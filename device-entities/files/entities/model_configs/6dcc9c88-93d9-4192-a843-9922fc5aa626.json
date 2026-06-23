@@ -1,0 +1,21 @@
+{
+    "id": "6dcc9c88-93d9-4192-a843-9922fc5aa626",
+    "displayName": "D4",
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "apiKey": "sk-ojfhqjrtexmljzjmfbtkkuyekccnjyzlahitvinftjduttov",
+    "modelName": "deepseek-ai/DeepSeek-V4-Pro",
+    "isMultimodal": false,
+    "visionModelId": "b9df5dc7-1e01-4581-9dc7-ad001e9aabbb",
+    "templateType": "OPENAI",
+    "customParams": {
+        "temperature": {
+            "type": "number",
+            "value": 0.7
+        },
+        "max_tokens": {
+            "type": "number",
+            "value": 1500.0
+        }
+    },
+    "createdAt": 1780224691810
+}

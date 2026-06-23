@@ -1,0 +1,592 @@
+package com.example.chatbar.domain.chat
+
+import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.ParamValue
+import com.example.chatbar.domain.prompt.PromptTemplates
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.put
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import okhttp3.sse.EventSource
+import okhttp3.sse.EventSourceListener
+import okhttp3.sse.EventSources
+import java.util.concurrent.TimeUnit
+import java.io.IOException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+
+// ========================= 数据模型 =========================
+
+/**
+ * SSE 流事件
+ */
+sealed class StreamEvent {
+    /** 增量文本片段 */
+    data class Delta(val text: String) : StreamEvent()
+
+    /** 增量思维链片段 */
+    data class ReasoningDelta(val text: String) : StreamEvent()
+
+    /** 错误 */
+    data class Error(val message: String) : StreamEvent()
+
+    /** 流结束 */
+    data object Done : StreamEvent()
+}
+
+/**
+ * 发送给 API 的消息格式
+ *
+ * [content] 为 JsonElement 类型以支持多模态：
+ * - 纯文本: JsonPrimitive("text")
+ * - 多模态: JsonArray of content parts
+ */
+@Serializable
+data class ChatApiMessage(
+    val role: String,
+    val content: JsonElement
+) {
+    companion object {
+        /** 创建纯文本消息 */
+        fun text(role: String, content: String) = ChatApiMessage(
+            role = role,
+            content = JsonPrimitive(content)
+        )
+
+        /** 创建带图片的多模态消息 */
+        fun withImage(role: String, text: String, imageBase64: String) = ChatApiMessage(
+            role = role,
+            content = multimodalContent(text, listOf(imageBase64))
+        )
+
+        fun withImages(role: String, text: String, imageBase64s: List<String>) = ChatApiMessage(
+            role = role,
+            content = multimodalContent(text, imageBase64s)
+        )
+
+        private fun multimodalContent(text: String, imageBase64s: List<String>) =
+            buildJsonArray {
+                text.takeIf(String::isNotBlank)?.let { nonBlankText ->
+                    add(buildJsonObject {
+                        put("type", "text")
+                        put("text", nonBlankText)
+                    })
+                }
+                imageBase64s.forEach { imageBase64 ->
+                    if (imageBase64.isNotBlank()) {
+                        add(buildJsonObject {
+                            put("type", "image_url")
+                            put("image_url", buildJsonObject {
+                                put("url", "data:image/jpeg;base64,$imageBase64")
+                            })
+                        })
+                    }
+                }
+            }
+    }
+}
+
+// ========================= 服务 =========================
+
+/**
+ * 流式聊天服务 — 通过 OkHttp SSE 与 OpenAI 兼容 API 通信
+ *
+ * 请求格式:
+ * POST {baseUrl}/chat/completions
+ * {"model": "...", "messages": [...], "stream": true, ...customParams}
+ *
+ * SSE 响应:
+ * data: {"choices": [{"delta": {"content": "..."}}]}
+ * data: [DONE]
+ */
+class StreamingChatService {
+
+    companion object {
+        private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
+        private const val CONNECT_TIMEOUT = 30L
+        private const val READ_TIMEOUT = 120L // SSE 需要较长读取超时
+    }
+
+    private val json = Json {
+        ignoreUnknownKeys = true
+        isLenient = true
+        encodeDefaults = true
+    }
+
+    private val client = OkHttpClient.Builder()
+        .connectTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
+        .writeTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
+        .build()
+
+    /**
+     * 流式聊天补全
+     *
+     * @param sessionId    会话 ID
+     * @param messages    消息列表
+     * @param modelConfig 模型配置
+     * @param systemPrompt 组装后的 System Prompt
+     * @param ragChunks    RAG 召回的知识块列表
+     * @return 包含 [StreamEvent] 的 Flow
+     */
+    fun streamChat(
+        sessionId: String,
+        messages: List<ChatApiMessage>,
+        modelConfig: ModelConfig,
+        systemPrompt: String = "",
+        ragChunks: List<String> = emptyList()
+    ): Flow<StreamEvent> = callbackFlow {
+        val maxRetries = 2
+        var retryCount = 0
+        var shouldStop = false
+
+        val baseUrl = modelConfig.baseUrl.trimEnd('/')
+        val url = "$baseUrl/chat/completions"
+        val requestBody = buildRequestBody(messages, modelConfig, stream = true)
+
+        // 写入 Debug 日志开始记录（仅一次）
+        com.example.chatbar.utils.DebugLogManager.startRequest(
+            sessionId = sessionId,
+            modelName = modelConfig.displayName,
+            apiUrl = url,
+            requestBodyJson = requestBody,
+            systemPrompt = systemPrompt,
+            ragChunks = ragChunks
+        )
+
+        while (!shouldStop && retryCount <= maxRetries) {
+            var retrying = false
+            val request = Request.Builder()
+                .url(url)
+                .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+                .addHeader("Content-Type", "application/json")
+                .addHeader("Accept", "text/event-stream")
+                .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+                .build()
+
+            suspendCancellableCoroutine { continuation ->
+                val listener = object : EventSourceListener() {
+                    override fun onEvent(
+                        eventSource: EventSource,
+                        id: String?,
+                        type: String?,
+                        data: String
+                    ) {
+                        if (data.trim() == "[DONE]") {
+                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(sessionId, data)
+                            com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
+                            trySend(StreamEvent.Done)
+                            shouldStop = true
+                            continuation.resume(Unit)
+                            return
+                        }
+
+                        try {
+                            val delta = parseDelta(data)
+                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(
+                                sessionId = sessionId,
+                                chunkData = data,
+                                deltaText = delta.content,
+                                reasoningText = delta.reasoningContent
+                            )
+
+                            if (delta.reasoningContent != null) {
+                                trySend(StreamEvent.ReasoningDelta(delta.reasoningContent))
+                            }
+                            if (delta.content != null) {
+                                trySend(StreamEvent.Delta(delta.content))
+                            }
+                        } catch (e: Exception) {
+                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(sessionId, data)
+                            trySend(StreamEvent.Error("解析 SSE 数据失败: ${e.message}"))
+                        }
+                    }
+
+                    override fun onFailure(
+                        eventSource: EventSource,
+                        t: Throwable?,
+                        response: Response?
+                    ) {
+                        val body = try { response?.body?.string() } catch (_: Exception) { null }
+
+                        if (retryCount < maxRetries && response?.code == 400 && body?.contains("20015") == true) {
+                            retrying = true
+                            retryCount++
+                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(
+                                sessionId,
+                                "[RETRY #$retryCount] 服务器返回 400/20015，${retryCount}秒后重试..."
+                            )
+                            continuation.resume(Unit)
+                            return
+                        }
+
+                        val errorMsg = buildString {
+                            append("流式请求失败")
+                            if (response != null) {
+                                append(" (${response.code})")
+                                if (!body.isNullOrBlank()) append(": $body")
+                            }
+                            if (t != null) {
+                                append(" - ${t.message}")
+                            }
+                            if (retryCount > 0) append(" (已重试${retryCount}次)")
+                        }
+                        com.example.chatbar.utils.DebugLogManager.logError(sessionId, errorMsg)
+                        trySend(StreamEvent.Error(errorMsg))
+                        shouldStop = true
+                        continuation.resume(Unit)
+                    }
+
+                    override fun onClosed(eventSource: EventSource) {
+                        if (!retrying) {
+                            com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
+                            shouldStop = true
+                        }
+                        continuation.resume(Unit)
+                    }
+                }
+
+                val eventSource = EventSources.createFactory(client)
+                    .newEventSource(request, listener)
+
+                continuation.invokeOnCancellation {
+                    eventSource.cancel()
+                }
+            }
+
+            if (!shouldStop) {
+                delay(retryCount * 1000L)
+            }
+        }
+
+        close()
+    }
+
+    /** 流式短文本任务；默认关闭思考，避免短任务长时间无正文输出。 */
+    fun streamText(
+        messages: List<ChatApiMessage>,
+        modelConfig: ModelConfig,
+        maxTokens: Int? = null,
+        enableThinking: Boolean = false,
+        maxThinkingTokens: Int? = null
+    ): Flow<StreamEvent> = callbackFlow {
+        val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
+        val requestBody = buildRequestBody(
+            messages = messages,
+            modelConfig = modelConfig,
+            stream = true,
+            maxTokens = maxTokens,
+            enableThinkingOverride = enableThinking,
+            maxThinkingTokens = maxThinkingTokens
+        )
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+            .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        val listener = object : EventSourceListener() {
+            override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
+                if (data.trim() == "[DONE]") {
+                    trySend(StreamEvent.Done)
+                    close()
+                    return
+                }
+                val delta = parseDelta(data)
+                delta.reasoningContent?.let { trySend(StreamEvent.ReasoningDelta(it)) }
+                delta.content?.let { trySend(StreamEvent.Delta(it)) }
+            }
+
+            override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
+                val message = buildString {
+                    append("流式文本补全失败")
+                    response?.let {
+                        append(" (${it.code})")
+                        runCatching { it.body?.string() }.getOrNull()
+                            ?.takeIf(String::isNotBlank)
+                            ?.let { body -> append(": ${body.take(2000)}") }
+                    }
+                    t?.let { append(" - ${it.message ?: it::class.java.simpleName}") }
+                }
+                trySend(StreamEvent.Error(message))
+                close()
+            }
+
+            override fun onClosed(eventSource: EventSource) {
+                close()
+            }
+        }
+        val eventSource = EventSources.createFactory(client).newEventSource(request, listener)
+        awaitClose { eventSource.cancel() }
+    }
+
+    /**
+     * 使用视觉模型描述图片
+     *
+     * @param imageBase64 图片的 Base64 编码
+     * @param modelConfig 视觉模型配置
+     * @return 图片描述文本
+     */
+    suspend fun describeImage(
+        imageBase64: String,
+        modelConfig: ModelConfig
+    ): String = suspendCancellableCoroutine { continuation ->
+        val baseUrl = modelConfig.baseUrl.trimEnd('/')
+        val url = "$baseUrl/chat/completions"
+
+        val messages = listOf(
+            ChatApiMessage.withImage(
+                role = "user",
+                text = PromptTemplates.IMAGE_DESCRIPTION_PROMPT,
+                imageBase64 = imageBase64
+            )
+        )
+
+        val requestBody = buildRequestBody(
+            messages = messages,
+            modelConfig = modelConfig,
+            stream = false,
+            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS
+        )
+
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = client.newCall(request)
+
+        continuation.invokeOnCancellation { call.cancel() }
+
+        Thread {
+            try {
+                val response = call.execute()
+                val body = response.body?.string() ?: ""
+                if (!response.isSuccessful) {
+                    continuation.resumeWithException(
+                        RuntimeException("图片描述失败 (${response.code}): $body")
+                    )
+                    return@Thread
+                }
+                continuation.resume(compactImageDescription(parseNonStreamResponse(body)))
+            } catch (e: Exception) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(
+                        RuntimeException("图片描述请求失败: ${e.message ?: e::class.java.simpleName}", e)
+                    )
+                }
+            }
+        }.start()
+    }
+
+    /**
+     * 非流式文本补全，用于短任务：RAG 联想判断、query planning、图片描述等。
+     */
+    suspend fun completeText(
+        messages: List<ChatApiMessage>,
+        modelConfig: ModelConfig,
+        maxTokens: Int? = null
+    ): String = suspendCancellableCoroutine { continuation ->
+        val baseUrl = modelConfig.baseUrl.trimEnd('/')
+        val url = "$baseUrl/chat/completions"
+        val requestBody = buildRequestBody(
+            messages = messages,
+            modelConfig = modelConfig,
+            stream = false,
+            maxTokens = maxTokens
+        )
+
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val call = client.newCall(request)
+        continuation.invokeOnCancellation { call.cancel() }
+        call.enqueue(object : Callback {
+            override fun onFailure(call: Call, e: IOException) {
+                if (continuation.isActive) {
+                    continuation.resumeWithException(
+                        RuntimeException(
+                            "文本补全请求失败: ${e.message ?: e::class.java.simpleName}",
+                            e
+                        )
+                    )
+                }
+            }
+
+            override fun onResponse(call: Call, response: Response) {
+                response.use {
+                    if (!continuation.isActive) return
+                    val body = response.body?.string().orEmpty()
+                    if (!response.isSuccessful) {
+                        continuation.resumeWithException(
+                            RuntimeException("文本补全失败 (${response.code}): ${body.take(2000)}")
+                        )
+                        return
+                    }
+                    runCatching { parseNonStreamResponse(body) }
+                        .onSuccess { content ->
+                            if (!continuation.isActive) return@onSuccess
+                            if (content.isBlank()) {
+                                continuation.resumeWithException(
+                                    RuntimeException("文本补全返回空内容。Raw body: ${body.take(2000)}")
+                                )
+                            } else {
+                                continuation.resume(content)
+                            }
+                        }
+                        .onFailure { error ->
+                            if (continuation.isActive) {
+                                continuation.resumeWithException(
+                                    RuntimeException(
+                                        "文本补全响应解析失败: ${error.message ?: error::class.java.simpleName}",
+                                        error
+                                    )
+                                )
+                            }
+                        }
+                }
+            }
+        })
+    }
+
+    // ========================= 内部方法 =========================
+
+    /** 构建请求 JSON body */
+    private fun buildRequestBody(
+        messages: List<ChatApiMessage>,
+        modelConfig: ModelConfig,
+        stream: Boolean,
+        maxTokens: Int? = null,
+        enableThinkingOverride: Boolean? = null,
+        maxThinkingTokens: Int? = null
+    ): String {
+        val messagesArray = buildJsonArray {
+            for (msg in messages) {
+                add(buildJsonObject {
+                    put("role", msg.role)
+                    put("content", msg.content)
+                })
+            }
+        }
+
+        val bodyObj = buildJsonObject {
+            put("model", modelConfig.modelName)
+            put("messages", messagesArray)
+            put("stream", stream)
+
+            // 追加自定义参数
+            for ((key, value) in modelConfig.customParams) {
+                when (value) {
+                    is ParamValue.NumberValue -> {
+                        val d = value.value
+                        if (d % 1.0 == 0.0) {
+                            put(key, d.toLong())
+                        } else {
+                            put(key, d)
+                        }
+                    }
+                    is ParamValue.BooleanValue -> put(key, value.value)
+                    is ParamValue.StringValue -> put(key, value.value)
+                }
+            }
+            val outputTokenLimit = maxTokens ?: modelConfig.maxOutputTokens
+            if (outputTokenLimit != null) {
+                put("max_tokens", outputTokenLimit)
+                put("max_completion_tokens", outputTokenLimit)
+            }
+            modelConfig.reasoningEffort?.takeIf { it.isNotBlank() }?.let { put("reasoning_effort", it) }
+            (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put("enable_thinking", it) }
+            maxThinkingTokens?.let { put("max_thinking_tokens", it) }
+        }
+
+        return bodyObj.toString()
+    }
+
+    private fun compactImageDescription(text: String): String {
+        return text
+            .replace(Regex("\\s+"), " ")
+            .trim()
+            .take(220)
+    }
+
+    data class DeltaResult(val content: String?, val reasoningContent: String?)
+
+    /** 从 SSE data 行解析增量文本和思维链 */
+    private fun parseDelta(data: String): DeltaResult {
+        return try {
+            val obj = json.decodeFromString<JsonObject>(data)
+            val delta = obj["choices"]?.jsonArray?.firstOrNull()
+                ?.jsonObject?.get("delta")?.jsonObject
+            val content = delta?.get("content")?.jsonPrimitive?.contentOrNull
+            val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+                ?: delta?.get("reasoning")?.jsonPrimitive?.contentOrNull
+            DeltaResult(content, reasoning)
+        } catch (_: Exception) {
+            DeltaResult(null, null)
+        }
+    }
+
+    /** 从非流式响应解析完整回复内容 */
+    private fun parseNonStreamResponse(body: String): String {
+        val obj = json.decodeFromString<JsonObject>(body)
+        val message = obj["choices"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("message")
+            ?.jsonObject
+        val content = message?.get("content")
+        val primitiveContent = content?.jsonPrimitive?.contentOrNull
+        if (primitiveContent != null) return primitiveContent
+
+        val arrayContent = runCatching {
+            content?.jsonArray?.joinToString("") { part ->
+                val partObj = part.jsonObject
+                partObj["text"]?.jsonPrimitive?.contentOrNull
+                    ?: partObj["content"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+            }
+        }.getOrNull()
+        if (arrayContent != null) return arrayContent
+
+        val reasoningContent = message?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+            ?: message?.get("reasoning")?.jsonPrimitive?.contentOrNull
+        if (reasoningContent != null) return reasoningContent
+
+        val legacyText = obj["choices"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("text")
+            ?.jsonPrimitive?.contentOrNull
+        if (legacyText != null) return legacyText
+
+        val outputText = obj["output_text"]?.jsonPrimitive?.contentOrNull
+        if (outputText != null) return outputText
+
+        throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
+    }
+}

@@ -1,0 +1,96 @@
+{
+  "schemaVersion": 1,
+  "provider": "SILICONFLOW",
+  "baseUrl": "https://api.siliconflow.cn/v1",
+  "chatModels": [
+    {
+      "modelKey": "DeepseekV3.2",
+      "displayName": "DS3.2",
+      "modelName": "deepseek-ai/DeepSeek-V3.2",
+      "visionModelKey": "k2.6",
+      "templateType": "OPENAI",
+      "customParams": {
+        "enable_thinking": { "type": "boolean", "value": true },
+        "thinking_budget": { "type": "number", "value": 1024.0 },
+        "max_tokens": { "type": "number", "value": 40960.0 }
+      }
+    },
+    {
+      "modelKey": "GLM5.1",
+      "displayName": "GLM5.1",
+      "modelName": "Pro/zai-org/GLM-5.1",
+      "visionModelKey": "k2.6",
+      "templateType": "OPENAI",
+      "customParams": {
+        "enable_thinking": {
+          "type": "boolean",
+          "value": true
+        },
+        "thinking_budget": {
+          "type": "number",
+          "value": 1024.0
+        },
+        "max_tokens": {
+          "type": "number",
+          "value": 40960.0
+        }
+      }
+    },
+    {
+      "modelKey": "Kimi2.6",
+      "displayName": "Kimi2.6",
+      "modelName": "Pro/moonshotai/Kimi-K2.6",
+      "isMultimodal": true,
+      "templateType": "OPENAI",
+      "customParams": {
+        "enable_thinking": {
+          "type": "boolean",
+          "value": true
+        },
+        "thinking_budget": {
+          "type": "number",
+          "value": 1024.0
+        },
+        "max_tokens": {
+          "type": "number",
+          "value": 40960.0
+        }
+      }
+    },
+    {
+      "modelKey": "vision",
+      "displayName": "视觉模型Qwen3.5",
+      "modelName": "Qwen/Qwen3.5-9B",
+      "selectableForChat": false,
+      "isMultimodal": true,
+      "templateType": "OPENAI",
+      "customParams": {
+        "enable_thinking": {
+          "type": "boolean",
+          "value": true
+        },
+        "thinking_budget": {
+          "type": "number",
+          "value": 1024.0
+        },
+        "max_tokens": {
+          "type": "number",
+          "value": 4096.0
+        }
+      }
+    }
+  ],
+  "retrievalModel": {
+    "modelKey": "retrieval",
+    "displayName": "检索规划模型",
+    "modelName": "Qwen/Qwen3.5-27B",
+    "templateType": "OPENAI",
+    "maxOutputTokens": 512
+  },
+  "embeddingModel": {
+    "modelKey": "embedding",
+    "displayName": "向量模型",
+    "modelName": "Qwen/Qwen3-Embedding-8B",
+    "dimensions": 1536
+  }
+}

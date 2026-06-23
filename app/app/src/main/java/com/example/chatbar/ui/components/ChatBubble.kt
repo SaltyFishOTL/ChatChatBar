@@ -1,0 +1,356 @@
+package com.example.chatbar.ui.components
+
+import android.graphics.BitmapFactory
+import android.widget.TextView
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.viewinterop.AndroidView
+import coil.compose.AsyncImage
+import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.ui.kit.CbIcon
+import com.example.chatbar.ui.kit.CbIconButton
+import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbText
+import com.example.chatbar.ui.kit.ChatBarTheme
+import android.text.Spannable
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
+import io.noties.markwon.AbstractMarkwonPlugin
+import io.noties.markwon.Markwon
+import io.noties.markwon.core.MarkwonTheme
+import io.noties.markwon.html.HtmlPlugin
+import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
+internal sealed interface RoleplayContentSegment {
+    data class Markdown(val text: String) : RoleplayContentSegment
+    data class Status(val text: String) : RoleplayContentSegment
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+fun ChatBubble(
+    message: ChatMessage,
+    modifier: Modifier = Modifier,
+    fontScale: Float = 1.0f,
+    onLongPress: (() -> Unit)? = null,
+    onPreviousAlternative: (() -> Unit)? = null,
+    onNextAlternative: (() -> Unit)? = null,
+    onImageClick: ((String) -> Unit)? = null,
+    onImageLongPress: ((String) -> Unit)? = null,
+    onGenerateImage: (() -> Unit)? = null,
+    imageGenerationEnabled: Boolean = true
+) {
+    val isUser = message.role == MessageRole.USER
+    val shape = RoundedCornerShape(
+        topStart = 10.dp,
+        topEnd = 10.dp,
+        bottomStart = if (isUser) 10.dp else 3.dp,
+        bottomEnd = if (isUser) 3.dp else 10.dp
+    )
+    val contentSegments = remember(message.id, message.currentAlternativeIndex, message.displayContent) {
+        parseRoleplayContent(message.displayContent)
+    }
+    Column(
+        modifier = modifier.fillMaxWidth().padding(vertical = 5.dp),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        Column(
+            Modifier
+                .widthIn(max = 300.dp)
+                .background(
+                    (if (isUser) ChatBarTheme.colors.primary else ChatBarTheme.colors.card)
+                        .copy(alpha = 0.6f),
+                    shape
+                )
+                .combinedClickable(
+                    enabled = onLongPress != null,
+                    onClick = {},
+                    onLongClick = { onLongPress?.invoke() }
+                )
+                .semantics {
+                    contentDescription = if (isUser) "用户消息" else "助手消息"
+                }
+                .padding(horizontal = 12.dp, vertical = 10.dp)
+        ) {
+            message.images.forEach { imagePath ->
+                val imageRatio = remember(imagePath) { imageAspectRatio(imagePath) }
+                AsyncImage(
+                    model = File(imagePath),
+                    contentDescription = "消息图片",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(bottom = 8.dp)
+                        .aspectRatio(imageRatio)
+                        .clip(RoundedCornerShape(8.dp))
+                        .combinedClickable(
+                            onClick = { onImageClick?.invoke(imagePath) },
+                            onLongClick = { onImageLongPress?.invoke(imagePath) }
+                        ),
+                    contentScale = ContentScale.Fit
+                )
+            }
+            if (!isUser && !message.reasoningContent.isNullOrBlank()) {
+                var expanded by remember(message.id) { mutableStateOf(false) }
+                Column(
+                    Modifier
+                        .padding(bottom = 8.dp)
+                        .background(ChatBarTheme.colors.accent, RoundedCornerShape(8.dp))
+                        .combinedClickable(
+                            onClick = { expanded = !expanded },
+                            onLongClick = { onLongPress?.invoke() }
+                        )
+                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CbText(
+                            if (expanded) "思考过程" else "思考过程（已折叠）",
+                            color = ChatBarTheme.colors.primary,
+                            style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
+                        )
+                        CbIcon(
+                            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            "切换思考过程",
+                            Modifier.size(14.dp),
+                            ChatBarTheme.colors.mutedForeground
+                        )
+                    }
+                    if (expanded) {
+                        Spacer(Modifier.height(4.dp))
+                        CbText(
+                            message.reasoningContent,
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption.copy(lineHeight = 15.sp)
+                        )
+                    }
+                }
+            }
+            val context = LocalContext.current
+            val foregroundColor = ChatBarTheme.colors.foreground
+            val primaryColor = ChatBarTheme.colors.primary
+            val linkColorArgb = primaryColor.toArgb()
+            val markwon = remember(context, linkColorArgb) {
+                Markwon.builder(context)
+                    .usePlugin(HtmlPlugin.create())
+                    .usePlugin(object : AbstractMarkwonPlugin() {
+                        override fun configureTheme(builder: MarkwonTheme.Builder) {
+                            builder.linkColor(linkColorArgb)
+                            builder.isLinkUnderlined(false)
+                        }
+                    })
+                    .build()
+            }
+            contentSegments.forEachIndexed { index, segment ->
+                key(message.id, message.currentAlternativeIndex, index) {
+                    when (segment) {
+                        is RoleplayContentSegment.Markdown -> AndroidView(
+                            factory = { ctx ->
+                                TextView(ctx).apply {
+                                    textSize = 14f * fontScale
+                                    setLineSpacing(2f, 1.08f)
+                                    linksClickable = false
+                                    isClickable = false
+                                    isLongClickable = false
+                                }
+                            },
+                            update = { textView ->
+                                textView.setOnClickListener(null)
+                                textView.setOnLongClickListener(null)
+                                textView.isClickable = false
+                                textView.isLongClickable = false
+                                textView.setTextColor(if (isUser) Color.White.toArgb() else foregroundColor.toArgb())
+                                markwon.setMarkdown(textView, sanitizeRoleplayMarkdown(segment.text, true))
+                                applyAccentColorToMarkedRanges(textView, primaryColor.toArgb())
+                                textView.linksClickable = false
+                                textView.movementMethod = null
+                            }
+                        )
+                        is RoleplayContentSegment.Status -> RoleplayStatusPanel(
+                            text = segment.text,
+                            onLongPress = onLongPress
+                        )
+                    }
+                }
+            }
+        }
+        Row(
+            modifier = Modifier.fillMaxWidth().widthIn(max = 300.dp).padding(top = 3.dp, start = 8.dp, end = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CbText(
+                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.createdAt)),
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            if (!isUser && message.alternatives.size > 1 && onPreviousAlternative != null && onNextAlternative != null) {
+                val canPrevious = message.currentAlternativeIndex > 0
+                val canNext = message.currentAlternativeIndex < message.alternatives.lastIndex
+                CbSurface(shape = RoundedCornerShape(8.dp), color = ChatBarTheme.colors.accent) {
+                    Row(Modifier.padding(horizontal = 7.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CbText("‹", color = if (canPrevious) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canPrevious) { onPreviousAlternative() })
+                        CbText("${message.currentAlternativeIndex + 1}/${message.alternatives.size}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                        CbText("›", color = if (canNext) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canNext) { onNextAlternative() })
+                    }
+                }
+            }
+            if (!isUser && onGenerateImage != null) {
+                Spacer(Modifier.weight(1f))
+                CbIconButton(
+                    Icons.Default.Image,
+                    "根据此消息生成图片",
+                    onGenerateImage,
+                    enabled = imageGenerationEnabled,
+                    tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
+    var expanded by remember(text) { mutableStateOf(false) }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(top = 6.dp)
+            .background(ChatBarTheme.colors.accent.copy(alpha = 0.78f), RoundedCornerShape(8.dp))
+            .combinedClickable(
+                onClick = { expanded = !expanded },
+                onLongClick = { onLongPress?.invoke() }
+            )
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        Row(
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(6.dp)
+        ) {
+            CbText(
+                if (expanded) "状态栏" else "状态栏（已折叠）",
+                color = ChatBarTheme.colors.primary,
+                style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
+            )
+            CbIcon(
+                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                "切换状态栏",
+                Modifier.size(14.dp),
+                ChatBarTheme.colors.mutedForeground
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(5.dp))
+            CbText(
+                text.trim(),
+                color = ChatBarTheme.colors.foreground,
+                style = ChatBarTheme.typography.caption.copy(lineHeight = 16.sp)
+            )
+        }
+    }
+}
+
+internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment> {
+    if (content.isEmpty()) return emptyList()
+    val marker = "\u0060\u0060\u0060"
+    val segments = mutableListOf<RoleplayContentSegment>()
+    var cursor = 0
+    while (cursor < content.length) {
+        val open = content.indexOf(marker, cursor)
+        if (open < 0) {
+            content.substring(cursor).takeIf(String::isNotBlank)
+                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+            break
+        }
+        if (open > cursor) {
+            content.substring(cursor, open).takeIf(String::isNotBlank)
+                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+        }
+        val headerEnd = content.indexOf('\n', open + marker.length)
+        val bodyStart = if (headerEnd >= 0) headerEnd + 1 else open + marker.length
+        val close = content.indexOf(marker, bodyStart)
+        if (close < 0) {
+            content.substring(open).takeIf(String::isNotBlank)
+                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+            break
+        }
+        segments += RoleplayContentSegment.Status(content.substring(bodyStart, close).trim())
+        cursor = close + marker.length
+    }
+    return segments.ifEmpty { listOf(RoleplayContentSegment.Markdown(content)) }
+}
+
+internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
+    if (forColoring) {
+        return Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)").replace(content) { match ->
+            val text = match.groupValues[1]
+            val url = match.value.substringAfter("](").substringBefore(")")
+            if (url.isEmpty()) "\u200B[$text]\u200B"
+            else match.value
+        }
+    }
+    return content.replace(Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)"), "[$1]")
+}
+
+private const val COLOR_MARKER = '\u200B'
+
+private fun applyAccentColorToMarkedRanges(textView: TextView, accentColor: Int) {
+    val spannable = textView.text as? Spannable ?: return
+    val text = spannable.toString()
+    var start = text.indexOf(COLOR_MARKER)
+    while (start >= 0) {
+        val end = text.indexOf(COLOR_MARKER, start + 1)
+        if (end < 0) break
+        spannable.setSpan(ForegroundColorSpan(accentColor), start + 1, end, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE)
+        start = text.indexOf(COLOR_MARKER, end + 1)
+    }
+}
+
+internal fun imageAspectRatio(path: String): Float {
+    val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, options)
+    return if (options.outWidth > 0 && options.outHeight > 0) {
+        options.outWidth.toFloat() / options.outHeight.toFloat()
+    } else {
+        1f
+    }
+}

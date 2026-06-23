@@ -1,0 +1,8 @@
+{
+    "defaultModelId": "6dcc9c88-93d9-4192-a843-9922fc5aa626",
+    "defaultEmbeddingId": "6a0683c4-826e-416d-ba2f-4da9de6512b5",
+    "defaultFormatCardId": null,
+    "ragTopK": 5,
+    "ragSimilarityThreshold": 0.7,
+    "defaultContextWindowSize": 20
+}

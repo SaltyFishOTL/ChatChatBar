@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar shadcn Compose"
+  short_description: "Translate shadcn patterns into Compose Foundation UI"
+  default_prompt: "Use $chatbar-shadcn-compose to build or migrate ChatBar UI components."

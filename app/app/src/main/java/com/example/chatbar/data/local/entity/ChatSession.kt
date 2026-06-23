@@ -1,0 +1,51 @@
+package com.example.chatbar.data.local.entity
+
+import kotlinx.serialization.Serializable
+import kotlin.uuid.ExperimentalUuidApi
+import kotlin.uuid.Uuid
+
+/**
+ * 聊天会话
+ */
+@Serializable
+data class ChatSession(
+    val id: String,
+    val characterCardId: String,
+    val title: String,
+    val modelId: String? = null,
+    val formatCardId: String? = null,
+    val replyLength: String? = null,         // 回复长度设定
+    val replyLanguage: String? = null,       // 回复语言
+    val roleplayStyle: String? = null,       // 会话扮演风格覆盖
+    val supplementarySetting: String? = null, // 补充设定
+    val playerName: String? = null,           // 玩家名称覆盖
+    val playerSetting: String? = null,        // 个人设定覆盖
+    val chatBackground: String? = null,
+    val contextWindowSize: Int = 20,
+    val isPinned: Boolean = false,
+    val lastMessagePreview: String? = null,
+    val lastMessageTime: Long? = null,
+    val createdAt: Long,
+    val updatedAt: Long
+) {
+    companion object {
+        @OptIn(ExperimentalUuidApi::class)
+        fun create(
+            characterCardId: String,
+            title: String,
+            modelId: String? = null,
+            formatCardId: String? = null
+        ): ChatSession {
+            val now = System.currentTimeMillis()
+            return ChatSession(
+                id = Uuid.random().toString(),
+                characterCardId = characterCardId,
+                title = title,
+                modelId = modelId,
+                formatCardId = formatCardId,
+                createdAt = now,
+                updatedAt = now
+            )
+        }
+    }
+}

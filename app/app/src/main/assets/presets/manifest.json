@@ -1,0 +1,39 @@
+{
+  "entries": [
+    {
+      "presetKey": "MujicaMyGO",
+      "type": "CHARACTER",
+      "version": 2,
+      "file": "presets/characters/MujicaMyGO.json",
+      "displayName": "Mujica与MyGO【开放世界】"
+    },
+    {
+      "presetKey": "Rupa",
+      "type": "CHARACTER",
+      "version": 1,
+      "file": "presets/characters/Rupa.json",
+      "displayName": "卢帕/RUPA——加班，然后捡到女高中生"
+    },
+    {
+      "presetKey": "erowriting-format",
+      "type": "FORMAT",
+      "version": 1,
+      "file": "presets/formats/erowriting-format.json",
+      "displayName": "黄文叙事"
+    },
+    {
+      "presetKey": "thinkchain-format",
+      "type": "FORMAT",
+      "version": 1,
+      "file": "presets/formats/thinkchain-format.json",
+      "displayName": "轻小说大师"
+    },
+    {
+      "presetKey": "default-model-catalog",
+      "type": "MODEL_CATALOG",
+      "version": 1,
+      "file": "presets/models/default-models.json",
+      "displayName": "内置模型目录"
+    }
+  ]
+}

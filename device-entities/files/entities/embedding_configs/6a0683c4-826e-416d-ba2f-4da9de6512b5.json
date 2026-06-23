@@ -1,0 +1,8 @@
+{
+    "id": "6a0683c4-826e-416d-ba2f-4da9de6512b5",
+    "displayName": "Qwen/Qwen3-VL-Embedding-8B",
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "apiKey": "sk-ojfhqjrtexmljzjmfbtkkuyekccnjyzlahitvinftjduttov",
+    "modelName": "Qwen/Qwen3-VL-Embedding-8B",
+    "dimensions": 1536
+}

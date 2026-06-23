@@ -1,0 +1,4 @@
+﻿interface:
+  display_name: "Project Handoff Memory"
+  short_description: "Maintain compact long-term project memory through handoff files."
+  default_prompt: "Use $project-handoff-memory to refresh project handoff memory before planning, committing, or pausing."

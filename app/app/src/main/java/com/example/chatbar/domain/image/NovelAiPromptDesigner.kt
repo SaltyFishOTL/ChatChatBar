@@ -1,0 +1,248 @@
+package com.example.chatbar.domain.image
+
+import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.CharacterEditMode
+import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.StreamEvent
+import com.example.chatbar.domain.chat.StreamingChatService
+import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.utils.DebugLogManager
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.collect
+import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+
+@Serializable
+data class DesignedImagePrompt(
+    val baseCaption: String = "",
+    val scenePrompt: String = "",
+    val characters: List<DesignedCharacterPrompt> = emptyList()
+) {
+    val effectiveBaseCaption: String get() = baseCaption.ifBlank { scenePrompt }
+}
+
+@Serializable
+data class DesignedCharacterPrompt(
+    val name: String,
+    val caption: String = "",
+    val adjustment: String = "",
+    val center: DesignedCharacterCenter? = null
+) {
+    val effectiveCaption: String get() = caption.ifBlank { adjustment }
+}
+
+@Serializable
+data class DesignedCharacterCenter(
+    val x: Float,
+    val y: Float
+)
+
+data class NovelAiCharacterCaption(
+    val prompt: String,
+    val center: DesignedCharacterCenter
+)
+
+data class NovelAiPromptPlan(
+    val baseCaption: String,
+    val characterCaptions: List<NovelAiCharacterCaption>,
+    val designed: DesignedImagePrompt? = null
+)
+
+class NovelAiPromptDesigner(
+    private val chatService: StreamingChatService,
+    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
+) {
+    suspend fun design(
+        messages: List<ChatMessage>,
+        anchorMessageId: String,
+        card: CharacterCard,
+        model: ModelConfig,
+        sessionId: String? = null,
+        onDelta: (String) -> Unit = {}
+    ): NovelAiPromptPlan {
+        val context = contextForAnchor(messages, anchorMessageId)
+        require(context.isNotEmpty()) { "没有可用于生图的聊天上下文" }
+        val structured = card.editMode == CharacterEditMode.STRUCTURED
+        val characterPrompts = if (structured) {
+            card.characters.map { baseCharacterName(it.name) to it.imagePrompt.trim() }
+        } else {
+            emptyList()
+        }
+        val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
+            cardDefaultImagePrompt = card.defaultImagePrompt,
+            characterImagePrompts = characterPrompts,
+            structured = structured
+        )
+        val userPrompt = PromptTemplates.novelAiImagePromptConversation(context)
+        val raw = streamCompletion(
+            messages = listOf(
+                ChatApiMessage.text("system", systemPrompt),
+                ChatApiMessage.text("user", userPrompt)
+            ),
+            model = model,
+            enableThinking = true,
+            maxThinkingTokens = 128,
+            onDelta = onDelta
+        )
+        sessionId?.let { sid ->
+            DebugLogManager.recordCompleted(
+                sessionId = sid,
+                modelName = model.modelName,
+                apiUrl = "${model.baseUrl.trimEnd('/')}/chat/completions",
+                requestBodyJson = buildDesignRequestJson(systemPrompt, userPrompt),
+                rawAiOutput = raw
+            )
+        }
+        val designed = parseOrRepair(raw, model, onDelta)
+        return convert(card, designed)
+    }
+
+    private suspend fun parseOrRepair(
+        raw: String,
+        model: ModelConfig,
+        onDelta: (String) -> Unit
+    ): DesignedImagePrompt {
+        parse(raw)?.let { return it }
+        val repaired = streamCompletion(
+            messages = listOf(
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+                ),
+                ChatApiMessage.text("user", raw)
+            ),
+            model = model,
+            onDelta = onDelta
+        )
+        return parse(repaired) ?: error("对话 AI 返回的生图 Prompt JSON 无法解析，原始内容: ${raw.take(500)}")
+    }
+
+    private suspend fun streamCompletion(
+        messages: List<ChatApiMessage>,
+        model: ModelConfig,
+        enableThinking: Boolean = false,
+        maxThinkingTokens: Int? = null,
+        onDelta: (String) -> Unit
+    ): String {
+        return collectPromptText(
+            events = chatService.streamText(
+            messages = messages,
+            modelConfig = model,
+            maxTokens = PromptTemplates.NOVELAI_IMAGE_PROMPT_MAX_TOKENS,
+            enableThinking = enableThinking,
+            maxThinkingTokens = maxThinkingTokens
+            ),
+            onDelta = onDelta
+        )
+    }
+
+    private fun parse(raw: String): DesignedImagePrompt? {
+        val candidate = raw.trim()
+            .removePrefix("```json").removePrefix("```")
+            .removeSuffix("```").trim()
+            .let { text ->
+                val start = text.indexOf('{')
+                val end = text.lastIndexOf('}')
+                if (start >= 0 && end > start) text.substring(start, end + 1) else text
+            }
+        return runCatching { json.decodeFromString(DesignedImagePrompt.serializer(), candidate) }
+            .getOrNull()
+            ?.takeIf { it.effectiveBaseCaption.isNotBlank() }
+    }
+
+    companion object {
+        fun contextForAnchor(
+            messages: List<ChatMessage>,
+            anchorMessageId: String
+        ): List<ChatMessage> {
+            val anchorIndex = messages.indexOfFirst { it.id == anchorMessageId }
+            if (anchorIndex < 0) return emptyList()
+            return messages.subList(0, anchorIndex + 1)
+                .filter { it.role != MessageRole.SYSTEM && it.displayContent.isNotBlank() }
+                .takeLast(3)
+        }
+
+        internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan {
+            val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
+            if (card.editMode != CharacterEditMode.STRUCTURED) return NovelAiPromptPlan(normalizedBase, emptyList(), designed)
+            val characters = designed.characters.take(6)
+            val captions = characters.mapIndexedNotNull { index, selected ->
+                selected.effectiveCaption.trim().takeIf(String::isNotBlank)?.let {
+                    NovelAiCharacterCaption(
+                        prompt = it,
+                        center = selected.center?.normalized()
+                            ?: fallbackCenter(index, characters.size)
+                    )
+                }
+            }
+            return NovelAiPromptPlan(normalizedBase, captions, designed)
+        }
+
+        private fun DesignedCharacterCenter.normalized() = DesignedCharacterCenter(
+            x = x.coerceIn(0.05f, 0.95f),
+            y = y.coerceIn(0.05f, 0.95f)
+        )
+
+        internal fun fallbackCenter(index: Int, count: Int): DesignedCharacterCenter {
+            if (count <= 1) return DesignedCharacterCenter(0.5f, 0.5f)
+            return DesignedCharacterCenter(
+                x = (index + 1f) / (count + 1f),
+                y = 0.5f
+            )
+        }
+
+        internal fun normalizeRelationTags(prompt: String): String =
+            prompt.replace(
+                Regex("""\b(source|target|mutual)#(?!\d+\b)[^,\s]+""", RegexOption.IGNORE_CASE)
+            ) { "" }
+                .split(',')
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .joinToString(", ")
+
+        internal fun baseCharacterName(fullName: String): String =
+            fullName.split(Regex("""[/;；]""")).first().trim()
+
+        private fun buildDesignRequestJson(systemPrompt: String, userPrompt: String): String =
+            buildJsonObject {
+                put("messages", kotlinx.serialization.json.buildJsonArray {
+                    add(buildJsonObject {
+                        put("role", "system")
+                        put("content", systemPrompt)
+                    })
+                    add(buildJsonObject {
+                        put("role", "user")
+                        put("content", userPrompt)
+                    })
+                })
+                put("max_tokens", PromptTemplates.NOVELAI_IMAGE_PROMPT_MAX_TOKENS)
+                put("enable_thinking", true)
+                put("max_thinking_tokens", 128)
+            }.toString()
+    }
+}
+
+internal suspend fun collectPromptText(
+    events: Flow<StreamEvent>,
+    onDelta: (String) -> Unit
+): String {
+    val content = StringBuilder()
+    events.collect { event ->
+        when (event) {
+            is StreamEvent.Delta -> {
+                content.append(event.text)
+                onDelta(content.toString())
+            }
+            is StreamEvent.ReasoningDelta -> Unit
+            is StreamEvent.Error -> error(event.message)
+            StreamEvent.Done -> Unit
+        }
+    }
+    return content.toString().takeIf(String::isNotBlank)
+        ?: error("对话 AI 流式生图 Prompt 返回空内容")
+}

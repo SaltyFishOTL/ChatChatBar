@@ -1,0 +1,21 @@
+{
+    "id": "b9df5dc7-1e01-4581-9dc7-ad001e9aabbb",
+    "displayName": "Qwen/Qwen3.6-27B",
+    "baseUrl": "https://api.siliconflow.cn/v1",
+    "apiKey": "sk-ojfhqjrtexmljzjmfbtkkuyekccnjyzlahitvinftjduttov",
+    "modelName": "Qwen/Qwen3-VL-Embedding-8B",
+    "isMultimodal": true,
+    "visionModelId": null,
+    "templateType": "OPENAI",
+    "customParams": {
+        "temperature": {
+            "type": "number",
+            "value": 0.7
+        },
+        "max_tokens": {
+            "type": "number",
+            "value": 1500.0
+        }
+    },
+    "createdAt": 1780224706088
+}

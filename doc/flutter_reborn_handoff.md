@@ -1,0 +1,767 @@
+# FlutterReborn Handoff
+
+Last updated: 2026-06-23
+Branch: `FlutterReborn`
+Latest stable code commit: `5376a37 Fix Flutter chat background and scroll parity`
+
+Purpose: living handoff for continuing Flutter rebuild. Keep this file as current facts, open risks, and next work. Do not append chronological logs.
+
+## Completed
+
+- Flutter toolchain installed under `D:\Tools\flutter`; Android debug build works.
+- Flutter app package: `com.example.chatbar_reborn`.
+- Core local-first data layer exists and is covered by tests:
+  - JSON entity compatibility with Android-shaped data.
+  - character CRUD, media ownership, import/export/overwrite.
+  - chat sessions/messages/images/save slots.
+  - model/settings/format cards.
+  - RAG chunking, retrieval, debug logs.
+  - NovelAI image generation domain/storage/service tests.
+- App icon/control icon migration started:
+  - `lucide_icons_flutter` imported.
+  - bottom nav, chat header, composer, fullscreen composer, message actions, alternative controls use real icons instead of temporary glyphs.
+- System back crash fixed at platform/app-shell level and partly regression-tested:
+  - Home transient overlay back.
+  - Manage edit back.
+  - Chat overlay back contract now has widget-state tests for preview, edit, fullscreen composer, message actions, header panels, and empty false.
+  - Chat overlays have Android integration coverage in `integration_test/chat_back_overlay_smoke_test.dart`:
+    - Chat settings pop route closes settings and keeps the selected chat visible.
+    - fullscreen composer, debug panel, message action panel, fullscreen edit, and image preview pop route all close before navigation.
+    - Latest emulator run on 2026-06-22 passed both Chat back overlay integration tests on `emulator-5554`.
+  - emulator smoke confirms no immediate `Router operation requested` crash.
+- Manage media/import/export critical flows fixed per user manual test:
+  - avatar/background/appearance pick-clear-save persist.
+  - new character avatar persists.
+  - export/import no longer crashes in tested flow.
+- Character document folder picker critical path fixed per user manual test:
+  - Android folder picker imports supported direct-child `.txt`, `.md`, and `.json` documents.
+- Settings customAPI parity:
+  - Custom API card now has Kotlin-like `Save API key` and `Test connection` actions.
+  - Test connection checks preset chat plus embedding endpoints through `SiliconFlowConnectionTester`.
+  - UI remains callback-only for network probing; domain service owns model resolution and chat/embedding test requests.
+- Chat header/navigation slice:
+  - Mobile Chat no longer shows the global `ChatBar Chat` top bar; Chat owns its route-local header like Kotlin.
+  - `ChatHeader` now has an explicit back icon action that delegates to Chat back handling before returning Home.
+  - App shell keeps Chat as hidden route with hidden bottom navigation; Home/Manage remain the session entry points.
+- Settings/provider/background repair slice:
+  - Settings keeps a state-owned `ScrollController`, so snapshot refreshes should no longer jump the Settings page back to top.
+  - AppShell still keeps last good snapshot during reload, avoiding full-screen `Loading...` while settings saves are pending.
+  - SiliconFlow default preset chat requests preserve the designed catalog body: `enable_thinking`, `thinking_budget`, `max_tokens`, and `max_completion_tokens`.
+  - Full-custom models still preserve manually configured advanced params.
+  - Chat background image failure now shows a visible `Background image failed to load` fallback instead of silently rendering nothing; if this appears on device, the saved path is stale/unreadable.
+- Bundled preset media repair slice:
+  - `PresetCatalogController.initializeMissingPresets()` now checks already-installed character presets for missing packaged avatar/background/appearance files.
+  - Missing packaged media triggers preset overwrite through `CharacterTransferController`, preserving local card id/name while rematerializing owned image files.
+  - Domain test covers an installed preset whose saved chat background path is stale and verifies the replacement file is written.
+- Chat scroll parity slice:
+  - Streaming/message updates now preserve the current viewport anchor, including when the user was already at bottom before generation.
+  - The only production calls to `scrollToBottom` are the down-arrow control and explicit save-slot restore success feedback; initial load, send, generation finish, regenerate, clear history, and NovelAI image completion do not force-scroll.
+  - Message refresh now keeps the existing `ChatMessageList` mounted while the next `messagesFuture` is pending, so send/image-send/generation refreshes do not replace the list with loading UI or reset scroll to top.
+  - Down-arrow jump now runs immediately when the scroll controller is attached, avoiding a swallowed post-frame jump.
+  - Widget tests cover reading older messages, bottom-before-streaming no-autojump, refresh-without-unmounting, and explicit jump-to-bottom.
+- Chat background fallback slice:
+  - Chat background rendering now keeps session and character background path candidates instead of letting a stale session-owned preset path hide a repaired character-default path.
+  - `LocalImageCover` chooses the first readable candidate path on IO platforms, so old sessions can display repaired bundled preset media without editing stored session JSON.
+  - Widget tests cover session/character background candidate ordering.
+- Chat message image action slice:
+  - Message images open preview by tapping the image tile; the visible `Preview image` text button is removed.
+  - Per-image delete controls were removed; deleting image-bearing chat content now follows normal message handling through long-press message actions or edit-message attachment removal.
+  - Widget tests cover no preview text button, image-tap preview, and no per-image delete affordance.
+- Chat settings/save-slot/image-turn parity slice:
+  - Chat settings panel no longer exposes Session title/pin controls; pin stays in Home long-press actions and title rename should be added there if needed.
+  - Chat settings fields now autosave with a short debounce; the top-right action is `Defaults`, clearing session-level overrides instead of applying stale draft values.
+  - Save-slot restore closes the panel and explicitly triggers the down-arrow jump-to-bottom path, giving visible restore feedback without reintroducing general auto-scroll.
+  - Image turns using preset/custom chat models with `visionModelId` now route to the configured multimodal helper model while text-only turns keep the original chat model request body.
+  - NovelAI image-generation meta action is a compact icon button instead of a large primary control, and generation phases now render visible status text immediately after tap.
+  - NovelAI prompt-design (`Designing`) phase now streams partial prompt drafts through `ChatCompletionClient.streamSink` instead of waiting for the full design response.
+  - Widget/domain tests cover defaults action, removal of Session controls, per-image delete removal, visible NovelAI progress, streaming Designing draft, and vision-helper image request parts.
+- Tutorial navigation parity slice:
+  - Tutorial now owns route-local back handling like Kotlin: back arrow/system back moves to the previous tutorial page first, and exits only from the first page.
+  - First-page exit completes `currentTutorialVersion` before returning Home, preserving Flutter's existing first-launch completion behavior.
+  - AppShell delegates Android/system back to `TutorialViewState.handleBack()` instead of treating Tutorial as a plain tab.
+- Settings default format slice:
+  - Bottom Settings now exposes a `Default format card` section backed by `SettingsController.setDefaultFormatCard`.
+  - Users can select any format card or `None`; new-session creation already reads `AppSettings.defaultFormatCardId`, so this restores a Kotlin global default path.
+  - Widget coverage proves select and clear write the expected `defaultFormatCardId`.
+- Manage tabs/list slice:
+  - Manage now uses shared `CbTabs` to separate character cards and format cards instead of rendering both large sections on one scrolling page.
+  - Switching tabs clears transient create/import/preset state so stale panels do not leak across sections.
+  - Widget test covers tab anatomy, character/format list separation, and transient-state reset.
+- Manage row/action slice:
+  - Character summary rows now use a compact Kotlin-like row: avatar/name/meta/start action in the main row, edit/export/delete as icon actions instead of a full-width text button cluster.
+  - Format card rows now show a compact title/content/default area, expose quick `设为默认`, and use edit/copy/delete icon actions.
+  - Widget tests cover character action callbacks, two-step delete confirmation, format quick-default update, and absence of old `Edit` / `Copy` text-button clutter.
+- Manage format export slice:
+  - `FormatCardPackage` can serialize to portable JSON.
+  - `FormatCardController.exportPackageText` emits indented package JSON with preset source metadata.
+  - Format rows expose a download/export icon and save through the existing package file saver.
+  - Tests cover package JSON fields and row export callback wiring.
+- Manage character duplicate slice:
+  - `CharacterTransferController.duplicateCard` reuses export/import package materialization, so duplicate cards get unique names, new ids, copied image/document resources, and cleared preset source metadata like Kotlin.
+  - Character rows expose a copy icon action.
+  - Duplicate success remembers the new local card and opens it in edit mode, matching Kotlin's duplicate-then-edit direction.
+  - Tests cover materialized duplicate resources and row copy callback wiring.
+- Manage format import slice:
+  - Format tab exposes `导入 JSON` and a `FormatPackageTransferPanel` for file pick, manual paste, import, overwrite, copy-on-conflict, and cancel.
+  - Import conflict state is handled as transient UI and closes through app back handling.
+  - `FormatCardController.importNew/importOverwrite` coverage proves unique-name copy and overwrite preserving identity/default state.
+  - Widget tests cover format import conflict actions.
+- Manage preset scope slice:
+  - Preset catalog panels are scoped by entity type, so character, format-card, and model-catalog presets no longer appear together in one Manage panel.
+  - Character tab keeps its preset entry, limited to character presets.
+  - Format tab now exposes a preset entry that can import, update, and recover installed format-card presets through the shared preset controller.
+  - Widget tests cover installed preset update/copy actions and type filtering.
+- Manage character action panel slice:
+  - Character summary rows now behave closer to Kotlin `EntityRow`: tap row edits, long-press or more action opens an action panel, and the main row keeps only start-chat plus overflow.
+  - Edit/copy/export/delete moved out of the character row into `CharacterCardActionPanel`.
+  - Delete remains two-step confirm inside the panel.
+  - Widget test covers row tap, start-chat, overflow panel, edit/export/copy callbacks, and delete confirmation.
+- Manage format action panel slice:
+  - Format-card summary rows now match the same Kotlin `EntityRow` direction: tap row edits, long-press or more action opens `FormatCardActionPanel`, and the row keeps quick default plus overflow.
+  - Edit/copy/export/delete moved out of the format-card row into the action panel.
+  - Delete remains two-step confirm inside the panel.
+  - Widget test covers quick default, row tap edit, overflow panel, export/copy callbacks, and delete confirmation.
+- Manage model tab skeleton slice:
+  - Manage now shows a third `模型` tab when `modelConfigurationMode == FULL_CUSTOM`, matching Kotlin's conditional model-tab visibility direction.
+  - `ModelListSection` lives in `manage_components.dart` and keeps model list anatomy out of the state owner.
+  - The tab exposes custom chat models, current/default embedding model, effective retrieval model status, default clear/set actions, and two-step delete controls through existing model/settings controllers.
+  - Widget test covers FULL_CUSTOM tab visibility and model/embedding/retrieval section anatomy.
+- Manage model edit form slice:
+  - `model_editor.dart` owns focused `ModelConfigEditView` form state instead of reusing the old Settings card.
+  - Model tab now opens create/edit forms with core config, template select, multimodal toggle, vision helper select, common params, save/cancel, and back handling.
+  - The form writes through `ModelConfigController` and preserves existing custom params while updating common params.
+  - Widget test covers create/edit form entry and back closing; controller tests continue to cover validation/persistence.
+- Manage embedding edit form slice:
+  - `model_editor.dart` also owns focused `EmbeddingConfigEditView` form state for Manage's vector-model section.
+  - Model tab can now open create/edit forms for embedding configs with display name, Base URL, API key, model id, dimensions, save/cancel, and back handling.
+  - The form writes through `EmbeddingConfigController`; dimension input is validated as a positive integer before controller clamp/persistence.
+  - Widget test covers embedding create/edit form entry and back closing; controller tests continue to cover validation/persistence.
+- Manage model package flow slice:
+  - `ModelConfigPackage` defines portable schema v1 for chat model export/import without local `id` or `createdAt`.
+  - `ModelConfigController` can export indented package JSON, import as unique-copy, and overwrite while preserving existing id/createdAt/default settings references.
+  - Model tab exposes `导入 JSON`, conflict overwrite/copy/cancel panel, and per-row export icon through the existing package picker/saver platform channel.
+  - Domain/widget tests cover portable package fields, conflict copy/overwrite semantics, import panel actions, and model-tab export affordance.
+- Manage retrieval model persistence slice:
+  - `AppSettings.defaultRetrievalModelId` is persisted as a nullable backward-compatible field.
+  - FULL_CUSTOM mode can select or clear a retrieval planner model independently from the default chat model.
+  - Home, Chat, and Manage pass the selected custom retrieval model into `EffectiveModelResolver`.
+  - Deleting a selected model clears both default chat and default retrieval settings if needed.
+  - Tests cover old settings JSON compatibility, set/clear persistence, delete cleanup, resolver behavior, and Manage model-tab selection wiring.
+- Manage embedding package/list slice:
+  - `EmbeddingConfigPackage` defines portable schema v1 for vector-model export/import without local `id`.
+  - `EmbeddingConfigController` can export package JSON, import as unique-copy, and overwrite while preserving existing id/display name.
+  - Model tab now lists all custom embedding configs instead of only the effective default/fallback config.
+  - Each embedding row exposes edit/export/default/delete; embedding import has paste/file/conflict overwrite/copy/cancel panel.
+  - Tests cover package fields, conflict copy/overwrite semantics, multiple embedding rows, default selection, and import-panel UI.
+- Settings/model navigation cleanup slice:
+  - Manage no longer includes a Settings tab; bottom navigation Settings is the single global settings entry.
+  - Manage shows character + format tabs in regular/customAPI modes, and adds the model tab only in FULL_CUSTOM mode.
+  - FULL_CUSTOM selection from Settings saves the mode and routes to Manage's model tab; defaultMode/customAPI do not auto-route.
+  - SettingsContent hides custom chat/embedding model forms outside Manage; customAPI mode shows a SiliconFlow API key field, while fullCustom mode shows an `Open model management` entry.
+  - Chat screen hides the bottom navigation bar while keeping Chat reachable from Home/Manage session entry points.
+  - Chat background overlay was reduced so configured character/session backgrounds remain visible; assistant bubbles now keep stronger card contrast and a border.
+  - Widget tests cover hidden Chat bottom navigation, Manage no-Settings tab behavior, model-mode gating, customAPI key save, and fullCustom model-management routing.
+- Settings reload/chat default repair slice:
+  - AppShell now keeps the last good `ChatBarSnapshot` as `FutureBuilder.initialData`, so settings saves no longer replace the whole app with `Loading...` during snapshot reload.
+  - SettingsView has a stable `PageStorageKey`, preserving scroll position across settings refreshes.
+  - Chat background selection now falls back from blank session background to character background, fixing the character-default background invisibility path.
+  - Preset SiliconFlow chat models keep the carefully designed bundled params (`enable_thinking`, `thinking_budget`) and still cap chat output at 1500 through token aliases.
+  - Tests cover non-loading Settings reload, chat background fallback, and preset request-body parameters.
+- Manage character people compact editor slice:
+  - Structured character people in Flutter edit view now render as compact rows by default, closer to Kotlin `CharacterRow` instead of showing every long field for every person at once.
+  - Existing people show name, summary text, optional appearance image preview, edit/collapse, and remove actions.
+  - Blank newly-added people still open expanded so creation remains direct.
+  - Full person fields reuse the existing controllers and save path; no schema, resource ownership, or ID semantics changed.
+  - Widget test covers existing people collapsed until editing and then exposing the full speech/style fields.
+- Manage character edit-mode confirmation slice:
+  - Switching between structured and freeform character edit modes now requires explicit confirmation, matching Kotlin's destructive transition warning.
+  - Cancel leaves current mode and draft data untouched.
+  - Confirming freeform clears structured person draft controllers immediately; confirming structured clears freeform text and creates one blank person if needed.
+  - Shared card fields, images, documents, and current card identity are preserved; no persisted schema changed.
+  - Widget test covers pending switch, cancel, confirm, and resulting form contents.
+- Manage character dirty-save/back slice:
+  - Character edit view now snapshots the initial draft and treats shared fields, edit mode, freeform text, image prompt, and structured people as unsaved draft state.
+  - Cancel and Android/app back now show a discard confirmation before leaving dirty character edits.
+  - Continue editing dismisses the confirmation; discard exits through the existing parent callback.
+  - Pending edit-mode switch warning is dismissed by back before dirty discard handling.
+  - Parent `ManageView.handleBack()` delegates character create/edit back handling into the active character editor through `GlobalKey<CharacterCardEditViewState>`, so app-shell back no longer bypasses dirty confirmation.
+  - Document/RAG actions remain immediate persisted operations and are explicitly not rolled back by discarding card-form draft changes.
+  - Widget tests cover dirty cancel confirmation and Manage back confirmation.
+- Manage format dirty-save/back slice:
+  - Format card create/edit views now snapshot draft fields and require explicit discard confirmation before leaving dirty drafts.
+  - Manage owns `editingFormatId`; row summary widgets no longer hide edit state from page-level back handling.
+  - `ManageView.handleBack()` delegates dirty back handling into active format create/edit views through `GlobalKey`.
+  - Widget tests cover direct format edit cancel, existing format edit back, new format draft back, and the controlled format summary action panel.
+- Manage character documents/RAG UX slice:
+  - Character document operations remain centralized in `CharacterDocumentController`; UI does not hand-roll file or vector-chunk cleanup.
+  - Character document editor now uses Kotlin-like header actions for new document, rebuild RAG, and clear all documents instead of always showing raw input fields.
+  - New document input is collapsed by default and opens as a bordered inline panel.
+  - RAG status now shows a compact progress bar plus readable status text.
+  - Document rows show file icon, document status, chunk/error details, and two-step delete.
+  - Clear-all document flow now requires explicit confirmation and deletes owned files plus document vector chunks through the controller.
+  - Domain/widget tests cover clear-all lifecycle, collapsed add panel, rebuild callback, clear confirmation, and per-document delete confirmation.
+- Manage character document batch-import slice:
+  - Character document controller now parses pasted multi-document batches split by `---`.
+  - Each imported document gets a new id, safe file name, owned file path, `PENDING` RAG state, and shared card-level `NOT_INDEXED` state.
+  - Blank/invalid batches fail without file writes.
+  - Character document editor exposes an Import documents header action and collapsed import panel.
+  - Widget/domain tests cover parser rules, multi-file import writes, empty-batch rejection, and import-panel callback wiring.
+- Manage character native document-picker slice:
+  - Added `CharacterDocumentFilePicker` with memory test double, IO file-selector fallback, web multi-file input, and Android method channel.
+  - Android `MainActivity` exposes `chatbar/character_document_picker.pickDocumentFiles` using `ACTION_OPEN_DOCUMENT` with multi-select for text/json files.
+  - Character editor imports picked files through `CharacterDocumentController.importDocumentEntries`, so picked files become owned private document files and mark RAG dirty.
+  - Character document editor exposes a `Pick document files` header action alongside pasted batch import.
+  - Tests cover method-channel delegation, memory picker, controller import lifecycle, and widget callback wiring.
+- Manage character document folder-picker slice:
+  - `CharacterDocumentFilePicker` now also exposes `pickDocumentFolder`.
+  - Android `MainActivity` exposes `chatbar/character_document_picker.pickDocumentFolder` through `ACTION_OPEN_DOCUMENT_TREE`.
+  - Android folder import enumerates supported non-directory `.txt/.md/.markdown/.json` or `text/*`/`application/json` children and returns file text/name to Flutter.
+  - Flutter imports picked folder files through `CharacterDocumentController.importDocumentEntries`, preserving owned private document lifecycle and RAG dirty marking.
+  - Desktop fallback uses `file_selector.getDirectoryPath` and non-recursive supported-file import; web folder import is intentionally no-op until web directory picker is needed.
+  - Tests cover method-channel folder delegation, memory picker folder batches, and the `Pick document folder` UI callback.
+- Navigation/manual-test feedback slice:
+  - Chat tab is hidden from AppFrame navigation; Chat remains reachable by opening/starting a session from Home or Manage.
+  - Home root system-back requires two presses within 1.6s to exit via `SystemNavigator.pop`; transient Home overlays still close on first back.
+  - Character create/edit in Manage now renders as a standalone editor view instead of appearing inline among other character cards.
+  - AppShell `reload()` no longer returns a `Future` from `setState`, fixing the launch/runtime error observed after tutorial/settings changes.
+  - Widget tests cover hidden Chat navigation and standalone character edit rendering.
+- UI kit foundation exists:
+  - semantic palette/theme.
+  - `CbButton` variants, sizes, disabled/loading semantics.
+  - `CbConfirmButton`.
+  - `CbIconButton`.
+  - `CbField`.
+  - `CbDivider`.
+  - `CbSelect`.
+  - `CbTabs`.
+  - shared inputs/cards/surfaces.
+- Architecture split to avoid giant UI files:
+  - Home session components moved to `home_session_components.dart`.
+  - Manage page sections moved to `manage_components.dart`.
+  - Chat detail split into `chat_session_detail.dart`, `chat_message_area.dart`, `chat_overlay_stack.dart`, `chat_composer_section.dart`.
+- Chat composer/image preview slice:
+  - `chat_pending_image_strip.dart` provides shared horizontal image strips.
+  - Compact composer uses 60px thumbnail tiles with circular close overlay.
+  - Fullscreen composer uses 96px thumbnail tiles with circular close overlay.
+  - Fullscreen composer follows Kotlin layout more closely: title + large input canvas + bottom floating close/add/send buttons.
+  - Fullscreen composer enters `SystemUiMode.immersiveSticky` while mounted and restores `SystemUiMode.edgeToEdge` on dispose.
+  - Fullscreen send is disabled when text is blank and no image is attached.
+  - Bottom composer is now full-width like Kotlin input bar, with inner 8px padding.
+  - Bottom composer section animates above `MediaQuery.viewInsets.bottom` for keyboard visibility.
+  - Bottom composer card background now covers Android navigation safe-area padding while keeping the input above the nav bar, matching Kotlin's `windowInsetsPadding(WindowInsets.navigationBars)` direction.
+  - Image preview uses black fullscreen surface, pinch/pan via `InteractiveViewer`, close/download icon buttons, long-press save confirmation.
+  - Android gallery save now also shows native `Toast` for success/failure while keeping Flutter preview status text.
+  - Preview save status now uses a visible icon row plus live-region semantics for saving, success, and failure states.
+  - Latest emulator platform-channel smoke on 2026-06-22 confirms Android gallery save returns `Pictures/ChatBar` path through the native channel.
+- Chat overlay/editing slice:
+  - Message edit now opens a fullscreen editor overlay like Kotlin `MessageEditFullScreen`.
+  - Edit fullscreen supports existing image thumbnails, remove image, pick image, cancel, and save.
+  - Edit fullscreen uses the same system-bar lifecycle as fullscreen compose.
+- Chat message bubble slice:
+  - Message bubble now uses Kotlin-like compact width cap, speech-tail corner radius, and role-based alignment.
+  - Role header text was removed from bubble body.
+  - Timestamp, alternative navigation, and NovelAI image action moved into a meta row below the bubble.
+  - Fenced code blocks now become collapsible status panels like Kotlin roleplay status blocks.
+  - Inline markdown links are sanitized to visible label text like Kotlin `sanitizeRoleplayMarkdown`.
+  - Basic rich markdown now renders inside bubbles without adding a dependency:
+    - headings.
+    - bullets.
+    - quotes.
+    - bold.
+    - italic.
+    - inline code.
+    - sanitized link labels.
+    - basic HTML normalization for `br`, `p`, `b`/`strong`, `i`/`em`, `code`, `a`, and common entities.
+    - pipe-table rows with separator suppression and inline styling inside cells.
+    - ordered markdown list lines.
+    - HTML unordered/ordered list items normalized into markdown list lines.
+    - nested inline spans for strong/emphasis containing inline code/link/basic spans.
+    - Markwon-like edge inline spans for `__strong__`, `_emphasis_`, `~~strikethrough~~`, HTML `<s>/<del>/<strike>`, and HTML `<u>`.
+  - Bubble tests cover compact anatomy, font scaling, alternatives, NovelAI action gating, images, reasoning toggle, status blocks, and malformed fences.
+- Chat streaming scroll slice:
+  - `ChatStreamingScrollCoordinator` owns message-list scroll policy outside `ChatViewState`.
+  - During streaming, Flutter now preserves the user's reading position when they are away from bottom.
+  - If streaming starts while already at bottom, Flutter stays pinned to the latest content.
+  - Tests cover both anchor preservation and bottom pinning with a real `ListView`/`ScrollController`.
+- Chat jump-to-bottom visual parity slice:
+  - Message list no longer renders a visible `Bottom` text button at the top of the scroll area.
+  - Jump-to-bottom now matches Kotlin direction more closely: a 48px primary circular chevron button floats at bottom-right and only becomes interactive/visible when the list is away from bottom.
+  - Message list bottom padding leaves room for the floating control without covering final messages.
+  - Widget tests cover hidden-at-bottom behavior, visible-away behavior, and callback preservation.
+- Chat overlay/action slice:
+  - Message action panel now matches Kotlin action dialog body more closely: no explanatory copy, vertical full-width action buttons, destructive delete, ghost close.
+  - Widget tests cover action callbacks, hidden regenerate state, and absence of the old temporary explanatory copy.
+- Chat header panel slice:
+  - Session settings, save slots, and debug panels no longer repeat their overlay title or wrap the whole content in an inner card.
+  - Save slot creation form stacks on narrow widths instead of squeezing two inputs and a button into one row.
+  - Save slot items use a thin bordered surface inside the overlay instead of nested `CbCard`.
+  - Save slot item details/actions now split into a vertical narrow layout with wrapping action controls, avoiding mobile overflow during delete confirmation.
+  - Widget tests cover save slot callbacks, narrow-width save slot layout, session setting callbacks, and debug panel actions.
+- Chat settings tabs slice:
+  - Chat header now exposes settings and debug actions like Kotlin; separate Save slots header button was removed.
+  - Settings overlay now contains `Parameters` and `Save slots` tabs, matching Kotlin's settings/save-slot grouping direction.
+  - Settings tabs now use shared `CbTabs` instead of two ordinary selected buttons, closer to Kotlin `CbTabs` anatomy and reusable for later screens.
+  - Widget tests cover header action availability and settings tab switching.
+- Chat save-slot action slice:
+  - Save-slot restore/delete actions now use icon buttons like Kotlin `Restore` / `Delete` controls.
+  - Save-slot delete is now two-step confirm (`Delete` -> `Confirm delete`) instead of immediate deletion.
+  - Save-slot creation now uses a bordered Kotlin-like section with field labels, compact `Create` action, and disabled empty-name state.
+  - Save-slot items now show timestamp plus message count like Kotlin save-slot rows.
+  - Narrow save-slot rows wrap restore/delete/confirm/cancel actions under details instead of forcing all controls into one row.
+  - Widget test proves first tap does not delete and second tap invokes delete.
+- Chat settings background override slice:
+  - Session settings form now loads/saves `chatBackground` through `SessionSettingsInput`.
+  - Settings panel shows a Kotlin-like 120px background preview area with pick and restore-character-default actions.
+  - Chat message area now prioritizes `session.chatBackground` over `character.chatBackground`.
+  - Widget/domain tests cover background callback exposure, preview rendering, save trimming, and clearing.
+- Chat settings roleplay-style slice:
+  - Session settings now expose `Normal` / `Aggressive` selected buttons, matching Kotlin choice-chip behavior.
+  - Selection writes `NORMAL` / `AGGRESSIVE` back to the existing `roleplayStyleController`, preserving save flow.
+  - Widget test covers selection and callback preservation.
+- Chat settings autosave/defaults slice:
+  - Session title and pin were removed from Chat settings; pin remains in Home long-press session actions, and title rename should be added there if needed.
+  - Chat settings field/select/background changes autosave through `ChatViewState` debounce instead of an Apply action.
+  - The full-screen Chat settings top-bar action is `Defaults`, which clears session-level overrides without restoring stale draft values.
+  - Widget tests cover the `Defaults` callback and absence of Session title/pin controls.
+- Chat settings unavailable-model notice slice:
+  - Session settings now detects when `selectedModelId` is not present in the current available model list.
+  - Flutter shows a Kotlin-like warning that runtime follows the global default until the original configuration mode is restored.
+  - Widget test covers the missing-model warning inside the existing session settings flow.
+- Chat settings full-screen overlay slice:
+  - `ChatPanelOverlay` now supports full-screen mode while preserving centered dialog mode for message/action panels.
+  - Chat settings opens as a full-screen settings surface, closer to Kotlin `ChatSettingsDialog`.
+  - Full-screen panel header now places the close control before the title, matching Kotlin's leading-close top bar direction more closely.
+  - Widget test covers settings using full-screen overlay and not the dialog overlay.
+  - Widget test covers full-screen panel leading-close placement.
+- Chat settings field/select slice:
+  - Session model and format-card choices now use `CbField` + `CbSelect` instead of wrap-button clusters.
+  - This moves Flutter settings closer to Kotlin `NullableSelect` / field layout and reduces button clutter.
+  - Widget test covers expanding each selector and choosing global defaults.
+- Chat settings field-grouping slice:
+  - `CbDivider` added to UI kit.
+  - Session settings now groups generation options, player overrides, background override, and danger zone with Kotlin-like field labels/dividers.
+  - Context window, reply length, reply language, roleplay style, supplementary setting, player name, and player setting now use `CbField`.
+  - Widget test covers the grouped labels and divider count.
+- Chat settings clear-history slice:
+  - `ChatController.clearHistoryAndMemory` deletes current-session messages, owned message images, and `CHAT_MEMORY` vector chunks.
+  - Clear history preserves session/character/save slots, clears stale preview/time, and restores the character greeting as the first assistant message when present.
+  - Session settings panel exposes a destructive two-step confirm action.
+  - Domain/widget tests cover deletion scope, owned-image cleanup, memory cleanup, greeting restore, and confirm state.
+- Local skill created for future long-context work:
+  - `C:\Users\Administrator\.codex\skills\handoff-long-memory`
+  - `C:\Users\Administrator\.codex\skills\living-handoff-workflow`
+  - `D:\Projects\ChatBar\.agents\skills\project-handoff-memory`
+  - Purpose: maintain handoff/audit files as living state, not chronological logs.
+- Kotlin-to-Flutter screen/overlay parity inventory now exists in `doc/flutter_parity_audit.md`.
+  - Source-audited Kotlin UI files under `app/app/src/main/java/com/example/chatbar/ui/**`.
+  - Source-audited Flutter UI files under `flutter_app/lib/ui/**`.
+  - Matrix covers app shell, Home, Manage, editors, Settings, Chat surfaces, Tutorial, and UI kit.
+- Home first-screen parity slice:
+  - Removed temporary dashboard stat cards from Home so the first screen starts with Kotlin-like session groups/empty state.
+  - Removed temporary instructional copy from the Home session action panel.
+  - Start-chat character choices now render as flat bordered rows instead of nested cards.
+  - Session action panel now uses Kotlin-like icon action rows for pin/delete, with only Cancel left as a ghost button.
+  - Pinned session rows show a pin icon with semantics instead of a text badge; archived session state uses destructive color.
+  - Session rows now use Kotlin-like 12px internal padding instead of content touching the card edge.
+  - Delete confirmation actions now wrap on narrow screens and use ghost Cancel + destructive Delete.
+  - Start-dialog character rows expose button/enabled semantics and stay disabled when model configuration is unusable.
+  - Shared `EmptyState` supports optional guidance text.
+  - Home no-session state and start-dialog no-character state show concise next-step guidance.
+  - Pinned/recent session groups now use Kotlin-like 18px inter-group spacing.
+  - Start-dialog Cancel uses ghost button styling like Kotlin dialog dismiss actions.
+  - Start dialog now keeps 16px side padding on narrow screens instead of touching screen edges.
+  - Home exposes an injectable `HomeSessionCreator` so UI tests can prove the create/open/changed flow without doing platform file writes.
+  - Home modals now share a fade/scale transition frame.
+  - Home FAB scales down and fades while a modal is open, preserving focus on the dialog.
+  - Widget tests cover the absence of stat cards, group spacing, flat start rows, ghost Cancel, narrow dialog padding, modal animation, FAB softened state, create/open callback flow, disabled model state, empty-state guidance, row padding, pin icon semantics, delete confirmation wrapping, and preservation of Home action callbacks.
+
+## In Progress
+
+- Full Flutter parity with Kotlin app remains incomplete.
+- Current active slice: Chat visual parity and remaining Settings/model parity after settings/navigation cleanup.
+  - Chat Kotlin reference: `app/app/src/main/java/com/example/chatbar/ui/chat/ChatScreen.kt`.
+  - Manage Kotlin reference: `app/app/src/main/java/com/example/chatbar/ui/manage/ManageScreen.kt`.
+  - Flutter Chat now has hidden-route navigation, hidden Chat bottom nav, Kotlin-like composer/overlays, background fallback support, compact bubbles, streaming scroll preservation, floating jump-to-bottom, autosaved chat settings without Apply, session-default reset, vision-helper image turns, integer-normalized provider custom params, and compact provider HTTP error bubbles.
+  - Flutter Manage now has shared `CbTabs`, compact character/format rows, Kotlin-like character and format action panels, quick start-chat, quick format default action, character duplicate, format-card package export/import/conflict handling, scoped character/format preset panels, character document/RAG header actions/progress/clear confirmation, pasted batch import, native document picker, FULL_CUSTOM-only model tab, model/embedding create-edit forms, chat-model package import/export, independent retrieval-model persistence, and embedding list/default/package flow.
+  - Remaining Manage gap: real indexing device UX, advanced model form parity beyond provider connection testing, and device visual density check for preset/action panels.
+  - Chat remaining gap is mostly device/manual: chat settings autosave/defaults, save-slot restore jump feedback, image turn visibility to AI, NovelAI image generation real effect, true physical Android key/gesture, provider/device streaming scroll feel, native image save Toast visual/manual verification, preview pinch/pan manual verification, exact settings/dialog spacing/typography, and remaining Markwon exact-span parity beyond implemented common edge spans.
+  - Home remaining gap: exact visual device check only; do not treat Home as active unless device visual mismatches appear.
+
+## Tried And Failed
+
+- PowerShell `rg` patterns containing `|` can be misparsed as shell pipes. Split searches when needed.
+- Widget tests that exercised Home start-flow through real platform file writes hung on Windows.
+  - Better split: UI widget test uses injected `HomeSessionCreator`; `session_controller_test.dart` owns JSON persistence coverage.
+- Running multiple `flutter test` commands in parallel can crash Flutter tool startup/native-assets copying on Windows.
+  - Better: run Flutter commands serially after quick shell reads; rerun failed test once lock contention clears.
+
+## Tried And Not Adopted
+
+- Did not keep append-only handoff/audit logs.
+  - Reason: they stopped helping planning and became noisy.
+  - Rule: rewrite docs as current-state references.
+- Did not move chat business operations out of `ChatViewState`.
+  - Reason: UI parity work should preserve state ownership until behavior is proven.
+- Did not introduce `ChatComposerState` / `ChatComposerCallbacks` yet.
+  - Reason: current composer API is still small enough; add typed props only if next UI migration increases parameter load.
+- Did not add a native platform channel for fullscreen system bars.
+  - Reason: Flutter `SystemChrome` provides the required Android behavior with less platform code.
+
+## Untested
+
+- User manual test after current composer/image-preview changes:
+  - pick image shows horizontal thumbnail strip.
+  - thumbnail close overlay removes image.
+  - send text.
+  - send image.
+  - fullscreen composer pick/remove/send.
+  - fullscreen composer blank send disabled.
+  - fullscreen composer bottom buttons reachable and not blocked by system nav.
+  - edit message opens fullscreen editor.
+  - edit message can remove/pick images and save.
+  - true physical Android back key/gesture behaves like the verified emulator integration pop route on image preview, fullscreen composer/edit, message action panel, debug panel, and Chat settings.
+  - user/assistant bubbles look compact and aligned like Kotlin.
+  - bubble timestamp and alternative controls appear below the bubble.
+  - NovelAI image action appears as a small icon in the meta row and shows visible generating/error state after tap.
+  - Chat settings field changes persist after closing/reopening the panel without tapping any Apply action.
+  - Chat settings `Defaults` clears session-level overrides and does not restore stale values.
+  - Chat settings no longer shows Session title/pin controls.
+  - Save-slot Restore closes the panel and jumps to the latest restored message.
+  - Sending an image with DeepSeek/GLM preset routes through the vision helper and AI sees the image.
+  - Sending an image clears the pending image strip after message creation/generation.
+  - Message image tiles have no independent delete icon/confirmation; delete/edit uses normal message actions.
+  - fenced status blocks are collapsed by default and expandable.
+  - markdown headings/bold/italic/code/bullets/quotes render in bubbles.
+  - markdown ordered lists and HTML list items render as list lines.
+  - simple nested inline markdown such as bold/italic containing inline code renders without raw backticks.
+  - `__bold__`, `_emphasis_`, `~~strike~~`, `<del>strike</del>`, and `<u>underline</u>` render without raw markup.
+  - markdown links show label text without URL noise and do not navigate.
+  - long rich markdown messages do not overflow or freeze.
+  - keyboard open/close with composer near navigation bar.
+  - preview opens as full-screen black viewer.
+  - pinch zoom and pan work.
+  - close icon exits preview.
+  - download icon opens save confirmation.
+  - long-press image opens save confirmation.
+  - confirmation Save saves image.
+  - confirmation Cancel dismisses without saving.
+  - Android native Toast appears after save success/failure.
+- User manual test after current session-background change:
+  - session settings pick background shows 120px preview before saving.
+  - save session settings persists session background override.
+  - restoring character default clears session background override and falls back to character background.
+- User manual test after current clear-history change:
+  - settings danger action first tap changes to destructive confirm label.
+  - second tap deletes visible history.
+  - greeting reappears when character has greeting.
+  - save slots remain available after clear.
+  - no other session history is affected.
+- User manual test after current save-slot visual parity change:
+  - Save slots tab creation section appears as one bordered block.
+  - empty save-slot name keeps `Create` disabled.
+  - entering a name enables `Create` and creates a slot.
+  - save-slot row shows timestamp plus message count.
+  - restore/delete icon actions remain usable.
+  - on phone width, restore/delete/confirm/cancel controls wrap under slot details instead of overflowing.
+  - delete asks for confirmation before removing.
+  - restore loads the slot and closes the overlay.
+- User manual test after current session controls visual parity change:
+  - Parameters tab does not show `Session`, title, or pin controls.
+  - Session pin remains reachable from Home long-press actions.
+  - `Defaults` appears in the full-screen Chat settings top bar and clears session overrides.
+  - Field/select/background changes save after a short delay without Apply.
+  - no vertical overflow on phone screen.
+- User manual test after current session unavailable-model notice:
+  - In a session whose saved model is unavailable under current model mode, Parameters tab shows a muted warning under Chat model.
+  - Changing Chat model to global default removes the stale-model state after autosave/reopen.
+  - Existing available model selection still works without showing the warning.
+- User manual test after current CbTabs change:
+  - Chat settings `Parameters` / `Save slots` looks like one segmented tab control, not two loose buttons.
+  - switching tabs still preserves expected content.
+- User manual test after current Manage tabs change:
+  - Manage top `角色卡` / `格式卡` control looks like one segmented tab control.
+  - character list and format list are not stacked on the same page.
+  - switching tabs clears open create/import/preset panels instead of leaving stale panels visible.
+  - character create/edit/import/export actions still work after switching away and back.
+  - format card create/edit/default actions still work on the format tab.
+- User manual test after current Manage row/action change:
+  - character rows look compact, with avatar/title/meta and a start-chat icon instead of a large text-button row.
+  - character edit/export/delete icon actions remain reachable.
+  - delete still requires confirmation before removing a character.
+  - format rows expose `设为默认`; tapping it changes the default.
+  - format edit/copy/delete icon actions remain reachable.
+- User manual test after current Manage model tab skeleton:
+  - In full-custom model mode, Manage shows `角色卡 / 格式卡 / 模型` tabs.
+  - Model tab lists custom chat models, embedding model, and retrieval-model status without layout overflow.
+  - Clear default/set default/delete controls are reachable and do not crash.
+  - Non-full-custom modes still hide the model tab.
+- User manual test after current Manage model edit form:
+  - Model tab `新建` opens model form and Android/back closes it without leaving stale state.
+  - Existing model edit opens prefilled form.
+  - Filling required fields enables save; save persists create/update and refreshes list.
+  - Template select updates default base URL/model id.
+  - Multimodal toggle hides/shows vision helper correctly.
+- User manual test after current Manage embedding edit form:
+  - No embedding config: Model tab -> `向量模型` -> `新增` opens form, Android/back closes it, filling required fields saves and refreshes list.
+  - Existing embedding config: edit opens prefilled form; changing Base URL/model/dimensions saves and persists after leaving/re-entering Manage.
+  - Default/delete controls remain reachable after opening/closing embedding create/edit forms.
+- User manual test after current Manage model package flow:
+  - Model tab -> `导入 JSON` opens import panel; paste valid model package imports a new model.
+  - Import same display name shows overwrite/copy/cancel conflict choices; overwrite keeps existing row identity, copy creates unique suffix.
+  - Model row export icon opens save flow and writes package JSON without crashing.
+- User manual test after current Manage retrieval-model slice:
+  - Model tab -> tap search icon on a non-default model; leave/re-enter Manage and confirm retrieval selection persists.
+  - Clear retrieval model and confirm RAG status falls back instead of crashing.
+  - Delete a model that is selected as retrieval and confirm retrieval selection clears.
+  - Start chat with FULL_CUSTOM mode and confirm RAG/retrieval path uses the selected retrieval model with real provider credentials.
+- User manual test after current Manage embedding package/list slice:
+  - Model tab with two embedding configs shows both rows and no layout overflow.
+  - Tap star/default on second embedding, leave/re-enter, confirm default persists.
+  - Export embedding row writes package JSON and does not crash.
+  - Import embedding package with same display name shows overwrite/copy/cancel; overwrite keeps existing row identity, copy creates unique suffix.
+- User manual retest after current Settings reload/chat default repair:
+  - Changing Settings options should no longer black-flash to `Loading...` or jump back to top.
+  - Character-default chat background should be visible when session override is blank.
+- User manual retest after current chat provider request/error repair:
+  - Sending a message in customAPI/default preset mode should still succeed after restoring the designed preset request body.
+  - If provider returns an HTTP error, assistant bubble should show a compact message without raw URL/full JSON; debug log should retain full details.
+- User manual test after current customAPI connection-test slice:
+  - Settings -> customAPI shows `Save API key` and `Test connection`.
+  - With a valid SiliconFlow key, tapping `Test connection` should show separate chat and embedding success/failure lines.
+  - While testing, repeated save/test taps should be blocked by loading state.
+- User manual test after current Chat jump-to-bottom visual parity slice:
+  - Scroll up in a long chat; a circular down-arrow button appears at bottom-right.
+  - Tap it; chat scrolls to the latest message.
+  - At bottom, the button fades away and no text `Bottom` button appears above messages.
+- User manual retest after current preset-media/scroll fix:
+  - Open default bundled character chat; configured background should load instead of `Background image failed to load`.
+  - Start an AI response while already at bottom; incoming text should not force repeated auto-jumps beyond the stored viewport.
+  - Scroll upward during a response; message updates must not yank back to bottom.
+  - Tap the down-arrow; only this action should jump to latest message.
+- User manual test after current Manage character people compact editor:
+  - Open existing structured character with multiple people; people appear as compact rows, not full expanded field stacks.
+  - Tap `编辑`; full fields appear and existing values are editable.
+  - Collapse row; summary updates without saving.
+  - Add a new blank person; new person opens expanded.
+  - Edit person fields, save card, leave/re-enter edit, confirm values persist.
+- User manual test after current Manage character edit-mode confirmation:
+  - Tap structured/freeform mode switch; confirm panel appears instead of immediately switching.
+  - Cancel keeps the old mode and draft fields.
+  - Confirm freeform hides people rows and shows freeform editor.
+  - Confirm structured clears freeform text and creates one blank person row.
+  - Save after switching, leave/re-enter, confirm persisted mode and fields match expectation.
+- User manual test after current Manage character dirty-save/back confirmation:
+  - Edit an existing character field, tap Cancel, confirm discard prompt appears instead of immediately closing.
+  - Tap Continue editing, confirm editor stays open and draft text remains.
+  - Tap Cancel again, then Discard changes, confirm editor closes and saved card value is unchanged.
+  - Edit a character field, press Android system back/gesture, confirm same discard prompt appears.
+  - With only a pending structured/freeform switch prompt open, press back and confirm the mode-switch prompt closes before leaving the editor.
+- User manual test after current Manage format dirty-save/back confirmation:
+  - Manage -> Format cards -> existing format; edit name/content/default, tap Cancel, confirm discard prompt appears.
+  - Tap Keep editing, confirm editor stays open and draft text remains.
+  - Tap Cancel again, then Discard changes, confirm editor closes and saved format value is unchanged.
+  - Edit an existing format, press Android system back/gesture, confirm same discard prompt appears.
+  - New format draft with typed name/content; press Android back, confirm discard prompt appears before closing.
+- User manual test after current Manage character documents/RAG UX slice:
+  - Manage -> character edit -> Reference documents: confirm document input is collapsed by default.
+  - Tap plus/New document, confirm inline name/content panel appears; Save document creates a document and panel closes.
+  - Tap Import documents, paste `world.md` + content, `---`, second file + content; import creates multiple rows and panel closes.
+  - Tap Pick document files, choose one or more `.txt/.md/.json` files from Android picker; each file becomes a document row with safe file name.
+  - Import empty/invalid batch shows an error and does not create document rows.
+  - Existing document row: first Delete tap changes to Confirm delete; second tap removes the document.
+  - Rebuild RAG button remains reachable and shows rebuild result/status without layout overflow.
+  - Clear documents button appears only when documents exist; first tap shows destructive confirmation; Keep documents cancels; Clear all removes documents and RAG chunks.
+  - Confirm RAG status/progress text stays readable for NOT_INDEXED, INDEXING, COMPLETE, and FAILED cards.
+- User manual test after current navigation/manual-test feedback slice:
+  - Bottom navigation should show Home, Manage, Settings, Help; Chat should not be a bottom tab.
+  - Open/start a chat from Home and from Manage; each should navigate into Chat automatically.
+  - On Home with no overlay, first system-back should stay in app; second quick system-back should exit.
+  - Manage -> old character -> Edit should show only the editor, not the full character list below/around it.
+  - Settings -> model mode/default model buttons should visibly refresh after tap; this should be rechecked because the `setState` runtime error is now fixed.
+  - Character JSON file selection should auto-run import; conflict still needs overwrite/copy choice.
+- Real provider streaming chat scroll behavior on device:
+  - start response at bottom and verify it preserves current viewport instead of auto-following.
+  - scroll upward during response and verify it does not yank back to bottom.
+  - after completion, verify jump-to-bottom affordance and final scroll position feel correct.
+- Real long conversation performance.
+- Android debug cold start is slow on current emulator smoke:
+  - 2026-06-22 latest smoke logged `Displayed com.example.chatbar_reborn/.MainActivity ... +10s789ms`.
+  - Need distinguish emulator slowness from app startup regression.
+- Real RAG retrieval quality with user data.
+- Save slot restore on device after many messages/images.
+- Release build.
+- iOS/macOS/Windows/Linux parity beyond debug web build.
+- Accessibility/TalkBack audit for custom controls.
+
+## Unconfirmed
+
+- Repository split target:
+  - Proposed safe split is `D:\Projects\ChatBar-Kotlin` for the current Android/Kotlin app and `D:\Projects\ChatBar-Flutter` for Flutter Reborn.
+  - Original `D:\Projects\ChatBar` should remain untouched as an archive until both new repos build.
+  - Need user confirmation of target paths/names before creating sibling repositories outside current workspace.
+- Exact Kotlin UI parity for:
+  - Chat message bubbles, timestamp/avatar layout, alternative controls.
+  - Chat overlay/dialog/sheet animation and hierarchy.
+  - Home layout/pagination/animation.
+  - Manage tabs/pagination/animation.
+  - Settings layout and all advanced model forms.
+  - Exact Tutorial copy/visual density compared with Kotlin.
+- Whether final send behavior should expose only one send action in Flutter.
+  - Current visible composer has one send icon that calls `onSendAndGenerate`.
+  - `onSend` remains in API for historical compatibility but is not used by visible composer.
+- Whether final Flutter app should preserve all Kotlin debug-only UI.
+
+## Blockers
+
+- No hard blocker.
+- Soft blockers:
+  - Need repeated user manual testing for UX parity; emulator smoke only proves launch/no-crash.
+  - Need Kotlin screen-by-screen parity inventory before large visual pass.
+
+## Recommended Next Steps
+
+1. User manual test latest installed APK:
+   - Default bundled character background loads instead of `Background image failed to load` in existing sessions and newly opened sessions.
+   - Long Chat never jumps to bottom on initial load, send, stream update, generation completion, regenerate, clear-history, save-slot restore, or NovelAI image completion.
+   - Floating down-arrow appears only when scrolled away from bottom, and tapping it is the only way to jump to latest.
+  - Message image tile opens fullscreen preview by tapping the image; no visible `Preview image` text button remains.
+  - Message image has no independent delete overlay; long-press message actions still delete the whole message, and edit-message can remove image attachments.
+  - Chat settings changes persist without Apply; `Defaults` clears session-level overrides only.
+  - Save-slot Restore closes panel and jumps to bottom as success feedback.
+  - AI send with SiliconFlow customAPI/default preset still succeeds; text-only request body must preserve the designed preset params.
+  - AI image send with preset DeepSeek/GLM uses the vision helper and the assistant can actually reference image content.
+   - Settings changes still do not black-flash or jump to top after toggling mode/default/theme/RAG options.
+2. If latest manual pass is good, continue Chat visual parity: background cases, bubble colors, composer/header spacing, Kotlin-like message density, keyboard/nav insets.
+3. Then continue Settings/model parity: customAPI live provider behavior, fullCustom model/embedding edit polish, default model selection, and advanced provider options.
+4. Continue Manage parity only for real RAG indexing/device feedback and visual density issues found by manual test.
+
+## Verification Baseline
+
+- Latest verified Flutter code commit: `2929b46 Preserve Flutter chat scroll during refresh`.
+- Current verified uncommitted WIP:
+  - NovelAI prompt-design (`Designing`) phase streams partial prompt drafts via `ChatCompletionClient.streamSink`.
+  - `D:\Tools\flutter\bin\dart.bat format ...`: passed for touched Flutter source/test files.
+  - `D:\Tools\flutter\bin\flutter.bat test test\novel_ai_generation_controller_test.dart`: passed.
+  - `D:\Tools\flutter\bin\flutter.bat analyze`: passed, no issues.
+  - `D:\Tools\flutter\bin\flutter.bat test`: passed, 315 tests.
+- Latest verification for Chat background/scroll/message-image parity slice:
+  - `D:\Tools\flutter\bin\dart.bat format ...`: passed for touched Flutter source/test files.
+  - `D:\Tools\flutter\bin\flutter.bat analyze`: passed, no issues.
+  - `D:\Tools\flutter\bin\flutter.bat test test/chat_scroll_coordinator_test.dart`: passed, 2 tests.
+  - `D:\Tools\flutter\bin\flutter.bat test test\widget_test.dart --plain-name "chat background keeps session and character path candidates"`: passed.
+  - `D:\Tools\flutter\bin\flutter.bat test test\widget_test.dart --plain-name "chat background layer renders local cover image"`: passed.
+  - `D:\Tools\flutter\bin\flutter.bat test test\widget_test.dart --plain-name "message bubble renders image attachments as image widgets"`: passed.
+  - `D:\Tools\flutter\bin\flutter.bat test test\widget_test.dart --plain-name "message bubble confirms image deletion"`: passed after fixing overlay hit area.
+  - `D:\Tools\flutter\bin\flutter.bat test test\widget_test.dart --plain-name "message bubble sends image preview callback"`: passed.
+  - `D:\Tools\flutter\bin\flutter.bat test`: passed, 310 tests.
+  - `D:\Tools\flutter\bin\flutter.bat build apk --debug`: passed.
+  - `adb install -r flutter_app\build\app\outputs\flutter-apk\app-debug.apk`: passed on `emulator-5554`.
+  - `adb shell monkey -p com.example.chatbar_reborn 1`: launched current APK.
+  - `adb shell pidof com.example.chatbar_reborn`: returned process `8004`.
+  - Fresh launch logcat scan found no AndroidRuntime/Flutter fatal app crash after launch; debug launch displayed in `+3s814ms`.
+- Previous emulator integration baseline still applies; not rerun in this slice:
+  - `D:\Tools\flutter\bin\flutter.bat test integration_test\chat_back_overlay_smoke_test.dart -d emulator-5554 --reporter compact --timeout=120s`: passed, 2 integration tests.
+  - `D:\Tools\flutter\bin\flutter.bat test integration_test\platform_channel_smoke_test.dart -d emulator-5554 --reporter compact --timeout=120s`: passed, 1 integration test.
+- Current manual-test baseline:
+  - User confirmed emulator is interactive, bottom tabs can switch, Manage start-chat works, Edit save works, hidden Chat tab/Home double-back/standalone edit/auto JSON import are working.
+  - User confirmed Chat page hides bottom navigation/input works, Manage has no Settings tab, bottom Settings is sole Settings entry, customAPI API key persists, fullCustom routes to model tab, default/customAPI do not route, bubbles/background remain readable, and folder picker imports supported direct-child documents.
+  - User reported character/default Chat background still invisible and message updates auto-jump to bottom; commit `5376a37` addresses stale session-vs-character background candidates and removes all production scroll-to-bottom calls except down-arrow, needs manual retest.
+
+## Architecture Notes
+
+Flutter app architecture:
+
+```text
+UI widgets
+  -> controllers/state objects
+    -> repositories/domain services
+      -> JSON/file storage + platform adapters
+```
+
+Important UI ownership:
+
+- `flutter_app/lib/ui/app_shell.dart`
+  - tab shell and root back handling; Chat is a hidden route, not a navigation tab.
+  - Delegates route-local Android/system back to Home, Manage, Chat, and Tutorial state objects before root fallback.
+- `flutter_app/lib/ui/shell/app_tab.dart`
+  - `navigationTabs` is the visible tab allow-list; keep hidden routes out of AppFrame loops.
+- `flutter_app/lib/ui/theme.dart`
+  - UI kit primitives and semantic styling.
+- `flutter_app/lib/ui/home/home_view.dart`
+  - Home state owner.
+- `flutter_app/lib/ui/home/home_session_components.dart`
+  - Home callback-only UI pieces.
+- `flutter_app/lib/ui/manage/manage_view.dart`
+  - Manage state owner and controller orchestration.
+  - Owns Manage tab section routing; use `_ManageSection` instead of raw index semantics when adding/removing tabs.
+- `flutter_app/lib/ui/manage/manage_components.dart`
+  - Manage section composition; character create/edit must render standalone instead of inline among list rows.
+- `flutter_app/lib/ui/manage/model_editor.dart`
+  - Manage model and embedding create/edit forms; keeps model-related form state out of `manage_view.dart`.
+- `flutter_app/lib/ui/manage/character_person_editor.dart`
+  - Owns character-person row/form widgets; `CompactCharacterDraftCard` keeps existing people collapsed by default while reusing draft controllers.
+- `flutter_app/lib/domain/model/model_config_package.dart`
+  - Portable chat model package schema; export/import must not persist local ids.
+- `flutter_app/lib/domain/model/embedding_config_package.dart`
+  - Portable embedding model package schema; export/import must not persist local ids.
+- `flutter_app/lib/data/entities/app_settings.dart`
+  - Owns user-selected default chat, retrieval, embedding, format, model-mode, and global settings ids; new fields must remain backward-compatible with older JSON.
+- `flutter_app/lib/ui/chat/chat_view.dart`
+  - Chat state owner and business operation orchestration.
+  - Owns chat settings autosave/debounce and session override reset orchestration; leaf settings widgets stay callback-only.
+- `flutter_app/lib/ui/chat/chat_session_detail.dart`
+  - Chat detail layout shell.
+  - Owns route-local Chat header placement; keep mobile/global shell top bar hidden for Chat.
+- `flutter_app/lib/ui/chat/chat_header.dart`
+  - Owns Chat title, back action, archive toggle, debug/settings actions.
+  - Back action must call the parent Chat route handler so overlays close before route exit.
+- `flutter_app/lib/ui/chat/chat_message_area.dart`
+  - background, async loading, message list shell.
+  - Pass both session and character background candidates; do not collapse to a single path before IO readability is known.
+- `flutter_app/lib/ui/chat/chat_composer_section.dart`
+  - bottom composer placement, keyboard inset animation, nav safe-area boundary.
+- `flutter_app/lib/ui/chat/chat_scroll_coordinator.dart`
+  - message-list bottom jump, streaming viewport anchor, and bottom-pinning policy.
+  - Production `scrollToBottom` should remain reachable only from the explicit down-arrow affordance or explicit save-slot restore feedback unless Kotlin parity requirements change.
+- `flutter_app/lib/ui/chat/message_image_section.dart`
+  - Owns per-message image tile preview only; delete should stay with normal message actions or edit-message attachment removal.
+- `flutter_app/lib/ui/chat/chat_composer.dart`
+  - bottom input controls.
+- `flutter_app/lib/ui/chat/chat_pending_image_strip.dart`
+  - pending image thumbnail strip shared by compact and fullscreen composer.
+- `flutter_app/lib/ui/chat/chat_overlay_stack.dart`
+  - Chat overlay host, including action panels, fullscreen compose/edit, image preview.
+- `flutter_app/lib/ui/chat/save_slots_panel.dart`
+  - Save-slot creation/list UI; keep mobile layouts responsive with `LayoutBuilder` and wrapping actions rather than fixed wide rows.
+- `flutter_app/lib/ui/settings/settings_view.dart`
+  - `SettingsView` owns standalone Settings route scrolling.
+  - Keep route scroll state in `SettingsView` state; avoid recreating scroll controllers during snapshot refresh.
+  - `SettingsContent` owns settings card composition for the bottom Settings route; do not reintroduce a duplicate Manage Settings tab.
+  - customAPI API key lives in Settings; fullCustom chat/embedding model forms live in Manage model tab.
+- `flutter_app/lib/ui/settings/settings_panels.dart`
+  - `DefaultFormatCardSettingsCard` owns global default format selection UI; persistence stays in `SettingsController`.
+- `flutter_app/lib/ui/tutorial/tutorial_view.dart`
+  - Owns Tutorial page index, completion, top back, and system-back contract.
+  - Keep Tutorial route-local back behavior aligned with Kotlin: previous page first, exit only from first page.
+- `flutter_app/lib/data/entities/default_preset_model_catalog.dart`
+  - Keep bundled preset provider defaults aligned with the original designed request body; do not silently strip `enable_thinking`/`thinking_budget` again.
+- `flutter_app/lib/domain/model/effective_model_resolver.dart`
+  - Owns model/default/vision-helper resolution. Do not make UI decide which model handles image turns.
+- `flutter_app/lib/domain/chat/chat_generation_coordinator.dart`
+  - Owns per-turn model selection; image turns may route to `visionModelId`, while text-only turns should keep the selected chat model and request-body params.
+- `flutter_app/lib/domain/chat/chat_completion_models.dart`
+  - Request body owns OpenAI-compatible serialization; bundled/default presets currently emit both `max_tokens` and `max_completion_tokens` to match the original long-used behavior.
+- `flutter_app/lib/domain/preset/preset_catalog_controller.dart`
+  - Preset initialization imports unseen presets and repairs installed character presets whose packaged media paths are missing/stale.
+- `flutter_app/lib/domain/settings/silicon_flow_connection_tester.dart`
+  - Owns customAPI live chat/embedding connection probing; Settings UI should only pass key/snapshot and render status.
+- `flutter_app/android/app/src/main/kotlin/com/example/chatbar_reborn/MainActivity.kt`
+  - Android platform adapters: image picker, gallery save, package import/export, character document file/folder picker, credential storage.
+
+Rules:
+
+- Keep repository/domain logic out of leaf widgets.
+- Keep visual primitives in UI kit or focused product widgets.
+- Avoid new large stateful page files.
+- Prefer replacing one vertical slice at a time, with tests and device smoke.
+
