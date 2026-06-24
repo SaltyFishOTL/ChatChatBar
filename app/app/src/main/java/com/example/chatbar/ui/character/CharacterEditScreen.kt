@@ -1,5 +1,6 @@
 package com.example.chatbar.ui.character
 
+import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -7,19 +8,26 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -29,13 +37,18 @@ import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Article
+import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.PhotoCamera
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -46,8 +59,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
@@ -283,7 +298,15 @@ fun CharacterEditScreen(
                 )
             }
             viewModel.documentsList.forEach { document ->
-                DocumentRow(document) { deleteDocument = document }
+                DocumentRow(
+                    document = document,
+                    onEdit = {
+                        editDocument = document
+                        editDocName = document.fileName
+                        editDocContent = try { java.io.File(document.filePath).readText() } catch (_: Exception) { "" }
+                    },
+                    onDelete = { deleteDocument = document }
+                )
             }
         }
     }
@@ -298,6 +321,21 @@ fun CharacterEditScreen(
             },
             visible = true,
             onDismiss = { fullscreenField = null; fullscreenOnChange = null }
+        )
+    }
+
+    editDocument?.let { doc ->
+        DocumentEditScreen(
+            title = "编辑参考文档",
+            name = editDocName,
+            onNameChange = { editDocName = it },
+            content = editDocContent,
+            onContentChange = { editDocContent = it },
+            onDismiss = { editDocument = null },
+            onSave = {
+                viewModel.updateDocument(doc, editDocName, editDocContent)
+                editDocument = null
+            }
         )
     }
 
@@ -420,8 +458,8 @@ private fun CharacterRow(character: CharacterInfo, canDelete: Boolean, onEdit: (
 }
 
 @Composable
-private fun DocumentRow(document: DocumentInfo, onDelete: () -> Unit) {
-    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: () -> Unit) {
+    CbSurface(Modifier.fillMaxWidth().clickable(onClick = onEdit), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             CbIcon(Icons.Default.Article, null, tint = ChatBarTheme.colors.mutedForeground)
             Spacer(Modifier.width(12.dp))
@@ -429,6 +467,7 @@ private fun DocumentRow(document: DocumentInfo, onDelete: () -> Unit) {
                 CbText(document.fileName, style = ChatBarTheme.typography.heading)
                 CbText(document.filePath, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption, maxLines = 1)
             }
+            CbIconButton(Icons.Default.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
             CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
@@ -538,6 +577,64 @@ private fun ConfirmDeleteDialog(title: String, message: String, onDismiss: () ->
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
         confirm = { CbButton("确认", onConfirm, variant = ButtonVariant.Destructive) }
     ) { CbText(message, color = ChatBarTheme.colors.mutedForeground) }
+}
+
+@Composable
+private fun DocumentEditScreen(
+    title: String,
+    name: String,
+    onNameChange: (String) -> Unit,
+    content: String,
+    onContentChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit
+) {
+    val localView = LocalView.current
+    DisposableEffect(Unit) {
+        val window = (localView.context as? Activity)?.window
+        val controller = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, localView) }
+        controller?.let {
+            it.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            it.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
+        }
+        onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
+    }
+    val colors = ChatBarTheme.colors
+    val intSrc = remember { MutableInteractionSource() }
+    val focused by intSrc.collectIsFocusedAsState()
+    Box(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
+        Column(Modifier.fillMaxSize().padding(16.dp)) {
+            CbText(title, style = ChatBarTheme.typography.title)
+            Spacer(Modifier.size(12.dp))
+            CbField("文档名称") {
+                CbInput(name, onNameChange, placeholder = "文档名称.txt")
+            }
+            Spacer(Modifier.height(8.dp))
+            CbField("文档内容") {
+                Box(Modifier.fillMaxWidth().weight(1f).heightIn(min = 200.dp)) {
+                    BasicTextField(
+                        value = content,
+                        onValueChange = onContentChange,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(colors.input, RoundedCornerShape(8.dp))
+                            .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
+                            .padding(horizontal = 12.dp, vertical = 11.dp),
+                        singleLine = false,
+                        textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+                        cursorBrush = SolidColor(colors.primary),
+                        interactionSource = intSrc,
+                        decorationBox = { inner ->
+                            if (content.isEmpty()) CbText("输入文档内容…", color = colors.mutedForeground)
+                            inner()
+                        }
+                    )
+                }
+            }
+        }
+        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
+        CbIconButton(Icons.Default.Check, "保存", onSave, Modifier.align(Alignment.BottomEnd).padding(16.dp).size(56.dp).background(colors.primary, CircleShape), enabled = name.isNotBlank() && content.isNotBlank(), tint = colors.primaryForeground)
+    }
 }
 
 private fun ragStatusText(status: String, done: Int, total: Int, message: String?): String {

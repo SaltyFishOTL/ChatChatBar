@@ -50,6 +50,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.CharacterEditRoute
@@ -83,6 +84,7 @@ import com.example.chatbar.ui.kit.CbScaffold
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSlider
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
@@ -120,6 +122,7 @@ fun ManageScreen(
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     val apiTestStatus by viewModel.apiTestStatus.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
+    val importProgress by viewModel.importProgress.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -226,7 +229,7 @@ fun ManageScreen(
             CbTabs(visibleTabs.map { it.second }, visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0), { tab = visibleTabs[it].first })
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), { card ->
+                    0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         exportCharacterId = card.id
                         exportCharacter.launch("${safeName(card.name)}.chatbar-character.json")
                     }, { onNavigate(CharacterEditRoute(it)) }, { id ->
@@ -361,6 +364,7 @@ private fun CharacterTab(
     hasUpdate: (CharacterCard) -> Boolean,
     modelUsable: Boolean,
     modelError: String?,
+    importProgress: String?,
     onExport: (CharacterCard) -> Unit,
     onEdit: (String) -> Unit,
     onDelete: (String) -> Unit,
@@ -371,6 +375,17 @@ private fun CharacterTab(
     var menuCard by remember { mutableStateOf<CharacterCard?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        importProgress?.let { msg ->
+            item {
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.primary.copy(alpha = 0.08f)) {
+                    Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                        CbSpinner()
+                        Spacer(Modifier.width(8.dp))
+                        CbText(msg, color = ChatBarTheme.colors.primary)
+                    }
+                }
+            }
+        }
         if (!modelUsable) item {
             CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.destructive.copy(alpha = 0.08f)) {
                 CbText(
@@ -383,17 +398,18 @@ private fun CharacterTab(
         item {
             CbButton(if (showPresets) "收起预制角色" else "恢复预制角色", { showPresets = !showPresets }, variant = ButtonVariant.Outline)
         }
-        if (showPresets) items(presets, key = { it.presetKey }) { preset ->
-            val update = cards.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
-            EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = if (update) "有更新" else "可恢复", actions = {
-                CbButton("导入", { onRecover(preset) }, variant = ButtonVariant.Secondary)
-            })
-        }
-        items(cards, key = { it.id }) { card ->
-            EntityRow(
-                title = card.name,
-                subtitle = if (card.editMode.name == "FREEFORM") "自由人物设定 · ${card.customDocuments.size} 份文档" else "${card.characters.size} 个人物 · ${card.customDocuments.size} 份文档",
-                badge = if (hasUpdate(card)) "有更新" else null,
+            if (showPresets) items(presets, key = { it.presetKey }) { preset ->
+                val hasCard = cards.any { it.sourcePresetKey == preset.presetKey }
+                val update = hasCard && cards.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
+                EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = when { update -> "有更新"; !hasCard -> "可恢复"; else -> null }, actions = {
+                    CbButton("导入", { onRecover(preset) }, variant = ButtonVariant.Secondary)
+                })
+            }
+            items(cards, key = { it.id }) { card ->
+                EntityRow(
+                    title = card.name,
+                    subtitle = if (card.editMode.name == "FREEFORM") "自由人物设定 · ${card.customDocuments.size} 份文档" else "${card.characters.size} 个人物 · ${card.customDocuments.size} 份文档",
+                    badge = if (hasUpdate(card)) "有更新" else null,
                 leading = { CharacterAvatar(card.avatar, Modifier.size(42.dp)) },
                 onClick = { onEdit(card.id) },
                 onLongClick = { menuCard = card },
@@ -429,8 +445,9 @@ private fun FormatTab(
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { CbButton(if (showPresets) "收起预制格式" else "恢复预制格式", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
-            val update = cards.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
-            EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = if (update) "有更新" else "可恢复", actions = {
+            val hasCard = cards.any { it.sourcePresetKey == preset.presetKey }
+            val update = hasCard && cards.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
+            EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = when { update -> "有更新"; !hasCard -> "可恢复"; else -> null }, actions = {
                 CbButton("导入", { onRecover(preset) }, variant = ButtonVariant.Secondary)
             })
         }
@@ -731,7 +748,7 @@ private fun EntityRow(
             leading?.invoke(); if (leading != null) Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    CbText(title, style = ChatBarTheme.typography.heading)
+                    CbText(title, modifier = Modifier.weight(1f, fill = false), style = ChatBarTheme.typography.heading, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     badge?.let { Spacer(Modifier.width(8.dp)); CbText(it, color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.caption) }
                 }
                 CbText(subtitle, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption, maxLines = 2)

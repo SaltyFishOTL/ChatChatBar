@@ -88,6 +88,8 @@ class ManageViewModel : ViewModel() {
     val isModelConfigurationUsable: StateFlow<Boolean> = _isModelConfigurationUsable
     private val _apiTestStatus = MutableStateFlow<String?>(null)
     val apiTestStatus: StateFlow<String?> = _apiTestStatus
+    private val _importProgress = MutableStateFlow<String?>(null)
+    val importProgress: StateFlow<String?> = _importProgress
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
 
     val appSettings: StateFlow<AppSettings> = settingsRepository.appSettings
@@ -152,11 +154,13 @@ class ManageViewModel : ViewModel() {
     suspend fun findCharacterNameConflict(name: String) = characterRepository.getAll().firstOrNull { com.example.chatbar.domain.card.NamePolicy.isSame(it.name, name) }
     suspend fun importCharacterAsNew(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard {
         val card = characterTransfers.importNew(data.packageData, presetKey = data.presetKey, presetVersion = data.presetVersion)
-        return rebuildImportedDocuments(card)
+        startBackgroundRebuild(card)
+        return card
     }
     suspend fun overwriteCharacter(id: String, data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard {
         val card = characterTransfers.overwrite(id, data.packageData, data.presetKey, data.presetVersion)
-        return rebuildImportedDocuments(card)
+        startBackgroundRebuild(card)
+        return card
     }
     suspend fun recoverCharacterPreset(entry: com.example.chatbar.data.local.entity.PresetEntry) =
         com.example.chatbar.domain.card.CharacterCardImportRequest(
@@ -165,39 +169,76 @@ class ManageViewModel : ViewModel() {
             presetVersion = entry.version
         )
 
-    private suspend fun rebuildImportedDocuments(card: CharacterCard): CharacterCard {
+    private fun startBackgroundRebuild(card: CharacterCard) {
         if (card.customDocuments.isEmpty()) {
-            return card.copy(
+            val done = card.copy(
                 ragIndexStatus = RagIndexStatus.COMPLETE.name,
                 ragIndexDone = 0,
                 ragIndexTotal = 0,
-                ragIndexMessage = "无参考文档"
-            ).also { characterRepository.save(it) }
+                ragIndexMessage = "无参考文档",
+                ragIndexedAt = System.currentTimeMillis()
+            )
+            viewModelScope.launch { characterRepository.save(done) }
+            return
         }
-        val settings = settingsRepository.getAppSettings()
-        val embedding = modelResolver.embeddingModel(settings) ?: return card
-        val indexed = card.customDocuments.map { doc ->
-            runCatching {
-                val result = ChatBarApp.instance.ragManager.indexDocument(doc, File(doc.filePath).readText(), card.id, embedding)
-                doc.copy(
-                    contentHash = result.contentHash,
-                    indexedHash = result.contentHash,
-                    ragStatus = com.example.chatbar.data.local.entity.DocumentRagStatus.INDEXED.name,
-                    ragChunkCount = result.chunkCount,
-                    ragIndexedAt = System.currentTimeMillis(),
-                    ragError = null
+        _importProgress.value = "${card.name}：准备 RAG 索引…"
+        viewModelScope.launch {
+            try {
+                val settings = settingsRepository.getAppSettings()
+                val embedding = modelResolver.embeddingModel(settings)
+                if (embedding == null) {
+                    _importProgress.value = "${card.name}：未配置嵌入模型，跳过索引"
+                    return@launch
+                }
+                val indexed = mutableListOf<com.example.chatbar.data.local.entity.DocumentInfo>()
+                val total = card.customDocuments.size
+                for ((i, doc) in card.customDocuments.withIndex()) {
+                    val result = runCatching {
+                        val r = ChatBarApp.instance.ragManager.indexDocument(doc, File(doc.filePath).readText(), card.id, embedding)
+                        doc.copy(
+                            contentHash = r.contentHash,
+                            indexedHash = r.contentHash,
+                            ragStatus = com.example.chatbar.data.local.entity.DocumentRagStatus.INDEXED.name,
+                            ragChunkCount = r.chunkCount,
+                            ragIndexedAt = System.currentTimeMillis(),
+                            ragError = null
+                        )
+                    }.getOrElse { doc.copy(ragStatus = com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name, ragError = it.message) }
+                    indexed.add(result)
+                    _importProgress.value = "${card.name}：索引进度 ${i + 1}/$total"
+                    if ((i + 1) % 3 == 0 || i == total - 1) {
+                        val current = characterRepository.getById(card.id)
+                        if (current != null) {
+                            val failed = indexed.count { it.ragStatus == com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name }
+                            val mergedDocs = current.customDocuments.map { old -> indexed.firstOrNull { it.id == old.id } ?: old }
+                            characterRepository.save(current.copy(
+                                customDocuments = mergedDocs,
+                                ragIndexStatus = if (failed > 0) RagIndexStatus.FAILED.name else RagIndexStatus.INDEXING.name,
+                                ragIndexDone = i + 1,
+                                ragIndexTotal = total,
+                                ragIndexMessage = "索引进度：${i + 1}/$total",
+                                ragIndexedAt = null
+                            ))
+                        }
+                    }
+                }
+                val failed = indexed.count { it.ragStatus == com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name }
+                val updated = characterRepository.getById(card.id) ?: return@launch
+                val finalDocs = updated.customDocuments.map { old -> indexed.firstOrNull { it.id == old.id } ?: old }
+                val final = updated.copy(
+                    customDocuments = finalDocs,
+                    ragIndexStatus = if (failed == 0) RagIndexStatus.COMPLETE.name else RagIndexStatus.FAILED.name,
+                    ragIndexDone = total,
+                    ragIndexTotal = total,
+                    ragIndexMessage = if (failed == 0) "参考文档索引完成" else "$failed 份文档索引失败",
+                    ragIndexedAt = System.currentTimeMillis()
                 )
-            }.getOrElse { doc.copy(ragStatus = com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name, ragError = it.message) }
+                characterRepository.save(final)
+                _importProgress.value = if (failed == 0) null else "${card.name}：$failed 份文档索引失败"
+            } catch (e: Exception) {
+                _importProgress.value = "${card.name}：索引失败 - ${e.message}"
+            }
         }
-        val failed = indexed.count { it.ragStatus == com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name }
-        return card.copy(
-            customDocuments = indexed,
-            ragIndexStatus = if (failed == 0) RagIndexStatus.COMPLETE.name else RagIndexStatus.FAILED.name,
-            ragIndexDone = indexed.size,
-            ragIndexTotal = indexed.size,
-            ragIndexMessage = if (failed == 0) "参考文档索引完成" else "$failed 份文档索引失败",
-            ragIndexedAt = System.currentTimeMillis()
-        ).also { characterRepository.save(it) }
     }
 
     suspend fun exportCharacterCardJson(id: String): String = characterTransfers.exportJson(id)
