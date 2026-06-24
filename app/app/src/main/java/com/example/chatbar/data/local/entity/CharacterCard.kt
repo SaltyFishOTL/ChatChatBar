@@ -72,10 +72,14 @@ data class CharacterInfo(
     val id: String,
     val name: String,
     val profile: String = "",       // 简介
-    val appearance: String = "",    // 形象文字描述
+    val appearance: String = "",    // 外貌特征
     val appearanceImage: String? = null, // 形象图片路径
-    val speakingStyle: String = "", // 语气
-    val background: String = "",    // 过往
+    val clothing: String = "",      // 服装
+    val abilities: String = "",     // 能力
+    val habits: String = "",        // 习惯与爱好
+    val background: String = "",    // 背景经历
+    val relationships: String = "", // 人际关系
+    val speakingStyle: String = "", // 语气与口癖
     val imagePrompt: String = ""
 ) {
     companion object {

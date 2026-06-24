@@ -31,8 +31,12 @@ data class PackagedCharacter(
     val profile: String = "",
     val appearance: String = "",
     val appearanceImageResourceId: String? = null,
-    val speakingStyle: String = "",
+    val clothing: String = "",
+    val abilities: String = "",
+    val habits: String = "",
     val background: String = "",
+    val relationships: String = "",
+    val speakingStyle: String = "",
     val imagePrompt: String = ""
 )
 

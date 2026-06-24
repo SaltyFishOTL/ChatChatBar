@@ -60,6 +60,7 @@ import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -90,6 +91,9 @@ fun ChatSettingsDialog(
     var slotDescription by remember { mutableStateOf("") }
     var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
 
+    var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> background = path } }
     }
@@ -101,6 +105,11 @@ fun ChatSettingsDialog(
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
         }
+    }
+
+    fun openFullscreen(title: String, text: String, onChange: (String) -> Unit) {
+        fullscreenField = title to text
+        fullscreenOnChange = onChange
     }
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
@@ -134,7 +143,8 @@ fun ChatSettingsDialog(
                     replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
                     roleplayStyle, { roleplayStyle = it }, supplementary, { supplementary = it },
                     playerName, { playerName = it }, playerSetting, { playerSetting = it },
-                    background, { backgroundPicker.launch("image/*") }, { background = "" }, onClearHistory
+                    background, { backgroundPicker.launch("image/*") }, { background = "" }, onClearHistory,
+                    ::openFullscreen
                 )
             } else {
                 SavesContent(
@@ -162,7 +172,20 @@ fun ChatSettingsDialog(
             confirm = {
                 CbButton("删除", { viewModel.deleteSaveSlot(slot.id); deleteSlot = null }, variant = ButtonVariant.Destructive)
             }
-        ) { CbText("确定删除“${slot.name}”？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
+        ) { CbText("确定删除\u201c${slot.name}\u201d？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
+    }
+
+    fullscreenField?.let { (title, text) ->
+        FullscreenTextEditor(
+            title = title,
+            text = text,
+            onTextChange = { newValue ->
+                fullscreenOnChange?.invoke(newValue)
+                fullscreenField = title to newValue
+            },
+            visible = true,
+            onDismiss = { fullscreenField = null; fullscreenOnChange = null }
+        )
     }
 }
 
@@ -173,7 +196,8 @@ private fun SettingsContent(
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
     style: String, onStyle: (String) -> Unit, supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
-    background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit, onClearHistory: () -> Unit
+    background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit, onClearHistory: () -> Unit,
+    openFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
@@ -198,12 +222,16 @@ private fun SettingsContent(
                 CbChoiceChip("激进", style == "AGGRESSIVE", { onStyle("AGGRESSIVE") })
             }
         }
-        CbField("临时补充设定") { CbInput(supplementary, onSupplementary, singleLine = false, minLines = 3) }
+        CbField("临时补充设定", onFullscreenEdit = {
+            openFullscreen("临时补充设定", supplementary, onSupplementary)
+        }) { CbInput(supplementary, onSupplementary, singleLine = false, minLines = 3) }
         CbDivider()
         CbField("玩家名称覆盖", description = "会话 Prompt 中的 ${'$'}username 将替换为此名称。") {
             CbInput(playerName, onPlayerName, placeholder = "会话专属名称")
         }
-        CbField("玩家设定覆盖") { CbInput(playerSetting, onPlayerSetting, singleLine = false, minLines = 3) }
+        CbField("玩家设定覆盖", onFullscreenEdit = {
+            openFullscreen("玩家设定覆盖", playerSetting, onPlayerSetting)
+        }) { CbInput(playerSetting, onPlayerSetting, singleLine = false, minLines = 3) }
         CbDivider()
         CbField("聊天背景覆盖") {
             Box(
@@ -266,7 +294,7 @@ fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit) {
                 CbText(slot.name, style = ChatBarTheme.typography.heading)
                 slot.description?.takeIf(String::isNotBlank)?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground) }
                 CbText(
-                    "${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(slot.createdAt))} · ${slot.messages.size} 条消息",
+                    "${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(slot.createdAt))} . ${slot.messages.size} 条消息",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )

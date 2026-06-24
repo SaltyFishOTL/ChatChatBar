@@ -137,8 +137,12 @@ class PromptAssembler {
                     char.name.trim().takeIf { it.isNotEmpty() }?.let { add("角色名称: $it") }
                     char.profile.trim().takeIf { it.isNotEmpty() }?.let { add("简介: $it") }
                     char.appearance.trim().takeIf { it.isNotEmpty() }?.let { add("外貌: $it") }
-                    char.speakingStyle.trim().takeIf { it.isNotEmpty() }?.let { add("语气: $it") }
-                    char.background.trim().takeIf { it.isNotEmpty() }?.let { add("过往: $it") }
+                    char.clothing.trim().takeIf { it.isNotEmpty() }?.let { add("服装: $it") }
+                    char.abilities.trim().takeIf { it.isNotEmpty() }?.let { add("能力: $it") }
+                    char.habits.trim().takeIf { it.isNotEmpty() }?.let { add("习惯与爱好: $it") }
+                    char.background.trim().takeIf { it.isNotEmpty() }?.let { add("背景经历: $it") }
+                    char.relationships.trim().takeIf { it.isNotEmpty() }?.let { add("人际关系: $it") }
+                    char.speakingStyle.trim().takeIf { it.isNotEmpty() }?.let { add("语气与口癖: $it") }
                 }.takeIf { it.isNotEmpty() }?.joinToString("\n")
             }.joinToString("\n\n")
         }

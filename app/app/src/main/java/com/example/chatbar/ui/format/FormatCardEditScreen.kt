@@ -15,6 +15,10 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Save
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
@@ -28,6 +32,7 @@ import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 
 @Composable
 fun FormatCardEditScreen(
@@ -39,6 +44,9 @@ fun FormatCardEditScreen(
         factory = FormatCardEditViewModelFactory(formatCardId)
     )
 ) {
+    var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+
     CbScaffold(
         modifier = modifier,
         topBar = {
@@ -80,7 +88,10 @@ fun FormatCardEditScreen(
 
             CbField(
                 label = "Prompt 格式要求",
-                description = "用于约束 AI 回复的结构和表达方式。"
+                description = "用于约束 AI 回复的结构和表达方式。",
+                onFullscreenEdit = {
+                    fullscreenField = "Prompt 格式要求" to viewModel.content; fullscreenOnChange = { viewModel.content = it }
+                }
             ) {
                 CbInput(
                     value = viewModel.content,
@@ -110,5 +121,18 @@ fun FormatCardEditScreen(
                 CbSwitch(viewModel.isDefault, { viewModel.isDefault = it })
             }
         }
+    }
+
+    fullscreenField?.let { (title, text) ->
+        FullscreenTextEditor(
+            title = title,
+            text = text,
+            onTextChange = { newValue ->
+                fullscreenOnChange?.invoke(newValue)
+                fullscreenField = title to newValue
+            },
+            visible = true,
+            onDismiss = { fullscreenField = null; fullscreenOnChange = null }
+        )
     }
 }

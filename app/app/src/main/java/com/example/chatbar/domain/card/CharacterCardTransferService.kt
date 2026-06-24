@@ -107,8 +107,12 @@ class CharacterCardTransferService(
                     "character-$index-appearance",
                     "人物 ${character.name} 的形象图"
                 ),
-                speakingStyle = character.speakingStyle,
+                clothing = character.clothing,
+                abilities = character.abilities,
+                habits = character.habits,
                 background = character.background,
+                relationships = character.relationships,
+                speakingStyle = character.speakingStyle,
                 imagePrompt = character.imagePrompt
             )
         }
@@ -162,8 +166,12 @@ class CharacterCardTransferService(
                         profile = character.profile,
                         appearance = character.appearance,
                         appearanceImage = character.appearanceImageResourceId?.let(imagePathMap::getValue),
-                        speakingStyle = character.speakingStyle,
+                        clothing = character.clothing,
+                        abilities = character.abilities,
+                        habits = character.habits,
                         background = character.background,
+                        relationships = character.relationships,
+                        speakingStyle = character.speakingStyle,
                         imagePrompt = character.imagePrompt
                     )
                 },

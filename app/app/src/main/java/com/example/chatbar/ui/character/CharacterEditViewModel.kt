@@ -121,17 +121,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     fun switchEditMode(target: CharacterEditMode) {
         if (target == editMode) return
         editMode = target
-        when (target) {
-            CharacterEditMode.FREEFORM -> {
-                charactersList.clear()
-                freeformCharacterText = ""
-            }
-            CharacterEditMode.STRUCTURED -> {
-                freeformCharacterText = ""
-                charactersList.clear()
-                charactersList.add(CharacterInfo.create(""))
-            }
-        }
     }
 
     private fun startBackgroundIndex(card: CharacterCard) {

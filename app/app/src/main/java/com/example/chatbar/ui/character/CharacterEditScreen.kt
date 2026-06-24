@@ -69,6 +69,7 @@ import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 
 @Composable
 fun CharacterEditScreen(
@@ -91,6 +92,8 @@ fun CharacterEditScreen(
     var confirmClearDocuments by remember { mutableStateOf(false) }
     var imageCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
+    var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     LaunchedEffect(indexingStatus) {
         indexingStatus?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
@@ -157,7 +160,9 @@ fun CharacterEditScreen(
                     CbInput(viewModel.name, { viewModel.name = it }, placeholder = "例如：西幻冒险小队")
                 }
             }
-            CbField("起始台词", description = "创建新会话时由角色发送。") {
+            CbField("起始台词", description = "创建新会话时由角色发送。", onFullscreenEdit = {
+                fullscreenField = "起始台词" to viewModel.greeting; fullscreenOnChange = { viewModel.greeting = it }
+            }) {
                 CbInput(viewModel.greeting, { viewModel.greeting = it }, placeholder = "输入开场白…", singleLine = false, minLines = 2)
             }
             CbField("默认聊天背景") {
@@ -168,7 +173,9 @@ fun CharacterEditScreen(
                     onClear = { viewModel.chatBackground = null }
                 )
             }
-            CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。") {
+            CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。", onFullscreenEdit = {
+                fullscreenField = "基本设定" to viewModel.basicSetting; fullscreenOnChange = { viewModel.basicSetting = it }
+            }) {
                 CbInput(
                     viewModel.basicSetting,
                     { viewModel.basicSetting = it },
@@ -179,7 +186,10 @@ fun CharacterEditScreen(
             }
             CbField(
                 "NovelAI 默认风格提示词",
-                description = "英文标签或自然语言。会固定加入每次生图的基础 Prompt；自由模式可在此直接写角色提示词。"
+                description = "英文标签或自然语言。会固定加入每次生图的基础 Prompt；自由模式可在此直接写角色提示词。",
+                onFullscreenEdit = {
+                    fullscreenField = "NovelAI 默认风格提示词" to viewModel.defaultImagePrompt; fullscreenOnChange = { viewModel.defaultImagePrompt = it }
+                }
             ) {
                 CbInput(
                     viewModel.defaultImagePrompt,
@@ -224,11 +234,13 @@ fun CharacterEditScreen(
                     )
                 }
             } else {
-                CbField("自由人物设定", description = "原文替换整个结构化人物设定部分。") {
+                CbField("自由人物设定", description = "原文替换整个结构化人物设定部分。", onFullscreenEdit = {
+                    fullscreenField = "自由人物设定" to viewModel.freeformCharacterText; fullscreenOnChange = { viewModel.freeformCharacterText = it }
+                }) {
                     CbInput(
                         viewModel.freeformCharacterText,
                         { viewModel.freeformCharacterText = it },
-                        placeholder = "自由编写人物名称、简介、外貌、语气、经历等…",
+                        placeholder = "自由编写人物名称、简介、外貌、服装、能力、习惯、经历、人际关系等…",
                         singleLine = false,
                         minLines = 10
                     )
@@ -259,6 +271,19 @@ fun CharacterEditScreen(
                 DocumentRow(document) { deleteDocument = document }
             }
         }
+    }
+
+    fullscreenField?.let { (title, text) ->
+        FullscreenTextEditor(
+            title = title,
+            text = text,
+            onTextChange = { newValue ->
+                fullscreenOnChange?.invoke(newValue)
+                fullscreenField = title to newValue
+            },
+            visible = true,
+            onDismiss = { fullscreenField = null; fullscreenOnChange = null }
+        )
     }
 
     if (showCharacterDialog) {
@@ -305,9 +330,9 @@ fun CharacterEditScreen(
         ) {
             CbText(
                 if (target == CharacterEditMode.FREEFORM)
-                    "切换后将永久清空全部分段人物设定。名称、开场白、基本设定、图片和参考文档不受影响。"
+                    "切换到自由模式后，分段人物数据将保留但不会发送给AI。名称、开场白、基本设定、图片和参考文档不受影响。"
                 else
-                    "切换后将永久清空自由人物设定，并建立一个空人物项。名称、开场白、基本设定、图片和参考文档不受影响。",
+                    "切换到分段模式后，自由人物数据将保留但不会发送给AI。名称、开场白、基本设定、图片和参考文档不受影响。",
                 color = ChatBarTheme.colors.mutedForeground
             )
         }
@@ -405,8 +430,12 @@ private fun CharacterDialog(
     var profile by remember { mutableStateOf(original?.profile ?: "") }
     var appearance by remember { mutableStateOf(original?.appearance ?: "") }
     var image by remember { mutableStateOf(original?.appearanceImage ?: "") }
-    var speaking by remember { mutableStateOf(original?.speakingStyle ?: "") }
+    var clothing by remember { mutableStateOf(original?.clothing ?: "") }
+    var abilities by remember { mutableStateOf(original?.abilities ?: "") }
+    var habits by remember { mutableStateOf(original?.habits ?: "") }
     var background by remember { mutableStateOf(original?.background ?: "") }
+    var relationships by remember { mutableStateOf(original?.relationships ?: "") }
+    var speaking by remember { mutableStateOf(original?.speakingStyle ?: "") }
     var imagePrompt by remember { mutableStateOf(original?.imagePrompt ?: "") }
     CbDialog(
         onDismissRequest = onDismiss,
@@ -422,8 +451,12 @@ private fun CharacterDialog(
                         profile = profile,
                         appearance = appearance,
                         appearanceImage = image,
-                        speakingStyle = speaking,
+                        clothing = clothing,
+                        abilities = abilities,
+                        habits = habits,
                         background = background,
+                        relationships = relationships,
+                        speakingStyle = speaking,
                         imagePrompt = imagePrompt
                     )
                 )
@@ -444,8 +477,12 @@ private fun CharacterDialog(
                 }
             }
             CbField("外貌特征") { CbInput(appearance, { appearance = it }, singleLine = false, minLines = 2) }
-            CbField("语气与口癖") { CbInput(speaking, { speaking = it }, singleLine = false, minLines = 2) }
+            CbField("服装") { CbInput(clothing, { clothing = it }, singleLine = false, minLines = 2) }
+            CbField("能力") { CbInput(abilities, { abilities = it }, singleLine = false, minLines = 2) }
+            CbField("习惯，爱好") { CbInput(habits, { habits = it }, singleLine = false, minLines = 2) }
             CbField("背景经历") { CbInput(background, { background = it }, singleLine = false, minLines = 3) }
+            CbField("人际关系") { CbInput(relationships, { relationships = it }, singleLine = false, minLines = 2) }
+            CbField("语气与口癖") { CbInput(speaking, { speaking = it }, singleLine = false, minLines = 2) }
             CbField(
                 "NovelAI 人物提示词",
                 description = "固定外貌与身份标签。当前服装、动作和表情会由对话 AI 按情景补充。"
