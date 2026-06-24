@@ -4,6 +4,7 @@ import android.app.Activity
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -28,8 +29,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AddPhotoAlternate
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.OpenInFull
@@ -42,11 +43,15 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
+import coil.compose.AsyncImage
+import java.io.File
 
 @Composable
 fun CbField(
@@ -70,7 +75,7 @@ fun CbField(
                         .clickable(role = Role.Button, onClick = onFullscreenEdit),
                     contentAlignment = Alignment.Center
                 ) {
-                    CbIcon(Icons.Default.OpenInFull, "全屏编辑", Modifier.size(14.dp), colors.mutedForeground)
+                    CbIcon(Icons.Default.OpenInFull, "\u5168\u5c4f\u7f16\u8f91", Modifier.size(14.dp), colors.mutedForeground)
                 }
             }
         } else {
@@ -208,9 +213,87 @@ fun FullscreenTextEditor(
     onTextChange: (String) -> Unit,
     visible: Boolean,
     onDismiss: () -> Unit,
-    placeholder: String = "输入内容…"
+    placeholder: String = "输入内容…",
+    onConfirm: (() -> Unit)? = null,
+    images: List<String> = emptyList(),
+    onAddImage: (() -> Unit)? = null,
+    onRemoveImage: ((String) -> Unit)? = null,
+    confirmIcon: ImageVector = Icons.Default.Check,
+    confirmEnabled: Boolean = true
 ) {
     if (!visible) return
+    val confirm = onConfirm ?: onDismiss
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { colors, interactionSource, focused ->
+        BasicTextField(
+            value = text,
+            onValueChange = onTextChange,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(colors.input, RoundedCornerShape(8.dp))
+                .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            singleLine = false,
+            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+            cursorBrush = SolidColor(colors.primary),
+            interactionSource = interactionSource,
+            decorationBox = { inner ->
+                if (text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
+                inner()
+            }
+        )
+    }
+}
+
+@Composable
+fun FullscreenTextEditor(
+    title: String,
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    placeholder: String = "输入消息…",
+    onConfirm: (() -> Unit)? = null,
+    images: List<String> = emptyList(),
+    onAddImage: (() -> Unit)? = null,
+    onRemoveImage: ((String) -> Unit)? = null,
+    confirmIcon: ImageVector = Icons.Default.Check,
+    confirmEnabled: Boolean = true
+) {
+    if (!visible) return
+    val confirm = onConfirm ?: onDismiss
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { colors, interactionSource, focused ->
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxSize()
+                .background(colors.input, RoundedCornerShape(8.dp))
+                .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
+                .padding(horizontal = 12.dp, vertical = 11.dp),
+            singleLine = false,
+            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+            cursorBrush = SolidColor(colors.primary),
+            interactionSource = interactionSource,
+            decorationBox = { inner ->
+                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
+                inner()
+            }
+        )
+    }
+}
+
+@Composable
+private fun FullscreenTextEditorLayout(
+    title: String,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+    confirmIcon: ImageVector,
+    confirmEnabled: Boolean,
+    images: List<String>,
+    onAddImage: (() -> Unit)?,
+    onRemoveImage: ((String) -> Unit)?,
+    textField: @Composable (colors: ChatBarColors, interactionSource: MutableInteractionSource, focused: Boolean) -> Unit
+) {
     val localView = LocalView.current
     DisposableEffect(Unit) {
         val window = (localView.context as? Activity)?.window
@@ -222,44 +305,34 @@ fun FullscreenTextEditor(
         onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
     val colors = ChatBarTheme.colors
-    val scrollState = rememberScrollState()
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
     Box(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             CbText(title, style = ChatBarTheme.typography.title)
             Spacer(Modifier.size(12.dp))
-            Box(Modifier.fillMaxWidth().weight(1f)) {
-                BasicTextField(
-                    value = text,
-                    onValueChange = onTextChange,
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .verticalScroll(scrollState)
-                        .background(colors.input, RoundedCornerShape(8.dp))
-                        .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
-                        .padding(horizontal = 12.dp, vertical = 11.dp),
-                    singleLine = false,
-                    textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-                    cursorBrush = SolidColor(colors.primary),
-                    interactionSource = interactionSource,
-                    decorationBox = { inner ->
-                        if (text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
-                        inner()
+            if (images.isNotEmpty()) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    images.forEach { path ->
+                        Box(Modifier.size(96.dp).clip(RoundedCornerShape(8.dp))) {
+                            AsyncImage(File(path), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                            Box(Modifier.align(Alignment.TopEnd).size(28.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).clickable { onRemoveImage?.invoke(path) }, contentAlignment = Alignment.Center) {
+                                CbIcon(Icons.Default.Close, "删除图片", Modifier.size(16.dp), Color.White)
+                            }
+                        }
                     }
-                )
+                }
+            }
+            Box(Modifier.fillMaxWidth().weight(1f)) {
+                textField(colors, interactionSource, focused)
             }
         }
-        CbIconButton(
-            Icons.Default.Close, "退出",
-            onDismiss,
-            Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape)
-        )
-        CbIconButton(
-            Icons.Default.Check, "确认",
-            onDismiss,
-            Modifier.align(Alignment.BottomEnd).padding(16.dp).size(56.dp).background(colors.primary, CircleShape),
-            tint = colors.primaryForeground
-        )
+        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
+        Row(Modifier.align(Alignment.BottomEnd).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (onAddImage != null) {
+                CbIconButton(Icons.Default.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(colors.card, CircleShape), tint = colors.primary)
+            }
+            CbIconButton(confirmIcon, "确认", onConfirm, Modifier.size(56.dp).background(colors.primary, CircleShape), enabled = confirmEnabled, tint = colors.primaryForeground)
+        }
     }
 }

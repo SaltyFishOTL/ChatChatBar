@@ -2,6 +2,7 @@ package com.example.chatbar.ui.character
 
 import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -94,6 +95,20 @@ fun CharacterEditScreen(
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var editDocument by remember { mutableStateOf<DocumentInfo?>(null) }
+    var editDocName by remember { mutableStateOf("") }
+    var editDocContent by remember { mutableStateOf("") }
+    var lastBackPressAt by remember { mutableStateOf(0L) }
+
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressAt <= 2000L) {
+            onBack()
+        } else {
+            lastBackPressAt = now
+            Toast.makeText(context, "再按一次退出编辑（不会保存修改）", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     LaunchedEffect(indexingStatus) {
         indexingStatus?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }

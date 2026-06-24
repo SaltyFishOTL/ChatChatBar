@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.model
 
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -27,6 +29,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -60,6 +63,18 @@ fun ModelEditScreen(
     var showAddParam by remember { mutableStateOf(false) }
     val canSave = viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
         viewModel.apiKey.isNotBlank() && viewModel.modelName.isNotBlank()
+    val context = LocalContext.current
+    var lastBackPressAt by remember { mutableStateOf(0L) }
+
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressAt <= 2000L) {
+            onBack()
+        } else {
+            lastBackPressAt = now
+            Toast.makeText(context, "再按一次退出编辑（不会保存修改）", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     CbScaffold(
         modifier = modifier,

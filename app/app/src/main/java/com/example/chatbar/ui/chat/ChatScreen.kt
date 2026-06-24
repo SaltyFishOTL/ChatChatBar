@@ -57,7 +57,6 @@ import androidx.compose.material.icons.filled.Save
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -77,15 +76,11 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
-import androidx.core.view.WindowCompat
-import androidx.core.view.WindowInsetsCompat
-import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.DebugConfig
@@ -104,6 +99,7 @@ import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
@@ -132,7 +128,6 @@ fun ChatScreen(
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
-    val localView = LocalView.current
 
     var input by remember { mutableStateOf(TextFieldValue("")) }
     val selectedImages = remember { mutableStateListOf<String>() }
@@ -174,16 +169,6 @@ fun ChatScreen(
 
     BackHandler(enabled = editingMessage != null) { editingMessage = null; editingImages.clear() }
     BackHandler(enabled = fullComposer) { fullComposer = false }
-    val fullScreenEditor = editingMessage != null || fullComposer
-    DisposableEffect(fullScreenEditor, localView) {
-        val window = (localView.context as? Activity)?.window
-        val controller = window?.let { WindowCompat.getInsetsController(it, localView) }
-        if (fullScreenEditor) {
-            controller?.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            controller?.hide(WindowInsetsCompat.Type.systemBars())
-        } else controller?.show(WindowInsetsCompat.Type.systemBars())
-        onDispose { controller?.show(WindowInsetsCompat.Type.systemBars()) }
-    }
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -231,36 +216,38 @@ fun ChatScreen(
     }
 
     if (editingMessage != null) {
-        MessageEditFullScreen(
+        FullscreenTextEditor(
             title = "编辑消息",
-            text = editingText,
+            value = editingText,
+            onValueChange = { editingText = it },
             images = editingImages,
-            onTextChange = { editingText = it },
             onAddImage = { editImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { editingImages.remove(it) },
-            onCancel = { editingMessage = null; editingImages.clear() },
-            onSave = {
+            onDismiss = { editingMessage = null; editingImages.clear() },
+            onConfirm = {
                 editingMessage?.let { viewModel.editMessage(it.id, editingText.text, editingImages.toList()) }
                 editingMessage = null; editingImages.clear()
             },
-            saveIcon = Icons.Default.Save
+            confirmIcon = Icons.Default.Save,
+            visible = true
         )
         return
     }
     if (fullComposer && !isArchived) {
-        MessageEditFullScreen(
+        FullscreenTextEditor(
             title = "撰写消息",
-            text = input,
+            value = input,
+            onValueChange = { input = it },
             images = selectedImages,
-            onTextChange = { input = it },
             onAddImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { selectedImages.remove(it) },
-            onCancel = { fullComposer = false },
-            onSave = {
+            onDismiss = { fullComposer = false },
+            onConfirm = {
                 viewModel.sendMessage(input.text, selectedImages.toList())
                 input = TextFieldValue(""); selectedImages.clear(); fullComposer = false
             },
-            saveIcon = Icons.Default.Send
+            confirmIcon = Icons.Default.Send,
+            visible = true
         )
         return
     }
@@ -668,40 +655,3 @@ private fun ImageStrip(images: List<String>, onRemove: (String) -> Unit) {
     }
 }
 
-@Composable
-private fun MessageEditFullScreen(
-    title: String,
-    text: TextFieldValue,
-    images: List<String>,
-    onTextChange: (TextFieldValue) -> Unit,
-    onAddImage: () -> Unit,
-    onRemoveImage: (String) -> Unit,
-    onCancel: () -> Unit,
-    onSave: () -> Unit,
-    saveIcon: androidx.compose.ui.graphics.vector.ImageVector
-) {
-    Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-                Column(Modifier.fillMaxSize().padding(16.dp).padding(bottom = 64.dp)) {
-            CbText(title, style = ChatBarTheme.typography.title)
-            Spacer(Modifier.size(12.dp))
-            if (images.isNotEmpty()) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    images.forEach { path ->
-                        Box(Modifier.size(96.dp).clip(RoundedCornerShape(8.dp))) {
-                            AsyncImage(File(path), "消息图片", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                            Box(Modifier.align(Alignment.TopEnd).size(28.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).clickable { onRemoveImage(path) }, contentAlignment = Alignment.Center) {
-                                CbIcon(Icons.Default.Close, "删除图片", Modifier.size(16.dp), Color.White)
-                            }
-                        }
-                    }
-                }
-            }
-            CbInput(text, onTextChange, Modifier.fillMaxWidth().weight(1f), placeholder = "输入消息…", minLines = 8)
-        }
-        CbIconButton(Icons.Default.Close, "退出", onCancel, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(ChatBarTheme.colors.card, CircleShape))
-        Row(Modifier.align(Alignment.BottomEnd).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CbIconButton(Icons.Default.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(ChatBarTheme.colors.card, CircleShape), tint = ChatBarTheme.colors.primary)
-            CbIconButton(saveIcon, "保存", onSave, Modifier.size(56.dp).background(ChatBarTheme.colors.primary, CircleShape), enabled = text.text.isNotBlank() || images.isNotEmpty(), tint = ChatBarTheme.colors.primaryForeground)
-        }
-    }
-}

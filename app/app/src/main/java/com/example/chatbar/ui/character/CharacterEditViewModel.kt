@@ -300,15 +300,45 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             localFile.writeText(content)
 
             documentsList.add(DocumentInfo.create(fileName, localFile.absolutePath, "txt"))
-            saveCharacterCardCurrentState()
-            markRagIndexDirty("文档已保存，保存角色卡后将重建 RAG 索引")
+            markRagIndexDirty("文档已添加，保存角色卡后将重建 RAG 索引")
         }
     }
 
-    private suspend fun saveCharacterCardCurrentState() {
-        val card = buildCurrentCard(markDirty = true)
-        characterRepository.save(card)
-        _characterCard.value = card
+    fun updateDocument(doc: DocumentInfo, newName: String, newContent: String) {
+        viewModelScope.launch {
+            val file = File(doc.filePath)
+            if (newName != doc.fileName) {
+                val parent = file.parentFile ?: return@launch
+                val extension = doc.fileName.substringAfterLast('.', "txt")
+                val newFile = File(parent, "${System.currentTimeMillis()}_$newName")
+                newFile.writeText(newContent)
+                file.delete()
+                val index = documentsList.indexOfFirst { it.id == doc.id }
+                if (index >= 0) {
+                    documentsList[index] = doc.copy(
+                        fileName = newName,
+                        filePath = newFile.absolutePath,
+                        fileType = extension,
+                        ragStatus = DocumentRagStatus.PENDING.name,
+                        ragChunkCount = 0,
+                        ragIndexedAt = null,
+                        ragError = null
+                    )
+                }
+            } else {
+                file.writeText(newContent)
+                val index = documentsList.indexOfFirst { it.id == doc.id }
+                if (index >= 0) {
+                    documentsList[index] = doc.copy(
+                        ragStatus = DocumentRagStatus.PENDING.name,
+                        ragChunkCount = 0,
+                        ragIndexedAt = null,
+                        ragError = null
+                    )
+                }
+            }
+            markRagIndexDirty("文档已编辑，保存角色卡后将重建 RAG 索引")
+        }
     }
 
     private fun buildCurrentCard(markDirty: Boolean): CharacterCard {
@@ -364,7 +394,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             ragIndexMessage = message,
             ragIndexedAt = null
         )
-        characterRepository.save(updated)
         _characterCard.value = updated
         _indexingStatus.value = message
     }
@@ -374,7 +403,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             File(doc.filePath).delete()
             documentsList.remove(doc)
             ChatBarApp.instance.ragRepository.deleteChunksByDocumentId(doc.id)
-            saveCharacterCardCurrentState()
             markRagIndexDirty("文档已删除，保存角色卡后将重建 RAG 索引")
         }
     }
@@ -392,14 +420,20 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     ragIndexStatus = RagIndexStatus.COMPLETE.name,
                     ragIndexDone = 0,
                     ragIndexTotal = 0,
-                    ragIndexMessage = "已清空当前角色卡文档，正在后台清理 RAG 索引",
+                    ragIndexMessage = "已清空当前角色卡文档，保存角色卡后将清理 RAG 索引",
                     ragIndexedAt = now,
                     updatedAt = now
                 )
-                characterRepository.save(updated)
                 _characterCard.value = updated
             } else {
-                saveCharacterCardCurrentState()
+                _characterCard.value = buildCurrentCard(markDirty = true).copy(
+                    customDocuments = emptyList(),
+                    ragIndexStatus = RagIndexStatus.COMPLETE.name,
+                    ragIndexDone = 0,
+                    ragIndexTotal = 0,
+                    ragIndexMessage = "已清空当前角色卡文档，保存角色卡后将清理 RAG 索引",
+                    ragIndexedAt = now
+                )
             }
             _indexingStatus.value = "已清空当前角色卡文档，正在后台清理 RAG 索引"
 
@@ -463,7 +497,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         }
                     }
 
-                    saveCharacterCardCurrentState()
                     markRagIndexDirty("已导入 ${filesToProcess.size} 个文档，保存角色卡后将重建 RAG 索引")
                 }
             } catch (e: Exception) {

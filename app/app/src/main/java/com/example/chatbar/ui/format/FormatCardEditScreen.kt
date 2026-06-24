@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.format
 
+import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -21,6 +23,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.ui.kit.CbDivider
@@ -46,6 +49,18 @@ fun FormatCardEditScreen(
 ) {
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    val context = LocalContext.current
+    var lastBackPressAt by remember { mutableStateOf(0L) }
+
+    BackHandler {
+        val now = System.currentTimeMillis()
+        if (now - lastBackPressAt <= 2000L) {
+            onBack()
+        } else {
+            lastBackPressAt = now
+            Toast.makeText(context, "再按一次退出编辑（不会保存修改）", Toast.LENGTH_SHORT).show()
+        }
+    }
 
     CbScaffold(
         modifier = modifier,
