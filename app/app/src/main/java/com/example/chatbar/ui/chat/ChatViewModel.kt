@@ -178,13 +178,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun refreshMessages() {
         viewModelScope.launch {
-            _messages.value = chatRepository.getMessages(sessionId)
+            try {
+                _messages.value = chatRepository.getMessages(sessionId)
+            } catch (_: Exception) {}
         }
     }
 
     fun refreshSaveSlots() {
         viewModelScope.launch {
-            _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
+            try {
+                _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
+            } catch (_: Exception) {}
         }
     }
 
@@ -710,6 +714,46 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
                 val apiMessages = mutableListOf<ChatApiMessage>()
+                val implicitInstruction = "（严格遵循格式要求、字数要求进行回复）"
+
+                // 重新生成时，找到被重新生成回复所对应的那条用户消息，需将其移至最底部
+                val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
+                    contextMsgs.lastOrNull { it.role == MessageRole.USER }
+                } else null
+
+                // 1. 过往消息（放在最上方，排除当前/重新生成触发的用户消息）
+                val historyMsgs = when {
+                    persistUserMessage -> contextMsgs.filterNot { it.id == userMsg.id }
+                    regenTargetUserMsg != null -> contextMsgs.filterNot { it.id == regenTargetUserMsg.id }
+                    else -> contextMsgs
+                }
+                for (msg in historyMsgs) {
+                    val role = msg.role.name.lowercase()
+                    val text = msg.displayContent
+                    if (msg.images.isNotEmpty() &&
+                        modelConfig.isMultimodal &&
+                        msg.role == MessageRole.USER
+                    ) {
+                        try {
+                            val base64 = encodeImageToBase64(msg.images.first())
+                            apiMessages.add(
+                                ChatApiMessage.withImage(
+                                    role = role,
+                                    text = text,
+                                    imageBase64 = base64
+                                )
+                            )
+                        } catch (e: Exception) {
+                            if (text.isNotBlank()) {
+                                apiMessages.add(ChatApiMessage.text(role, text))
+                            }
+                        }
+                    } else if (text.isNotBlank()) {
+                        apiMessages.add(ChatApiMessage.text(role, text))
+                    }
+                }
+
+                // 2. System prompt（中间位置）
                 apiMessages.add(ChatApiMessage.text("system", systemPrompt))
                 if (characterImageRefs.isNotEmpty() && modelConfig.isMultimodal) {
                     val imageBase64s = characterImageRefs.mapNotNull { (_, imagePath) ->
@@ -726,37 +770,51 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 对 contextMsgs 进行映射
-                for (msg in contextMsgs) {
-                    val role = msg.role.name.lowercase()
-                    val text = msg.displayContent
-                    if (msg.images.isNotEmpty() &&
-                        modelConfig.isMultimodal &&
-                        msg.role == MessageRole.USER
-                    ) {
-                        // 支持多模态模型直接发送图片 Base64
+                // 3. 本次用户输入（始终放在最底部，追加隐式指令）
+                val currentUserContent: String?
+                val currentUserImages: List<String>
+                val shouldAddUserPrompt: Boolean = when {
+                    persistUserMessage -> {
+                        currentUserContent = finalUserContent
+                        currentUserImages = userMsgImages
+                        true
+                    }
+                    regenTargetUserMsg != null -> {
+                        currentUserContent = regenTargetUserMsg.displayContent
+                        currentUserImages = regenTargetUserMsg.images
+                        true
+                    }
+                    content.isNotBlank() -> {
+                        currentUserContent = content
+                        currentUserImages = emptyList()
+                        true
+                    }
+                    else -> {
+                        currentUserContent = null
+                        currentUserImages = emptyList()
+                        false
+                    }
+                }
+                if (shouldAddUserPrompt && currentUserContent != null) {
+                    val userPromptText = currentUserContent + implicitInstruction
+                    if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
                         try {
-                            val base64 = encodeImageToBase64(msg.images.first())
+                            val base64 = encodeImageToBase64(currentUserImages.first())
                             apiMessages.add(
                                 ChatApiMessage.withImage(
-                                    role = role,
-                                    text = text,
+                                    role = "user",
+                                    text = userPromptText,
                                     imageBase64 = base64
                                 )
                             )
                         } catch (e: Exception) {
-                            if (text.isNotBlank()) {
-                                apiMessages.add(ChatApiMessage.text(role, text))
+                            if (userPromptText.isNotBlank()) {
+                                apiMessages.add(ChatApiMessage.text("user", userPromptText))
                             }
                         }
-                    } else if (text.isNotBlank()) {
-                        // Assistant 图片不能作为 image_url 历史输入；纯图片消息不参与文本上下文。
-                        apiMessages.add(ChatApiMessage.text(role, text))
+                    } else if (userPromptText.isNotBlank()) {
+                        apiMessages.add(ChatApiMessage.text("user", userPromptText))
                     }
-                }
-
-                if (!persistUserMessage && content.isNotBlank()) {
-                    apiMessages.add(ChatApiMessage.text("user", content))
                 }
 
                 // 8. 开启流式响应
@@ -867,14 +925,38 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
             } catch (e: Exception) {
-                ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
-                StreamingNotificationManager.cancel(ChatBarApp.instance)
+                try {
+                    ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
+                } catch (_: Exception) {}
+                try {
+                    StreamingNotificationManager.cancel(ChatBarApp.instance)
+                } catch (_: Exception) {}
                 ChatBarApp.instance.streamingStopRequested.value = false
                 _isResponding.value = false
                 _streamingMessage.value = null
                 if (e !is CancellationException) {
-                    addSystemMessage("错误: ${e.message}")
+                    try {
+                        if (alternativeTargetMessageId == null) {
+                            val errorAssistantMsg = ChatMessage.create(
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = "错误: ${e.message}"
+                            )
+                            chatRepository.addMessage(errorAssistantMsg)
+                            refreshMessages()
+                        } else {
+                            addSystemMessage("错误: ${e.message}")
+                        }
+                    } catch (_: Exception) {}
                 }
+            } finally {
+                ChatBarApp.instance.streamingStopRequested.value = false
+                try {
+                    ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
+                } catch (_: Exception) {}
+                try {
+                    StreamingNotificationManager.cancel(ChatBarApp.instance)
+                } catch (_: Exception) {}
             }
         }
     }

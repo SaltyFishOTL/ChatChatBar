@@ -83,6 +83,33 @@ class ChatBubbleImageTest {
     }
 
     @Test
+    fun roleplayContent_extractsDashFencedStatusBlocks() {
+        val content = "正文开头\n---\n姓名:卢帕\n状态:疲惫\n---\n正文结尾"
+
+        val result = parseRoleplayContent(content)
+
+        assertEquals(3, result.size)
+        assertTrue(result[0] is RoleplayContentSegment.Markdown)
+        assertTrue((result[0] as RoleplayContentSegment.Markdown).text.contains("正文开头"))
+        assertEquals(
+            "姓名:卢帕\n状态:疲惫",
+            (result[1] as RoleplayContentSegment.Status).text
+        )
+        assertTrue(result[2] is RoleplayContentSegment.Markdown)
+        assertTrue((result[2] as RoleplayContentSegment.Markdown).text.contains("正文结尾"))
+    }
+
+    @Test
+    fun roleplayContent_singleDashLineRemainsMarkdown() {
+        val content = "正文\n---\n更多正文"
+
+        val result = parseRoleplayContent(content)
+
+        assertEquals(1, result.size)
+        assertTrue(result[0] is RoleplayContentSegment.Markdown)
+    }
+
+    @Test
     fun messageBubble_longPressOpensMessageActions() {
         var longPressed = false
         val message = ChatMessage(

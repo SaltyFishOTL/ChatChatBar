@@ -316,7 +316,45 @@ internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment>
         segments += RoleplayContentSegment.Status(content.substring(bodyStart, close).trim())
         cursor = close + marker.length
     }
-    return segments.ifEmpty { listOf(RoleplayContentSegment.Markdown(content)) }
+    val result = mutableListOf<RoleplayContentSegment>()
+    for (segment in segments) {
+        if (segment is RoleplayContentSegment.Markdown) {
+            result.addAll(splitMarkdownByHrFences(segment.text))
+        } else {
+            result.add(segment)
+        }
+    }
+    return result.ifEmpty { listOf(RoleplayContentSegment.Markdown(content)) }
+}
+
+private val hrFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
+
+private fun splitMarkdownByHrFences(text: String): List<RoleplayContentSegment> {
+    val matches = hrFencePattern.findAll(text).toList()
+    if (matches.size < 2) return listOf(RoleplayContentSegment.Markdown(text))
+
+    val segments = mutableListOf<RoleplayContentSegment>()
+    var cursor = 0
+    var i = 0
+    while (i < matches.size - 1) {
+        val open = matches[i]
+        val close = matches[i + 1]
+        if (open.range.first > cursor) {
+            text.substring(cursor, open.range.first).takeIf(String::isNotBlank)
+                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+        }
+        val statusStart = open.range.last + 1
+        val statusEnd = close.range.first
+        text.substring(statusStart, statusEnd).trim().takeIf(String::isNotBlank)
+            ?.let { segments += RoleplayContentSegment.Status(it) }
+        cursor = close.range.last + 1
+        i += 2
+    }
+    if (cursor < text.length) {
+        text.substring(cursor).takeIf(String::isNotBlank)
+            ?.let { segments += RoleplayContentSegment.Markdown(it) }
+    }
+    return segments.ifEmpty { listOf(RoleplayContentSegment.Markdown(text)) }
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {

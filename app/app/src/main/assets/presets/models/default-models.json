@@ -4,9 +4,9 @@
   "baseUrl": "https://api.siliconflow.cn/v1",
   "chatModels": [
     {
-      "modelKey": "DeepseekV3.2",
-      "displayName": "DS3.2",
-      "modelName": "deepseek-ai/DeepSeek-V3.2",
+      "modelKey": "DeepseekV4F",
+      "displayName": "DS4F",
+      "modelName": "deepseek-ai/DeepSeek-V4-Flash",
       "visionModelKey": "k2.6",
       "templateType": "OPENAI",
       "customParams": {
@@ -16,9 +16,9 @@
       }
     },
     {
-      "modelKey": "GLM5.1",
-      "displayName": "GLM5.1",
-      "modelName": "Pro/zai-org/GLM-5.1",
+      "modelKey": "GLM5.2",
+      "displayName": "GLM5.2",
+      "modelName": "zai-org/GLM-5.2",
       "visionModelKey": "k2.6",
       "templateType": "OPENAI",
       "customParams": {

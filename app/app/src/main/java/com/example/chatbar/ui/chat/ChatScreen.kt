@@ -221,7 +221,9 @@ fun ChatScreen(
     }
     LaunchedEffect(streamingMessage?.content?.length, streamingMessage?.reasoningContent?.length) {
         if (streamingMessage != null && !listState.isScrollInProgress) {
-            val maxIndex = (listState.layoutInfo.totalItemsCount - 1).coerceAtLeast(0)
+            val totalItems = listState.layoutInfo.totalItemsCount
+            if (totalItems == 0) return@LaunchedEffect
+            val maxIndex = totalItems - 1
             restoringViewport = true
             listState.scrollToItem(viewportAnchor.first.coerceAtMost(maxIndex), viewportAnchor.second)
             restoringViewport = false

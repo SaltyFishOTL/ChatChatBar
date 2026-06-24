@@ -187,6 +187,7 @@ class StreamingChatService {
                 .build()
 
             suspendCancellableCoroutine { continuation ->
+                var resumed = false
                 val listener = object : EventSourceListener() {
                     override fun onEvent(
                         eventSource: EventSource,
@@ -199,7 +200,10 @@ class StreamingChatService {
                             com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
                             trySend(StreamEvent.Done)
                             shouldStop = true
-                            continuation.resume(Unit)
+                            if (!resumed) {
+                                resumed = true
+                                continuation.resume(Unit)
+                            }
                             return
                         }
 
@@ -256,7 +260,10 @@ class StreamingChatService {
                         com.example.chatbar.utils.DebugLogManager.logError(sessionId, errorMsg)
                         trySend(StreamEvent.Error(errorMsg))
                         shouldStop = true
-                        continuation.resume(Unit)
+                        if (!resumed) {
+                            resumed = true
+                            continuation.resume(Unit)
+                        }
                     }
 
                     override fun onClosed(eventSource: EventSource) {
@@ -264,7 +271,10 @@ class StreamingChatService {
                             com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
                             shouldStop = true
                         }
-                        continuation.resume(Unit)
+                        if (!resumed) {
+                            resumed = true
+                            continuation.resume(Unit)
+                        }
                     }
                 }
 
@@ -309,10 +319,12 @@ class StreamingChatService {
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val listener = object : EventSourceListener() {
+            private var closed = false
+
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 if (data.trim() == "[DONE]") {
                     trySend(StreamEvent.Done)
-                    close()
+                    if (!closed) { closed = true; close() }
                     return
                 }
                 val delta = parseDelta(data)
@@ -332,11 +344,11 @@ class StreamingChatService {
                     t?.let { append(" - ${it.message ?: it::class.java.simpleName}") }
                 }
                 trySend(StreamEvent.Error(message))
-                close()
+                if (!closed) { closed = true; close() }
             }
 
             override fun onClosed(eventSource: EventSource) {
-                close()
+                if (!closed) { closed = true; close() }
             }
         }
         val eventSource = EventSources.createFactory(client).newEventSource(request, listener)

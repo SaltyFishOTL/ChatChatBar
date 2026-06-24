@@ -21,7 +21,7 @@ import org.msgpack.core.MessagePack
 
 class NovelAiImageFeatureTest {
     @Test
-    fun `context ends at anchor and keeps three valid text messages`() {
+    fun `context returns only the anchor message`() {
         val messages = listOf(
             message("1", MessageRole.USER, "old"),
             message("2", MessageRole.SYSTEM, "hidden"),
@@ -33,7 +33,7 @@ class NovelAiImageFeatureTest {
 
         val result = NovelAiPromptDesigner.contextForAnchor(messages, "5")
 
-        assertEquals(listOf("first", "second", "third alt"), result.map { it.displayContent })
+        assertEquals(listOf("third alt"), result.map { it.displayContent })
     }
 
     @Test

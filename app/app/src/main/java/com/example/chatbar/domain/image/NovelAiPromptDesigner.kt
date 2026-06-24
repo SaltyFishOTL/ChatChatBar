@@ -86,7 +86,7 @@ class NovelAiPromptDesigner(
             ),
             model = model,
             enableThinking = true,
-            maxThinkingTokens = 128,
+            maxThinkingTokens = 100,
             onDelta = onDelta
         )
         sessionId?.let { sid ->
@@ -160,17 +160,16 @@ class NovelAiPromptDesigner(
             messages: List<ChatMessage>,
             anchorMessageId: String
         ): List<ChatMessage> {
-            val anchorIndex = messages.indexOfFirst { it.id == anchorMessageId }
-            if (anchorIndex < 0) return emptyList()
-            return messages.subList(0, anchorIndex + 1)
-                .filter { it.role != MessageRole.SYSTEM && it.displayContent.isNotBlank() }
-                .takeLast(3)
+            val msg = messages.firstOrNull { it.id == anchorMessageId }
+                ?: return emptyList()
+            if (msg.role == MessageRole.SYSTEM || msg.displayContent.isBlank()) return emptyList()
+            return listOf(msg)
         }
 
         internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan {
             val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
-            if (card.editMode != CharacterEditMode.STRUCTURED) return NovelAiPromptPlan(normalizedBase, emptyList(), designed)
             val characters = designed.characters.take(6)
+            if (characters.isEmpty()) return NovelAiPromptPlan(normalizedBase, emptyList(), designed)
             val captions = characters.mapIndexedNotNull { index, selected ->
                 selected.effectiveCaption.trim().takeIf(String::isNotBlank)?.let {
                     NovelAiCharacterCaption(
@@ -222,7 +221,7 @@ class NovelAiPromptDesigner(
                 })
                 put("max_tokens", PromptTemplates.NOVELAI_IMAGE_PROMPT_MAX_TOKENS)
                 put("enable_thinking", true)
-                put("max_thinking_tokens", 128)
+                put("max_thinking_tokens", 100)
             }.toString()
     }
 }
@@ -232,13 +231,17 @@ internal suspend fun collectPromptText(
     onDelta: (String) -> Unit
 ): String {
     val content = StringBuilder()
+    val reasoning = StringBuilder()
     events.collect { event ->
         when (event) {
             is StreamEvent.Delta -> {
                 content.append(event.text)
                 onDelta(content.toString())
             }
-            is StreamEvent.ReasoningDelta -> Unit
+            is StreamEvent.ReasoningDelta -> {
+                reasoning.append(event.text)
+                onDelta("[思考] " + reasoning.toString())
+            }
             is StreamEvent.Error -> error(event.message)
             StreamEvent.Done -> Unit
         }
