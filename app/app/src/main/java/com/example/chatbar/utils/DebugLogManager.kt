@@ -56,7 +56,7 @@ object DebugLogManager {
             requestBodyJson = sanitizeRequestBodyForDisplay(requestBodyJson),
             systemPrompt = systemPrompt,
             ragChunks = ragChunks,
-            estimatedPromptTokens = estimateTokens(systemPrompt + sanitizeRequestBodyForDisplay(requestBodyJson))
+            estimatedPromptTokens = estimateTokens(sanitizeRequestBodyForDisplay(requestBodyJson))
         )
         activeLogs[sessionId] = entry.id
         synchronized(this) {
@@ -78,7 +78,7 @@ object DebugLogManager {
                     entry.rawSseOutput.append(chunkData).append("\n")
                     if (deltaText != null) entry.rawAiOutput.append(deltaText)
                     if (reasoningText != null) entry.rawReasoningOutput.append(reasoningText)
-                    entry.estimatedCompletionTokens = estimateTokens(entry.rawSseOutput.toString())
+                    entry.estimatedCompletionTokens = estimateTokens(entry.rawAiOutput.toString())
                     entry
                 } else {
                     entry

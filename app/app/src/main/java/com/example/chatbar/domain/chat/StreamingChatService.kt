@@ -30,6 +30,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
+import com.example.chatbar.domain.ProxyAwareClient
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
@@ -135,7 +136,7 @@ class StreamingChatService {
         encodeDefaults = true
     }
 
-    private val client = OkHttpClient.Builder()
+    private val client = ProxyAwareClient.builder()
         .connectTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
         .readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
         .writeTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)

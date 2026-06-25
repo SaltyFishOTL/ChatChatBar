@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -18,20 +19,22 @@ fun CbTopBar(
     title: String,
     modifier: Modifier = Modifier,
     statusBarInset: Boolean = true,
+    elevated: Boolean = true,
     navigation: @Composable RowScope.() -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {}
 ) {
     Row(
         modifier = modifier
             .fillMaxWidth()
+            .then(if (elevated) Modifier.shadow(ChatBarElevation.low, ambientColor = ChatBarTheme.colors.cardShadow) else Modifier)
             .background(ChatBarTheme.colors.background)
             .then(if (statusBarInset) Modifier.statusBarsPadding() else Modifier)
             .height(56.dp)
-            .padding(horizontal = 8.dp),
+            .padding(horizontal = ChatBarSpacing.sm),
         verticalAlignment = Alignment.CenterVertically
     ) {
         navigation()
-        Box(Modifier.weight(1f).padding(horizontal = 8.dp)) {
+        Box(Modifier.weight(1f).padding(horizontal = ChatBarSpacing.sm)) {
             CbText(title, style = ChatBarTheme.typography.title)
         }
         actions()

@@ -37,11 +37,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.R
 import com.example.chatbar.ChatRoute
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.ui.components.EmptyState
@@ -77,7 +79,18 @@ fun HomeScreen(
 
     CbScaffold(
         modifier = modifier,
-        topBar = { CbTopBar("ChatChatBar") },
+        topBar = {
+            CbTopBar(
+                title = "ChatChatBar",
+                navigation = {
+                    androidx.compose.foundation.Image(
+                        painter = painterResource(R.mipmap.ic_launcher),
+                        contentDescription = "ChatBar",
+                        modifier = Modifier.size(26.dp)
+                    )
+                }
+            )
+        },
         floatingActionButton = {
             CbFab(Icons.Default.Add, "新建对话", { showStartDialog = true })
         }

@@ -21,7 +21,9 @@ data class AppSettings(
     val defaultContextWindowSize: Int = 20,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
-    val tutorialVersion: Int = 0
+    val tutorialVersion: Int = 0,
+    val proxyHost: String? = null,
+    val proxyPort: Int? = null
 )
 
 @Serializable

@@ -1,6 +1,9 @@
 package com.example.chatbar.ui.kit
 
 import android.app.Activity
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -67,11 +70,11 @@ fun CbField(
         if (onFullscreenEdit != null) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 CbText(label, modifier = Modifier.weight(1f), style = ChatBarTheme.typography.label)
-                Spacer(Modifier.width(4.dp))
+                Spacer(Modifier.width(ChatBarSpacing.xs))
                 Box(
                     modifier = Modifier
                         .size(22.dp)
-                        .clip(RoundedCornerShape(4.dp))
+                        .clip(RoundedCornerShape(ChatBarShape.xs))
                         .clickable(role = Role.Button, onClick = onFullscreenEdit),
                     contentAlignment = Alignment.Center
                 ) {
@@ -81,11 +84,11 @@ fun CbField(
         } else {
             CbText(label, style = ChatBarTheme.typography.label)
         }
-        Spacer(Modifier.height(7.dp))
+        Spacer(Modifier.height(ChatBarSpacing.sm))
         content()
         val supporting = error ?: description
         supporting?.let {
-            Spacer(Modifier.height(6.dp))
+            Spacer(Modifier.height(ChatBarSpacing.xs))
             CbText(
                 it,
                 color = if (error != null) colors.destructive else colors.mutedForeground,
@@ -111,16 +114,26 @@ fun CbInput(
     val colors = ChatBarTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
-    val borderColor = when {
-        isError -> colors.destructive
-        focused -> colors.primary
-        else -> colors.border
-    }
+    val borderColor by animateColorAsState(
+        when {
+            isError -> colors.destructive
+            focused -> colors.primary
+            else -> colors.border
+        },
+        animationSpec = tween(200),
+        label = "inputBorder"
+    )
+    val borderWidth by animateDpAsState(
+        if (focused) 1.5.dp else 1.dp,
+        animationSpec = tween(200),
+        label = "inputBorderWidth"
+    )
     val heightModifier = if (singleLine) {
         Modifier.heightIn(min = 44.dp)
     } else {
         Modifier.height(150.dp)
     }
+    val shape = RoundedCornerShape(ChatBarShape.sm)
     Box(modifier = modifier.fillMaxWidth()) {
         BasicTextField(
             value = value,
@@ -128,9 +141,9 @@ fun CbInput(
             modifier = Modifier
                 .fillMaxWidth()
                 .then(heightModifier)
-                .background(colors.input, RoundedCornerShape(8.dp))
-                .border(if (focused) 1.5.dp else 1.dp, borderColor, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 11.dp),
+                .background(colors.input, shape)
+                .border(borderWidth, borderColor, shape)
+                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
             enabled = enabled,
             singleLine = singleLine,
             minLines = minLines,
@@ -150,9 +163,9 @@ fun CbInput(
             "${value.length}字",
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 8.dp, bottom = 6.dp)
-                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 4.dp, vertical = 1.dp),
+                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
+                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
+                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
             color = colors.mutedForeground,
             style = ChatBarTheme.typography.caption
         )
@@ -172,6 +185,17 @@ fun CbInput(
     val colors = ChatBarTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
+    val borderColor by animateColorAsState(
+        if (focused) colors.primary else colors.border,
+        animationSpec = tween(200),
+        label = "inputBorder"
+    )
+    val borderWidth by animateDpAsState(
+        if (focused) 1.5.dp else 1.dp,
+        animationSpec = tween(200),
+        label = "inputBorderWidth"
+    )
+    val shape = RoundedCornerShape(ChatBarShape.sm)
     Box(modifier = modifier.fillMaxWidth()) {
         BasicTextField(
             value = value,
@@ -179,9 +203,9 @@ fun CbInput(
             modifier = Modifier
                 .fillMaxWidth()
                 .heightIn(min = 44.dp)
-                .background(colors.input, RoundedCornerShape(8.dp))
-                .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 11.dp),
+                .background(colors.input, shape)
+                .border(borderWidth, borderColor, shape)
+                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
             enabled = enabled,
             singleLine = singleLine,
             minLines = minLines,
@@ -197,9 +221,9 @@ fun CbInput(
             "${value.text.length}字",
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 8.dp, bottom = 6.dp)
-                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(4.dp))
-                .padding(horizontal = 4.dp, vertical = 1.dp),
+                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
+                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
+                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
             color = colors.mutedForeground,
             style = ChatBarTheme.typography.caption
         )
@@ -223,21 +247,22 @@ fun FullscreenTextEditor(
 ) {
     if (!visible) return
     val confirm = onConfirm ?: onDismiss
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { colors, interactionSource, focused ->
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+        val shape = RoundedCornerShape(ChatBarShape.sm)
         BasicTextField(
             value = text,
             onValueChange = onTextChange,
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.input, RoundedCornerShape(8.dp))
-                .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 11.dp),
+                .background(ctxColors.input, shape)
+                .border(if (focused) 1.5.dp else 1.dp, if (focused) ctxColors.primary else ctxColors.border, shape)
+                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
             singleLine = false,
-            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-            cursorBrush = SolidColor(colors.primary),
+            textStyle = ChatBarTheme.typography.body.copy(color = ctxColors.foreground),
+            cursorBrush = SolidColor(ctxColors.primary),
             interactionSource = interactionSource,
             decorationBox = { inner ->
-                if (text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
+                if (text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = ctxColors.mutedForeground)
                 inner()
             }
         )
@@ -261,21 +286,22 @@ fun FullscreenTextEditor(
 ) {
     if (!visible) return
     val confirm = onConfirm ?: onDismiss
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { colors, interactionSource, focused ->
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+        val shape = RoundedCornerShape(ChatBarShape.sm)
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier
                 .fillMaxSize()
-                .background(colors.input, RoundedCornerShape(8.dp))
-                .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
-                .padding(horizontal = 12.dp, vertical = 11.dp),
+                .background(ctxColors.input, shape)
+                .border(if (focused) 1.5.dp else 1.dp, if (focused) ctxColors.primary else ctxColors.border, shape)
+                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
             singleLine = false,
-            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-            cursorBrush = SolidColor(colors.primary),
+            textStyle = ChatBarTheme.typography.body.copy(color = ctxColors.foreground),
+            cursorBrush = SolidColor(ctxColors.primary),
             interactionSource = interactionSource,
             decorationBox = { inner ->
-                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
+                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = ctxColors.mutedForeground)
                 inner()
             }
         )
@@ -308,13 +334,13 @@ private fun FullscreenTextEditorLayout(
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
     Box(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
-        Column(Modifier.fillMaxSize().padding(16.dp)) {
+        Column(Modifier.fillMaxSize().padding(ChatBarSpacing.lg)) {
             CbText(title, style = ChatBarTheme.typography.title)
-            Spacer(Modifier.size(12.dp))
+            Spacer(Modifier.size(ChatBarSpacing.md))
             if (images.isNotEmpty()) {
-                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = 12.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = ChatBarSpacing.md), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
                     images.forEach { path ->
-                        Box(Modifier.size(96.dp).clip(RoundedCornerShape(8.dp))) {
+                        Box(Modifier.size(96.dp).clip(RoundedCornerShape(ChatBarShape.sm))) {
                             AsyncImage(File(path), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             Box(Modifier.align(Alignment.TopEnd).size(28.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).clickable { onRemoveImage?.invoke(path) }, contentAlignment = Alignment.Center) {
                                 CbIcon(Icons.Default.Close, "删除图片", Modifier.size(16.dp), Color.White)
@@ -327,8 +353,8 @@ private fun FullscreenTextEditorLayout(
                 textField(colors, interactionSource, focused)
             }
         }
-        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
-        Row(Modifier.align(Alignment.BottomEnd).padding(16.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(ChatBarSpacing.lg).size(56.dp).background(colors.card, CircleShape))
+        Row(Modifier.align(Alignment.BottomEnd).padding(ChatBarSpacing.lg), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
             if (onAddImage != null) {
                 CbIconButton(Icons.Default.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(colors.card, CircleShape), tint = colors.primary)
             }

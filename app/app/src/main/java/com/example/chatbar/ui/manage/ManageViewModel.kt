@@ -13,6 +13,7 @@ import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
+import com.example.chatbar.domain.ProxyAwareClient
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -362,6 +363,8 @@ class ManageViewModel : ViewModel() {
     fun updateAppSettings(settings: AppSettings) {
         viewModelScope.launch {
             settingsRepository.saveAppSettings(settings)
+            ProxyAwareClient.manualProxyHost = settings.proxyHost
+            ProxyAwareClient.manualProxyPort = settings.proxyPort
             refreshEffectiveModels()
         }
     }

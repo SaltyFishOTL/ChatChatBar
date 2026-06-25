@@ -4,6 +4,10 @@ import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
@@ -14,7 +18,6 @@ import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.Modifier
 import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
@@ -36,7 +39,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     val initialRoute: NavKey = if (tutorialCompleted) HomeRoute else TutorialRoute(firstLaunch = true)
     val backStack = rememberNavBackStack(initialRoute)
     val currentRoute = backStack.lastOrNull() ?: HomeRoute
-    val context = LocalContext.current
+    val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
     val sharedUri by sharedImportUri.collectAsState()
@@ -56,6 +59,10 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         } else {
             backStack[0] = route
         }
+    }
+
+    fun pushRoute(route: NavKey) {
+        backStack.add(route as NavKey)
     }
 
     BackHandler(enabled = backStack.size == 1 && (currentRoute == HomeRoute || currentRoute == ManageRoute)) {
@@ -82,12 +89,14 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
             NavDisplay(
                 backStack = backStack,
                 onBack = ::popBackStack,
+                transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) },
+                popTransitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) },
                 entryProvider = entryProvider {
                     entry<HomeRoute> {
-                        HomeScreen(onNavigate = { route -> backStack.add(route as NavKey) })
+                        HomeScreen(onNavigate = { route -> pushRoute(route as NavKey) })
                     }
                     entry<ManageRoute> {
-                        ManageScreen(onNavigate = { route -> backStack.add(route as NavKey) }, sharedUri = sharedUri)
+                        ManageScreen(onNavigate = { route -> pushRoute(route as NavKey) }, sharedUri = sharedUri)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(

@@ -14,8 +14,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.unit.dp
+import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbText
+import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
 
 @Composable
@@ -23,19 +25,25 @@ fun EmptyState(
     modifier: Modifier = Modifier,
     icon: ImageVector = Icons.Default.Forum,
     title: String = "暂无内容",
-    description: String? = null
+    description: String? = null,
+    actionLabel: String? = null,
+    onAction: (() -> Unit)? = null
 ) {
     Column(
-        modifier = modifier.fillMaxSize().padding(24.dp),
+        modifier = modifier.fillMaxSize().padding(ChatBarSpacing.xxl),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        CbIcon(icon, null, Modifier.size(40.dp), ChatBarTheme.colors.mutedForeground)
-        Spacer(Modifier.height(16.dp))
+        CbIcon(icon, null, Modifier.size(48.dp), ChatBarTheme.colors.mutedForeground.copy(alpha = 0.5f))
+        Spacer(Modifier.height(ChatBarSpacing.lg))
         CbText(title, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.heading)
         description?.let {
-            Spacer(Modifier.height(6.dp))
-            CbText(it, color = ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        if (actionLabel != null && onAction != null) {
+            Spacer(Modifier.height(ChatBarSpacing.xl))
+            CbButton(text = actionLabel, onClick = onAction)
         }
     }
 }

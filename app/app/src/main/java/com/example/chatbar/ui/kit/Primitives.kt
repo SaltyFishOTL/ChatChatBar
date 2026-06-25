@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.kit
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -12,7 +14,6 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
@@ -26,12 +27,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.semantics.Role
@@ -64,15 +70,17 @@ fun CbText(
 fun CbSurface(
     modifier: Modifier = Modifier,
     color: Color = ChatBarTheme.colors.card,
-    shape: Shape = RoundedCornerShape(10.dp),
+    shape: Shape = RoundedCornerShape(ChatBarShape.md),
     border: BorderStroke? = null,
+    elevation: Dp = 0.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
     Box(
         modifier = modifier
+            .let { if (elevation > 0.dp) it.shadow(elevation, shape, ambientColor = ChatBarTheme.colors.cardShadow) else it }
             .clip(shape)
             .background(color)
-            .then(if (border != null) Modifier.border(border, shape) else Modifier),
+            .let { if (border != null) it.border(border, shape) else it },
         content = content
     )
 }
@@ -89,48 +97,62 @@ fun CbButton(
     variant: ButtonVariant = ButtonVariant.Default,
     size: ButtonSize = ButtonSize.Default
 ) {
+    var pressVersion by remember { mutableStateOf(0) }
+    val scale by animateFloatAsState(
+        if (pressVersion % 2 == 1) 0.96f else 1f,
+        animationSpec = tween(80),
+        label = "btnScale"
+    )
     val colors = ChatBarTheme.colors
-    val background = when (variant) {
+    val bg = when (variant) {
         ButtonVariant.Default -> colors.primary
         ButtonVariant.Destructive -> colors.destructive
         ButtonVariant.Secondary -> colors.secondary
         ButtonVariant.Outline, ButtonVariant.Ghost, ButtonVariant.Link -> Color.Transparent
     }
-    val foreground = when (variant) {
+    val fg = when (variant) {
         ButtonVariant.Default -> colors.primaryForeground
         ButtonVariant.Destructive -> colors.destructiveForeground
         ButtonVariant.Secondary -> colors.secondaryForeground
         ButtonVariant.Outline, ButtonVariant.Ghost -> colors.foreground
         ButtonVariant.Link -> colors.primary
     }
-    val height = when (size) {
+    val h = when (size) {
         ButtonSize.Xs, ButtonSize.IconXs -> 28.dp
         ButtonSize.Sm, ButtonSize.IconSm -> 34.dp
         ButtonSize.Default, ButtonSize.Icon -> 40.dp
         ButtonSize.Lg, ButtonSize.IconLg -> 44.dp
     }
-    val horizontalPadding = when (size) {
+    val hp = when (size) {
         ButtonSize.Xs -> 10.dp
         ButtonSize.Sm -> 12.dp
         ButtonSize.Default -> 16.dp
         ButtonSize.Lg -> 20.dp
         else -> 0.dp
     }
+    val shape = RoundedCornerShape(ChatBarShape.sm)
+    androidx.compose.runtime.LaunchedEffect(pressVersion) {
+        if (pressVersion > 0) {
+            kotlinx.coroutines.delay(150)
+            pressVersion = 0
+        }
+    }
     Box(
         modifier = modifier
-            .height(height.coerceAtLeast(48.dp))
-            .clip(RoundedCornerShape(8.dp))
-            .background(background)
-            .then(
-                if (variant == ButtonVariant.Outline) {
-                    Modifier.border(1.dp, colors.border, RoundedCornerShape(8.dp))
-                } else Modifier
-            )
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick)
-            .padding(horizontal = horizontalPadding),
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .height(h.coerceAtLeast(44.dp))
+            .clip(shape)
+            .background(bg)
+            .let { if (variant == ButtonVariant.Outline) it.border(1.dp, colors.border, shape) else it }
+            .clickable(enabled = enabled, role = Role.Button, indication = null, interactionSource = null) {
+                pressVersion = 1
+                onClick()
+            },
         contentAlignment = Alignment.Center
     ) {
-        CbText(text, color = foreground, style = ChatBarTheme.typography.label)
+        Box(Modifier.padding(horizontal = hp)) {
+            CbText(text, color = fg, style = ChatBarTheme.typography.label)
+        }
     }
 }
 
@@ -158,11 +180,27 @@ fun CbIconButton(
     enabled: Boolean = true,
     tint: Color = ChatBarTheme.colors.foreground
 ) {
+    var pressVersion by remember { mutableStateOf(0) }
+    val scale by animateFloatAsState(
+        if (pressVersion % 2 == 1) 0.92f else 1f,
+        animationSpec = tween(80),
+        label = "iconBtnScale"
+    )
+    androidx.compose.runtime.LaunchedEffect(pressVersion) {
+        if (pressVersion > 0) {
+            kotlinx.coroutines.delay(150)
+            pressVersion = 0
+        }
+    }
     Box(
         modifier = modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
             .size(40.dp)
-            .clip(RoundedCornerShape(9.dp))
-            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+            .clip(RoundedCornerShape(ChatBarShape.sm))
+            .clickable(enabled = enabled, role = Role.Button, indication = null, interactionSource = null) {
+                pressVersion = 1
+                onClick()
+            },
         contentAlignment = Alignment.Center
     ) {
         CbIcon(imageVector, contentDescription, Modifier.size(20.dp), tint)
@@ -176,15 +214,33 @@ fun CbFab(
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    var pressVersion by remember { mutableStateOf(0) }
+    val scale by animateFloatAsState(
+        if (pressVersion % 2 == 1) 0.92f else 1f,
+        animationSpec = tween(80),
+        label = "fabScale"
+    )
+    androidx.compose.runtime.LaunchedEffect(pressVersion) {
+        if (pressVersion > 0) {
+            kotlinx.coroutines.delay(150)
+            pressVersion = 0
+        }
+    }
+    val shape = RoundedCornerShape(ChatBarShape.lg)
     Box(
         modifier = modifier
-            .size(54.dp)
-            .clip(CircleShape)
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .shadow(ChatBarElevation.medium, shape, ambientColor = ChatBarTheme.colors.cardShadow)
+            .size(width = 48.dp, height = 48.dp)
+            .clip(shape)
             .background(ChatBarTheme.colors.primary)
-            .clickable(role = Role.Button, onClick = onClick),
+            .clickable(role = Role.Button, indication = null, interactionSource = null) {
+                pressVersion = 1
+                onClick()
+            },
         contentAlignment = Alignment.Center
     ) {
-        CbIcon(imageVector, contentDescription, Modifier.size(24.dp), ChatBarTheme.colors.primaryForeground)
+        CbIcon(imageVector, contentDescription, Modifier.size(22.dp), ChatBarTheme.colors.primaryForeground)
     }
 }
 
@@ -209,7 +265,7 @@ fun CbScaffold(
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .windowInsetsPadding(WindowInsets.navigationBars)
-                .padding(18.dp)
+                .padding(ChatBarSpacing.lg)
         ) { floatingActionButton() }
     }
 }
@@ -227,24 +283,37 @@ fun CbDialog(
         onDismissRequest = onDismissRequest,
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
-        CbSurface(
-            modifier = modifier.fillMaxWidth().padding(horizontal = 24.dp),
-            border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(ChatBarTheme.colors.dim)
+                .clickable(
+                    interactionSource = remember { MutableInteractionSource() },
+                    indication = null,
+                    onClick = onDismissRequest
+                ),
+            contentAlignment = Alignment.Center
         ) {
-            Column(Modifier.padding(18.dp)) {
-                CbText(title, style = ChatBarTheme.typography.title)
-                Spacer(Modifier.height(14.dp))
-                content()
-                if (confirm != null || dismiss != null) {
-                    Spacer(Modifier.height(18.dp))
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.End,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        dismiss?.invoke()
-                        if (dismiss != null && confirm != null) Spacer(Modifier.size(8.dp))
-                        confirm?.invoke()
+            CbSurface(
+                modifier = modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.xxl),
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+                elevation = ChatBarElevation.high
+            ) {
+                Column(Modifier.padding(ChatBarSpacing.lg)) {
+                    CbText(title, style = ChatBarTheme.typography.heading)
+                    Spacer(Modifier.height(ChatBarSpacing.md))
+                    content()
+                    if (confirm != null || dismiss != null) {
+                        Spacer(Modifier.height(ChatBarSpacing.lg))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.End,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            dismiss?.invoke()
+                            if (dismiss != null && confirm != null) Spacer(Modifier.size(ChatBarSpacing.sm))
+                            confirm?.invoke()
+                        }
                     }
                 }
             }

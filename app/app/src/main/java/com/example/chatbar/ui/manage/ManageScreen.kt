@@ -4,6 +4,12 @@ import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedContentTransitionScope
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -48,9 +54,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -129,6 +137,8 @@ fun ManageScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(0) }
+    var tabDir by remember { mutableIntStateOf(0) }
+    var prevTab by remember { mutableIntStateOf(0) }
     val visibleTabs = if (settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM) {
         listOf(0 to "角色", 1 to "格式", 2 to "模型", 3 to "设置")
     } else listOf(0 to "角色", 1 to "格式", 3 to "设置")
@@ -246,8 +256,25 @@ fun ManageScreen(
         }
     ) {
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-            CbTabs(visibleTabs.map { it.second }, visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0), { tab = visibleTabs[it].first })
+            CbTabs(visibleTabs.map { it.second }, visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0), { newIdx ->
+                val newTabId = visibleTabs[newIdx].first
+                prevTab = tab
+                tabDir = if (newTabId > tab) 1 else -1
+                tab = newTabId
+            })
             Box(Modifier.weight(1f)) {
+                AnimatedContent(
+                    targetState = tab,
+                    transitionSpec = {
+                        if (tabDir > 0)
+                            (fadeIn(tween(100)) + slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(200)))
+                                .togetherWith(fadeOut(tween(80)) + slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(200)))
+                        else
+                            (fadeIn(tween(100)) + slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(200)))
+                                .togetherWith(fadeOut(tween(80)) + slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(200)))
+                    },
+                    label = "tabTransition"
+                ) {
                 when (tab) {
                     0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         exportCharacterId = card.id
@@ -300,6 +327,7 @@ fun ManageScreen(
                 }
             }
         }
+    }
     }
 
     if (addFormat) FormatDialog({ addFormat = false }) { name, content ->
@@ -572,13 +600,16 @@ private fun SettingsTab(
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var novelAiToken by remember { mutableStateOf("") }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
-    var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.toFloat()) }
+    var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
+    var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
     var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.toFloat()) }
     var memoryThreshold by remember { mutableFloatStateOf(settings.memoryRagSimilarityThreshold) }
     var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.toFloat()) }
     var docThreshold by remember { mutableFloatStateOf(settings.docRagSimilarityThreshold) }
     var ragMode by remember { mutableFloatStateOf(settings.ragInjectionMode.toModeIndex().toFloat()) }
+    var proxyHost by remember { mutableStateOf(settings.proxyHost ?: "") }
+    var proxyPort by remember { mutableStateOf(settings.proxyPort?.toString() ?: "") }
     LaunchedEffect(
         player.playerName,
         player.globalPersona,
@@ -592,13 +623,16 @@ private fun SettingsTab(
         settings.docRagTopK,
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
-        settings.chatBubbleFontScale
+        settings.chatBubbleFontScale,
+        settings.proxyHost,
+        settings.proxyPort
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId; presetModelKey = settings.presetDefaultModelKey; siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
+        proxyHost = settings.proxyHost ?: ""; proxyPort = settings.proxyPort?.toString() ?: ""
     }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
@@ -669,6 +703,15 @@ private fun SettingsTab(
                 }
             }
         }
+        SettingsSection("代理设置") {
+            CbText("如使用本地代理访问外网，请在此配置代理地址。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbField("代理地址") {
+                CbInput(proxyHost, { proxyHost = it }, placeholder = "127.0.0.1")
+            }
+            CbField("代理端口") {
+                CbInput(proxyPort, { proxyPort = it.filter { c -> c.isDigit() } }, placeholder = "7890", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
+            }
+        }
         SettingsSection("玩家") {
             CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
@@ -683,6 +726,13 @@ private fun SettingsTab(
             }
             NullableSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
             SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
+            if (contextSize.toInt() >= 50) {
+                CbField("自定义上下文上限") {
+                    CbInput(customContextSize, { newValue ->
+                        customContextSize = newValue.filter { it.isDigit() }
+                    }, placeholder = "50")
+                }
+            }
         }
         SettingsSection("RAG 检索") {
             SliderField("注入强度：${ragMode.roundToInt().modeLabel()}", ragMode, 0f..3f, 2) { ragMode = it }
@@ -704,8 +754,10 @@ private fun SettingsTab(
                     docRagTopK = docTopK.toInt(),
                     docRagSimilarityThreshold = docThreshold,
                     ragInjectionMode = ragMode.roundToInt().modeValue(),
-                    defaultContextWindowSize = contextSize.toInt(),
-                    chatBubbleFontScale = bubbleFontScale
+                    defaultContextWindowSize = if (contextSize.toInt() >= 50 && customContextSize.isNotBlank()) customContextSize.toIntOrNull() ?: 50 else contextSize.toInt(),
+                    chatBubbleFontScale = bubbleFontScale,
+                    proxyHost = proxyHost.ifBlank { null },
+                    proxyPort = proxyPort.toIntOrNull()
                 )
             )
         }, modifier = Modifier.fillMaxWidth())

@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.image
 
+import com.example.chatbar.domain.ProxyAwareClient
 import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
@@ -31,7 +32,7 @@ sealed class NovelAiImageEvent {
 }
 
 class NovelAiImageService(
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    private val client: OkHttpClient = ProxyAwareClient.builder()
         .connectTimeout(30, TimeUnit.SECONDS)
         .readTimeout(5, TimeUnit.MINUTES)
         .writeTimeout(30, TimeUnit.SECONDS)

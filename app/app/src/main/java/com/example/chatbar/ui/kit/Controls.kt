@@ -1,6 +1,8 @@
 package com.example.chatbar.ui.kit
 
+import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
@@ -31,6 +33,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
@@ -51,11 +54,12 @@ fun CbSwitch(
     enabled: Boolean = true
 ) {
     val colors = ChatBarTheme.colors
-    val thumbOffset by animateDpAsState(if (checked) 18.dp else 2.dp, label = "switchThumb")
+    val thumbOffset by animateDpAsState(if (checked) 18.dp else 2.dp, animationSpec = tween(200), label = "switchThumb")
+    val bgColor by animateColorAsState(if (checked) colors.primary else colors.muted, animationSpec = tween(200), label = "switchBg")
     Box(
         modifier = modifier
             .size(width = 40.dp, height = 24.dp)
-            .background(if (checked) colors.primary else colors.muted, RoundedCornerShape(12.dp))
+            .background(bgColor, RoundedCornerShape(12.dp))
             .toggleable(
                 value = checked,
                 enabled = enabled,
@@ -83,14 +87,15 @@ fun <T> CbSelect(
     placeholder: String = "请选择"
 ) {
     var open by remember { mutableStateOf(false) }
+    val shape = RoundedCornerShape(ChatBarShape.sm)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 44.dp)
-            .background(ChatBarTheme.colors.input, RoundedCornerShape(8.dp))
-            .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(8.dp))
+            .background(ChatBarTheme.colors.input, shape)
+            .border(1.dp, ChatBarTheme.colors.border, shape)
             .clickable(role = Role.Button) { open = true }
-            .padding(horizontal = 12.dp, vertical = 12.dp)
+            .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.md)
     ) {
         CbText(
             value?.let(optionLabel) ?: placeholder,
@@ -113,7 +118,7 @@ fun <T> CbSelect(
                                 onValueChange(option)
                                 open = false
                             }
-                            .padding(vertical = 12.dp)
+                            .padding(vertical = ChatBarSpacing.md)
                     )
                 }
             }
@@ -129,16 +134,19 @@ fun CbChoiceChip(
     modifier: Modifier = Modifier
 ) {
     val colors = ChatBarTheme.colors
+    val bg by animateColorAsState(if (selected) colors.accent else colors.card, animationSpec = tween(200), label = "chipBg")
+    val borderColor by animateColorAsState(if (selected) colors.primary else colors.border, animationSpec = tween(200), label = "chipBorder")
+    val textColor by animateColorAsState(if (selected) colors.primary else colors.foreground, animationSpec = tween(200), label = "chipText")
     Box(
         modifier = modifier
             .heightIn(min = 40.dp)
-            .background(if (selected) colors.accent else colors.card, RoundedCornerShape(8.dp))
-            .border(1.dp, if (selected) colors.primary else colors.border, RoundedCornerShape(8.dp))
+            .background(bg, RoundedCornerShape(ChatBarShape.sm))
+            .border(1.dp, borderColor, RoundedCornerShape(ChatBarShape.sm))
             .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 9.dp),
+            .padding(horizontal = ChatBarSpacing.md, vertical = 9.dp),
         contentAlignment = Alignment.Center
     ) {
-        CbText(text, color = if (selected) colors.primary else colors.foreground, style = ChatBarTheme.typography.label)
+        CbText(text, color = textColor, style = ChatBarTheme.typography.label)
     }
 }
 
@@ -149,9 +157,19 @@ fun CbTabs(
     onSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(modifier.fillMaxWidth().padding(horizontal = 8.dp)) {
+    Row(modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.sm)) {
         items.forEachIndexed { index, label ->
             val selected = index == selectedIndex
+            val textColor by animateColorAsState(
+                if (selected) ChatBarTheme.colors.foreground else ChatBarTheme.colors.mutedForeground,
+                animationSpec = tween(200),
+                label = "tabText"
+            )
+            val indicatorColor by animateColorAsState(
+                if (selected) ChatBarTheme.colors.primary else Color.Transparent,
+                animationSpec = tween(200),
+                label = "tabIndicator"
+            )
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -160,16 +178,13 @@ fun CbTabs(
                 contentAlignment = Alignment.Center
             ) {
                 Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CbText(
-                        label,
-                        color = if (selected) ChatBarTheme.colors.foreground else ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.label
-                    )
+                    CbText(label, color = textColor, style = ChatBarTheme.typography.label)
                     Spacer(Modifier.size(6.dp))
                     Box(
                         Modifier
                             .size(width = 24.dp, height = 2.dp)
-                            .background(if (selected) ChatBarTheme.colors.primary else Color.Transparent)
+                            .clip(RoundedCornerShape(1.dp))
+                            .background(indicatorColor)
                     )
                 }
             }

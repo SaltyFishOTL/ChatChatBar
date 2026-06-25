@@ -2,6 +2,7 @@ package com.example.chatbar.ui.components
 
 import android.graphics.BitmapFactory
 import android.widget.TextView
+import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -16,9 +17,11 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Image
@@ -34,9 +37,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -156,11 +161,13 @@ fun ChatBubble(
                     }
                     if (expanded) {
                         Spacer(Modifier.height(4.dp))
-                        CbText(
-                            message.reasoningContent,
-                            color = ChatBarTheme.colors.mutedForeground,
-                            style = ChatBarTheme.typography.caption.copy(lineHeight = 15.sp)
-                        )
+                        SelectionContainer {
+                            CbText(
+                                message.reasoningContent,
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption.copy(lineHeight = 15.sp)
+                            )
+                        }
                     }
                 }
             }
@@ -233,8 +240,19 @@ fun ChatBubble(
                     }
                 }
             }
+            Spacer(Modifier.weight(1f))
+            val clipboardManager = LocalClipboardManager.current
+            val ctx = LocalContext.current
+            CbIconButton(
+                Icons.Default.ContentCopy,
+                "复制消息",
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(message.displayContent))
+                    Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                },
+                tint = ChatBarTheme.colors.mutedForeground
+            )
             if (!isUser && onGenerateImage != null) {
-                Spacer(Modifier.weight(1f))
                 CbIconButton(
                     Icons.Default.Image,
                     "根据此消息生成图片",
@@ -280,11 +298,13 @@ private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
         }
         if (expanded) {
             Spacer(Modifier.height(5.dp))
-            CbText(
-                text.trim(),
-                color = ChatBarTheme.colors.foreground,
-                style = ChatBarTheme.typography.caption.copy(lineHeight = 16.sp)
-            )
+            SelectionContainer {
+                CbText(
+                    text.trim(),
+                    color = ChatBarTheme.colors.foreground,
+                    style = ChatBarTheme.typography.caption.copy(lineHeight = 16.sp)
+                )
+            }
         }
     }
 }
@@ -331,28 +351,37 @@ private val hrFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
 
 private fun splitMarkdownByHrFences(text: String): List<RoleplayContentSegment> {
     val matches = hrFencePattern.findAll(text).toList()
-    if (matches.size < 2) return listOf(RoleplayContentSegment.Markdown(text))
+    if (matches.isEmpty()) return listOf(RoleplayContentSegment.Markdown(text))
 
     val segments = mutableListOf<RoleplayContentSegment>()
     var cursor = 0
     var i = 0
-    while (i < matches.size - 1) {
-        val open = matches[i]
-        val close = matches[i + 1]
-        if (open.range.first > cursor) {
-            text.substring(cursor, open.range.first).takeIf(String::isNotBlank)
-                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+    while (i < matches.size) {
+        val fence = matches[i]
+        if (i % 2 == 0) {
+            if (fence.range.first > cursor) {
+                text.substring(cursor, fence.range.first).takeIf(String::isNotBlank)
+                    ?.let { segments += RoleplayContentSegment.Markdown(it) }
+            }
+            cursor = fence.range.last + 1
+        } else {
+            val statusText = text.substring(cursor, fence.range.first).trim()
+            if (statusText.isNotBlank()) {
+                segments += RoleplayContentSegment.Status(statusText)
+            }
+            cursor = fence.range.last + 1
         }
-        val statusStart = open.range.last + 1
-        val statusEnd = close.range.first
-        text.substring(statusStart, statusEnd).trim().takeIf(String::isNotBlank)
-            ?.let { segments += RoleplayContentSegment.Status(it) }
-        cursor = close.range.last + 1
-        i += 2
+        i++
     }
     if (cursor < text.length) {
-        text.substring(cursor).takeIf(String::isNotBlank)
-            ?.let { segments += RoleplayContentSegment.Markdown(it) }
+        val remaining = text.substring(cursor).trim()
+        if (remaining.isNotBlank()) {
+            if (matches.size % 2 == 1) {
+                segments += RoleplayContentSegment.Status(remaining)
+            } else {
+                segments += RoleplayContentSegment.Markdown(remaining)
+            }
+        }
     }
     return segments.ifEmpty { listOf(RoleplayContentSegment.Markdown(text)) }
 }

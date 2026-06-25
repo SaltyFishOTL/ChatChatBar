@@ -49,7 +49,7 @@ fun CbSpinner(modifier: Modifier = Modifier) {
     val rotation by transition.animateFloat(
         initialValue = 0f,
         targetValue = 360f,
-        animationSpec = infiniteRepeatable(tween(800, easing = LinearEasing)),
+        animationSpec = infiniteRepeatable(tween(750, easing = LinearEasing)),
         label = "spinnerRotation"
     )
     Canvas(modifier.size(28.dp).rotate(rotation)) {

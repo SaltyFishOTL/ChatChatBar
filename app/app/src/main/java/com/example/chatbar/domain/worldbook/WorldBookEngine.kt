@@ -303,7 +303,13 @@ class WorldBookEngine {
         return sb.toString().trimEnd()
     }
 
-    private fun estimateTokens(text: String): Int = (text.length * 0.5).toInt().coerceAtLeast(1)
+    private fun estimateTokens(text: String): Int {
+        var count = 0
+        for (char in text) {
+            count += if (char.code in 0x4E00..0x9FA5) 2 else 1
+        }
+        return (count * 0.4).toInt().coerceAtLeast(1)
+    }
 
     private fun normalizePlaceholders(text: String): String =
         text.replace("{{char}}", "\$botname")
