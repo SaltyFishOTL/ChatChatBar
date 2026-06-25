@@ -64,6 +64,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterInfo
@@ -114,6 +116,7 @@ fun CharacterEditScreen(
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var charDlgFullscreen by remember { mutableStateOf<Triple<String, String, (String) -> Unit>?>(null) }
     var editDocument by remember { mutableStateOf<DocumentInfo?>(null) }
     var editDocName by remember { mutableStateOf("") }
     var editDocContent by remember { mutableStateOf("") }
@@ -373,6 +376,21 @@ fun CharacterEditScreen(
         )
     }
 
+    charDlgFullscreen?.let { (title, text, setter) ->
+        Dialog(onDismissRequest = { charDlgFullscreen = null }, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+            FullscreenTextEditor(
+                title = title,
+                text = text,
+                onTextChange = { newValue ->
+                    setter(newValue)
+                    charDlgFullscreen = Triple(title, newValue, setter)
+                },
+                visible = true,
+                onDismiss = { charDlgFullscreen = null }
+            )
+        }
+    }
+
     editDocument?.let { doc ->
         DocumentEditScreen(
             title = "编辑参考文档",
@@ -397,6 +415,9 @@ fun CharacterEditScreen(
                 val index = viewModel.charactersList.indexOfFirst { it.id == updated.id }
                 if (index >= 0) viewModel.charactersList[index] = updated else viewModel.charactersList.add(updated)
                 showCharacterDialog = false
+            },
+            onFullscreen = { title, text, setter ->
+                charDlgFullscreen = Triple(title, text, setter)
             }
         )
     }
@@ -553,7 +574,8 @@ private fun CharacterDialog(
     original: CharacterInfo?,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
-    onSave: (CharacterInfo) -> Unit
+    onSave: (CharacterInfo) -> Unit,
+    onFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
     var name by remember { mutableStateOf(original?.name ?: "") }
     var profile by remember { mutableStateOf(original?.profile ?: "") }
@@ -594,7 +616,7 @@ private fun CharacterDialog(
     ) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("人物名称") { CbInput(name, { name = it }, placeholder = "例如：阿尔托莉雅") }
-            CbField("简介") { CbInput(profile, { profile = it }, placeholder = "一句话概括身份设定") }
+            CbField("简介", onFullscreenEdit = { onFullscreen("简介", profile, { profile = it }) }) { CbInput(profile, { profile = it }, placeholder = "一句话概括身份设定", singleLine = false, minLines = 2) }
             Box(
                 Modifier.fillMaxWidth().height(100.dp).clip(RoundedCornerShape(8.dp)).background(ChatBarTheme.colors.muted).clickable { onPickImage { image = it } },
                 contentAlignment = Alignment.Center
@@ -605,16 +627,17 @@ private fun CharacterDialog(
                     CbText("上传设定图", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
                 }
             }
-            CbField("外貌特征") { CbInput(appearance, { appearance = it }, singleLine = false, minLines = 2) }
-            CbField("服装") { CbInput(clothing, { clothing = it }, singleLine = false, minLines = 2) }
-            CbField("能力") { CbInput(abilities, { abilities = it }, singleLine = false, minLines = 2) }
-            CbField("习惯，爱好") { CbInput(habits, { habits = it }, singleLine = false, minLines = 2) }
-            CbField("背景经历") { CbInput(background, { background = it }, singleLine = false, minLines = 3) }
-            CbField("人际关系") { CbInput(relationships, { relationships = it }, singleLine = false, minLines = 2) }
-            CbField("语气与口癖") { CbInput(speaking, { speaking = it }, singleLine = false, minLines = 2) }
+            CbField("外貌特征", onFullscreenEdit = { onFullscreen("外貌特征", appearance, { appearance = it }) }) { CbInput(appearance, { appearance = it }, singleLine = false, minLines = 2) }
+            CbField("服装", onFullscreenEdit = { onFullscreen("服装", clothing, { clothing = it }) }) { CbInput(clothing, { clothing = it }, singleLine = false, minLines = 2) }
+            CbField("能力", onFullscreenEdit = { onFullscreen("能力", abilities, { abilities = it }) }) { CbInput(abilities, { abilities = it }, singleLine = false, minLines = 2) }
+            CbField("习惯，爱好", onFullscreenEdit = { onFullscreen("习惯，爱好", habits, { habits = it }) }) { CbInput(habits, { habits = it }, singleLine = false, minLines = 2) }
+            CbField("背景经历", onFullscreenEdit = { onFullscreen("背景经历", background, { background = it }) }) { CbInput(background, { background = it }, singleLine = false, minLines = 3) }
+            CbField("人际关系", onFullscreenEdit = { onFullscreen("人际关系", relationships, { relationships = it }) }) { CbInput(relationships, { relationships = it }, singleLine = false, minLines = 2) }
+            CbField("语气与口癖", onFullscreenEdit = { onFullscreen("语气与口癖", speaking, { speaking = it }) }) { CbInput(speaking, { speaking = it }, singleLine = false, minLines = 2) }
             CbField(
                 "NovelAI 人物提示词",
-                description = "固定外貌与身份标签。当前服装、动作和表情会由对话 AI 按情景补充。"
+                description = "固定外貌与身份标签。当前服装、动作和表情会由对话 AI 按情景补充。",
+                onFullscreenEdit = { onFullscreen("NovelAI 人物提示词", imagePrompt, { imagePrompt = it }) }
             ) {
                 CbInput(
                     imagePrompt,
