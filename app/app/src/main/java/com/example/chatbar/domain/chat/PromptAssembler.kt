@@ -39,7 +39,9 @@ class PromptAssembler {
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
         replyLength: String? = null,
-        replyLanguage: String? = null
+        replyLanguage: String? = null,
+        worldBookPrompt: String? = null,
+        worldBookOutlets: Map<String, String> = emptyMap()
     ): String {
         val rawPrompt = buildString {
             // 1. 其他设定（角色描述、RAG上下文、格式要求等）
@@ -49,6 +51,13 @@ class PromptAssembler {
                 appendLine("1. 角色卡基本描述与设定")
                 appendLine("==================================================")
                 appendSection(characterSection)
+            }
+
+            if (!worldBookPrompt.isNullOrBlank()) {
+                appendLine("\n==================================================")
+                appendLine("1.5 世界设定 (World Book)")
+                appendLine("==================================================")
+                appendSection(worldBookPrompt)
             }
 
             val ragSection = buildRagCardsSection(ragResults, ragInjectionMode)
@@ -131,7 +140,15 @@ class PromptAssembler {
         } else {
             rawPrompt
         }
-        return promptWithPlayerName.replace("\$botname", characterCard.name)
+        val promptWithBotName = promptWithPlayerName.replace("\$botname", characterCard.name)
+        return if (worldBookOutlets.isNotEmpty()) {
+            val outletRegex = Regex("\\{\\{outlet::(\\w+)}}")
+            outletRegex.replace(promptWithBotName) { mr ->
+                worldBookOutlets[mr.groupValues[1]] ?: mr.value
+            }
+        } else {
+            promptWithBotName
+        }
     }
 
     // ========================= 内部方法 =========================

@@ -69,6 +69,8 @@ import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.DocumentInfo
+import com.example.chatbar.data.local.entity.WorldBookEntry
+import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -80,8 +82,10 @@ import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbScaffold
+import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -113,6 +117,9 @@ fun CharacterEditScreen(
     var editDocument by remember { mutableStateOf<DocumentInfo?>(null) }
     var editDocName by remember { mutableStateOf("") }
     var editDocContent by remember { mutableStateOf("") }
+    var editWorldBookEntryIndex by remember { mutableStateOf<Int?>(null) }
+    var deleteWorldBookEntryIndex by remember { mutableStateOf<Int?>(null) }
+    var showWorldBookEntryDialog by remember { mutableStateOf(false) }
     var lastBackPressAt by remember { mutableStateOf(0L) }
 
     BackHandler {
@@ -293,7 +300,9 @@ fun CharacterEditScreen(
             ) {
                 CbInput(viewModel.postHistoryInstructions, { viewModel.postHistoryInstructions = it }, placeholder = "留空使用默认…", singleLine = false, minLines = 3)
             }
-            CbField("作者备注", description = "仅供用户参考，不会注入AI提示词。") {
+            CbField("作者备注", description = "仅供用户参考，不会注入AI提示词。", onFullscreenEdit = {
+                fullscreenField = "作者备注" to viewModel.creatorNotes; fullscreenOnChange = { viewModel.creatorNotes = it }
+            }) {
                 CbInput(viewModel.creatorNotes, { viewModel.creatorNotes = it }, placeholder = "例如：推荐温度 1.4", singleLine = false, minLines = 2)
             }
 
@@ -326,6 +335,26 @@ fun CharacterEditScreen(
                         editDocContent = try { java.io.File(document.filePath).readText() } catch (_: Exception) { "" }
                     },
                     onDelete = { deleteDocument = document }
+                )
+            }
+
+            CbDivider()
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                SectionTitle("世界书 (${viewModel.worldBookEntries.size})")
+                CbButton("添加条目", {
+                    editWorldBookEntryIndex = null
+                    showWorldBookEntryDialog = true
+                }, variant = ButtonVariant.Ghost)
+            }
+            viewModel.worldBookEntries.forEachIndexed { index, entry ->
+                WorldBookEntryRow(
+                    entry = entry,
+                    onEdit = {
+                        editWorldBookEntryIndex = index
+                        showWorldBookEntryDialog = true
+                    },
+                    onToggle = { viewModel.toggleWorldBookEntry(index) },
+                    onDelete = { deleteWorldBookEntryIndex = index }
                 )
             }
         }
@@ -379,6 +408,32 @@ fun CharacterEditScreen(
                 showDocumentDialog = false
             }
         )
+    }
+    if (showWorldBookEntryDialog) {
+        WorldBookEntryDialog(
+            original = editWorldBookEntryIndex?.let { viewModel.worldBookEntries.getOrNull(it) },
+            onDismiss = { showWorldBookEntryDialog = false; editWorldBookEntryIndex = null },
+            onSave = { entry ->
+                val idx = editWorldBookEntryIndex
+                if (idx != null) viewModel.updateWorldBookEntry(idx, entry)
+                else viewModel.addWorldBookEntry(entry)
+                showWorldBookEntryDialog = false; editWorldBookEntryIndex = null
+            }
+        )
+    }
+    deleteWorldBookEntryIndex?.let { idx ->
+        val name = viewModel.worldBookEntries.getOrNull(idx)?.name?.ifBlank { "未命名条目" } ?: "未命名条目"
+        CbDialog(
+            onDismissRequest = { deleteWorldBookEntryIndex = null },
+            title = "删除世界书条目",
+            dismiss = { CbButton("取消", { deleteWorldBookEntryIndex = null }, variant = ButtonVariant.Ghost) },
+            confirm = {
+                CbButton("删除", {
+                    viewModel.deleteWorldBookEntry(idx)
+                    deleteWorldBookEntryIndex = null
+                }, variant = ButtonVariant.Destructive)
+            }
+        ) { CbText("确定删除[$name]？", color = ChatBarTheme.colors.mutedForeground) }
     }
     if (validationErrors.isNotEmpty()) {
         CbDialog(
@@ -654,6 +709,147 @@ private fun DocumentEditScreen(
         }
         CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
         CbIconButton(Icons.Default.Check, "保存", onSave, Modifier.align(Alignment.BottomEnd).padding(16.dp).size(56.dp).background(colors.primary, CircleShape), enabled = name.isNotBlank() && content.isNotBlank(), tint = colors.primaryForeground)
+    }
+}
+
+@Composable
+private fun WorldBookEntryRow(entry: WorldBookEntry, onEdit: () -> Unit, onToggle: () -> Unit, onDelete: () -> Unit) {
+    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            CbIcon(Icons.Default.Article, null, tint = if (entry.enabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                CbText(entry.name.ifBlank { "未命名条目" }, style = ChatBarTheme.typography.heading)
+                CbText(entry.keys.joinToString(", ").ifBlank { "无触发词" }, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
+            }
+            CbIconButton(Icons.Default.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
+            CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+        }
+    }
+}
+
+@Composable
+private fun WorldBookEntryDialog(
+    original: WorldBookEntry?,
+    onDismiss: () -> Unit,
+    onSave: (WorldBookEntry) -> Unit
+) {
+    var name by remember { mutableStateOf(original?.name ?: "") }
+    var keys by remember { mutableStateOf(original?.keys?.joinToString(", ") ?: "") }
+    var content by remember { mutableStateOf(original?.content ?: "") }
+    var order by remember { mutableStateOf((original?.insertionOrder ?: 100).toString()) }
+    var enabled by remember { mutableStateOf(original?.enabled ?: true) }
+    var constant by remember { mutableStateOf(original?.constant ?: false) }
+    var probability by remember { mutableStateOf((original?.probability ?: 100).toString()) }
+    var sticky by remember { mutableStateOf((original?.sticky ?: 0).toString()) }
+    var cooldown by remember { mutableStateOf((original?.cooldown ?: 0).toString()) }
+    var delay by remember { mutableStateOf((original?.delay ?: 0).toString()) }
+    var useRegex by remember { mutableStateOf(original?.useRegex ?: false) }
+    var outletName by remember { mutableStateOf(original?.outletName ?: "") }
+    var charFilter by remember { mutableStateOf(original?.characterFilter?.joinToString(", ") ?: "") }
+    var position by remember { mutableStateOf(original?.position ?: WorldBookPosition.BEFORE_CHAR) }
+    var contentFullscreen by remember { mutableStateOf(false) }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = if (original == null) "添加世界书条目" else "编辑世界书条目",
+        modifier = Modifier.heightIn(max = 700.dp),
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = {
+            CbButton("保存", {
+                onSave(
+                    WorldBookEntry(
+                        id = original?.id ?: java.util.UUID.randomUUID().toString(),
+                        name = name,
+                        keys = keys.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                        content = content,
+                        enabled = enabled,
+                        insertionOrder = order.toIntOrNull() ?: 100,
+                        constant = constant,
+                        position = position,
+                        useRegex = useRegex,
+                        outletName = outletName,
+                        characterFilter = charFilter.split(",").map { it.trim() }.filter { it.isNotEmpty() },
+                        probability = probability.toIntOrNull() ?: 100,
+                        sticky = sticky.toIntOrNull() ?: 0,
+                        cooldown = cooldown.toIntOrNull() ?: 0,
+                        delay = delay.toIntOrNull() ?: 0
+                    )
+                )
+            }, enabled = keys.isNotBlank() && content.isNotBlank())
+        }
+    ) {
+        Column(Modifier.heightIn(max = 500.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            CbField("条目名称", description = "可选，仅供备忘") { CbInput(name, { name = it }, placeholder = "可选") }
+            CbField("触发词", description = "逗号分隔，大小写不敏感。任一词出现在最近消息中即触发") {
+                CbInput(keys, { keys = it }, placeholder = "关键词1, 关键词2")
+            }
+            CbField("条目内容", description = "触发后注入到系统提示词中", onFullscreenEdit = {
+                contentFullscreen = true
+            }) {
+                CbInput(content, { content = it }, singleLine = false, minLines = 3)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CbField("插入顺序", Modifier.weight(1f), description = "数值越大越靠后，对生成影响越强") {
+                    CbInput(order, { order = it }, placeholder = "100")
+                }
+                CbField("触发概率", Modifier.weight(1f), description = "100=必定触发，50=一半概率，0=禁用") {
+                    CbInput(probability, { probability = it }, placeholder = "100")
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                CbField("保持 (Sticky)", Modifier.weight(1f), description = "激活后持续N条消息，0=不保持") {
+                    CbInput(sticky, { sticky = it }, placeholder = "0")
+                }
+                CbField("冷却 (Cooldown)", Modifier.weight(1f), description = "激活后冷却N条消息，0=无冷却") {
+                    CbInput(cooldown, { cooldown = it }, placeholder = "0")
+                }
+            }
+            CbField("延迟轮数", description = "聊天消息数达到N后才允许激活，0=无延迟") {
+                CbInput(delay, { delay = it }, placeholder = "0")
+            }
+            CbField("出口名称 (Outlet)", description = "非空时条目不自动注入，通过 {{outlet::名称}} 宏手动放置") {
+                CbInput(outletName, { outletName = it }, placeholder = "留空则自动注入")
+            }
+            CbField("角色过滤", description = "逗号分隔的角色名称。为空则对所有角色生效") {
+                CbInput(charFilter, { charFilter = it }, placeholder = "角色A, 角色B")
+            }
+            CbField("插入位置", description = "BEFORE=角色设定前, AFTER=角色设定后, OUTLET=通过宏手动放置") {
+                CbSelect(
+                    value = position,
+                    options = listOf(WorldBookPosition.BEFORE_CHAR, WorldBookPosition.AFTER_CHAR, WorldBookPosition.OUTLET),
+                    optionLabel = {
+                        when (it) {
+                            WorldBookPosition.BEFORE_CHAR -> "角色设定之前"
+                            WorldBookPosition.AFTER_CHAR -> "角色设定之后"
+                            WorldBookPosition.OUTLET -> "出口 (Outlet)"
+                        }
+                    },
+                    onValueChange = { position = it }
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                CbText("正则匹配", color = ChatBarTheme.colors.mutedForeground)
+                CbSwitch(useRegex, { useRegex = it })
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                CbText("启用")
+                CbSwitch(enabled, { enabled = it })
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                CbText("始终注入", color = ChatBarTheme.colors.mutedForeground)
+                CbSwitch(constant, { constant = it })
+            }
+        }
+    }
+
+    if (contentFullscreen) {
+        FullscreenTextEditor(
+            title = "编辑条目内容",
+            text = content,
+            onTextChange = { content = it },
+            visible = true,
+            onDismiss = { contentFullscreen = false }
+        )
     }
 }
 

@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.card
 
 import com.example.chatbar.data.local.entity.CharacterEditMode
+import com.example.chatbar.data.local.entity.WorldBook
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -31,7 +32,8 @@ data class PackagedCharacterCard(
     val tags: List<String> = emptyList(),
     val creator: String = "",
     val characterVersion: String = "",
-    val extensions: String = ""
+    val extensions: String = "",
+    val characterBook: WorldBook? = null
 )
 
 @Serializable

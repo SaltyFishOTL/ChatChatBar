@@ -29,6 +29,8 @@ data class CharacterCard(
     val creator: String = "",
     val characterVersion: String = "",
     val extensions: String = "",
+    val characterBook: WorldBook? = null,
+    val boundWorldBookId: String? = null,
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null,
     val ragIndexStatus: String = RagIndexStatus.NOT_INDEXED.name,

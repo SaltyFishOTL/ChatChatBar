@@ -16,6 +16,7 @@ import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.DocumentRagStatus
 import com.example.chatbar.data.local.entity.RagIndexStatus
+import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -63,6 +64,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var creatorNotes by mutableStateOf("")
     val charactersList = mutableStateListOf<CharacterInfo>()
     val documentsList = mutableStateListOf<DocumentInfo>()
+    val worldBookEntries = mutableStateListOf<com.example.chatbar.data.local.entity.WorldBookEntry>()
 
     init {
         loadCharacterCard()
@@ -89,6 +91,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     charactersList.addAll(card.characters)
                     documentsList.clear()
                     documentsList.addAll(card.customDocuments)
+                    worldBookEntries.clear()
+                    card.characterBook?.entries?.let { worldBookEntries.addAll(it) }
                 }
             } else {
                 charactersList.add(CharacterInfo.create(""))
@@ -312,6 +316,25 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         }
     }
 
+    fun addWorldBookEntry(entry: WorldBookEntry) {
+        worldBookEntries.add(entry)
+    }
+
+    fun updateWorldBookEntry(index: Int, entry: WorldBookEntry) {
+        if (index in worldBookEntries.indices) worldBookEntries[index] = entry
+    }
+
+    fun deleteWorldBookEntry(index: Int) {
+        if (index in worldBookEntries.indices) worldBookEntries.removeAt(index)
+    }
+
+    fun toggleWorldBookEntry(index: Int) {
+        if (index in worldBookEntries.indices) {
+            val e = worldBookEntries[index]
+            worldBookEntries[index] = e.copy(enabled = !e.enabled)
+        }
+    }
+
     fun updateDocument(doc: DocumentInfo, newName: String, newContent: String) {
         viewModelScope.launch {
             val file = File(doc.filePath)
@@ -367,6 +390,21 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            characterBook = worldBookEntries.takeIf { it.isNotEmpty() }?.let { entries ->
+                val existing = base.characterBook
+                com.example.chatbar.data.local.entity.WorldBook(
+                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
+                    name = existing?.name ?: "角色世界书",
+                    entries = entries.toList(),
+                    scanDepth = existing?.scanDepth ?: 10,
+                    tokenBudget = existing?.tokenBudget,
+                    recursiveScanning = existing?.recursiveScanning ?: false,
+                    caseSensitive = existing?.caseSensitive ?: false,
+                    matchWholeWords = existing?.matchWholeWords ?: false,
+                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
+                )
+            },
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,
@@ -389,6 +427,21 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            characterBook = worldBookEntries.takeIf { it.isNotEmpty() }?.let { entries ->
+                val existing = _characterCard.value?.characterBook
+                com.example.chatbar.data.local.entity.WorldBook(
+                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
+                    name = existing?.name ?: "角色世界书",
+                    entries = entries.toList(),
+                    scanDepth = existing?.scanDepth ?: 10,
+                    tokenBudget = existing?.tokenBudget,
+                    recursiveScanning = existing?.recursiveScanning ?: false,
+                    caseSensitive = existing?.caseSensitive ?: false,
+                    matchWholeWords = existing?.matchWholeWords ?: false,
+                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
+                    updatedAt = System.currentTimeMillis()
+                )
+            },
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,

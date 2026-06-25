@@ -148,7 +148,7 @@ class NovelAiImageFeatureTest {
             updates::add
         )
 
-        assertEquals(listOf("{\"scene", "{\"scenePrompt\":\"night\"}"), updates)
+        assertEquals(listOf("[思考] hidden", "{\"scene", "{\"scenePrompt\":\"night\"}"), updates)
         assertEquals("{\"scenePrompt\":\"night\"}", result)
     }
 

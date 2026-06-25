@@ -382,6 +382,38 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         return size
     }
 
+    private suspend fun buildWorldBookPrompt(card: CharacterCard, messages: List<ChatMessage>): Pair<String?, Map<String, String>> {
+        val engine = ChatBarApp.instance.worldBookEngine
+        val worldBooks = mutableListOf<com.example.chatbar.data.local.entity.WorldBook>()
+
+        card.characterBook?.let { worldBooks += it }
+        card.boundWorldBookId?.let { id ->
+            ChatBarApp.instance.worldBookRepository.getById(id)?.let { worldBooks += it }
+        }
+
+        if (worldBooks.isEmpty()) return null to emptyMap()
+
+        val tokens = mutableSetOf(card.name.lowercase())
+        card.characters.mapTo(tokens) { it.name.lowercase() }
+        if (card.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.FREEFORM) {
+            // Extract potential character names from freeform text via 【角色名称】 markers
+            Regex("【角色名称】\\s*\\n?\\s*(\\S+)").findAll(card.freeformCharacterText)
+                .mapTo(tokens) { it.groupValues[1].lowercase().trim() }
+        }
+
+        val activated = engine.evaluateAll(worldBooks, messages.takeLast(20), messageCount = messages.size, characterTokens = tokens)
+        val before = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.BEFORE_CHAR }
+        val after = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.AFTER_CHAR }
+        val allEntries = before + after
+        val outlets = engine.collectOutlets(activated)
+
+        val prompt = if (allEntries.isEmpty()) null else {
+            val playerName = ChatBarApp.instance.settingsRepository.getPlayerSetting().playerName.takeIf { it.isNotBlank() }
+            engine.buildWorldBookPrompt(allEntries, card.name, playerName)
+        }
+        return prompt to outlets
+    }
+
     /**
      * 发送文本及图片
      */
@@ -676,6 +708,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val activeFormatId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
 
+                val (wbPrompt, wbOutlets) = buildWorldBookPrompt(charCard, messages.value)
                 var systemPrompt = promptAssembler.assembleSystemPrompt(
                     characterCard = charCard,
                     playerSetting = activePlayerSetting,
@@ -685,7 +718,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ragResults = ragResults,
                     ragInjectionMode = appSettings.ragInjectionMode,
                     replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
-                    replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() }
+                    replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
+                    worldBookPrompt = wbPrompt,
+                    worldBookOutlets = wbOutlets
                 )
 
                 // 6. 截取最近消息构建上下文

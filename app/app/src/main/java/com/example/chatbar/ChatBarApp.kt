@@ -10,6 +10,7 @@ import com.example.chatbar.domain.card.*
 import com.example.chatbar.domain.deletion.DeletionCoordinator
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
+import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
@@ -42,6 +43,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var ragRepository: RagRepository
         private set
+    lateinit var worldBookRepository: WorldBookRepository
+        private set
 
     // 领域层服务
     lateinit var chunkingEngine: ChunkingEngine
@@ -57,6 +60,8 @@ class ChatBarApp : Application() {
     lateinit var promptAssembler: PromptAssembler
         private set
     lateinit var contextWindowManager: ContextWindowManager
+        private set
+    lateinit var worldBookEngine: WorldBookEngine
         private set
     lateinit var streamingChatService: StreamingChatService
         private set
@@ -99,6 +104,7 @@ class ChatBarApp : Application() {
         settingsRepository = SettingsRepository(jsonFileStorage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
+        worldBookRepository = WorldBookRepository(jsonFileStorage)
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()
@@ -120,6 +126,7 @@ class ChatBarApp : Application() {
         
         promptAssembler = PromptAssembler()
         contextWindowManager = ContextWindowManager()
+        worldBookEngine = WorldBookEngine()
 
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)

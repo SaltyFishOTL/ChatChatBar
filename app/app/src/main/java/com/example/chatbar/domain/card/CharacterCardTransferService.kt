@@ -135,7 +135,8 @@ class CharacterCardTransferService(
                 tags = card.tags,
                 creator = card.creator,
                 characterVersion = card.characterVersion,
-                extensions = card.extensions
+                extensions = card.extensions,
+                characterBook = card.characterBook
             ),
             documents = documents,
             images = images
@@ -199,6 +200,7 @@ class CharacterCardTransferService(
                 creator = card.creator,
                 characterVersion = card.characterVersion,
                 extensions = card.extensions,
+                characterBook = card.characterBook,
                 sourcePresetKey = presetKey,
                 sourcePresetVersion = presetVersion,
                 ragIndexStatus = RagIndexStatus.NOT_INDEXED.name,
