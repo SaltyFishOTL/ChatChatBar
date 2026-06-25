@@ -52,6 +52,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     var name by mutableStateOf("")
     var greeting by mutableStateOf("")
+    var alternateGreetings by mutableStateOf(listOf<String>())
     var avatar by mutableStateOf<String?>(null)
     var chatBackground by mutableStateOf<String?>(null)
     var editMode by mutableStateOf(CharacterEditMode.STRUCTURED)
@@ -77,6 +78,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     _characterCard.value = card
                     name = card.name
                     greeting = card.greeting
+                    alternateGreetings = card.alternateGreetings
                     avatar = card.avatar
                     chatBackground = card.chatBackground
                     editMode = card.editMode
@@ -380,6 +382,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         return base?.copy(
             name = name,
             greeting = greeting,
+            alternateGreetings = alternateGreetings,
             avatar = avatar,
             chatBackground = chatBackground,
             editMode = editMode,
@@ -417,6 +420,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             id = characterId ?: java.util.UUID.randomUUID().toString(),
             name = name,
             greeting = greeting,
+            alternateGreetings = alternateGreetings,
             avatar = avatar,
             chatBackground = chatBackground,
             editMode = editMode,

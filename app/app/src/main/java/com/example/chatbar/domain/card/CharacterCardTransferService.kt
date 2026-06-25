@@ -187,6 +187,7 @@ class CharacterCardTransferService(
                 },
                 customDocuments = documents,
                 greeting = card.greeting,
+                alternateGreetings = card.alternateGreetings,
                 chatBackground = card.chatBackgroundResourceId?.let(imagePathMap::getValue),
                 editMode = card.editMode,
                 basicSetting = card.basicSetting,

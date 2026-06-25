@@ -14,22 +14,28 @@ object SillyTavernCardParser {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     fun parseUri(context: Context, uri: Uri): SillyTavernCard {
-        val rawJson = if (isPngContent(context, uri)) {
-            extractCharaChunkFromPng(context, uri)
+        val rawJson: String?
+        val pngBytes: ByteArray?
+        if (isPngContent(context, uri)) {
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            pngBytes = bytes
+            rawJson = bytes?.let { extractCharaChunk(it) }
         } else {
-            try {
+            pngBytes = null
+            rawJson = try {
                 context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
             } catch (_: Exception) { null }
         }
 
         if (rawJson == null) {
             // Last resort: try PNG extraction even if MIME didn't indicate PNG
-            val chunk = extractCharaChunkFromPng(context, uri)
+            val bytes = context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+            val chunk = bytes?.let { extractCharaChunk(it) }
                 ?: throw IllegalArgumentException("未提取出角色卡数据")
-            return parseJson(chunk)
+            return parseJson(chunk).copy(pngBytes = bytes)
         }
 
-        return parseJson(rawJson)
+        return parseJson(rawJson).copy(pngBytes = pngBytes)
     }
 
     private fun parseJson(raw: String): SillyTavernCard {
@@ -149,15 +155,24 @@ object SillyTavernCardParser {
     private fun JsonObject.string(key: String): String =
         this[key]?.jsonPrimitive?.content ?: ""
 
-    private fun JsonObject.jsonArray(key: String): List<String> =
-        this[key]?.let { element ->
-            val raw = element.toString().trim()
-            if (raw.startsWith("[") && raw.endsWith("]")) {
-                val inner = raw.substring(1, raw.length - 1).trim()
-                if (inner.isEmpty()) emptyList()
-                else inner.split(",").map { it.trim().removeSurrounding("\"") }
-            } else emptyList()
-        } ?: emptyList()
+    private fun JsonObject.jsonArray(key: String): List<String> {
+        val element = this[key] ?: return emptyList()
+        return try {
+            when (element) {
+                is kotlinx.serialization.json.JsonArray -> element.mapNotNull { it.jsonPrimitive?.content }
+                else -> {
+                    val raw = element.toString().trim()
+                    if (raw.startsWith("[") && raw.endsWith("]")) {
+                        val inner = raw.substring(1, raw.length - 1).trim()
+                        if (inner.isEmpty()) emptyList()
+                        else inner.split(",").map { it.trim().removeSurrounding("\"") }
+                    } else emptyList()
+                }
+            }
+        } catch (_: Exception) {
+            emptyList()
+        }
+    }
 }
 
 data class SillyTavernCard(
@@ -175,5 +190,6 @@ data class SillyTavernCard(
     val creator: String = "",
     val characterVersion: String = "",
     val extensions: String = "",
-    val characterBook: String? = null
+    val characterBook: String? = null,
+    val pngBytes: ByteArray? = null
 )

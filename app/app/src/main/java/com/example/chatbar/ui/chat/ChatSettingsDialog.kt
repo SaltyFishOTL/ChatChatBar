@@ -82,7 +82,6 @@ fun ChatSettingsDialog(
     var formatId by remember { mutableStateOf(session?.formatCardId) }
     var replyLength by remember { mutableStateOf(session?.replyLength ?: "") }
     var replyLanguage by remember { mutableStateOf(session?.replyLanguage ?: "") }
-    var roleplayStyle by remember { mutableStateOf(session?.roleplayStyle ?: "NORMAL") }
     var supplementary by remember { mutableStateOf(session?.supplementarySetting ?: "") }
     var playerName by remember { mutableStateOf(session?.playerName ?: "") }
     var playerSetting by remember { mutableStateOf(session?.playerSetting ?: "") }
@@ -101,7 +100,7 @@ fun ChatSettingsDialog(
     LaunchedEffect(session) {
         session?.let {
             modelId = it.modelId; formatId = it.formatCardId; replyLength = it.replyLength ?: ""
-            replyLanguage = it.replyLanguage ?: ""; roleplayStyle = it.roleplayStyle ?: "NORMAL"
+            replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
         }
@@ -125,7 +124,6 @@ fun ChatSettingsDialog(
                             formatCardId = formatId,
                             replyLength = replyLength.takeIf(String::isNotBlank),
                             replyLanguage = replyLanguage.takeIf(String::isNotBlank),
-                            roleplayStyle = roleplayStyle,
                             supplementarySetting = supplementary.takeIf(String::isNotBlank),
                             playerName = playerName.takeIf(String::isNotBlank),
                             playerSetting = playerSetting.takeIf(String::isNotBlank),
@@ -141,7 +139,7 @@ fun ChatSettingsDialog(
                     modelId, { modelId = it }, models,
                     formatId, { formatId = it }, formats,
                     replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
-                    roleplayStyle, { roleplayStyle = it }, supplementary, { supplementary = it },
+                    supplementary, { supplementary = it },
                     playerName, { playerName = it }, playerSetting, { playerSetting = it },
                     background, { backgroundPicker.launch("image/*") }, { background = "" }, onClearHistory,
                     ::openFullscreen
@@ -194,7 +192,7 @@ private fun SettingsContent(
     modelId: String?, onModel: (String?) -> Unit, models: List<ModelConfig>,
     formatId: String?, onFormat: (String?) -> Unit, formats: List<FormatCard>,
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
-    style: String, onStyle: (String) -> Unit, supplementary: String, onSupplementary: (String) -> Unit,
+    supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
     background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit, onClearHistory: () -> Unit,
     openFullscreen: (String, String, (String) -> Unit) -> Unit
@@ -215,12 +213,6 @@ private fun SettingsContent(
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("回复长度", Modifier.weight(1f)) { CbInput(length, onLength, placeholder = "50 字内 / 长篇") }
             CbField("回复语言", Modifier.weight(1f)) { CbInput(language, onLanguage, placeholder = "中文") }
-        }
-        CbField("扮演风格") {
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbChoiceChip("普通", style != "AGGRESSIVE", { onStyle("NORMAL") })
-                CbChoiceChip("激进", style == "AGGRESSIVE", { onStyle("AGGRESSIVE") })
-            }
         }
         CbField("临时补充设定", onFullscreenEdit = {
             openFullscreen("临时补充设定", supplementary, onSupplementary)

@@ -172,43 +172,45 @@ class WorldBookEngine {
     private fun matchesKeys(entry: WorldBookEntry, messages: List<ChatMessage>): Boolean {
         if (entry.keys.isEmpty()) return false
         val buffer = messages.joinToString("\n") { it.content }
+        val effectiveBuffer = if (entry.caseSensitive) buffer else buffer.lowercase()
 
         for (key in entry.keys) {
-            val matched = if (entry.useRegex && isRegexKey(key)) {
-                try {
-                    val (pattern, flags) = parseRegexKey(key)
-                    val options = mutableSetOf<RegexOption>()
-                    if (!entry.caseSensitive || flags.contains("i")) options += RegexOption.IGNORE_CASE
-                    val regex = Regex(pattern, options)
-                    regex.containsMatchIn(buffer)
-                } catch (_: Exception) { false }
-            } else {
-                val effectiveKey = if (entry.caseSensitive) key else key.lowercase()
-                val effectiveBuffer = if (entry.caseSensitive) buffer else buffer.lowercase()
-                effectiveBuffer.contains(effectiveKey)
-            }
-
+            val matched = matchKey(key, buffer, effectiveBuffer, entry)
             if (entry.selective && matched) {
                 val secondaryMatch = entry.secondaryKeys.any { sk ->
-                    if (entry.useRegex && isRegexKey(sk)) {
-                        try {
-                            val (pattern, flags) = parseRegexKey(sk)
-                            val options = mutableSetOf<RegexOption>()
-                            if (!entry.caseSensitive || flags.contains("i")) options += RegexOption.IGNORE_CASE
-                            Regex(pattern, options).containsMatchIn(buffer)
-                        } catch (_: Exception) { false }
-                    } else {
-                        val effectiveSk = if (entry.caseSensitive) sk else sk.lowercase()
-                        val effectiveBuffer = if (entry.caseSensitive) buffer else buffer.lowercase()
-                        effectiveBuffer.contains(effectiveSk)
-                    }
+                    matchKey(sk, buffer, effectiveBuffer, entry)
                 }
                 if (!secondaryMatch) continue
             }
-
             if (matched) return true
         }
         return false
+    }
+
+    private fun matchKey(
+        key: String,
+        buffer: String,
+        effectiveBuffer: String,
+        entry: WorldBookEntry
+    ): Boolean {
+        if (entry.useRegex) {
+            // Check literal match first
+            val literalKey = if (entry.caseSensitive) key else key.lowercase()
+            if (effectiveBuffer.contains(literalKey)) return true
+            // Then try regex match
+            return tryRegexMatch(key, buffer, entry.caseSensitive)
+        }
+        val effectiveKey = if (entry.caseSensitive) key else key.lowercase()
+        return effectiveBuffer.contains(effectiveKey)
+    }
+
+    private fun tryRegexMatch(key: String, buffer: String, caseSensitive: Boolean): Boolean {
+        return try {
+            val (pattern, flags) = if (isRegexKey(key)) parseRegexKey(key) else key to ""
+            val options = mutableSetOf<RegexOption>()
+            if (!caseSensitive || flags.contains("i")) options += RegexOption.IGNORE_CASE
+            Regex(pattern, options).containsMatchIn(buffer)
+        } catch (_: Exception) { false }
     }
 
     private fun isRegexKey(key: String): Boolean =
@@ -235,7 +237,7 @@ class WorldBookEngine {
         for (act in outletEntries) {
             val sb = outlets.getOrPut(act.entry.outletName) { StringBuilder() }
             if (sb.isNotEmpty()) sb.appendLine()
-            sb.append(act.entry.content)
+            sb.append(normalizePlaceholders(act.entry.content))
         }
         return outlets.mapValues { it.value.toString() }
     }
@@ -292,6 +294,7 @@ class WorldBookEngine {
         for (act in activated) {
             if (act.entry.content.isBlank()) continue
             var content = act.entry.content
+            content = normalizePlaceholders(content)
             content = content.replace("\$botname", characterName)
             if (playerName != null) content = content.replace("\$username", playerName)
             sb.appendLine(content)
@@ -301,4 +304,10 @@ class WorldBookEngine {
     }
 
     private fun estimateTokens(text: String): Int = (text.length * 0.5).toInt().coerceAtLeast(1)
+
+    private fun normalizePlaceholders(text: String): String =
+        text.replace("{{char}}", "\$botname")
+            .replace("{{user}}", "\$username")
+            .replace("<BOT>", "\$botname")
+            .replace("<USER>", "\$username")
 }
