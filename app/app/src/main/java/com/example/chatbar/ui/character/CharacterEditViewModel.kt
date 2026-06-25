@@ -57,6 +57,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var basicSetting by mutableStateOf("")
     var freeformCharacterText by mutableStateOf("")
     var defaultImagePrompt by mutableStateOf("")
+    var systemPrompt by mutableStateOf("")
+    var postHistoryInstructions by mutableStateOf("")
+    var mesExample by mutableStateOf("")
+    var creatorNotes by mutableStateOf("")
     val charactersList = mutableStateListOf<CharacterInfo>()
     val documentsList = mutableStateListOf<DocumentInfo>()
 
@@ -77,6 +81,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     basicSetting = card.basicSetting
                     freeformCharacterText = card.freeformCharacterText
                     defaultImagePrompt = card.defaultImagePrompt
+                    systemPrompt = card.systemPrompt
+                    postHistoryInstructions = card.postHistoryInstructions
+                    mesExample = card.mesExample
+                    creatorNotes = card.creatorNotes
                     charactersList.clear()
                     charactersList.addAll(card.characters)
                     documentsList.clear()
@@ -355,6 +363,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
             defaultImagePrompt = defaultImagePrompt,
+            systemPrompt = systemPrompt,
+            postHistoryInstructions = postHistoryInstructions,
+            mesExample = mesExample,
+            creatorNotes = creatorNotes,
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,
@@ -373,6 +385,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
             defaultImagePrompt = defaultImagePrompt,
+            systemPrompt = systemPrompt,
+            postHistoryInstructions = postHistoryInstructions,
+            mesExample = mesExample,
+            creatorNotes = creatorNotes,
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,

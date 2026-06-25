@@ -151,6 +151,12 @@ class ManageViewModel : ViewModel() {
 
     suspend fun decodeCharacterImport(rawJson: String) =
         com.example.chatbar.domain.card.CharacterCardImportRequest(characterTransfers.decode(rawJson))
+
+    suspend fun decodeCharacterImport(uri: android.net.Uri, context: android.content.Context): com.example.chatbar.domain.card.CharacterCardImportRequest {
+        val st = com.example.chatbar.domain.card.SillyTavernCardParser.parseUri(context, uri)
+        val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
+        return com.example.chatbar.domain.card.CharacterCardImportRequest(packageData)
+    }
     suspend fun findCharacterNameConflict(name: String) = characterRepository.getAll().firstOrNull { com.example.chatbar.domain.card.NamePolicy.isSame(it.name, name) }
     suspend fun importCharacterAsNew(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard {
         val card = characterTransfers.importNew(data.packageData, presetKey = data.presetKey, presetVersion = data.presetVersion)

@@ -14,12 +14,21 @@ data class CharacterCard(
     val avatar: String? = null,
     val characters: List<CharacterInfo> = emptyList(),
     val customDocuments: List<DocumentInfo> = emptyList(),
-    val greeting: String = "", // 起始台词
+    val greeting: String = "",
+    val alternateGreetings: List<String> = emptyList(),
     val chatBackground: String? = null,
     val editMode: CharacterEditMode = CharacterEditMode.STRUCTURED,
     val basicSetting: String = "",
     val freeformCharacterText: String = "",
     val defaultImagePrompt: String = "",
+    val systemPrompt: String = "",
+    val postHistoryInstructions: String = "",
+    val mesExample: String = "",
+    val creatorNotes: String = "",
+    val tags: List<String> = emptyList(),
+    val creator: String = "",
+    val characterVersion: String = "",
+    val extensions: String = "",
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null,
     val ragIndexStatus: String = RagIndexStatus.NOT_INDEXED.name,
@@ -71,15 +80,15 @@ enum class RagIndexStatus {
 data class CharacterInfo(
     val id: String,
     val name: String,
-    val profile: String = "",       // 简介
-    val appearance: String = "",    // 外貌特征
-    val appearanceImage: String? = null, // 形象图片路径
-    val clothing: String = "",      // 服装
-    val abilities: String = "",     // 能力
-    val habits: String = "",        // 习惯与爱好
-    val background: String = "",    // 背景经历
-    val relationships: String = "", // 人际关系
-    val speakingStyle: String = "", // 语气与口癖
+    val profile: String = "",
+    val appearance: String = "",
+    val appearanceImage: String? = null,
+    val clothing: String = "",
+    val abilities: String = "",
+    val habits: String = "",
+    val background: String = "",
+    val relationships: String = "",
+    val speakingStyle: String = "",
     val imagePrompt: String = ""
 ) {
     companion object {
@@ -99,7 +108,7 @@ data class DocumentInfo(
     val id: String,
     val fileName: String,
     val filePath: String,
-    val fileType: String, // txt/md/json
+    val fileType: String,
     val addedAt: Long,
     val contentHash: String? = null,
     val indexedHash: String? = null,

@@ -39,8 +39,7 @@ class PromptAssembler {
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
         replyLength: String? = null,
-        replyLanguage: String? = null,
-        roleplayStyle: String = "NORMAL"
+        replyLanguage: String? = null
     ): String {
         val rawPrompt = buildString {
             // 1. 其他设定（角色描述、RAG上下文、格式要求等）
@@ -107,10 +106,23 @@ class PromptAssembler {
             }
 
             // 4. 系统指令沉底
+            val systemPrompt = characterCard.systemPrompt.takeIf { it.isNotBlank() }
+                ?.replace("{{original}}", PromptTemplates.systemPromptTemplate().trimIndent().trim())
+                ?: PromptTemplates.systemPromptTemplate().trimIndent().trim()
+
+            val postHistory = characterCard.postHistoryInstructions.takeIf { it.isNotBlank() }
+                ?.replace("{{original}}", PromptTemplates.postHistoryInstructionsTemplate().trimIndent().trim())
+                ?: PromptTemplates.postHistoryInstructionsTemplate().trimIndent().trim()
+
             appendLine("\n==================================================")
             appendLine("7. 系统核心行为指令 (System Instruction)")
             appendLine("==================================================")
-            appendSection(PromptTemplates.roleplaySystemInstruction(roleplayStyle).trimIndent().trim())
+            appendSection(systemPrompt)
+
+            appendLine("\n==================================================")
+            appendLine("8. 后置强制指令 (Post-History Instructions)")
+            appendLine("==================================================")
+            appendSection(postHistory)
         }.trim()
 
         // 全局替换玩家与当前角色卡名称占位符
@@ -130,7 +142,8 @@ class PromptAssembler {
         card.basicSetting.trim().takeIf { it.isNotEmpty() }?.let {
             sections += "【基本设定】\n$it"
         }
-        val characterText = when (card.editMode) {
+        val mesExample = card.mesExample.trim().takeIf { it.isNotEmpty() }?.let { "\n\n【对话示例】\n$it" } ?: ""
+        val characterText = (when (card.editMode) {
             CharacterEditMode.FREEFORM -> card.freeformCharacterText.trim()
             CharacterEditMode.STRUCTURED -> card.characters.mapNotNull { char ->
                 buildList {
@@ -145,7 +158,7 @@ class PromptAssembler {
                     char.speakingStyle.trim().takeIf { it.isNotEmpty() }?.let { add("语气与口癖: $it") }
                 }.takeIf { it.isNotEmpty() }?.joinToString("\n")
             }.joinToString("\n\n")
-        }
+        }) + mesExample
         if (characterText.isNotBlank()) sections += "【人物设定】\n$characterText"
         return sections.joinToString("\n\n")
     }

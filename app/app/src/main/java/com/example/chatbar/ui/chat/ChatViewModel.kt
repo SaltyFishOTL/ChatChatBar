@@ -685,8 +685,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ragResults = ragResults,
                     ragInjectionMode = appSettings.ragInjectionMode,
                     replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
-                    replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
-                    roleplayStyle = currentSession.roleplayStyle ?: "NORMAL"
+                    replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() }
                 )
 
                 // 6. 截取最近消息构建上下文

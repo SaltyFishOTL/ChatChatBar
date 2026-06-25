@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.manage
 
+import android.net.Uri
+import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -105,7 +107,8 @@ private sealed interface DeleteTarget {
 fun ManageScreen(
     onNavigate: (Any) -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: ManageViewModel = viewModel()
+    viewModel: ManageViewModel = viewModel(),
+    sharedUri: android.net.Uri? = null
 ) {
     val characters by viewModel.characterCards.collectAsState()
     val formats by viewModel.formatCards.collectAsState()
@@ -144,6 +147,24 @@ fun ManageScreen(
     var pendingCharacterImport by remember { mutableStateOf<Pair<CharacterCardImportRequest, CharacterCard?>?>(null) }
     var pendingFormatImport by remember { mutableStateOf<Pair<FormatCardPackage, FormatCard?>?>(null) }
 
+    LaunchedEffect(sharedUri) {
+        sharedUri?.let { uri ->
+            scope.launch {
+                runCatching {
+                    val data = viewModel.decodeCharacterImport(uri, context)
+                    val conflict = viewModel.findCharacterNameConflict(data.packageData.card.name)
+                    if (conflict == null) {
+                        viewModel.importCharacterAsNew(data)
+                        message = "角色卡已导入，文档 RAG 待重建。"
+                    } else {
+                        pendingCharacterImport = data to conflict
+                        tab = 0
+                    }
+                }.onFailure { message = "导入失败：${it.message}" }
+            }
+        }
+    }
+
     val exportCharacter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         val id = exportCharacterId.also { exportCharacterId = null }
         if (uri != null && id != null) scope.launch {
@@ -155,8 +176,7 @@ fun ManageScreen(
     val importCharacter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) scope.launch {
             runCatching {
-                val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("文件为空")
-                val data = viewModel.decodeCharacterImport(raw)
+                val data = viewModel.decodeCharacterImport(uri, context)
                 val conflict = viewModel.findCharacterNameConflict(data.packageData.card.name)
                 if (conflict == null) {
                     viewModel.importCharacterAsNew(data)
@@ -209,7 +229,7 @@ fun ManageScreen(
                 title = "管理",
                 actions = {
                     CbIconButton(Icons.AutoMirrored.Filled.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
-                    if (tab == 0) CbIconButton(Icons.Default.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                        if (tab == 0) CbIconButton(Icons.Default.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                     if (tab == 1) CbIconButton(Icons.Default.UploadFile, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                     if (tab == 2) CbIconButton(Icons.Default.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                 }

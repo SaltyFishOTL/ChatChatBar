@@ -5,7 +5,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class CharacterCardPackage(
-    val schemaVersion: Int = 3,
+    val schemaVersion: Int = 4,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
@@ -18,11 +18,20 @@ data class PackagedCharacterCard(
     val avatarResourceId: String? = null,
     val characters: List<PackagedCharacter> = emptyList(),
     val greeting: String = "",
+    val alternateGreetings: List<String> = emptyList(),
     val chatBackgroundResourceId: String? = null,
     val editMode: CharacterEditMode = CharacterEditMode.STRUCTURED,
     val basicSetting: String = "",
     val freeformCharacterText: String = "",
-    val defaultImagePrompt: String = ""
+    val defaultImagePrompt: String = "",
+    val systemPrompt: String = "",
+    val postHistoryInstructions: String = "",
+    val mesExample: String = "",
+    val creatorNotes: String = "",
+    val tags: List<String> = emptyList(),
+    val creator: String = "",
+    val characterVersion: String = "",
+    val extensions: String = ""
 )
 
 @Serializable
@@ -60,7 +69,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion == 3) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..4) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     require(card.name.isNotBlank()) { "角色卡名称不能为空" }
     require(card.characters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
     require(documents.all { it.fileName.isNotBlank() && it.fileType.isNotBlank() }) { "文档名称和类型不能为空" }

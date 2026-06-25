@@ -1,12 +1,14 @@
 package com.example.chatbar
 
 import android.app.Activity
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.remember
@@ -26,16 +28,18 @@ import com.example.chatbar.ui.character.CharacterEditScreen
 import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.tutorial.TutorialScreen
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 @Composable
-fun MainNavigation(tutorialCompleted: Boolean) {
+fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>) {
     val initialRoute: NavKey = if (tutorialCompleted) HomeRoute else TutorialRoute(firstLaunch = true)
     val backStack = rememberNavBackStack(initialRoute)
     val currentRoute = backStack.lastOrNull() ?: HomeRoute
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
+    val sharedUri by sharedImportUri.collectAsState()
 
     fun popBackStack() {
         if (backStack.size > 1) {
@@ -83,7 +87,7 @@ fun MainNavigation(tutorialCompleted: Boolean) {
                         HomeScreen(onNavigate = { route -> backStack.add(route as NavKey) })
                     }
                     entry<ManageRoute> {
-                        ManageScreen(onNavigate = { route -> backStack.add(route as NavKey) })
+                        ManageScreen(onNavigate = { route -> backStack.add(route as NavKey) }, sharedUri = sharedUri)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(

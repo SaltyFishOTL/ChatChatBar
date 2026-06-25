@@ -278,6 +278,26 @@ fun CharacterEditScreen(
             }
 
             CbDivider()
+            SectionTitle("高级设定")
+            CbField(
+                "覆盖系统提示词",
+                description = "为空时使用全局默认。支持 {{original}} 占位符回退到默认值。",
+                onFullscreenEdit = { fullscreenField = "覆盖系统提示词" to viewModel.systemPrompt; fullscreenOnChange = { viewModel.systemPrompt = it } }
+            ) {
+                CbInput(viewModel.systemPrompt, { viewModel.systemPrompt = it }, placeholder = "留空使用默认…", singleLine = false, minLines = 3)
+            }
+            CbField(
+                "后置强制指令 (Jailbreak)",
+                description = "沉底于系统提示词最底部，对模型有最强的约束效果。为空时使用全局默认。",
+                onFullscreenEdit = { fullscreenField = "后置强制指令" to viewModel.postHistoryInstructions; fullscreenOnChange = { viewModel.postHistoryInstructions = it } }
+            ) {
+                CbInput(viewModel.postHistoryInstructions, { viewModel.postHistoryInstructions = it }, placeholder = "留空使用默认…", singleLine = false, minLines = 3)
+            }
+            CbField("作者备注", description = "仅供用户参考，不会注入AI提示词。") {
+                CbInput(viewModel.creatorNotes, { viewModel.creatorNotes = it }, placeholder = "例如：推荐温度 1.4", singleLine = false, minLines = 2)
+            }
+
+            CbDivider()
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("参考文档 (${viewModel.documentsList.size})")
                 Row {
