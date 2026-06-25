@@ -25,6 +25,7 @@ data class ChatSession(
     val isPinned: Boolean = false,
     val lastMessagePreview: String? = null,
     val lastMessageTime: Long? = null,
+    val timedWorldInfo: Map<String, TimedEffectState> = emptyMap(),
     val createdAt: Long,
     val updatedAt: Long
 ) {

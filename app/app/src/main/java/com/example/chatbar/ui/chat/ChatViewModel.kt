@@ -19,6 +19,7 @@ import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
+import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.domain.service.StreamingForegroundService
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
@@ -382,7 +383,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         return size
     }
 
-    private suspend fun buildWorldBookPrompt(card: CharacterCard, messages: List<ChatMessage>): Pair<String?, Map<String, String>> {
+    private suspend fun buildWorldBookPrompt(
+        card: CharacterCard,
+        messages: List<ChatMessage>,
+        previousTimed: Map<String, com.example.chatbar.data.local.entity.TimedEffectState>
+    ): Triple<String?, Map<String, String>, Map<String, com.example.chatbar.data.local.entity.TimedEffectState>> {
         val engine = ChatBarApp.instance.worldBookEngine
         val worldBooks = mutableListOf<com.example.chatbar.data.local.entity.WorldBook>()
 
@@ -391,17 +396,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             ChatBarApp.instance.worldBookRepository.getById(id)?.let { worldBooks += it }
         }
 
-        if (worldBooks.isEmpty()) return null to emptyMap()
+        if (worldBooks.isEmpty()) return Triple(null, emptyMap(), emptyMap())
 
         val tokens = mutableSetOf(card.name.lowercase())
         card.characters.mapTo(tokens) { it.name.lowercase() }
         if (card.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.FREEFORM) {
-            // Extract potential character names from freeform text via 【角色名称】 markers
             Regex("【角色名称】\\s*\\n?\\s*(\\S+)").findAll(card.freeformCharacterText)
                 .mapTo(tokens) { it.groupValues[1].lowercase().trim() }
         }
 
-        val activated = engine.evaluateAll(worldBooks, messages.takeLast(20), messageCount = messages.size, characterTokens = tokens)
+        val timedStates = previousTimed.mapValues { (_, v) ->
+            WorldBookEngine.TimedState(v.entryId, v.stickyUntil, v.cooldownUntil)
+        }
+        val bookTimedStates = worldBooks.associate { it.id to timedStates }
+        val activated = engine.evaluateAll(worldBooks, messages.takeLast(20),
+            messageCount = messages.size, characterTokens = tokens, timedStates = bookTimedStates)
         val before = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.BEFORE_CHAR }
         val after = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.AFTER_CHAR }
         val allEntries = before + after
@@ -411,7 +420,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val playerName = ChatBarApp.instance.settingsRepository.getPlayerSetting().playerName.takeIf { it.isNotBlank() }
             engine.buildWorldBookPrompt(allEntries, card.name, playerName)
         }
-        return prompt to outlets
+
+        // Compute new timed states from activated entries
+        val activatedIds = activated.map { it.entry.id }.toSet()
+        val entryMap = worldBooks.flatMap { it.entries }.associateBy { it.id }
+        val newTimed = engine.computeTimedStates(timedStates, activatedIds, entryMap, messages.size)
+            .mapValues { (_, v) -> com.example.chatbar.data.local.entity.TimedEffectState(v.entryId, v.stickyUntil, v.cooldownUntil) }
+
+        return Triple(prompt, outlets, newTimed)
     }
 
     /**
@@ -708,7 +724,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val activeFormatId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
 
-                val (wbPrompt, wbOutlets) = buildWorldBookPrompt(charCard, messages.value)
+                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, messages.value, currentSession.timedWorldInfo)
+                if (wbTimed != currentSession.timedWorldInfo) {
+                    val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
+                    chatRepository.updateSession(updatedSession)
+                    _session.value = updatedSession
+                }
                 var systemPrompt = promptAssembler.assembleSystemPrompt(
                     characterCard = charCard,
                     playerSetting = activePlayerSetting,
