@@ -85,8 +85,6 @@ class NovelAiPromptDesigner(
                 ChatApiMessage.text("user", userPrompt)
             ),
             model = model,
-            enableThinking = true,
-            maxThinkingTokens = 100,
             onDelta = onDelta
         )
         sessionId?.let { sid ->
@@ -125,17 +123,12 @@ class NovelAiPromptDesigner(
     private suspend fun streamCompletion(
         messages: List<ChatApiMessage>,
         model: ModelConfig,
-        enableThinking: Boolean = false,
-        maxThinkingTokens: Int? = null,
         onDelta: (String) -> Unit
     ): String {
         return collectPromptText(
             events = chatService.streamText(
-            messages = messages,
-            modelConfig = model,
-            maxTokens = PromptTemplates.NOVELAI_IMAGE_PROMPT_MAX_TOKENS,
-            enableThinking = enableThinking,
-            maxThinkingTokens = maxThinkingTokens
+                messages = messages,
+                modelConfig = model
             ),
             onDelta = onDelta
         )
@@ -219,9 +212,6 @@ class NovelAiPromptDesigner(
                         put("content", userPrompt)
                     })
                 })
-                put("max_tokens", PromptTemplates.NOVELAI_IMAGE_PROMPT_MAX_TOKENS)
-                put("enable_thinking", true)
-                put("max_thinking_tokens", 100)
             }.toString()
     }
 }

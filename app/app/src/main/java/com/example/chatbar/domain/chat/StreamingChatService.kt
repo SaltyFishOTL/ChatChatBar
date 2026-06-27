@@ -295,12 +295,12 @@ class StreamingChatService {
         close()
     }
 
-    /** 流式短文本任务；默认关闭思考，避免短任务长时间无正文输出。 */
+    /** 流式短文本任务；默认不覆盖模型思考配置，完全遵循 ModelConfig。 */
     fun streamText(
         messages: List<ChatApiMessage>,
         modelConfig: ModelConfig,
         maxTokens: Int? = null,
-        enableThinking: Boolean = false,
+        enableThinking: Boolean? = null,
         maxThinkingTokens: Int? = null
     ): Flow<StreamEvent> = callbackFlow {
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"

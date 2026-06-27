@@ -25,6 +25,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.jsonObject
 
 @Serializable
 private data class ExportedModelTemplate(
@@ -153,6 +154,19 @@ class ManageViewModel : ViewModel() {
         com.example.chatbar.domain.card.CharacterCardImportRequest(characterTransfers.decode(rawJson))
 
     suspend fun decodeCharacterImport(uri: android.net.Uri, context: android.content.Context): com.example.chatbar.domain.card.CharacterCardImportRequest {
+        val rawJson = runCatching {
+            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        }.getOrNull()
+
+        if (rawJson != null) {
+            runCatching {
+                val doc = Json { ignoreUnknownKeys = true; isLenient = true }.parseToJsonElement(rawJson).jsonObject
+                if (doc.containsKey("schemaVersion") && doc.containsKey("card")) {
+                    return decodeCharacterImport(rawJson)
+                }
+            }
+        }
+
         val st = com.example.chatbar.domain.card.SillyTavernCardParser.parseUri(context, uri)
         val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
         return com.example.chatbar.domain.card.CharacterCardImportRequest(packageData)
