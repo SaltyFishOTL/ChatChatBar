@@ -144,8 +144,7 @@ fun ChatScreen(
     var viewportAnchor by remember { mutableStateOf(0 to 0) }
     var restoringViewport by remember { mutableStateOf(false) }
     var initialScrollDone by remember(sessionId) { mutableStateOf(false) }
-    var awaitingCompletedReply by remember(sessionId) { mutableStateOf(false) }
-
+    
     suspend fun scrollToBottom(animated: Boolean, expectedItemCount: Int = 0) {
         if (expectedItemCount > 0) {
             snapshotFlow { listState.layoutInfo.totalItemsCount }
@@ -194,14 +193,6 @@ fun ChatScreen(
             scrollToBottom(animated = false, expectedItemCount = messages.size)
             viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
             restoringViewport = false
-        }
-    }
-    LaunchedEffect(isResponding, streamingMessage, messages.lastOrNull()?.id) {
-        if (isResponding) awaitingCompletedReply = true
-        val completedReply = messages.lastOrNull()?.role == MessageRole.ASSISTANT
-        if (awaitingCompletedReply && !isResponding && streamingMessage == null && completedReply) {
-            awaitingCompletedReply = false
-            scrollToBottom(animated = true, expectedItemCount = messages.size)
         }
     }
     LaunchedEffect(streamingMessage?.content?.length, streamingMessage?.reasoningContent?.length) {
@@ -291,9 +282,10 @@ fun ChatScreen(
                 streamingMessage?.let { item(key = "streaming-${it.id}") { ChatBubble(it, fontScale = bubbleFontScale) } }
                 imageGeneration?.let { generation ->
                     item(key = "novelai-generation") {
-                        NovelAiGenerationCard(generation) {
-                            viewModel.generateNovelAiImage(generation.anchorMessageId)
-                        }
+                        NovelAiGenerationCard(generation,
+                            onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
+                            onDismiss = { viewModel.dismissNovelAiImageGeneration() }
+                        )
                     }
                 }
                 if (isResponding && streamingMessage == null) item(key = "typing") {
@@ -440,7 +432,7 @@ fun ChatScreen(
 }
 
 @Composable
-private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Unit) {
+private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Unit, onDismiss: () -> Unit) {
     val label = when (state.phase) {
         ImageGenerationPhase.DESIGNING -> "正在设计 NovelAI Prompt"
         ImageGenerationPhase.GENERATING -> "NovelAI 正在生成"
@@ -490,7 +482,10 @@ private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Un
             }
             state.error?.let { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
             if (state.phase == ImageGenerationPhase.FAILED) {
-                CbButton("重试", onRetry, variant = ButtonVariant.Outline)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton("重试", onRetry, variant = ButtonVariant.Outline)
+                    CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
+                }
             }
         }
     }

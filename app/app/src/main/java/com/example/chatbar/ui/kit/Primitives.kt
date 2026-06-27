@@ -6,7 +6,6 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -144,7 +143,7 @@ fun CbButton(
             .clip(shape)
             .background(bg)
             .let { if (variant == ButtonVariant.Outline) it.border(1.dp, colors.border, shape) else it }
-            .clickable(enabled = enabled, role = Role.Button, indication = null, interactionSource = null) {
+            .clickable(enabled = enabled, role = Role.Button) {
                 pressVersion = 1
                 onClick()
             },
@@ -197,7 +196,7 @@ fun CbIconButton(
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .size(40.dp)
             .clip(RoundedCornerShape(ChatBarShape.sm))
-            .clickable(enabled = enabled, role = Role.Button, indication = null, interactionSource = null) {
+            .clickable(enabled = enabled, role = Role.Button) {
                 pressVersion = 1
                 onClick()
             },
@@ -234,7 +233,7 @@ fun CbFab(
             .size(width = 48.dp, height = 48.dp)
             .clip(shape)
             .background(ChatBarTheme.colors.primary)
-            .clickable(role = Role.Button, indication = null, interactionSource = null) {
+            .clickable(role = Role.Button) {
                 pressVersion = 1
                 onClick()
             },
@@ -287,11 +286,7 @@ fun CbDialog(
             Modifier
                 .fillMaxSize()
                 .background(ChatBarTheme.colors.dim)
-                .clickable(
-                    interactionSource = remember { MutableInteractionSource() },
-                    indication = null,
-                    onClick = onDismissRequest
-                ),
+                .clickable(onClick = onDismissRequest),
             contentAlignment = Alignment.Center
         ) {
             CbSurface(

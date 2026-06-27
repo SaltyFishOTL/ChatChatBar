@@ -71,6 +71,10 @@ internal sealed interface RoleplayContentSegment {
     data class Status(val text: String) : RoleplayContentSegment
 }
 
+private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
+private val roleplayLinkPattern = Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)")
+private val singleNewlinePattern = Regex("(?<!\n)\n(?!\n)")
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatBubble(
@@ -174,13 +178,13 @@ fun ChatBubble(
             val context = LocalContext.current
             val foregroundColor = ChatBarTheme.colors.foreground
             val primaryColor = ChatBarTheme.colors.primary
-            val linkColorArgb = primaryColor.toArgb()
-            val markwon = remember(context, linkColorArgb) {
-                Markwon.builder(context)
+            val appContext = context.applicationContext
+            val markwon = remember(appContext) {
+                Markwon.builder(appContext)
                     .usePlugin(HtmlPlugin.create())
                     .usePlugin(object : AbstractMarkwonPlugin() {
                         override fun configureTheme(builder: MarkwonTheme.Builder) {
-                            builder.linkColor(linkColorArgb)
+                            builder.linkColor(primaryColor.toArgb())
                             builder.isLinkUnderlined(false)
                         }
                     })
@@ -225,7 +229,7 @@ fun ChatBubble(
             horizontalArrangement = Arrangement.spacedBy(6.dp)
         ) {
             CbText(
-                SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(message.createdAt)),
+                timeFormatter.format(Date(message.createdAt)),
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -387,15 +391,16 @@ private fun splitMarkdownByHrFences(text: String): List<RoleplayContentSegment> 
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
+    val withLineBreaks = singleNewlinePattern.replace(content, "  \n")
     if (forColoring) {
-        return Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)").replace(content) { match ->
+        return roleplayLinkPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
             val url = match.value.substringAfter("](").substringBefore(")")
             if (url.isEmpty()) "\u200B[$text]\u200B"
             else match.value
         }
     }
-    return content.replace(Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)"), "[$1]")
+    return withLineBreaks.replace(roleplayLinkPattern, "[$1]")
 }
 
 private const val COLOR_MARKER = '\u200B'

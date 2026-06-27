@@ -166,6 +166,7 @@ fun ChatBarTheme(
     CompositionLocalProvider(
         LocalChatBarColors provides if (darkTheme) DarkColors else LightColors,
         LocalChatBarTypography provides DefaultTypography,
-        content = content
-    )
+    ) {
+        ProvideRipple(content = content)
+    }
 }

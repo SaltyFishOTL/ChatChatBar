@@ -57,6 +57,7 @@ import com.example.chatbar.ui.kit.CbScaffold
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
+import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
 import java.text.SimpleDateFormat
@@ -86,7 +87,9 @@ fun HomeScreen(
                     androidx.compose.foundation.Image(
                         painter = painterResource(R.mipmap.ic_launcher),
                         contentDescription = "ChatBar",
-                        modifier = Modifier.size(26.dp)
+                        modifier = Modifier
+                            .padding(start = ChatBarSpacing.sm)
+                            .size(26.dp)
                     )
                 }
             )
@@ -133,8 +136,8 @@ fun HomeScreen(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
-                                .clickable(enabled = modelUsable) {
-                                    viewModel.createSession(character) { sessionId ->
+.clickable(enabled = modelUsable) {
+                                        viewModel.createSession(character) { sessionId ->
                                         showStartDialog = false
                                         onNavigate(ChatRoute(sessionId))
                                     }

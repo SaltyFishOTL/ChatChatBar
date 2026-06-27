@@ -1,11 +1,12 @@
 package com.example.chatbar.domain
 
+import okhttp3.Dns
 import okhttp3.OkHttpClient
+import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
-import java.util.concurrent.TimeUnit
 
 object ProxyAwareClient {
 
@@ -19,6 +20,16 @@ object ProxyAwareClient {
         val selector = ProxySelectorDelegate()
         return OkHttpClient.Builder()
             .proxySelector(selector)
+            .dns(Ipv4OnlyDns)
+    }
+
+    private object Ipv4OnlyDns : Dns {
+        override fun lookup(hostname: String): List<java.net.InetAddress> {
+            return Dns.SYSTEM.lookup(hostname)
+                .filterIsInstance<Inet4Address>()
+                .takeIf { it.isNotEmpty() }
+                ?: Dns.SYSTEM.lookup(hostname)
+        }
     }
 
     private class ProxySelectorDelegate : ProxySelector() {

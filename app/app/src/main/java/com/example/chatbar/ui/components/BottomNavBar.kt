@@ -67,7 +67,7 @@ fun BottomNavBar(
             Column(
                 horizontalAlignment = Alignment.CenterHorizontally,
                 modifier = Modifier
-                    .clickable(indication = null, interactionSource = null) { onNavigate(item.route) }
+                    .clickable { onNavigate(item.route) }
                     .padding(top = 4.dp)
             ) {
                 CbIcon(

@@ -12,14 +12,12 @@ import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.data.security.NovelAiCredentialStore
-import com.example.chatbar.domain.ProxyAwareClient
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.runBlocking
 
 /**
  * App Application class - 初始化并持有所有的全局仓库和域服务实例
@@ -107,14 +105,6 @@ class ChatBarApp : Application() {
         novelAiCredentialStore = NovelAiCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
-
-        runBlocking {
-            val settings = settingsRepository.getAppSettings()
-            if (!settings.proxyHost.isNullOrBlank() && settings.proxyPort != null) {
-                ProxyAwareClient.manualProxyHost = settings.proxyHost
-                ProxyAwareClient.manualProxyPort = settings.proxyPort
-            }
-        }
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()

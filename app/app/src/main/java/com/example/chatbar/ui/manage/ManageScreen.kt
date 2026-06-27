@@ -54,11 +54,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -608,8 +606,6 @@ private fun SettingsTab(
     var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.toFloat()) }
     var docThreshold by remember { mutableFloatStateOf(settings.docRagSimilarityThreshold) }
     var ragMode by remember { mutableFloatStateOf(settings.ragInjectionMode.toModeIndex().toFloat()) }
-    var proxyHost by remember { mutableStateOf(settings.proxyHost ?: "") }
-    var proxyPort by remember { mutableStateOf(settings.proxyPort?.toString() ?: "") }
     LaunchedEffect(
         player.playerName,
         player.globalPersona,
@@ -623,16 +619,13 @@ private fun SettingsTab(
         settings.docRagTopK,
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
-        settings.chatBubbleFontScale,
-        settings.proxyHost,
-        settings.proxyPort
+        settings.chatBubbleFontScale
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId; presetModelKey = settings.presetDefaultModelKey; siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
-        proxyHost = settings.proxyHost ?: ""; proxyPort = settings.proxyPort?.toString() ?: ""
     }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
@@ -703,15 +696,6 @@ private fun SettingsTab(
                 }
             }
         }
-        SettingsSection("代理设置") {
-            CbText("如使用本地代理访问外网，请在此配置代理地址。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-            CbField("代理地址") {
-                CbInput(proxyHost, { proxyHost = it }, placeholder = "127.0.0.1")
-            }
-            CbField("代理端口") {
-                CbInput(proxyPort, { proxyPort = it.filter { c -> c.isDigit() } }, placeholder = "7890", keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number))
-            }
-        }
         SettingsSection("玩家") {
             CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
@@ -755,9 +739,7 @@ private fun SettingsTab(
                     docRagSimilarityThreshold = docThreshold,
                     ragInjectionMode = ragMode.roundToInt().modeValue(),
                     defaultContextWindowSize = if (contextSize.toInt() >= 50 && customContextSize.isNotBlank()) customContextSize.toIntOrNull() ?: 50 else contextSize.toInt(),
-                    chatBubbleFontScale = bubbleFontScale,
-                    proxyHost = proxyHost.ifBlank { null },
-                    proxyPort = proxyPort.toIntOrNull()
+                    chatBubbleFontScale = bubbleFontScale
                 )
             )
         }, modifier = Modifier.fillMaxWidth())

@@ -356,6 +356,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             .any { msg.contains(it) }
     }
 
+    fun dismissNovelAiImageGeneration() {
+        _imageGeneration.value = null
+    }
+
     fun dismissBatteryOptimizationHint() {
         _showBatteryOptimizationHint.value = false
         ChatBarApp.batteryOptimizationHintShown = true
@@ -962,9 +966,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 chatRepository.addMessage(assistantMsg)
                             }
                             
+                            try {
+                                _messages.value = chatRepository.getMessages(sessionId)
+                            } catch (_: Exception) {}
                             _streamingMessage.value = null
                             _isResponding.value = false
-                            refreshMessages()
 
                             // 对话存入 RAG 记忆库（后台异步）
                             if (embeddingConfig != null) {
@@ -988,7 +994,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } catch (_: Exception) {}
                 ChatBarApp.instance.streamingStopRequested.value = false
                 _isResponding.value = false
-                _streamingMessage.value = null
                 if (e !is CancellationException) {
                     try {
                         if (alternativeTargetMessageId == null) {
@@ -998,12 +1003,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 content = "错误: ${e.message}"
                             )
                             chatRepository.addMessage(errorAssistantMsg)
-                            refreshMessages()
+                            try {
+                                _messages.value = chatRepository.getMessages(sessionId)
+                            } catch (_: Exception) {}
                         } else {
                             addSystemMessage("错误: ${e.message}")
                         }
                     } catch (_: Exception) {}
                 }
+                _streamingMessage.value = null
             } finally {
                 ChatBarApp.instance.streamingStopRequested.value = false
                 try {
@@ -1432,7 +1440,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             content = text
         )
         chatRepository.addMessage(sysMsg)
-        refreshMessages()
+        _messages.value = _messages.value + sysMsg
     }
 
     fun copyUriToLocalFile(uri: Uri, onSuccess: (String) -> Unit) {
