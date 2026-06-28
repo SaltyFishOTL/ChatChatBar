@@ -53,6 +53,17 @@ class PromptAssemblerCharacterModeTest {
         assertFalse(prompt.contains("【人物设定】"))
     }
 
+    @Test fun blankLongTermMemoryIsOmitted() {
+        val prompt = assembler.assembleSystemPrompt(card(), longTermMemory = "   ")
+        assertFalse(prompt.contains("Long-Term Memory"))
+    }
+
+    @Test fun longTermMemoryIsInjectedWhenPresent() {
+        val prompt = assembler.assembleSystemPrompt(card(), longTermMemory = "User prefers concise replies.")
+        assertTrue(prompt.contains("Long-Term Memory"))
+        assertTrue(prompt.contains("User prefers concise replies."))
+    }
+
     @Test fun replacesPlayerAndCharacterNamePlaceholdersGlobally() {
         val prompt = assembler.assembleSystemPrompt(
             characterCard = card(

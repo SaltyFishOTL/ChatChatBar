@@ -15,6 +15,7 @@ import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
@@ -744,6 +745,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ragInjectionMode = appSettings.ragInjectionMode,
                     replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
                     replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
+                    longTermMemory = currentSession.longTermMemory.takeIf {
+                        currentSession.longTermMemoryEnabled && it.isNotBlank()
+                    },
                     worldBookPrompt = wbPrompt,
                     worldBookOutlets = wbOutlets
                 )
@@ -965,6 +969,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             } else {
                                 chatRepository.addMessage(assistantMsg)
                             }
+
+                            updateLongTermMemoryAfterReply(
+                                session = currentSession,
+                                modelConfig = modelConfig,
+                                userContent = currentUserContent.orEmpty(),
+                                assistantContent = accumulatedText
+                            )
                             
                             try {
                                 _messages.value = chatRepository.getMessages(sessionId)
@@ -1027,6 +1038,41 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 删除特定消息
      */
+    private fun updateLongTermMemoryAfterReply(
+        session: ChatSession,
+        modelConfig: ModelConfig,
+        userContent: String,
+        assistantContent: String
+    ) {
+        if (!session.longTermMemoryEnabled || assistantContent.isBlank()) return
+        viewModelScope.launch {
+            try {
+                val latestSession = chatRepository.getSession(sessionId) ?: return@launch
+                if (!latestSession.longTermMemoryEnabled) return@launch
+                val prompt = PromptTemplates.longTermMemoryUpdatePrompt(
+                    currentMemory = latestSession.longTermMemory,
+                    userContent = userContent,
+                    assistantContent = assistantContent
+                )
+                val updatedMemory = streamingChatService.completeText(
+                    messages = listOf(ChatApiMessage.text("user", prompt)),
+                    modelConfig = modelConfig,
+                    maxTokens = 1200
+                ).trim()
+                if (updatedMemory.isNotBlank()) {
+                    val current = chatRepository.getSession(sessionId) ?: return@launch
+                    if (current.longTermMemoryEnabled) {
+                        val updatedSession = current.copy(longTermMemory = updatedMemory)
+                        chatRepository.updateSession(updatedSession)
+                        _session.value = updatedSession
+                    }
+                }
+            } catch (_: Exception) {
+                // Memory update is best-effort and must not block chat completion.
+            }
+        }
+    }
+
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             val contextWindowSize = effectiveContextWindowSize()
@@ -1193,6 +1239,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             // 3. 重置 session 预览信息
             _session.value?.let { session ->
                 chatRepository.updateSession(session.copy(
+                    longTermMemory = "",
                     lastMessagePreview = null,
                     lastMessageTime = null
                 ))
@@ -1281,7 +1328,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         supplementarySetting: String?,
         playerName: String?,
         playerSetting: String?,
-        chatBackground: String?
+        chatBackground: String?,
+        longTermMemoryEnabled: Boolean,
+        longTermMemory: String
     ) {
         viewModelScope.launch {
             _session.value?.let { s ->
@@ -1293,7 +1342,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     supplementarySetting = supplementarySetting?.takeIf { it.isNotBlank() },
                     playerName = playerName?.takeIf { it.isNotBlank() },
                     playerSetting = playerSetting?.takeIf { it.isNotBlank() },
-                    chatBackground = chatBackground?.takeIf { it.isNotBlank() }
+                    chatBackground = chatBackground?.takeIf { it.isNotBlank() },
+                    longTermMemoryEnabled = longTermMemoryEnabled,
+                    longTermMemory = longTermMemory
                 )
                 chatRepository.updateSession(updated)
                 _session.value = updated
@@ -1334,6 +1385,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 replyLanguage = curSession.replyLanguage,
                 roleplayStyle = curSession.roleplayStyle,
                 chatBackground = curSession.chatBackground,
+                longTermMemoryEnabled = curSession.longTermMemoryEnabled,
+                longTermMemory = curSession.longTermMemory,
                 contextWindowSize = curSession.contextWindowSize
             )
 
@@ -1374,6 +1427,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 replyLanguage = slot.replyLanguage,
                 roleplayStyle = slot.roleplayStyle,
                 chatBackground = slot.chatBackground,
+                longTermMemoryEnabled = slot.longTermMemoryEnabled,
+                longTermMemory = slot.longTermMemory,
                 contextWindowSize = slot.contextWindowSize ?: curSession.contextWindowSize,
                 lastMessagePreview = slot.messages.lastOrNull()?.content?.take(100),
                 lastMessageTime = slot.messages.lastOrNull()?.createdAt

@@ -22,6 +22,8 @@ data class SaveSlot(
     val replyLanguage: String? = null,
     val roleplayStyle: String? = null,
     val chatBackground: String? = null,
+    val longTermMemoryEnabled: Boolean = false,
+    val longTermMemory: String = "",
     val contextWindowSize: Int? = null,
     val messages: List<ChatMessage> = emptyList(),
     val vectorChunks: List<VectorChunk> = emptyList(), // 记忆状态

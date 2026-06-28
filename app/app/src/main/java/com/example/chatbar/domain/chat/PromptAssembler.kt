@@ -40,6 +40,7 @@ class PromptAssembler {
         ragInjectionMode: String = "STANDARD",
         replyLength: String? = null,
         replyLanguage: String? = null,
+        longTermMemory: String? = null,
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap()
     ): String {
@@ -94,6 +95,16 @@ class PromptAssembler {
                 appendLine("4. 回复偏好与语言约束")
                 appendLine("==================================================")
                 appendSection("【回复约束】【字数长度要求仅影响输出正文部分，确保正文字数符合字数要求，状态栏等格式文本不计入字数】\n请按照【300字短篇】的长度要求构建正文进行回复")
+            }
+
+            if (!longTermMemory.isNullOrBlank()) {
+                appendLine("\n==================================================")
+                appendLine("4.5 Long-Term Memory")
+                appendLine("==================================================")
+                appendSection(
+                    "The following is persistent long-term memory for this conversation. " +
+                        "Use it as stable context, but do not quote it unless relevant.\n$longTermMemory"
+                )
             }
 
             // 2. 补充设定

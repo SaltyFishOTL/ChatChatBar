@@ -21,6 +21,8 @@ data class ChatSession(
     val playerName: String? = null,           // 玩家名称覆盖
     val playerSetting: String? = null,        // 个人设定覆盖
     val chatBackground: String? = null,
+    val longTermMemoryEnabled: Boolean = false,
+    val longTermMemory: String = "",
     val contextWindowSize: Int = 20,
     val isPinned: Boolean = false,
     val lastMessagePreview: String? = null,

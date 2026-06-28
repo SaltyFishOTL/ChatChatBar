@@ -56,6 +56,7 @@ import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
@@ -86,6 +87,8 @@ fun ChatSettingsDialog(
     var playerName by remember { mutableStateOf(session?.playerName ?: "") }
     var playerSetting by remember { mutableStateOf(session?.playerSetting ?: "") }
     var background by remember { mutableStateOf(session?.chatBackground ?: "") }
+    var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: false) }
+    var longTermMemory by remember { mutableStateOf(session?.longTermMemory ?: "") }
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
     var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
@@ -103,6 +106,8 @@ fun ChatSettingsDialog(
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
+            longTermMemoryEnabled = it.longTermMemoryEnabled
+            longTermMemory = it.longTermMemory
         }
     }
 
@@ -127,13 +132,17 @@ fun ChatSettingsDialog(
                             supplementarySetting = supplementary.takeIf(String::isNotBlank),
                             playerName = playerName.takeIf(String::isNotBlank),
                             playerSetting = playerSetting.takeIf(String::isNotBlank),
-                            chatBackground = background.takeIf(String::isNotBlank)
+                            chatBackground = background.takeIf(String::isNotBlank),
+                            longTermMemoryEnabled = longTermMemoryEnabled,
+                            longTermMemory = longTermMemory
                         )
                         onDismiss()
                     }, variant = ButtonVariant.Ghost)
                 }
             )
-            CbTabs(listOf("参数与设定", "存档"), tab, { tab = it })
+            val tabs = if (longTermMemoryEnabled) listOf("参数与设定", "长期记忆", "存档") else listOf("参数与设定", "存档")
+            if (tab >= tabs.size) tab = tabs.lastIndex
+            CbTabs(tabs, tab, { tab = it })
             if (tab == 0) {
                 SettingsContent(
                     modelId, { modelId = it }, models,
@@ -141,9 +150,12 @@ fun ChatSettingsDialog(
                     replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
                     supplementary, { supplementary = it },
                     playerName, { playerName = it }, playerSetting, { playerSetting = it },
-                    background, { backgroundPicker.launch("image/*") }, { background = "" }, onClearHistory,
+                    background, { backgroundPicker.launch("image/*") }, { background = "" },
+                    longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
                     ::openFullscreen
                 )
+            } else if (longTermMemoryEnabled && tab == 1) {
+                LongTermMemoryContent(longTermMemory, { longTermMemory = it })
             } else {
                 SavesContent(
                     slots = slots,
@@ -194,7 +206,8 @@ private fun SettingsContent(
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
     supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
-    background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit, onClearHistory: () -> Unit,
+    background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit,
+    longTermMemoryEnabled: Boolean, onLongTermMemoryEnabled: (Boolean) -> Unit, onClearHistory: () -> Unit,
     openFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
     Column(
@@ -225,6 +238,14 @@ private fun SettingsContent(
             openFullscreen("玩家设定覆盖", playerSetting, onPlayerSetting)
         }) { CbInput(playerSetting, onPlayerSetting, singleLine = false, minLines = 3) }
         CbDivider()
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                CbText("长期记忆", style = ChatBarTheme.typography.label)
+                CbText("发送时注入 Prompt，AI 回复后自动总结更新。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+            CbSwitch(longTermMemoryEnabled, onLongTermMemoryEnabled)
+        }
+        CbDivider()
         CbField("聊天背景覆盖") {
             Box(
                 Modifier.fillMaxWidth().height(120.dp).clip(RoundedCornerShape(10.dp)).background(ChatBarTheme.colors.muted).clickable(onClick = onPickBackground),
@@ -242,6 +263,23 @@ private fun SettingsContent(
         CbText("危险操作", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.label)
         CbButton("清空历史和长期记忆", onClearHistory, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun LongTermMemoryContent(
+    memory: String,
+    onMemory: (String) -> Unit
+) {
+    Column(Modifier.fillMaxSize().padding(16.dp)) {
+        CbInput(
+            value = memory,
+            onValueChange = onMemory,
+            placeholder = "记录稳定事实、偏好、关系、目标、已确认设定...",
+            modifier = Modifier.fillMaxSize(),
+            singleLine = false,
+            minLines = 24
+        )
     }
 }
 
