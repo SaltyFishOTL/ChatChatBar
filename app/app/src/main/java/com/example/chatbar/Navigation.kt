@@ -4,6 +4,11 @@ import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.scaleIn
+import androidx.compose.animation.scaleOut
+import androidx.compose.animation.core.FastOutLinearInEasing
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.LinearOutSlowInEasing
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -89,8 +94,24 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
             NavDisplay(
                 backStack = backStack,
                 onBack = ::popBackStack,
-                transitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) },
-                popTransitionSpec = { fadeIn(tween(150)) togetherWith fadeOut(tween(100)) },
+                transitionSpec = {
+                    (
+                        fadeIn(tween(durationMillis = 220, delayMillis = 90, easing = LinearOutSlowInEasing)) +
+                            scaleIn(initialScale = 0.98f, animationSpec = tween(durationMillis = 220, delayMillis = 90, easing = FastOutSlowInEasing))
+                        ).togetherWith(
+                            fadeOut(tween(durationMillis = 90, easing = FastOutLinearInEasing)) +
+                                scaleOut(targetScale = 1.02f, animationSpec = tween(durationMillis = 90, easing = FastOutLinearInEasing))
+                        )
+                },
+                popTransitionSpec = {
+                    (
+                        fadeIn(tween(durationMillis = 220, delayMillis = 90, easing = LinearOutSlowInEasing)) +
+                            scaleIn(initialScale = 0.98f, animationSpec = tween(durationMillis = 220, delayMillis = 90, easing = FastOutSlowInEasing))
+                        ).togetherWith(
+                            fadeOut(tween(durationMillis = 90, easing = FastOutLinearInEasing)) +
+                                scaleOut(targetScale = 1.02f, animationSpec = tween(durationMillis = 90, easing = FastOutLinearInEasing))
+                        )
+                },
                 entryProvider = entryProvider {
                     entry<HomeRoute> {
                         HomeScreen(onNavigate = { route -> pushRoute(route as NavKey) })

@@ -20,6 +20,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.resolveDarkTheme
+import com.example.chatbar.ui.kit.CbLoadingState
 import com.example.chatbar.ui.kit.ChatBarTheme
 import kotlinx.coroutines.flow.MutableStateFlow
 
@@ -57,6 +58,8 @@ class MainActivity : ComponentActivity() {
                             tutorialCompleted = settings.tutorialVersion >= CURRENT_TUTORIAL_VERSION,
                             sharedImportUri = sharedImportUri
                         )
+                    } else {
+                        CbLoadingState(label = "ChatBar")
                     }
                 }
             }

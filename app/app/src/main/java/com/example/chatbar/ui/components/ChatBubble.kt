@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.components
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.graphics.BitmapFactory
 import android.widget.TextView
 import android.widget.Toast
@@ -20,11 +22,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.Image
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -157,7 +154,7 @@ fun ChatBubble(
                             style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
                         )
                         CbIcon(
-                            if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                            if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
                             "切换思考过程",
                             Modifier.size(14.dp),
                             ChatBarTheme.colors.mutedForeground
@@ -248,7 +245,7 @@ fun ChatBubble(
             val clipboardManager = LocalClipboardManager.current
             val ctx = LocalContext.current
             CbIconButton(
-                Icons.Default.ContentCopy,
+                AppIcons.ContentCopy,
                 "复制消息",
                 onClick = {
                     clipboardManager.setText(AnnotatedString(message.displayContent))
@@ -258,7 +255,7 @@ fun ChatBubble(
             )
             if (!isUser && onGenerateImage != null) {
                 CbIconButton(
-                    Icons.Default.Image,
+                    AppIcons.Image,
                     "根据此消息生成图片",
                     onGenerateImage,
                     enabled = imageGenerationEnabled,
@@ -294,7 +291,7 @@ private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
                 style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
             )
             CbIcon(
-                if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+                if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
                 "切换状态栏",
                 Modifier.size(14.dp),
                 ChatBarTheme.colors.mutedForeground

@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.character
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.app.Activity
 import android.net.Uri
 import android.widget.Toast
@@ -32,19 +34,6 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Article
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.PhotoCamera
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -156,10 +145,10 @@ fun CharacterEditScreen(
             CbTopBar(
                 title = if (characterId == null) "新建角色卡" else "编辑角色卡",
                 statusBarInset = true,
-                navigation = { CbIconButton(Icons.Default.ArrowBack, "返回", onBack) },
+                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
                 actions = {
                     CbIconButton(
-                        Icons.Default.Save,
+                        AppIcons.Save,
                         "保存",
                         {
                             val errors = viewModel.validateForSave()
@@ -188,7 +177,7 @@ fun CharacterEditScreen(
                 ) {
                     CharacterAvatar(viewModel.avatar, Modifier.fillMaxSize())
                     Box(Modifier.fillMaxSize().clip(CircleShape).background(Color.Black.copy(alpha = 0.28f)), contentAlignment = Alignment.Center) {
-                        CbIcon(Icons.Default.PhotoCamera, "更换头像", Modifier.size(18.dp), Color.White)
+                        CbIcon(AppIcons.PhotoCamera, "更换头像", Modifier.size(18.dp), Color.White)
                     }
                 }
                 Spacer(Modifier.width(16.dp))
@@ -313,10 +302,10 @@ fun CharacterEditScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("参考文档 (${viewModel.documentsList.size})")
                 Row {
-                    CbIconButton(Icons.Default.Add, "新建文档", { showDocumentDialog = true }, tint = ChatBarTheme.colors.primary)
-                    CbIconButton(Icons.Default.UploadFile, "批量导入", { directoryPicker.launch(null) }, tint = ChatBarTheme.colors.primary)
+                    CbIconButton(AppIcons.Add, "新建文档", { showDocumentDialog = true }, tint = ChatBarTheme.colors.primary)
+                    CbIconButton(AppIcons.UploadFile, "批量导入", { directoryPicker.launch(null) }, tint = ChatBarTheme.colors.primary)
                     if (viewModel.documentsList.isNotEmpty()) {
-                        CbIconButton(Icons.Default.DeleteSweep, "清空文档", { confirmClearDocuments = true }, tint = ChatBarTheme.colors.destructive)
+                        CbIconButton(AppIcons.DeleteSweep, "清空文档", { confirmClearDocuments = true }, tint = ChatBarTheme.colors.destructive)
                     }
                 }
             }
@@ -529,7 +518,7 @@ private fun ImagePickerPanel(imagePath: String?, height: androidx.compose.ui.uni
                 AsyncImage(imagePath, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.22f)))
             }
-            CbIcon(Icons.Default.PhotoCamera, "选择图片", tint = Color.White)
+            CbIcon(AppIcons.PhotoCamera, "选择图片", tint = Color.White)
         }
         if (!imagePath.isNullOrBlank()) CbButton("清除图片", onClear, variant = ButtonVariant.Ghost)
     }
@@ -547,8 +536,8 @@ private fun CharacterRow(character: CharacterInfo, canDelete: Boolean, onEdit: (
                 CbText(character.name.ifBlank { "未命名角色" }, style = ChatBarTheme.typography.heading)
                 if (character.profile.isNotBlank()) CbText(character.profile, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
             }
-            CbIconButton(Icons.Default.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
-            if (canDelete) CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
+            if (canDelete) CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
 }
@@ -557,14 +546,14 @@ private fun CharacterRow(character: CharacterInfo, canDelete: Boolean, onEdit: (
 private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: () -> Unit) {
     CbSurface(Modifier.fillMaxWidth().clickable(onClick = onEdit), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            CbIcon(Icons.Default.Article, null, tint = ChatBarTheme.colors.mutedForeground)
+            CbIcon(AppIcons.Article, null, tint = ChatBarTheme.colors.mutedForeground)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 CbText(document.fileName, style = ChatBarTheme.typography.heading)
                 CbText(document.filePath, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption, maxLines = 1)
             }
-            CbIconButton(Icons.Default.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
-            CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
+            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
 }
@@ -623,7 +612,7 @@ private fun CharacterDialog(
             ) {
                 if (image.isNotBlank()) AsyncImage(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CbIcon(Icons.Default.AddPhotoAlternate, null, tint = ChatBarTheme.colors.mutedForeground)
+                    CbIcon(AppIcons.AddPhotoAlternate, null, tint = ChatBarTheme.colors.mutedForeground)
                     CbText("上传设定图", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
                 }
             }
@@ -730,8 +719,8 @@ private fun DocumentEditScreen(
                 }
             }
         }
-        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
-        CbIconButton(Icons.Default.Check, "保存", onSave, Modifier.align(Alignment.BottomEnd).padding(16.dp).size(56.dp).background(colors.primary, CircleShape), enabled = name.isNotBlank() && content.isNotBlank(), tint = colors.primaryForeground)
+        CbIconButton(AppIcons.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(16.dp).size(56.dp).background(colors.card, CircleShape))
+        CbIconButton(AppIcons.Check, "保存", onSave, Modifier.align(Alignment.BottomEnd).padding(16.dp).size(56.dp).background(colors.primary, CircleShape), enabled = name.isNotBlank() && content.isNotBlank(), tint = colors.primaryForeground)
     }
 }
 
@@ -739,14 +728,14 @@ private fun DocumentEditScreen(
 private fun WorldBookEntryRow(entry: WorldBookEntry, onEdit: () -> Unit, onToggle: () -> Unit, onDelete: () -> Unit) {
     CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-            CbIcon(Icons.Default.Article, null, tint = if (entry.enabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
+            CbIcon(AppIcons.Article, null, tint = if (entry.enabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
             Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
                 CbText(entry.name.ifBlank { "未命名条目" }, style = ChatBarTheme.typography.heading)
                 CbText(entry.keys.joinToString(", ").ifBlank { "无触发词" }, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
             }
-            CbIconButton(Icons.Default.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
-            CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
+            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
 }

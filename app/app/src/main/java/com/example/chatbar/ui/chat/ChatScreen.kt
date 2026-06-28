@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.chat
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.app.Activity
 import android.net.Uri
 import android.content.ContentValues
@@ -42,20 +44,6 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.BugReport
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.OpenInFull
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Save
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Tune
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -219,7 +207,7 @@ fun ChatScreen(
                 editingMessage?.let { viewModel.editMessage(it.id, editingText.text, editingImages.toList()) }
                 editingMessage = null; editingImages.clear()
             },
-            confirmIcon = Icons.Default.Save,
+            confirmIcon = AppIcons.Save,
             visible = true
         )
         return
@@ -237,7 +225,7 @@ fun ChatScreen(
                 viewModel.sendMessage(input.text, selectedImages.toList())
                 input = TextFieldValue(""); selectedImages.clear(); fullComposer = false
             },
-            confirmIcon = Icons.Default.Send,
+            confirmIcon = AppIcons.Send,
             visible = true
         )
         return
@@ -246,10 +234,10 @@ fun ChatScreen(
     Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         CbTopBar(
             title = session?.title ?: characterCard?.name ?: "聊天",
-            navigation = { CbIconButton(Icons.Default.ArrowBack, "返回", onBack) },
+            navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
-                if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(Icons.Default.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
-                CbIconButton(Icons.Default.Tune, "会话设置", { settingsOpen = true })
+                if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(AppIcons.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
+                CbIconButton(AppIcons.Tune, "会话设置", { settingsOpen = true })
             }
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -301,10 +289,10 @@ fun ChatScreen(
                     },
                     contentAlignment = Alignment.Center
                 ) {
-                    CbIcon(Icons.Default.KeyboardArrowDown, "跳到底部", tint = ChatBarTheme.colors.primaryForeground)
+                    CbIcon(AppIcons.KeyboardArrowDown, "跳到底部", tint = ChatBarTheme.colors.primaryForeground)
                     if (latestComplete) {
                         Box(Modifier.align(Alignment.TopEnd).size(16.dp).clip(CircleShape).background(ChatBarTheme.colors.success), contentAlignment = Alignment.Center) {
-                            CbIcon(Icons.Default.Check, "最新消息已完成", Modifier.size(11.dp), Color.White)
+                            CbIcon(AppIcons.Check, "最新消息已完成", Modifier.size(11.dp), Color.White)
                         }
                     }
                 }
@@ -550,7 +538,7 @@ private fun FullImageDialog(path: String, onDismiss: () -> Unit) {
                 contentScale = ContentScale.Fit
             )
             CbIconButton(
-                Icons.Default.Close,
+                AppIcons.Close,
                 "关闭大图",
                 onDismiss,
                 modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
@@ -618,12 +606,12 @@ private fun ChatComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CbIconButton(Icons.Default.AddPhotoAlternate, "添加图片", onImage, enabled = enabled, tint = ChatBarTheme.colors.primary)
-        CbIconButton(Icons.Default.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
+        CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled, tint = ChatBarTheme.colors.primary)
+        CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else "本对话已封存", enabled = enabled, minLines = 1)
         Spacer(Modifier.width(8.dp))
         CbIconButton(
-            Icons.Default.Send,
+            AppIcons.Send,
             "发送",
             onSend,
             modifier = Modifier.background(ChatBarTheme.colors.primary, CircleShape),
@@ -643,7 +631,7 @@ private fun ImageStrip(images: List<String>, onRemove: (String) -> Unit) {
             Box(Modifier.size(60.dp).clip(RoundedCornerShape(8.dp))) {
                 AsyncImage(File(path), "待发图片", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 Box(Modifier.align(Alignment.TopEnd).size(24.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).clickable { onRemove(path) }, contentAlignment = Alignment.Center) {
-                    CbIcon(Icons.Default.Close, "删除图片", Modifier.size(14.dp), Color.White)
+                    CbIcon(AppIcons.Close, "删除图片", Modifier.size(14.dp), Color.White)
                 }
             }
         }

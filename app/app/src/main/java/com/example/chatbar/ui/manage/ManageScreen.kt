@@ -1,16 +1,11 @@
 package com.example.chatbar.ui.manage
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedContentTransitionScope
-import androidx.compose.animation.core.tween
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -33,16 +28,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Download
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.automirrored.filled.HelpOutline
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Star
-import androidx.compose.material.icons.filled.UploadFile
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -97,6 +82,7 @@ import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
+import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.util.UUID
 import kotlin.math.roundToInt
@@ -136,8 +122,6 @@ fun ManageScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(0) }
-    var tabDir by remember { mutableIntStateOf(0) }
-    var prevTab by remember { mutableIntStateOf(0) }
     var settingsSaveRequest by remember { mutableIntStateOf(0) }
     var settingsDirty by remember { mutableStateOf(false) }
     val visibleTabs = if (settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM) {
@@ -239,16 +223,16 @@ fun ManageScreen(
             CbTopBar(
                 title = "管理",
                 actions = {
-                    CbIconButton(Icons.AutoMirrored.Filled.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
+                    CbIconButton(AppIcons.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
                     if (tab == 3) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
-                        if (tab == 0) CbIconButton(Icons.Default.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 1) CbIconButton(Icons.Default.UploadFile, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 2) CbIconButton(Icons.Default.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                        if (tab == 0) CbIconButton(AppIcons.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 1) CbIconButton(AppIcons.UploadFile, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 2) CbIconButton(AppIcons.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                 }
             )
         },
         floatingActionButton = {
-            if (tab < 3 && (tab != 2 || settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM)) CbFab(Icons.Default.Add, "新建", {
+            if (tab < 3 && (tab != 2 || settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM)) CbFab(AppIcons.Add, "新建", {
                 when (tab) {
                     0 -> onNavigate(CharacterEditRoute(null))
                     1 -> addFormat = true
@@ -260,23 +244,9 @@ fun ManageScreen(
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
             CbTabs(visibleTabs.map { it.second }, visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0), { newIdx ->
                 val newTabId = visibleTabs[newIdx].first
-                prevTab = tab
-                tabDir = if (newTabId > tab) 1 else -1
                 tab = newTabId
             })
             Box(Modifier.weight(1f)) {
-                AnimatedContent(
-                    targetState = tab,
-                    transitionSpec = {
-                        if (tabDir > 0)
-                            (fadeIn(tween(100)) + slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(200)))
-                                .togetherWith(fadeOut(tween(80)) + slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(200)))
-                        else
-                            (fadeIn(tween(100)) + slideIntoContainer(AnimatedContentTransitionScope.SlideDirection.End, tween(200)))
-                                .togetherWith(fadeOut(tween(80)) + slideOutOfContainer(AnimatedContentTransitionScope.SlideDirection.Start, tween(200)))
-                    },
-                    label = "tabTransition"
-                ) {
                 when (tab) {
                     0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         exportCharacterId = card.id
@@ -330,7 +300,6 @@ fun ManageScreen(
                 }
             }
         }
-    }
     }
 
     if (addFormat) FormatDialog({ addFormat = false }) { name, content ->
@@ -464,7 +433,15 @@ private fun CharacterTab(
                 leading = { CharacterAvatar(card.avatar, Modifier.size(42.dp)) },
                 onClick = { onEdit(card.id) },
                 onLongClick = { menuCard = card },
-                actions = { CbButton("开始聊天", { onStart(card.id) }, enabled = modelUsable) }
+                actions = {
+                    CbIconButton(
+                        AppIcons.PlayArrow,
+                        "开始聊天",
+                        { onStart(card.id) },
+                        enabled = modelUsable,
+                        tint = ChatBarTheme.colors.primary
+                    )
+                }
             )
         }
     }
@@ -559,26 +536,26 @@ private fun ModelsTab(
         items(models, key = { it.id }) { model ->
             val isDefault = model.id == effectiveDefaultModelId
             EntityRow(model.displayName, "${model.modelName} · ${model.baseUrl}", badge = if (isDefault) "默认" else null, actions = {
-                CbIconButton(Icons.Default.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
-                CbIconButton(Icons.Default.Download, "导出", { onExportModel(model) })
-                CbIconButton(Icons.Default.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
-                CbIconButton(Icons.Default.Delete, "删除", { onDeleteModel(model.id) }, tint = ChatBarTheme.colors.destructive)
+                CbIconButton(AppIcons.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
+                CbIconButton(AppIcons.Download, "导出", { onExportModel(model) })
+                CbIconButton(AppIcons.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
+                CbIconButton(AppIcons.Delete, "删除", { onDeleteModel(model.id) }, tint = ChatBarTheme.colors.destructive)
             })
         }
         item { CbDivider(); HeaderAction("检索规划模型", if (retrieval == null) "添加" else "编辑", onEditRetrieval) }
         item {
             if (retrieval == null) CbText("未配置时回退到当前对话模型。建议配置快速、便宜的小模型。", color = ChatBarTheme.colors.mutedForeground)
             else EntityRow(retrieval.displayName, "${retrieval.modelName} · max=${retrieval.maxOutputTokens ?: "默认"}", actions = {
-                CbIconButton(Icons.Default.Edit, "编辑", onEditRetrieval, tint = ChatBarTheme.colors.primary)
-                CbIconButton(Icons.Default.Delete, "删除", onDeleteRetrieval, tint = ChatBarTheme.colors.destructive)
+                CbIconButton(AppIcons.Edit, "编辑", onEditRetrieval, tint = ChatBarTheme.colors.primary)
+                CbIconButton(AppIcons.Delete, "删除", onDeleteRetrieval, tint = ChatBarTheme.colors.destructive)
             })
         }
         item { CbDivider(); HeaderAction("向量模型", if (embedding == null) "添加" else "编辑", { if (embedding == null) onAddEmbedding() else onEditEmbedding(embedding) }) }
         item {
             if (embedding == null) CbText("尚未配置向量模型，RAG 无法建立索引。", color = ChatBarTheme.colors.mutedForeground)
             else EntityRow(embedding.displayName, "${embedding.modelName} · ${embedding.dimensions} 维", actions = {
-                CbIconButton(Icons.Default.Edit, "编辑", { onEditEmbedding(embedding) }, tint = ChatBarTheme.colors.primary)
-                CbIconButton(Icons.Default.Delete, "删除", { onDeleteEmbedding(embedding.id) }, tint = ChatBarTheme.colors.destructive)
+                CbIconButton(AppIcons.Edit, "编辑", { onEditEmbedding(embedding) }, tint = ChatBarTheme.colors.primary)
+                CbIconButton(AppIcons.Delete, "删除", { onDeleteEmbedding(embedding.id) }, tint = ChatBarTheme.colors.destructive)
             })
         }
     }
@@ -827,7 +804,8 @@ private fun EntityRow(
                 )
             } else Modifier
         ),
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+        color = ChatBarTheme.colors.surfaceElevated,
+        elevation = ChatBarElevation.low
     ) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             leading?.invoke(); if (leading != null) Spacer(Modifier.width(12.dp))
@@ -855,7 +833,11 @@ private fun SectionTitle(title: String) = CbText(title, color = ChatBarTheme.col
 
 @Composable
 private fun SettingsSection(title: String, content: @Composable ColumnScope.() -> Unit) {
-    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.surfaceElevated,
+        elevation = ChatBarElevation.low
+    ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             SectionTitle(title)
             content()

@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.chat
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
@@ -26,10 +28,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Restore
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -141,7 +139,7 @@ fun ChatSettingsDialog(
             CbTopBar(
                 title = "会话设置",
                 statusBarInset = true,
-                navigation = { CbIconButton(Icons.Default.Close, "关闭", onDismiss) },
+                navigation = { CbIconButton(AppIcons.Close, "关闭", onDismiss) },
                 actions = {
                     CbDirtySaveButton(settingsDirty, {
                         viewModel.updateSessionConfig(
@@ -355,8 +353,8 @@ fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit) {
                     style = ChatBarTheme.typography.caption
                 )
             }
-            CbIconButton(Icons.Default.Restore, "读档", onLoad, tint = ChatBarTheme.colors.primary)
-            CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Restore, "读档", onLoad, tint = ChatBarTheme.colors.primary)
+            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
 }

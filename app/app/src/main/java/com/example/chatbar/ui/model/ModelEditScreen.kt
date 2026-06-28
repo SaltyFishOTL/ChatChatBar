@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.model
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
@@ -16,11 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -82,10 +79,10 @@ fun ModelEditScreen(
             CbTopBar(
                 title = if (modelId == null) "添加模型" else "编辑模型",
                 statusBarInset = true,
-                navigation = { CbIconButton(Icons.Default.ArrowBack, "返回", onBack) },
+                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
                 actions = {
                     CbIconButton(
-                        Icons.Default.Save,
+                        AppIcons.Save,
                         "保存",
                         { viewModel.saveModelConfig(onBack) },
                         enabled = canSave,
@@ -235,7 +232,7 @@ private fun ParameterRow(
                 }
             }
             Spacer(Modifier.width(8.dp))
-            CbIconButton(Icons.Default.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
 }

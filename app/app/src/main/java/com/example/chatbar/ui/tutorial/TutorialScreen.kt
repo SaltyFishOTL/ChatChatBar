@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.tutorial
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -16,8 +18,6 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -167,7 +167,7 @@ fun TutorialScreen(onExit: () -> Unit) {
         CbTopBar(
             title = "基础教程",
             navigation = {
-                CbIconButton(Icons.AutoMirrored.Filled.ArrowBack, "返回", {
+                CbIconButton(AppIcons.ArrowBack, "返回", {
                     if (pageIndex > 0) pageIndex-- else onExit()
                 })
             },

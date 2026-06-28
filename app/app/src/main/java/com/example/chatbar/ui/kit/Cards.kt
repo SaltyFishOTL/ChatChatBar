@@ -14,6 +14,7 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 
 @Composable
 fun CbCard(
@@ -24,11 +25,19 @@ fun CbCard(
     color: Color = ChatBarTheme.colors.card,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors = ChatBarTheme.colors
+    val surfaceColor = if (elevation > 0.dp && color == colors.card) colors.surfaceElevated else color
     Column(
         modifier = modifier
-            .shadow(elevation, shape, ambientColor = ChatBarTheme.colors.cardShadow, clip = false)
+            .shadow(
+                elevation = elevation,
+                shape = shape,
+                ambientColor = colors.cardShadow,
+                spotColor = colors.cardShadow,
+                clip = false
+            )
             .clip(shape)
-            .background(color)
+            .background(surfaceColor)
             .let { m -> if (border != null) m.border(border, shape) else m }
             .padding(ChatBarSpacing.lg),
         content = content
@@ -46,11 +55,19 @@ fun CbCardSectioned(
     footer: (@Composable ColumnScope.() -> Unit)? = null,
     content: @Composable ColumnScope.() -> Unit
 ) {
+    val colors = ChatBarTheme.colors
+    val surfaceColor = if (elevation > 0.dp && color == colors.card) colors.surfaceElevated else color
     Column(
         modifier = modifier
-            .shadow(elevation, shape, ambientColor = ChatBarTheme.colors.cardShadow, clip = false)
+            .shadow(
+                elevation = elevation,
+                shape = shape,
+                ambientColor = colors.cardShadow,
+                spotColor = colors.cardShadow,
+                clip = false
+            )
             .clip(shape)
-            .background(color)
+            .background(surfaceColor)
             .let { m -> if (border != null) m.border(border, shape) else m }
     ) {
         header?.let {

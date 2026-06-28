@@ -92,7 +92,7 @@ fun <T> CbSelect(
         modifier = modifier
             .fillMaxWidth()
             .heightIn(min = 44.dp)
-            .background(ChatBarTheme.colors.input, shape)
+            .background(ChatBarTheme.colors.surfaceSubtle, shape)
             .border(1.dp, ChatBarTheme.colors.border, shape)
             .clickable(role = Role.Button) { open = true }
             .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.md)
@@ -134,9 +134,9 @@ fun CbChoiceChip(
     modifier: Modifier = Modifier
 ) {
     val colors = ChatBarTheme.colors
-    val bg by animateColorAsState(if (selected) colors.accent else colors.card, animationSpec = tween(200), label = "chipBg")
-    val borderColor by animateColorAsState(if (selected) colors.primary else colors.border, animationSpec = tween(200), label = "chipBorder")
-    val textColor by animateColorAsState(if (selected) colors.primary else colors.foreground, animationSpec = tween(200), label = "chipText")
+    val bg by animateColorAsState(if (selected) colors.primaryAlpha else colors.surfaceElevated, animationSpec = tween(ChatBarMotion.normal), label = "chipBg")
+    val borderColor by animateColorAsState(if (selected) colors.primary else colors.border, animationSpec = tween(ChatBarMotion.normal), label = "chipBorder")
+    val textColor by animateColorAsState(if (selected) colors.primary else colors.foreground, animationSpec = tween(ChatBarMotion.normal), label = "chipText")
     Box(
         modifier = modifier
             .heightIn(min = 40.dp)
@@ -162,12 +162,12 @@ fun CbTabs(
             val selected = index == selectedIndex
             val textColor by animateColorAsState(
                 if (selected) ChatBarTheme.colors.foreground else ChatBarTheme.colors.mutedForeground,
-                animationSpec = tween(200),
+                animationSpec = tween(ChatBarMotion.normal),
                 label = "tabText"
             )
             val indicatorColor by animateColorAsState(
                 if (selected) ChatBarTheme.colors.primary else Color.Transparent,
-                animationSpec = tween(200),
+                animationSpec = tween(ChatBarMotion.normal),
                 label = "tabIndicator"
             )
             Box(

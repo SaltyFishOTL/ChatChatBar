@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.format
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
@@ -13,9 +15,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material.icons.filled.Save
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -69,11 +68,11 @@ fun FormatCardEditScreen(
                 title = if (formatCardId == null) "新建格式卡" else "编辑格式卡",
                 statusBarInset = true,
                 navigation = {
-                    CbIconButton(Icons.Default.ArrowBack, "返回", onBack)
+                    CbIconButton(AppIcons.ArrowBack, "返回", onBack)
                 },
                 actions = {
                     CbIconButton(
-                        imageVector = Icons.Default.Save,
+                        imageVector = AppIcons.Save,
                         contentDescription = "保存",
                         onClick = { viewModel.saveFormatCard(onBack) },
                         enabled = viewModel.name.isNotBlank() && viewModel.content.isNotBlank(),

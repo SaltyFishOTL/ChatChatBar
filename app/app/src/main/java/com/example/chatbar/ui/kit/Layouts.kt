@@ -2,6 +2,7 @@ package com.example.chatbar.ui.kit
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -23,20 +24,26 @@ fun CbTopBar(
     navigation: @Composable RowScope.() -> Unit = {},
     actions: @Composable RowScope.() -> Unit = {}
 ) {
-    Row(
+    Column(
         modifier = modifier
             .fillMaxWidth()
             .then(if (elevated) Modifier.shadow(ChatBarElevation.low, ambientColor = ChatBarTheme.colors.cardShadow) else Modifier)
-            .background(ChatBarTheme.colors.background)
-            .then(if (statusBarInset) Modifier.statusBarsPadding() else Modifier)
-            .height(56.dp)
-            .padding(horizontal = ChatBarSpacing.sm),
-        verticalAlignment = Alignment.CenterVertically
+            .background(ChatBarTheme.colors.surfaceElevated)
     ) {
-        navigation()
-        Box(Modifier.weight(1f).padding(horizontal = ChatBarSpacing.sm)) {
-            CbText(title, style = ChatBarTheme.typography.title)
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(if (statusBarInset) Modifier.statusBarsPadding() else Modifier)
+                .height(58.dp)
+                .padding(horizontal = ChatBarSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            navigation()
+            Box(Modifier.weight(1f).padding(horizontal = ChatBarSpacing.sm)) {
+                CbText(title, style = ChatBarTheme.typography.title)
+            }
+            actions()
         }
-        actions()
+        if (elevated) CbDivider(color = ChatBarTheme.colors.border.copy(alpha = 0.72f))
     }
 }

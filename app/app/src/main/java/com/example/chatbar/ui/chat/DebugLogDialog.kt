@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.chat
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -21,16 +23,6 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.DeleteSweep
-import androidx.compose.material.icons.filled.Error
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
-import androidx.compose.material.icons.filled.KeyboardArrowDown
-import androidx.compose.material.icons.filled.KeyboardArrowRight
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -80,17 +72,17 @@ fun DebugLogDialog(
             CbTopBar(
                 title = "调试控制台",
                 statusBarInset = true,
-                navigation = { CbIconButton(Icons.Default.Close, "关闭", onDismiss) },
+                navigation = { CbIconButton(AppIcons.Close, "关闭", onDismiss) },
                 actions = {
                     if (rebuilding) CbSpinner(Modifier.size(24.dp))
-                    else CbIconButton(Icons.Default.Refresh, "重建 RAG 索引", {
+                    else CbIconButton(AppIcons.Refresh, "重建 RAG 索引", {
                         rebuilding = true
                         scope.launch {
                             rebuildResult = viewModel.rebuildRagIndex()
                             rebuilding = false
                         }
                     }, tint = ChatBarTheme.colors.primary)
-                    CbIconButton(Icons.Default.DeleteSweep, "清空日志", { DebugLogManager.clearLogs(sessionId) }, tint = ChatBarTheme.colors.destructive)
+                    CbIconButton(AppIcons.DeleteSweep, "清空日志", { DebugLogManager.clearLogs(sessionId) }, tint = ChatBarTheme.colors.destructive)
                 }
             )
             if (sessionLogs.isEmpty()) {
@@ -138,9 +130,9 @@ fun DebugLogCard(logEntry: DebugLogEntry) {
                         style = ChatBarTheme.typography.caption
                     )
                 }
-                if (logEntry.error != null) CbIcon(Icons.Default.Error, "错误", tint = ChatBarTheme.colors.destructive)
+                if (logEntry.error != null) CbIcon(AppIcons.Error, "错误", tint = ChatBarTheme.colors.destructive)
                 else if (!logEntry.isCompleted) CbSpinner(Modifier.size(20.dp))
-                CbIcon(if (expanded) Icons.Default.ExpandLess else Icons.Default.ExpandMore, if (expanded) "收起" else "展开", tint = ChatBarTheme.colors.mutedForeground)
+                CbIcon(if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore, if (expanded) "收起" else "展开", tint = ChatBarTheme.colors.mutedForeground)
             }
             AnimatedVisibility(expanded) {
                 Column(Modifier.fillMaxWidth().padding(top = 12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -179,10 +171,10 @@ private fun DebugSection(title: String, text: String, copy: (String) -> Unit, co
         verticalAlignment = Alignment.CenterVertically
     ) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            CbIcon(if (expanded) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight, null, Modifier.size(18.dp), ChatBarTheme.colors.primary)
+            CbIcon(if (expanded) AppIcons.KeyboardArrowDown else AppIcons.KeyboardArrowRight, null, Modifier.size(18.dp), ChatBarTheme.colors.primary)
             Spacer(Modifier.width(4.dp)); CbText(title, style = ChatBarTheme.typography.heading)
         }
-        CbIconButton(Icons.Default.ContentCopy, "复制", { copy(text) }, modifier = Modifier.size(32.dp), tint = ChatBarTheme.colors.mutedForeground)
+        CbIconButton(AppIcons.ContentCopy, "复制", { copy(text) }, modifier = Modifier.size(32.dp), tint = ChatBarTheme.colors.mutedForeground)
     }
     AnimatedVisibility(expanded) { content() }
 }

@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.kit
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import android.app.Activity
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
@@ -34,11 +36,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.AddPhotoAlternate
-import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
@@ -88,7 +85,7 @@ fun CbField(
                         .clickable(role = Role.Button, onClick = onFullscreenEdit),
                     contentAlignment = Alignment.Center
                 ) {
-                    CbIcon(Icons.Default.OpenInFull, "\u5168\u5c4f\u7f16\u8f91", Modifier.size(14.dp), colors.mutedForeground)
+                    CbIcon(AppIcons.OpenInFull, "\u5168\u5c4f\u7f16\u8f91", Modifier.size(14.dp), colors.mutedForeground)
                 }
             }
         } else {
@@ -386,7 +383,7 @@ fun FullscreenTextEditor(
     images: List<String> = emptyList(),
     onAddImage: (() -> Unit)? = null,
     onRemoveImage: ((String) -> Unit)? = null,
-    confirmIcon: ImageVector = Icons.Default.Check,
+    confirmIcon: ImageVector = AppIcons.Check,
     confirmEnabled: Boolean = true
 ) {
     if (!visible) return
@@ -426,7 +423,7 @@ fun FullscreenTextEditor(
     images: List<String> = emptyList(),
     onAddImage: (() -> Unit)? = null,
     onRemoveImage: ((String) -> Unit)? = null,
-    confirmIcon: ImageVector = Icons.Default.Check,
+    confirmIcon: ImageVector = AppIcons.Check,
     confirmEnabled: Boolean = true
 ) {
     if (!visible) return
@@ -553,7 +550,7 @@ private fun FullscreenTextEditorLayout(
                         Box(Modifier.size(96.dp).clip(RoundedCornerShape(ChatBarShape.sm))) {
                             AsyncImage(File(path), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                             Box(Modifier.align(Alignment.TopEnd).size(28.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.55f)).clickable { onRemoveImage?.invoke(path) }, contentAlignment = Alignment.Center) {
-                                CbIcon(Icons.Default.Close, "删除图片", Modifier.size(16.dp), Color.White)
+                                CbIcon(AppIcons.Close, "删除图片", Modifier.size(16.dp), Color.White)
                             }
                         }
                     }
@@ -568,10 +565,10 @@ private fun FullscreenTextEditorLayout(
                 textField(colors, interactionSource, focused)
             }
         }
-        CbIconButton(Icons.Default.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(ChatBarSpacing.lg).size(56.dp).background(colors.card, CircleShape))
+        CbIconButton(AppIcons.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(ChatBarSpacing.lg).size(56.dp).background(colors.card, CircleShape))
         Row(Modifier.align(Alignment.BottomEnd).padding(ChatBarSpacing.lg), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
             if (onAddImage != null) {
-                CbIconButton(Icons.Default.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(colors.card, CircleShape), tint = colors.primary)
+                CbIconButton(AppIcons.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(colors.card, CircleShape), tint = colors.primary)
             }
             CbIconButton(confirmIcon, "确认", onConfirm, Modifier.size(56.dp).background(colors.primary, CircleShape), enabled = confirmEnabled, tint = colors.primaryForeground)
         }

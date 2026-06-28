@@ -15,6 +15,9 @@ import androidx.compose.ui.unit.sp
 data class ChatBarColors(
     val background: Color,
     val foreground: Color,
+    val surface: Color,
+    val surfaceElevated: Color,
+    val surfaceSubtle: Color,
     val card: Color,
     val cardForeground: Color,
     val cardShadow: Color,
@@ -79,6 +82,12 @@ object ChatBarElevation {
     val xhigh = 8.dp
 }
 
+object ChatBarMotion {
+    const val fast = 120
+    const val normal = 180
+    const val slow = 260
+}
+
 private val LocalChatBarColors = staticCompositionLocalOf<ChatBarColors> {
     error("ChatBarTheme missing")
 }
@@ -95,25 +104,28 @@ object ChatBarTheme {
 }
 
 private val LightColors = ChatBarColors(
-    background = Color(0xFFFAFAFA),
-    foreground = Color(0xFF1A1C1B),
+    background = Color(0xFFFCFDFC),
+    foreground = Color(0xFF171A1F),
+    surface = Color(0xFFFFFFFF),
+    surfaceElevated = Color(0xFFFFFFFF),
+    surfaceSubtle = Color(0xFFF6F8F7),
     card = Color.White,
-    cardForeground = Color(0xFF1A1C1B),
-    cardShadow = Color(0x1A000000),
+    cardForeground = Color(0xFF171A1F),
+    cardShadow = Color(0x2022312D),
     popover = Color.White,
-    popoverForeground = Color(0xFF1A1C1B),
-    border = Color(0xFFE4E7E5),
-    input = Color(0xFFF5F5F3),
-    ring = Color(0xFF58BCA8).copy(alpha = 0.45f),
-    primary = Color(0xFF3EA08E),
+    popoverForeground = Color(0xFF171A1F),
+    border = Color(0xFFDDE3DF),
+    input = Color(0xFFF3F6F4),
+    ring = Color(0xFF2F8E7B).copy(alpha = 0.42f),
+    primary = Color(0xFF2F8E7B),
     primaryForeground = Color.White,
-    primaryAlpha = Color(0xFF58BCA8).copy(alpha = 0.12f),
-    secondary = Color(0xFFF3F4F3),
-    secondaryForeground = Color(0xFF1A1C1B),
-    muted = Color(0xFFF3F4F3),
-    mutedForeground = Color(0xFF757975),
-    accent = Color(0xFF58BCA8).copy(alpha = 0.10f),
-    accentForeground = Color(0xFF1A1C1B),
+    primaryAlpha = Color(0xFF2F8E7B).copy(alpha = 0.12f),
+    secondary = Color(0xFFEFF3F5),
+    secondaryForeground = Color(0xFF171A1F),
+    muted = Color(0xFFEFF2F0),
+    mutedForeground = Color(0xFF68716D),
+    accent = Color(0xFFEAF6F2),
+    accentForeground = Color(0xFF143A34),
     success = Color(0xFF3DA86C),
     warning = Color(0xFFE8A838),
     destructive = Color(0xFFDC5C50),
@@ -122,25 +134,28 @@ private val LightColors = ChatBarColors(
 )
 
 private val DarkColors = ChatBarColors(
-    background = Color(0xFF0F1412),
-    foreground = Color(0xFFE4EAE7),
+    background = Color(0xFF0F1110),
+    foreground = Color(0xFFE8EFEB),
+    surface = Color(0xFF141917),
+    surfaceElevated = Color(0xFF1B211F),
+    surfaceSubtle = Color(0xFF202724),
     card = Color(0xFF171C1A),
     cardForeground = Color(0xFFE4EAE7),
-    cardShadow = Color(0x33000000),
+    cardShadow = Color(0x52000000),
     popover = Color(0xFF1B2120),
     popoverForeground = Color(0xFFE4EAE7),
-    border = Color(0xFF2A312E),
-    input = Color(0xFF151917),
-    ring = Color(0xFF69CDB8).copy(alpha = 0.55f),
-    primary = Color(0xFF5DC4B2),
+    border = Color(0xFF2D3531),
+    input = Color(0xFF151A18),
+    ring = Color(0xFF62CBB5).copy(alpha = 0.50f),
+    primary = Color(0xFF62CBB5),
     primaryForeground = Color(0xFF0A1E1B),
-    primaryAlpha = Color(0xFF69CDB8).copy(alpha = 0.16f),
-    secondary = Color(0xFF1F2624),
+    primaryAlpha = Color(0xFF62CBB5).copy(alpha = 0.16f),
+    secondary = Color(0xFF20272A),
     secondaryForeground = Color(0xFFE4EAE7),
-    muted = Color(0xFF1F2624),
-    mutedForeground = Color(0xFF9EA7A3),
-    accent = Color(0xFF69CDB8).copy(alpha = 0.14f),
-    accentForeground = Color(0xFFE4EAE7),
+    muted = Color(0xFF202724),
+    mutedForeground = Color(0xFFA2ACA7),
+    accent = Color(0xFF18332E),
+    accentForeground = Color(0xFFD8FFF5),
     success = Color(0xFF5CBC82),
     warning = Color(0xFFDCA83C),
     destructive = Color(0xFFEC7A6E),

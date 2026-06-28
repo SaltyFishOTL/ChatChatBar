@@ -38,7 +38,6 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -46,6 +45,7 @@ import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.material3.Icon
 
 @Composable
 fun CbText(
@@ -74,11 +74,25 @@ fun CbSurface(
     elevation: Dp = 0.dp,
     content: @Composable BoxScope.() -> Unit
 ) {
+    val colors = ChatBarTheme.colors
+    val surfaceColor = if (elevation > 0.dp && color == colors.card) colors.surfaceElevated else color
     Box(
         modifier = modifier
-            .let { if (elevation > 0.dp) it.shadow(elevation, shape, ambientColor = ChatBarTheme.colors.cardShadow) else it }
+            .let {
+                if (elevation > 0.dp) {
+                    it.shadow(
+                        elevation = elevation,
+                        shape = shape,
+                        clip = false,
+                        ambientColor = colors.cardShadow,
+                        spotColor = colors.cardShadow
+                    )
+                } else {
+                    it
+                }
+            }
             .clip(shape)
-            .background(color)
+            .background(surfaceColor)
             .let { if (border != null) it.border(border, shape) else it },
         content = content
     )
@@ -99,8 +113,13 @@ fun CbButton(
     var pressVersion by remember { mutableStateOf(0) }
     val scale by animateFloatAsState(
         if (pressVersion % 2 == 1) 0.96f else 1f,
-        animationSpec = tween(80),
+        animationSpec = tween(ChatBarMotion.fast),
         label = "btnScale"
+    )
+    val alpha by animateFloatAsState(
+        if (enabled) 1f else 0.48f,
+        animationSpec = tween(ChatBarMotion.normal),
+        label = "btnAlpha"
     )
     val colors = ChatBarTheme.colors
     val bg = when (variant) {
@@ -138,7 +157,11 @@ fun CbButton(
     }
     Box(
         modifier = modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
             .height(h.coerceAtLeast(44.dp))
             .clip(shape)
             .background(bg)
@@ -182,11 +205,11 @@ fun CbIcon(
     modifier: Modifier = Modifier,
     tint: Color = ChatBarTheme.colors.foreground
 ) {
-    androidx.compose.foundation.Image(
-        painter = rememberVectorPainter(imageVector),
+    Icon(
+        imageVector = imageVector,
         contentDescription = contentDescription,
         modifier = modifier,
-        colorFilter = androidx.compose.ui.graphics.ColorFilter.tint(tint)
+        tint = tint
     )
 }
 
@@ -202,8 +225,13 @@ fun CbIconButton(
     var pressVersion by remember { mutableStateOf(0) }
     val scale by animateFloatAsState(
         if (pressVersion % 2 == 1) 0.92f else 1f,
-        animationSpec = tween(80),
+        animationSpec = tween(ChatBarMotion.fast),
         label = "iconBtnScale"
+    )
+    val alpha by animateFloatAsState(
+        if (enabled) 1f else 0.45f,
+        animationSpec = tween(ChatBarMotion.normal),
+        label = "iconBtnAlpha"
     )
     androidx.compose.runtime.LaunchedEffect(pressVersion) {
         if (pressVersion > 0) {
@@ -213,7 +241,11 @@ fun CbIconButton(
     }
     Box(
         modifier = modifier
-            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                this.alpha = alpha
+            }
             .size(40.dp)
             .clip(RoundedCornerShape(ChatBarShape.sm))
             .clickable(enabled = enabled, role = Role.Button) {
@@ -236,7 +268,7 @@ fun CbFab(
     var pressVersion by remember { mutableStateOf(0) }
     val scale by animateFloatAsState(
         if (pressVersion % 2 == 1) 0.92f else 1f,
-        animationSpec = tween(80),
+        animationSpec = tween(ChatBarMotion.fast),
         label = "fabScale"
     )
     androidx.compose.runtime.LaunchedEffect(pressVersion) {
@@ -249,8 +281,13 @@ fun CbFab(
     Box(
         modifier = modifier
             .graphicsLayer { scaleX = scale; scaleY = scale }
-            .shadow(ChatBarElevation.medium, shape, ambientColor = ChatBarTheme.colors.cardShadow)
-            .size(width = 48.dp, height = 48.dp)
+            .shadow(
+                elevation = ChatBarElevation.xhigh,
+                shape = shape,
+                ambientColor = ChatBarTheme.colors.cardShadow,
+                spotColor = ChatBarTheme.colors.cardShadow
+            )
+            .size(width = 52.dp, height = 52.dp)
             .clip(shape)
             .background(ChatBarTheme.colors.primary)
             .clickable(role = Role.Button) {

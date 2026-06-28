@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.home
 
+import com.example.chatbar.ui.kit.AppIcons
+
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -21,11 +23,6 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Face
-import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -95,7 +92,7 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            CbFab(Icons.Default.Add, "新建对话", { showStartDialog = true })
+            CbFab(AppIcons.Add, "新建对话", { showStartDialog = true })
         }
     ) {
         Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
@@ -170,7 +167,7 @@ fun HomeScreen(
             dismiss = { CbButton("取消", { actionSession = null }, variant = ButtonVariant.Ghost) }
         ) {
             ActionRow(
-                icon = Icons.Default.PushPin,
+                icon = AppIcons.PushPin,
                 title = if (session.isPinned) "取消置顶" else "置顶",
                 onClick = {
                     viewModel.togglePinSession(session)
@@ -178,7 +175,7 @@ fun HomeScreen(
                 }
             )
             ActionRow(
-                icon = Icons.Default.Delete,
+                icon = AppIcons.Delete,
                 title = "删除聊天",
                 destructive = true,
                 onClick = {
@@ -316,7 +313,7 @@ fun SessionItem(
         }
         if (showPinned) {
             Spacer(Modifier.width(8.dp))
-            CbIcon(Icons.Default.PushPin, "置顶", Modifier.size(16.dp), ChatBarTheme.colors.mutedForeground)
+            CbIcon(AppIcons.PushPin, "置顶", Modifier.size(16.dp), ChatBarTheme.colors.mutedForeground)
         }
     }
 }
@@ -353,7 +350,7 @@ fun CharacterAvatar(avatarPath: String?, modifier: Modifier = Modifier) {
             modifier = modifier.clip(CircleShape).background(ChatBarTheme.colors.accent),
             contentAlignment = Alignment.Center
         ) {
-            CbIcon(Icons.Default.Face, "头像", Modifier.fillMaxSize(0.55f), ChatBarTheme.colors.primary)
+            CbIcon(AppIcons.Face, "头像", Modifier.fillMaxSize(0.55f), ChatBarTheme.colors.primary)
         }
     }
 }
