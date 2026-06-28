@@ -8,10 +8,12 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -38,9 +40,12 @@ import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.OpenInFull
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,13 +53,18 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import java.io.File
+import kotlin.math.roundToInt
 
 @Composable
 fun CbField(
@@ -247,24 +257,25 @@ fun FullscreenTextEditor(
 ) {
     if (!visible) return
     val confirm = onConfirm ?: onDismiss
+    var editorValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
+    LaunchedEffect(text) {
+        if (text != editorValue.text) {
+            val start = editorValue.selection.start.coerceIn(0, text.length)
+            val end = editorValue.selection.end.coerceIn(0, text.length)
+            editorValue = editorValue.copy(text = text, selection = TextRange(start, end), composition = null)
+        }
+    }
     FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
-        val shape = RoundedCornerShape(ChatBarShape.sm)
-        BasicTextField(
-            value = text,
-            onValueChange = onTextChange,
-            modifier = Modifier
-                .fillMaxSize()
-                .background(ctxColors.input, shape)
-                .border(if (focused) 1.5.dp else 1.dp, if (focused) ctxColors.primary else ctxColors.border, shape)
-                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
-            singleLine = false,
-            textStyle = ChatBarTheme.typography.body.copy(color = ctxColors.foreground),
-            cursorBrush = SolidColor(ctxColors.primary),
+        CursorAwareFullscreenTextField(
+            value = editorValue,
+            onValueChange = { newValue ->
+                editorValue = newValue
+                if (newValue.text != text) onTextChange(newValue.text)
+            },
+            placeholder = placeholder,
+            colors = ctxColors,
             interactionSource = interactionSource,
-            decorationBox = { inner ->
-                if (text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = ctxColors.mutedForeground)
-                inner()
-            }
+            focused = focused
         )
     }
 }
@@ -287,27 +298,92 @@ fun FullscreenTextEditor(
     if (!visible) return
     val confirm = onConfirm ?: onDismiss
     FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
-        val shape = RoundedCornerShape(ChatBarShape.sm)
+        CursorAwareFullscreenTextField(
+            value = value,
+            onValueChange = onValueChange,
+            placeholder = placeholder,
+            colors = ctxColors,
+            interactionSource = interactionSource,
+            focused = focused
+        )
+    }
+}
+
+@Composable
+private fun CursorAwareFullscreenTextField(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit,
+    placeholder: String,
+    colors: ChatBarColors,
+    interactionSource: MutableInteractionSource,
+    focused: Boolean
+) {
+    val density = LocalDensity.current
+    val shape = RoundedCornerShape(ChatBarShape.sm)
+    val scrollState = rememberScrollState()
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var fieldHeightPx by remember { mutableStateOf(0) }
+    var lastSelectionEnd by remember { mutableStateOf(value.selection.end) }
+    var preferredCursorY by remember { mutableStateOf<Float?>(null) }
+    val imeBottom = WindowInsets.ime.getBottom(density)
+
+    LaunchedEffect(value.selection.end, value.text, imeBottom, fieldHeightPx, textLayoutResult, focused) {
+        val layout = textLayoutResult ?: return@LaunchedEffect
+        if (!focused || fieldHeightPx <= 0) return@LaunchedEffect
+        val selectionEnd = value.selection.end.coerceIn(0, value.text.length)
+        val cursorRect = layout.getCursorRect(selectionEnd)
+        val cursorCenter = (cursorRect.top + cursorRect.bottom) / 2f
+        val verticalPadding = with(density) { 22.dp.toPx() }
+        val visibleHeight = (fieldHeightPx - verticalPadding).coerceAtLeast(1f)
+        val margin = with(density) { 24.dp.toPx() }
+        val maxPreferredY = (visibleHeight - margin).coerceAtLeast(margin)
+
+        if (selectionEnd != lastSelectionEnd || preferredCursorY == null) {
+            preferredCursorY = (cursorCenter - scrollState.value).coerceIn(margin, maxPreferredY)
+        }
+
+        val desiredCursorY = (preferredCursorY ?: (cursorCenter - scrollState.value)).coerceIn(margin, maxPreferredY)
+        var targetScroll = (cursorCenter - desiredCursorY).roundToInt().coerceIn(0, scrollState.maxValue)
+        val bottomAfterScroll = cursorRect.bottom - targetScroll
+        val topAfterScroll = cursorRect.top - targetScroll
+        if (bottomAfterScroll > visibleHeight - margin) {
+            targetScroll += (bottomAfterScroll - (visibleHeight - margin)).roundToInt()
+        } else if (topAfterScroll < margin) {
+            targetScroll -= (margin - topAfterScroll).roundToInt()
+        }
+        targetScroll = targetScroll.coerceIn(0, scrollState.maxValue)
+        if (targetScroll != scrollState.value) scrollState.scrollTo(targetScroll)
+        preferredCursorY = (cursorCenter - targetScroll).coerceIn(margin, maxPreferredY)
+        lastSelectionEnd = selectionEnd
+    }
+
+    BoxWithConstraints(
+        modifier = Modifier
+            .fillMaxSize()
+            .onSizeChanged { fieldHeightPx = it.height }
+            .background(colors.input, shape)
+            .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, shape)
+            .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp)
+    ) {
         BasicTextField(
             value = value,
             onValueChange = onValueChange,
             modifier = Modifier
-                .fillMaxSize()
-                .background(ctxColors.input, shape)
-                .border(if (focused) 1.5.dp else 1.dp, if (focused) ctxColors.primary else ctxColors.border, shape)
-                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
+                .fillMaxWidth()
+                .heightIn(min = maxHeight.coerceAtLeast(1.dp))
+                .verticalScroll(scrollState),
             singleLine = false,
-            textStyle = ChatBarTheme.typography.body.copy(color = ctxColors.foreground),
-            cursorBrush = SolidColor(ctxColors.primary),
+            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+            cursorBrush = SolidColor(colors.primary),
             interactionSource = interactionSource,
+            onTextLayout = { textLayoutResult = it },
             decorationBox = { inner ->
-                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = ctxColors.mutedForeground)
+                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
                 inner()
             }
         )
     }
 }
-
 @Composable
 private fun FullscreenTextEditorLayout(
     title: String,
@@ -349,7 +425,12 @@ private fun FullscreenTextEditorLayout(
                     }
                 }
             }
-            Box(Modifier.fillMaxWidth().weight(1f)) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .weight(1f)
+                    .padding(bottom = 56.dp + ChatBarSpacing.md)
+            ) {
                 textField(colors, interactionSource, focused)
             }
         }
