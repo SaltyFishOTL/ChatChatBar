@@ -423,7 +423,8 @@ class StreamingChatService {
     suspend fun completeText(
         messages: List<ChatApiMessage>,
         modelConfig: ModelConfig,
-        maxTokens: Int? = null
+        maxTokens: Int? = null,
+        thinkingBudget: Int? = null
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -431,7 +432,8 @@ class StreamingChatService {
             messages = messages,
             modelConfig = modelConfig,
             stream = false,
-            maxTokens = maxTokens
+            maxTokens = maxTokens,
+            thinkingBudget = thinkingBudget
         )
 
         val request = Request.Builder()
@@ -500,7 +502,8 @@ class StreamingChatService {
         stream: Boolean,
         maxTokens: Int? = null,
         enableThinkingOverride: Boolean? = null,
-        maxThinkingTokens: Int? = null
+        maxThinkingTokens: Int? = null,
+        thinkingBudget: Int? = null
     ): String {
         val messagesArray = buildJsonArray {
             for (msg in messages) {
@@ -539,6 +542,7 @@ class StreamingChatService {
             modelConfig.reasoningEffort?.takeIf { it.isNotBlank() }?.let { put("reasoning_effort", it) }
             (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put("enable_thinking", it) }
             maxThinkingTokens?.let { put("max_thinking_tokens", it) }
+            thinkingBudget?.let { put("thinking_budget", it) }
         }
 
         return bodyObj.toString()

@@ -156,6 +156,26 @@ fun CbButton(
 }
 
 @Composable
+fun CbDirtySaveButton(
+    dirty: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    variant: ButtonVariant = ButtonVariant.Ghost
+) {
+    Box(modifier) {
+        CbButton("保存", onClick, variant = variant)
+        if (dirty) {
+            Box(
+                Modifier
+                    .align(Alignment.TopEnd)
+                    .size(8.dp)
+                    .background(ChatBarTheme.colors.destructive, CircleShape)
+            )
+        }
+    }
+}
+
+@Composable
 fun CbIcon(
     imageVector: ImageVector,
     contentDescription: String?,

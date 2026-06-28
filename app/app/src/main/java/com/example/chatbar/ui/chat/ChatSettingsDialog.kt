@@ -10,13 +10,17 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -51,6 +55,7 @@ import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
+import com.example.chatbar.ui.kit.CbDirtySaveButton
 import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
@@ -77,6 +82,8 @@ fun ChatSettingsDialog(
     val session by viewModel.session.collectAsState()
     val models by viewModel.availableModels.collectAsState()
     val formats by viewModel.availableFormats.collectAsState()
+    val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
+    val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
     var tab by remember { mutableIntStateOf(0) }
     var modelId by remember { mutableStateOf(session?.modelId) }
@@ -87,7 +94,7 @@ fun ChatSettingsDialog(
     var playerName by remember { mutableStateOf(session?.playerName ?: "") }
     var playerSetting by remember { mutableStateOf(session?.playerSetting ?: "") }
     var background by remember { mutableStateOf(session?.chatBackground ?: "") }
-    var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: false) }
+    var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: true) }
     var longTermMemory by remember { mutableStateOf(session?.longTermMemory ?: "") }
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
@@ -111,6 +118,19 @@ fun ChatSettingsDialog(
         }
     }
 
+    val settingsDirty = session?.let {
+        modelId != it.modelId ||
+            formatId != it.formatCardId ||
+            replyLength.takeIf(String::isNotBlank) != it.replyLength ||
+            replyLanguage.takeIf(String::isNotBlank) != it.replyLanguage ||
+            supplementary.takeIf(String::isNotBlank) != it.supplementarySetting ||
+            playerName.takeIf(String::isNotBlank) != it.playerName ||
+            playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
+            background.takeIf(String::isNotBlank) != it.chatBackground ||
+            longTermMemoryEnabled != it.longTermMemoryEnabled ||
+            longTermMemory != it.longTermMemory
+    } ?: false
+
     fun openFullscreen(title: String, text: String, onChange: (String) -> Unit) {
         fullscreenField = title to text
         fullscreenOnChange = onChange
@@ -123,7 +143,7 @@ fun ChatSettingsDialog(
                 statusBarInset = true,
                 navigation = { CbIconButton(Icons.Default.Close, "关闭", onDismiss) },
                 actions = {
-                    CbButton("应用", {
+                    CbDirtySaveButton(settingsDirty, {
                         viewModel.updateSessionConfig(
                             modelId = modelId,
                             formatCardId = formatId,
@@ -145,8 +165,8 @@ fun ChatSettingsDialog(
             CbTabs(tabs, tab, { tab = it })
             if (tab == 0) {
                 SettingsContent(
-                    modelId, { modelId = it }, models,
-                    formatId, { formatId = it }, formats,
+                    modelId, { modelId = it }, defaultModelId, models,
+                    formatId, { formatId = it }, defaultFormatId, formats,
                     replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
                     supplementary, { supplementary = it },
                     playerName, { playerName = it }, playerSetting, { playerSetting = it },
@@ -201,8 +221,8 @@ fun ChatSettingsDialog(
 
 @Composable
 private fun SettingsContent(
-    modelId: String?, onModel: (String?) -> Unit, models: List<ModelConfig>,
-    formatId: String?, onFormat: (String?) -> Unit, formats: List<FormatCard>,
+    modelId: String?, onModel: (String?) -> Unit, defaultModelId: String?, models: List<ModelConfig>,
+    formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
     supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
@@ -214,7 +234,15 @@ private fun SettingsContent(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        NullableSelect("对话模型", modelId, models.map { IdOption(it.id, it.displayName) }, onModel, "跟随全局默认")
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                CbText("长期记忆", style = ChatBarTheme.typography.label)
+                CbText("发送时注入 Prompt，AI 回复后自动总结更新。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+            CbSwitch(longTermMemoryEnabled, onLongTermMemoryEnabled)
+        }
+        CbDivider()
+        DefaultAwareSelect("对话模型", modelId, defaultModelId, models.map { IdOption(it.id, it.displayName) }, onModel)
         if (modelId != null && models.none { it.id == modelId }) {
             CbText(
                 "原会话模型在当前配置模式不可用，运行时已跟随全局默认。切回原配置模式后可恢复。",
@@ -222,7 +250,7 @@ private fun SettingsContent(
                 style = ChatBarTheme.typography.caption
             )
         }
-        NullableSelect("格式卡", formatId, formats.map { IdOption(it.id, it.name) }, onFormat, "跟随全局默认")
+        DefaultAwareSelect("格式卡", formatId, defaultFormatId, formats.map { IdOption(it.id, it.name) }, onFormat, noneLabel = "不设置")
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("回复长度", Modifier.weight(1f)) { CbInput(length, onLength, placeholder = "50 字内 / 长篇") }
             CbField("回复语言", Modifier.weight(1f)) { CbInput(language, onLanguage, placeholder = "中文") }
@@ -237,14 +265,6 @@ private fun SettingsContent(
         CbField("玩家设定覆盖", onFullscreenEdit = {
             openFullscreen("玩家设定覆盖", playerSetting, onPlayerSetting)
         }) { CbInput(playerSetting, onPlayerSetting, singleLine = false, minLines = 3) }
-        CbDivider()
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                CbText("长期记忆", style = ChatBarTheme.typography.label)
-                CbText("发送时注入 Prompt，AI 回复后自动总结更新。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-            }
-            CbSwitch(longTermMemoryEnabled, onLongTermMemoryEnabled)
-        }
         CbDivider()
         CbField("聊天背景覆盖") {
             Box(
@@ -271,14 +291,20 @@ private fun LongTermMemoryContent(
     memory: String,
     onMemory: (String) -> Unit
 ) {
-    Column(Modifier.fillMaxSize().padding(16.dp)) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .windowInsetsPadding(WindowInsets.ime)
+    ) {
         CbInput(
             value = memory,
             onValueChange = onMemory,
             placeholder = "记录稳定事实、偏好、关系、目标、已确认设定...",
             modifier = Modifier.fillMaxSize(),
             singleLine = false,
-            minLines = 24
+            minLines = 24,
+            expand = true
         )
     }
 }
@@ -336,9 +362,22 @@ fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit) {
 }
 
 @Composable
-private fun NullableSelect(label: String, selectedId: String?, options: List<IdOption>, onSelected: (String?) -> Unit, empty: String) {
-    val all = listOf(IdOption(null, empty)) + options
-    CbField(label) { CbSelect(all.firstOrNull { it.id == selectedId }, all, { it.label }, { onSelected(it.id) }) }
+private fun DefaultAwareSelect(
+    label: String,
+    selectedId: String?,
+    defaultId: String?,
+    options: List<IdOption>,
+    onSelected: (String?) -> Unit,
+    noneLabel: String? = null
+) {
+    val allOptions = if (defaultId == null && noneLabel != null) listOf(IdOption(null, noneLabel)) + options else options
+    val effectiveId = selectedId ?: defaultId
+    val selected = allOptions.firstOrNull { it.id == effectiveId } ?: allOptions.firstOrNull()
+    CbField(label) {
+        CbSelect(selected, allOptions, { it.label }, { option ->
+            onSelected(if (option.id == defaultId) null else option.id)
+        })
+    }
 }
 
 private data class IdOption(val id: String?, val label: String)

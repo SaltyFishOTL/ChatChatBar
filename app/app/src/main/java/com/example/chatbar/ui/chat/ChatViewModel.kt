@@ -122,6 +122,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _availableFormats = MutableStateFlow<List<FormatCard>>(emptyList())
     val availableFormats: StateFlow<List<FormatCard>> = _availableFormats.asStateFlow()
 
+    private val _effectiveDefaultModelId = MutableStateFlow<String?>(null)
+    val effectiveDefaultModelId: StateFlow<String?> = _effectiveDefaultModelId.asStateFlow()
+
+    private val _effectiveDefaultFormatCardId = MutableStateFlow<String?>(null)
+    val effectiveDefaultFormatCardId: StateFlow<String?> = _effectiveDefaultFormatCardId.asStateFlow()
+
     private val _availableSaveSlots = MutableStateFlow<List<SaveSlot>>(emptyList())
     val availableSaveSlots: StateFlow<List<SaveSlot>> = _availableSaveSlots.asStateFlow()
 
@@ -170,11 +176,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun refreshConfigurations() {
         viewModelScope.launch {
             val settings = settingsRepository.getAppSettings()
-            _availableModels.value = modelResolver.availableChatModels(settings)
+            val availableModels = modelResolver.availableChatModels(settings)
+            _availableModels.value = availableModels
+            _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
+            val formats = formatCardRepository.getAll()
+            _availableFormats.value = formats
+            _effectiveDefaultFormatCardId.value = settings.defaultFormatCardId
             val status = modelResolver.status(settings)
             _modelConfigurationErrors.value = status.errors
             _isModelUsable.value = status.isUsable
-            _availableFormats.value = formatCardRepository.getAll()
         }
     }
 
@@ -726,7 +736,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ?: playerSettingObj.globalPersona
                 val activePlayerName = currentSession.playerName?.takeIf { it.isNotBlank() }
                     ?: playerSettingObj.playerName
-                val activeFormatId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
+                val activeFormatId = currentSession.formatCardId
+                    ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
 
                 val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, messages.value, currentSession.timedWorldInfo)
@@ -1057,7 +1068,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val updatedMemory = streamingChatService.completeText(
                     messages = listOf(ChatApiMessage.text("user", prompt)),
                     modelConfig = modelConfig,
-                    maxTokens = 1200
+                    maxTokens = 10000,
+                    thinkingBudget = 512
                 ).trim()
                 if (updatedMemory.isNotBlank()) {
                     val current = chatRepository.getSession(sessionId) ?: return@launch

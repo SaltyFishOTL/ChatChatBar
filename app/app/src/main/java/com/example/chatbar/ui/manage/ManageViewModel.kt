@@ -285,6 +285,16 @@ class ManageViewModel : ViewModel() {
     fun setFormatCardDefault(id: String) {
         viewModelScope.launch {
             formatCardRepository.setDefault(id)
+            val current = settingsRepository.getAppSettings()
+            settingsRepository.saveAppSettings(current.copy(defaultFormatCardId = id))
+        }
+    }
+
+    fun setDefaultModel(id: String) {
+        viewModelScope.launch {
+            val current = settingsRepository.getAppSettings()
+            settingsRepository.saveAppSettings(current.copy(defaultModelId = id))
+            refreshEffectiveModels()
         }
     }
 

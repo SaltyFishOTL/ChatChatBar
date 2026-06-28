@@ -22,7 +22,7 @@ data class SaveSlot(
     val replyLanguage: String? = null,
     val roleplayStyle: String? = null,
     val chatBackground: String? = null,
-    val longTermMemoryEnabled: Boolean = false,
+    val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val contextWindowSize: Int? = null,
     val messages: List<ChatMessage> = emptyList(),

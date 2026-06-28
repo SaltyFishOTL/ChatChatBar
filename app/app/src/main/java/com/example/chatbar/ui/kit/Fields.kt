@@ -117,6 +117,7 @@ fun CbInput(
     enabled: Boolean = true,
     singleLine: Boolean = true,
     minLines: Int = 1,
+    expand: Boolean = false,
     isError: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     visualTransformation: VisualTransformation = VisualTransformation.None
@@ -138,12 +139,31 @@ fun CbInput(
         animationSpec = tween(200),
         label = "inputBorderWidth"
     )
-    val heightModifier = if (singleLine) {
-        Modifier.heightIn(min = 44.dp)
-    } else {
-        Modifier.height(150.dp)
+    val heightModifier = when {
+        singleLine -> Modifier.heightIn(min = 44.dp)
+        expand -> Modifier.fillMaxSize()
+        else -> Modifier.height(150.dp)
     }
     val shape = RoundedCornerShape(ChatBarShape.sm)
+    if (expand && !singleLine) {
+        CursorAwareExpandedStringInput(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = modifier,
+            placeholder = placeholder,
+            enabled = enabled,
+            minLines = minLines,
+            keyboardOptions = keyboardOptions,
+            visualTransformation = visualTransformation,
+            colors = colors,
+            shape = shape,
+            borderWidth = borderWidth,
+            borderColor = borderColor,
+            interactionSource = interactionSource,
+            focused = focused
+        )
+        return
+    }
     Box(modifier = modifier.fillMaxWidth()) {
         BasicTextField(
             value = value,
@@ -171,6 +191,120 @@ fun CbInput(
         )
         CbText(
             "${value.length}字",
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
+                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
+                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
+            color = colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+    }
+}
+
+@Composable
+private fun CursorAwareExpandedStringInput(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier,
+    placeholder: String,
+    enabled: Boolean,
+    minLines: Int,
+    keyboardOptions: KeyboardOptions,
+    visualTransformation: VisualTransformation,
+    colors: ChatBarColors,
+    shape: RoundedCornerShape,
+    borderWidth: androidx.compose.ui.unit.Dp,
+    borderColor: Color,
+    interactionSource: MutableInteractionSource,
+    focused: Boolean
+) {
+    val density = LocalDensity.current
+    val scrollState = rememberScrollState()
+    var fieldValue by remember { mutableStateOf(TextFieldValue(value, selection = TextRange(value.length))) }
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    var fieldHeightPx by remember { mutableStateOf(0) }
+    var lastSelectionEnd by remember { mutableStateOf(fieldValue.selection.end) }
+    var preferredCursorY by remember { mutableStateOf<Float?>(null) }
+    val imeBottom = WindowInsets.ime.getBottom(density)
+
+    LaunchedEffect(value) {
+        if (value != fieldValue.text) {
+            val start = fieldValue.selection.start.coerceIn(0, value.length)
+            val end = fieldValue.selection.end.coerceIn(0, value.length)
+            fieldValue = fieldValue.copy(text = value, selection = TextRange(start, end), composition = null)
+        }
+    }
+
+    LaunchedEffect(fieldValue.selection.end, fieldValue.text, imeBottom, fieldHeightPx, textLayoutResult, focused) {
+        val layout = textLayoutResult ?: return@LaunchedEffect
+        if (!focused || fieldHeightPx <= 0) return@LaunchedEffect
+        val selectionEnd = fieldValue.selection.end.coerceIn(0, fieldValue.text.length)
+        val cursorRect = layout.getCursorRect(selectionEnd)
+        val cursorCenter = (cursorRect.top + cursorRect.bottom) / 2f
+        val verticalPadding = with(density) { 22.dp.toPx() }
+        val visibleHeight = (fieldHeightPx - verticalPadding).coerceAtLeast(1f)
+        val margin = with(density) { 24.dp.toPx() }
+        val maxPreferredY = (visibleHeight - margin).coerceAtLeast(margin)
+
+        if (selectionEnd != lastSelectionEnd || preferredCursorY == null) {
+            preferredCursorY = (cursorCenter - scrollState.value).coerceIn(margin, maxPreferredY)
+        }
+
+        val desiredCursorY = (preferredCursorY ?: (cursorCenter - scrollState.value)).coerceIn(margin, maxPreferredY)
+        var targetScroll = (cursorCenter - desiredCursorY).roundToInt().coerceIn(0, scrollState.maxValue)
+        val bottomAfterScroll = cursorRect.bottom - targetScroll
+        val topAfterScroll = cursorRect.top - targetScroll
+        if (bottomAfterScroll > visibleHeight - margin) {
+            targetScroll += (bottomAfterScroll - (visibleHeight - margin)).roundToInt()
+        } else if (topAfterScroll < margin) {
+            targetScroll -= (margin - topAfterScroll).roundToInt()
+        }
+        targetScroll = targetScroll.coerceIn(0, scrollState.maxValue)
+        if (targetScroll != scrollState.value) scrollState.scrollTo(targetScroll)
+        preferredCursorY = (cursorCenter - targetScroll).coerceIn(margin, maxPreferredY)
+        lastSelectionEnd = selectionEnd
+    }
+
+    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
+        val availableHeight = maxHeight
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .onSizeChanged { fieldHeightPx = it.height }
+                .background(colors.input, shape)
+                .border(borderWidth, borderColor, shape)
+                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp)
+        ) {
+            BasicTextField(
+                value = fieldValue,
+                onValueChange = { newValue ->
+                    fieldValue = newValue
+                    if (newValue.text != value) onValueChange(newValue.text)
+                },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = availableHeight.coerceAtLeast(1.dp))
+                    .verticalScroll(scrollState),
+                enabled = enabled,
+                singleLine = false,
+                minLines = minLines,
+                textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+                cursorBrush = SolidColor(colors.primary),
+                interactionSource = interactionSource,
+                keyboardOptions = keyboardOptions,
+                visualTransformation = visualTransformation,
+                onTextLayout = { textLayoutResult = it },
+                decorationBox = { innerTextField ->
+                    if (fieldValue.text.isEmpty() && placeholder.isNotEmpty()) {
+                        CbText(placeholder, color = colors.mutedForeground)
+                    }
+                    innerTextField()
+                }
+            )
+        }
+        CbText(
+            "${value.length} chars",
             modifier = Modifier
                 .align(Alignment.BottomEnd)
                 .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
