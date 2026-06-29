@@ -23,6 +23,7 @@ data class ChatSession(
     val chatBackground: String? = null,
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
+    val longTermMemoryUpdatedThroughMessageId: String? = null,
     val contextWindowSize: Int = 20,
     val isPinned: Boolean = false,
     val lastMessagePreview: String? = null,

@@ -314,10 +314,10 @@ JSON only, no Markdown, no explanation:
         appendLine("Current memory:")
         appendLine(currentMemory.ifBlank { "(empty)" })
         appendLine()
-        appendLine("Latest user message:")
+        appendLine("Stable user message:")
         appendLine(userContent.ifBlank { "(empty)" })
         appendLine()
-        appendLine("Latest assistant reply:")
+        appendLine("Stable assistant reply:")
         appendLine(assistantContent)
     }
 

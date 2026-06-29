@@ -13,6 +13,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -983,9 +984,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                             updateLongTermMemoryAfterReply(
                                 session = currentSession,
-                                modelConfig = modelConfig,
-                                userContent = currentUserContent.orEmpty(),
-                                assistantContent = accumulatedText
+                                modelConfig = modelConfig
                             )
                             
                             try {
@@ -1051,19 +1050,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     private fun updateLongTermMemoryAfterReply(
         session: ChatSession,
-        modelConfig: ModelConfig,
-        userContent: String,
-        assistantContent: String
+        modelConfig: ModelConfig
     ) {
-        if (!session.longTermMemoryEnabled || assistantContent.isBlank()) return
+        if (!session.longTermMemoryEnabled) return
         viewModelScope.launch {
             try {
                 val latestSession = chatRepository.getSession(sessionId) ?: return@launch
                 if (!latestSession.longTermMemoryEnabled) return@launch
+                val candidate = LongTermMemoryUpdatePolicy.nextCandidate(
+                    messages = chatRepository.getMessages(sessionId),
+                    updatedThroughMessageId = latestSession.longTermMemoryUpdatedThroughMessageId
+                ) ?: return@launch
                 val prompt = PromptTemplates.longTermMemoryUpdatePrompt(
                     currentMemory = latestSession.longTermMemory,
-                    userContent = userContent,
-                    assistantContent = assistantContent
+                    userContent = candidate.userContent,
+                    assistantContent = candidate.assistantContent
                 )
                 val updatedMemory = streamingChatService.completeText(
                     messages = listOf(ChatApiMessage.text("user", prompt)),
@@ -1071,13 +1072,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     maxTokens = 10000,
                     thinkingBudget = 512
                 ).trim()
-                if (updatedMemory.isNotBlank()) {
-                    val current = chatRepository.getSession(sessionId) ?: return@launch
-                    if (current.longTermMemoryEnabled) {
-                        val updatedSession = current.copy(longTermMemory = updatedMemory)
-                        chatRepository.updateSession(updatedSession)
-                        _session.value = updatedSession
-                    }
+                val current = chatRepository.getSession(sessionId) ?: return@launch
+                if (current.longTermMemoryEnabled) {
+                    val updatedSession = current.copy(
+                        longTermMemory = updatedMemory.ifBlank { current.longTermMemory },
+                        longTermMemoryUpdatedThroughMessageId = candidate.assistantMessageId
+                    )
+                    chatRepository.updateSession(updatedSession)
+                    _session.value = updatedSession
                 }
             } catch (_: Exception) {
                 // Memory update is best-effort and must not block chat completion.
@@ -1252,6 +1254,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _session.value?.let { session ->
                 chatRepository.updateSession(session.copy(
                     longTermMemory = "",
+                    longTermMemoryUpdatedThroughMessageId = null,
                     lastMessagePreview = null,
                     lastMessageTime = null
                 ))
@@ -1399,6 +1402,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 chatBackground = curSession.chatBackground,
                 longTermMemoryEnabled = curSession.longTermMemoryEnabled,
                 longTermMemory = curSession.longTermMemory,
+                longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
                 contextWindowSize = curSession.contextWindowSize
             )
 
@@ -1441,6 +1445,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 chatBackground = slot.chatBackground,
                 longTermMemoryEnabled = slot.longTermMemoryEnabled,
                 longTermMemory = slot.longTermMemory,
+                longTermMemoryUpdatedThroughMessageId = slot.longTermMemoryUpdatedThroughMessageId,
                 contextWindowSize = slot.contextWindowSize ?: curSession.contextWindowSize,
                 lastMessagePreview = slot.messages.lastOrNull()?.content?.take(100),
                 lastMessageTime = slot.messages.lastOrNull()?.createdAt
