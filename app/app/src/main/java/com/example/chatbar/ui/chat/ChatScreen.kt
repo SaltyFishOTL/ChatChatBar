@@ -171,6 +171,10 @@ fun ChatScreen(
     }
     val regenerableId = messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.id
     val imageGenerationRunning = imageGeneration != null && imageGeneration?.phase != ImageGenerationPhase.FAILED
+    val imageGenerationAnchorExists = remember(messages, imageGeneration?.anchorMessageId) {
+        val anchorId = imageGeneration?.anchorMessageId
+        anchorId != null && messages.any { it.id == anchorId }
+    }
 
     LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) {
         if (!restoringViewport) viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
@@ -266,9 +270,15 @@ fun ChatScreen(
                         ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
                         imageGenerationEnabled = !imageGenerationRunning
                     )
+                    imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
+                        NovelAiGenerationCard(generation,
+                            onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
+                            onDismiss = { viewModel.dismissNovelAiImageGeneration() }
+                        )
+                    }
                 }
                 streamingMessage?.let { item(key = "streaming-${it.id}") { ChatBubble(it, fontScale = bubbleFontScale) } }
-                imageGeneration?.let { generation ->
+                imageGeneration?.takeUnless { imageGenerationAnchorExists }?.let { generation ->
                     item(key = "novelai-generation") {
                         NovelAiGenerationCard(generation,
                             onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
@@ -372,7 +382,21 @@ fun ChatScreen(
         }
     }
     expandedImagePath?.let { path ->
-        FullImageDialog(path = path, onDismiss = { expandedImagePath = null })
+        val context = LocalContext.current
+        FullImageDialog(
+            path = path,
+            onDismiss = { expandedImagePath = null },
+            onSetCardAvatar = if (!isArchived && characterCard != null) ({
+                viewModel.replaceCharacterCardAvatarFromImage(path) { _, message ->
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            }) else null,
+            onSetCardBackground = if (!isArchived && characterCard != null) ({
+                viewModel.replaceCharacterCardBackgroundFromImage(path) { _, message ->
+                    Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            }) else null
+        )
     }
     deleteImageTarget?.let { (messageId, path) ->
         CbDialog(
@@ -480,20 +504,55 @@ private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Un
 }
 
 @Composable
-private fun FullImageDialog(path: String, onDismiss: () -> Unit) {
+private fun FullImageDialog(
+    path: String,
+    onDismiss: () -> Unit,
+    onSetCardAvatar: (() -> Unit)? = null,
+    onSetCardBackground: (() -> Unit)? = null
+) {
     var scale by remember(path) { mutableFloatStateOf(1f) }
     var offset by remember(path) { mutableStateOf(Offset.Zero) }
-    var showSaveDialog by remember { mutableStateOf(false) }
+    var showImageActions by remember { mutableStateOf(false) }
     val context = LocalContext.current
 
-    if (showSaveDialog) {
+    if (showImageActions) {
         CbDialog(
-            onDismissRequest = { showSaveDialog = false },
-            title = "保存图片",
-            confirm = { CbButton("保存", { showSaveDialog = false; saveImageToGallery(context, path) }) },
-            dismiss = { CbButton("取消", { showSaveDialog = false }, variant = ButtonVariant.Ghost) }
+            onDismissRequest = { showImageActions = false },
+            title = "图片操作",
+            dismiss = { CbButton("取消", { showImageActions = false }, variant = ButtonVariant.Ghost) }
         ) {
-            CbText("保存到相册？")
+            CbButton(
+                "保存图片",
+                {
+                    showImageActions = false
+                    saveImageToGallery(context, path)
+                },
+                modifier = Modifier.fillMaxWidth()
+            )
+            if (onSetCardAvatar != null) {
+                Spacer(Modifier.size(8.dp))
+                CbButton(
+                    "将此图片替换为角色卡头像",
+                    {
+                        showImageActions = false
+                        onSetCardAvatar()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Secondary
+                )
+            }
+            if (onSetCardBackground != null) {
+                Spacer(Modifier.size(8.dp))
+                CbButton(
+                    "将此图片替换为角色卡背景",
+                    {
+                        showImageActions = false
+                        onSetCardBackground()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Secondary
+                )
+            }
         }
     }
 
@@ -516,7 +575,7 @@ private fun FullImageDialog(path: String, onDismiss: () -> Unit) {
                     .fillMaxSize()
                     .padding(16.dp)
                     .pointerInput(path) {
-                        detectTapGestures(onLongPress = { showSaveDialog = true })
+                        detectTapGestures(onLongPress = { showImageActions = true })
                     }
                     .pointerInput(path) {
                         detectTransformGestures { _, pan, zoom, _ ->

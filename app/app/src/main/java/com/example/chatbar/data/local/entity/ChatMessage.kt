@@ -15,6 +15,10 @@ enum class MessageRole {
     SYSTEM
 }
 
+const val MESSAGE_ORDER_STEP: Long = 1_000_000L
+
+fun Long.toMessageOrderKey(): Long = this * MESSAGE_ORDER_STEP
+
 /**
  * 聊天消息
  */
@@ -29,8 +33,10 @@ data class ChatMessage(
     val alternatives: List<String> = emptyList(),      // 重新生成的替代回复
     val currentAlternativeIndex: Int = 0,
     val reasoningContent: String? = null,              // 思维链内容
+    val generatedFromMessageId: String? = null,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val orderKey: Long = createdAt.toMessageOrderKey()
 ) {
     /** 获取当前显示的内容（考虑替代回复） */
     val displayContent: String
@@ -41,13 +47,20 @@ data class ChatMessage(
         }
 
     companion object {
+        val TimelineComparator: Comparator<ChatMessage> =
+            compareBy<ChatMessage> { it.orderKey }
+                .thenBy { it.createdAt }
+                .thenBy { it.id }
+
         @OptIn(ExperimentalUuidApi::class)
         fun create(
             sessionId: String,
             role: MessageRole,
             content: String,
             images: List<String> = emptyList(),
-            reasoningContent: String? = null
+            reasoningContent: String? = null,
+            generatedFromMessageId: String? = null,
+            orderKey: Long? = null
         ): ChatMessage {
             val now = System.currentTimeMillis()
             return ChatMessage(
@@ -57,8 +70,10 @@ data class ChatMessage(
                 content = content,
                 images = images,
                 reasoningContent = reasoningContent,
+                generatedFromMessageId = generatedFromMessageId,
                 createdAt = now,
-                updatedAt = now
+                updatedAt = now,
+                orderKey = orderKey ?: now.toMessageOrderKey()
             )
         }
     }

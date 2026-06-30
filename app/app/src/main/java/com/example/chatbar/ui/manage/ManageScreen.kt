@@ -61,6 +61,7 @@ import com.example.chatbar.data.local.entity.ModelTemplate
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
+import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.ui.home.CharacterAvatar
@@ -113,6 +114,7 @@ fun ManageScreen(
     val player by viewModel.playerSetting.collectAsState()
     val characterPresets by viewModel.characterPresets.collectAsState()
     val formatPresets by viewModel.formatPresets.collectAsState()
+    val modelPresets by viewModel.modelPresets.collectAsState()
     val effectiveModels by viewModel.effectiveChatModels.collectAsState()
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
@@ -124,9 +126,12 @@ fun ManageScreen(
     var tab by rememberSaveable { mutableIntStateOf(0) }
     var settingsSaveRequest by remember { mutableIntStateOf(0) }
     var settingsDirty by remember { mutableStateOf(false) }
-    val visibleTabs = if (settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM) {
-        listOf(0 to "角色", 1 to "格式", 2 to "模型", 3 to "设置")
-    } else listOf(0 to "角色", 1 to "格式", 3 to "设置")
+    val visibleTabs = listOf(
+        0 to "\u89d2\u8272",
+        1 to "\u683c\u5f0f",
+        2 to "\u6a21\u578b",
+        3 to "\u8bbe\u7f6e"
+    )
     LaunchedEffect(settings.modelConfigurationMode) {
         if (visibleTabs.none { it.first == tab }) tab = 3
     }
@@ -232,7 +237,7 @@ fun ManageScreen(
             )
         },
         floatingActionButton = {
-            if (tab < 3 && (tab != 2 || settings.modelConfigurationMode == ModelConfigurationMode.FULL_CUSTOM)) CbFab(AppIcons.Add, "新建", {
+            if (tab < 3) CbFab(AppIcons.Add, "新建", {
                 when (tab) {
                     0 -> onNavigate(CharacterEditRoute(null))
                     1 -> addFormat = true
@@ -271,7 +276,7 @@ fun ManageScreen(
                         if (conflict == null) viewModel.importFormatAsNew(data) else pendingFormatImport = data to conflict
                     } })
                     2 -> ModelsTab(
-                        models, settings.defaultModelId, embeddingModel, retrievalModel,
+                        models, settings.defaultModelId, modelPresets, embeddingModel, retrievalModel,
                         onEditModel = { onNavigate(ModelEditRoute(it)) },
                         onExportModel = { model ->
                             exportModelId = model.id
@@ -279,6 +284,7 @@ fun ManageScreen(
                         },
                         onSetDefaultModel = viewModel::setDefaultModel,
                         onDeleteModel = { id -> deleteTarget = DeleteTarget.Model(id, models.firstOrNull { it.id == id }?.displayName ?: "未命名模型") },
+                        onRecoverPresetModels = { viewModel.importPresetModelCatalog { error -> message = error ?: "内置模型已导入。" } },
                         onEditEmbedding = { editEmbedding = it; showEmbedding = true },
                         onDeleteEmbedding = { id -> deleteTarget = DeleteTarget.Embedding(id, embeddingModel?.displayName ?: "未命名向量模型") },
                         onAddEmbedding = { editEmbedding = null; showEmbedding = true },
@@ -477,7 +483,7 @@ private fun FormatTab(
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
             val hasCard = cards.any { it.sourcePresetKey == preset.presetKey }
             val update = hasCard && cards.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
-            EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = when { update -> "有更新"; !hasCard -> "可恢复"; else -> null }, actions = {
+                EntityRow(preset.displayName, "预制版本 ${preset.version}", badge = when { update -> "有更新"; !hasCard -> "可恢复"; else -> null }, actions = {
                 CbButton("导入", { onRecover(preset) }, variant = ButtonVariant.Secondary)
             })
         }
@@ -518,24 +524,46 @@ private fun CardActionDialog(title: String, onDismiss: () -> Unit, actions: List
 private fun ModelsTab(
     models: List<ModelConfig>,
     defaultModelId: String?,
+    presets: List<PresetEntry>,
     embedding: EmbeddingConfig?,
     retrieval: ModelConfig?,
     onEditModel: (String) -> Unit,
     onExportModel: (ModelConfig) -> Unit,
     onSetDefaultModel: (String) -> Unit,
     onDeleteModel: (String) -> Unit,
+    onRecoverPresetModels: () -> Unit,
     onEditEmbedding: (EmbeddingConfig) -> Unit,
     onDeleteEmbedding: (String) -> Unit,
     onAddEmbedding: () -> Unit,
     onEditRetrieval: () -> Unit,
     onDeleteRetrieval: () -> Unit
 ) {
+    var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultModelId = defaultModelId ?: models.firstOrNull()?.id
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { CbButton(if (showPresets) "收起内置模型" else "恢复内置模型", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
+        if (showPresets) items(presets, key = { it.presetKey }) { preset ->
+            val importedCount = models.count { it.sourcePresetKey != null }
+            val hasUpdate = models.any { it.sourcePresetKey != null && (it.sourcePresetVersion ?: 0) < preset.version }
+            EntityRow(
+                preset.displayName,
+                "预置版本 ${preset.version} · 已导入 $importedCount 个",
+                badge = when {
+                    importedCount == 0 -> "可恢复"
+                    hasUpdate -> "有更新"
+                    else -> null
+                },
+                actions = { CbButton("导入", onRecoverPresetModels, variant = ButtonVariant.Secondary) }
+            )
+        }
         item { SectionTitle("对话模型") }
         items(models, key = { it.id }) { model ->
             val isDefault = model.id == effectiveDefaultModelId
-            EntityRow(model.displayName, "${model.modelName} · ${model.baseUrl}", badge = if (isDefault) "默认" else null, actions = {
+            EntityRow(model.displayName, "${model.modelName} · ${model.baseUrl}", badge = when {
+                isDefault -> "默认"
+                model.sourcePresetKey != null -> "内置"
+                else -> null
+            }, actions = {
                 CbIconButton(AppIcons.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
                 CbIconButton(AppIcons.Download, "导出", { onExportModel(model) })
                 CbIconButton(AppIcons.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
@@ -589,7 +617,7 @@ private fun SettingsTab(
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var novelAiToken by remember { mutableStateOf("") }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
-    var mode by remember { mutableStateOf(settings.modelConfigurationMode) }
+    var mode by remember { mutableStateOf(settings.modelConfigurationMode.normalized()) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
@@ -617,22 +645,22 @@ private fun SettingsTab(
         settings.chatBubbleFontScale
     ) {
         playerName = player.playerName; persona = player.globalPersona
-        modelId = settings.defaultModelId; presetModelKey = settings.presetDefaultModelKey; siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
-        mode = settings.modelConfigurationMode; themeMode = settings.themeMode
+        modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
+        presetModelKey = settings.presetDefaultModelKey; siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
+        mode = settings.modelConfigurationMode.normalized(); themeMode = settings.themeMode
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
     }
-    val customDefaultModelId = modelId ?: customModels.firstOrNull()?.id
-    val presetDefaultModelKeyValue = presetModelKey ?: effectiveModels.firstOrNull()?.id?.removePrefix("preset:")
+    val effectiveDefaultModelId = modelId ?: effectiveModels.firstOrNull()?.id ?: customModels.firstOrNull { it.selectableForChat }?.id
     val draftContextWindowSize = if (contextSize.toInt() >= 50 && customContextSize.isNotBlank()) {
         customContextSize.toIntOrNull() ?: 50
     } else {
         contextSize.toInt()
     }
     val draftSettings = settings.copy(
-        defaultModelId = customDefaultModelId,
-        presetDefaultModelKey = presetDefaultModelKeyValue,
+        defaultModelId = effectiveDefaultModelId,
+        presetDefaultModelKey = null,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
         defaultEmbeddingId = null,
         defaultFormatCardId = formatId,
@@ -653,7 +681,7 @@ private fun SettingsTab(
             onSavePlayer(playerName, persona)
             onSaveSettings(
                 draftSettings.copy(
-                    modelConfigurationMode = mode,
+                    modelConfigurationMode = mode.normalized(),
                     chatBubbleFontScale = bubbleFontScale,
                     themeMode = themeMode
                 )
@@ -665,12 +693,12 @@ private fun SettingsTab(
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
         SettingsSection("实时生效") {
-            ModelConfigurationMode.entries.forEach { option ->
+            listOf(ModelConfigurationMode.DEFAULT, ModelConfigurationMode.CUSTOM_API).forEach { option ->
                 CbButton(
                     when (option) {
                         ModelConfigurationMode.DEFAULT -> "全默认"
                         ModelConfigurationMode.CUSTOM_API -> "自定义 API"
-                        ModelConfigurationMode.FULL_CUSTOM -> "完全自定义"
+                        ModelConfigurationMode.FULL_CUSTOM -> "自定义 API"
                     },
                     { mode = option; onMode(option) },
                     modifier = Modifier.fillMaxWidth(),
@@ -680,8 +708,8 @@ private fun SettingsTab(
             CbText(
                 when (mode) {
                     ModelConfigurationMode.DEFAULT -> "使用内置模型与共享 API Key，开箱即用。"
-                    ModelConfigurationMode.CUSTOM_API -> "使用内置模型，并用你的硅基流动 API Key 覆盖全部模型。"
-                    ModelConfigurationMode.FULL_CUSTOM -> "显示模型分页，使用完全独立的用户模型配置。"
+                    ModelConfigurationMode.CUSTOM_API -> "API 模式允许编辑、导入、新建任意模型；单个模型 API Key 为空时使用这里的硅基流动 API Key。"
+                    ModelConfigurationMode.FULL_CUSTOM -> "API 模式允许编辑、导入、新建任意模型；单个模型 API Key 为空时使用这里的硅基流动 API Key。"
                 },
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
@@ -751,12 +779,8 @@ private fun SettingsTab(
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
         }
         SettingsSection("默认对话") {
-            if (mode == ModelConfigurationMode.FULL_CUSTOM) {
-                RequiredSelect("默认对话模型", customDefaultModelId, customModels.map { IdOption(it.id, it.displayName) }, { modelId = it })
-            } else {
-                val presetOptions = effectiveModels.map { IdOption(it.id.removePrefix("preset:"), it.displayName) }
-                RequiredSelect("默认对话模型", presetDefaultModelKeyValue, presetOptions, { presetModelKey = it })
-            }
+            val modelOptions = effectiveModels.map { IdOption(it.id, it.displayName) }
+            RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
             OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
             SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
             if (contextSize.toInt() >= 50) {

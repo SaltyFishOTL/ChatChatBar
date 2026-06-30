@@ -5,6 +5,8 @@ import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
+const val PRESET_MODEL_ID_PREFIX = "preset:"
+
 /**
  * 模型模板类型
  */
@@ -44,6 +46,7 @@ data class ModelConfig(
     val baseUrl: String,
     val apiKey: String,
     val modelName: String,
+    val selectableForChat: Boolean = true,
     val isMultimodal: Boolean = false,
     val visionModelId: String? = null, // 文本模型关联的视觉模型
     val templateType: ModelTemplate = ModelTemplate.OPENAI,
@@ -51,6 +54,8 @@ data class ModelConfig(
     val reasoningEffort: String? = null,
     val enableThinking: Boolean? = null,
     val maxOutputTokens: Int? = null,
+    val sourcePresetKey: String? = null,
+    val sourcePresetVersion: Int? = null,
     val createdAt: Long
 ) {
     companion object {

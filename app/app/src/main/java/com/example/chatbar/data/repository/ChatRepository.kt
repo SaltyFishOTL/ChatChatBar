@@ -3,6 +3,7 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.domain.chat.ChatMessageOrdering
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -101,7 +102,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun getMessages(sessionId: String): List<ChatMessage> {
         return storage.loadAll(MESSAGE_TYPE, ChatMessage.serializer())
             .filter { it.sessionId == sessionId }
-            .sortedBy { it.createdAt }
+            .sortedWith(ChatMessage.TimelineComparator)
     }
 
     suspend fun getMessage(messageId: String, sessionId: String): ChatMessage? {
@@ -113,24 +114,53 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun addMessage(message: ChatMessage): ChatMessage {
+        saveMessageRecord(message)
+
+        // 更新会话预览
+        val latest = getMessages(message.sessionId).lastOrNull()
+        if (latest?.id == message.id) {
+            getSession(message.sessionId)?.let { session ->
+                updateSession(
+                    session.copy(
+                        lastMessagePreview = message.previewText(),
+                        lastMessageTime = message.createdAt
+                    )
+                )
+            }
+        }
+
+        return message
+    }
+
+    suspend fun addMessageAfter(message: ChatMessage, anchorMessageId: String): ChatMessage {
+        val reordered = ChatMessageOrdering.insertGeneratedImageAfter(
+            messages = getMessages(message.sessionId),
+            imageMessage = message,
+            anchorMessageId = anchorMessageId
+        )
+        val inserted = reordered.first { it.id == message.id }
+        reordered.forEach { saveMessageRecord(it) }
+
+        val latest = reordered.lastOrNull()
+        getSession(message.sessionId)?.let { session ->
+            updateSession(
+                session.copy(
+                    lastMessagePreview = latest?.previewText(),
+                    lastMessageTime = latest?.createdAt
+                )
+            )
+        }
+
+        return inserted
+    }
+
+    private suspend fun saveMessageRecord(message: ChatMessage) {
         storage.saveEntity(
             MESSAGE_TYPE,
             messageStorageId(message.sessionId, message.id),
             message,
             ChatMessage.serializer()
         )
-
-        // 更新会话预览
-        getSession(message.sessionId)?.let { session ->
-            updateSession(
-                session.copy(
-                    lastMessagePreview = message.previewText(),
-                    lastMessageTime = message.createdAt
-                )
-            )
-        }
-
-        return message
     }
 
     suspend fun updateMessage(message: ChatMessage) {

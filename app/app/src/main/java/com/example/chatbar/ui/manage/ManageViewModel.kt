@@ -10,9 +10,11 @@ import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
+import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
+import com.example.chatbar.data.local.entity.normalized
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -54,6 +56,7 @@ class ManageViewModel : ViewModel() {
     private val characterTransfers = ChatBarApp.instance.characterCardTransferService
     private val formatTransfers = ChatBarApp.instance.formatCardTransferService
     private val presetCatalog = ChatBarApp.instance.presetCatalogService
+    private val presetModelCatalog = ChatBarApp.instance.presetModelCatalogService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val json = Json {
@@ -103,6 +106,8 @@ class ManageViewModel : ViewModel() {
     val characterPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _characterPresets
     private val _formatPresets = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>>(emptyList())
     val formatPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _formatPresets
+    private val _modelPresets = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>>(emptyList())
+    val modelPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _modelPresets
 
     init {
         refreshAll()
@@ -117,6 +122,7 @@ class ManageViewModel : ViewModel() {
             presetCatalog.initialize()
             _characterPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.CHARACTER)
             _formatPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.FORMAT)
+            _modelPresets.value = presetModelCatalog.entries()
             refreshEffectiveModels()
         }
     }
@@ -293,8 +299,31 @@ class ManageViewModel : ViewModel() {
     fun setDefaultModel(id: String) {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
-            settingsRepository.saveAppSettings(current.copy(defaultModelId = id))
+            settingsRepository.saveAppSettings(current.copy(defaultModelId = id, presetDefaultModelKey = null))
             refreshEffectiveModels()
+        }
+    }
+
+    fun importPresetModelCatalog(onDone: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            runCatching {
+                val version = presetModelCatalog.entries().firstOrNull()?.version
+                    ?: presetModelCatalog.catalog.schemaVersion
+                modelRepository.restorePresetChatModels(presetModelCatalog.catalog, version)
+                val current = settingsRepository.getAppSettings()
+                if (current.defaultModelId == null && current.presetDefaultModelKey != null) {
+                    settingsRepository.saveAppSettings(
+                        current.copy(
+                            defaultModelId = PRESET_MODEL_ID_PREFIX + current.presetDefaultModelKey,
+                            presetDefaultModelKey = null
+                        )
+                    )
+                }
+                refreshEffectiveModels()
+            }.fold(
+                onSuccess = { onDone(null) },
+                onFailure = { onDone(it.message ?: "导入失败") }
+            )
         }
     }
 
@@ -315,6 +344,7 @@ class ManageViewModel : ViewModel() {
     fun deleteModelConfig(id: String) {
         viewModelScope.launch {
             modelRepository.deleteModel(id)
+            refreshEffectiveModels()
         }
     }
 
@@ -393,7 +423,7 @@ class ManageViewModel : ViewModel() {
     fun updateModelConfigurationMode(mode: ModelConfigurationMode) {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
-            settingsRepository.saveAppSettings(current.copy(modelConfigurationMode = mode))
+            settingsRepository.saveAppSettings(current.copy(modelConfigurationMode = mode.normalized()))
             refreshEffectiveModels()
         }
     }

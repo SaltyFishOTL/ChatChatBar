@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.model
 
 import android.content.Context
+import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.PresetManifest
 import com.example.chatbar.data.local.entity.PresetModelCatalog
@@ -13,7 +14,7 @@ class PresetModelCatalogService(
 ) {
     companion object {
         private const val MANIFEST_PATH = "presets/manifest.json"
-        const val PRESET_REF_PREFIX = "preset:"
+        const val PRESET_REF_PREFIX = PRESET_MODEL_ID_PREFIX
     }
 
     val catalog: PresetModelCatalog by lazy {

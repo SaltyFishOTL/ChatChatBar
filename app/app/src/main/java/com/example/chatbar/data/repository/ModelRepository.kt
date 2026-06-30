@@ -3,6 +3,9 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
+import com.example.chatbar.data.local.entity.PresetChatModel
+import com.example.chatbar.data.local.entity.PresetModelCatalog
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,6 +87,64 @@ class ModelRepository(private val storage: JsonFileStorage) {
         storage.saveEntity(MODEL_TYPE, model.id, model, ModelConfig.serializer())
         refreshModelCache()
     }
+
+    suspend fun ensurePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
+        upsertPresetChatModels(catalog, catalogVersion, overwriteExisting = false)
+
+    suspend fun restorePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
+        upsertPresetChatModels(catalog, catalogVersion, overwriteExisting = true)
+
+    private suspend fun upsertPresetChatModels(
+        catalog: PresetModelCatalog,
+        catalogVersion: Int,
+        overwriteExisting: Boolean
+    ): List<ModelConfig> {
+        initialize()
+        val current = _models.value
+        val saved = mutableListOf<ModelConfig>()
+        catalog.chatModels.forEach { preset ->
+            val stableId = PRESET_MODEL_ID_PREFIX + preset.modelKey
+            val existing = current.firstOrNull { it.sourcePresetKey == preset.modelKey || it.id == stableId }
+            val next = if (existing != null && !overwriteExisting) {
+                existing
+            } else {
+                preset.toModelConfig(
+                    catalog = catalog,
+                    catalogVersion = catalogVersion,
+                    existing = existing
+                )
+            }
+            if (existing == null || next != existing) {
+                storage.saveEntity(MODEL_TYPE, next.id, next, ModelConfig.serializer())
+            }
+            saved.add(next)
+        }
+        refreshModelCache()
+        return saved
+    }
+
+    private fun PresetChatModel.toModelConfig(
+        catalog: PresetModelCatalog,
+        catalogVersion: Int,
+        existing: ModelConfig?
+    ): ModelConfig = ModelConfig(
+        id = existing?.id ?: PRESET_MODEL_ID_PREFIX + modelKey,
+        displayName = displayName,
+        baseUrl = catalog.baseUrl,
+        apiKey = existing?.apiKey.orEmpty(),
+        modelName = modelName,
+        selectableForChat = selectableForChat,
+        isMultimodal = isMultimodal,
+        visionModelId = visionModelKey?.let { PRESET_MODEL_ID_PREFIX + it },
+        templateType = templateType,
+        customParams = customParams,
+        reasoningEffort = reasoningEffort,
+        enableThinking = enableThinking,
+        maxOutputTokens = maxOutputTokens,
+        sourcePresetKey = modelKey,
+        sourcePresetVersion = catalogVersion,
+        createdAt = existing?.createdAt ?: 0L
+    )
 
     suspend fun deleteModel(id: String) {
         storage.deleteEntity<ModelConfig>(MODEL_TYPE, id)

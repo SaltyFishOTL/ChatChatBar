@@ -134,59 +134,84 @@ fun ChatSettingsDialog(
         fullscreenOnChange = onChange
     }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-            CbTopBar(
-                title = "会话设置",
-                statusBarInset = true,
-                navigation = { CbIconButton(AppIcons.Close, "关闭", onDismiss) },
-                actions = {
-                    CbDirtySaveButton(settingsDirty, {
-                        viewModel.updateSessionConfig(
-                            modelId = modelId,
-                            formatCardId = formatId,
-                            replyLength = replyLength.takeIf(String::isNotBlank),
-                            replyLanguage = replyLanguage.takeIf(String::isNotBlank),
-                            supplementarySetting = supplementary.takeIf(String::isNotBlank),
-                            playerName = playerName.takeIf(String::isNotBlank),
-                            playerSetting = playerSetting.takeIf(String::isNotBlank),
-                            chatBackground = background.takeIf(String::isNotBlank),
-                            longTermMemoryEnabled = longTermMemoryEnabled,
-                            longTermMemory = longTermMemory
-                        )
-                        onDismiss()
-                    }, variant = ButtonVariant.Ghost)
-                }
-            )
-            val tabs = if (longTermMemoryEnabled) listOf("参数与设定", "长期记忆", "存档") else listOf("参数与设定", "存档")
-            if (tab >= tabs.size) tab = tabs.lastIndex
-            CbTabs(tabs, tab, { tab = it })
-            if (tab == 0) {
-                SettingsContent(
-                    modelId, { modelId = it }, defaultModelId, models,
-                    formatId, { formatId = it }, defaultFormatId, formats,
-                    replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
-                    supplementary, { supplementary = it },
-                    playerName, { playerName = it }, playerSetting, { playerSetting = it },
-                    background, { backgroundPicker.launch("image/*") }, { background = "" },
-                    longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
-                    ::openFullscreen
+    fun closeFullscreen() {
+        fullscreenField = null
+        fullscreenOnChange = null
+    }
+
+    Dialog(
+        onDismissRequest = {
+            if (fullscreenField != null) closeFullscreen() else onDismiss()
+        },
+        properties = DialogProperties(usePlatformDefaultWidth = false)
+    ) {
+        Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
+            Column(Modifier.fillMaxSize()) {
+                CbTopBar(
+                    title = "会话设置",
+                    statusBarInset = true,
+                    navigation = { CbIconButton(AppIcons.Close, "关闭", onDismiss) },
+                    actions = {
+                        CbDirtySaveButton(settingsDirty, {
+                            viewModel.updateSessionConfig(
+                                modelId = modelId,
+                                formatCardId = formatId,
+                                replyLength = replyLength.takeIf(String::isNotBlank),
+                                replyLanguage = replyLanguage.takeIf(String::isNotBlank),
+                                supplementarySetting = supplementary.takeIf(String::isNotBlank),
+                                playerName = playerName.takeIf(String::isNotBlank),
+                                playerSetting = playerSetting.takeIf(String::isNotBlank),
+                                chatBackground = background.takeIf(String::isNotBlank),
+                                longTermMemoryEnabled = longTermMemoryEnabled,
+                                longTermMemory = longTermMemory
+                            )
+                            onDismiss()
+                        }, variant = ButtonVariant.Ghost)
+                    }
                 )
-            } else if (longTermMemoryEnabled && tab == 1) {
-                LongTermMemoryContent(longTermMemory, { longTermMemory = it })
-            } else {
-                SavesContent(
-                    slots = slots,
-                    name = slotName,
-                    onName = { slotName = it },
-                    description = slotDescription,
-                    onDescription = { slotDescription = it },
-                    onCreate = {
-                        viewModel.createSaveSlot(slotName, slotDescription)
-                        slotName = ""; slotDescription = ""
+                val tabs = if (longTermMemoryEnabled) listOf("参数与设定", "长期记忆", "存档") else listOf("参数与设定", "存档")
+                if (tab >= tabs.size) tab = tabs.lastIndex
+                CbTabs(tabs, tab, { tab = it })
+                if (tab == 0) {
+                    SettingsContent(
+                        modelId, { modelId = it }, defaultModelId, models,
+                        formatId, { formatId = it }, defaultFormatId, formats,
+                        replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
+                        supplementary, { supplementary = it },
+                        playerName, { playerName = it }, playerSetting, { playerSetting = it },
+                        background, { backgroundPicker.launch("image/*") }, { background = "" },
+                        longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
+                        ::openFullscreen
+                    )
+                } else if (longTermMemoryEnabled && tab == 1) {
+                    LongTermMemoryContent(longTermMemory, { longTermMemory = it })
+                } else {
+                    SavesContent(
+                        slots = slots,
+                        name = slotName,
+                        onName = { slotName = it },
+                        description = slotDescription,
+                        onDescription = { slotDescription = it },
+                        onCreate = {
+                            viewModel.createSaveSlot(slotName, slotDescription)
+                            slotName = ""; slotDescription = ""
+                        },
+                        onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
+                        onDelete = { deleteSlot = it }
+                    )
+                }
+            }
+
+            fullscreenField?.let { (title, text) ->
+                FullscreenTextEditor(
+                    title = title,
+                    text = text,
+                    onTextChange = { newValue ->
+                        fullscreenOnChange?.invoke(newValue)
+                        fullscreenField = title to newValue
                     },
-                    onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
-                    onDelete = { deleteSlot = it }
+                    visible = true,
+                    onDismiss = ::closeFullscreen
                 )
             }
         }
@@ -203,18 +228,6 @@ fun ChatSettingsDialog(
         ) { CbText("确定删除\u201c${slot.name}\u201d？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
     }
 
-    fullscreenField?.let { (title, text) ->
-        FullscreenTextEditor(
-            title = title,
-            text = text,
-            onTextChange = { newValue ->
-                fullscreenOnChange?.invoke(newValue)
-                fullscreenField = title to newValue
-            },
-            visible = true,
-            onDismiss = { fullscreenField = null; fullscreenOnChange = null }
-        )
-    }
 }
 
 @Composable

@@ -36,6 +36,7 @@ import kotlinx.coroutines.yield
 import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
+import java.util.UUID
 
 enum class ImageGenerationPhase {
     DESIGNING,
@@ -285,13 +286,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     val path = withContext(Dispatchers.IO) {
                                         novelAiImageStorage.save(sessionId, event.image)
                                     }
-                                    chatRepository.addMessage(
+                                    chatRepository.addMessageAfter(
                                         ChatMessage.create(
                                             sessionId = sessionId,
                                             role = MessageRole.ASSISTANT,
                                             content = "",
-                                            images = listOf(path)
-                                        )
+                                            images = listOf(path),
+                                            generatedFromMessageId = anchorMessageId
+                                        ),
+                                        anchorMessageId
                                     )
                                     refreshMessages()
                                     _imageGeneration.value = null
@@ -1251,13 +1254,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, sessionId)
             
             // 3. 重置 session 预览信息
-            _session.value?.let { session ->
-                chatRepository.updateSession(session.copy(
+            chatRepository.getSession(sessionId)?.let { session ->
+                val resetSession = session.copy(
                     longTermMemory = "",
                     longTermMemoryUpdatedThroughMessageId = null,
                     lastMessagePreview = null,
                     lastMessageTime = null
-                ))
+                )
+                chatRepository.updateSession(resetSession)
+                _session.value = resetSession
             }
 
             _characterCard.value?.greeting?.takeIf { it.isNotBlank() }?.let { greeting ->
@@ -1515,6 +1520,70 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _messages.value = _messages.value + sysMsg
     }
 
+    fun replaceCharacterCardAvatarFromImage(imagePath: String, onResult: (Boolean, String) -> Unit) {
+        replaceCharacterCardImage(imagePath, CharacterCardImageTarget.AVATAR, onResult)
+    }
+
+    fun replaceCharacterCardBackgroundFromImage(imagePath: String, onResult: (Boolean, String) -> Unit) {
+        replaceCharacterCardImage(imagePath, CharacterCardImageTarget.BACKGROUND, onResult)
+    }
+
+    private fun replaceCharacterCardImage(
+        imagePath: String,
+        target: CharacterCardImageTarget,
+        onResult: (Boolean, String) -> Unit
+    ) {
+        viewModelScope.launch {
+            try {
+                val currentCard = _characterCard.value
+                    ?: throw IllegalStateException("当前会话没有可更新的角色卡")
+                val localPath = copyImageIntoCharacterCardStorage(
+                    sourcePath = imagePath,
+                    cardId = currentCard.id,
+                    target = target
+                )
+                val updated = when (target) {
+                    CharacterCardImageTarget.AVATAR -> currentCard.copy(avatar = localPath)
+                    CharacterCardImageTarget.BACKGROUND -> currentCard.copy(chatBackground = localPath)
+                }
+                characterRepository.update(updated)
+                _characterCard.value = characterRepository.getById(updated.id) ?: updated
+                onResult(
+                    true,
+                    when (target) {
+                        CharacterCardImageTarget.AVATAR -> "已替换角色卡头像"
+                        CharacterCardImageTarget.BACKGROUND -> "已替换角色卡背景"
+                    }
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                onResult(false, error.message ?: "替换图片失败")
+            }
+        }
+    }
+
+    private suspend fun copyImageIntoCharacterCardStorage(
+        sourcePath: String,
+        cardId: String,
+        target: CharacterCardImageTarget
+    ): String = withContext(Dispatchers.IO) {
+        val source = File(sourcePath)
+        if (!source.exists()) throw IllegalArgumentException("图片文件不存在")
+        val extension = source.extension.takeIf { it.isNotBlank() } ?: "png"
+        val directory = File(
+            ChatBarApp.instance.filesDir,
+            "images/character_cards/${cardId.safeFileSegment()}"
+        ).also(File::mkdirs)
+        val targetFile = File(
+            directory,
+            "${target.filePrefix}_${System.currentTimeMillis()}_${UUID.randomUUID()}.$extension"
+        )
+        source.inputStream().use { input ->
+            targetFile.outputStream().use { output -> input.copyTo(output) }
+        }
+        targetFile.absolutePath
+    }
+
     fun copyUriToLocalFile(uri: Uri, onSuccess: (String) -> Unit) {
         viewModelScope.launch {
             try {
@@ -1556,6 +1625,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
     }
 }
+
+private enum class CharacterCardImageTarget(val filePrefix: String) {
+    AVATAR("avatar"),
+    BACKGROUND("background")
+}
+
+private fun String.safeFileSegment(): String = replace(Regex("[^A-Za-z0-9._-]"), "_")
 
 private fun VectorChunk.messageIds(): Set<String> {
     val metadataIds = metadata["messageIds"]

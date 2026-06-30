@@ -43,3 +43,8 @@ enum class ModelConfigurationMode {
     CUSTOM_API,
     FULL_CUSTOM
 }
+
+fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {
+    ModelConfigurationMode.FULL_CUSTOM -> ModelConfigurationMode.CUSTOM_API
+    else -> this
+}

@@ -1,9 +1,11 @@
 package com.example.chatbar.domain.model
 
 import com.example.chatbar.data.local.entity.AppSettings
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.ThemeMode
+import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.data.local.entity.resolveDarkTheme
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -48,5 +50,21 @@ class ModelConfigurationTest {
         )
 
         assertTrue(model.selectableForChat)
+    }
+
+    @Test fun fullCustomModeNormalizesToCustomApi() {
+        assertEquals(ModelConfigurationMode.CUSTOM_API, ModelConfigurationMode.FULL_CUSTOM.normalized())
+        assertEquals(ModelConfigurationMode.DEFAULT, ModelConfigurationMode.DEFAULT.normalized())
+    }
+
+    @Test fun oldModelConfigDecodesWithVisibleModelDefaults() {
+        val model = json.decodeFromString(
+            ModelConfig.serializer(),
+            """{"id":"m1","displayName":"M","baseUrl":"https://example.test/v1","apiKey":"","modelName":"provider/model","createdAt":1}"""
+        )
+
+        assertTrue(model.selectableForChat)
+        assertEquals(null, model.sourcePresetKey)
+        assertEquals(null, model.sourcePresetVersion)
     }
 }
