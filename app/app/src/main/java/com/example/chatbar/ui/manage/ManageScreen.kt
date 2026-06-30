@@ -61,7 +61,6 @@ import com.example.chatbar.data.local.entity.ModelTemplate
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
-import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.ui.home.CharacterAvatar
@@ -132,9 +131,6 @@ fun ManageScreen(
         2 to "\u6a21\u578b",
         3 to "\u8bbe\u7f6e"
     )
-    LaunchedEffect(settings.modelConfigurationMode) {
-        if (visibleTabs.none { it.first == tab }) tab = 3
-    }
     var addFormat by remember { mutableStateOf(false) }
     var editEmbedding by remember { mutableStateOf<EmbeddingConfig?>(null) }
     var showEmbedding by remember { mutableStateOf(false) }
@@ -152,7 +148,7 @@ fun ManageScreen(
             scope.launch {
                 runCatching {
                     val data = viewModel.decodeCharacterImport(uri, context)
-                    val conflict = viewModel.findCharacterNameConflict(data.packageData.card.name)
+                    val conflict = viewModel.findCharacterImportConflict(data)
                     if (conflict == null) {
                         viewModel.importCharacterAsNew(data)
                         message = "角色卡已导入，文档 RAG 待重建。"
@@ -177,7 +173,7 @@ fun ManageScreen(
         if (uri != null) scope.launch {
             runCatching {
                 val data = viewModel.decodeCharacterImport(uri, context)
-                val conflict = viewModel.findCharacterNameConflict(data.packageData.card.name)
+                val conflict = viewModel.findCharacterImportConflict(data)
                 if (conflict == null) {
                     viewModel.importCharacterAsNew(data)
                     message = "角色卡已导入，文档 RAG 等待重建。"
@@ -262,7 +258,7 @@ fun ManageScreen(
                         viewModel.createSessionForCharacter(id) { onNavigate(ChatRoute(it)) }
                     }, { entry -> scope.launch {
                         val data = viewModel.recoverCharacterPreset(entry)
-                        val conflict = viewModel.findCharacterNameConflict(data.packageData.card.name)
+                        val conflict = viewModel.findCharacterImportConflict(data)
                         if (conflict == null) viewModel.importCharacterAsNew(data) else pendingCharacterImport = data to conflict
                     } })
                     1 -> FormatTab(formats, settings.defaultFormatCardId, formatPresets, viewModel::formatHasUpdate, { onNavigate(FormatCardEditRoute(it)) }, { id ->
@@ -284,6 +280,7 @@ fun ManageScreen(
                         },
                         onSetDefaultModel = viewModel::setDefaultModel,
                         onDeleteModel = { id -> deleteTarget = DeleteTarget.Model(id, models.firstOrNull { it.id == id }?.displayName ?: "未命名模型") },
+                        onDuplicateModel = { id -> viewModel.duplicateModelConfig(id) { onNavigate(ModelEditRoute(it)) } },
                         onRecoverPresetModels = { viewModel.importPresetModelCatalog { error -> message = error ?: "内置模型已导入。" } },
                         onEditEmbedding = { editEmbedding = it; showEmbedding = true },
                         onDeleteEmbedding = { id -> deleteTarget = DeleteTarget.Embedding(id, embeddingModel?.displayName ?: "未命名向量模型") },
@@ -295,7 +292,6 @@ fun ManageScreen(
                         settingsSaveRequest, settings, player, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
-                        viewModel::updateModelConfigurationMode,
                         viewModel::updateThemeMode,
                         viewModel::updateBubbleFontScale,
                         { settingsDirty = it },
@@ -531,6 +527,7 @@ private fun ModelsTab(
     onExportModel: (ModelConfig) -> Unit,
     onSetDefaultModel: (String) -> Unit,
     onDeleteModel: (String) -> Unit,
+    onDuplicateModel: (String) -> Unit,
     onRecoverPresetModels: () -> Unit,
     onEditEmbedding: (EmbeddingConfig) -> Unit,
     onDeleteEmbedding: (String) -> Unit,
@@ -538,6 +535,7 @@ private fun ModelsTab(
     onEditRetrieval: () -> Unit,
     onDeleteRetrieval: () -> Unit
 ) {
+    var menuModel by remember { mutableStateOf<ModelConfig?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultModelId = defaultModelId ?: models.firstOrNull()?.id
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -563,7 +561,7 @@ private fun ModelsTab(
                 isDefault -> "默认"
                 model.sourcePresetKey != null -> "内置"
                 else -> null
-            }, actions = {
+            }, onClick = { onEditModel(model.id) }, onLongClick = { menuModel = model }, actions = {
                 CbIconButton(AppIcons.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
                 CbIconButton(AppIcons.Download, "导出", { onExportModel(model) })
                 CbIconButton(AppIcons.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
@@ -587,6 +585,14 @@ private fun ModelsTab(
             })
         }
     }
+    menuModel?.let { model ->
+        CardActionDialog(model.displayName, { menuModel = null }, listOf(
+            "编辑" to { onEditModel(model.id) },
+            "复制" to { onDuplicateModel(model.id) },
+            "导出" to { onExportModel(model) },
+            "删除" to { onDeleteModel(model.id) }
+        ))
+    }
 }
 
 @Composable
@@ -602,7 +608,6 @@ private fun SettingsTab(
     novelAiConfigured: Boolean,
     onSaveSettings: (AppSettings) -> Unit,
     onSavePlayer: (String, String) -> Unit,
-    onMode: (ModelConfigurationMode) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
     onBubbleFontScale: (Float) -> Unit,
     onDirtyChange: (Boolean) -> Unit,
@@ -613,11 +618,9 @@ private fun SettingsTab(
     var playerName by remember { mutableStateOf(player.playerName) }
     var persona by remember { mutableStateOf(player.globalPersona) }
     var modelId by remember { mutableStateOf(settings.defaultModelId) }
-    var presetModelKey by remember { mutableStateOf(settings.presetDefaultModelKey) }
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var novelAiToken by remember { mutableStateOf("") }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
-    var mode by remember { mutableStateOf(settings.modelConfigurationMode.normalized()) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
@@ -634,7 +637,6 @@ private fun SettingsTab(
         settings.presetDefaultModelKey,
         settings.siliconFlowApiKey,
         settings.defaultFormatCardId,
-        settings.modelConfigurationMode,
         settings.themeMode,
         settings.defaultContextWindowSize,
         settings.memoryRagTopK,
@@ -646,8 +648,8 @@ private fun SettingsTab(
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
-        presetModelKey = settings.presetDefaultModelKey; siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
-        mode = settings.modelConfigurationMode.normalized(); themeMode = settings.themeMode
+        siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
+        themeMode = settings.themeMode
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
@@ -681,7 +683,7 @@ private fun SettingsTab(
             onSavePlayer(playerName, persona)
             onSaveSettings(
                 draftSettings.copy(
-                    modelConfigurationMode = mode.normalized(),
+                    modelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
                     chatBubbleFontScale = bubbleFontScale,
                     themeMode = themeMode
                 )
@@ -692,31 +694,41 @@ private fun SettingsTab(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        SettingsSection("实时生效") {
-            listOf(ModelConfigurationMode.DEFAULT, ModelConfigurationMode.CUSTOM_API).forEach { option ->
-                CbButton(
-                    when (option) {
-                        ModelConfigurationMode.DEFAULT -> "全默认"
-                        ModelConfigurationMode.CUSTOM_API -> "自定义 API"
-                        ModelConfigurationMode.FULL_CUSTOM -> "自定义 API"
-                    },
-                    { mode = option; onMode(option) },
-                    modifier = Modifier.fillMaxWidth(),
-                    variant = if (mode == option) ButtonVariant.Default else ButtonVariant.Outline
-                )
-            }
+        SettingsSection("模型与 API") {
             CbText(
-                when (mode) {
-                    ModelConfigurationMode.DEFAULT -> "使用内置模型与共享 API Key，开箱即用。"
-                    ModelConfigurationMode.CUSTOM_API -> "API 模式允许编辑、导入、新建任意模型；单个模型 API Key 为空时使用这里的硅基流动 API Key。"
-                    ModelConfigurationMode.FULL_CUSTOM -> "API 模式允许编辑、导入、新建任意模型；单个模型 API Key 为空时使用这里的硅基流动 API Key。"
-                },
+                "模型 API Key 留空时使用全局默认 API Key。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
             modelErrors.forEach { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
+            CbField("全局默认 API Key") {
+                CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", visualTransformation = PasswordVisualTransformation())
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton("测试连接", { onTestApiKey(siliconFlowApiKey) }, variant = ButtonVariant.Outline)
+            }
+            apiTestStatus?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption) }
             CbDivider()
-            CbText("外观", style = ChatBarTheme.typography.label)
+            val modelOptions = effectiveModels.map { IdOption(it.id, it.displayName) }
+            RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
+            OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
+            SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
+            if (contextSize.toInt() >= 50) {
+                CbField("自定义上下文上限") {
+                    CbInput(customContextSize, { newValue ->
+                        customContextSize = newValue.filter { it.isDigit() }
+                    }, placeholder = "50")
+                }
+            }
+        }
+        SettingsSection("RAG 检索") {
+            SliderField("注入强度：${ragMode.roundToInt().modeLabel()}", ragMode, 0f..3f, 2) { ragMode = it }
+            SliderField("文档召回数量：${docTopK.toInt()}", docTopK, 1f..15f, 13) { docTopK = it }
+            SliderField("文档相似度：${"%.2f".format(docThreshold)}", docThreshold, 0.3f..0.95f) { docThreshold = it }
+            SliderField("记忆召回数量：${memoryTopK.toInt()}", memoryTopK, 1f..15f, 13) { memoryTopK = it }
+            SliderField("记忆相似度：${"%.2f".format(memoryThreshold)}", memoryThreshold, 0.3f..0.95f) { memoryThreshold = it }
+        }
+        SettingsSection("外观") {
             SliderField("气泡字号：${"%.1f".format(bubbleFontScale)}x", bubbleFontScale, 0.5f..1.5f, 9) {
                 bubbleFontScale = it
                 onBubbleFontScale(it)
@@ -734,16 +746,9 @@ private fun SettingsTab(
                 )
             }
         }
-        if (mode == ModelConfigurationMode.CUSTOM_API) {
-            SettingsSection("硅基流动 API") {
-                CbField("API Key") {
-                    CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", visualTransformation = PasswordVisualTransformation())
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CbButton("测试连接", { onTestApiKey(siliconFlowApiKey) }, variant = ButtonVariant.Outline)
-                }
-                apiTestStatus?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption) }
-            }
+        SettingsSection("玩家") {
+            CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
+            CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
         }
         SettingsSection("NovelAI 生图") {
             CbText(
@@ -773,30 +778,6 @@ private fun SettingsTab(
                     CbButton("清除", onClearNovelAiToken, variant = ButtonVariant.Destructive)
                 }
             }
-        }
-        SettingsSection("玩家") {
-            CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
-            CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
-        }
-        SettingsSection("默认对话") {
-            val modelOptions = effectiveModels.map { IdOption(it.id, it.displayName) }
-            RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
-            OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
-            SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
-            if (contextSize.toInt() >= 50) {
-                CbField("自定义上下文上限") {
-                    CbInput(customContextSize, { newValue ->
-                        customContextSize = newValue.filter { it.isDigit() }
-                    }, placeholder = "50")
-                }
-            }
-        }
-        SettingsSection("RAG 检索") {
-            SliderField("注入强度：${ragMode.roundToInt().modeLabel()}", ragMode, 0f..3f, 2) { ragMode = it }
-            SliderField("文档召回数量：${docTopK.toInt()}", docTopK, 1f..15f, 13) { docTopK = it }
-            SliderField("文档相似度：${"%.2f".format(docThreshold)}", docThreshold, 0.3f..0.95f) { docThreshold = it }
-            SliderField("记忆召回数量：${memoryTopK.toInt()}", memoryTopK, 1f..15f, 13) { memoryTopK = it }
-            SliderField("记忆相似度：${"%.2f".format(memoryThreshold)}", memoryThreshold, 0.3f..0.95f) { memoryThreshold = it }
         }
         Spacer(Modifier.height(80.dp))
     }

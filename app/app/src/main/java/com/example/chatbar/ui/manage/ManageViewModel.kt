@@ -15,6 +15,7 @@ import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
+import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -177,6 +178,16 @@ class ManageViewModel : ViewModel() {
         val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
         return com.example.chatbar.domain.card.CharacterCardImportRequest(packageData)
     }
+    suspend fun findCharacterImportConflict(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard? {
+        val all = characterRepository.getAll()
+        data.presetKey
+            ?.let { key -> all.firstOrNull { it.sourcePresetKey == key } }
+            ?.let { return it }
+        return all.firstOrNull {
+            com.example.chatbar.domain.card.NamePolicy.isSame(it.name, data.packageData.card.name)
+        }
+    }
+
     suspend fun findCharacterNameConflict(name: String) = characterRepository.getAll().firstOrNull { com.example.chatbar.domain.card.NamePolicy.isSame(it.name, name) }
     suspend fun importCharacterAsNew(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard {
         val card = characterTransfers.importNew(data.packageData, presetKey = data.presetKey, presetVersion = data.presetVersion)
@@ -208,13 +219,14 @@ class ManageViewModel : ViewModel() {
             return
         }
         _importProgress.value = "${card.name}：准备 RAG 索引…"
-        viewModelScope.launch {
+        ChatBarApp.instance.applicationScope.launch {
             try {
+                AiBackgroundWorkManager.run(card.id) {
                 val settings = settingsRepository.getAppSettings()
                 val embedding = modelResolver.embeddingModel(settings)
                 if (embedding == null) {
                     _importProgress.value = "${card.name}：未配置嵌入模型，跳过索引"
-                    return@launch
+                    return@run
                 }
                 val indexed = mutableListOf<com.example.chatbar.data.local.entity.DocumentInfo>()
                 val total = card.customDocuments.size
@@ -249,7 +261,7 @@ class ManageViewModel : ViewModel() {
                     }
                 }
                 val failed = indexed.count { it.ragStatus == com.example.chatbar.data.local.entity.DocumentRagStatus.FAILED.name }
-                val updated = characterRepository.getById(card.id) ?: return@launch
+                val updated = characterRepository.getById(card.id) ?: return@run
                 val finalDocs = updated.customDocuments.map { old -> indexed.firstOrNull { it.id == old.id } ?: old }
                 val final = updated.copy(
                     customDocuments = finalDocs,
@@ -261,6 +273,7 @@ class ManageViewModel : ViewModel() {
                 )
                 characterRepository.save(final)
                 _importProgress.value = if (failed == 0) null else "${card.name}：$failed 份文档索引失败"
+                }
             } catch (e: Exception) {
                 _importProgress.value = "${card.name}：索引失败 - ${e.message}"
             }
@@ -310,6 +323,7 @@ class ManageViewModel : ViewModel() {
                 val version = presetModelCatalog.entries().firstOrNull()?.version
                     ?: presetModelCatalog.catalog.schemaVersion
                 modelRepository.restorePresetChatModels(presetModelCatalog.catalog, version)
+                modelRepository.restorePresetSupportModels(presetModelCatalog.catalog, version)
                 val current = settingsRepository.getAppSettings()
                 if (current.defaultModelId == null && current.presetDefaultModelKey != null) {
                     settingsRepository.saveAppSettings(
@@ -345,6 +359,14 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             modelRepository.deleteModel(id)
             refreshEffectiveModels()
+        }
+    }
+
+    fun duplicateModelConfig(id: String, onDone: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            val copy = modelRepository.duplicateModel(id)
+            refreshEffectiveModels()
+            onDone(copy.id)
         }
     }
 
@@ -460,7 +482,7 @@ class ManageViewModel : ViewModel() {
     }
 
     fun testSiliconFlowApi(apiKey: String) {
-        viewModelScope.launch {
+        ChatBarApp.instance.applicationScope.launch {
             _apiTestStatus.value = "正在测试对话与向量接口…"
             val current = settingsRepository.getAppSettings().copy(
                 modelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
@@ -469,15 +491,19 @@ class ManageViewModel : ViewModel() {
             val chat = modelResolver.defaultChatModel(current)
             val embedding = modelResolver.embeddingModel(current)
             val chatResult = if (chat == null) "对话：预制型号未配置" else runCatching {
-                ChatBarApp.instance.streamingChatService.completeText(
+                AiBackgroundWorkManager.run("api-test") {
+                    ChatBarApp.instance.streamingChatService.completeText(
                     listOf(com.example.chatbar.domain.chat.ChatApiMessage.text("user", "Reply with OK")),
                     chat,
                     maxTokens = 8
                 )
+                }
                 "对话：成功"
             }.getOrElse { "对话：失败 ${it.message}" }
             val embeddingResult = if (embedding == null) "向量：预制型号未配置" else runCatching {
-                ChatBarApp.instance.embeddingService.getEmbedding("test", embedding)
+                AiBackgroundWorkManager.run("api-test") {
+                    ChatBarApp.instance.embeddingService.getEmbedding("test", embedding)
+                }
                 "向量：成功"
             }.getOrElse { "向量：失败 ${it.message}" }
             _apiTestStatus.value = "$chatResult\n$embeddingResult"

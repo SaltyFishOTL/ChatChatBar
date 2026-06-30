@@ -21,7 +21,7 @@ class ModelConfigurationMigration(
 ) {
     companion object {
         private const val STATE_TYPE = "model_configuration_migration"
-        private const val CURRENT_VERSION = 2
+        private const val CURRENT_VERSION = 4
     }
 
     private val mutex = Mutex()
@@ -36,6 +36,12 @@ class ModelConfigurationMigration(
         }
         if (state.version < 2) {
             importVisiblePresetModels()
+        }
+        if (state.version < 3) {
+            normalizeOnlyApiMode()
+        }
+        if (state.version < 4) {
+            importPresetSupportModels()
         }
 
         storage.saveSingleton(
@@ -63,6 +69,7 @@ class ModelConfigurationMigration(
     private suspend fun importVisiblePresetModels() {
         val version = presets.entries().firstOrNull()?.version ?: presets.catalog.schemaVersion
         val imported = models.ensurePresetChatModels(presets.catalog, version)
+        models.ensurePresetSupportModels(presets.catalog, version)
         val current = settings.getAppSettings()
         val defaultFromPreset = current.presetDefaultModelKey?.let { PRESET_MODEL_ID_PREFIX + it }
         val defaultModelId = current.defaultModelId
@@ -75,5 +82,16 @@ class ModelConfigurationMigration(
             defaultEmbeddingId = null
         )
         if (next != current) settings.saveAppSettings(next)
+    }
+
+    private suspend fun normalizeOnlyApiMode() {
+        val current = settings.getAppSettings()
+        val next = current.copy(modelConfigurationMode = current.modelConfigurationMode.normalized())
+        if (next != current) settings.saveAppSettings(next)
+    }
+
+    private suspend fun importPresetSupportModels() {
+        val version = presets.entries().firstOrNull()?.version ?: presets.catalog.schemaVersion
+        models.ensurePresetSupportModels(presets.catalog, version)
     }
 }

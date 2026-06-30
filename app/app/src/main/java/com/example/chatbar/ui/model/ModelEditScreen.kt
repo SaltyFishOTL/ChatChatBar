@@ -59,7 +59,7 @@ fun ModelEditScreen(
     val multimodalModels by viewModel.availableMultimodalModels.collectAsState()
     var showAddParam by remember { mutableStateOf(false) }
     val canSave = viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
-        viewModel.apiKey.isNotBlank() && viewModel.modelName.isNotBlank()
+        viewModel.modelName.isNotBlank()
     val context = LocalContext.current
     var lastBackPressAt by remember { mutableStateOf(0L) }
 
@@ -116,11 +116,11 @@ fun ModelEditScreen(
             CbField("Base URL") {
                 CbInput(viewModel.baseUrl, { viewModel.baseUrl = it }, placeholder = "https://api.openai.com/v1")
             }
-            CbField("API Key") {
+            CbField("API Key", description = "留空时使用设置里的全局默认 API Key。") {
                 CbInput(
                     viewModel.apiKey,
                     { viewModel.apiKey = it },
-                    placeholder = "sk-...",
+                    placeholder = "可留空，默认使用全局 API Key",
                     visualTransformation = PasswordVisualTransformation()
                 )
             }

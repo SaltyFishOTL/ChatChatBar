@@ -102,14 +102,14 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
      * 保存模型配置
      */
     fun saveModelConfig(onSuccess: () -> Unit) {
-        if (displayName.isBlank() || baseUrl.isBlank() || apiKey.isBlank() || modelName.isBlank()) return
+        if (displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
 
         viewModelScope.launch {
             val now = System.currentTimeMillis()
             val config = _modelConfig.value?.copy(
                 displayName = displayName,
                 baseUrl = baseUrl,
-                apiKey = apiKey,
+                apiKey = apiKey.trim(),
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,
@@ -119,7 +119,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 id = modelId ?: java.util.UUID.randomUUID().toString(),
                 displayName = displayName,
                 baseUrl = baseUrl,
-                apiKey = apiKey,
+                apiKey = apiKey.trim(),
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,

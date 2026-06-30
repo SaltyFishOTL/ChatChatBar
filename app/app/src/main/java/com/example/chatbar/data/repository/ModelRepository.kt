@@ -5,7 +5,10 @@ import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetChatModel
+import com.example.chatbar.data.local.entity.PresetEmbeddingModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
+import com.example.chatbar.domain.card.NamePolicy
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -88,11 +91,33 @@ class ModelRepository(private val storage: JsonFileStorage) {
         refreshModelCache()
     }
 
+    suspend fun duplicateModel(id: String): ModelConfig {
+        initialize()
+        val source = getModel(id) ?: error("Model not found")
+        val copy = source.copy(
+            id = UUID.randomUUID().toString(),
+            displayName = NamePolicy.nextCopyName(source.displayName, _models.value.map { it.displayName }),
+            sourcePresetKey = null,
+            sourcePresetVersion = null,
+            createdAt = System.currentTimeMillis()
+        )
+        saveModel(copy)
+        return copy
+    }
+
     suspend fun ensurePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
         upsertPresetChatModels(catalog, catalogVersion, overwriteExisting = false)
 
     suspend fun restorePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
         upsertPresetChatModels(catalog, catalogVersion, overwriteExisting = true)
+
+    suspend fun ensurePresetSupportModels(catalog: PresetModelCatalog, catalogVersion: Int) {
+        upsertPresetSupportModels(catalog, catalogVersion, overwriteExisting = false)
+    }
+
+    suspend fun restorePresetSupportModels(catalog: PresetModelCatalog, catalogVersion: Int) {
+        upsertPresetSupportModels(catalog, catalogVersion, overwriteExisting = true)
+    }
 
     private suspend fun upsertPresetChatModels(
         catalog: PresetModelCatalog,
@@ -144,6 +169,63 @@ class ModelRepository(private val storage: JsonFileStorage) {
         sourcePresetKey = modelKey,
         sourcePresetVersion = catalogVersion,
         createdAt = existing?.createdAt ?: 0L
+    )
+
+    private suspend fun upsertPresetSupportModels(
+        catalog: PresetModelCatalog,
+        catalogVersion: Int,
+        overwriteExisting: Boolean
+    ) {
+        initialize()
+        catalog.retrievalModel?.let { preset ->
+            val existing = _retrievalModel.value
+            if (existing == null || overwriteExisting) {
+                val next = preset.toRetrievalModelConfig(catalog, catalogVersion, existing)
+                if (next != existing) saveRetrievalModel(next)
+            }
+        }
+        catalog.embeddingModel?.let { preset ->
+            val existing = _embeddingModel.value
+            if (existing == null || overwriteExisting) {
+                val next = preset.toEmbeddingConfig(catalog, existing)
+                if (next != existing) saveEmbeddingModel(next)
+            }
+        }
+    }
+
+    private fun PresetChatModel.toRetrievalModelConfig(
+        catalog: PresetModelCatalog,
+        catalogVersion: Int,
+        existing: ModelConfig?
+    ): ModelConfig = ModelConfig(
+        id = existing?.id ?: RETRIEVAL_MODEL_ID,
+        displayName = displayName,
+        baseUrl = catalog.baseUrl,
+        apiKey = existing?.apiKey.orEmpty(),
+        modelName = modelName,
+        selectableForChat = false,
+        isMultimodal = isMultimodal,
+        visionModelId = visionModelKey?.let { PRESET_MODEL_ID_PREFIX + it },
+        templateType = templateType,
+        customParams = customParams,
+        reasoningEffort = reasoningEffort,
+        enableThinking = enableThinking,
+        maxOutputTokens = maxOutputTokens,
+        sourcePresetKey = modelKey,
+        sourcePresetVersion = catalogVersion,
+        createdAt = existing?.createdAt ?: 0L
+    )
+
+    private fun PresetEmbeddingModel.toEmbeddingConfig(
+        catalog: PresetModelCatalog,
+        existing: EmbeddingConfig?
+    ): EmbeddingConfig = EmbeddingConfig(
+        id = existing?.id ?: EMBEDDING_SINGLETON_ID,
+        displayName = displayName,
+        baseUrl = catalog.baseUrl,
+        apiKey = existing?.apiKey.orEmpty(),
+        modelName = modelName,
+        dimensions = dimensions
     )
 
     suspend fun deleteModel(id: String) {

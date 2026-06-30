@@ -18,6 +18,7 @@ import com.example.chatbar.data.local.entity.DocumentRagStatus
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -153,6 +154,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             }
 
             try {
+                AiBackgroundWorkManager.run(card.id) {
                 persistRagIndexState(card.id, RagIndexStatus.INDEXING, 0, total, "正在检查文档索引状态")
                 val existingChunks = ChatBarApp.instance.ragRepository
                     .getAllChunksForCharacter(card.id)
@@ -250,6 +252,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     total,
                     if (failed > 0) "RAG 索引完成但有 $failed 个文档失败" else "RAG 索引完成：跳过 $skipped 个未变化文档"
                 )
+                }
             } catch (e: Exception) {
                 persistRagIndexState(card.id, RagIndexStatus.FAILED, 0, total, "RAG 索引失败: ${e.message}")
             }

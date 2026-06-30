@@ -16,13 +16,13 @@ import org.junit.Test
 class ModelConfigurationTest {
     private val json = Json { ignoreUnknownKeys = true }
 
-    @Test fun legacySettingsDefaultToDefaultMode() {
+    @Test fun legacySettingsDefaultToOnlyApiMode() {
         val settings = json.decodeFromString(
             AppSettings.serializer(),
             """{"defaultModelId":"legacy-model","defaultEmbeddingId":"legacy-embedding"}"""
         )
 
-        assertEquals(ModelConfigurationMode.DEFAULT, settings.modelConfigurationMode)
+        assertEquals(ModelConfigurationMode.CUSTOM_API, settings.modelConfigurationMode)
         assertEquals("legacy-model", settings.defaultModelId)
         assertEquals("legacy-embedding", settings.defaultEmbeddingId)
         assertEquals("", settings.siliconFlowApiKey)
@@ -54,7 +54,7 @@ class ModelConfigurationTest {
 
     @Test fun fullCustomModeNormalizesToCustomApi() {
         assertEquals(ModelConfigurationMode.CUSTOM_API, ModelConfigurationMode.FULL_CUSTOM.normalized())
-        assertEquals(ModelConfigurationMode.DEFAULT, ModelConfigurationMode.DEFAULT.normalized())
+        assertEquals(ModelConfigurationMode.CUSTOM_API, ModelConfigurationMode.DEFAULT.normalized())
     }
 
     @Test fun oldModelConfigDecodesWithVisibleModelDefaults() {

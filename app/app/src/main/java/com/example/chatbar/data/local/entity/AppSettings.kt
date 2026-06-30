@@ -8,7 +8,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class AppSettings(
     val defaultModelId: String? = null,
-    val modelConfigurationMode: ModelConfigurationMode = ModelConfigurationMode.DEFAULT,
+    val modelConfigurationMode: ModelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
     val presetDefaultModelKey: String? = null,
     val siliconFlowApiKey: String = "",
     val defaultEmbeddingId: String? = null,
@@ -45,6 +45,7 @@ enum class ModelConfigurationMode {
 }
 
 fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {
+    ModelConfigurationMode.DEFAULT,
+    ModelConfigurationMode.CUSTOM_API,
     ModelConfigurationMode.FULL_CUSTOM -> ModelConfigurationMode.CUSTOM_API
-    else -> this
 }

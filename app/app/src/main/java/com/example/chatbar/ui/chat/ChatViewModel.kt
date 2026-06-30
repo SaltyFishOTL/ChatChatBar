@@ -2,7 +2,6 @@ package com.example.chatbar.ui.chat
 
 import android.net.Uri
 import android.content.Context
-import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.os.PowerManager
@@ -22,7 +21,7 @@ import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
 import com.example.chatbar.domain.worldbook.WorldBookEngine
-import com.example.chatbar.domain.service.StreamingForegroundService
+import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -209,7 +208,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun generateNovelAiImage(anchorMessageId: String) {
         val active = _imageGeneration.value
         if (active != null && active.phase != ImageGenerationPhase.FAILED) return
-        viewModelScope.launch {
+        ChatBarApp.instance.applicationScope.launch {
             val token = novelAiCredentials.load()
             val currentSession = chatRepository.getSession(sessionId)
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
@@ -228,6 +227,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 return@launch
             }
             try {
+                AiBackgroundWorkManager.run(sessionId) {
                 _imageGeneration.value = ImageGenerationState(anchorMessageId, ImageGenerationPhase.DESIGNING)
                 val prompt = novelAiPromptDesigner.design(
                     chatRepository.getMessages(sessionId),
@@ -339,6 +339,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                     }
                 }
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 _imageGeneration.value = ImageGenerationState(
@@ -387,6 +388,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (!powerManager.isIgnoringBatteryOptimizations(ctx.packageName)) {
             _showBatteryOptimizationHint.value = true
         }
+    }
+
+    private fun startStreamingForegroundWork() {
+        AiBackgroundWorkManager.start(sessionId)
+        checkBatteryOptimization()
+    }
+
+    private fun stopStreamingForegroundWork() {
+        AiBackgroundWorkManager.finish()
     }
 
     private suspend fun effectiveContextWindowSize(): Int {
@@ -468,7 +478,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         if (_isResponding.value && !respondingAlreadyStarted) return
 
-        viewModelScope.launch {
+        ChatBarApp.instance.applicationScope.launch {
             if (!respondingAlreadyStarted) {
                 _isResponding.value = true
             }
@@ -502,6 +512,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
 
             // 确定是否要用 Embedding 做 RAG 检索
+            startStreamingForegroundWork()
+            try {
             val embeddingConfig = modelResolver.embeddingModel(appSettings)
 
             // 2. 多模态图片处理 (如果是纯文本模型但附带了图片，则先调用视觉模型生成图片描述)
@@ -546,6 +558,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .filterNot { it.id == alternativeTargetMessageId }
             val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
             val contextMsgs = contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
+            val currentRetrievalUserContent = when {
+                persistUserMessage -> finalUserContent
+                alternativeTargetMessageId != null -> contextMsgs.lastOrNull {
+                    it.role == MessageRole.USER
+                }?.displayContent ?: content
+                else -> content
+            }
+            val retrievalCredentialMsgs = buildRagRetrievalCredentialMessages(
+                contextMsgs = contextMsgs,
+                currentUserMessageId = userMsg.id,
+                currentUserContent = currentRetrievalUserContent
+            )
             val activeContextMessageIds = contextMsgs.map { it.id }.toSet()
             val indexedDocumentCount = maxOf(
                 charCard.ragIndexDone,
@@ -610,8 +634,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     if (retrievalModelConfig.id == modelConfig.id) " (fallback to chat model)" else ""
                             )
                             val retrievalPlanResult = retrievalPlanner.plan(
-                                currentUserContent = content,
-                                contextMessages = contextMsgs,
+                                currentUserContent = currentRetrievalUserContent,
+                                contextMessages = retrievalCredentialMsgs,
                                 characterName = charCard.name,
                                 modelConfig = retrievalModelConfig
                             )
@@ -639,9 +663,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 ragDebugLogs.add("Retrieval planner skipped RAG: no topic/query/entity returned.")
                                 emptyList()
                             } else {
-                            val ragQuery = retrievalPlan?.toRagQuery(content, contextMsgs) ?: buildRagQuery(content, contextMsgs)
+                            val ragQuery = retrievalPlan?.toRagQuery(
+                                currentRetrievalUserContent,
+                                retrievalCredentialMsgs
+                            ) ?: buildRagQuery(currentRetrievalUserContent, retrievalCredentialMsgs)
                             val queryEmbedding = ChatBarApp.instance.embeddingService.getEmbedding(ragQuery, embeddingConfig)
                             ragDebugLogs.add("RAG query text (${ragQuery.length} chars):\n${ragQuery.take(1200)}")
+                            ragDebugLogs.add("RAG retrieval credentials: last_assistant=${retrievalCredentialMsgs.size}, current_user=1.")
                             ragDebugLogs.add("查询文本 Embedding 计算完成。维度: ${queryEmbedding.size}")
                             
                             val rankedDocChunks = rankChunksByMultiRoute(
@@ -901,11 +929,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
 
                 val ctx = ChatBarApp.instance
-                StreamingNotificationManager.show(ctx, sessionId)
-                ctx.startForegroundService(Intent(ctx, StreamingForegroundService::class.java).apply {
-                    putExtra("sessionId", sessionId)
-                })
-                checkBatteryOptimization()
 
                 streamingChatService.streamChat(
                     sessionId = sessionId,
@@ -947,8 +970,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             throw Exception(event.message)
                         }
                         is StreamEvent.Done -> {
-                            ctx.stopService(Intent(ctx, StreamingForegroundService::class.java))
-                            StreamingNotificationManager.cancel(ctx)
                             ChatBarApp.instance.streamingStopRequested.value = false
                             if (accumulatedText.isNotBlank()) {
                                 StreamingNotificationManager.showComplete(ctx, accumulatedText)
@@ -1010,12 +1031,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
             } catch (e: Exception) {
-                try {
-                    ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
-                } catch (_: Exception) {}
-                try {
-                    StreamingNotificationManager.cancel(ChatBarApp.instance)
-                } catch (_: Exception) {}
                 ChatBarApp.instance.streamingStopRequested.value = false
                 _isResponding.value = false
                 if (e !is CancellationException) {
@@ -1038,12 +1053,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _streamingMessage.value = null
             } finally {
                 ChatBarApp.instance.streamingStopRequested.value = false
-                try {
-                    ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
-                } catch (_: Exception) {}
-                try {
-                    StreamingNotificationManager.cancel(ChatBarApp.instance)
-                } catch (_: Exception) {}
+            }
+            } catch (e: Exception) {
+                ChatBarApp.instance.streamingStopRequested.value = false
+                _isResponding.value = false
+                if (e !is CancellationException) {
+                    try {
+                        if (alternativeTargetMessageId == null) {
+                            val errorAssistantMsg = ChatMessage.create(
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = "閿欒: ${e.message}"
+                            )
+                            chatRepository.addMessage(errorAssistantMsg)
+                            try {
+                                _messages.value = chatRepository.getMessages(sessionId)
+                            } catch (_: Exception) {}
+                        } else {
+                            addSystemMessage("閿欒: ${e.message}")
+                        }
+                    } catch (_: Exception) {}
+                }
+                _streamingMessage.value = null
+            } finally {
+                ChatBarApp.instance.streamingStopRequested.value = false
+                stopStreamingForegroundWork()
             }
         }
     }
@@ -1056,14 +1090,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         modelConfig: ModelConfig
     ) {
         if (!session.longTermMemoryEnabled) return
-        viewModelScope.launch {
+        ChatBarApp.instance.applicationScope.launch {
             try {
-                val latestSession = chatRepository.getSession(sessionId) ?: return@launch
-                if (!latestSession.longTermMemoryEnabled) return@launch
+                AiBackgroundWorkManager.run(sessionId) {
+                val latestSession = chatRepository.getSession(sessionId) ?: return@run
+                if (!latestSession.longTermMemoryEnabled) return@run
                 val candidate = LongTermMemoryUpdatePolicy.nextCandidate(
                     messages = chatRepository.getMessages(sessionId),
                     updatedThroughMessageId = latestSession.longTermMemoryUpdatedThroughMessageId
-                ) ?: return@launch
+                ) ?: return@run
                 val prompt = PromptTemplates.longTermMemoryUpdatePrompt(
                     currentMemory = latestSession.longTermMemory,
                     userContent = candidate.userContent,
@@ -1075,7 +1110,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     maxTokens = 10000,
                     thinkingBudget = 512
                 ).trim()
-                val current = chatRepository.getSession(sessionId) ?: return@launch
+                val current = chatRepository.getSession(sessionId) ?: return@run
                 if (current.longTermMemoryEnabled) {
                     val updatedSession = current.copy(
                         longTermMemory = updatedMemory.ifBlank { current.longTermMemory },
@@ -1083,6 +1118,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                     chatRepository.updateSession(updatedSession)
                     _session.value = updatedSession
+                }
                 }
             } catch (_: Exception) {
                 // Memory update is best-effort and must not block chat completion.
@@ -1173,7 +1209,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         } else {
                             emptyList()
                         }
-                        ragManager.indexSingleMessageMemory(updatedMessage, contextMessages, sessionId, embeddingConfig)
+                        AiBackgroundWorkManager.run(sessionId) {
+                            ragManager.indexSingleMessageMemory(updatedMessage, contextMessages, sessionId, embeddingConfig)
+                        }
                     } catch (_: Exception) {
                         ragManager.deleteMemoryForMessage(messageId)
                     }
@@ -1486,6 +1524,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val embeddingConfig = modelResolver.embeddingModel(appSettings)
             ?: return@withContext "错误：当前配置层级没有可用向量模型"
         
+        AiBackgroundWorkManager.run(sessionId) {
         val logs = StringBuilder()
         logs.appendLine("开始重建 RAG 索引...")
         
@@ -1508,6 +1547,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         
         logs.appendLine("重建完成。")
         logs.toString()
+        }
     }
 
     private suspend fun addSystemMessage(text: String) {
@@ -1749,23 +1789,33 @@ private fun VectorChunk.sourceDiversityKey(): String {
         ?: sourceId
 }
 
-private fun buildRagQuery(currentUserContent: String, contextMsgs: List<ChatMessage>): String {
-    val recentUserContext = contextMsgs
-        .dropLastWhile { it.role == MessageRole.USER && it.content == currentUserContent }
-        .takeLast(6)
-        .filter { it.role == MessageRole.USER }
+internal fun buildRagRetrievalCredentialMessages(
+    contextMsgs: List<ChatMessage>,
+    currentUserMessageId: String? = null,
+    currentUserContent: String = ""
+): List<ChatMessage> {
+    val lastAssistant = contextMsgs.asReversed().firstOrNull { msg ->
+        msg.role == MessageRole.ASSISTANT &&
+            msg.id != currentUserMessageId &&
+            msg.displayContent.isNotBlank() &&
+            msg.displayContent != currentUserContent
+    }
+    return listOfNotNull(lastAssistant)
+}
+
+internal fun buildRagQuery(currentUserContent: String, contextMsgs: List<ChatMessage>): String {
+    val lastAssistant = contextMsgs
+        .lastOrNull { it.role == MessageRole.ASSISTANT && it.displayContent.isNotBlank() }
 
     return buildString {
         appendLine("Current user message:")
         appendLine(currentUserContent.trim().take(800))
-        if (recentUserContext.isNotEmpty()) {
+        if (lastAssistant != null) {
             appendLine()
-            appendLine("Recent user context:")
-            recentUserContext.forEach { msg ->
-                val text = msg.displayContent.replace(Regex("\\s+"), " ").trim().take(300)
-                if (text.isNotBlank()) {
-                    appendLine("user: $text")
-                }
+            appendLine("Last assistant reply:")
+            val text = lastAssistant.displayContent.replace(Regex("\\s+"), " ").trim().take(600)
+            if (text.isNotBlank()) {
+                appendLine("assistant: $text")
             }
         }
     }.trim().take(2400)

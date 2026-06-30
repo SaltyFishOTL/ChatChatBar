@@ -1,12 +1,9 @@
 package com.example.chatbar.domain.model
 
-import com.example.chatbar.BuildConfig
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PresetChatModel
-import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
 
@@ -89,11 +86,7 @@ class EffectiveModelResolver(
     }
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
-        if (appSettings.modelConfigurationMode.normalized() == ModelConfigurationMode.CUSTOM_API) {
-            appSettings.siliconFlowApiKey.trim()
-        } else {
-            BuildConfig.SILICONFLOW_API_KEY.trim()
-        }
+        appSettings.siliconFlowApiKey.trim()
 
     private suspend fun repositoryChatModels(appSettings: AppSettings): List<ModelConfig> =
         models.getAllModels()
