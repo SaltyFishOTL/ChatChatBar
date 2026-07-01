@@ -473,7 +473,6 @@ ChatBar/
 ├── doc/
 │   ├── AppDesignDocument.md                   # 原始设计文档
 │   ├── implementation_plan.md                 # 项目全局实施计划（本文件）
-│   ├── DebugLoggingDesign.md                  # 调试面板设计及清理指南
 │   └── task.md                                # 任务清单
 ```
 

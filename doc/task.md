@@ -14,7 +14,6 @@
 - [x] Modify `ChatViewModel.kt` to feed the logs (RAG, prompt, estimation)
 - [x] Create `DebugLogDialog.kt` UI screen
 - [x] Modify `ChatScreen.kt` to support the debug action trigger
-- [x] Write `doc/DebugLoggingDesign.md` documentation
 - [x] Compile and verify Kotlin compilation
 - [x] Package final APK (`assembleDebug`)
 
