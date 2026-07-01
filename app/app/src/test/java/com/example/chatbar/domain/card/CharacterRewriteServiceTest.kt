@@ -129,7 +129,74 @@ class CharacterRewriteServiceTest {
         assertFalse(prompt.contains("不要同时处理两种编辑模式"))
         assertFalse(prompt.contains("STRUCTURED 模式输出结构"))
         assertFalse(prompt.contains("FREEFORM 模式输出结构"))
+        assertFalse(prompt.contains("只返回完成 request 必须变化的字段"))
+        assertFalse(prompt.contains("JSON patch"))
         assertTrue(prompt.contains("outputSchema"))
+    }
+
+    @Test
+    fun `materialize structured rewrite fills omitted existing fields from current`() {
+        val current = card(
+            name = "旧卡名",
+            greeting = "旧开场",
+            basicSetting = "旧设定",
+            defaultImagePrompt = "旧风格",
+            characters = listOf(
+                CharacterInfo(
+                    id = "c1",
+                    name = "林雾",
+                    profile = "旧简介",
+                    appearance = "银发",
+                    clothing = "白大褂",
+                    background = "旧背景"
+                ),
+                CharacterInfo(id = "c2", name = "沈澜", profile = "助手")
+            )
+        )
+        val patch = CharacterRewriteDraft(
+            basicSetting = "新设定",
+            characters = listOf(CharacterRewriteCharacterDraft(id = "c1", profile = "新简介"))
+        )
+
+        val materialized = CharacterRewriteService.materializeDraft(current, patch)
+
+        assertEquals("旧卡名", materialized.name)
+        assertEquals("旧开场", materialized.greeting)
+        assertEquals("新设定", materialized.basicSetting)
+        assertEquals("旧风格", materialized.defaultImagePrompt)
+        assertEquals(2, materialized.characters.size)
+        val first = materialized.characters.first { it.id == "c1" }
+        assertEquals("林雾", first.name)
+        assertEquals("新简介", first.profile)
+        assertEquals("银发", first.appearance)
+        assertEquals("白大褂", first.clothing)
+        assertEquals("旧背景", first.background)
+        val second = materialized.characters.first { it.id == "c2" }
+        assertEquals("沈澜", second.name)
+        assertEquals("助手", second.profile)
+    }
+
+    @Test
+    fun `materialize freeform rewrite fills omitted existing fields from current`() {
+        val current = card(
+            editMode = CharacterEditMode.FREEFORM,
+            name = "旧名",
+            greeting = "旧开场",
+            basicSetting = "旧设定",
+            defaultImagePrompt = "旧风格",
+            freeformCharacterText = "旧自由文本"
+        )
+        val patch = CharacterRewriteDraft(freeformCharacterText = "新自由文本")
+
+        val materialized = CharacterRewriteService.materializeDraft(current, patch)
+
+        assertEquals("旧名", materialized.name)
+        assertEquals("旧开场", materialized.greeting)
+        assertEquals("旧设定", materialized.basicSetting)
+        assertEquals("旧风格", materialized.defaultImagePrompt)
+        assertEquals("新自由文本", materialized.freeformCharacterText)
+        assertTrue(materialized.characters.isEmpty())
+        assertTrue(materialized.deleteCharacterIds.isEmpty())
     }
 
     @Test

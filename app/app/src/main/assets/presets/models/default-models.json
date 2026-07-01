@@ -39,7 +39,7 @@
     {
       "modelKey": "GLM5.1",
       "displayName": "GLM5.1",
-      "modelName": "zai-org/GLM-5.1",
+      "modelName": "Pro/zai-org/GLM-5.1",
       "visionModelKey": "vision",
       "templateType": "OPENAI",
       "customParams": {

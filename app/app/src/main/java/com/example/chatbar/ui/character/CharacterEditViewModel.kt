@@ -21,12 +21,14 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -43,7 +45,8 @@ data class CharacterAutoFillUiState(
     val draft: CharacterAutoFillDraft? = null,
     val error: String? = null,
     val streamingText: String = "",
-    val statusText: String = ""
+    val statusText: String = "",
+    val modelId: String? = null
 )
 
 data class CharacterRewriteUiState(
@@ -62,8 +65,13 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val characterAutoFillService = ChatBarApp.instance.characterAutoFillService
     private val characterRewriteService = ChatBarApp.instance.characterRewriteService
+    private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
+    private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
+    private val novelAiImageService = ChatBarApp.instance.novelAiImageService
+    private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
     private var indexingJob: Job? = null
     private var autoFillJob: Job? = null
+    private var autoFillImageJob: Job? = null
     private var autoFillGenerationToken = 0
     private var rewriteJob: Job? = null
     private var rewriteGenerationToken = 0
@@ -216,6 +224,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             refreshAutoFillModels()
             return
         }
+        val selectedModelId = selectedModel?.id
         autoFillJob?.cancel()
         autoFillGenerationToken += 1
         val generationToken = autoFillGenerationToken
@@ -224,7 +233,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             ?: "正在使用默认模型生成角色卡候选"
         _autoFillState.value = CharacterAutoFillUiState(
             isGenerating = true,
-            statusText = statusText
+            statusText = statusText,
+            modelId = selectedModelId
         )
         autoFillJob = viewModelScope.launch {
             var latestRawText = ""
@@ -239,7 +249,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             _autoFillState.value = CharacterAutoFillUiState(
                                 isGenerating = true,
                                 streamingText = rawText,
-                                statusText = statusText
+                                statusText = statusText,
+                                modelId = selectedModelId
                             )
                         }
                     }
@@ -247,7 +258,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 if (generationToken == autoFillGenerationToken) {
                     _autoFillState.value = CharacterAutoFillUiState(
                         draft = draft,
-                        streamingText = latestRawText
+                        streamingText = latestRawText,
+                        modelId = selectedModelId
                     )
                 }
             } catch (_: CancellationException) {
@@ -255,14 +267,16 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     _autoFillState.value = CharacterAutoFillUiState(
                         error = "已取消生成",
                         streamingText = latestRawText,
-                        statusText = "已取消生成"
+                        statusText = "已取消生成",
+                        modelId = selectedModelId
                     )
                 }
             } catch (error: Throwable) {
                 if (generationToken == autoFillGenerationToken) {
                     _autoFillState.value = CharacterAutoFillUiState(
                         error = error.message ?: "AI 自动填充失败",
-                        streamingText = latestRawText
+                        streamingText = latestRawText,
+                        modelId = selectedModelId
                     )
                 }
             } finally {
@@ -286,19 +300,80 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     }
 
     fun applyAutoFillDraft() {
-        val draft = _autoFillState.value.draft ?: return
+        val state = _autoFillState.value
+        val draft = state.draft ?: return
         if (editMode != CharacterEditMode.STRUCTURED) {
             _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
             return
         }
         val merged = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
+        val shouldGenerateCoverImage = avatar.isNullOrBlank() && chatBackground.isNullOrBlank()
         name = merged.name
         greeting = merged.greeting
         basicSetting = merged.basicSetting
         defaultImagePrompt = merged.defaultImagePrompt
         charactersList.clear()
         charactersList.addAll(merged.characters)
+        if (shouldGenerateCoverImage) {
+            generateAutoFillCoverImage(buildCurrentCard(markDirty = false), state.modelId)
+        }
         _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    private fun generateAutoFillCoverImage(card: CharacterCard, modelId: String?) {
+        autoFillImageJob?.cancel()
+        autoFillImageJob = viewModelScope.launch {
+            if (!avatar.isNullOrBlank() || !chatBackground.isNullOrBlank()) return@launch
+            try {
+                val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
+                val settings = settingsRepository.getAppSettings()
+                val model = modelResolver.resolveChatModel(modelId, settings)
+                if (token == null || model == null || model.apiKey.isBlank()) {
+                    val missing = mutableListOf<String>()
+                    if (token == null) missing += "NovelAI Token"
+                    if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
+                    _indexingStatus.value = "AI 自动填充已应用；缺少${missing.joinToString("、")}，未生成头像和背景"
+                    return@launch
+                }
+                AiBackgroundWorkManager.run(card.id) {
+                    _indexingStatus.value = "正在根据角色卡生成头像和聊天背景"
+                    val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) {
+                        _indexingStatus.value = "正在设计头像和背景 Prompt"
+                    }
+                    _indexingStatus.value = "正在调用 NovelAI 生成头像和聊天背景"
+                    val seed = novelAiImageService.newSeed()
+                    var finalImage: ByteArray? = null
+                    novelAiImageService.generate(token, prompt, seed).collect { event ->
+                        when (event) {
+                            is NovelAiImageEvent.Intermediate -> Unit
+                            is NovelAiImageEvent.Final -> {
+                                finalImage = event.image
+                            }
+                            is NovelAiImageEvent.Error -> error(event.message)
+                        }
+                    }
+                    val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+                    val path = withContext(Dispatchers.IO) {
+                        novelAiImageStorage.save(card.id, bytes)
+                    }
+                    if (avatar.isNullOrBlank() && chatBackground.isNullOrBlank()) {
+                        avatar = path
+                        chatBackground = path
+                        _indexingStatus.value = "已生成头像和聊天背景"
+                    } else {
+                        withContext(Dispatchers.IO) {
+                            novelAiImageStorage.deleteIfOwned(path)
+                        }
+                        _indexingStatus.value = "头像或背景已存在，已跳过自动写入"
+                    }
+                }
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                _indexingStatus.value = "AI 自动填充已应用；头像/背景生成失败：${error.message ?: "未知错误"}"
+            } finally {
+                autoFillImageJob = null
+            }
+        }
     }
 
     fun clearAutoFillDraft() {

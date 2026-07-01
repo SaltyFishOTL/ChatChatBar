@@ -92,7 +92,7 @@ class CharacterRewriteService(
         val rawText = raw.toString()
         if (rawText.isBlank()) error(streamError ?: "AI 自动改写返回空内容")
         val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model, currentCard)
-        draft.constrainedTo(currentCard)
+        materializeDraft(currentCard, draft)
     }
 
     private suspend fun repairDraft(
@@ -176,6 +176,47 @@ class CharacterRewriteService(
                 }
             }.toString()
 
+        fun materializeDraft(
+            current: CharacterCard,
+            draft: CharacterRewriteDraft
+        ): CharacterRewriteDraft {
+            val normalized = draft.constrainedTo(current)
+            return when (current.editMode) {
+                CharacterEditMode.STRUCTURED -> {
+                    val deletedIds = normalized.deleteCharacterIds.map(String::trim).filter(String::isNotBlank).toSet()
+                    val patchesById = normalized.characters
+                        .map(CharacterRewriteCharacterDraft::normalized)
+                        .filter { !it.id.isNullOrBlank() }
+                        .associateBy { it.id!!.trim() }
+                    val currentIds = current.characters.map { it.id }.toSet()
+                    val kept = current.characters
+                        .filterNot { it.id in deletedIds }
+                        .map { it.toFullRewriteDraft(patchesById[it.id]) }
+                    val additions = normalized.characters
+                        .map(CharacterRewriteCharacterDraft::normalized)
+                        .filter(CharacterRewriteCharacterDraft::hasVisibleContent)
+                        .filter { it.id.isNullOrBlank() || it.id !in currentIds }
+                        .take((6 - kept.size).coerceAtLeast(0))
+                        .map(CharacterRewriteCharacterDraft::toFullNewCharacterDraft)
+                    CharacterRewriteDraft(
+                        name = normalized.name.patch(current.name),
+                        greeting = normalized.greeting.patch(current.greeting),
+                        basicSetting = normalized.basicSetting.patch(current.basicSetting),
+                        defaultImagePrompt = normalized.defaultImagePrompt.patch(current.defaultImagePrompt),
+                        deleteCharacterIds = normalized.deleteCharacterIds,
+                        characters = kept + additions
+                    )
+                }
+                CharacterEditMode.FREEFORM -> CharacterRewriteDraft(
+                    name = normalized.name.patch(current.name),
+                    greeting = normalized.greeting.patch(current.greeting),
+                    basicSetting = normalized.basicSetting.patch(current.basicSetting),
+                    defaultImagePrompt = normalized.defaultImagePrompt.patch(current.defaultImagePrompt),
+                    freeformCharacterText = normalized.freeformCharacterText.patch(current.freeformCharacterText)
+                )
+            }
+        }
+
         fun mergeInto(
             current: CharacterCard,
             draft: CharacterRewriteDraft,
@@ -254,8 +295,8 @@ private fun CharacterInfo.toRewriteCurrentCharacter(): JsonObject? {
 private fun CharacterCard.rewriteOutputSchema(): JsonObject =
     when (editMode) {
         CharacterEditMode.STRUCTURED -> buildJsonObject {
-            put("schemaName", "structuredCharacterRewritePatch")
-            put("patchSemantics", "字段缺失或 null 表示保持当前；空字符串表示清空；非空字符串表示替换。")
+            put("schemaName", "structuredCharacterRewriteCandidate")
+            put("candidateSemantics", "输出应用后的完整候选；保留不变的现有内容也要原样写回；空字符串只表示明确清空。")
             put("allowedTopLevelKeys", jsonStringArray(cardPatchFields + listOf("deleteCharacterIds", "characters")))
             put("cardFields", jsonStringArray(cardPatchFields))
             put("deleteCharacterIds", "string[]；只有用户明确要求删除角色时输出")
@@ -263,14 +304,14 @@ private fun CharacterCard.rewriteOutputSchema(): JsonObject =
                 add(
                     buildJsonObject {
                         put("id", "已有角色 id；新增角色省略或写 null")
-                        structuredCharacterPatchFields.forEach { put(it, "string|null，可省略") }
+                        structuredCharacterPatchFields.forEach { put(it, "string，保留内容也要原样写回") }
                     }
                 )
             })
             put("maxCharacters", 6)
             put("rules", buildJsonArray {
-                add(JsonPrimitive("已有角色必须按 current.characters[].id 改写。"))
-                add(JsonPrimitive("未出现在 characters 中的已有角色保持不变。"))
+                add(JsonPrimitive("characters 是应用后的完整人物候选列表；保留人物也要输出。"))
+                add(JsonPrimitive("已有角色必须按 current.characters[].id 改写并保留 id。"))
                 add(JsonPrimitive("删除角色必须写入 deleteCharacterIds；不要靠遗漏删除。"))
                 add(JsonPrimitive("用户明确要求新增人物时，可以新增无 id 的角色对象；总角色数最多 6。"))
                 add(JsonPrimitive("新增人物必须基于 current 与 request，不要变成无关原创卡。"))
@@ -278,13 +319,13 @@ private fun CharacterCard.rewriteOutputSchema(): JsonObject =
             })
         }
         CharacterEditMode.FREEFORM -> buildJsonObject {
-            put("schemaName", "freeformCharacterRewritePatch")
-            put("patchSemantics", "字段缺失或 null 表示保持当前；空字符串表示清空；非空字符串表示替换。")
+            put("schemaName", "freeformCharacterRewriteCandidate")
+            put("candidateSemantics", "输出应用后的完整候选；保留不变的现有内容也要原样写回；空字符串只表示明确清空。")
             put("allowedTopLevelKeys", jsonStringArray(cardPatchFields + listOf("freeformCharacterText")))
             put("cardFields", jsonStringArray(cardPatchFields))
-            put("freeformCharacterText", "string|null，可省略")
+            put("freeformCharacterText", "string，保留内容也要原样写回")
             put("rules", buildJsonArray {
-                add(JsonPrimitive("只改当前自由文本与卡级字段。"))
+                add(JsonPrimitive("输出应用后的完整自由模式候选。"))
                 add(JsonPrimitive("输出 JSON 不包含 characters 或 deleteCharacterIds。"))
             })
         }
@@ -312,6 +353,36 @@ private fun JsonObjectBuilder.putNonBlank(key: String, value: String) {
 private fun jsonStringArray(values: List<String>) = buildJsonArray {
     values.forEach { add(JsonPrimitive(it)) }
 }
+
+private fun CharacterInfo.toFullRewriteDraft(patch: CharacterRewriteCharacterDraft?): CharacterRewriteCharacterDraft =
+    CharacterRewriteCharacterDraft(
+        id = id,
+        name = patch?.name.patch(name),
+        profile = patch?.profile.patch(profile),
+        appearance = patch?.appearance.patch(appearance),
+        clothing = patch?.clothing.patch(clothing),
+        abilities = patch?.abilities.patch(abilities),
+        habits = patch?.habits.patch(habits),
+        background = patch?.background.patch(background),
+        relationships = patch?.relationships.patch(relationships),
+        speakingStyle = patch?.speakingStyle.patch(speakingStyle),
+        imagePrompt = patch?.imagePrompt.patch(imagePrompt)
+    )
+
+private fun CharacterRewriteCharacterDraft.toFullNewCharacterDraft(): CharacterRewriteCharacterDraft =
+    CharacterRewriteCharacterDraft(
+        id = null,
+        name = name.orEmpty(),
+        profile = profile.orEmpty(),
+        appearance = appearance.orEmpty(),
+        clothing = clothing.orEmpty(),
+        abilities = abilities.orEmpty(),
+        habits = habits.orEmpty(),
+        background = background.orEmpty(),
+        relationships = relationships.orEmpty(),
+        speakingStyle = speakingStyle.orEmpty(),
+        imagePrompt = imagePrompt.orEmpty()
+    )
 
 private fun mergeStructuredCharacters(
     current: List<CharacterInfo>,

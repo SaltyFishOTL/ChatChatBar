@@ -3,6 +3,7 @@ package com.example.chatbar.domain.image
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.chat.StreamEvent
 import java.nio.ByteBuffer
@@ -59,6 +60,40 @@ class NovelAiImageFeatureTest {
         assertFalse(result.characterCaptions.any { "ignored" in it.prompt })
         assertEquals(1f / 7f, result.characterCaptions.first().center.x, 0.001f)
         assertEquals(6f / 7f, result.characterCaptions.last().center.x, 0.001f)
+    }
+
+    @Test
+    fun `character card cover prompt uses final card content without external resources`() {
+        val card = CharacterCard(
+            id = "card",
+            name = "夜雨诊所",
+            greeting = "雨夜里，林雾推开诊室门。",
+            basicSetting = "都市怪谈诊所，冷淡女医生与来访者建立危险信任。",
+            characters = listOf(
+                CharacterInfo(
+                    id = "c1",
+                    name = "林雾",
+                    profile = "怪谈医生",
+                    appearance = "银发，灰蓝眼，冷淡表情",
+                    clothing = "白大褂，黑色高领",
+                    imagePrompt = "1girl, silver hair, blue-gray eyes, lab coat"
+                )
+            ),
+            customDocuments = listOf(DocumentInfo.create("secret-notes.txt", "/tmp/secret-notes.txt", "txt")),
+            worldBookIds = listOf("hidden-world"),
+            defaultImagePrompt = "anime screencap",
+            createdAt = 1,
+            updatedAt = 1
+        )
+
+        val prompt = NovelAiPromptDesigner.characterCardImagePrompt(card)
+
+        assertTrue(prompt.contains("夜雨诊所"))
+        assertTrue(prompt.contains("都市怪谈诊所"))
+        assertTrue(prompt.contains("林雾"))
+        assertTrue(prompt.contains("silver hair"))
+        assertFalse(prompt.contains("secret-notes.txt"))
+        assertFalse(prompt.contains("hidden-world"))
     }
 
     @Test

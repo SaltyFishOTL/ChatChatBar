@@ -859,7 +859,7 @@ private fun CharacterRewriteDialog(
             }
             state.draft?.let { draft ->
                 CbDivider()
-                RewriteDraftPreview(draft)
+                RewriteCandidatePreview(draft)
             }
         }
     }
@@ -880,14 +880,14 @@ private fun AutoFillRawStreamPreview(rawText: String) {
 }
 
 @Composable
-private fun RewriteDraftPreview(draft: CharacterRewriteDraft) {
+private fun RewriteCandidatePreview(draft: CharacterRewriteDraft) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         CbText("改写候选", style = ChatBarTheme.typography.heading)
-        PreviewPatchField("角色卡名称", draft.name)
-        PreviewPatchField("开场白", draft.greeting)
-        PreviewPatchField("基本设定", draft.basicSetting)
-        PreviewPatchField("NovelAI 默认风格", draft.defaultImagePrompt)
-        PreviewPatchField("自由人物设定", draft.freeformCharacterText)
+        PreviewField("角色卡名称", draft.name.orEmpty())
+        PreviewField("开场白", draft.greeting.orEmpty())
+        PreviewField("基本设定", draft.basicSetting.orEmpty())
+        PreviewField("NovelAI 默认风格", draft.defaultImagePrompt.orEmpty())
+        PreviewField("自由人物设定", draft.freeformCharacterText.orEmpty())
         if (draft.deleteCharacterIds.isNotEmpty()) {
             CbSurface(
                 Modifier.fillMaxWidth(),
@@ -907,19 +907,19 @@ private fun RewriteDraftPreview(draft: CharacterRewriteDraft) {
             ) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     CbText(
-                        character.id?.takeIf(String::isNotBlank)?.let { "人物改写：$it" } ?: "新增人物 ${index + 1}",
+                        character.id?.takeIf(String::isNotBlank)?.let { "人物 ${index + 1}: ${character.name.orEmpty().ifBlank { it }}" } ?: "新增人物 ${index + 1}",
                         style = ChatBarTheme.typography.heading
                     )
-                    PreviewPatchInline("姓名", character.name)
-                    PreviewPatchInline("简介", character.profile)
-                    PreviewPatchInline("外貌", character.appearance)
-                    PreviewPatchInline("服装", character.clothing)
-                    PreviewPatchInline("能力", character.abilities)
-                    PreviewPatchInline("习惯/爱好", character.habits)
-                    PreviewPatchInline("背景", character.background)
-                    PreviewPatchInline("关系", character.relationships)
-                    PreviewPatchInline("语气", character.speakingStyle)
-                    PreviewPatchInline("NAI 人物提示词", character.imagePrompt)
+                    CharacterPreviewField("姓名", character.name.orEmpty())
+                    CharacterPreviewField("简介", character.profile.orEmpty())
+                    CharacterPreviewField("外貌", character.appearance.orEmpty())
+                    CharacterPreviewField("服装", character.clothing.orEmpty())
+                    CharacterPreviewField("能力", character.abilities.orEmpty())
+                    CharacterPreviewField("习惯/爱好", character.habits.orEmpty())
+                    CharacterPreviewField("背景", character.background.orEmpty())
+                    CharacterPreviewField("关系", character.relationships.orEmpty())
+                    CharacterPreviewField("语气", character.speakingStyle.orEmpty())
+                    CharacterPreviewField("NAI 人物提示词", character.imagePrompt.orEmpty())
                 }
             }
         }

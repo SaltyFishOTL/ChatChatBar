@@ -128,6 +128,7 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 10. imagePrompt 只写稳定外观、身份、发型、体型、服装等角色形象标签；不要写场景、动作、光照、构图或剧情事件。
 11. 中文字段使用中文；imagePrompt 使用英文逗号分隔的 NovelAI/Danbooru 标签。
 12. 优先给出具体姓名、稳定身份、可扮演冲突、关系张力、说话风格和可直接开局的互动钩子。
+13. 使用${'$'}username指代玩家，使用${'$'}botname指代扮演卡
 
 输出结构：
 {
@@ -173,23 +174,24 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 你会收到一个 JSON 作业：
 - request：用户本次改写想法。
 - current：本次需要修改的现有角色卡内容。
-- outputSchema：本次唯一允许输出的 JSON patch 结构、字段、限制和规则。
+- outputSchema：本次唯一允许输出的 JSON 候选结构、字段、限制和规则。
 - characterImageGuide：仅当 outputSchema 允许角色 imagePrompt 时提供。
 
 改写规则：
-1. 只输出 outputSchema 允许的顶级键；只返回完成 request 必须变化的字段。
-2. 字段缺失或 null 表示保持当前；字段为 "" 表示清空；字段为非空字符串表示替换。
-3. current 不含的字段表示当前为空或本次未提供；不要为 outputSchema 之外的内容补历史。
+1. 输出“应用后的完整候选”，不是局部补丁。没有变化的现有内容也要原样写回。
+2. 只输出 outputSchema 允许的顶级键；不要输出文档、世界书、高级提示词、示例、元数据。
+3. 字段为 "" 表示清空；只有 request 明确要求删除、清空、去掉某段设定时才使用空字符串。
 4. 中文字段使用中文；NovelAI prompt 使用英文逗号分隔标签。
 5. defaultImagePrompt 只有 request 要求改图像默认风格时才返回，否则省略。
 6. imagePrompt 只写稳定外观、身份、发型、体型、服装等角色形象标签；不要写场景、动作、光照、构图或剧情事件。
-7. 空字符串只在 request 明确要求删除、清空、去掉某段设定时使用。
-8. 新增或删除人物只在 outputSchema 明确允许且 request 要求时使用。
+7. STRUCTURED 的 characters 是应用后的完整人物候选列表；保留人物也要输出并保留 id；新增人物可省略 id。
+8. 谨慎新增或删除人物。
+9. 使用${'$'}username指代玩家，使用${'$'}botname指代扮演卡。
 """
 
     const val CHARACTER_REWRITE_REPAIR_PROMPT = """
 你会收到一个 JSON 对象，包含 outputSchema 与 text。
-把 text 修复成符合 outputSchema 的合法 JSON patch。只输出 JSON；不要 Markdown、解释、注释或多余文字。
+把 text 修复成符合 outputSchema 的合法 JSON 候选。只输出 JSON；不要 Markdown、解释、注释或多余文字。
 保留可用内容；删除 outputSchema 未允许的键；缺失字段保持缺失；无法确定的字段写 null；空字符串保持空字符串。
 """
 
