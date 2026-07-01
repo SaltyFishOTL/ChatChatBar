@@ -196,7 +196,6 @@ class CharacterRewriteService(
                         .map(CharacterRewriteCharacterDraft::normalized)
                         .filter(CharacterRewriteCharacterDraft::hasVisibleContent)
                         .filter { it.id.isNullOrBlank() || it.id !in currentIds }
-                        .take((6 - kept.size).coerceAtLeast(0))
                         .map(CharacterRewriteCharacterDraft::toFullNewCharacterDraft)
                     CharacterRewriteDraft(
                         name = normalized.name.patch(current.name),
@@ -308,12 +307,11 @@ private fun CharacterCard.rewriteOutputSchema(): JsonObject =
                     }
                 )
             })
-            put("maxCharacters", 6)
             put("rules", buildJsonArray {
                 add(JsonPrimitive("characters 是应用后的完整人物候选列表；保留人物也要输出。"))
                 add(JsonPrimitive("已有角色必须按 current.characters[].id 改写并保留 id。"))
                 add(JsonPrimitive("删除角色必须写入 deleteCharacterIds；不要靠遗漏删除。"))
-                add(JsonPrimitive("用户明确要求新增人物时，可以新增无 id 的角色对象；总角色数最多 6。"))
+                add(JsonPrimitive("用户明确要求新增人物时，可以新增无 id 的角色对象。"))
                 add(JsonPrimitive("新增人物必须基于 current 与 request，不要变成无关原创卡。"))
                 add(JsonPrimitive("imagePrompt 只写稳定外观、身份、发型、体型、服装等角色形象标签。"))
             })
@@ -404,7 +402,6 @@ private fun mergeStructuredCharacters(
         .filter(CharacterRewriteCharacterDraft::hasVisibleContent)
         .filter { it.id.isNullOrBlank() || it.id !in currentIds }
     additions.forEach { addition ->
-        if (kept.size >= 6) return@forEach
         kept += CharacterInfo(
             id = idFactory(),
             name = addition.name.orEmpty(),
@@ -419,7 +416,7 @@ private fun mergeStructuredCharacters(
             imagePrompt = addition.imagePrompt.orEmpty()
         )
     }
-    return kept.take(6)
+    return kept
 }
 
 private fun CharacterInfo.rewriteWith(draft: CharacterRewriteCharacterDraft): CharacterInfo =

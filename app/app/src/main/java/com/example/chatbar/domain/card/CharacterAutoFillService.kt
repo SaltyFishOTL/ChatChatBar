@@ -214,7 +214,6 @@ class CharacterAutoFillService(
             if (draftCharacters.isEmpty()) return current
             if (current.canCreateCharacterList()) {
                 return draftCharacters
-                    .take(6)
                     .map { it.toCharacterInfo(idFactory) }
             }
             val usedDraftIndexes = mutableSetOf<Int>()
@@ -225,8 +224,7 @@ class CharacterAutoFillService(
             val existingNames = mergedExisting.characterInfoNameKeys()
             val appended = draftCharacters.createdCharactersToAppend(
                 usedDraftIndexes = usedDraftIndexes,
-                initialNameKeys = existingNames,
-                limit = (6 - mergedExisting.size).coerceAtLeast(0)
+                initialNameKeys = existingNames
             )
                 .map { it.toCharacterInfo(idFactory) }
             return mergedExisting + appended
@@ -313,22 +311,17 @@ private fun CharacterCard.buildFillTargets(): JsonObject = buildJsonObject {
                 "createCharacters",
                 buildJsonObject {
                     put("enabled", true)
-                    put("limit", characters.createCharacterLimit())
                     put("fields", JsonArray(characterFieldNames.map(::JsonPrimitive)))
                 }
             )
         } else {
-            val createLimit = characters.createCharacterLimit()
-            if (createLimit > 0) {
-                put(
-                    "createCharacters",
-                    buildJsonObject {
-                        put("enabled", true)
-                        put("limit", createLimit)
-                        put("fields", JsonArray(characterFieldNames.map(::JsonPrimitive)))
-                    }
-                )
-            }
+            put(
+                "createCharacters",
+                buildJsonObject {
+                    put("enabled", true)
+                    put("fields", JsonArray(characterFieldNames.map(::JsonPrimitive)))
+                }
+            )
         }
     }
 
@@ -423,7 +416,7 @@ private fun CharacterAutoFillDraft.constrainedToTargets(currentCard: CharacterCa
     val draftCharacters = normalizedDraft.characters.filter(CharacterAutoFillCharacterDraft::hasAnyContent)
     if (draftCharacters.isEmpty()) return normalizedDraft
     val constrainedCharacters = if (currentCard.characters.canCreateCharacterList()) {
-        draftCharacters.take(6)
+        draftCharacters
     } else {
         val usedDraftIndexes = mutableSetOf<Int>()
         val existingMatches = currentCard.characters.mapIndexedNotNull { index, existing ->
@@ -437,8 +430,7 @@ private fun CharacterAutoFillDraft.constrainedToTargets(currentCard: CharacterCa
         val existingNames = currentCard.characters.characterInfoNameKeys() + existingMatches.draftNameKeys()
         val createdCharacters = draftCharacters.createdCharactersToAppend(
             usedDraftIndexes = usedDraftIndexes,
-            initialNameKeys = existingNames,
-            limit = currentCard.characters.createCharacterLimit()
+            initialNameKeys = existingNames
         )
         existingMatches + createdCharacters
     }
@@ -448,9 +440,6 @@ private fun CharacterAutoFillDraft.constrainedToTargets(currentCard: CharacterCa
 private fun List<CharacterInfo>.canCreateCharacterList(): Boolean =
     isEmpty() || isDefaultEmptyCharacterList()
 
-private fun List<CharacterInfo>.createCharacterLimit(): Int =
-    if (canCreateCharacterList()) 6 else (6 - size).coerceAtLeast(0)
-
 private fun List<CharacterInfo>.characterInfoNameKeys(): Set<String> =
     mapNotNull { it.name.nameKey().takeIf(String::isNotBlank) }.toSet()
 
@@ -459,10 +448,8 @@ private fun List<CharacterAutoFillCharacterDraft>.draftNameKeys(): Set<String> =
 
 private fun List<CharacterAutoFillCharacterDraft>.createdCharactersToAppend(
     usedDraftIndexes: Set<Int>,
-    initialNameKeys: Set<String>,
-    limit: Int
+    initialNameKeys: Set<String>
 ): List<CharacterAutoFillCharacterDraft> {
-    if (limit <= 0) return emptyList()
     val nameKeys = initialNameKeys.toMutableSet()
     val result = mutableListOf<CharacterAutoFillCharacterDraft>()
     forEachIndexed { draftIndex, draft ->
@@ -470,7 +457,6 @@ private fun List<CharacterAutoFillCharacterDraft>.createdCharactersToAppend(
         val key = draft.name.nameKey()
         if (key.isNotBlank() && !nameKeys.add(key)) return@forEachIndexed
         result += draft
-        if (result.size >= limit) return result
     }
     return result
 }

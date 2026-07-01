@@ -259,7 +259,7 @@ class CharacterRewriteServiceTest {
     }
 
     @Test
-    fun `structured rewrite adds characters up to total limit`() {
+    fun `structured rewrite adds characters without hard total limit`() {
         val current = card(
             characters = (1..5).map { CharacterInfo(id = "c$it", name = "角色$it") }
         )
@@ -273,10 +273,22 @@ class CharacterRewriteServiceTest {
 
         val merged = CharacterRewriteService.mergeInto(current, draft) { "new-${++nextId}" }
 
-        assertEquals(6, merged.characters.size)
-        assertEquals("new-1", merged.characters.last().id)
-        assertEquals("新增一", merged.characters.last().name)
-        assertFalse(merged.characters.any { it.name == "新增二" })
+        assertEquals(7, merged.characters.size)
+        assertEquals(listOf("new-1", "new-2"), merged.characters.takeLast(2).map { it.id })
+        assertEquals(listOf("新增一", "新增二"), merged.characters.takeLast(2).map { it.name })
+    }
+
+    @Test
+    fun `structured rewrite preserves existing ten character cards`() {
+        val current = card(
+            characters = (1..10).map { CharacterInfo(id = "c$it", name = "角色$it") }
+        )
+        val draft = CharacterRewriteDraft(name = "新卡名")
+
+        val merged = CharacterRewriteService.mergeInto(current, draft)
+
+        assertEquals(10, merged.characters.size)
+        assertEquals((1..10).map { "c$it" }, merged.characters.map { it.id })
     }
 
     @Test

@@ -122,7 +122,7 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 4. 补全已有角色槽位时，每个对象必须写 targetIndex，对应 fillTargets.characters 中的 index。
 5. 若槽位带 matchName，生成内容必须服务于该角色名，不要改名或替换成另一个角色。
 6. 若槽位没有 matchName，可以根据 request 为该槽位生成一个具体姓名与稳定身份。
-7. 若 fillTargets.createCharacters 存在，可以在 request 明确需要现有槽位之外的主要角色时主动新增独立角色；数量根据 request 判断，最多不超过 createCharacters.limit。新增角色不要写 targetIndex，或写 null。
+7. 若 fillTargets.createCharacters 存在，可以在 request 明确需要现有槽位之外的主要角色时主动新增独立角色；数量根据 request 判断。新增角色不要写 targetIndex，或写 null。
 8. 没有 fillTargets.createCharacters 时，不要新增未匹配角色。
 9. defaultImagePrompt 只在被要求时填写，并且必须等于 defaultNaiStyle 的完整原文。
 10. imagePrompt 只写稳定外观、身份、发型、体型、服装等角色形象标签；不要写场景、动作、光照、构图或剧情事件。
@@ -282,7 +282,7 @@ Max 1 location, 1 lighting, 1 camera, 1 emotion/action.
 Polished key visual/CG/dramatic still, NOT literal report.
 Drop anything not visibly improving image.
 Chars:
-Only visible. Max 6. Exact names. No inventing.
+Only visible focal characters needed by scene. Max 6. Exact names. No inventing.
 Output JSON only:
 {"baseCaption":"...","characters":[{"name":"exact name","caption":"...","center":{"x":0.3,"y":0.5}}]}
 baseCaption = preset style + scene description. Preset style MANDATORY.

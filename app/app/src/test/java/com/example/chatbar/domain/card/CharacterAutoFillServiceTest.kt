@@ -54,6 +54,7 @@ class CharacterAutoFillServiceTest {
             "mesExample",
             "replaceDefaultEmptyCharacter",
             "maxCharacters",
+            "createCharacters.limit",
             "major characters",
             "1-6"
         ).forEach { forbidden ->
@@ -101,7 +102,7 @@ class CharacterAutoFillServiceTest {
         assertEquals("0", characterTarget.getValue("index").jsonPrimitive.content)
         assertEquals("Alice", characterTarget.getValue("matchName").jsonPrimitive.content)
         assertEquals("true", createCharacters.getValue("enabled").jsonPrimitive.content)
-        assertEquals("5", createCharacters.getValue("limit").jsonPrimitive.content)
+        assertFalse(createCharacters.containsKey("limit"))
         assertEquals(
             listOf("profile", "clothing", "abilities", "habits", "background", "relationships", "speakingStyle", "imagePrompt"),
             characterFields
@@ -129,7 +130,7 @@ class CharacterAutoFillServiceTest {
 
         assertTrue(characterTargets.isEmpty())
         assertEquals("true", createCharacters.getValue("enabled").jsonPrimitive.content)
-        assertEquals("6", createCharacters.getValue("limit").jsonPrimitive.content)
+        assertFalse(createCharacters.containsKey("limit"))
         assertEquals(
             listOf(
                 "name",
@@ -227,6 +228,23 @@ class CharacterAutoFillServiceTest {
 
         assertEquals(listOf("new-1", "new-2"), merged.characters.map { it.id })
         assertEquals(listOf("林雾", "沈澜"), merged.characters.map { it.name })
+    }
+
+    @Test
+    fun `merge keeps all generated characters when default empty card has more than six`() {
+        val current = card(characters = listOf(CharacterInfo.create("")))
+        val draft = CharacterAutoFillDraft(
+            characters = (1..10).map { index ->
+                CharacterAutoFillCharacterDraft(name = "Character $index", profile = "Profile $index")
+            }
+        )
+        var nextId = 0
+
+        val merged = CharacterAutoFillService.mergeInto(current, draft) { "new-${++nextId}" }
+
+        assertEquals(10, merged.characters.size)
+        assertEquals("new-10", merged.characters.last().id)
+        assertEquals("Character 10", merged.characters.last().name)
     }
 
     @Test
