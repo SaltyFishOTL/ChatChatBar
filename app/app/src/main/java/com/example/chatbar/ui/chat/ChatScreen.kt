@@ -353,6 +353,7 @@ fun ChatScreen(
             enabled = !isArchived && isModelUsable,
             onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onFull = { fullComposer = true },
+            onCancel = viewModel::cancelResponseGeneration,
             onSend = {
                 if (viewModel.sendMessage(input.text, selectedImages.toList())) {
                     input = TextFieldValue(""); selectedImages.clear()
@@ -671,6 +672,7 @@ private fun ChatComposer(
     enabled: Boolean,
     onImage: () -> Unit,
     onFull: () -> Unit,
+    onCancel: () -> Unit,
     onSend: () -> Unit
 ) {
     Row(
@@ -681,17 +683,17 @@ private fun ChatComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled, tint = ChatBarTheme.colors.primary)
+        CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else "本对话已封存", enabled = enabled, minLines = 1)
         Spacer(Modifier.width(8.dp))
         CbIconButton(
-            AppIcons.Send,
-            "发送",
-            onSend,
-            modifier = Modifier.background(ChatBarTheme.colors.primary, CircleShape),
-            enabled = enabled && !responding,
-            tint = ChatBarTheme.colors.primaryForeground
+            if (responding) AppIcons.Close else AppIcons.Send,
+            if (responding) "中断生成" else "发送",
+            if (responding) onCancel else onSend,
+            modifier = Modifier.background(if (responding) ChatBarTheme.colors.destructive else ChatBarTheme.colors.primary, CircleShape),
+            enabled = enabled || responding,
+            tint = if (responding) ChatBarTheme.colors.destructiveForeground else ChatBarTheme.colors.primaryForeground
         )
     }
 }

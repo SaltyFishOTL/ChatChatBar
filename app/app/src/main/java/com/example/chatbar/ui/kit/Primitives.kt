@@ -6,6 +6,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
@@ -333,21 +334,35 @@ fun CbDialog(
     modifier: Modifier = Modifier,
     confirm: (@Composable () -> Unit)? = null,
     dismiss: (@Composable () -> Unit)? = null,
+    dismissOnClickOutside: Boolean = true,
+    dismissOnBackPress: Boolean = true,
     content: @Composable ColumnScope.() -> Unit
 ) {
     Dialog(
         onDismissRequest = onDismissRequest,
-        properties = DialogProperties(usePlatformDefaultWidth = false)
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            dismissOnBackPress = dismissOnBackPress,
+            dismissOnClickOutside = dismissOnClickOutside
+        )
     ) {
+        val surfaceInteraction = remember { MutableInteractionSource() }
         Box(
             Modifier
                 .fillMaxSize()
                 .background(ChatBarTheme.colors.dim)
-                .clickable(onClick = onDismissRequest),
+                .clickable(enabled = dismissOnClickOutside, onClick = onDismissRequest),
             contentAlignment = Alignment.Center
         ) {
             CbSurface(
-                modifier = modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.xxl),
+                modifier = modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = ChatBarSpacing.xxl)
+                    .clickable(
+                        interactionSource = surfaceInteraction,
+                        indication = null,
+                        onClick = {}
+                    ),
                 border = BorderStroke(1.dp, ChatBarTheme.colors.border),
                 elevation = ChatBarElevation.high
             ) {

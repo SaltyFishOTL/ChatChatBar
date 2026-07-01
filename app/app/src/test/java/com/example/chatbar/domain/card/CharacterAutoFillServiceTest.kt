@@ -42,7 +42,8 @@ class CharacterAutoFillServiceTest {
         val prompt = PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT
 
         assertTrue(prompt.contains("角色卡可以包含多个 characters"))
-        assertTrue(prompt.contains("一个角色槽位只对应一个角色"))
+        assertTrue(prompt.contains("fillTargets.createCharacters"))
+        assertTrue(prompt.contains("每个 fillTargets.characters 项只对应一个已有角色槽位"))
         listOf(
             "document",
             "world book",
@@ -89,6 +90,8 @@ class CharacterAutoFillServiceTest {
             .map { it.jsonPrimitive.content }
         val characterTarget = root.getValue("fillTargets").jsonObject
             .getValue("characters").jsonArray.single().jsonObject
+        val createCharacters = root.getValue("fillTargets").jsonObject
+            .getValue("createCharacters").jsonObject
         val characterFields = characterTarget.getValue("fields").jsonArray
             .map { it.jsonPrimitive.content }
         val locked = root.getValue("lockedContext").jsonObject
@@ -97,6 +100,8 @@ class CharacterAutoFillServiceTest {
         assertEquals("fillCharacterSlot", characterTarget.getValue("mode").jsonPrimitive.content)
         assertEquals("0", characterTarget.getValue("index").jsonPrimitive.content)
         assertEquals("Alice", characterTarget.getValue("matchName").jsonPrimitive.content)
+        assertEquals("true", createCharacters.getValue("enabled").jsonPrimitive.content)
+        assertEquals("5", createCharacters.getValue("limit").jsonPrimitive.content)
         assertEquals(
             listOf("profile", "clothing", "abilities", "habits", "background", "relationships", "speakingStyle", "imagePrompt"),
             characterFields
@@ -111,19 +116,20 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
-    fun `prompt payload treats default empty character as one slot`() {
+    fun `prompt payload lets default empty card create character list`() {
         val current = card(characters = listOf(CharacterInfo.create("")))
 
         val payload = CharacterAutoFillService.buildPromptPayload("fill one role", current)
         val root = Json.parseToJsonElement(payload).jsonObject
-        val characterTarget = root.getValue("fillTargets").jsonObject
-            .getValue("characters").jsonArray.single().jsonObject
-        val characterFields = characterTarget.getValue("fields").jsonArray
+        val fillTargets = root.getValue("fillTargets").jsonObject
+        val characterTargets = fillTargets.getValue("characters").jsonArray
+        val createCharacters = fillTargets.getValue("createCharacters").jsonObject
+        val characterFields = createCharacters.getValue("fields").jsonArray
             .map { it.jsonPrimitive.content }
 
-        assertEquals("fillCharacterSlot", characterTarget.getValue("mode").jsonPrimitive.content)
-        assertEquals("0", characterTarget.getValue("index").jsonPrimitive.content)
-        assertFalse(characterTarget.containsKey("maxCharacters"))
+        assertTrue(characterTargets.isEmpty())
+        assertEquals("true", createCharacters.getValue("enabled").jsonPrimitive.content)
+        assertEquals("6", createCharacters.getValue("limit").jsonPrimitive.content)
         assertEquals(
             listOf(
                 "name",
@@ -140,6 +146,7 @@ class CharacterAutoFillServiceTest {
             characterFields
         )
         assertFalse(payload.contains("replaceDefaultEmptyCharacter"))
+        assertFalse(payload.contains("maxCharacters"))
     }
 
     @Test
@@ -186,7 +193,7 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
-    fun `merge fills default empty character with first generated character only`() {
+    fun `merge replaces default empty character with generated character list`() {
         val current = card(
             characters = listOf(CharacterInfo.create(""))
         )
@@ -200,9 +207,26 @@ class CharacterAutoFillServiceTest {
 
         val merged = CharacterAutoFillService.mergeInto(current, draft) { "new-${++nextId}" }
 
-        assertEquals(listOf("new-1"), merged.characters.map { it.id })
-        assertEquals(listOf("林雾"), merged.characters.map { it.name })
-        assertEquals(listOf("调查员"), merged.characters.map { it.profile })
+        assertEquals(listOf("new-1", "new-2"), merged.characters.map { it.id })
+        assertEquals(listOf("林雾", "沈澜"), merged.characters.map { it.name })
+        assertEquals(listOf("调查员", "委托人"), merged.characters.map { it.profile })
+    }
+
+    @Test
+    fun `merge creates characters when current list is empty`() {
+        val current = card(characters = emptyList())
+        val draft = CharacterAutoFillDraft(
+            characters = listOf(
+                CharacterAutoFillCharacterDraft(name = "林雾", profile = "调查员"),
+                CharacterAutoFillCharacterDraft(name = "沈澜", profile = "委托人")
+            )
+        )
+        var nextId = 0
+
+        val merged = CharacterAutoFillService.mergeInto(current, draft) { "new-${++nextId}" }
+
+        assertEquals(listOf("new-1", "new-2"), merged.characters.map { it.id })
+        assertEquals(listOf("林雾", "沈澜"), merged.characters.map { it.name })
     }
 
     @Test
@@ -228,7 +252,7 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
-    fun `merge does not append unmatched characters when card already has named characters`() {
+    fun `merge appends unmatched created characters when card already has named characters`() {
         val current = card(
             characters = listOf(CharacterInfo(id = "c1", name = "林雾"))
         )
@@ -236,6 +260,25 @@ class CharacterAutoFillServiceTest {
             characters = listOf(
                 CharacterAutoFillCharacterDraft(name = "林雾", profile = "调查员"),
                 CharacterAutoFillCharacterDraft(name = "沈澜", profile = "委托人")
+            )
+        )
+
+        val merged = CharacterAutoFillService.mergeInto(current, draft)
+
+        assertEquals(2, merged.characters.size)
+        assertEquals(listOf("林雾", "沈澜"), merged.characters.map { it.name })
+        assertEquals(listOf("调查员", "委托人"), merged.characters.map { it.profile })
+    }
+
+    @Test
+    fun `merge does not append unmatched targeted characters`() {
+        val current = card(
+            characters = listOf(CharacterInfo(id = "c1", name = "林雾"))
+        )
+        val draft = CharacterAutoFillDraft(
+            characters = listOf(
+                CharacterAutoFillCharacterDraft(name = "林雾", profile = "调查员"),
+                CharacterAutoFillCharacterDraft(targetIndex = 3, name = "沈澜", profile = "委托人")
             )
         )
 

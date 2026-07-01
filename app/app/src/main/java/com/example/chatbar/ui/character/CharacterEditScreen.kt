@@ -60,9 +60,11 @@ import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.DocumentInfo
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
+import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -95,12 +97,16 @@ fun CharacterEditScreen(
     val card by viewModel.characterCard.collectAsState()
     val indexingStatus by viewModel.indexingStatus.collectAsState()
     val autoFillState by viewModel.autoFillState.collectAsState()
+    val rewriteState by viewModel.rewriteState.collectAsState()
+    val autoFillModels by viewModel.autoFillModels.collectAsState()
+    val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
     val context = LocalContext.current
 
     var editCharacter by remember { mutableStateOf<CharacterInfo?>(null) }
     var showCharacterDialog by remember { mutableStateOf(false) }
     var showAutoFillDialog by remember { mutableStateOf(false) }
+    var showRewriteDialog by remember { mutableStateOf(false) }
     var showDocumentDialog by remember { mutableStateOf(false) }
     var validationErrors by remember { mutableStateOf<List<String>>(emptyList()) }
     var deleteCharacter by remember { mutableStateOf<Pair<Int, String>?>(null) }
@@ -143,6 +149,16 @@ fun CharacterEditScreen(
         imageCallback = callback
         imagePicker.launch("image/*")
     }
+    fun openAutoFillDialog() {
+        if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
+            showAutoFillDialog = true
+        } else {
+            Toast.makeText(context, "AI 自动填充仅支持分段模式", Toast.LENGTH_SHORT).show()
+        }
+    }
+    fun openRewriteDialog() {
+        showRewriteDialog = true
+    }
 
     CbScaffold(
         modifier = modifier,
@@ -155,13 +171,14 @@ fun CharacterEditScreen(
                     CbIconButton(
                         AppIcons.Star,
                         "AI 自动填充",
-                        {
-                            if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
-                                showAutoFillDialog = true
-                            } else {
-                                Toast.makeText(context, "AI 自动填充仅支持分段模式", Toast.LENGTH_SHORT).show()
-                            }
-                        },
+                        { openAutoFillDialog() },
+                        enabled = !isSaving,
+                        tint = ChatBarTheme.colors.primary
+                    )
+                    CbIconButton(
+                        AppIcons.Edit,
+                        "AI 自动改写",
+                        { openRewriteDialog() },
                         enabled = !isSaving,
                         tint = ChatBarTheme.colors.primary
                     )
@@ -188,6 +205,22 @@ fun CharacterEditScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SectionTitle("角色卡信息")
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    if (viewModel.editMode == CharacterEditMode.STRUCTURED) "AI 自动填充" else "AI 自动填充（仅分段模式）",
+                    { openAutoFillDialog() },
+                    modifier = Modifier.weight(1f),
+                    enabled = !isSaving && viewModel.editMode == CharacterEditMode.STRUCTURED,
+                    variant = if (viewModel.editMode == CharacterEditMode.STRUCTURED) ButtonVariant.Default else ButtonVariant.Outline
+                )
+                CbButton(
+                    "AI 自动改写",
+                    { openRewriteDialog() },
+                    modifier = Modifier.weight(1f),
+                    enabled = !isSaving,
+                    variant = ButtonVariant.Secondary
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier.size(64.dp).clickable { pickImage { viewModel.avatar = it } },
@@ -431,14 +464,34 @@ fun CharacterEditScreen(
     if (showAutoFillDialog) {
         CharacterAutoFillDialog(
             state = autoFillState,
+            models = autoFillModels,
+            defaultModelId = autoFillDefaultModelId,
             onDismiss = {
                 showAutoFillDialog = false
                 viewModel.clearAutoFillDraft()
             },
             onGenerate = viewModel::generateAutoFillDraft,
+            onCancel = viewModel::cancelAutoFillGeneration,
             onApply = {
                 viewModel.applyAutoFillDraft()
                 showAutoFillDialog = false
+            }
+        )
+    }
+    if (showRewriteDialog) {
+        CharacterRewriteDialog(
+            state = rewriteState,
+            models = autoFillModels,
+            defaultModelId = autoFillDefaultModelId,
+            onDismiss = {
+                showRewriteDialog = false
+                viewModel.clearRewriteDraft()
+            },
+            onGenerate = viewModel::generateRewriteDraft,
+            onCancel = viewModel::cancelRewriteGeneration,
+            onApply = {
+                viewModel.applyRewriteDraft()
+                showRewriteDialog = false
             }
         )
     }
@@ -593,30 +646,69 @@ private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: ()
 @Composable
 private fun CharacterAutoFillDialog(
     state: CharacterAutoFillUiState,
+    models: List<ModelConfig>,
+    defaultModelId: String?,
     onDismiss: () -> Unit,
-    onGenerate: (String) -> Unit,
+    onGenerate: (String, String?) -> Unit,
+    onCancel: () -> Unit,
     onApply: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
+    var selectedModelId by remember { mutableStateOf<String?>(null) }
+    val modelOptions = remember(models, defaultModelId) {
+        val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
+        listOf(AutoFillModelOption(null, defaultModelLabel?.let { "默认模型：$it" } ?: "默认模型")) +
+            models.map { AutoFillModelOption(it.id, it.autoFillLabel()) }
+    }
+    val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
+    val bodyScroll = rememberScrollState()
+    LaunchedEffect(models) {
+        if (selectedModelId != null && models.none { it.id == selectedModelId }) {
+            selectedModelId = null
+        }
+    }
+    LaunchedEffect(state.streamingText) {
+        if (state.isGenerating && state.streamingText.isNotBlank()) {
+            bodyScroll.animateScrollTo(bodyScroll.maxValue)
+        }
+    }
     CbDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!state.isGenerating) onDismiss() },
         title = "AI 自动填充",
         modifier = Modifier.heightIn(max = 760.dp),
-        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        dismiss = {
+            if (state.isGenerating) {
+                CbButton("取消生成", onCancel, variant = ButtonVariant.Destructive)
+            } else {
+                CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
+            }
+        },
         confirm = {
             CbButton(
                 "应用",
                 onApply,
                 enabled = state.draft != null && !state.isGenerating
             )
-        }
+        },
+        dismissOnClickOutside = false,
+        dismissOnBackPress = false
     ) {
         Column(
             Modifier
-                .heightIn(max = 560.dp)
-                .verticalScroll(rememberScrollState()),
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(bodyScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
+            CbField("本次使用模型") {
+                CbSelect(
+                    value = selectedModel,
+                    options = modelOptions,
+                    optionLabel = { it.label },
+                    onValueChange = { selectedModelId = it.id },
+                    placeholder = "本次使用模型"
+                )
+            }
             CbField("角色信息与扮演要求") {
                 CbInput(
                     input,
@@ -627,16 +719,19 @@ private fun CharacterAutoFillDialog(
                 )
             }
             CbButton(
-                if (state.isGenerating) "生成中" else "生成候选",
-                { onGenerate(input) },
-                enabled = input.isNotBlank() && !state.isGenerating,
-                variant = ButtonVariant.Secondary
+                if (state.isGenerating) "取消生成" else "生成候选",
+                { if (state.isGenerating) onCancel() else onGenerate(input, selectedModel.id) },
+                enabled = state.isGenerating || input.isNotBlank(),
+                variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
             )
             if (state.isGenerating) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbSpinner()
-                    CbText("正在生成角色卡候选", color = ChatBarTheme.colors.mutedForeground)
+                    CbText(state.statusText.ifBlank { "正在生成角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
+            }
+            if (state.streamingText.isNotBlank() && state.draft == null) {
+                AutoFillRawStreamPreview(state.streamingText)
             }
             state.error?.takeIf(String::isNotBlank)?.let { error ->
                 CbSurface(
@@ -654,6 +749,178 @@ private fun CharacterAutoFillDialog(
             state.draft?.let { draft ->
                 CbDivider()
                 AutoFillDraftPreview(draft)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CharacterRewriteDialog(
+    state: CharacterRewriteUiState,
+    models: List<ModelConfig>,
+    defaultModelId: String?,
+    onDismiss: () -> Unit,
+    onGenerate: (String, String?) -> Unit,
+    onCancel: () -> Unit,
+    onApply: () -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+    var selectedModelId by remember { mutableStateOf<String?>(null) }
+    val modelOptions = remember(models, defaultModelId) {
+        val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
+        listOf(AutoFillModelOption(null, defaultModelLabel?.let { "默认模型：$it" } ?: "默认模型")) +
+            models.map { AutoFillModelOption(it.id, it.autoFillLabel()) }
+    }
+    val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
+    val bodyScroll = rememberScrollState()
+    LaunchedEffect(models) {
+        if (selectedModelId != null && models.none { it.id == selectedModelId }) {
+            selectedModelId = null
+        }
+    }
+    LaunchedEffect(state.streamingText) {
+        if (state.isGenerating && state.streamingText.isNotBlank()) {
+            bodyScroll.animateScrollTo(bodyScroll.maxValue)
+        }
+    }
+    CbDialog(
+        onDismissRequest = { if (!state.isGenerating) onDismiss() },
+        title = "AI 自动改写",
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismiss = {
+            if (state.isGenerating) {
+                CbButton("取消生成", onCancel, variant = ButtonVariant.Destructive)
+            } else {
+                CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
+            }
+        },
+        confirm = {
+            CbButton(
+                "应用改写",
+                onApply,
+                enabled = state.draft != null && !state.isGenerating
+            )
+        },
+        dismissOnClickOutside = false,
+        dismissOnBackPress = false
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 620.dp)
+                .verticalScroll(bodyScroll),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CbField("本次使用模型") {
+                CbSelect(
+                    value = selectedModel,
+                    options = modelOptions,
+                    optionLabel = { it.label },
+                    onValueChange = { selectedModelId = it.id },
+                    placeholder = "本次使用模型"
+                )
+            }
+            CbField("改写要求") {
+                CbInput(
+                    input,
+                    { input = it },
+                    placeholder = "写下要如何基于当前角色卡改写，例如更冷淡、新增助手、删掉某个配角、清空背景经历……",
+                    singleLine = false,
+                    minLines = 6
+                )
+            }
+            CbButton(
+                if (state.isGenerating) "取消生成" else "生成改写",
+                { if (state.isGenerating) onCancel() else onGenerate(input, selectedModel.id) },
+                enabled = state.isGenerating || input.isNotBlank(),
+                variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
+            )
+            if (state.isGenerating) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbSpinner()
+                    CbText(state.statusText.ifBlank { "正在改写角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
+                }
+            }
+            if (state.streamingText.isNotBlank() && state.draft == null) {
+                AutoFillRawStreamPreview(state.streamingText)
+            }
+            state.error?.takeIf(String::isNotBlank)?.let { error ->
+                CbSurface(
+                    Modifier.fillMaxWidth(),
+                    color = ChatBarTheme.colors.muted,
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
+                ) {
+                    CbText(
+                        error,
+                        Modifier.padding(12.dp),
+                        color = ChatBarTheme.colors.destructive
+                    )
+                }
+            }
+            state.draft?.let { draft ->
+                CbDivider()
+                RewriteDraftPreview(draft)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoFillRawStreamPreview(rawText: String) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            CbText("实时输出", style = ChatBarTheme.typography.heading)
+            CbText(rawText, color = ChatBarTheme.colors.mutedForeground)
+        }
+    }
+}
+
+@Composable
+private fun RewriteDraftPreview(draft: CharacterRewriteDraft) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CbText("改写候选", style = ChatBarTheme.typography.heading)
+        PreviewPatchField("角色卡名称", draft.name)
+        PreviewPatchField("开场白", draft.greeting)
+        PreviewPatchField("基本设定", draft.basicSetting)
+        PreviewPatchField("NovelAI 默认风格", draft.defaultImagePrompt)
+        PreviewPatchField("自由人物设定", draft.freeformCharacterText)
+        if (draft.deleteCharacterIds.isNotEmpty()) {
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                color = ChatBarTheme.colors.muted,
+                border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CbText("删除人物", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+                    CbText(draft.deleteCharacterIds.joinToString("、"))
+                }
+            }
+        }
+        draft.characters.forEachIndexed { index, character ->
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CbText(
+                        character.id?.takeIf(String::isNotBlank)?.let { "人物改写：$it" } ?: "新增人物 ${index + 1}",
+                        style = ChatBarTheme.typography.heading
+                    )
+                    PreviewPatchInline("姓名", character.name)
+                    PreviewPatchInline("简介", character.profile)
+                    PreviewPatchInline("外貌", character.appearance)
+                    PreviewPatchInline("服装", character.clothing)
+                    PreviewPatchInline("能力", character.abilities)
+                    PreviewPatchInline("习惯/爱好", character.habits)
+                    PreviewPatchInline("背景", character.background)
+                    PreviewPatchInline("关系", character.relationships)
+                    PreviewPatchInline("语气", character.speakingStyle)
+                    PreviewPatchInline("NAI 人物提示词", character.imagePrompt)
+                }
             }
         }
     }
@@ -690,6 +957,30 @@ private fun AutoFillDraftPreview(draft: CharacterAutoFillDraft) {
 }
 
 @Composable
+private fun PreviewPatchField(label: String, value: String?) {
+    if (value == null) return
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbText(value.ifEmpty { "（清空）" })
+        }
+    }
+}
+
+@Composable
+private fun PreviewPatchInline(label: String, value: String?) {
+    if (value == null) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        CbText(value.ifEmpty { "（清空）" })
+    }
+}
+
+@Composable
 private fun PreviewField(label: String, value: String) {
     if (value.isBlank()) return
     CbSurface(
@@ -699,7 +990,7 @@ private fun PreviewField(label: String, value: String) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
             CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-            CbText(value, maxLines = 5)
+            CbText(value)
         }
     }
 }
@@ -709,7 +1000,7 @@ private fun CharacterPreviewField(label: String, value: String) {
     if (value.isBlank()) return
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-        CbText(value, maxLines = 4)
+        CbText(value)
     }
 }
 
@@ -1029,3 +1320,8 @@ private fun ragStatusText(status: String, done: Int, total: Int, message: String
     }
     return "$label $done/$total${message?.let { " · $it" } ?: ""}"
 }
+
+private data class AutoFillModelOption(val id: String?, val label: String)
+
+private fun ModelConfig.autoFillLabel(): String =
+    displayName.ifBlank { modelName.ifBlank { id } }

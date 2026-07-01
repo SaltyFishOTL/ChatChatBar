@@ -69,6 +69,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var characterAutoFillService: CharacterAutoFillService
         private set
+    lateinit var characterRewriteService: CharacterRewriteService
+        private set
     lateinit var formatCardTransferService: FormatCardTransferService
         private set
     lateinit var worldBookTransferService: WorldBookTransferService
@@ -136,6 +138,7 @@ class ChatBarApp : Application() {
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
         characterAutoFillService = CharacterAutoFillService(effectiveModelResolver, streamingChatService)
+        characterRewriteService = CharacterRewriteService(effectiveModelResolver, streamingChatService)
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
         characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)

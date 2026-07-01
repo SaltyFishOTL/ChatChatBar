@@ -15,11 +15,14 @@ import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.DocumentRagStatus
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
+import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
@@ -38,18 +41,32 @@ import java.io.File
 data class CharacterAutoFillUiState(
     val isGenerating: Boolean = false,
     val draft: CharacterAutoFillDraft? = null,
-    val error: String? = null
+    val error: String? = null,
+    val streamingText: String = "",
+    val statusText: String = ""
+)
+
+data class CharacterRewriteUiState(
+    val isGenerating: Boolean = false,
+    val draft: CharacterRewriteDraft? = null,
+    val error: String? = null,
+    val streamingText: String = "",
+    val statusText: String = ""
 )
 
 class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
     private val worldBookRepository = ChatBarApp.instance.worldBookRepository
-    private val modelRepository = ChatBarApp.instance.modelRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val ragManager = ChatBarApp.instance.ragManager
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val characterAutoFillService = ChatBarApp.instance.characterAutoFillService
+    private val characterRewriteService = ChatBarApp.instance.characterRewriteService
     private var indexingJob: Job? = null
+    private var autoFillJob: Job? = null
+    private var autoFillGenerationToken = 0
+    private var rewriteJob: Job? = null
+    private var rewriteGenerationToken = 0
 
     private val _characterCard = MutableStateFlow<CharacterCard?>(null)
     val characterCard: StateFlow<CharacterCard?> = _characterCard.asStateFlow()
@@ -62,6 +79,15 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     private val _autoFillState = MutableStateFlow(CharacterAutoFillUiState())
     val autoFillState: StateFlow<CharacterAutoFillUiState> = _autoFillState.asStateFlow()
+
+    private val _rewriteState = MutableStateFlow(CharacterRewriteUiState())
+    val rewriteState: StateFlow<CharacterRewriteUiState> = _rewriteState.asStateFlow()
+
+    private val _autoFillModels = MutableStateFlow<List<ModelConfig>>(emptyList())
+    val autoFillModels: StateFlow<List<ModelConfig>> = _autoFillModels.asStateFlow()
+
+    private val _autoFillDefaultModelId = MutableStateFlow<String?>(null)
+    val autoFillDefaultModelId: StateFlow<String?> = _autoFillDefaultModelId.asStateFlow()
 
     private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
@@ -86,6 +112,20 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     init {
         loadCharacterCard()
+        refreshAutoFillModels()
+    }
+
+    private fun refreshAutoFillModels() {
+        viewModelScope.launch {
+            runCatching {
+                val settings = settingsRepository.getAppSettings()
+                _autoFillModels.value = modelResolver.availableChatModels(settings)
+                _autoFillDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
+            }.onFailure {
+                _autoFillModels.value = emptyList()
+                _autoFillDefaultModelId.value = null
+            }
+        }
     }
 
     private fun loadCharacterCard() {
@@ -161,7 +201,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         editMode = target
     }
 
-    fun generateAutoFillDraft(userInput: String) {
+    fun generateAutoFillDraft(userInput: String, modelId: String? = null) {
         if (editMode != CharacterEditMode.STRUCTURED) {
             _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
             return
@@ -170,19 +210,79 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息或想玩的角色")
             return
         }
-        _autoFillState.value = CharacterAutoFillUiState(isGenerating = true)
-        viewModelScope.launch {
-            runCatching {
-                characterAutoFillService.generate(userInput, buildCurrentCard(markDirty = false))
-            }.fold(
-                onSuccess = { draft ->
-                    _autoFillState.value = CharacterAutoFillUiState(draft = draft)
-                },
-                onFailure = { error ->
-                    _autoFillState.value = CharacterAutoFillUiState(error = error.message ?: "AI 自动填充失败")
-                }
-            )
+        val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
+        if (modelId != null && selectedModel == null) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "所选模型不可用，请重新选择")
+            refreshAutoFillModels()
+            return
         }
+        autoFillJob?.cancel()
+        autoFillGenerationToken += 1
+        val generationToken = autoFillGenerationToken
+        val statusText = selectedModel?.autoFillLabel()
+            ?.let { "正在使用 $it 生成角色卡候选" }
+            ?: "正在使用默认模型生成角色卡候选"
+        _autoFillState.value = CharacterAutoFillUiState(
+            isGenerating = true,
+            statusText = statusText
+        )
+        autoFillJob = viewModelScope.launch {
+            var latestRawText = ""
+            try {
+                val draft = characterAutoFillService.generateStreaming(
+                    userInput = userInput,
+                    currentCard = buildCurrentCard(markDirty = false),
+                    modelOverride = selectedModel,
+                    onRawText = { rawText ->
+                        latestRawText = rawText
+                        if (generationToken == autoFillGenerationToken) {
+                            _autoFillState.value = CharacterAutoFillUiState(
+                                isGenerating = true,
+                                streamingText = rawText,
+                                statusText = statusText
+                            )
+                        }
+                    }
+                )
+                if (generationToken == autoFillGenerationToken) {
+                    _autoFillState.value = CharacterAutoFillUiState(
+                        draft = draft,
+                        streamingText = latestRawText
+                    )
+                }
+            } catch (_: CancellationException) {
+                if (generationToken == autoFillGenerationToken) {
+                    _autoFillState.value = CharacterAutoFillUiState(
+                        error = "已取消生成",
+                        streamingText = latestRawText,
+                        statusText = "已取消生成"
+                    )
+                }
+            } catch (error: Throwable) {
+                if (generationToken == autoFillGenerationToken) {
+                    _autoFillState.value = CharacterAutoFillUiState(
+                        error = error.message ?: "AI 自动填充失败",
+                        streamingText = latestRawText
+                    )
+                }
+            } finally {
+                if (generationToken == autoFillGenerationToken) {
+                    autoFillJob = null
+                }
+            }
+        }
+    }
+
+    fun cancelAutoFillGeneration() {
+        val state = _autoFillState.value
+        if (!state.isGenerating) return
+        autoFillJob?.cancel()
+        _autoFillState.value = state.copy(
+            isGenerating = false,
+            draft = null,
+            error = "已取消生成",
+            statusText = "已取消生成"
+        )
     }
 
     fun applyAutoFillDraft() {
@@ -202,7 +302,112 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     }
 
     fun clearAutoFillDraft() {
+        autoFillGenerationToken += 1
+        autoFillJob?.cancel()
+        autoFillJob = null
         _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    fun generateRewriteDraft(userInput: String, modelId: String? = null) {
+        if (userInput.isBlank()) {
+            _rewriteState.value = CharacterRewriteUiState(error = "请输入改写要求")
+            return
+        }
+        val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
+        if (modelId != null && selectedModel == null) {
+            _rewriteState.value = CharacterRewriteUiState(error = "所选模型不可用，请重新选择")
+            refreshAutoFillModels()
+            return
+        }
+        rewriteJob?.cancel()
+        rewriteGenerationToken += 1
+        val generationToken = rewriteGenerationToken
+        val statusText = selectedModel?.autoFillLabel()
+            ?.let { "正在使用 $it 改写角色卡候选" }
+            ?: "正在使用默认模型改写角色卡候选"
+        _rewriteState.value = CharacterRewriteUiState(
+            isGenerating = true,
+            statusText = statusText
+        )
+        rewriteJob = viewModelScope.launch {
+            var latestRawText = ""
+            try {
+                val draft = characterRewriteService.rewriteStreaming(
+                    userInput = userInput,
+                    currentCard = buildCurrentCard(markDirty = false),
+                    modelOverride = selectedModel,
+                    onRawText = { rawText ->
+                        latestRawText = rawText
+                        if (generationToken == rewriteGenerationToken) {
+                            _rewriteState.value = CharacterRewriteUiState(
+                                isGenerating = true,
+                                streamingText = rawText,
+                                statusText = statusText
+                            )
+                        }
+                    }
+                )
+                if (generationToken == rewriteGenerationToken) {
+                    _rewriteState.value = CharacterRewriteUiState(
+                        draft = draft,
+                        streamingText = latestRawText
+                    )
+                }
+            } catch (_: CancellationException) {
+                if (generationToken == rewriteGenerationToken) {
+                    _rewriteState.value = CharacterRewriteUiState(
+                        error = "已取消生成",
+                        streamingText = latestRawText,
+                        statusText = "已取消生成"
+                    )
+                }
+            } catch (error: Throwable) {
+                if (generationToken == rewriteGenerationToken) {
+                    _rewriteState.value = CharacterRewriteUiState(
+                        error = error.message ?: "AI 自动改写失败",
+                        streamingText = latestRawText
+                    )
+                }
+            } finally {
+                if (generationToken == rewriteGenerationToken) {
+                    rewriteJob = null
+                }
+            }
+        }
+    }
+
+    fun cancelRewriteGeneration() {
+        val state = _rewriteState.value
+        if (!state.isGenerating) return
+        rewriteJob?.cancel()
+        _rewriteState.value = state.copy(
+            isGenerating = false,
+            draft = null,
+            error = "已取消生成",
+            statusText = "已取消生成"
+        )
+    }
+
+    fun applyRewriteDraft() {
+        val draft = _rewriteState.value.draft ?: return
+        val merged = characterRewriteService.mergeInto(buildCurrentCard(markDirty = false), draft)
+        name = merged.name
+        greeting = merged.greeting
+        basicSetting = merged.basicSetting
+        defaultImagePrompt = merged.defaultImagePrompt
+        freeformCharacterText = merged.freeformCharacterText
+        if (editMode == CharacterEditMode.STRUCTURED) {
+            charactersList.clear()
+            charactersList.addAll(merged.characters)
+        }
+        _rewriteState.value = CharacterRewriteUiState()
+    }
+
+    fun clearRewriteDraft() {
+        rewriteGenerationToken += 1
+        rewriteJob?.cancel()
+        rewriteJob = null
+        _rewriteState.value = CharacterRewriteUiState()
     }
 
     private fun startBackgroundIndex(card: CharacterCard) {
@@ -659,3 +864,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         }
     }
 }
+
+private fun ModelConfig.autoFillLabel(): String =
+    displayName.ifBlank { modelName.ifBlank { id } }

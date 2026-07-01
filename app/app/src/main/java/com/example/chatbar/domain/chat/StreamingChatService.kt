@@ -301,7 +301,8 @@ class StreamingChatService {
         modelConfig: ModelConfig,
         maxTokens: Int? = null,
         enableThinking: Boolean? = null,
-        maxThinkingTokens: Int? = null
+        maxThinkingTokens: Int? = null,
+        thinkingBudget: Int? = null
     ): Flow<StreamEvent> = callbackFlow {
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
@@ -310,7 +311,8 @@ class StreamingChatService {
             stream = true,
             maxTokens = maxTokens,
             enableThinkingOverride = enableThinking,
-            maxThinkingTokens = maxThinkingTokens
+            maxThinkingTokens = maxThinkingTokens,
+            thinkingBudget = thinkingBudget
         )
         val request = Request.Builder()
             .url(url)

@@ -3,11 +3,14 @@ package com.example.chatbar.domain.card
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -62,13 +65,12 @@ class CharacterAutoFillService(
 
     suspend fun generate(
         userInput: String,
-        currentCard: CharacterCard
+        currentCard: CharacterCard,
+        modelOverride: ModelConfig? = null
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
-        val model = modelResolver.defaultChatModel()
-            ?: error("未配置可用的默认对话模型")
-        require(model.apiKey.isNotBlank()) { "默认对话模型 API Key 为空" }
+        val model = resolveModel(modelOverride)
 
         val raw = chatService.completeText(
             messages = listOf(
@@ -83,9 +85,50 @@ class CharacterAutoFillService(
         draft.constrainedToTargets(currentCard)
     }
 
+    suspend fun generateStreaming(
+        userInput: String,
+        currentCard: CharacterCard,
+        modelOverride: ModelConfig? = null,
+        onRawText: (String) -> Unit
+    ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
+        require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
+        require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
+        val model = resolveModel(modelOverride)
+
+        val messages = listOf(
+            ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
+            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard))
+        )
+        val raw = StringBuilder()
+        var streamError: String? = null
+        chatService.streamText(
+            messages = messages,
+            modelConfig = model,
+            maxTokens = 6000,
+            thinkingBudget = 512
+        ).collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> {
+                    raw.append(event.text)
+                    onRawText(raw.toString())
+                }
+                is StreamEvent.Error -> streamError = event.message
+                StreamEvent.Done,
+                is StreamEvent.ReasoningDelta -> Unit
+            }
+        }
+
+        val rawText = raw.toString()
+        if (rawText.isBlank()) {
+            error(streamError ?: "AI 自动填充返回空内容")
+        }
+        val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model)
+        draft.constrainedToTargets(currentCard)
+    }
+
     private suspend fun repairDraft(
         raw: String,
-        model: com.example.chatbar.data.local.entity.ModelConfig
+        model: ModelConfig
     ): CharacterAutoFillDraft {
         val repaired = chatService.completeText(
             messages = listOf(
@@ -98,6 +141,13 @@ class CharacterAutoFillService(
         )
         return parseGeneratedDraft(repaired)
             ?: error("AI 自动填充结果不是可解析 JSON：${raw.take(500)}")
+    }
+
+    private suspend fun resolveModel(modelOverride: ModelConfig?): ModelConfig {
+        val model = modelOverride ?: modelResolver.defaultChatModel()
+            ?: error("未配置可用的默认对话模型")
+        require(model.apiKey.isNotBlank()) { "${model.displayName.ifBlank { model.modelName }} API Key 为空" }
+        return model
     }
 
     private fun parseGeneratedDraft(raw: String): CharacterAutoFillDraft? =
@@ -162,14 +212,24 @@ class CharacterAutoFillService(
                 .map(CharacterAutoFillCharacterDraft::normalized)
                 .filter(CharacterAutoFillCharacterDraft::hasAnyContent)
             if (draftCharacters.isEmpty()) return current
-            if (current.isDefaultEmptyCharacterList()) {
-                return listOf(draftCharacters.first().toCharacterInfo(idFactory))
+            if (current.canCreateCharacterList()) {
+                return draftCharacters
+                    .take(6)
+                    .map { it.toCharacterInfo(idFactory) }
             }
             val usedDraftIndexes = mutableSetOf<Int>()
-            return current.mapIndexed { index, existing ->
+            val mergedExisting = current.mapIndexed { index, existing ->
                 val selected = draftCharacters.selectForSlot(index, existing, usedDraftIndexes)
                 if (selected == null) existing else existing.mergeBlank(selected)
             }
+            val existingNames = mergedExisting.characterInfoNameKeys()
+            val appended = draftCharacters.createdCharactersToAppend(
+                usedDraftIndexes = usedDraftIndexes,
+                initialNameKeys = existingNames,
+                limit = (6 - mergedExisting.size).coerceAtLeast(0)
+            )
+                .map { it.toCharacterInfo(idFactory) }
+            return mergedExisting + appended
         }
 
         fun buildPromptPayload(
@@ -231,22 +291,59 @@ private fun CharacterCard.buildFillTargets(): JsonObject = buildJsonObject {
         }
         put("card", cardTargets)
         val characterTargets = buildJsonArray {
-            characters.forEachIndexed { index, character ->
-                val fields = character.blankFieldNames()
-                if (fields.isNotEmpty()) {
-                    add(buildJsonObject {
-                        put("mode", "fillCharacterSlot")
-                        put("index", index)
-                        if (character.name.isNotBlank()) {
-                            put("matchName", character.name.trim())
-                        }
-                        put("fields", JsonArray(fields.map(::JsonPrimitive)))
-                    })
+            if (!characters.canCreateCharacterList()) {
+                characters.forEachIndexed { index, character ->
+                    val fields = character.blankFieldNames()
+                    if (fields.isNotEmpty()) {
+                        add(buildJsonObject {
+                            put("mode", "fillCharacterSlot")
+                            put("index", index)
+                            if (character.name.isNotBlank()) {
+                                put("matchName", character.name.trim())
+                            }
+                            put("fields", JsonArray(fields.map(::JsonPrimitive)))
+                        })
+                    }
                 }
             }
         }
         put("characters", characterTargets)
+        if (characters.canCreateCharacterList()) {
+            put(
+                "createCharacters",
+                buildJsonObject {
+                    put("enabled", true)
+                    put("limit", characters.createCharacterLimit())
+                    put("fields", JsonArray(characterFieldNames.map(::JsonPrimitive)))
+                }
+            )
+        } else {
+            val createLimit = characters.createCharacterLimit()
+            if (createLimit > 0) {
+                put(
+                    "createCharacters",
+                    buildJsonObject {
+                        put("enabled", true)
+                        put("limit", createLimit)
+                        put("fields", JsonArray(characterFieldNames.map(::JsonPrimitive)))
+                    }
+                )
+            }
+        }
     }
+
+private val characterFieldNames = listOf(
+    "name",
+    "profile",
+    "appearance",
+    "clothing",
+    "abilities",
+    "habits",
+    "background",
+    "relationships",
+    "speakingStyle",
+    "imagePrompt"
+)
 
 private fun CharacterInfo.blankFieldNames(): List<String> = buildList {
     if (name.isBlank()) add("name")
@@ -325,11 +422,11 @@ private fun CharacterAutoFillDraft.constrainedToTargets(currentCard: CharacterCa
     val normalizedDraft = normalized()
     val draftCharacters = normalizedDraft.characters.filter(CharacterAutoFillCharacterDraft::hasAnyContent)
     if (draftCharacters.isEmpty()) return normalizedDraft
-    val constrainedCharacters = if (currentCard.characters.isDefaultEmptyCharacterList()) {
-        draftCharacters.take(1).map { it.copy(targetIndex = it.targetIndex ?: 0) }
+    val constrainedCharacters = if (currentCard.characters.canCreateCharacterList()) {
+        draftCharacters.take(6)
     } else {
         val usedDraftIndexes = mutableSetOf<Int>()
-        currentCard.characters.mapIndexedNotNull { index, existing ->
+        val existingMatches = currentCard.characters.mapIndexedNotNull { index, existing ->
             if (existing.blankFieldNames().isEmpty()) {
                 null
             } else {
@@ -337,9 +434,49 @@ private fun CharacterAutoFillDraft.constrainedToTargets(currentCard: CharacterCa
                     ?.let { it.copy(targetIndex = it.targetIndex ?: index) }
             }
         }
+        val existingNames = currentCard.characters.characterInfoNameKeys() + existingMatches.draftNameKeys()
+        val createdCharacters = draftCharacters.createdCharactersToAppend(
+            usedDraftIndexes = usedDraftIndexes,
+            initialNameKeys = existingNames,
+            limit = currentCard.characters.createCharacterLimit()
+        )
+        existingMatches + createdCharacters
     }
     return normalizedDraft.copy(characters = constrainedCharacters)
 }
+
+private fun List<CharacterInfo>.canCreateCharacterList(): Boolean =
+    isEmpty() || isDefaultEmptyCharacterList()
+
+private fun List<CharacterInfo>.createCharacterLimit(): Int =
+    if (canCreateCharacterList()) 6 else (6 - size).coerceAtLeast(0)
+
+private fun List<CharacterInfo>.characterInfoNameKeys(): Set<String> =
+    mapNotNull { it.name.nameKey().takeIf(String::isNotBlank) }.toSet()
+
+private fun List<CharacterAutoFillCharacterDraft>.draftNameKeys(): Set<String> =
+    mapNotNull { it.name.nameKey().takeIf(String::isNotBlank) }.toSet()
+
+private fun List<CharacterAutoFillCharacterDraft>.createdCharactersToAppend(
+    usedDraftIndexes: Set<Int>,
+    initialNameKeys: Set<String>,
+    limit: Int
+): List<CharacterAutoFillCharacterDraft> {
+    if (limit <= 0) return emptyList()
+    val nameKeys = initialNameKeys.toMutableSet()
+    val result = mutableListOf<CharacterAutoFillCharacterDraft>()
+    forEachIndexed { draftIndex, draft ->
+        if (draftIndex in usedDraftIndexes || draft.targetIndex != null) return@forEachIndexed
+        val key = draft.name.nameKey()
+        if (key.isNotBlank() && !nameKeys.add(key)) return@forEachIndexed
+        result += draft
+        if (result.size >= limit) return result
+    }
+    return result
+}
+
+private fun String.nameKey(): String =
+    trim().lowercase()
 
 private fun List<CharacterInfo>.isDefaultEmptyCharacterList(): Boolean =
     size == 1 && single().let {

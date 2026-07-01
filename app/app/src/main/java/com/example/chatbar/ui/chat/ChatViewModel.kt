@@ -25,6 +25,7 @@ import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -141,6 +142,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private var draftTouched = false
     private var draftSaveSequence = 0
+    private var responseJob: Job? = null
 
     init {
         loadSessionData()
@@ -493,6 +495,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         return true
     }
 
+    fun cancelResponseGeneration() {
+        if (!_isResponding.value) return
+        ChatBarApp.instance.streamingStopRequested.value = true
+        responseJob?.cancel(CancellationException("用户停止生成"))
+    }
+
     fun updateDraftInput(text: String) {
         if (_draftInput.value == text) return
         draftTouched = true
@@ -516,7 +524,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         if (_isResponding.value && !respondingAlreadyStarted) return
 
-        ChatBarApp.instance.applicationScope.launch {
+        val job = ChatBarApp.instance.applicationScope.launch {
             if (!respondingAlreadyStarted) {
                 _isResponding.value = true
             }
@@ -1127,6 +1135,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 ChatBarApp.instance.streamingStopRequested.value = false
                 stopStreamingForegroundWork()
             }
+        }
+        responseJob = job
+        job.invokeOnCompletion {
+            if (responseJob == job) responseJob = null
         }
     }
 

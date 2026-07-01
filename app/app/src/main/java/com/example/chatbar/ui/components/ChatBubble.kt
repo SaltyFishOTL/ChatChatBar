@@ -71,6 +71,8 @@ internal sealed interface RoleplayContentSegment {
 private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
 private val roleplayLinkPattern = Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)")
 private val singleNewlinePattern = Regex("(?<!\n)\n(?!\n)")
+private const val hiddenCommentOpen = "<!--"
+private const val hiddenCommentClose = "-->"
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -311,30 +313,31 @@ private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
 }
 
 internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment> {
-    if (content.isEmpty()) return emptyList()
+    val visibleContent = stripRoleplayHiddenComments(content)
+    if (visibleContent.isEmpty()) return emptyList()
     val marker = "\u0060\u0060\u0060"
     val segments = mutableListOf<RoleplayContentSegment>()
     var cursor = 0
-    while (cursor < content.length) {
-        val open = content.indexOf(marker, cursor)
+    while (cursor < visibleContent.length) {
+        val open = visibleContent.indexOf(marker, cursor)
         if (open < 0) {
-            content.substring(cursor).takeIf(String::isNotBlank)
+            visibleContent.substring(cursor).takeIf(String::isNotBlank)
                 ?.let { segments += RoleplayContentSegment.Markdown(it) }
             break
         }
         if (open > cursor) {
-            content.substring(cursor, open).takeIf(String::isNotBlank)
+            visibleContent.substring(cursor, open).takeIf(String::isNotBlank)
                 ?.let { segments += RoleplayContentSegment.Markdown(it) }
         }
-        val headerEnd = content.indexOf('\n', open + marker.length)
+        val headerEnd = visibleContent.indexOf('\n', open + marker.length)
         val bodyStart = if (headerEnd >= 0) headerEnd + 1 else open + marker.length
-        val close = content.indexOf(marker, bodyStart)
+        val close = visibleContent.indexOf(marker, bodyStart)
         if (close < 0) {
-            content.substring(open).takeIf(String::isNotBlank)
+            visibleContent.substring(open).takeIf(String::isNotBlank)
                 ?.let { segments += RoleplayContentSegment.Markdown(it) }
             break
         }
-        segments += RoleplayContentSegment.Status(content.substring(bodyStart, close).trim())
+        segments += RoleplayContentSegment.Status(visibleContent.substring(bodyStart, close).trim())
         cursor = close + marker.length
     }
     val result = mutableListOf<RoleplayContentSegment>()
@@ -345,7 +348,7 @@ internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment>
             result.add(segment)
         }
     }
-    return result.ifEmpty { listOf(RoleplayContentSegment.Markdown(content)) }
+    return result.ifEmpty { listOf(RoleplayContentSegment.Markdown(visibleContent)) }
 }
 
 private val hrFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
@@ -388,7 +391,8 @@ private fun splitMarkdownByHrFences(text: String): List<RoleplayContentSegment> 
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
-    val withLineBreaks = singleNewlinePattern.replace(content, "  \n")
+    val withoutHiddenComments = stripRoleplayHiddenComments(content)
+    val withLineBreaks = singleNewlinePattern.replace(withoutHiddenComments, "  \n")
     if (forColoring) {
         return roleplayLinkPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
@@ -398,6 +402,67 @@ internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = fa
         }
     }
     return withLineBreaks.replace(roleplayLinkPattern, "[$1]")
+}
+
+private fun stripRoleplayHiddenComments(content: String): String {
+    val result = StringBuilder(content.length)
+    var cursor = 0
+    while (cursor < content.length) {
+        val open = content.indexOf(hiddenCommentOpen, cursor)
+        if (open < 0) {
+            result.append(content, cursor, content.length)
+            break
+        }
+
+        var depth = 1
+        var search = open + hiddenCommentOpen.length
+        var closedAt = -1
+
+        while (search < content.length) {
+            val nextOpen = content.indexOf(hiddenCommentOpen, search)
+            val nextClose = content.indexOf(hiddenCommentClose, search)
+            if (nextClose < 0) break
+
+            if (nextOpen >= 0 && nextOpen < nextClose) {
+                depth++
+                search = nextOpen + hiddenCommentOpen.length
+            } else {
+                depth--
+                search = nextClose + hiddenCommentClose.length
+                if (depth == 0) {
+                    closedAt = search
+                    break
+                }
+            }
+        }
+
+        if (closedAt < 0) {
+            result.append(content, cursor, open)
+            result.append(content, open, content.length)
+            break
+        }
+
+        val lineStart = content.lastIndexOf('\n', open - 1).let { if (it < 0) 0 else it + 1 }
+        val openerStartsLine = content.substring(lineStart, open).all(::isHorizontalWhitespace)
+        var afterCloseLineEnd = closedAt
+        while (afterCloseLineEnd < content.length && isHorizontalWhitespace(content[afterCloseLineEnd])) {
+            afterCloseLineEnd++
+        }
+        val closesLine = afterCloseLineEnd >= content.length || content[afterCloseLineEnd] == '\n'
+        val standaloneBlock = openerStartsLine && closesLine
+
+        result.append(content, cursor, if (standaloneBlock) lineStart else open)
+        cursor = if (standaloneBlock && afterCloseLineEnd < content.length) {
+            afterCloseLineEnd + 1
+        } else {
+            closedAt
+        }
+    }
+    return result.toString()
+}
+
+private fun isHorizontalWhitespace(char: Char): Boolean {
+    return char == ' ' || char == '\t' || char == '\r'
 }
 
 private const val COLOR_MARKER = '\u200B'
