@@ -1,62 +1,47 @@
-# ChatBar - Agent Guidance
+# Repository Guidelines
 
-## Build & Verification
+## Project Structure & Module Organization
 
-All Gradle commands run from `app/`, **not** the repo root:
+ChatBar is a single-module Android project under `app/`. Run Gradle from that directory, not repository root.
+
+- `app/app/src/main/java/com/example/chatbar/`: Kotlin source. Main layers are `ui/`, `data/`, and `domain/`.
+- `app/app/src/test/`: JVM unit tests.
+- `app/app/src/androidTest/`: instrumented Compose/device tests.
+- `device-entities/`: seed JSON for characters, models, sessions, and related local data.
+- `app/gradle/libs.versions.toml`: dependency versions.
+
+Persistence is JSON-file based through `JsonFileStorage`; there is no active SQL database.
+
+## Build, Test, and Development Commands
+
+Use PowerShell from `app/`:
 
 ```powershell
-cd app
-.\gradlew.bat assembleDebug          # Build debug APK
-.\gradlew.bat :app:compileDebugKotlin # Compile only (faster for syntax checks)
-.\gradlew.bat test                    # Unit tests (JVM, no device needed)
+.\gradlew.bat :app:compileDebugKotlin
+.\gradlew.bat test
+.\gradlew.bat assembleDebug
+.\ci.ps1 -SkipAssemble
+.\ci.ps1
 ```
 
-Full CI-equivalent verification (lint not configured):
+- `compileDebugKotlin`: fast Kotlin syntax/type check.
+- `test`: JVM unit tests, no emulator required.
+- `assembleDebug`: builds debug APK at `app/app/build/outputs/apk/debug/app-debug.apk`.
+- `ci.ps1 -SkipAssemble`: tests plus Android test compilation.
+- `ci.ps1`: full local verification. JDK 17 required.
 
-```powershell
-.\ci.ps1              # test + compileDebugAndroidTestKotlin + assembleDebug
-.\ci.ps1 -SkipAssemble  # Skip APK packaging
-```
+## Coding Style & Naming Conventions
 
-- **JDK 17** required. CI uses `temurin-17`.
-- The debug APK installs via `adb install -r app/build/outputs/apk/debug/app-debug.apk`.
-- Gradle wrapper is at `app/gradlew.bat`.
+Use Kotlin with standard 4-space indentation. Keep package names under `com.example.chatbar`. Name Compose screens `*Screen`, ViewModels `*ViewModel`, factories `*ViewModelFactory`, repositories `*Repository`, and tests `*Test`. Prefer existing `ui/kit` components and app theme primitives before adding new UI styles. Keep domain logic out of Composables; place chat, RAG, model, card, and image behavior in `domain/`.
 
-## Architecture
+## Testing Guidelines
 
-Single-module Android app, `com.example.chatbar`, minSdk 26, targetSdk 36. Jetpack Compose UI with Navigation3 (type-safe serializable routes).
+Add JVM tests in `app/app/src/test` for domain and repository behavior. Add instrumented tests in `app/app/src/androidTest` for Compose UI or device-only behavior. Match existing test names such as `ContextWindowManagerTest` or `TutorialScreenTest`. Run `.\gradlew.bat test` for normal changes; run `.\ci.ps1 -SkipAssemble` when touching UI, navigation, Android APIs, or shared build config.
 
-```
-UI (Compose screens + ViewModels)
-  -> Data (Repositories: Character, Chat, Model, FormatCard, SaveSlot, Settings)
-       -> JsonFileStorage  (JSON files, no SQL/DB)
-  -> Domain (Chat: PromptAssembler, ContextWindowManager, StreamingChatService)
-           (RAG: ChunkingEngine, EmbeddingService, VectorSearchEngine, RagManager)
-```
+## Commit & Pull Request Guidelines
 
-- **No real database.** `ObjectBox` is listed as a dependency but is unused. All persistence is JSON files on disk via `JsonFileStorage` (`filesDir/entities/<type>/<id>.json`).
-- `ChatBarApp` (Application class) initializes all repositories and domain services. Access globals via `ChatBarApp.instance`.
-- `DebugConfig.SHOW_DEBUG_UI` toggles debug overlays (log dialog, etc.).
-- Navigation routes defined in `NavigationKeys.kt`. `Navigation.kt` wires the `NavDisplay` with bottom nav + screen stack.
+Git history uses short, scope-focused summaries, often Chinese imperatives such as `优化RAG` or `美化界面`. Keep commits concise and focused on one change. PRs should include problem, solution, verification commands, and screenshots or recordings for visible UI changes. Link related issues when available and call out data migration or seed-data changes.
 
-## Dependencies & Build
+## Architecture & Configuration Notes
 
-- Uses **Aliyun Maven mirrors** in `settings.gradle.kts` — required for artifact resolution inside China.
-- Version catalog at `app/gradle/libs.versions.toml`.
-- Compose BOM `2026.03.01`, Kotlin `2.3.20`, AGP `9.0.1`.
-- `isMinifyEnabled = false` even in release builds.
-
-## Testing
-
-- **Unit tests** (`app/src/test/`): JVM, run with `.\gradlew.bat test`. No device/emulator needed.
-- **Instrumented tests** (`app/src/androidTest/`): require device. Compile-only check via `compileDebugAndroidTestKotlin`.
-
-## Device Seed Data
-
-`device-entities/` contains pre-populated JSON files (characters, models, sessions, etc.) used for device seeding. Entity schemas match the `data.local.entity` Kotlin data classes.
-
-## Key Constraints
-
-- Portrait-only (`screenOrientation="portrait"` in manifest).
-- Requires `INTERNET` + `ACCESS_NETWORK_STATE` permissions.
-- No ProGuard/R8 enabled; no keystore configured for release signing.
+`ChatBarApp` wires repositories and services; access app-level instances through `ChatBarApp.instance`. Navigation routes live in `NavigationKeys.kt`, with wiring in `Navigation.kt`. The app is portrait-only and uses `INTERNET` plus `ACCESS_NETWORK_STATE`. `DebugConfig.SHOW_DEBUG_UI` controls debug overlays.

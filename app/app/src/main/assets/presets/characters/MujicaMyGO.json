@@ -466,9 +466,7 @@
       "tokenBudget": null,
       "recursiveScanning": false,
       "caseSensitive": false,
-      "matchWholeWords": false,
-      "createdAt": 1782803566984,
-      "updatedAt": 1782803566984
+      "matchWholeWords": false
     }
   },
   "documents": [

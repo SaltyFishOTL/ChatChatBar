@@ -4,10 +4,10 @@
   "baseUrl": "https://api.siliconflow.cn/v1",
   "chatModels": [
     {
-      "modelKey": "DeepseekV4F",
-      "displayName": "DS4F",
-      "modelName": "deepseek-ai/DeepSeek-V4-Flash",
-      "visionModelKey": "k2.6",
+      "modelKey": "DeepseekV4P",
+      "displayName": "DS4P",
+      "modelName": "deepseek-ai/DeepSeek-V4-Pro",
+      "visionModelKey": "vision",
       "templateType": "OPENAI",
       "customParams": {
         "enable_thinking": { "type": "boolean", "value": true },
@@ -16,10 +16,31 @@
       }
     },
     {
-      "modelKey": "GLM5.2",
-      "displayName": "GLM5.2",
-      "modelName": "zai-org/GLM-5.2",
-      "visionModelKey": "k2.6",
+      "modelKey": "DeepseekV3.2",
+      "displayName": "DS3.2",
+      "modelName": "deepseek-ai/DeepSeek-V3.2",
+      "visionModelKey": "vision",
+      "templateType": "OPENAI",
+      "customParams": {
+        "enable_thinking": {
+          "type": "boolean",
+          "value": true
+        },
+        "thinking_budget": {
+          "type": "number",
+          "value": 1024.0
+        },
+        "max_tokens": {
+          "type": "number",
+          "value": 40960.0
+        }
+      }
+    },
+    {
+      "modelKey": "GLM5.1",
+      "displayName": "GLM5.1",
+      "modelName": "zai-org/GLM-5.1",
+      "visionModelKey": "vision",
       "templateType": "OPENAI",
       "customParams": {
         "enable_thinking": {
