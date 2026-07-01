@@ -927,8 +927,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 var accumulatedText = ""
                 var accumulatedReasoning = ""
                 val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
+                val streamStartedAt = System.currentTimeMillis()
 
                 val ctx = ChatBarApp.instance
+                _streamingMessage.value = ChatMessage(
+                    id = assistantMsgId,
+                    sessionId = sessionId,
+                    role = MessageRole.ASSISTANT,
+                    content = "...",
+                    createdAt = streamStartedAt,
+                    updatedAt = streamStartedAt
+                )
+                StreamingNotificationManager.update(ctx, "正在连接流式响应...", sessionId)
 
                 streamingChatService.streamChat(
                     sessionId = sessionId,
@@ -949,7 +959,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 role = MessageRole.ASSISTANT,
                                 content = accumulatedText,
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = System.currentTimeMillis(),
+                                createdAt = streamStartedAt,
                                 updatedAt = System.currentTimeMillis()
                             )
                         }
@@ -961,7 +971,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 role = MessageRole.ASSISTANT,
                                 content = accumulatedText,
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = System.currentTimeMillis(),
+                                createdAt = streamStartedAt,
                                 updatedAt = System.currentTimeMillis()
                             )
                             StreamingNotificationManager.update(ctx, accumulatedText, sessionId)
@@ -981,7 +991,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 role = MessageRole.ASSISTANT,
                                 content = accumulatedText,
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = System.currentTimeMillis(),
+                                createdAt = streamStartedAt,
                                 updatedAt = System.currentTimeMillis()
                             )
                             if (alternativeTargetMessageId != null) {

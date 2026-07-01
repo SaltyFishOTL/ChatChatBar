@@ -15,8 +15,8 @@ data class WorldBook(
     val recursiveScanning: Boolean = false,
     val caseSensitive: Boolean = false,
     val matchWholeWords: Boolean = false,
-    val createdAt: Long,
-    val updatedAt: Long
+    val createdAt: Long = 0L,
+    val updatedAt: Long = createdAt
 ) {
     companion object {
         @OptIn(ExperimentalUuidApi::class)
