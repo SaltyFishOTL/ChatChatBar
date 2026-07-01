@@ -13,9 +13,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
-import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonObjectBuilder
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -58,12 +58,6 @@ class CharacterRewriteService(
         encodeDefaults = false
     }
 ) {
-    private val promptJson = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        encodeDefaults = false
-    }
-
     suspend fun rewriteStreaming(
         userInput: String,
         currentCard: CharacterCard,
@@ -97,15 +91,25 @@ class CharacterRewriteService(
 
         val rawText = raw.toString()
         if (rawText.isBlank()) error(streamError ?: "AI 自动改写返回空内容")
-        val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model)
+        val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model, currentCard)
         draft.constrainedTo(currentCard)
     }
 
-    private suspend fun repairDraft(raw: String, model: ModelConfig): CharacterRewriteDraft {
+    private suspend fun repairDraft(
+        raw: String,
+        model: ModelConfig,
+        currentCard: CharacterCard
+    ): CharacterRewriteDraft {
         val repaired = chatService.completeText(
             messages = listOf(
                 ChatApiMessage.text("system", PromptTemplates.CHARACTER_REWRITE_REPAIR_PROMPT),
-                ChatApiMessage.text("user", raw)
+                ChatApiMessage.text(
+                    "user",
+                    buildJsonObject {
+                        put("outputSchema", currentCard.rewriteOutputSchema())
+                        put("text", raw)
+                    }.toString()
+                )
             ),
             modelConfig = model,
             maxTokens = 7000,
@@ -126,7 +130,7 @@ class CharacterRewriteService(
         parseDraft(raw, json)
 
     fun buildUserPrompt(userInput: String, currentCard: CharacterCard): String =
-        buildPromptPayload(userInput, currentCard, promptJson)
+        buildPromptPayload(userInput, currentCard)
 
     fun mergeInto(
         current: CharacterCard,
@@ -139,11 +143,6 @@ class CharacterRewriteService(
             ignoreUnknownKeys = true
             isLenient = true
             coerceInputValues = false
-            encodeDefaults = false
-        }
-        private val defaultPromptJson = Json {
-            ignoreUnknownKeys = true
-            isLenient = true
             encodeDefaults = false
         }
 
@@ -166,15 +165,15 @@ class CharacterRewriteService(
 
         fun buildPromptPayload(
             userInput: String,
-            currentCard: CharacterCard,
-            promptJson: Json = defaultPromptJson
+            currentCard: CharacterCard
         ): String =
             buildJsonObject {
                 put("request", userInput.trim())
-                put("mode", currentCard.editMode.name)
-                put("current", promptJson.parseToJsonElement(promptJson.encodeToString(currentCard.toRewriteSource())))
-                put("rules", currentCard.rewriteRules())
-                put("characterImageGuide", PromptTemplates.CHARACTER_IMAGE_NAI_PROMPT_GUIDE.trim())
+                put("current", currentCard.toRewriteCurrent())
+                put("outputSchema", currentCard.rewriteOutputSchema())
+                if (currentCard.editMode == CharacterEditMode.STRUCTURED) {
+                    put("characterImageGuide", PromptTemplates.CHARACTER_IMAGE_NAI_PROMPT_GUIDE.trim())
+                }
             }.toString()
 
         fun mergeInto(
@@ -203,93 +202,115 @@ class CharacterRewriteService(
     }
 }
 
-@Serializable
-private data class CharacterRewriteSource(
-    val name: String,
-    val greeting: String,
-    val basicSetting: String,
-    val defaultImagePrompt: String,
-    val freeformCharacterText: String? = null,
-    val characters: List<CharacterRewriteCharacterSource>? = null
-)
-
-@Serializable
-private data class CharacterRewriteCharacterSource(
-    val id: String,
-    val name: String,
-    val profile: String,
-    val appearance: String,
-    val clothing: String,
-    val abilities: String,
-    val habits: String,
-    val background: String,
-    val relationships: String,
-    val speakingStyle: String,
-    val imagePrompt: String
-)
-
-private fun CharacterCard.toRewriteSource(): CharacterRewriteSource =
-    when (editMode) {
-        CharacterEditMode.STRUCTURED -> CharacterRewriteSource(
-            name = name,
-            greeting = greeting,
-            basicSetting = basicSetting,
-            defaultImagePrompt = defaultImagePrompt,
-            characters = characters.map {
-                CharacterRewriteCharacterSource(
-                    id = it.id,
-                    name = it.name,
-                    profile = it.profile,
-                    appearance = it.appearance,
-                    clothing = it.clothing,
-                    abilities = it.abilities,
-                    habits = it.habits,
-                    background = it.background,
-                    relationships = it.relationships,
-                    speakingStyle = it.speakingStyle,
-                    imagePrompt = it.imagePrompt
-                )
-            }
-        )
-        CharacterEditMode.FREEFORM -> CharacterRewriteSource(
-            name = name,
-            greeting = greeting,
-            basicSetting = basicSetting,
-            defaultImagePrompt = defaultImagePrompt,
-            freeformCharacterText = freeformCharacterText
-        )
-    }
-
-private fun CharacterCard.rewriteRules(): JsonObject = buildJsonObject {
-    put("nullablePatch", "字段缺失或 null 表示保持当前；空字符串表示清空；非空字符串表示替换。")
-    put("cardFields", buildJsonArray {
-        listOf("name", "greeting", "basicSetting", "defaultImagePrompt").forEach { add(JsonPrimitive(it)) }
-    })
+private fun CharacterCard.toRewriteCurrent(): JsonObject = buildJsonObject {
+    putNonBlank("name", name)
+    putNonBlank("greeting", greeting)
+    putNonBlank("basicSetting", basicSetting)
+    putNonBlank("defaultImagePrompt", defaultImagePrompt)
     when (editMode) {
         CharacterEditMode.STRUCTURED -> {
-            put("characterFields", buildJsonArray {
-                listOf(
-                    "id",
-                    "name",
-                    "profile",
-                    "appearance",
-                    "clothing",
-                    "abilities",
-                    "habits",
-                    "background",
-                    "relationships",
-                    "speakingStyle",
-                    "imagePrompt"
-                ).forEach { add(JsonPrimitive(it)) }
-            })
-            put("maxCharacters", 6)
-            put("allowDeleteCharacterIds", true)
-            put("allowNewCharacters", true)
+            val visibleCharacters = characters.mapNotNull(CharacterInfo::toRewriteCurrentCharacter)
+            if (visibleCharacters.isNotEmpty()) {
+                put("characters", buildJsonArray {
+                    visibleCharacters.forEach { add(it) }
+                })
+            }
         }
         CharacterEditMode.FREEFORM -> {
-            put("freeformField", "freeformCharacterText")
+            putNonBlank("freeformCharacterText", freeformCharacterText)
         }
     }
+}
+
+private fun CharacterInfo.toRewriteCurrentCharacter(): JsonObject? {
+    val hasContent = listOf(
+        name,
+        profile,
+        appearance,
+        clothing,
+        abilities,
+        habits,
+        background,
+        relationships,
+        speakingStyle,
+        imagePrompt
+    ).any(String::isNotBlank)
+    if (!hasContent) return null
+    return buildJsonObject {
+        put("id", id)
+        putNonBlank("name", name)
+        putNonBlank("profile", profile)
+        putNonBlank("appearance", appearance)
+        putNonBlank("clothing", clothing)
+        putNonBlank("abilities", abilities)
+        putNonBlank("habits", habits)
+        putNonBlank("background", background)
+        putNonBlank("relationships", relationships)
+        putNonBlank("speakingStyle", speakingStyle)
+        putNonBlank("imagePrompt", imagePrompt)
+    }
+}
+
+private fun CharacterCard.rewriteOutputSchema(): JsonObject =
+    when (editMode) {
+        CharacterEditMode.STRUCTURED -> buildJsonObject {
+            put("schemaName", "structuredCharacterRewritePatch")
+            put("patchSemantics", "字段缺失或 null 表示保持当前；空字符串表示清空；非空字符串表示替换。")
+            put("allowedTopLevelKeys", jsonStringArray(cardPatchFields + listOf("deleteCharacterIds", "characters")))
+            put("cardFields", jsonStringArray(cardPatchFields))
+            put("deleteCharacterIds", "string[]；只有用户明确要求删除角色时输出")
+            put("characters", buildJsonArray {
+                add(
+                    buildJsonObject {
+                        put("id", "已有角色 id；新增角色省略或写 null")
+                        structuredCharacterPatchFields.forEach { put(it, "string|null，可省略") }
+                    }
+                )
+            })
+            put("maxCharacters", 6)
+            put("rules", buildJsonArray {
+                add(JsonPrimitive("已有角色必须按 current.characters[].id 改写。"))
+                add(JsonPrimitive("未出现在 characters 中的已有角色保持不变。"))
+                add(JsonPrimitive("删除角色必须写入 deleteCharacterIds；不要靠遗漏删除。"))
+                add(JsonPrimitive("用户明确要求新增人物时，可以新增无 id 的角色对象；总角色数最多 6。"))
+                add(JsonPrimitive("新增人物必须基于 current 与 request，不要变成无关原创卡。"))
+                add(JsonPrimitive("imagePrompt 只写稳定外观、身份、发型、体型、服装等角色形象标签。"))
+            })
+        }
+        CharacterEditMode.FREEFORM -> buildJsonObject {
+            put("schemaName", "freeformCharacterRewritePatch")
+            put("patchSemantics", "字段缺失或 null 表示保持当前；空字符串表示清空；非空字符串表示替换。")
+            put("allowedTopLevelKeys", jsonStringArray(cardPatchFields + listOf("freeformCharacterText")))
+            put("cardFields", jsonStringArray(cardPatchFields))
+            put("freeformCharacterText", "string|null，可省略")
+            put("rules", buildJsonArray {
+                add(JsonPrimitive("只改当前自由文本与卡级字段。"))
+                add(JsonPrimitive("输出 JSON 不包含 characters 或 deleteCharacterIds。"))
+            })
+        }
+    }
+
+private val cardPatchFields = listOf("name", "greeting", "basicSetting", "defaultImagePrompt")
+
+private val structuredCharacterPatchFields = listOf(
+    "name",
+    "profile",
+    "appearance",
+    "clothing",
+    "abilities",
+    "habits",
+    "background",
+    "relationships",
+    "speakingStyle",
+    "imagePrompt"
+)
+
+private fun JsonObjectBuilder.putNonBlank(key: String, value: String) {
+    if (value.isNotBlank()) put(key, value)
+}
+
+private fun jsonStringArray(values: List<String>) = buildJsonArray {
+    values.forEach { add(JsonPrimitive(it)) }
 }
 
 private fun mergeStructuredCharacters(

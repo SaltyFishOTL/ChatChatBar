@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
+import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -51,9 +52,14 @@ class CharacterRewriteServiceTest {
         val payload = CharacterRewriteService.buildPromptPayload("改冷淡", current)
         val root = Json.parseToJsonElement(payload).jsonObject
         val currentJson = root.getValue("current").jsonObject
+        val schemaJson = root.getValue("outputSchema").jsonObject
+        val allowedKeys = schemaJson.getValue("allowedTopLevelKeys").jsonArray.map { it.jsonPrimitive.content }
 
-        assertEquals("STRUCTURED", root.getValue("mode").jsonPrimitive.content)
         assertTrue(currentJson.containsKey("characters"))
+        assertTrue(root.containsKey("characterImageGuide"))
+        assertTrue(allowedKeys.contains("characters"))
+        assertTrue(allowedKeys.contains("deleteCharacterIds"))
+        assertFalse(allowedKeys.contains("freeformCharacterText"))
         assertFalse(currentJson.containsKey("freeformCharacterText"))
         assertFalse(payload.contains("自由模式秘密"))
         assertFalse(payload.contains("customDocuments"))
@@ -75,12 +81,55 @@ class CharacterRewriteServiceTest {
         val payload = CharacterRewriteService.buildPromptPayload("改轻松", current)
         val root = Json.parseToJsonElement(payload).jsonObject
         val currentJson = root.getValue("current").jsonObject
+        val schemaJson = root.getValue("outputSchema").jsonObject
+        val allowedKeys = schemaJson.getValue("allowedTopLevelKeys").jsonArray.map { it.jsonPrimitive.content }
 
-        assertEquals("FREEFORM", root.getValue("mode").jsonPrimitive.content)
         assertEquals("自由人物原文", currentJson.getValue("freeformCharacterText").jsonPrimitive.content)
+        assertFalse(root.containsKey("characterImageGuide"))
+        assertTrue(allowedKeys.contains("freeformCharacterText"))
+        assertFalse(allowedKeys.contains("characters"))
+        assertFalse(allowedKeys.contains("deleteCharacterIds"))
         assertFalse(currentJson.containsKey("characters"))
         assertFalse(payload.contains("结构化人物"))
         assertFalse(payload.contains("不能暴露"))
+    }
+
+    @Test
+    fun `payload current only includes nonblank current fields`() {
+        val current = card(
+            name = "",
+            greeting = "hello",
+            basicSetting = "",
+            defaultImagePrompt = "",
+            characters = listOf(
+                CharacterInfo(id = "blank", name = ""),
+                CharacterInfo(id = "c1", name = "林雾", appearance = "银发")
+            )
+        )
+
+        val payload = CharacterRewriteService.buildPromptPayload("让她更冷", current)
+        val currentJson = Json.parseToJsonElement(payload).jsonObject.getValue("current").jsonObject
+        val characterJson = currentJson.getValue("characters").jsonArray.single().jsonObject
+
+        assertFalse(currentJson.containsKey("name"))
+        assertEquals("hello", currentJson.getValue("greeting").jsonPrimitive.content)
+        assertFalse(currentJson.containsKey("basicSetting"))
+        assertFalse(currentJson.containsKey("defaultImagePrompt"))
+        assertEquals("c1", characterJson.getValue("id").jsonPrimitive.content)
+        assertEquals("林雾", characterJson.getValue("name").jsonPrimitive.content)
+        assertEquals("银发", characterJson.getValue("appearance").jsonPrimitive.content)
+        assertFalse(characterJson.containsKey("profile"))
+        assertFalse(characterJson.containsKey("clothing"))
+    }
+
+    @Test
+    fun `rewrite prompt does not embed dual mode schemas`() {
+        val prompt = PromptTemplates.CHARACTER_REWRITE_SYSTEM_PROMPT
+
+        assertFalse(prompt.contains("不要同时处理两种编辑模式"))
+        assertFalse(prompt.contains("STRUCTURED 模式输出结构"))
+        assertFalse(prompt.contains("FREEFORM 模式输出结构"))
+        assertTrue(prompt.contains("outputSchema"))
     }
 
     @Test
