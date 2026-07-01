@@ -37,6 +37,28 @@ class CharacterRewriteServiceTest {
     }
 
     @Test
+    fun `parser extracts final rewrite json after thinking text`() {
+        val raw = """
+            thinking:
+            {"name":"Wrong draft"}
+            This part has loose braces: {not json}
+            final:
+            {
+              "name": "Right draft",
+              "characters": [
+                {"id": "c1", "profile": "Colder"}
+              ]
+            }
+        """.trimIndent()
+
+        val draft = CharacterRewriteService.parseDraft(raw)
+
+        assertEquals("Right draft", draft?.name)
+        assertEquals("c1", draft?.characters?.single()?.id)
+        assertEquals("Colder", draft?.characters?.single()?.profile)
+    }
+
+    @Test
     fun `structured payload does not expose freeform or excluded fields`() {
         val current = card(
             editMode = CharacterEditMode.STRUCTURED,

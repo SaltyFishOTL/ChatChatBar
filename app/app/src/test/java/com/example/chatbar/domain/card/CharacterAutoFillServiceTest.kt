@@ -38,6 +38,30 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
+    fun `parser extracts final json after thinking text`() {
+        val raw = """
+            thinking:
+            {"name":"Wrong draft"}
+            Some prose with loose braces: {not json}
+            final:
+            {
+              "name": "Right draft",
+              "greeting": "Hello",
+              "characters": [
+                {"name": "Alice", "profile": "Detective"}
+              ]
+            }
+        """.trimIndent()
+
+        val draft = CharacterAutoFillService.parseDraft(raw)
+
+        assertEquals("Right draft", draft?.name)
+        assertEquals("Hello", draft?.greeting)
+        assertEquals("Alice", draft?.characters?.single()?.name)
+        assertEquals("Detective", draft?.characters?.single()?.profile)
+    }
+
+    @Test
     fun `system prompt does not mention fields outside auto fill surface`() {
         val prompt = PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT
 

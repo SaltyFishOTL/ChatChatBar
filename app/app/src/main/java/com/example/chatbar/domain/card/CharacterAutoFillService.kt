@@ -167,20 +167,20 @@ class CharacterAutoFillService(
         }
 
         fun parseDraft(raw: String, json: Json = defaultJson): CharacterAutoFillDraft? {
-        val candidates = buildList {
-            add(raw.trim())
-            add(raw.removeMarkdownFence().trim())
-            raw.extractBalancedJsonObject()?.let { add(it) }
-            raw.removeMarkdownFence().extractBalancedJsonObject()?.let { add(it) }
-        }.distinct().filter { it.isNotBlank() }
-
-        return candidates.firstNotNullOfOrNull { candidate ->
-            runCatching {
-                json.decodeFromString(CharacterAutoFillDraft.serializer(), candidate)
-                    .normalized()
-                    .takeIf(CharacterAutoFillDraft::hasAnyContent)
-            }.getOrNull()
-        }
+            val decoded = raw.extractJsonObjectCandidates().mapIndexedNotNull { index, candidate ->
+                runCatching {
+                    json.decodeFromString(CharacterAutoFillDraft.serializer(), candidate)
+                        .normalized()
+                        .takeIf(CharacterAutoFillDraft::hasAnyContent)
+                        ?.let { index to it }
+                }.getOrNull()
+            }
+            return decoded.maxWithOrNull(
+                compareBy<Pair<Int, CharacterAutoFillDraft>>(
+                    { it.second.contentScore() },
+                    { it.first }
+                )
+            )?.second
         }
 
         fun mergeInto(
@@ -495,6 +495,10 @@ private fun CharacterAutoFillDraft.hasAnyContent(): Boolean =
         defaultImagePrompt.isNotBlank() ||
         characters.any(CharacterAutoFillCharacterDraft::hasAnyContent)
 
+private fun CharacterAutoFillDraft.contentScore(): Int =
+    listOf(name, greeting, basicSetting, defaultImagePrompt).count(String::isNotBlank) +
+        characters.sumOf(CharacterAutoFillCharacterDraft::contentScore)
+
 private fun CharacterAutoFillCharacterDraft.normalized(): CharacterAutoFillCharacterDraft =
     copy(
         name = name.trim(),
@@ -521,35 +525,19 @@ private fun CharacterAutoFillCharacterDraft.hasAnyContent(): Boolean =
         speakingStyle.isNotBlank() ||
         imagePrompt.isNotBlank()
 
+private fun CharacterAutoFillCharacterDraft.contentScore(): Int =
+    listOf(
+        name,
+        profile,
+        appearance,
+        clothing,
+        abilities,
+        habits,
+        background,
+        relationships,
+        speakingStyle,
+        imagePrompt
+    ).count(String::isNotBlank)
+
 private fun String.fillBlank(candidate: String): String =
     if (isBlank()) candidate.trim() else this
-
-private fun String.removeMarkdownFence(): String =
-    trim()
-        .removePrefix("```json")
-        .removePrefix("```JSON")
-        .removePrefix("```")
-        .removeSuffix("```")
-        .trim()
-
-private fun String.extractBalancedJsonObject(): String? {
-    val start = indexOf('{')
-    if (start < 0) return null
-    var depth = 0
-    var inString = false
-    var escaped = false
-    for (i in start until length) {
-        val ch = this[i]
-        when {
-            escaped -> escaped = false
-            ch == '\\' && inString -> escaped = true
-            ch == '"' -> inString = !inString
-            !inString && ch == '{' -> depth++
-            !inString && ch == '}' -> {
-                depth--
-                if (depth == 0) return substring(start, i + 1)
-            }
-        }
-    }
-    return null
-}

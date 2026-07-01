@@ -147,20 +147,20 @@ class CharacterRewriteService(
         }
 
         fun parseDraft(raw: String, json: Json = defaultJson): CharacterRewriteDraft? {
-            val candidates = buildList {
-                add(raw.trim())
-                add(raw.removeMarkdownFence().trim())
-                raw.extractBalancedJsonObject()?.let { add(it) }
-                raw.removeMarkdownFence().extractBalancedJsonObject()?.let { add(it) }
-            }.distinct().filter { it.isNotBlank() }
-
-            return candidates.firstNotNullOfOrNull { candidate ->
+            val decoded = raw.extractJsonObjectCandidates().mapIndexedNotNull { index, candidate ->
                 runCatching {
                     json.decodeFromString(CharacterRewriteDraft.serializer(), candidate)
                         .normalized()
                         .takeIf(CharacterRewriteDraft::hasAnyPatch)
+                        ?.let { index to it }
                 }.getOrNull()
             }
+            return decoded.maxWithOrNull(
+                compareBy<Pair<Int, CharacterRewriteDraft>>(
+                    { it.second.patchScore() },
+                    { it.first }
+                )
+            )?.second
         }
 
         fun buildPromptPayload(
@@ -476,6 +476,11 @@ private fun CharacterRewriteDraft.hasAnyPatch(): Boolean =
         deleteCharacterIds.isNotEmpty() ||
         characters.any(CharacterRewriteCharacterDraft::hasAnyPatch)
 
+private fun CharacterRewriteDraft.patchScore(): Int =
+    listOf(name, greeting, basicSetting, defaultImagePrompt, freeformCharacterText).count { it != null } +
+        deleteCharacterIds.size +
+        characters.sumOf(CharacterRewriteCharacterDraft::patchScore)
+
 private fun CharacterRewriteCharacterDraft.hasAnyPatch(): Boolean =
     id != null ||
         name != null ||
@@ -489,39 +494,24 @@ private fun CharacterRewriteCharacterDraft.hasAnyPatch(): Boolean =
         speakingStyle != null ||
         imagePrompt != null
 
+private fun CharacterRewriteCharacterDraft.patchScore(): Int =
+    listOf(
+        id,
+        name,
+        profile,
+        appearance,
+        clothing,
+        abilities,
+        habits,
+        background,
+        relationships,
+        speakingStyle,
+        imagePrompt
+    ).count { it != null }
+
 private fun CharacterRewriteCharacterDraft.hasVisibleContent(): Boolean =
     listOf(name, profile, appearance, clothing, abilities, habits, background, relationships, speakingStyle, imagePrompt)
         .any { !it.isNullOrBlank() }
 
 private fun String?.patch(current: String): String =
     this ?: current
-
-private fun String.removeMarkdownFence(): String =
-    trim()
-        .removePrefix("```json")
-        .removePrefix("```JSON")
-        .removePrefix("```")
-        .removeSuffix("```")
-        .trim()
-
-private fun String.extractBalancedJsonObject(): String? {
-    val start = indexOf('{')
-    if (start < 0) return null
-    var depth = 0
-    var inString = false
-    var escaped = false
-    for (i in start until length) {
-        val ch = this[i]
-        when {
-            escaped -> escaped = false
-            ch == '\\' && inString -> escaped = true
-            ch == '"' -> inString = !inString
-            !inString && ch == '{' -> depth++
-            !inString && ch == '}' -> {
-                depth--
-                if (depth == 0) return substring(start, i + 1)
-            }
-        }
-    }
-    return null
-}

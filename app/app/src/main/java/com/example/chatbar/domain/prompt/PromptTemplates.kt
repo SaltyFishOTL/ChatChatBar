@@ -129,6 +129,7 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 11. 中文字段使用中文；imagePrompt 使用英文逗号分隔的 NovelAI/Danbooru 标签。
 12. 优先给出具体姓名、稳定身份、可扮演冲突、关系张力、说话风格和可直接开局的互动钩子。
 13. 使用${'$'}username指代玩家，使用${'$'}botname指代扮演卡
+14. 玩家的角色设定应该写在basicSetting中，而不是作为characters。除非玩家设定至关重要，否则不应该写玩家的角色设定，而是让玩家事后自己定义
 
 输出结构：
 {
@@ -187,6 +188,7 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 7. STRUCTURED 的 characters 是应用后的完整人物候选列表；保留人物也要输出并保留 id；新增人物可省略 id。
 8. 谨慎新增或删除人物。
 9. 使用${'$'}username指代玩家，使用${'$'}botname指代扮演卡。
+10. 玩家的角色设定应该写在basicSetting中，而不是作为characters。除非玩家设定至关重要，否则不应该写玩家的角色设定，而是让玩家事后自己定义
 """
 
     const val CHARACTER_REWRITE_REPAIR_PROMPT = """
