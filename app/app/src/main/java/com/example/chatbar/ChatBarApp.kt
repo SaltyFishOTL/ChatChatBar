@@ -69,6 +69,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var formatCardTransferService: FormatCardTransferService
         private set
+    lateinit var worldBookTransferService: WorldBookTransferService
+        private set
     lateinit var presetCatalogService: PresetCatalogService
         private set
     lateinit var characterSessionService: CharacterSessionService
@@ -131,13 +133,15 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
-        characterCardTransferService = CharacterCardTransferService(this, characterRepository, ragRepository, transferJson)
+        worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
+        characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)
         presetCatalogService = PresetCatalogService(
             this,
             jsonFileStorage,
             characterCardTransferService,
             formatCardTransferService,
+            worldBookTransferService,
             ragRepository,
             transferJson
         )
@@ -153,6 +157,11 @@ class ChatBarApp : Application() {
         StreamingNotificationManager.init(this)
         applicationScope.launch {
             deletionCoordinator.resumePending()
+            WorldBookMigration(
+                jsonFileStorage,
+                characterRepository,
+                worldBookRepository
+            ).run()
             presetCatalogService.initialize()
             ModelConfigurationMigration(
                 jsonFileStorage,

@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
+import com.example.chatbar.data.local.entity.WorldBookSelectiveLogic
 
 class WorldBookEngine {
 
@@ -89,14 +90,17 @@ class WorldBookEngine {
 
             // Delay check
             if (entry.delay > 0 && currentMsg < entry.delay) continue
-
-            // Cooldown check
-            if (timed != null && timed.cooldownUntil > 0 && currentMsg < timed.cooldownUntil) continue
+            if (depth == 0 && entry.delayUntilRecursion) continue
+            if (depth > 0 && entry.excludeRecursion) continue
+            entry.recursionLevel?.let { level ->
+                if (depth > 0 && depth < level) continue
+            }
 
             // Sticky check - auto-activate if sticky
             val isSticky = timed != null && timed.stickyUntil > 0 && currentMsg <= timed.stickyUntil
+            if (!isSticky && timed != null && timed.cooldownUntil > 0 && currentMsg < timed.cooldownUntil) continue
 
-            val shouldActivate = isSticky || entry.constant || matchesKeys(entry, messages)
+            val shouldActivate = isSticky || entry.constant || matchesKeys(entry, messages, book.scanDepth)
 
             if (shouldActivate) {
                 // Probability check (only for non-constant, non-sticky)
@@ -124,7 +128,9 @@ class WorldBookEngine {
 
         // Recursive scanning
         if (allowRecursion() && depth < maxDepth) {
-            val triggeredContent = activated.joinToString("\n") { it.entry.content }
+            val triggeredContent = activated
+                .filterNot { it.entry.preventRecursion }
+                .joinToString("\n") { it.entry.content }
             if (triggeredContent.isNotBlank()) {
                 val now = System.currentTimeMillis()
                 val recursiveMsg = listOf(
@@ -145,46 +151,53 @@ class WorldBookEngine {
         activated: List<ActivatedEntry>,
         books: List<WorldBook>
     ): List<ActivatedEntry> {
-        // Sort by insertionOrder descending (higher = closer to bottom = more impact)
-        val sorted = activated.sortedByDescending { it.entry.insertionOrder }
-
-        // Apply budget per book
-        val budgetMap = books.associate { it.id to (it.tokenBudget ?: Int.MAX_VALUE) }
-        val budgetUsed = mutableMapOf<String, Int>()
         val result = mutableListOf<ActivatedEntry>()
 
-        for (act in sorted) {
-            val budget = budgetMap[act.sourceBookId] ?: Int.MAX_VALUE
-            val used = budgetUsed[act.sourceBookId] ?: 0
-            val tokenEstimate = estimateTokens(act.entry.content)
-
-            if (used + tokenEstimate <= budget) {
-                result += act
-                budgetUsed[act.sourceBookId] = used + tokenEstimate
+        for (book in books) {
+            val bookActivated = activated.filter { it.sourceBookId == book.id }
+            val budget = book.tokenBudget ?: Int.MAX_VALUE
+            var used = 0
+            val accepted = mutableListOf<ActivatedEntry>()
+            for (act in bookActivated.sortedByDescending { it.entry.insertionOrder }) {
+                val tokenEstimate = estimateTokens(act.entry.content)
+                if (act.entry.ignoreBudget || used + tokenEstimate <= budget) {
+                    accepted += act
+                    if (!act.entry.ignoreBudget) used += tokenEstimate
+                }
             }
-            // else: pruned due to budget
+            result += accepted.sortedBy { it.entry.insertionOrder }
         }
 
-        // Sort back to insertionOrder ascending for final prompt insertion
-        return result.sortedBy { it.entry.insertionOrder }
+        return result
     }
 
-    private fun matchesKeys(entry: WorldBookEntry, messages: List<ChatMessage>): Boolean {
+    private fun matchesKeys(entry: WorldBookEntry, messages: List<ChatMessage>, bookScanDepth: Int): Boolean {
         if (entry.keys.isEmpty()) return false
-        val buffer = messages.joinToString("\n") { it.content }
+        val depth = (entry.scanDepth ?: bookScanDepth).coerceAtLeast(0)
+        if (depth == 0) return false
+        val buffer = messages.takeLast(depth).joinToString("\n") { it.content }
         val effectiveBuffer = if (entry.caseSensitive) buffer else buffer.lowercase()
 
+        var primaryMatched = false
         for (key in entry.keys) {
             val matched = matchKey(key, buffer, effectiveBuffer, entry)
-            if (entry.selective && matched) {
-                val secondaryMatch = entry.secondaryKeys.any { sk ->
-                    matchKey(sk, buffer, effectiveBuffer, entry)
-                }
-                if (!secondaryMatch) continue
+            if (matched) {
+                primaryMatched = true
+                break
             }
-            if (matched) return true
         }
-        return false
+        if (!primaryMatched) return false
+        if (!entry.selective || entry.secondaryKeys.isEmpty()) return true
+
+        val secondaryMatches = entry.secondaryKeys.map { sk -> matchKey(sk, buffer, effectiveBuffer, entry) }
+        val any = secondaryMatches.any { it }
+        val all = secondaryMatches.all { it }
+        return when (entry.selectiveLogic) {
+            WorldBookSelectiveLogic.NOT_ALL.value -> !all
+            WorldBookSelectiveLogic.NOT_ANY.value -> !any
+            WorldBookSelectiveLogic.AND_ALL.value -> all
+            else -> any
+        }
     }
 
     private fun matchKey(
@@ -201,6 +214,11 @@ class WorldBookEngine {
             return tryRegexMatch(key, buffer, entry.caseSensitive)
         }
         val effectiveKey = if (entry.caseSensitive) key else key.lowercase()
+        if (entry.matchWholeWords == true) {
+            if (effectiveKey.contains(Regex("\\s"))) return effectiveBuffer.contains(effectiveKey)
+            return Regex("(?:^|\\W)${Regex.escape(effectiveKey)}(?:$|\\W)")
+                .containsMatchIn(effectiveBuffer)
+        }
         return effectiveBuffer.contains(effectiveKey)
     }
 

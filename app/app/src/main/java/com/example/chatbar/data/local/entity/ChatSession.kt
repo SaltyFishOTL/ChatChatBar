@@ -25,6 +25,7 @@ data class ChatSession(
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
     val contextWindowSize: Int = 20,
+    val extraWorldBookIds: List<String> = emptyList(),
     val isPinned: Boolean = false,
     val lastMessagePreview: String? = null,
     val lastMessageTime: Long? = null,

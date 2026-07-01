@@ -35,6 +35,7 @@ import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
 import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
+import com.example.chatbar.ui.worldbook.WorldBookEditScreen
 import com.example.chatbar.ui.tutorial.TutorialScreen
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -144,6 +145,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     }
                     entry<FormatCardEditRoute> { key ->
                         FormatCardEditScreen(formatCardId = key.formatCardId, onBack = ::popBackStack)
+                    }
+                    entry<WorldBookEditRoute> { key ->
+                        WorldBookEditScreen(worldBookId = key.worldBookId, onBack = ::popBackStack)
                     }
                 }
             )

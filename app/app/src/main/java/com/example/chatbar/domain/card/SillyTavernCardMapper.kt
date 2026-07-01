@@ -64,6 +64,7 @@ object SillyTavernCardMapper {
             cleanedGreeting to cleanedAlternates
         }
 
+        val characterBook = parseCharacterBook(st.characterBook)
         val card = PackagedCharacterCard(
             name = st.name,
             greeting = finalGreeting,
@@ -80,11 +81,11 @@ object SillyTavernCardMapper {
             creator = st.creator,
             characterVersion = st.characterVersion,
             extensions = st.extensions,
-            characterBook = parseCharacterBook(st.characterBook)
+            characterBook = null
         )
 
         return CharacterCardPackage(
-            schemaVersion = 4,
+            schemaVersion = 5,
             card = card,
             documents = emptyList(),
             images = if (st.pngBytes != null) {
@@ -92,7 +93,8 @@ object SillyTavernCardMapper {
                     fileName = "card.png",
                     data = Base64.encodeToString(st.pngBytes, Base64.NO_WRAP)
                 ))
-            } else emptyMap()
+            } else emptyMap(),
+            worldBooks = listOfNotNull(characterBook)
         )
     }
 

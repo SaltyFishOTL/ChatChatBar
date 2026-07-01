@@ -13,11 +13,12 @@ data class PresetEntry(
     val type: PresetType,
     val version: Int,
     val file: String,
-    val displayName: String
+    val displayName: String,
+    val worldBookPresetKeys: List<String> = emptyList()
 )
 
 @Serializable
-enum class PresetType { CHARACTER, FORMAT, MODEL_CATALOG }
+enum class PresetType { CHARACTER, FORMAT, WORLD_BOOK, MODEL_CATALOG }
 
 @Serializable
 data class PresetImportState(

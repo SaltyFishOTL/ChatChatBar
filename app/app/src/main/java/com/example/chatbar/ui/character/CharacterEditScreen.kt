@@ -65,6 +65,7 @@ import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbField
@@ -92,6 +93,7 @@ fun CharacterEditScreen(
     val isSaving by viewModel.isSaving.collectAsState()
     val card by viewModel.characterCard.collectAsState()
     val indexingStatus by viewModel.indexingStatus.collectAsState()
+    val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
     val context = LocalContext.current
 
     var editCharacter by remember { mutableStateOf<CharacterInfo?>(null) }
@@ -331,23 +333,23 @@ fun CharacterEditScreen(
             }
 
             CbDivider()
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                SectionTitle("世界书 (${viewModel.worldBookEntries.size})")
-                CbButton("添加条目", {
-                    editWorldBookEntryIndex = null
-                    showWorldBookEntryDialog = true
-                }, variant = ButtonVariant.Ghost)
-            }
-            viewModel.worldBookEntries.forEachIndexed { index, entry ->
-                WorldBookEntryRow(
-                    entry = entry,
-                    onEdit = {
-                        editWorldBookEntryIndex = index
-                        showWorldBookEntryDialog = true
-                    },
-                    onToggle = { viewModel.toggleWorldBookEntry(index) },
-                    onDelete = { deleteWorldBookEntryIndex = index }
-                )
+            SectionTitle("世界书装配 (${viewModel.selectedWorldBookIds.size})")
+            CbText(
+                "从独立世界书模块选择，创建新对话和生成回复时自动注入。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            if (availableWorldBooks.isEmpty()) {
+                CbText("暂无世界书，可在管理页导入或新建。", color = ChatBarTheme.colors.mutedForeground)
+            } else {
+                availableWorldBooks.forEach { book ->
+                    CbChoiceChip(
+                        text = book.name,
+                        selected = book.id in viewModel.selectedWorldBookIds,
+                        onClick = { viewModel.toggleWorldBookBinding(book.id) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     }

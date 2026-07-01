@@ -51,6 +51,7 @@ import com.example.chatbar.ChatRoute
 import com.example.chatbar.FormatCardEditRoute
 import com.example.chatbar.ModelEditRoute
 import com.example.chatbar.TutorialRoute
+import com.example.chatbar.WorldBookEditRoute
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EmbeddingConfig
@@ -61,8 +62,10 @@ import com.example.chatbar.data.local.entity.ModelTemplate
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
+import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.FormatCardPackage
+import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -91,6 +94,7 @@ import kotlinx.coroutines.launch
 private sealed interface DeleteTarget {
     data class Character(val id: String, val name: String) : DeleteTarget
     data class Format(val id: String, val name: String) : DeleteTarget
+    data class World(val id: String, val name: String) : DeleteTarget
     data class Model(val id: String, val name: String) : DeleteTarget
     data class Embedding(val id: String, val name: String) : DeleteTarget
     data class Retrieval(val name: String) : DeleteTarget
@@ -105,6 +109,7 @@ fun ManageScreen(
 ) {
     val characters by viewModel.characterCards.collectAsState()
     val formats by viewModel.formatCards.collectAsState()
+    val worldBooks by viewModel.worldBooks.collectAsState()
     val models by viewModel.modelConfigs.collectAsState()
     val embeddings by viewModel.embeddingConfigs.collectAsState()
     val embeddingModel by viewModel.embeddingModelConfig.collectAsState()
@@ -113,6 +118,7 @@ fun ManageScreen(
     val player by viewModel.playerSetting.collectAsState()
     val characterPresets by viewModel.characterPresets.collectAsState()
     val formatPresets by viewModel.formatPresets.collectAsState()
+    val worldBookPresets by viewModel.worldBookPresets.collectAsState()
     val modelPresets by viewModel.modelPresets.collectAsState()
     val effectiveModels by viewModel.effectiveChatModels.collectAsState()
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
@@ -128,8 +134,9 @@ fun ManageScreen(
     val visibleTabs = listOf(
         0 to "\u89d2\u8272",
         1 to "\u683c\u5f0f",
-        2 to "\u6a21\u578b",
-        3 to "\u8bbe\u7f6e"
+        2 to "世界书",
+        3 to "\u6a21\u578b",
+        4 to "\u8bbe\u7f6e"
     )
     var addFormat by remember { mutableStateOf(false) }
     var editEmbedding by remember { mutableStateOf<EmbeddingConfig?>(null) }
@@ -139,9 +146,12 @@ fun ManageScreen(
     var message by remember { mutableStateOf<String?>(null) }
     var exportCharacterId by remember { mutableStateOf<String?>(null) }
     var exportFormatId by remember { mutableStateOf<String?>(null) }
+    var exportWorldBookId by remember { mutableStateOf<String?>(null) }
+    var exportWorldBookAsStId by remember { mutableStateOf<String?>(null) }
     var exportModelId by remember { mutableStateOf<String?>(null) }
     var pendingCharacterImport by remember { mutableStateOf<Pair<CharacterCardImportRequest, CharacterCard?>?>(null) }
     var pendingFormatImport by remember { mutableStateOf<Pair<FormatCardPackage, FormatCard?>?>(null) }
+    var pendingWorldBookImport by remember { mutableStateOf<Pair<WorldBookPackage, WorldBook?>?>(null) }
 
     LaunchedEffect(sharedUri) {
         sharedUri?.let { uri ->
@@ -198,6 +208,33 @@ fun ManageScreen(
             }.onFailure { message = "导入失败：${it.message}" }
         }
     }
+    val exportWorldBook = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val id = exportWorldBookId.also { exportWorldBookId = null }
+        if (uri != null && id != null) scope.launch {
+            runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportWorldBookJson(id).toByteArray()) } }
+                .onSuccess { message = "世界书已导出。" }
+                .onFailure { message = "导出失败：${it.message}" }
+        }
+    }
+    val exportWorldBookAsSt = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val id = exportWorldBookAsStId.also { exportWorldBookAsStId = null }
+        if (uri != null && id != null) scope.launch {
+            runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportWorldBookSillyTavernJson(id).toByteArray()) } }
+                .onSuccess { message = "SillyTavern 世界书 JSON 已导出。" }
+                .onFailure { message = "导出失败：${it.message}" }
+        }
+    }
+    val importWorldBook = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            runCatching {
+                val raw = context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() } ?: error("文件为空")
+                val name = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "导入世界书"
+                val data = viewModel.decodeWorldBookImport(raw, name)
+                val conflict = viewModel.findWorldBookNameConflict(data.book.name)
+                if (conflict == null) viewModel.importWorldBookAsNew(data) else pendingWorldBookImport = data to conflict
+            }.onFailure { message = "导入失败：${it.message}" }
+        }
+    }
     val exportModel = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
         val id = exportModelId.also { exportModelId = null }
         if (uri != null && id != null) scope.launch {
@@ -225,19 +262,21 @@ fun ManageScreen(
                 title = "管理",
                 actions = {
                     CbIconButton(AppIcons.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
-                    if (tab == 3) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
-                        if (tab == 0) CbIconButton(AppIcons.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 4) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
+                    if (tab == 0) CbIconButton(AppIcons.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                     if (tab == 1) CbIconButton(AppIcons.UploadFile, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 2) CbIconButton(AppIcons.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 2) CbIconButton(AppIcons.UploadFile, "导入世界书", { importWorldBook.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 3) CbIconButton(AppIcons.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                 }
             )
         },
         floatingActionButton = {
-            if (tab < 3) CbFab(AppIcons.Add, "新建", {
+            if (tab < 4) CbFab(AppIcons.Add, "新建", {
                 when (tab) {
                     0 -> onNavigate(CharacterEditRoute(null))
                     1 -> addFormat = true
-                    2 -> onNavigate(ModelEditRoute(null))
+                    2 -> onNavigate(WorldBookEditRoute(null))
+                    3 -> onNavigate(ModelEditRoute(null))
                 }
             })
         }
@@ -271,7 +310,26 @@ fun ManageScreen(
                         val conflict = viewModel.findFormatNameConflict(data.name)
                         if (conflict == null) viewModel.importFormatAsNew(data) else pendingFormatImport = data to conflict
                     } })
-                    2 -> ModelsTab(
+                    2 -> WorldBookTab(
+                        worldBooks, worldBookPresets, viewModel::worldBookHasUpdate,
+                        onEdit = { onNavigate(WorldBookEditRoute(it)) },
+                        onDelete = { id -> deleteTarget = DeleteTarget.World(id, worldBooks.firstOrNull { it.id == id }?.name ?: "未命名世界书") },
+                        onDuplicate = viewModel::duplicateWorldBook,
+                        onExport = { book ->
+                            exportWorldBookId = book.id
+                            exportWorldBook.launch("${safeName(book.name)}.chatbar-world-book.json")
+                        },
+                        onExportSt = { book ->
+                            exportWorldBookAsStId = book.id
+                            exportWorldBookAsSt.launch("${safeName(book.name)}.sillytavern-world.json")
+                        },
+                        onRecover = { entry -> scope.launch {
+                            val data = viewModel.recoverWorldBookPreset(entry)
+                            val conflict = viewModel.findWorldBookNameConflict(data.book.name)
+                            if (conflict == null) viewModel.importWorldBookAsNew(data) else pendingWorldBookImport = data to conflict
+                        } }
+                    )
+                    3 -> ModelsTab(
                         models, settings.defaultModelId, modelPresets, embeddingModel, retrievalModel,
                         onEditModel = { onNavigate(ModelEditRoute(it)) },
                         onExportModel = { model ->
@@ -288,7 +346,7 @@ fun ManageScreen(
                         onEditRetrieval = { showRetrieval = true },
                         onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
                     )
-                    3 -> SettingsTab(
+                    4 -> SettingsTab(
                         settingsSaveRequest, settings, player, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
@@ -321,6 +379,7 @@ fun ManageScreen(
         val (title, body) = when (target) {
             is DeleteTarget.Character -> "删除角色卡" to "确定删除“${target.name}”？相关 RAG 数据也会清理。"
             is DeleteTarget.Format -> "删除格式卡" to "确定删除“${target.name}”？"
+            is DeleteTarget.World -> "删除世界书" to "确定删除“${target.name}”？被角色或会话引用时会阻止删除。"
             is DeleteTarget.Model -> "删除模型" to "确定删除“${target.name}”？"
             is DeleteTarget.Embedding -> "删除向量模型" to "确定删除“${target.name}”？"
             is DeleteTarget.Retrieval -> "删除检索模型" to "确定删除“${target.name}”？"
@@ -334,6 +393,9 @@ fun ManageScreen(
                     when (target) {
                         is DeleteTarget.Character -> viewModel.deleteCharacterCard(target.id)
                         is DeleteTarget.Format -> viewModel.deleteFormatCard(target.id)
+                        is DeleteTarget.World -> viewModel.deleteWorldBook(target.id) { error ->
+                            if (error != null) message = error
+                        }
                         is DeleteTarget.Model -> viewModel.deleteModelConfig(target.id)
                         is DeleteTarget.Embedding -> viewModel.deleteEmbeddingConfig(target.id)
                         is DeleteTarget.Retrieval -> viewModel.deleteRetrievalModelConfig()
@@ -368,6 +430,20 @@ fun ManageScreen(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CbButton("覆盖现有卡", { scope.launch { viewModel.overwriteFormat(existing!!.id, data); pendingFormatImport = null } }, variant = ButtonVariant.Destructive)
                 CbButton("创建新卡", { scope.launch { viewModel.importFormatAsNew(data); pendingFormatImport = null } })
+            }
+        }
+    }
+    pendingWorldBookImport?.let { (data, existing) ->
+        CbDialog(
+            onDismissRequest = { pendingWorldBookImport = null },
+            title = "世界书名称冲突",
+            dismiss = { CbButton("取消", { pendingWorldBookImport = null }, variant = ButtonVariant.Ghost) }
+        ) {
+            CbText("已存在“${existing?.name}”。覆盖会保留世界书 ID 与现有绑定；也可创建自动编号的新书。", color = ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.height(14.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton("覆盖现有书", { scope.launch { viewModel.overwriteWorldBook(existing!!.id, data); pendingWorldBookImport = null } }, variant = ButtonVariant.Destructive)
+                CbButton("创建新书", { scope.launch { viewModel.importWorldBookAsNew(data); pendingWorldBookImport = null } })
             }
         }
     }
@@ -501,6 +577,68 @@ private fun FormatTab(
             "复制" to { onDuplicate(card.id) },
             "导出" to { onExport(card) },
             "删除" to { onDelete(card.id) }
+        ))
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun WorldBookTab(
+    books: List<WorldBook>,
+    presets: List<PresetEntry>,
+    hasUpdate: (WorldBook) -> Boolean,
+    onEdit: (String) -> Unit,
+    onDelete: (String) -> Unit,
+    onDuplicate: (String) -> Unit,
+    onExport: (WorldBook) -> Unit,
+    onExportSt: (WorldBook) -> Unit,
+    onRecover: (PresetEntry) -> Unit
+) {
+    var menuBook by remember { mutableStateOf<WorldBook?>(null) }
+    var showPresets by remember { mutableStateOf(false) }
+    LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        item { CbButton(if (showPresets) "收起预制世界书" else "恢复预制世界书", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
+        if (showPresets) items(presets, key = { it.presetKey }) { preset ->
+            val hasBook = books.any { it.sourcePresetKey == preset.presetKey }
+            val update = hasBook && books.any { it.sourcePresetKey == preset.presetKey && (it.sourcePresetVersion ?: 0) < preset.version }
+            EntityRow(
+                preset.displayName,
+                "预制版本 ${preset.version}",
+                badge = when {
+                    update -> "有更新"
+                    !hasBook -> "可恢复"
+                    else -> null
+                },
+                actions = { CbButton("导入", { onRecover(preset) }, variant = ButtonVariant.Secondary) }
+            )
+        }
+        items(books, key = { it.id }) { book ->
+            val enabledCount = book.entries.count { it.enabled }
+            EntityRow(
+                title = book.name,
+                subtitle = "${book.entries.size} 条目 · 启用 $enabledCount · 扫描 ${book.scanDepth} 条",
+                badge = when {
+                    hasUpdate(book) -> "有更新"
+                    book.sourcePresetKey != null -> "内置"
+                    else -> null
+                },
+                onClick = { onEdit(book.id) },
+                onLongClick = { menuBook = book },
+                actions = {
+                    CbIconButton(AppIcons.Download, "导出", { onExport(book) })
+                    CbIconButton(AppIcons.Edit, "编辑", { onEdit(book.id) }, tint = ChatBarTheme.colors.primary)
+                    CbIconButton(AppIcons.Delete, "删除", { onDelete(book.id) }, tint = ChatBarTheme.colors.destructive)
+                }
+            )
+        }
+    }
+    menuBook?.let { book ->
+        CardActionDialog(book.name, { menuBook = null }, listOf(
+            "编辑" to { onEdit(book.id) },
+            "复制" to { onDuplicate(book.id) },
+            "导出" to { onExport(book) },
+            "导出为 SillyTavern JSON" to { onExportSt(book) },
+            "删除" to { onDelete(book.id) }
         ))
     }
 }

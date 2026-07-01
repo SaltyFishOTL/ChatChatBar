@@ -6,11 +6,12 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class CharacterCardPackage(
-    val schemaVersion: Int = 4,
+    val schemaVersion: Int = 5,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
-    val images: Map<String, PackagedImage> = emptyMap()
+    val images: Map<String, PackagedImage> = emptyMap(),
+    val worldBooks: List<WorldBook> = emptyList()
 )
 
 @Serializable
@@ -71,7 +72,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion in 3..4) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..5) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     require(card.name.isNotBlank()) { "角色卡名称不能为空" }
     require(card.characters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
     require(documents.all { it.fileName.isNotBlank() && it.fileType.isNotBlank() }) { "文档名称和类型不能为空" }
@@ -95,4 +96,11 @@ data class FormatCardPackage(
     val content: String,
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null
+)
+
+@Serializable
+data class WorldBookPackage(
+    val schemaVersion: Int = 1,
+    val exportedAt: Long = System.currentTimeMillis(),
+    val book: WorldBook
 )

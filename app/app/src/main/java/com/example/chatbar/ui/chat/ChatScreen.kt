@@ -65,6 +65,7 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -114,10 +115,11 @@ fun ChatScreen(
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val imageGeneration by viewModel.imageGeneration.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
+    val draftInput by viewModel.draftInput.collectAsState()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
-    var input by remember { mutableStateOf(TextFieldValue("")) }
+    var input by remember(sessionId) { mutableStateOf(TextFieldValue("")) }
     val selectedImages = remember { mutableStateListOf<String>() }
     var settingsOpen by remember { mutableStateOf(false) }
     var debugOpen by remember { mutableStateOf(false) }
@@ -132,6 +134,12 @@ fun ChatScreen(
     var viewportAnchor by remember { mutableStateOf(0 to 0) }
     var restoringViewport by remember { mutableStateOf(false) }
     var initialScrollDone by remember(sessionId) { mutableStateOf(false) }
+
+    LaunchedEffect(draftInput) {
+        if (input.text != draftInput) {
+            input = TextFieldValue(draftInput, selection = TextRange(draftInput.length))
+        }
+    }
     
     suspend fun scrollToBottom(animated: Boolean, expectedItemCount: Int = 0) {
         if (expectedItemCount > 0) {
@@ -220,14 +228,18 @@ fun ChatScreen(
         FullscreenTextEditor(
             title = "撰写消息",
             value = input,
-            onValueChange = { input = it },
+            onValueChange = {
+                input = it
+                viewModel.updateDraftInput(it.text)
+            },
             images = selectedImages,
             onAddImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { selectedImages.remove(it) },
             onDismiss = { fullComposer = false },
             onConfirm = {
-                viewModel.sendMessage(input.text, selectedImages.toList())
-                input = TextFieldValue(""); selectedImages.clear(); fullComposer = false
+                if (viewModel.sendMessage(input.text, selectedImages.toList())) {
+                    input = TextFieldValue(""); selectedImages.clear(); fullComposer = false
+                }
             },
             confirmIcon = AppIcons.Send,
             visible = true
@@ -333,14 +345,18 @@ fun ChatScreen(
         if (selectedImages.isNotEmpty()) ImageStrip(selectedImages, { selectedImages.remove(it) })
         ChatComposer(
             input = input,
-            onInput = { input = it },
+            onInput = {
+                input = it
+                viewModel.updateDraftInput(it.text)
+            },
             responding = isResponding,
             enabled = !isArchived && isModelUsable,
             onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onFull = { fullComposer = true },
             onSend = {
-                viewModel.sendMessage(input.text, selectedImages.toList())
-                input = TextFieldValue(""); selectedImages.clear()
+                if (viewModel.sendMessage(input.text, selectedImages.toList())) {
+                    input = TextFieldValue(""); selectedImages.clear()
+                }
             }
         )
     }

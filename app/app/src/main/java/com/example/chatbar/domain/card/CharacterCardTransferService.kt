@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.repository.CharacterRepository
+import com.example.chatbar.data.repository.WorldBookRepository
 import com.example.chatbar.domain.rag.RagRepository
 import java.io.File
 import java.util.UUID
@@ -17,6 +18,7 @@ import kotlinx.serialization.json.Json
 class CharacterCardTransferService(
     private val app: ChatBarApp,
     private val repository: CharacterRepository,
+    private val worldBookRepository: WorldBookRepository,
     private val ragRepository: RagRepository,
     private val json: Json
 ) {
@@ -69,7 +71,7 @@ class CharacterCardTransferService(
             deleteMaterializedFiles(replacement)
             throw error
         }
-        deleteOwnedResources(existing)
+        deleteOwnedResources(existing, preservePaths = replacement.ownedFilePaths())
         replacement
     }
 
@@ -79,7 +81,7 @@ class CharacterCardTransferService(
         repository.delete(id)
     }
 
-    private fun packageCard(card: CharacterCard): CharacterCardPackage {
+    private suspend fun packageCard(card: CharacterCard): CharacterCardPackage {
         val documents = card.customDocuments.map { doc ->
             val file = requireResourceFile(doc.filePath, "参考文档 ${doc.fileName}")
             PackagedDocument(doc.fileName, doc.fileType, file.readText())
@@ -139,7 +141,11 @@ class CharacterCardTransferService(
                 characterBook = card.characterBook
             ),
             documents = documents,
-            images = images
+            images = images,
+            worldBooks = (
+                card.worldBookIds.mapNotNull { worldBookRepository.getById(it) } +
+                    listOfNotNull(card.characterBook)
+                ).distinctBy { it.id }
         )
     }
 
@@ -165,6 +171,27 @@ class CharacterCardTransferService(
                 DocumentInfo.create(packaged.fileName, file.absolutePath, packaged.fileType).copy(id = docId, addedAt = now)
             }
             val card = packageData.card
+            val importedWorldBooks = (packageData.worldBooks + listOfNotNull(card.characterBook))
+                .distinctBy { it.id }
+                .map { source ->
+                    val existingNames = worldBookRepository.getAll().map { it.name }
+                    val fallbackName = "${name} 世界书"
+                    val requested = source.name.ifBlank { fallbackName }
+                    val worldBookName = if (existingNames.any { NamePolicy.isSame(it, requested) }) {
+                        NamePolicy.nextCopyName(requested, existingNames)
+                    } else {
+                        NamePolicy.normalize(requested)
+                    }
+                    source.copy(
+                        id = UUID.randomUUID().toString(),
+                        name = worldBookName,
+                        entries = source.entries.map { it.copy(id = UUID.randomUUID().toString()) },
+                        sourcePresetKey = presetKey,
+                        sourcePresetVersion = presetVersion,
+                        createdAt = now,
+                        updatedAt = now
+                    ).also { worldBookRepository.save(it) }
+                }
             return CharacterCard(
                 id = id,
                 name = NamePolicy.normalize(name),
@@ -201,7 +228,9 @@ class CharacterCardTransferService(
                 creator = card.creator,
                 characterVersion = card.characterVersion,
                 extensions = card.extensions,
-                characterBook = card.characterBook,
+                worldBookIds = importedWorldBooks.map { it.id },
+                characterBook = null,
+                boundWorldBookId = null,
                 sourcePresetKey = presetKey,
                 sourcePresetVersion = presetVersion,
                 ragIndexStatus = RagIndexStatus.NOT_INDEXED.name,
@@ -257,17 +286,20 @@ class CharacterCardTransferService(
         value.replace(Regex("[\\\\/:*?\"<>|]"), "_").ifBlank { "document.txt" }
 
     private fun deleteMaterializedFiles(card: CharacterCard) {
-        card.avatar?.let { File(it).delete() }
-        card.chatBackground?.let { File(it).delete() }
-        card.characters.mapNotNull { it.appearanceImage }.forEach { File(it).delete() }
-        card.customDocuments.forEach { File(it.filePath).delete() }
+        card.ownedFilePaths().forEach { File(it).delete() }
     }
 
-    private suspend fun deleteOwnedResources(card: CharacterCard) {
-        card.avatar?.let { File(it).delete() }
-        card.chatBackground?.let { File(it).delete() }
-        card.characters.mapNotNull { it.appearanceImage }.forEach { File(it).delete() }
-        card.customDocuments.forEach { File(it.filePath).delete() }
+    private suspend fun deleteOwnedResources(card: CharacterCard, preservePaths: Set<String> = emptySet()) {
+        card.ownedFilePaths()
+            .filterNot { it in preservePaths }
+            .forEach { File(it).delete() }
         ragRepository.deleteChunksBySource(com.example.chatbar.data.local.entity.ChunkSourceType.DOCUMENT, card.id)
+    }
+
+    private fun CharacterCard.ownedFilePaths(): Set<String> = buildSet {
+        avatar?.takeIf { it.isNotBlank() }?.let(::add)
+        chatBackground?.takeIf { it.isNotBlank() }?.let(::add)
+        characters.mapNotNullTo(this) { it.appearanceImage?.takeIf(String::isNotBlank) }
+        customDocuments.mapNotNullTo(this) { it.filePath.takeIf(String::isNotBlank) }
     }
 }

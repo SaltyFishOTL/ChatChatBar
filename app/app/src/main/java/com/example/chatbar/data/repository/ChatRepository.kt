@@ -1,6 +1,7 @@
 package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.domain.chat.ChatMessageOrdering
@@ -17,6 +18,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     companion object {
         private const val SESSION_TYPE = "chat_sessions"
         private const val MESSAGE_TYPE = "chat_messages"
+        private const val DRAFT_TYPE = "chat_drafts"
     }
 
     private val _sessions = MutableStateFlow<List<ChatSession>>(emptyList())
@@ -67,6 +69,22 @@ class ChatRepository(private val storage: JsonFileStorage) {
         refreshSessionCache()
     }
 
+    suspend fun getSessionDraft(id: String): String {
+        return storage.loadEntity(DRAFT_TYPE, id, ChatDraft.serializer())?.content.orEmpty()
+    }
+
+    suspend fun updateSessionDraft(id: String, draft: String) {
+        if (draft.isEmpty()) {
+            deleteSessionDraft(id)
+        } else {
+            storage.saveEntity(DRAFT_TYPE, id, ChatDraft(id, draft), ChatDraft.serializer())
+        }
+    }
+
+    suspend fun deleteSessionDraft(id: String) {
+        storage.deleteEntity<ChatDraft>(DRAFT_TYPE, id)
+    }
+
     suspend fun deleteSession(id: String) {
         deleteSessionRecord(id)
         deleteMessagesForSession(id)
@@ -74,6 +92,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     suspend fun deleteSessionRecord(id: String) {
         storage.deleteEntity<ChatSession>(SESSION_TYPE, id)
+        deleteSessionDraft(id)
         _sessions.value = _sessions.value.filterNot { it.id == id }
     }
 

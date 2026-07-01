@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.ParamValue
@@ -52,10 +53,12 @@ class ManageViewModel : ViewModel() {
 
     private val characterRepository = ChatBarApp.instance.characterRepository
     private val formatCardRepository = ChatBarApp.instance.formatCardRepository
+    private val worldBookRepository = ChatBarApp.instance.worldBookRepository
     private val modelRepository = ChatBarApp.instance.modelRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val characterTransfers = ChatBarApp.instance.characterCardTransferService
     private val formatTransfers = ChatBarApp.instance.formatCardTransferService
+    private val worldBookTransfers = ChatBarApp.instance.worldBookTransferService
     private val presetCatalog = ChatBarApp.instance.presetCatalogService
     private val presetModelCatalog = ChatBarApp.instance.presetModelCatalogService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
@@ -71,6 +74,9 @@ class ManageViewModel : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val formatCards: StateFlow<List<FormatCard>> = formatCardRepository.formatCards
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    val worldBooks: StateFlow<List<WorldBook>> = worldBookRepository.worldBooks
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
 
     val modelConfigs: StateFlow<List<ModelConfig>> = modelRepository.models
@@ -107,6 +113,8 @@ class ManageViewModel : ViewModel() {
     val characterPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _characterPresets
     private val _formatPresets = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>>(emptyList())
     val formatPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _formatPresets
+    private val _worldBookPresets = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>>(emptyList())
+    val worldBookPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _worldBookPresets
     private val _modelPresets = kotlinx.coroutines.flow.MutableStateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>>(emptyList())
     val modelPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _modelPresets
 
@@ -118,11 +126,13 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             characterRepository.initialize()
             formatCardRepository.initialize()
+            worldBookRepository.initialize()
             modelRepository.initialize()
             settingsRepository.initialize()
             presetCatalog.initialize()
             _characterPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.CHARACTER)
             _formatPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.FORMAT)
+            _worldBookPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.WORLD_BOOK)
             _modelPresets.value = presetModelCatalog.entries()
             refreshEffectiveModels()
         }
@@ -207,6 +217,13 @@ class ManageViewModel : ViewModel() {
         )
 
     private fun startBackgroundRebuild(card: CharacterCard) {
+        viewModelScope.launch {
+            val repairedCard = presetCatalog.repairPresetCharacterResources(card)
+            startBackgroundRebuildAfterRepair(repairedCard)
+        }
+    }
+
+    private fun startBackgroundRebuildAfterRepair(card: CharacterCard) {
         if (card.customDocuments.isEmpty()) {
             val done = card.copy(
                 ragIndexStatus = RagIndexStatus.COMPLETE.name,
@@ -299,6 +316,40 @@ class ManageViewModel : ViewModel() {
     suspend fun recoverFormatPreset(entry: com.example.chatbar.data.local.entity.PresetEntry): com.example.chatbar.domain.card.FormatCardPackage {
         val data = presetCatalog.formatPackage(entry)
         return data.copy(sourcePresetKey = entry.presetKey, sourcePresetVersion = entry.version)
+    }
+
+    // ===== 世界书 CRUD =====
+    fun duplicateWorldBook(id: String) { viewModelScope.launch { worldBookTransfers.duplicate(id) } }
+    fun worldBookHasUpdate(book: WorldBook): Boolean = presetCatalog.hasUpdate(book.sourcePresetKey, book.sourcePresetVersion)
+    suspend fun exportWorldBookJson(id: String): String = worldBookTransfers.exportJson(id)
+    suspend fun exportWorldBookSillyTavernJson(id: String): String = worldBookTransfers.exportSillyTavernJson(id)
+    fun decodeWorldBookImport(rawJson: String, fallbackName: String = "导入世界书") = worldBookTransfers.decode(rawJson, fallbackName)
+    suspend fun findWorldBookNameConflict(name: String) =
+        worldBookRepository.getAll().firstOrNull { com.example.chatbar.domain.card.NamePolicy.isSame(it.name, name) }
+    suspend fun importWorldBookAsNew(data: com.example.chatbar.domain.card.WorldBookPackage) = worldBookTransfers.importNew(data)
+    suspend fun overwriteWorldBook(id: String, data: com.example.chatbar.domain.card.WorldBookPackage) = worldBookTransfers.overwrite(id, data)
+    suspend fun recoverWorldBookPreset(entry: com.example.chatbar.data.local.entity.PresetEntry): com.example.chatbar.domain.card.WorldBookPackage =
+        presetCatalog.worldBookPackage(entry).let {
+            it.copy(book = it.book.copy(sourcePresetKey = entry.presetKey, sourcePresetVersion = entry.version))
+        }
+
+    fun deleteWorldBook(id: String, onResult: (String?) -> Unit = {}) {
+        viewModelScope.launch {
+            val characterRefs = characterRepository.getAll().filter { id in it.worldBookIds }.map { it.name }
+            val sessionRefs = ChatBarApp.instance.chatRepository.getAllSessions().filter { id in it.extraWorldBookIds }.map { it.title }
+            if (characterRefs.isNotEmpty() || sessionRefs.isNotEmpty()) {
+                onResult(
+                    buildString {
+                        append("世界书仍被引用，请先解绑。")
+                        if (characterRefs.isNotEmpty()) append(" 角色：${characterRefs.take(3).joinToString("、")}")
+                        if (sessionRefs.isNotEmpty()) append(" 会话：${sessionRefs.take(3).joinToString("、")}")
+                    }
+                )
+                return@launch
+            }
+            worldBookRepository.delete(id)
+            onResult(null)
+        }
     }
 
     fun setFormatCardDefault(id: String) {

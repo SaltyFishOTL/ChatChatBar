@@ -29,6 +29,7 @@ data class CharacterCard(
     val creator: String = "",
     val characterVersion: String = "",
     val extensions: String = "",
+    val worldBookIds: List<String> = emptyList(),
     val characterBook: WorldBook? = null,
     val boundWorldBookId: String? = null,
     val sourcePresetKey: String? = null,

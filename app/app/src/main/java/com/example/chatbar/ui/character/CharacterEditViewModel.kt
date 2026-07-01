@@ -36,6 +36,7 @@ import java.io.File
 
 class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
+    private val worldBookRepository = ChatBarApp.instance.worldBookRepository
     private val modelRepository = ChatBarApp.instance.modelRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val ragManager = ChatBarApp.instance.ragManager
@@ -50,6 +51,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     private val _indexingStatus = MutableStateFlow<String?>(null)
     val indexingStatus: StateFlow<String?> = _indexingStatus.asStateFlow()
+
+    private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
+    val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
 
     var name by mutableStateOf("")
     var greeting by mutableStateOf("")
@@ -66,6 +70,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var creatorNotes by mutableStateOf("")
     val charactersList = mutableStateListOf<CharacterInfo>()
     val documentsList = mutableStateListOf<DocumentInfo>()
+    val selectedWorldBookIds = mutableStateListOf<String>()
     val worldBookEntries = mutableStateListOf<com.example.chatbar.data.local.entity.WorldBookEntry>()
 
     init {
@@ -74,6 +79,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     private fun loadCharacterCard() {
         viewModelScope.launch {
+            _availableWorldBooks.value = worldBookRepository.getAll()
             if (characterId != null) {
                 characterRepository.getById(characterId)?.let { card ->
                     _characterCard.value = card
@@ -94,6 +100,12 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     charactersList.addAll(card.characters)
                     documentsList.clear()
                     documentsList.addAll(card.customDocuments)
+                    selectedWorldBookIds.clear()
+                    selectedWorldBookIds.addAll(
+                        (card.worldBookIds + listOfNotNull(card.boundWorldBookId, card.characterBook?.id))
+                            .filter { it.isNotBlank() }
+                            .distinct()
+                    )
                     worldBookEntries.clear()
                     card.characterBook?.entries?.let { worldBookEntries.addAll(it) }
                 }
@@ -141,27 +153,28 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private fun startBackgroundIndex(card: CharacterCard) {
         indexingJob?.cancel()
         indexingJob = ChatBarApp.instance.applicationScope.launch {
-            val total = card.customDocuments.size
+            val cardForIndex = ChatBarApp.instance.presetCatalogService.repairPresetCharacterResources(card)
+            val total = cardForIndex.customDocuments.size
             if (total == 0) {
-                ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, card.id)
-                persistRagIndexState(card.id, RagIndexStatus.COMPLETE, 0, 0, "无参考文档，已跳过文档 RAG")
+                ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, cardForIndex.id)
+                persistRagIndexState(cardForIndex.id, RagIndexStatus.COMPLETE, 0, 0, "无参考文档，已跳过文档 RAG")
                 return@launch
             }
             val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
             if (embeddingConfig == null) {
-                persistRagIndexState(card.id, RagIndexStatus.FAILED, 0, total, "未配置全局嵌入模型，无法建立 RAG 索引")
+                persistRagIndexState(cardForIndex.id, RagIndexStatus.FAILED, 0, total, "未配置全局嵌入模型，无法建立 RAG 索引")
                 return@launch
             }
 
             try {
-                AiBackgroundWorkManager.run(card.id) {
-                persistRagIndexState(card.id, RagIndexStatus.INDEXING, 0, total, "正在检查文档索引状态")
+                AiBackgroundWorkManager.run(cardForIndex.id) {
+                persistRagIndexState(cardForIndex.id, RagIndexStatus.INDEXING, 0, total, "正在检查文档索引状态")
                 val existingChunks = ChatBarApp.instance.ragRepository
-                    .getAllChunksForCharacter(card.id)
+                    .getAllChunksForCharacter(cardForIndex.id)
                     .filter { it.sourceType == ChunkSourceType.DOCUMENT }
                     .groupBy { it.metadata["originalDocId"] }
 
-                val initialDocs = card.customDocuments.map { doc ->
+                val initialDocs = cardForIndex.customDocuments.map { doc ->
                     val file = File(doc.filePath)
                     if (!file.exists()) {
                         doc.copy(ragStatus = DocumentRagStatus.FAILED.name, ragError = "文件不存在")
@@ -198,7 +211,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 var failed = initialDocs.count { it.ragStatus == DocumentRagStatus.FAILED.name }
 
                 persistRagIndexSnapshot(
-                    card.id,
+                    cardForIndex.id,
                     docsById.values.toList(),
                     RagIndexStatus.INDEXING,
                     done,
@@ -214,7 +227,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 if (!file.exists()) {
                                     doc.copy(ragStatus = DocumentRagStatus.FAILED.name, ragError = "文件不存在")
                                 } else {
-                                    val result = ragManager.indexDocument(doc, file.readText(), card.id, embeddingConfig)
+                                    val result = ragManager.indexDocument(doc, file.readText(), cardForIndex.id, embeddingConfig)
                                     doc.copy(
                                         contentHash = result.contentHash,
                                         indexedHash = result.contentHash,
@@ -236,7 +249,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 val message = "索引进度：$done/$total，跳过 $skipped，失败 $failed"
                                 _indexingStatus.value = message
                                 if (done % 3 == 0 || done == total || resultDoc.ragStatus == DocumentRagStatus.FAILED.name) {
-                                    persistRagIndexSnapshot(card.id, docsById.values.toList(), status, done, total, message)
+                                    persistRagIndexSnapshot(cardForIndex.id, docsById.values.toList(), status, done, total, message)
                                 }
                             }
                         }
@@ -245,7 +258,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
                 val finalStatus = if (failed > 0) RagIndexStatus.FAILED else RagIndexStatus.COMPLETE
                 persistRagIndexSnapshot(
-                    card.id,
+                    cardForIndex.id,
                     docsById.values.toList(),
                     finalStatus,
                     done,
@@ -254,7 +267,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 )
                 }
             } catch (e: Exception) {
-                persistRagIndexState(card.id, RagIndexStatus.FAILED, 0, total, "RAG 索引失败: ${e.message}")
+                persistRagIndexState(cardForIndex.id, RagIndexStatus.FAILED, 0, total, "RAG 索引失败: ${e.message}")
             }
         }
     }
@@ -340,6 +353,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         }
     }
 
+    fun toggleWorldBookBinding(id: String) {
+        if (id in selectedWorldBookIds) selectedWorldBookIds.remove(id) else selectedWorldBookIds.add(id)
+    }
+
     fun updateDocument(doc: DocumentInfo, newName: String, newContent: String) {
         viewModelScope.launch {
             val file = File(doc.filePath)
@@ -396,21 +413,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
-            characterBook = worldBookEntries.takeIf { it.isNotEmpty() }?.let { entries ->
-                val existing = base.characterBook
-                com.example.chatbar.data.local.entity.WorldBook(
-                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
-                    name = existing?.name ?: "角色世界书",
-                    entries = entries.toList(),
-                    scanDepth = existing?.scanDepth ?: 10,
-                    tokenBudget = existing?.tokenBudget,
-                    recursiveScanning = existing?.recursiveScanning ?: false,
-                    caseSensitive = existing?.caseSensitive ?: false,
-                    matchWholeWords = existing?.matchWholeWords ?: false,
-                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
-                    updatedAt = System.currentTimeMillis()
-                )
-            },
+            worldBookIds = selectedWorldBookIds.distinct(),
+            characterBook = null,
+            boundWorldBookId = null,
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,
@@ -434,21 +439,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
-            characterBook = worldBookEntries.takeIf { it.isNotEmpty() }?.let { entries ->
-                val existing = _characterCard.value?.characterBook
-                com.example.chatbar.data.local.entity.WorldBook(
-                    id = existing?.id ?: java.util.UUID.randomUUID().toString(),
-                    name = existing?.name ?: "角色世界书",
-                    entries = entries.toList(),
-                    scanDepth = existing?.scanDepth ?: 10,
-                    tokenBudget = existing?.tokenBudget,
-                    recursiveScanning = existing?.recursiveScanning ?: false,
-                    caseSensitive = existing?.caseSensitive ?: false,
-                    matchWholeWords = existing?.matchWholeWords ?: false,
-                    createdAt = existing?.createdAt ?: System.currentTimeMillis(),
-                    updatedAt = System.currentTimeMillis()
-                )
-            },
+            worldBookIds = selectedWorldBookIds.distinct(),
+            characterBook = null,
+            boundWorldBookId = null,
             characters = charactersList.toList(),
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,

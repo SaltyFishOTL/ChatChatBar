@@ -63,6 +63,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
     private val modelRepository = ChatBarApp.instance.modelRepository
     private val formatCardRepository = ChatBarApp.instance.formatCardRepository
+    private val worldBookRepository = ChatBarApp.instance.worldBookRepository
     private val saveSlotRepository = ChatBarApp.instance.saveSlotRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val ragManager = ChatBarApp.instance.ragManager
@@ -94,6 +95,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
 
+    private val _draftInput = MutableStateFlow("")
+    val draftInput: StateFlow<String> = _draftInput.asStateFlow()
+
     private val _isResponding = MutableStateFlow(false)
     val isResponding: StateFlow<Boolean> = _isResponding.asStateFlow()
 
@@ -123,6 +127,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _availableFormats = MutableStateFlow<List<FormatCard>>(emptyList())
     val availableFormats: StateFlow<List<FormatCard>> = _availableFormats.asStateFlow()
 
+    private val _availableWorldBooks = MutableStateFlow<List<WorldBook>>(emptyList())
+    val availableWorldBooks: StateFlow<List<WorldBook>> = _availableWorldBooks.asStateFlow()
+
     private val _effectiveDefaultModelId = MutableStateFlow<String?>(null)
     val effectiveDefaultModelId: StateFlow<String?> = _effectiveDefaultModelId.asStateFlow()
 
@@ -131,6 +138,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _availableSaveSlots = MutableStateFlow<List<SaveSlot>>(emptyList())
     val availableSaveSlots: StateFlow<List<SaveSlot>> = _availableSaveSlots.asStateFlow()
+
+    private var draftTouched = false
+    private var draftSaveSequence = 0
 
     init {
         loadSessionData()
@@ -161,6 +171,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             val s = chatRepository.getSession(sessionId)
             _session.value = s
+            if (s != null && !draftTouched) {
+                _draftInput.value = chatRepository.getSessionDraft(sessionId)
+            }
             val settings = settingsRepository.getAppSettings()
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
@@ -182,6 +195,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
             val formats = formatCardRepository.getAll()
             _availableFormats.value = formats
+            _availableWorldBooks.value = worldBookRepository.getAll()
             _effectiveDefaultFormatCardId.value = settings.defaultFormatCardId
             val status = modelResolver.status(settings)
             _modelConfigurationErrors.value = status.errors
@@ -414,6 +428,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun buildWorldBookPrompt(
         card: CharacterCard,
+        session: ChatSession,
         messages: List<ChatMessage>,
         previousTimed: Map<String, com.example.chatbar.data.local.entity.TimedEffectState>
     ): Triple<String?, Map<String, String>, Map<String, com.example.chatbar.data.local.entity.TimedEffectState>> {
@@ -422,10 +437,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         card.characterBook?.let { worldBooks += it }
         card.boundWorldBookId?.let { id ->
-            ChatBarApp.instance.worldBookRepository.getById(id)?.let { worldBooks += it }
+            worldBookRepository.getById(id)?.let { worldBooks += it }
         }
+        card.worldBookIds.forEach { id ->
+            worldBookRepository.getById(id)?.let { worldBooks += it }
+        }
+        session.extraWorldBookIds.forEach { id ->
+            worldBookRepository.getById(id)?.let { worldBooks += it }
+        }
+        val orderedWorldBooks = worldBooks.distinctBy { it.id }
 
-        if (worldBooks.isEmpty()) return Triple(null, emptyMap(), emptyMap())
+        if (orderedWorldBooks.isEmpty()) return Triple(null, emptyMap(), emptyMap())
 
         val tokens = mutableSetOf(card.name.lowercase())
         card.characters.mapTo(tokens) { it.name.lowercase() }
@@ -437,8 +459,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val timedStates = previousTimed.mapValues { (_, v) ->
             WorldBookEngine.TimedState(v.entryId, v.stickyUntil, v.cooldownUntil)
         }
-        val bookTimedStates = worldBooks.associate { it.id to timedStates }
-        val activated = engine.evaluateAll(worldBooks, messages.takeLast(20),
+        val bookTimedStates = orderedWorldBooks.associate { it.id to timedStates }
+        val activated = engine.evaluateAll(orderedWorldBooks, messages,
             messageCount = messages.size, characterTokens = tokens, timedStates = bookTimedStates)
         val before = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.BEFORE_CHAR }
         val after = activated.filter { it.entry.position == com.example.chatbar.data.local.entity.WorldBookPosition.AFTER_CHAR }
@@ -452,7 +474,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         // Compute new timed states from activated entries
         val activatedIds = activated.map { it.entry.id }.toSet()
-        val entryMap = worldBooks.flatMap { it.entries }.associateBy { it.id }
+        val entryMap = orderedWorldBooks.flatMap { it.entries }.associateBy { it.id }
         val newTimed = engine.computeTimedStates(timedStates, activatedIds, entryMap, messages.size)
             .mapValues { (_, v) -> com.example.chatbar.data.local.entity.TimedEffectState(v.entryId, v.stickyUntil, v.cooldownUntil) }
 
@@ -462,11 +484,27 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 发送文本及图片
      */
-    fun sendMessage(content: String, imagePaths: List<String> = emptyList()) {
-        if (_isArchived.value || !_isModelUsable.value) return
+    fun sendMessage(content: String, imagePaths: List<String> = emptyList()): Boolean {
+        if (_isArchived.value || !_isModelUsable.value || _isResponding.value) return false
         val isBlank = content.isBlank() && imagePaths.isEmpty()
         val effectiveContent = if (isBlank) "continue" else content
+        if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
         sendMessageInternal(content = effectiveContent, imagePaths = imagePaths, persistUserMessage = !isBlank)
+        return true
+    }
+
+    fun updateDraftInput(text: String) {
+        if (_draftInput.value == text) return
+        draftTouched = true
+        _draftInput.value = text
+        val sequence = ++draftSaveSequence
+        ChatBarApp.instance.applicationScope.launch {
+            try {
+                if (sequence == draftSaveSequence) {
+                    chatRepository.updateSessionDraft(sessionId, text)
+                }
+            } catch (_: Exception) {}
+        }
     }
 
     private fun sendMessageInternal(
@@ -772,7 +810,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
 
-                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, messages.value, currentSession.timedWorldInfo)
+                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, currentSession, messages.value, currentSession.timedWorldInfo)
                 if (wbTimed != currentSession.timedWorldInfo) {
                     val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
                     chatRepository.updateSession(updatedSession)
@@ -1398,7 +1436,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         playerSetting: String?,
         chatBackground: String?,
         longTermMemoryEnabled: Boolean,
-        longTermMemory: String
+        longTermMemory: String,
+        extraWorldBookIds: List<String> = _session.value?.extraWorldBookIds ?: emptyList()
     ) {
         viewModelScope.launch {
             _session.value?.let { s ->
@@ -1412,7 +1451,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerSetting = playerSetting?.takeIf { it.isNotBlank() },
                     chatBackground = chatBackground?.takeIf { it.isNotBlank() },
                     longTermMemoryEnabled = longTermMemoryEnabled,
-                    longTermMemory = longTermMemory
+                    longTermMemory = longTermMemory,
+                    extraWorldBookIds = extraWorldBookIds.distinct()
                 )
                 chatRepository.updateSession(updated)
                 _session.value = updated
@@ -1525,7 +1565,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      * @return 状态信息，供 UI 展示
      */
     suspend fun rebuildRagIndex(): String = withContext(Dispatchers.IO) {
-        val charCard = _characterCard.value ?: return@withContext "错误：未加载角色卡"
+        val loadedCard = _characterCard.value ?: return@withContext "错误：未加载角色卡"
+        val charCard = ChatBarApp.instance.presetCatalogService.repairPresetCharacterResources(loadedCard)
+        _characterCard.value = charCard
         if (charCard.customDocuments.isEmpty()) {
             ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, charCard.id)
             return@withContext "无参考文档，已跳过文档 RAG。"

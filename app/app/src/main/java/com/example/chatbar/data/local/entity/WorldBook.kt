@@ -15,6 +15,8 @@ data class WorldBook(
     val recursiveScanning: Boolean = false,
     val caseSensitive: Boolean = false,
     val matchWholeWords: Boolean = false,
+    val sourcePresetKey: String? = null,
+    val sourcePresetVersion: Int? = null,
     val createdAt: Long = 0L,
     val updatedAt: Long = createdAt
 ) {
@@ -45,9 +47,24 @@ data class WorldBookEntry(
     val constant: Boolean = false,
     val position: WorldBookPosition = WorldBookPosition.BEFORE_CHAR,
     val caseSensitive: Boolean = false,
+    val matchWholeWords: Boolean? = null,
     val selective: Boolean = false,
     val secondaryKeys: List<String> = emptyList(),
+    val selectiveLogic: Int = WorldBookSelectiveLogic.AND_ANY.value,
     val comment: String = "",
+    val scanDepth: Int? = null,
+    val role: String? = null,
+    val ignoreBudget: Boolean = false,
+    val excludeRecursion: Boolean = false,
+    val preventRecursion: Boolean = false,
+    val delayUntilRecursion: Boolean = false,
+    val recursionLevel: Int? = null,
+    val originalPosition: String? = null,
+    val matchCharacterDescription: Boolean = false,
+    val matchCharacterPersonality: Boolean = false,
+    val matchScenario: Boolean = false,
+    val matchCreatorNotes: Boolean = false,
+    val matchPersonaDescription: Boolean = false,
     // V2 extensions
     val probability: Int = 100,
     val group: String = "",
@@ -74,4 +91,12 @@ enum class WorldBookPosition {
     BEFORE_CHAR,
     AFTER_CHAR,
     OUTLET
+}
+
+@Serializable
+enum class WorldBookSelectiveLogic(val value: Int) {
+    AND_ANY(0),
+    NOT_ALL(1),
+    NOT_ANY(2),
+    AND_ALL(3)
 }

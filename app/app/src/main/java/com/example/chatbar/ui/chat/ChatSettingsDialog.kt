@@ -48,6 +48,7 @@ import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
@@ -80,6 +81,8 @@ fun ChatSettingsDialog(
     val session by viewModel.session.collectAsState()
     val models by viewModel.availableModels.collectAsState()
     val formats by viewModel.availableFormats.collectAsState()
+    val worldBooks by viewModel.availableWorldBooks.collectAsState()
+    val characterCard by viewModel.characterCard.collectAsState()
     val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
@@ -94,6 +97,7 @@ fun ChatSettingsDialog(
     var background by remember { mutableStateOf(session?.chatBackground ?: "") }
     var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: true) }
     var longTermMemory by remember { mutableStateOf(session?.longTermMemory ?: "") }
+    var extraWorldBookIds by remember { mutableStateOf(session?.extraWorldBookIds ?: emptyList()) }
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
     var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
@@ -113,6 +117,7 @@ fun ChatSettingsDialog(
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
             longTermMemoryEnabled = it.longTermMemoryEnabled
             longTermMemory = it.longTermMemory
+            extraWorldBookIds = it.extraWorldBookIds
         }
     }
 
@@ -126,7 +131,8 @@ fun ChatSettingsDialog(
             playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
             background.takeIf(String::isNotBlank) != it.chatBackground ||
             longTermMemoryEnabled != it.longTermMemoryEnabled ||
-            longTermMemory != it.longTermMemory
+            longTermMemory != it.longTermMemory ||
+            extraWorldBookIds != it.extraWorldBookIds
     } ?: false
 
     fun openFullscreen(title: String, text: String, onChange: (String) -> Unit) {
@@ -163,7 +169,8 @@ fun ChatSettingsDialog(
                                 playerSetting = playerSetting.takeIf(String::isNotBlank),
                                 chatBackground = background.takeIf(String::isNotBlank),
                                 longTermMemoryEnabled = longTermMemoryEnabled,
-                                longTermMemory = longTermMemory
+                                longTermMemory = longTermMemory,
+                                extraWorldBookIds = extraWorldBookIds
                             )
                             onDismiss()
                         }, variant = ButtonVariant.Ghost)
@@ -176,6 +183,7 @@ fun ChatSettingsDialog(
                     SettingsContent(
                         modelId, { modelId = it }, defaultModelId, models,
                         formatId, { formatId = it }, defaultFormatId, formats,
+                        worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
                         replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
                         supplementary, { supplementary = it },
                         playerName, { playerName = it }, playerSetting, { playerSetting = it },
@@ -234,6 +242,7 @@ fun ChatSettingsDialog(
 private fun SettingsContent(
     modelId: String?, onModel: (String?) -> Unit, defaultModelId: String?, models: List<ModelConfig>,
     formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
+    worldBooks: List<WorldBook>, inheritedWorldBookIds: List<String>, extraWorldBookIds: List<String>, onExtraWorldBookIds: (List<String>) -> Unit,
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
     supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
@@ -262,6 +271,7 @@ private fun SettingsContent(
             )
         }
         DefaultAwareSelect("格式卡", formatId, defaultFormatId, formats.map { IdOption(it.id, it.name) }, onFormat, noneLabel = "不设置")
+        WorldBookSettings(worldBooks, inheritedWorldBookIds, extraWorldBookIds, onExtraWorldBookIds)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("回复长度", Modifier.weight(1f)) { CbInput(length, onLength, placeholder = "50 字内 / 长篇") }
             CbField("回复语言", Modifier.weight(1f)) { CbInput(language, onLanguage, placeholder = "中文") }
@@ -294,6 +304,49 @@ private fun SettingsContent(
         CbText("危险操作", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.label)
         CbButton("清空历史和长期记忆", onClearHistory, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+@Composable
+private fun WorldBookSettings(
+    worldBooks: List<WorldBook>,
+    inheritedIds: List<String>,
+    selectedIds: List<String>,
+    onSelectedIds: (List<String>) -> Unit
+) {
+    val inherited = inheritedIds.mapNotNull { id -> worldBooks.firstOrNull { it.id == id } }
+    CbField(
+        "世界书",
+        description = "角色绑定世界书会自动继承；这里可为当前会话额外启用世界书。"
+    ) {
+        if (inherited.isNotEmpty()) {
+            CbText(
+                "角色继承：${inherited.joinToString("、") { it.name }}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            Spacer(Modifier.height(8.dp))
+        }
+        if (worldBooks.isEmpty()) {
+            CbText("暂无世界书", color = ChatBarTheme.colors.mutedForeground)
+        } else {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                worldBooks.forEach { book ->
+                    val selected = book.id in selectedIds
+                    CbChoiceChip(
+                        text = book.name,
+                        selected = selected,
+                        onClick = {
+                            onSelectedIds(
+                                if (selected) selectedIds - book.id
+                                else (selectedIds + book.id).distinct()
+                            )
+                        },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
     }
 }
 
