@@ -62,6 +62,7 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
+import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -93,11 +94,13 @@ fun CharacterEditScreen(
     val isSaving by viewModel.isSaving.collectAsState()
     val card by viewModel.characterCard.collectAsState()
     val indexingStatus by viewModel.indexingStatus.collectAsState()
+    val autoFillState by viewModel.autoFillState.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
     val context = LocalContext.current
 
     var editCharacter by remember { mutableStateOf<CharacterInfo?>(null) }
     var showCharacterDialog by remember { mutableStateOf(false) }
+    var showAutoFillDialog by remember { mutableStateOf(false) }
     var showDocumentDialog by remember { mutableStateOf(false) }
     var validationErrors by remember { mutableStateOf<List<String>>(emptyList()) }
     var deleteCharacter by remember { mutableStateOf<Pair<Int, String>?>(null) }
@@ -149,6 +152,19 @@ fun CharacterEditScreen(
                 statusBarInset = true,
                 navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
                 actions = {
+                    CbIconButton(
+                        AppIcons.Star,
+                        "AI 自动填充",
+                        {
+                            if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
+                                showAutoFillDialog = true
+                            } else {
+                                Toast.makeText(context, "AI 自动填充仅支持分段模式", Toast.LENGTH_SHORT).show()
+                            }
+                        },
+                        enabled = !isSaving,
+                        tint = ChatBarTheme.colors.primary
+                    )
                     CbIconButton(
                         AppIcons.Save,
                         "保存",
@@ -412,6 +428,20 @@ fun CharacterEditScreen(
             }
         )
     }
+    if (showAutoFillDialog) {
+        CharacterAutoFillDialog(
+            state = autoFillState,
+            onDismiss = {
+                showAutoFillDialog = false
+                viewModel.clearAutoFillDraft()
+            },
+            onGenerate = viewModel::generateAutoFillDraft,
+            onApply = {
+                viewModel.applyAutoFillDraft()
+                showAutoFillDialog = false
+            }
+        )
+    }
     if (showDocumentDialog) {
         DocumentDialog(
             onDismiss = { showDocumentDialog = false },
@@ -557,6 +587,129 @@ private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: ()
             CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
             CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
+    }
+}
+
+@Composable
+private fun CharacterAutoFillDialog(
+    state: CharacterAutoFillUiState,
+    onDismiss: () -> Unit,
+    onGenerate: (String) -> Unit,
+    onApply: () -> Unit
+) {
+    var input by remember { mutableStateOf("") }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "AI 自动填充",
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = {
+            CbButton(
+                "应用",
+                onApply,
+                enabled = state.draft != null && !state.isGenerating
+            )
+        }
+    ) {
+        Column(
+            Modifier
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CbField("角色信息与扮演要求") {
+                CbInput(
+                    input,
+                    { input = it },
+                    placeholder = "写下想玩的角色、世界观、玩法偏好、互动要求……",
+                    singleLine = false,
+                    minLines = 6
+                )
+            }
+            CbButton(
+                if (state.isGenerating) "生成中" else "生成候选",
+                { onGenerate(input) },
+                enabled = input.isNotBlank() && !state.isGenerating,
+                variant = ButtonVariant.Secondary
+            )
+            if (state.isGenerating) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbSpinner()
+                    CbText("正在生成角色卡候选", color = ChatBarTheme.colors.mutedForeground)
+                }
+            }
+            state.error?.takeIf(String::isNotBlank)?.let { error ->
+                CbSurface(
+                    Modifier.fillMaxWidth(),
+                    color = ChatBarTheme.colors.muted,
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
+                ) {
+                    CbText(
+                        error,
+                        Modifier.padding(12.dp),
+                        color = ChatBarTheme.colors.destructive
+                    )
+                }
+            }
+            state.draft?.let { draft ->
+                CbDivider()
+                AutoFillDraftPreview(draft)
+            }
+        }
+    }
+}
+
+@Composable
+private fun AutoFillDraftPreview(draft: CharacterAutoFillDraft) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CbText("候选预览", style = ChatBarTheme.typography.heading)
+        PreviewField("角色卡名称", draft.name)
+        PreviewField("开场白", draft.greeting)
+        PreviewField("基本设定", draft.basicSetting)
+        PreviewField("NovelAI 默认风格", draft.defaultImagePrompt)
+        draft.characters.forEachIndexed { index, character ->
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CbText("人物 ${index + 1}: ${character.name.ifBlank { "未命名" }}", style = ChatBarTheme.typography.heading)
+                    CharacterPreviewField("简介", character.profile)
+                    CharacterPreviewField("外貌", character.appearance)
+                    CharacterPreviewField("服装", character.clothing)
+                    CharacterPreviewField("能力", character.abilities)
+                    CharacterPreviewField("习惯/爱好", character.habits)
+                    CharacterPreviewField("背景", character.background)
+                    CharacterPreviewField("关系", character.relationships)
+                    CharacterPreviewField("语气", character.speakingStyle)
+                    CharacterPreviewField("NAI 人物提示词", character.imagePrompt)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PreviewField(label: String, value: String) {
+    if (value.isBlank()) return
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbText(value, maxLines = 5)
+        }
+    }
+}
+
+@Composable
+private fun CharacterPreviewField(label: String, value: String) {
+    if (value.isBlank()) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        CbText(value, maxLines = 4)
     }
 }
 

@@ -18,6 +18,7 @@ import com.example.chatbar.data.local.entity.DocumentRagStatus
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -34,6 +35,12 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
+data class CharacterAutoFillUiState(
+    val isGenerating: Boolean = false,
+    val draft: CharacterAutoFillDraft? = null,
+    val error: String? = null
+)
+
 class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
     private val worldBookRepository = ChatBarApp.instance.worldBookRepository
@@ -41,6 +48,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val ragManager = ChatBarApp.instance.ragManager
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
+    private val characterAutoFillService = ChatBarApp.instance.characterAutoFillService
     private var indexingJob: Job? = null
 
     private val _characterCard = MutableStateFlow<CharacterCard?>(null)
@@ -51,6 +59,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     private val _indexingStatus = MutableStateFlow<String?>(null)
     val indexingStatus: StateFlow<String?> = _indexingStatus.asStateFlow()
+
+    private val _autoFillState = MutableStateFlow(CharacterAutoFillUiState())
+    val autoFillState: StateFlow<CharacterAutoFillUiState> = _autoFillState.asStateFlow()
 
     private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
@@ -148,6 +159,50 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     fun switchEditMode(target: CharacterEditMode) {
         if (target == editMode) return
         editMode = target
+    }
+
+    fun generateAutoFillDraft(userInput: String) {
+        if (editMode != CharacterEditMode.STRUCTURED) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
+            return
+        }
+        if (userInput.isBlank()) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息或想玩的角色")
+            return
+        }
+        _autoFillState.value = CharacterAutoFillUiState(isGenerating = true)
+        viewModelScope.launch {
+            runCatching {
+                characterAutoFillService.generate(userInput, buildCurrentCard(markDirty = false))
+            }.fold(
+                onSuccess = { draft ->
+                    _autoFillState.value = CharacterAutoFillUiState(draft = draft)
+                },
+                onFailure = { error ->
+                    _autoFillState.value = CharacterAutoFillUiState(error = error.message ?: "AI 自动填充失败")
+                }
+            )
+        }
+    }
+
+    fun applyAutoFillDraft() {
+        val draft = _autoFillState.value.draft ?: return
+        if (editMode != CharacterEditMode.STRUCTURED) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
+            return
+        }
+        val merged = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
+        name = merged.name
+        greeting = merged.greeting
+        basicSetting = merged.basicSetting
+        defaultImagePrompt = merged.defaultImagePrompt
+        charactersList.clear()
+        charactersList.addAll(merged.characters)
+        _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    fun clearAutoFillDraft() {
+        _autoFillState.value = CharacterAutoFillUiState()
     }
 
     private fun startBackgroundIndex(card: CharacterCard) {

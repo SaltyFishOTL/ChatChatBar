@@ -67,6 +67,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var characterCardTransferService: CharacterCardTransferService
         private set
+    lateinit var characterAutoFillService: CharacterAutoFillService
+        private set
     lateinit var formatCardTransferService: FormatCardTransferService
         private set
     lateinit var worldBookTransferService: WorldBookTransferService
@@ -133,6 +135,7 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        characterAutoFillService = CharacterAutoFillService(effectiveModelResolver, streamingChatService)
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
         characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)
