@@ -9,6 +9,9 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.CharacterResearchService
+import com.example.chatbar.domain.search.ResearchBrief
+import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -50,6 +53,7 @@ data class CharacterAutoFillCharacterDraft(
 class CharacterAutoFillService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
+    private val researchService: CharacterResearchService? = null,
     private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -71,11 +75,12 @@ class CharacterAutoFillService(
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
         val model = resolveModel(modelOverride)
+        val researchBrief = buildResearchBrief(userInput, currentCard, model)
 
         val raw = chatService.completeText(
             messages = listOf(
                 ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
-                ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard))
+                ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
             ),
             modelConfig = model,
             maxTokens = 6000,
@@ -89,15 +94,19 @@ class CharacterAutoFillService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
+        onStatus: (String) -> Unit = {},
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onRawText: (String) -> Unit
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
         val model = resolveModel(modelOverride)
+        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+        onStatus("生成角色卡")
 
         val messages = listOf(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
-            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard))
+            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
         )
         val raw = StringBuilder()
         var streamError: String? = null
@@ -148,6 +157,29 @@ class CharacterAutoFillService(
             ?: error("未配置可用的默认对话模型")
         require(model.apiKey.isNotBlank()) { "${model.displayName.ifBlank { model.modelName }} API Key 为空" }
         return model
+    }
+
+    private suspend fun buildResearchBrief(
+        userInput: String,
+        currentCard: CharacterCard,
+        generationModel: ModelConfig,
+        onStatus: (String) -> Unit = {},
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit = {}
+    ): ResearchBrief? {
+        val service = researchService ?: return null
+        val researchModel = runCatching { modelResolver.retrievalModel() }
+            .getOrNull()
+            ?.takeIf { it.apiKey.isNotBlank() }
+            ?: generationModel
+        return runCatching {
+            service.research(
+                userInput = userInput,
+                currentCard = currentCard,
+                modelConfig = researchModel,
+                onDebug = onResearchDebug,
+                onStatus = onStatus
+            )
+        }.getOrNull()
     }
 
     private fun parseGeneratedDraft(raw: String): CharacterAutoFillDraft? =
@@ -233,6 +265,7 @@ class CharacterAutoFillService(
         fun buildPromptPayload(
             userInput: String,
             currentCard: CharacterCard,
+            externalResearch: ResearchBrief? = null,
             promptJson: Json = defaultPromptJson
         ): String =
             buildJsonObject {
@@ -241,6 +274,16 @@ class CharacterAutoFillService(
                 put("lockedContext", promptJson.parseToJsonElement(promptJson.encodeToString(currentCard.toLockedDraft())))
                 put("defaultNaiStyle", PromptTemplates.DEFAULT_CHARACTER_NAI_STYLE_PROMPT.trim())
                 put("characterImageGuide", PromptTemplates.CHARACTER_IMAGE_NAI_PROMPT_GUIDE.trim())
+                externalResearch?.takeIf(ResearchBrief::hasContent)?.let { brief ->
+                    put(
+                        "externalResearchUsage",
+                        PromptTemplates.CHARACTER_EXTERNAL_RESEARCH_USAGE_PROMPT
+                    )
+                    put(
+                        "externalResearch",
+                        promptJson.parseToJsonElement(promptJson.encodeToString(ResearchBrief.serializer(), brief))
+                    )
+                }
             }.toString()
     }
 
@@ -250,8 +293,8 @@ class CharacterAutoFillService(
         idFactory: () -> String = { UUID.randomUUID().toString() }
     ): CharacterCard = CharacterAutoFillService.mergeInto(current, draft, idFactory)
 
-    fun buildUserPrompt(userInput: String, currentCard: CharacterCard): String =
-        CharacterAutoFillService.buildPromptPayload(userInput, currentCard, promptJson)
+    fun buildUserPrompt(userInput: String, currentCard: CharacterCard, externalResearch: ResearchBrief? = null): String =
+        CharacterAutoFillService.buildPromptPayload(userInput, currentCard, externalResearch, promptJson)
 }
 
 private fun CharacterCard.toLockedDraft(): CharacterAutoFillDraft =

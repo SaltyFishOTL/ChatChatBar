@@ -22,6 +22,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -46,7 +47,15 @@ data class CharacterAutoFillUiState(
     val error: String? = null,
     val streamingText: String = "",
     val statusText: String = "",
-    val modelId: String? = null
+    val progressLines: List<String> = emptyList(),
+    val researchDebug: ResearchDebugSnapshot? = null,
+    val modelId: String? = null,
+    val isGeneratingCoverImage: Boolean = false,
+    val coverImagePreview: ByteArray? = null,
+    val coverImageProgress: Float = 0f,
+    val coverImagePath: String? = null,
+    val coverImagePromptText: String = "",
+    val coverImageError: String? = null
 )
 
 data class CharacterRewriteUiState(
@@ -54,7 +63,9 @@ data class CharacterRewriteUiState(
     val draft: CharacterRewriteDraft? = null,
     val error: String? = null,
     val streamingText: String = "",
-    val statusText: String = ""
+    val statusText: String = "",
+    val progressLines: List<String> = emptyList(),
+    val researchDebug: ResearchDebugSnapshot? = null
 )
 
 class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
@@ -71,7 +82,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
     private var indexingJob: Job? = null
     private var autoFillJob: Job? = null
-    private var autoFillImageJob: Job? = null
     private var autoFillGenerationToken = 0
     private var rewriteJob: Job? = null
     private var rewriteGenerationToken = 0
@@ -225,8 +235,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             return
         }
         val selectedModelId = selectedModel?.id
-        autoFillJob?.cancel()
+        val previousCoverImagePath = _autoFillState.value.coverImagePath
         autoFillGenerationToken += 1
+        autoFillJob?.cancel()
+        deleteAutoFillCandidateImage(previousCoverImagePath)
         val generationToken = autoFillGenerationToken
         val statusText = selectedModel?.autoFillLabel()
             ?.let { "正在使用 $it 生成角色卡候选" }
@@ -234,33 +246,74 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         _autoFillState.value = CharacterAutoFillUiState(
             isGenerating = true,
             statusText = statusText,
+            progressLines = listOf(statusText),
             modelId = selectedModelId
         )
         autoFillJob = viewModelScope.launch {
             var latestRawText = ""
+            var currentStatusText = statusText
+            var progressLines = listOf(statusText)
+            var latestResearchDebug: ResearchDebugSnapshot? = null
             try {
                 val draft = characterAutoFillService.generateStreaming(
                     userInput = userInput,
                     currentCard = buildCurrentCard(markDirty = false),
                     modelOverride = selectedModel,
+                    onStatus = { nextStatus ->
+                        currentStatusText = nextStatus
+                        progressLines = progressLines.appendProgressLine(nextStatus)
+                        if (generationToken == autoFillGenerationToken) {
+                            _autoFillState.value = CharacterAutoFillUiState(
+                                isGenerating = true,
+                                streamingText = latestRawText,
+                                statusText = nextStatus,
+                                progressLines = progressLines,
+                                researchDebug = latestResearchDebug,
+                                modelId = selectedModelId
+                            )
+                        }
+                    },
+                    onResearchDebug = { snapshot ->
+                        latestResearchDebug = snapshot
+                        if (generationToken == autoFillGenerationToken) {
+                            _autoFillState.value = _autoFillState.value.copy(researchDebug = snapshot)
+                        }
+                    },
                     onRawText = { rawText ->
                         latestRawText = rawText
                         if (generationToken == autoFillGenerationToken) {
                             _autoFillState.value = CharacterAutoFillUiState(
                                 isGenerating = true,
                                 streamingText = rawText,
-                                statusText = statusText,
+                                statusText = currentStatusText,
+                                progressLines = progressLines,
+                                researchDebug = latestResearchDebug,
                                 modelId = selectedModelId
                             )
                         }
                     }
                 )
                 if (generationToken == autoFillGenerationToken) {
+                    val mergedCard = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
+                    val needsCoverImage = avatar.isNullOrBlank() || chatBackground.isNullOrBlank()
                     _autoFillState.value = CharacterAutoFillUiState(
+                        isGenerating = needsCoverImage,
                         draft = draft,
                         streamingText = latestRawText,
-                        modelId = selectedModelId
+                        statusText = if (needsCoverImage) "正在生成头像和聊天背景" else "",
+                        progressLines = progressLines.appendProgressLine("角色卡候选已生成"),
+                        researchDebug = latestResearchDebug,
+                        modelId = selectedModelId,
+                        isGeneratingCoverImage = needsCoverImage
                     )
+                    if (needsCoverImage) {
+                        generateAutoFillCoverImageCandidate(
+                            card = mergedCard,
+                            modelOverride = selectedModel,
+                            selectedModelId = selectedModelId,
+                            generationToken = generationToken
+                        )
+                    }
                 }
             } catch (_: CancellationException) {
                 if (generationToken == autoFillGenerationToken) {
@@ -268,6 +321,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         error = "已取消生成",
                         streamingText = latestRawText,
                         statusText = "已取消生成",
+                        progressLines = progressLines.appendProgressLine("已取消生成"),
+                        researchDebug = latestResearchDebug,
                         modelId = selectedModelId
                     )
                 }
@@ -276,6 +331,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     _autoFillState.value = CharacterAutoFillUiState(
                         error = error.message ?: "AI 自动填充失败",
                         streamingText = latestRawText,
+                        progressLines = progressLines.appendProgressLine("生成失败"),
+                        researchDebug = latestResearchDebug,
                         modelId = selectedModelId
                     )
                 }
@@ -290,12 +347,21 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     fun cancelAutoFillGeneration() {
         val state = _autoFillState.value
         if (!state.isGenerating) return
+        autoFillGenerationToken += 1
         autoFillJob?.cancel()
+        deleteAutoFillCandidateImage(state.coverImagePath)
         _autoFillState.value = state.copy(
             isGenerating = false,
             draft = null,
             error = "已取消生成",
-            statusText = "已取消生成"
+            statusText = "已取消生成",
+            progressLines = state.progressLines.appendProgressLine("已取消生成"),
+            isGeneratingCoverImage = false,
+            coverImagePreview = null,
+            coverImageProgress = 0f,
+            coverImagePath = null,
+            coverImagePromptText = "",
+            coverImageError = null
         )
     }
 
@@ -307,80 +373,155 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             return
         }
         val merged = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
-        val shouldGenerateCoverImage = avatar.isNullOrBlank() && chatBackground.isNullOrBlank()
         name = merged.name
         greeting = merged.greeting
         basicSetting = merged.basicSetting
         defaultImagePrompt = merged.defaultImagePrompt
         charactersList.clear()
         charactersList.addAll(merged.characters)
-        if (shouldGenerateCoverImage) {
-            generateAutoFillCoverImage(buildCurrentCard(markDirty = false), state.modelId)
+        state.coverImagePath?.takeIf(String::isNotBlank)?.let { path ->
+            var used = false
+            if (avatar.isNullOrBlank()) {
+                avatar = path
+                used = true
+            }
+            if (chatBackground.isNullOrBlank()) {
+                chatBackground = path
+                used = true
+            }
+            if (!used) deleteAutoFillCandidateImage(path)
         }
         _autoFillState.value = CharacterAutoFillUiState()
     }
 
-    private fun generateAutoFillCoverImage(card: CharacterCard, modelId: String?) {
-        autoFillImageJob?.cancel()
-        autoFillImageJob = viewModelScope.launch {
-            if (!avatar.isNullOrBlank() || !chatBackground.isNullOrBlank()) return@launch
-            try {
-                val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
-                val settings = settingsRepository.getAppSettings()
-                val model = modelResolver.resolveChatModel(modelId, settings)
-                if (token == null || model == null || model.apiKey.isBlank()) {
-                    val missing = mutableListOf<String>()
-                    if (token == null) missing += "NovelAI Token"
-                    if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
-                    _indexingStatus.value = "AI 自动填充已应用；缺少${missing.joinToString("、")}，未生成头像和背景"
-                    return@launch
+    private suspend fun generateAutoFillCoverImageCandidate(
+        card: CharacterCard,
+        modelOverride: ModelConfig?,
+        selectedModelId: String?,
+        generationToken: Int
+    ) {
+        try {
+            val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
+            val settings = settingsRepository.getAppSettings()
+            val model = modelOverride ?: modelResolver.resolveChatModel(selectedModelId, settings)
+            if (token == null || model == null || model.apiKey.isBlank()) {
+                val missing = mutableListOf<String>()
+                if (token == null) missing += "NovelAI Token"
+                if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
+                updateAutoFillStateIfCurrent(generationToken) {
+                    it.copy(
+                        isGenerating = false,
+                        isGeneratingCoverImage = false,
+                        coverImageError = "缺少${missing.joinToString("、")}，未生成头像和背景",
+                        statusText = "角色卡候选已生成"
+                    )
                 }
-                AiBackgroundWorkManager.run(card.id) {
-                    _indexingStatus.value = "正在根据角色卡生成头像和聊天背景"
-                    val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) {
-                        _indexingStatus.value = "正在设计头像和背景 Prompt"
+                return
+            }
+            AiBackgroundWorkManager.run(card.id) {
+                updateAutoFillStateIfCurrent(generationToken) {
+                    it.copy(
+                        statusText = "正在设计头像和聊天背景 Prompt",
+                        isGenerating = true,
+                        isGeneratingCoverImage = true
+                    )
+                }
+                val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) { promptDraft ->
+                    updateAutoFillStateIfCurrent(generationToken) {
+                        it.copy(
+                            coverImagePromptText = promptDraft,
+                            statusText = "正在设计头像和聊天背景 Prompt"
+                        )
                     }
-                    _indexingStatus.value = "正在调用 NovelAI 生成头像和聊天背景"
-                    val seed = novelAiImageService.newSeed()
-                    var finalImage: ByteArray? = null
-                    novelAiImageService.generate(token, prompt, seed).collect { event ->
-                        when (event) {
-                            is NovelAiImageEvent.Intermediate -> Unit
-                            is NovelAiImageEvent.Final -> {
-                                finalImage = event.image
+                }
+                updateAutoFillStateIfCurrent(generationToken) {
+                    it.copy(statusText = "正在调用 NovelAI 生成头像和聊天背景")
+                }
+                val seed = novelAiImageService.newSeed()
+                var finalImage: ByteArray? = null
+                novelAiImageService.generate(token, prompt, seed).collect { event ->
+                    when (event) {
+                        is NovelAiImageEvent.Intermediate -> {
+                            finalImage = event.image
+                            updateAutoFillStateIfCurrent(generationToken) {
+                                it.copy(
+                                    coverImagePreview = event.image,
+                                    coverImageProgress = event.progress,
+                                    statusText = "正在流式生成头像和聊天背景"
+                                )
                             }
-                            is NovelAiImageEvent.Error -> error(event.message)
                         }
-                    }
-                    val bytes = finalImage ?: error("NovelAI 未返回最终图片")
-                    val path = withContext(Dispatchers.IO) {
-                        novelAiImageStorage.save(card.id, bytes)
-                    }
-                    if (avatar.isNullOrBlank() && chatBackground.isNullOrBlank()) {
-                        avatar = path
-                        chatBackground = path
-                        _indexingStatus.value = "已生成头像和聊天背景"
-                    } else {
-                        withContext(Dispatchers.IO) {
-                            novelAiImageStorage.deleteIfOwned(path)
+                        is NovelAiImageEvent.Final -> {
+                            finalImage = event.image
+                            updateAutoFillStateIfCurrent(generationToken) {
+                                it.copy(
+                                    coverImagePreview = event.image,
+                                    coverImageProgress = 1f,
+                                    statusText = "正在保存头像和聊天背景候选"
+                                )
+                            }
                         }
-                        _indexingStatus.value = "头像或背景已存在，已跳过自动写入"
+                        is NovelAiImageEvent.Error -> error(event.message)
                     }
                 }
-            } catch (error: Throwable) {
-                if (error is CancellationException) throw error
-                _indexingStatus.value = "AI 自动填充已应用；头像/背景生成失败：${error.message ?: "未知错误"}"
-            } finally {
-                autoFillImageJob = null
+                if (generationToken != autoFillGenerationToken) return@run
+                val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+                val path = withContext(Dispatchers.IO) {
+                    novelAiImageStorage.save(card.id, bytes)
+                }
+                if (generationToken != autoFillGenerationToken) {
+                    withContext(Dispatchers.IO) {
+                        novelAiImageStorage.deleteIfOwned(path)
+                    }
+                    return@run
+                }
+                updateAutoFillStateIfCurrent(generationToken) {
+                    it.copy(
+                        isGenerating = false,
+                        isGeneratingCoverImage = false,
+                        coverImagePath = path,
+                        coverImagePreview = bytes,
+                        coverImageProgress = 1f,
+                        statusText = "角色卡候选和头像/背景候选已生成"
+                    )
+                }
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            updateAutoFillStateIfCurrent(generationToken) {
+                it.copy(
+                    isGenerating = false,
+                    isGeneratingCoverImage = false,
+                    coverImageError = error.message ?: "头像/背景生成失败",
+                    statusText = "角色卡候选已生成，头像/背景生成失败"
+                )
             }
         }
     }
 
     fun clearAutoFillDraft() {
+        val coverImagePath = _autoFillState.value.coverImagePath
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
         autoFillJob = null
+        deleteAutoFillCandidateImage(coverImagePath)
         _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    private fun updateAutoFillStateIfCurrent(
+        generationToken: Int,
+        transform: (CharacterAutoFillUiState) -> CharacterAutoFillUiState
+    ) {
+        if (generationToken == autoFillGenerationToken) {
+            _autoFillState.value = transform(_autoFillState.value)
+        }
+    }
+
+    private fun deleteAutoFillCandidateImage(path: String?) {
+        if (path.isNullOrBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            novelAiImageStorage.deleteIfOwned(path)
+        }
     }
 
     fun generateRewriteDraft(userInput: String, modelId: String? = null) {
@@ -402,22 +543,47 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             ?: "正在使用默认模型改写角色卡候选"
         _rewriteState.value = CharacterRewriteUiState(
             isGenerating = true,
-            statusText = statusText
+            statusText = statusText,
+            progressLines = listOf(statusText)
         )
         rewriteJob = viewModelScope.launch {
             var latestRawText = ""
+            var currentStatusText = statusText
+            var progressLines = listOf(statusText)
+            var latestResearchDebug: ResearchDebugSnapshot? = null
             try {
                 val draft = characterRewriteService.rewriteStreaming(
                     userInput = userInput,
                     currentCard = buildCurrentCard(markDirty = false),
                     modelOverride = selectedModel,
+                    onStatus = { nextStatus ->
+                        currentStatusText = nextStatus
+                        progressLines = progressLines.appendProgressLine(nextStatus)
+                        if (generationToken == rewriteGenerationToken) {
+                            _rewriteState.value = CharacterRewriteUiState(
+                                isGenerating = true,
+                                streamingText = latestRawText,
+                                statusText = nextStatus,
+                                progressLines = progressLines,
+                                researchDebug = latestResearchDebug
+                            )
+                        }
+                    },
+                    onResearchDebug = { snapshot ->
+                        latestResearchDebug = snapshot
+                        if (generationToken == rewriteGenerationToken) {
+                            _rewriteState.value = _rewriteState.value.copy(researchDebug = snapshot)
+                        }
+                    },
                     onRawText = { rawText ->
                         latestRawText = rawText
                         if (generationToken == rewriteGenerationToken) {
                             _rewriteState.value = CharacterRewriteUiState(
                                 isGenerating = true,
                                 streamingText = rawText,
-                                statusText = statusText
+                                statusText = currentStatusText,
+                                progressLines = progressLines,
+                                researchDebug = latestResearchDebug
                             )
                         }
                     }
@@ -425,7 +591,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 if (generationToken == rewriteGenerationToken) {
                     _rewriteState.value = CharacterRewriteUiState(
                         draft = draft,
-                        streamingText = latestRawText
+                        streamingText = latestRawText,
+                        progressLines = progressLines.appendProgressLine("改写候选已生成"),
+                        researchDebug = latestResearchDebug
                     )
                 }
             } catch (_: CancellationException) {
@@ -433,14 +601,18 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     _rewriteState.value = CharacterRewriteUiState(
                         error = "已取消生成",
                         streamingText = latestRawText,
-                        statusText = "已取消生成"
+                        statusText = "已取消生成",
+                        progressLines = progressLines.appendProgressLine("已取消生成"),
+                        researchDebug = latestResearchDebug
                     )
                 }
             } catch (error: Throwable) {
                 if (generationToken == rewriteGenerationToken) {
                     _rewriteState.value = CharacterRewriteUiState(
                         error = error.message ?: "AI 自动改写失败",
-                        streamingText = latestRawText
+                        streamingText = latestRawText,
+                        progressLines = progressLines.appendProgressLine("改写失败"),
+                        researchDebug = latestResearchDebug
                     )
                 }
             } finally {
@@ -459,7 +631,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             isGenerating = false,
             draft = null,
             error = "已取消生成",
-            statusText = "已取消生成"
+            statusText = "已取消生成",
+            progressLines = state.progressLines.appendProgressLine("已取消生成")
         )
     }
 
@@ -938,6 +1111,12 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             }
         }
     }
+}
+
+private fun List<String>.appendProgressLine(line: String): List<String> {
+    val normalized = line.replace(Regex("\\s+"), " ").trim()
+    if (normalized.isBlank() || lastOrNull() == normalized) return this
+    return (this + normalized).takeLast(14)
 }
 
 private fun ModelConfig.autoFillLabel(): String =

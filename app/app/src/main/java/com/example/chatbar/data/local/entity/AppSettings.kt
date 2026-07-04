@@ -21,7 +21,10 @@ data class AppSettings(
     val defaultContextWindowSize: Int = 20,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
-    val tutorialVersion: Int = 0
+    val tutorialVersion: Int = 0,
+    val webSearchSettingsVersion: Int = 0,
+    val webSearchEnabled: Boolean = true,
+    val webSearchMaxResultsPerQuery: Int = 1
 )
 
 @Serializable
@@ -43,6 +46,19 @@ enum class ModelConfigurationMode {
     CUSTOM_API,
     FULL_CUSTOM
 }
+
+const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 3
+
+fun AppSettings.withCurrentWebSearchDefaults(): AppSettings =
+    if (webSearchSettingsVersion >= CURRENT_WEB_SEARCH_SETTINGS_VERSION) {
+        this
+    } else {
+        copy(
+            webSearchSettingsVersion = CURRENT_WEB_SEARCH_SETTINGS_VERSION,
+            webSearchEnabled = if (webSearchSettingsVersion == 0) true else webSearchEnabled,
+            webSearchMaxResultsPerQuery = 1
+        )
+    }
 
 fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {
     ModelConfigurationMode.DEFAULT,

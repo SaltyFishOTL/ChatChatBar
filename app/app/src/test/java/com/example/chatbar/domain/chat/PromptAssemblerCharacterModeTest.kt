@@ -89,6 +89,21 @@ class PromptAssemblerCharacterModeTest {
         assertFalse(prompt.contains("${'$'}botname"))
     }
 
+    @Test fun replacesPlaceholdersInsideWorldBookOutlets() {
+        val prompt = assembler.assembleSystemPrompt(
+            characterCard = card(
+                name = "Bot",
+                basicSetting = "{{outlet::scene}}"
+            ),
+            playerName = "Alice",
+            worldBookOutlets = mapOf("scene" to "${'$'}username meets ${'$'}botname.")
+        )
+
+        assertTrue(prompt.contains("Alice meets Bot."))
+        assertFalse(prompt.contains("${'$'}username"))
+        assertFalse(prompt.contains("${'$'}botname"))
+    }
+
     private fun card(
         name: String = "Card",
         editMode: CharacterEditMode = CharacterEditMode.STRUCTURED,

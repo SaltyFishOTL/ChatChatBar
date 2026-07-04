@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.data.local.entity.WorldBookSelectiveLogic
+import com.example.chatbar.domain.chat.PlaceholderRenderer
 
 class WorldBookEngine {
 
@@ -255,7 +256,7 @@ class WorldBookEngine {
         for (act in outletEntries) {
             val sb = outlets.getOrPut(act.entry.outletName) { StringBuilder() }
             if (sb.isNotEmpty()) sb.appendLine()
-            sb.append(normalizePlaceholders(act.entry.content))
+            sb.append(PlaceholderRenderer.normalize(act.entry.content))
         }
         return outlets.mapValues { it.value.toString() }
     }
@@ -311,10 +312,7 @@ class WorldBookEngine {
         val sb = StringBuilder()
         for (act in activated) {
             if (act.entry.content.isBlank()) continue
-            var content = act.entry.content
-            content = normalizePlaceholders(content)
-            content = content.replace("\$botname", characterName)
-            if (playerName != null) content = content.replace("\$username", playerName)
+            val content = PlaceholderRenderer.render(act.entry.content, playerName, characterName)
             sb.appendLine(content)
             sb.appendLine()
         }
@@ -329,9 +327,4 @@ class WorldBookEngine {
         return (count * 0.4).toInt().coerceAtLeast(1)
     }
 
-    private fun normalizePlaceholders(text: String): String =
-        text.replace("{{char}}", "\$botname")
-            .replace("{{user}}", "\$username")
-            .replace("<BOT>", "\$botname")
-            .replace("<USER>", "\$username")
 }

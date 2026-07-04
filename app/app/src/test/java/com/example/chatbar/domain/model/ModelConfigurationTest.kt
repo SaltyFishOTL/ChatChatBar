@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.data.local.entity.resolveDarkTheme
+import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -28,6 +29,52 @@ class ModelConfigurationTest {
         assertEquals("", settings.siliconFlowApiKey)
         assertEquals(ThemeMode.SYSTEM, settings.themeMode)
         assertEquals(0, settings.tutorialVersion)
+        assertTrue(settings.webSearchEnabled)
+        assertEquals(0, settings.webSearchSettingsVersion)
+        assertEquals(1, settings.webSearchMaxResultsPerQuery)
+    }
+
+    @Test fun unversionedSearchSettingsMigrateToWikiEnabled() {
+        val settings = json.decodeFromString(
+            AppSettings.serializer(),
+            """{"webSearchEnabled":false}"""
+        ).withCurrentWebSearchDefaults()
+
+        assertTrue(settings.webSearchEnabled)
+        assertEquals(3, settings.webSearchSettingsVersion)
+        assertEquals(1, settings.webSearchMaxResultsPerQuery)
+    }
+
+    @Test fun currentSearchSettingsPreserveUserDisabledState() {
+        val settings = AppSettings(
+            webSearchSettingsVersion = 3,
+            webSearchEnabled = false
+        ).withCurrentWebSearchDefaults()
+
+        assertFalse(settings.webSearchEnabled)
+        assertEquals(3, settings.webSearchSettingsVersion)
+    }
+
+    @Test fun v2SearchSettingsMigrateResultCountToOneWithoutReenabling() {
+        val settings = AppSettings(
+            webSearchSettingsVersion = 2,
+            webSearchEnabled = false,
+            webSearchMaxResultsPerQuery = 3
+        ).withCurrentWebSearchDefaults()
+
+        assertFalse(settings.webSearchEnabled)
+        assertEquals(3, settings.webSearchSettingsVersion)
+        assertEquals(1, settings.webSearchMaxResultsPerQuery)
+    }
+
+    @Test fun oldSearchMaxQueriesFieldIsIgnored() {
+        val settings = json.decodeFromString(
+            AppSettings.serializer(),
+            """{"webSearchSettingsVersion":3,"webSearchMaxQueries":99,"webSearchMaxResultsPerQuery":1}"""
+        )
+
+        assertEquals(3, settings.webSearchSettingsVersion)
+        assertEquals(1, settings.webSearchMaxResultsPerQuery)
     }
 
     @Test fun presetPlaceholdersAreNotConfigured() {

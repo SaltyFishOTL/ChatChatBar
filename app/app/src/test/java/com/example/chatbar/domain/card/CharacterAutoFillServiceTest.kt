@@ -5,6 +5,8 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.ResearchBrief
+import com.example.chatbar.domain.search.ResearchSource
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -172,6 +174,25 @@ class CharacterAutoFillServiceTest {
         )
         assertFalse(payload.contains("replaceDefaultEmptyCharacter"))
         assertFalse(payload.contains("maxCharacters"))
+    }
+
+    @Test
+    fun `prompt payload includes externalResearch only when brief has content`() {
+        val current = card()
+        val brief = researchBrief()
+
+        val payload = CharacterAutoFillService.buildPromptPayload("fill with canon", current, brief)
+        val root = Json.parseToJsonElement(payload).jsonObject
+        val research = root.getValue("externalResearch").jsonObject
+
+        assertTrue(root.containsKey("externalResearchUsage"))
+        assertEquals("Need canon", research.getValue("reason").jsonPrimitive.content)
+        assertEquals("source-backed fact", research.getValue("facts").jsonArray.single().jsonPrimitive.content)
+        assertTrue(payload.contains(PromptTemplates.CHARACTER_EXTERNAL_RESEARCH_USAGE_PROMPT))
+        assertFalse(
+            CharacterAutoFillService.buildPromptPayload("fill", current, ResearchBrief())
+                .contains("externalResearch")
+        )
     }
 
     @Test
@@ -390,5 +411,23 @@ class CharacterAutoFillServiceTest {
         editMode = CharacterEditMode.STRUCTURED,
         createdAt = 1L,
         updatedAt = 1L
+    )
+
+    private fun researchBrief() = ResearchBrief(
+        reason = "Need canon",
+        queries = listOf("canon query"),
+        facts = listOf("source-backed fact"),
+        notes = listOf("wiki usage note"),
+        sources = listOf(
+            ResearchSource(
+                sourceId = "S1",
+                title = "Source",
+                url = "https://example.com/source",
+                sourceType = "web",
+                query = "canon query",
+                excerpt = "excerpt",
+                score = 0.5
+            )
+        )
     )
 }

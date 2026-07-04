@@ -9,6 +9,9 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.CharacterResearchService
+import com.example.chatbar.domain.search.ResearchBrief
+import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -51,6 +54,7 @@ data class CharacterRewriteCharacterDraft(
 class CharacterRewriteService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
+    private val researchService: CharacterResearchService? = null,
     private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -62,13 +66,17 @@ class CharacterRewriteService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
+        onStatus: (String) -> Unit = {},
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onRawText: (String) -> Unit
     ): CharacterRewriteDraft = withContext(Dispatchers.IO) {
         require(userInput.isNotBlank()) { "请输入改写要求" }
         val model = resolveModel(modelOverride)
+        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+        onStatus("改写角色卡")
         val messages = listOf(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_REWRITE_SYSTEM_PROMPT),
-            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard))
+            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
         )
         val raw = StringBuilder()
         var streamError: String? = null
@@ -126,11 +134,34 @@ class CharacterRewriteService(
         return model
     }
 
+    private suspend fun buildResearchBrief(
+        userInput: String,
+        currentCard: CharacterCard,
+        generationModel: ModelConfig,
+        onStatus: (String) -> Unit,
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit
+    ): ResearchBrief? {
+        val service = researchService ?: return null
+        val researchModel = runCatching { modelResolver.retrievalModel() }
+            .getOrNull()
+            ?.takeIf { it.apiKey.isNotBlank() }
+            ?: generationModel
+        return runCatching {
+            service.research(
+                userInput = userInput,
+                currentCard = currentCard,
+                modelConfig = researchModel,
+                onDebug = onResearchDebug,
+                onStatus = onStatus
+            )
+        }.getOrNull()
+    }
+
     private fun parseGeneratedDraft(raw: String): CharacterRewriteDraft? =
         parseDraft(raw, json)
 
-    fun buildUserPrompt(userInput: String, currentCard: CharacterCard): String =
-        buildPromptPayload(userInput, currentCard)
+    fun buildUserPrompt(userInput: String, currentCard: CharacterCard, externalResearch: ResearchBrief? = null): String =
+        buildPromptPayload(userInput, currentCard, externalResearch)
 
     fun mergeInto(
         current: CharacterCard,
@@ -165,7 +196,8 @@ class CharacterRewriteService(
 
         fun buildPromptPayload(
             userInput: String,
-            currentCard: CharacterCard
+            currentCard: CharacterCard,
+            externalResearch: ResearchBrief? = null
         ): String =
             buildJsonObject {
                 put("request", userInput.trim())
@@ -173,6 +205,16 @@ class CharacterRewriteService(
                 put("outputSchema", currentCard.rewriteOutputSchema())
                 if (currentCard.editMode == CharacterEditMode.STRUCTURED) {
                     put("characterImageGuide", PromptTemplates.CHARACTER_IMAGE_NAI_PROMPT_GUIDE.trim())
+                }
+                externalResearch?.takeIf(ResearchBrief::hasContent)?.let { brief ->
+                    put(
+                        "externalResearchUsage",
+                        PromptTemplates.CHARACTER_EXTERNAL_RESEARCH_USAGE_PROMPT
+                    )
+                    put(
+                        "externalResearch",
+                        defaultJson.parseToJsonElement(defaultJson.encodeToString(ResearchBrief.serializer(), brief))
+                    )
                 }
             }.toString()
 

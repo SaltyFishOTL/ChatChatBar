@@ -72,9 +72,12 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.PlayerSetting
+import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.TypingIndicator
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -116,6 +119,7 @@ fun ChatScreen(
     val imageGeneration by viewModel.imageGeneration.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
+    val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
 
@@ -174,6 +178,14 @@ fun ChatScreen(
     }
     val latestComplete = !isResponding && streamingMessage == null && messages.isNotEmpty()
     val backgroundPath = session?.chatBackground ?: characterCard?.chatBackground
+    val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
+        ?: playerSetting.playerName.takeIf { it.isNotBlank() }
+    val renderBotName = characterCard?.name ?: session?.title ?: ""
+    val renderedTitle = PlaceholderRenderer.render(
+        session?.title ?: characterCard?.name ?: "聊天",
+        renderPlayerName,
+        renderBotName
+    )
     val alternativeIds = remember(messages, contextWindowSize) {
         messages.takeLast(contextWindowSize.coerceAtLeast(1)).filter { it.role == MessageRole.ASSISTANT && it.alternatives.size > 1 }.map { it.id }.toSet()
     }
@@ -249,7 +261,7 @@ fun ChatScreen(
 
     Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         CbTopBar(
-            title = session?.title ?: characterCard?.name ?: "聊天",
+            title = renderedTitle,
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
                 if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(AppIcons.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
@@ -263,8 +275,11 @@ fun ChatScreen(
             }
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                 items(messages, key = { it.id }) { message ->
+                    val renderedMessage = remember(message, renderPlayerName, renderBotName) {
+                        PlaceholderRenderer.renderMessage(message, renderPlayerName, renderBotName)
+                    }
                     ChatBubble(
-                        message = message,
+                        message = renderedMessage,
                         fontScale = bubbleFontScale,
                         onLongPress = { if (!isResponding) actionMessageId = message.id },
                         onImageClick = { expandedImagePath = it },
@@ -277,8 +292,8 @@ fun ChatScreen(
                             novelAiConfigured &&
                             !isArchived &&
                             isModelUsable &&
-                            message.role == MessageRole.ASSISTANT &&
-                            message.displayContent.isNotBlank()
+                            renderedMessage.role == MessageRole.ASSISTANT &&
+                            renderedMessage.displayContent.isNotBlank()
                         ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
                         imageGenerationEnabled = !imageGenerationRunning
                     )
@@ -289,7 +304,14 @@ fun ChatScreen(
                         )
                     }
                 }
-                streamingMessage?.let { item(key = "streaming-${it.id}") { ChatBubble(it, fontScale = bubbleFontScale) } }
+                streamingMessage?.let { message ->
+                    item(key = "streaming-${message.id}") {
+                        val renderedMessage = remember(message, renderPlayerName, renderBotName) {
+                            PlaceholderRenderer.renderMessage(message, renderPlayerName, renderBotName)
+                        }
+                        ChatBubble(renderedMessage, fontScale = bubbleFontScale)
+                    }
+                }
                 imageGeneration?.takeUnless { imageGenerationAnchorExists }?.let { generation ->
                     item(key = "novelai-generation") {
                         NovelAiGenerationCard(generation,

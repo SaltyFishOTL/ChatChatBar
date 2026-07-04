@@ -5,6 +5,8 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.ResearchBrief
+import com.example.chatbar.domain.search.ResearchSource
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -142,6 +144,25 @@ class CharacterRewriteServiceTest {
         assertEquals("银发", characterJson.getValue("appearance").jsonPrimitive.content)
         assertFalse(characterJson.containsKey("profile"))
         assertFalse(characterJson.containsKey("clothing"))
+    }
+
+    @Test
+    fun `rewrite payload includes externalResearch only when brief has content`() {
+        val current = card()
+        val brief = researchBrief()
+
+        val payload = CharacterRewriteService.buildPromptPayload("make canon accurate", current, brief)
+        val root = Json.parseToJsonElement(payload).jsonObject
+        val research = root.getValue("externalResearch").jsonObject
+
+        assertTrue(root.containsKey("externalResearchUsage"))
+        assertEquals("Need canon", research.getValue("reason").jsonPrimitive.content)
+        assertEquals("source-backed fact", research.getValue("facts").jsonArray.single().jsonPrimitive.content)
+        assertTrue(payload.contains(PromptTemplates.CHARACTER_EXTERNAL_RESEARCH_USAGE_PROMPT))
+        assertFalse(
+            CharacterRewriteService.buildPromptPayload("rewrite", current, ResearchBrief())
+                .contains("externalResearch")
+        )
     }
 
     @Test
@@ -386,5 +407,23 @@ class CharacterRewriteServiceTest {
         editMode = editMode,
         createdAt = 1L,
         updatedAt = 1L
+    )
+
+    private fun researchBrief() = ResearchBrief(
+        reason = "Need canon",
+        queries = listOf("canon query"),
+        facts = listOf("source-backed fact"),
+        notes = listOf("wiki usage note"),
+        sources = listOf(
+            ResearchSource(
+                sourceId = "S1",
+                title = "Source",
+                url = "https://example.com/source",
+                sourceType = "web",
+                query = "canon query",
+                excerpt = "excerpt",
+                score = 0.5
+            )
+        )
     )
 }

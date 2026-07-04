@@ -151,22 +151,15 @@ class PromptAssembler {
             appendSection(postHistory)
         }.trim()
 
-        // 全局替换玩家与当前角色卡名称占位符
-        val normalizedPrompt = normalizePlaceholders(rawPrompt)
-        val promptWithPlayerName = if (!playerName.isNullOrBlank()) {
-            normalizedPrompt.replace("\$username", playerName)
-        } else {
-            normalizedPrompt
-        }
-        val promptWithBotName = promptWithPlayerName.replace("\$botname", characterCard.name)
-        return if (worldBookOutlets.isNotEmpty()) {
+        val promptWithOutlets = if (worldBookOutlets.isNotEmpty()) {
             val outletRegex = Regex("\\{\\{outlet::(\\w+)}}")
-            outletRegex.replace(promptWithBotName) { mr ->
+            outletRegex.replace(rawPrompt) { mr ->
                 worldBookOutlets[mr.groupValues[1]] ?: mr.value
             }
         } else {
-            promptWithBotName
+            rawPrompt
         }
+        return PlaceholderRenderer.render(promptWithOutlets, playerName, characterCard.name)
     }
 
     // ========================= 内部方法 =========================
@@ -232,9 +225,4 @@ class PromptAssembler {
         }
     }
 
-    private fun normalizePlaceholders(text: String): String =
-        text.replace("{{char}}", "\$botname")
-            .replace("{{user}}", "\$username")
-            .replace("<BOT>", "\$botname")
-            .replace("<USER>", "\$username")
 }

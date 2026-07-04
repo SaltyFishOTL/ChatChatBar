@@ -65,6 +65,7 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -667,8 +668,8 @@ private fun CharacterAutoFillDialog(
             selectedModelId = null
         }
     }
-    LaunchedEffect(state.streamingText) {
-        if (state.isGenerating && state.streamingText.isNotBlank()) {
+    LaunchedEffect(state.streamingText, state.progressLines.size) {
+        if (state.isGenerating && (state.streamingText.isNotBlank() || state.progressLines.isNotEmpty())) {
             bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
@@ -724,11 +725,21 @@ private fun CharacterAutoFillDialog(
                 enabled = state.isGenerating || input.isNotBlank(),
                 variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
             )
+            if (state.progressLines.isNotEmpty()) {
+                GenerationProgressPanel(
+                    active = state.isGenerating,
+                    statusText = state.statusText.ifBlank { "正在生成角色卡候选" },
+                    progressLines = state.progressLines
+                )
+            }
             if (state.isGenerating) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbSpinner()
                     CbText(state.statusText.ifBlank { "正在生成角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
+            }
+            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
+                ResearchDebugPanel(debug)
             }
             if (state.streamingText.isNotBlank() && state.draft == null) {
                 AutoFillRawStreamPreview(state.streamingText)
@@ -746,6 +757,7 @@ private fun CharacterAutoFillDialog(
                     )
                 }
             }
+            AutoFillCoverImagePreview(state)
             state.draft?.let { draft ->
                 CbDivider()
                 AutoFillDraftPreview(draft)
@@ -778,8 +790,8 @@ private fun CharacterRewriteDialog(
             selectedModelId = null
         }
     }
-    LaunchedEffect(state.streamingText) {
-        if (state.isGenerating && state.streamingText.isNotBlank()) {
+    LaunchedEffect(state.streamingText, state.progressLines.size) {
+        if (state.isGenerating && (state.streamingText.isNotBlank() || state.progressLines.isNotEmpty())) {
             bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
@@ -835,11 +847,21 @@ private fun CharacterRewriteDialog(
                 enabled = state.isGenerating || input.isNotBlank(),
                 variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
             )
+            if (state.progressLines.isNotEmpty()) {
+                GenerationProgressPanel(
+                    active = state.isGenerating,
+                    statusText = state.statusText.ifBlank { "正在改写角色卡候选" },
+                    progressLines = state.progressLines
+                )
+            }
             if (state.isGenerating) {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbSpinner()
                     CbText(state.statusText.ifBlank { "正在改写角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
+            }
+            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
+                ResearchDebugPanel(debug)
             }
             if (state.streamingText.isNotBlank() && state.draft == null) {
                 AutoFillRawStreamPreview(state.streamingText)
@@ -866,6 +888,132 @@ private fun CharacterRewriteDialog(
 }
 
 @Composable
+private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CbText("检索调试", style = ChatBarTheme.typography.heading)
+        debug.plan?.let { plan ->
+            DebugTextBlock(
+                title = "搜索规划",
+                text = buildString {
+                    appendLine("needSearch=${plan.needSearch}")
+                    if (plan.reason.isNotBlank()) appendLine("reason=${plan.reason}")
+                    plan.queries.forEachIndexed { index, query ->
+                        appendLine("${index + 1}. [P${query.priority}] ${query.query}")
+                    }
+                }.trim()
+            )
+        }
+        debug.brief?.takeIf(ResearchBriefVisible::hasBriefText)?.let { brief ->
+            DebugTextBlock(
+                title = "整理后的资料",
+                text = buildString {
+                    if (brief.facts.isNotEmpty()) {
+                        appendLine("facts:")
+                        brief.facts.forEachIndexed { index, fact -> appendLine("${index + 1}. $fact") }
+                    }
+                    if (brief.notes.isNotEmpty()) {
+                        if (brief.facts.isNotEmpty()) appendLine()
+                        appendLine("notes:")
+                        brief.notes.forEachIndexed { index, note -> appendLine("${index + 1}. $note") }
+                    }
+                }.trim()
+            )
+        }
+        if (debug.briefFailureReason.isNotBlank() || debug.briefRawResponsePreview.isNotBlank()) {
+            DebugTextBlock(
+                title = "资料整理失败",
+                text = buildString {
+                    if (debug.briefFailureReason.isNotBlank()) {
+                        appendLine("reason=${debug.briefFailureReason}")
+                    }
+                    if (debug.briefRawResponsePreview.isNotBlank()) {
+                        if (isNotEmpty()) appendLine()
+                        appendLine("raw:")
+                        append(debug.briefRawResponsePreview)
+                    }
+                }.trim()
+            )
+        }
+        if (debug.sources.isNotEmpty()) {
+            CbText("搜索到并清洗后的内容", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            debug.sources.forEach { source ->
+                DebugTextBlock(
+                    title = "[${source.sourceId}] ${source.title}",
+                    text = buildString {
+                        appendLine("type=${source.sourceType}; query=${source.query}")
+                        appendLine(source.url)
+                        appendLine()
+                        append(source.excerpt)
+                    }.trim()
+                )
+            }
+        }
+    }
+}
+
+private object ResearchBriefVisible {
+    fun hasBriefText(brief: com.example.chatbar.domain.search.ResearchBrief): Boolean =
+        brief.facts.isNotEmpty() || brief.notes.isNotEmpty()
+}
+
+@Composable
+private fun DebugTextBlock(title: String, text: String) {
+    if (text.isBlank()) return
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            CbText(title, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbText(text)
+        }
+    }
+}
+
+@Composable
+private fun GenerationProgressPanel(
+    active: Boolean,
+    statusText: String,
+    progressLines: List<String>
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                if (active) CbSpinner()
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    CbText("执行进度", style = ChatBarTheme.typography.heading)
+                    CbText(statusText, color = ChatBarTheme.colors.mutedForeground)
+                }
+            }
+            progressLines.takeLast(8).forEachIndexed { index, line ->
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(
+                        "${progressLines.size - progressLines.takeLast(8).size + index + 1}.",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbText(
+                        line,
+                        modifier = Modifier.weight(1f),
+                        color = if (index == progressLines.takeLast(8).lastIndex) {
+                            ChatBarTheme.colors.foreground
+                        } else {
+                            ChatBarTheme.colors.mutedForeground
+                        },
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun AutoFillRawStreamPreview(rawText: String) {
     CbSurface(
         Modifier.fillMaxWidth(),
@@ -875,6 +1023,54 @@ private fun AutoFillRawStreamPreview(rawText: String) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             CbText("实时输出", style = ChatBarTheme.typography.heading)
             CbText(rawText, color = ChatBarTheme.colors.mutedForeground)
+        }
+    }
+}
+
+@Composable
+private fun AutoFillCoverImagePreview(state: CharacterAutoFillUiState) {
+    val imageModel: Any? = state.coverImagePreview ?: state.coverImagePath
+    val hasImageStatus = state.isGeneratingCoverImage ||
+        imageModel != null ||
+        state.coverImageError?.isNotBlank() == true ||
+        state.coverImagePromptText.isNotBlank()
+    if (!hasImageStatus) return
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(
+            1.dp,
+            if (state.coverImageError.isNullOrBlank()) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive
+        )
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            CbText("头像/背景候选", style = ChatBarTheme.typography.heading)
+            imageModel?.let { model ->
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(220.dp)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(ChatBarTheme.colors.background),
+                    contentAlignment = Alignment.Center
+                ) {
+                    AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                }
+            }
+            if (state.isGeneratingCoverImage) {
+                CbProgress(state.coverImageProgress.coerceAtLeast(0.04f))
+                CbText(
+                    state.statusText.ifBlank { "正在生成头像和聊天背景" },
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            state.coverImageError?.takeIf(String::isNotBlank)?.let { error ->
+                CbText(error, color = ChatBarTheme.colors.destructive)
+            }
+            if (imageModel == null && state.coverImagePromptText.isNotBlank()) {
+                CbText(state.coverImagePromptText, color = ChatBarTheme.colors.mutedForeground)
+            }
         }
     }
 }

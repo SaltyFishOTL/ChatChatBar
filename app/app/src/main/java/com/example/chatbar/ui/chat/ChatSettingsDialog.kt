@@ -45,10 +45,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
@@ -83,6 +86,7 @@ fun ChatSettingsDialog(
     val formats by viewModel.availableFormats.collectAsState()
     val worldBooks by viewModel.availableWorldBooks.collectAsState()
     val characterCard by viewModel.characterCard.collectAsState()
+    val globalPlayerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
@@ -134,6 +138,12 @@ fun ChatSettingsDialog(
             longTermMemory != it.longTermMemory ||
             extraWorldBookIds != it.extraWorldBookIds
     } ?: false
+    val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
+        ?: globalPlayerSetting.playerName.takeIf { it.isNotBlank() }
+    val renderBotName = characterCard?.name ?: session?.title ?: ""
+
+    fun renderSessionText(text: String): String =
+        PlaceholderRenderer.render(text, renderPlayerName, renderBotName)
 
     fun openFullscreen(title: String, text: String, onChange: (String) -> Unit) {
         fullscreenField = title to text
@@ -205,7 +215,8 @@ fun ChatSettingsDialog(
                             slotName = ""; slotDescription = ""
                         },
                         onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
-                        onDelete = { deleteSlot = it }
+                        onDelete = { deleteSlot = it },
+                        renderText = ::renderSessionText
                     )
                 }
             }
@@ -233,7 +244,7 @@ fun ChatSettingsDialog(
             confirm = {
                 CbButton("删除", { viewModel.deleteSaveSlot(slot.id); deleteSlot = null }, variant = ButtonVariant.Destructive)
             }
-        ) { CbText("确定删除\u201c${slot.name}\u201d？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
+        ) { CbText("确定删除\u201c${renderSessionText(slot.name)}\u201d？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
     }
 
 }
@@ -382,7 +393,8 @@ private fun SavesContent(
     onDescription: (String) -> Unit,
     onCreate: () -> Unit,
     onLoad: (SaveSlot) -> Unit,
-    onDelete: (SaveSlot) -> Unit
+    onDelete: (SaveSlot) -> Unit,
+    renderText: (String) -> String
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
@@ -400,19 +412,21 @@ private fun SavesContent(
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(slots, key = { it.id }) { slot -> SaveSlotItem(slot, { onLoad(slot) }, { onDelete(slot) }) }
+                items(slots, key = { it.id }) { slot -> SaveSlotItem(slot, { onLoad(slot) }, { onDelete(slot) }, renderText) }
             }
         }
     }
 }
 
 @Composable
-fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit) {
+fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit, renderText: (String) -> String = { it }) {
     CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted, border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
-                CbText(slot.name, style = ChatBarTheme.typography.heading)
-                slot.description?.takeIf(String::isNotBlank)?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground) }
+                CbText(renderText(slot.name), style = ChatBarTheme.typography.heading)
+                slot.description?.takeIf(String::isNotBlank)?.let {
+                    CbText(renderText(it), color = ChatBarTheme.colors.mutedForeground)
+                }
                 CbText(
                     "${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(slot.createdAt))} . ${slot.messages.size} 条消息",
                     color = ChatBarTheme.colors.mutedForeground,

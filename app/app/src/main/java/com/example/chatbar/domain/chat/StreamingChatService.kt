@@ -495,6 +495,109 @@ class StreamingChatService {
         })
     }
 
+    suspend fun completeTextStreaming(
+        messages: List<ChatApiMessage>,
+        modelConfig: ModelConfig,
+        maxTokens: Int? = null,
+        enableThinking: Boolean? = null,
+        maxThinkingTokens: Int? = null,
+        thinkingBudget: Int? = null,
+        reasoningEffort: String? = null,
+        onDelta: (String) -> Unit = {},
+        onReasoningDelta: (String) -> Unit = {}
+    ): String = suspendCancellableCoroutine { continuation ->
+        val baseUrl = modelConfig.baseUrl.trimEnd('/')
+        val url = "$baseUrl/chat/completions"
+        val requestBody = buildRequestBody(
+            messages = messages,
+            modelConfig = modelConfig,
+            stream = true,
+            maxTokens = maxTokens,
+            enableThinkingOverride = enableThinking,
+            maxThinkingTokens = maxThinkingTokens,
+            thinkingBudget = thinkingBudget,
+            reasoningEffortOverride = reasoningEffort
+        )
+
+        val request = Request.Builder()
+            .url(url)
+            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Accept", "text/event-stream")
+            .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+
+        val text = StringBuilder()
+        val lock = Any()
+        var completed = false
+
+        fun resumeSuccessIfActive() {
+            synchronized(lock) {
+                if (completed || !continuation.isActive) return
+                completed = true
+                val content = text.toString()
+                if (content.isBlank()) {
+                    continuation.resumeWithException(RuntimeException("流式文本补全返回空内容"))
+                } else {
+                    continuation.resume(content)
+                }
+            }
+        }
+
+        fun resumeFailureIfActive(error: Throwable) {
+            synchronized(lock) {
+                if (completed || !continuation.isActive) return
+                completed = true
+                continuation.resumeWithException(error)
+            }
+        }
+
+        val eventSource = EventSources.createFactory(client).newEventSource(
+            request,
+            object : EventSourceListener() {
+                override fun onEvent(
+                    eventSource: EventSource,
+                    id: String?,
+                    type: String?,
+                    data: String
+                ) {
+                    if (data.trim() == "[DONE]") {
+                        resumeSuccessIfActive()
+                        return
+                    }
+                    val delta = parseDelta(data)
+                    delta.reasoningContent?.takeIf(String::isNotBlank)?.let(onReasoningDelta)
+                    delta.content?.takeIf(String::isNotBlank)?.let { chunk ->
+                        text.append(chunk)
+                        onDelta(chunk)
+                    }
+                }
+
+                override fun onFailure(
+                    eventSource: EventSource,
+                    t: Throwable?,
+                    response: Response?
+                ) {
+                    val body = try { response?.body?.string() } catch (_: Exception) { null }
+                    val message = buildString {
+                        append("流式文本补全失败")
+                        if (response != null) {
+                            append(" (${response.code})")
+                            if (!body.isNullOrBlank()) append(": ${body.take(2000)}")
+                        }
+                        if (t != null) append(" - ${t.message ?: t::class.java.simpleName}")
+                    }
+                    resumeFailureIfActive(RuntimeException(message, t))
+                }
+
+                override fun onClosed(eventSource: EventSource) {
+                    resumeSuccessIfActive()
+                }
+            }
+        )
+        continuation.invokeOnCancellation { eventSource.cancel() }
+    }
+
     // ========================= 内部方法 =========================
 
     /** 构建请求 JSON body */
@@ -505,7 +608,8 @@ class StreamingChatService {
         maxTokens: Int? = null,
         enableThinkingOverride: Boolean? = null,
         maxThinkingTokens: Int? = null,
-        thinkingBudget: Int? = null
+        thinkingBudget: Int? = null,
+        reasoningEffortOverride: String? = null
     ): String {
         val messagesArray = buildJsonArray {
             for (msg in messages) {
@@ -541,7 +645,9 @@ class StreamingChatService {
                 put("max_tokens", outputTokenLimit)
                 put("max_completion_tokens", outputTokenLimit)
             }
-            modelConfig.reasoningEffort?.takeIf { it.isNotBlank() }?.let { put("reasoning_effort", it) }
+            (reasoningEffortOverride ?: modelConfig.reasoningEffort)
+                ?.takeIf { it.isNotBlank() }
+                ?.let { put("reasoning_effort", it) }
             (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put("enable_thinking", it) }
             maxThinkingTokens?.let { put("max_thinking_tokens", it) }
             thinkingBudget?.let { put("thinking_budget", it) }

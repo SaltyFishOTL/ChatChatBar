@@ -82,6 +82,7 @@ import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSlider
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbSpinner
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
@@ -760,6 +761,7 @@ private fun SettingsTab(
     var novelAiToken by remember { mutableStateOf("") }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
+    var webSearchEnabled by remember { mutableStateOf(settings.webSearchEnabled) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
@@ -782,12 +784,14 @@ private fun SettingsTab(
         settings.docRagTopK,
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
+        settings.webSearchEnabled,
         settings.chatBubbleFontScale
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         themeMode = settings.themeMode
+        webSearchEnabled = settings.webSearchEnabled
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
@@ -809,7 +813,9 @@ private fun SettingsTab(
         docRagTopK = docTopK.toInt(),
         docRagSimilarityThreshold = docThreshold,
         ragInjectionMode = ragMode.roundToInt().modeValue(),
-        defaultContextWindowSize = draftContextWindowSize
+        defaultContextWindowSize = draftContextWindowSize,
+        webSearchEnabled = webSearchEnabled,
+        webSearchMaxResultsPerQuery = 1
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
     val settingsDirty = draftSettings != savedSettingsComparable ||
@@ -887,6 +893,29 @@ private fun SettingsTab(
         SettingsSection("玩家") {
             CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
+        }
+        SettingsSection("搜索增强") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("AI 角色卡搜索", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "自动判断是否搜索，并把清洗后的资料注入自动填充/改写。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(webSearchEnabled, { webSearchEnabled = it })
+            }
+            CbText(
+                "当前资料源：萌娘百科优先，Wikipedia 兜底。免费、无需 API Key；网络不可达时自动跳过搜索。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            CbText(
+                "默认最多规划 20 个搜索词；每个搜索词只取首个结果，减少无关来源噪声。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
         }
         SettingsSection("NovelAI 生图") {
             CbText(

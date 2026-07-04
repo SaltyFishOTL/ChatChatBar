@@ -43,6 +43,8 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.R
 import com.example.chatbar.ChatRoute
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.PlayerSetting
+import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.EmptyState
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -69,11 +71,21 @@ fun HomeScreen(
 ) {
     val sessions by viewModel.sessions.collectAsState()
     val characters by viewModel.characters.collectAsState()
+    val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     var showStartDialog by remember { mutableStateOf(false) }
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
+    val characterNamesById = remember(characters) { characters.associate { it.id to it.name } }
+
+    fun renderSessionText(session: ChatSession, text: String): String =
+        PlaceholderRenderer.render(
+            text = text,
+            playerName = session.playerName?.takeIf { it.isNotBlank() }
+                ?: playerSetting.playerName.takeIf { it.isNotBlank() },
+            botName = characterNamesById[session.characterCardId] ?: session.title
+        )
 
     CbScaffold(
         modifier = modifier,
@@ -102,7 +114,8 @@ fun HomeScreen(
                 SessionList(
                     sessions = sessions,
                     onOpen = { onNavigate(ChatRoute(it.id)) },
-                    onAction = { actionSession = it }
+                    onAction = { actionSession = it },
+                    renderSessionText = ::renderSessionText
                 )
             }
         }
@@ -163,7 +176,7 @@ fun HomeScreen(
     actionSession?.let { session ->
         CbDialog(
             onDismissRequest = { actionSession = null },
-            title = session.title,
+            title = renderSessionText(session, session.title),
             dismiss = { CbButton("取消", { actionSession = null }, variant = ButtonVariant.Ghost) }
         ) {
             ActionRow(
@@ -202,7 +215,7 @@ fun HomeScreen(
                 )
             }
         ) {
-            CbText("确定删除“${session.title}”？聊天记录和对应记忆索引会一并删除。", color = ChatBarTheme.colors.mutedForeground)
+            CbText("确定删除“${renderSessionText(session, session.title)}”？聊天记录和对应记忆索引会一并删除。", color = ChatBarTheme.colors.mutedForeground)
         }
     }
 }
@@ -211,7 +224,8 @@ fun HomeScreen(
 private fun SessionList(
     sessions: List<ChatSession>,
     onOpen: (ChatSession) -> Unit,
-    onAction: (ChatSession) -> Unit
+    onAction: (ChatSession) -> Unit,
+    renderSessionText: (ChatSession, String) -> String
 ) {
     val pinned = sessions.filter { it.isPinned }
     val recent = sessions.filterNot { it.isPinned }
@@ -222,12 +236,12 @@ private fun SessionList(
     ) {
         if (pinned.isNotEmpty()) {
             item {
-                SessionGroup("置顶", pinned, true, onOpen, onAction)
+                SessionGroup("置顶", pinned, true, onOpen, onAction, renderSessionText)
             }
         }
         if (recent.isNotEmpty()) {
             item {
-                SessionGroup("最近对话", recent, false, onOpen, onAction)
+                SessionGroup("最近对话", recent, false, onOpen, onAction, renderSessionText)
             }
         }
     }
@@ -239,7 +253,8 @@ private fun SessionGroup(
     sessions: List<ChatSession>,
     pinned: Boolean,
     onOpen: (ChatSession) -> Unit,
-    onAction: (ChatSession) -> Unit
+    onAction: (ChatSession) -> Unit,
+    renderSessionText: (ChatSession, String) -> String
 ) {
     CbText(title, style = ChatBarTheme.typography.heading)
     Spacer(Modifier.height(8.dp))
@@ -249,7 +264,7 @@ private fun SessionGroup(
     ) {
         Column {
             sessions.forEachIndexed { index, session ->
-                SessionItem(session, pinned, { onOpen(session) }, { onAction(session) })
+                SessionItem(session, pinned, { onOpen(session) }, { onAction(session) }, renderSessionText)
                 if (index != sessions.lastIndex) CbDivider(Modifier.padding(horizontal = 12.dp))
             }
         }
@@ -262,7 +277,8 @@ fun SessionItem(
     session: ChatSession,
     showPinned: Boolean = false,
     onClick: () -> Unit,
-    onLongClick: () -> Unit
+    onLongClick: () -> Unit,
+    renderSessionText: (ChatSession, String) -> String = { _, text -> text }
 ) {
     var avatar by remember { mutableStateOf<String?>(null) }
     var archived by remember { mutableStateOf(false) }
@@ -283,7 +299,7 @@ fun SessionItem(
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 CbText(
-                    session.title,
+                    renderSessionText(session, session.title),
                     modifier = Modifier.weight(1f),
                     style = ChatBarTheme.typography.heading,
                     maxLines = 1,
@@ -305,7 +321,7 @@ fun SessionItem(
             }
             Spacer(Modifier.height(4.dp))
             CbText(
-                session.lastMessagePreview ?: "开始全新对话…",
+                renderSessionText(session, session.lastMessagePreview ?: "开始全新对话…"),
                 color = ChatBarTheme.colors.mutedForeground,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis

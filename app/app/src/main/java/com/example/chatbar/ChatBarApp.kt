@@ -10,6 +10,7 @@ import com.example.chatbar.domain.card.*
 import com.example.chatbar.domain.deletion.DeletionCoordinator
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
+import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
@@ -93,6 +94,14 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiImageStorage: NovelAiImageStorage
         private set
+    lateinit var searchBackend: SearchBackend
+        private set
+    lateinit var characterResearchPlanner: CharacterResearchPlanner
+        private set
+    lateinit var researchBriefSummarizer: LlmResearchBriefSummarizer
+        private set
+    lateinit var characterResearchService: CharacterResearchService
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -121,6 +130,9 @@ class ChatBarApp : Application() {
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
+        searchBackend = MediaWikiSearchBackend()
+        characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
+        researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
 
         ragManager = RagManager(
             chunkingEngine = chunkingEngine,
@@ -137,8 +149,14 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
-        characterAutoFillService = CharacterAutoFillService(effectiveModelResolver, streamingChatService)
-        characterRewriteService = CharacterRewriteService(effectiveModelResolver, streamingChatService)
+        characterResearchService = CharacterResearchService(
+            settingsProvider = { settingsRepository.getAppSettings() },
+            planner = characterResearchPlanner,
+            backend = searchBackend,
+            summarizer = researchBriefSummarizer
+        )
+        characterAutoFillService = CharacterAutoFillService(effectiveModelResolver, streamingChatService, characterResearchService)
+        characterRewriteService = CharacterRewriteService(effectiveModelResolver, streamingChatService, characterResearchService)
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
         characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)

@@ -3,6 +3,7 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
+import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -37,13 +38,23 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun getAppSettings(): AppSettings {
-        return storage.loadSingleton(APP_SETTINGS_TYPE, AppSettings.serializer())
+        val loaded = storage.loadSingleton(APP_SETTINGS_TYPE, AppSettings.serializer())
             ?: AppSettings().also { saveAppSettings(it) }
+        return migrateAppSettings(loaded)
     }
 
     suspend fun saveAppSettings(settings: AppSettings) {
         storage.saveSingleton(APP_SETTINGS_TYPE, settings, AppSettings.serializer())
         _appSettings.value = settings
+    }
+
+    private suspend fun migrateAppSettings(settings: AppSettings): AppSettings {
+        val migrated = settings.withCurrentWebSearchDefaults()
+        if (migrated == settings) {
+            return settings
+        }
+        saveAppSettings(migrated)
+        return migrated
     }
 
     suspend fun completeTutorial(version: Int) {

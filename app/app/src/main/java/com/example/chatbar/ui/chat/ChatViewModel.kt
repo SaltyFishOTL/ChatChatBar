@@ -13,6 +13,7 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
+import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -144,6 +145,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var draftSaveSequence = 0
     private var responseJob: Job? = null
 
+    private data class PlaceholderRenderContext(
+        val playerName: String?,
+        val botName: String
+    )
+
     init {
         loadSessionData()
         refreshConfigurations()
@@ -220,6 +226,28 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             } catch (_: Exception) {}
         }
     }
+
+    private suspend fun placeholderRenderContext(
+        session: ChatSession? = _session.value
+    ): PlaceholderRenderContext? {
+        val currentSession = session ?: chatRepository.getSession(sessionId) ?: return null
+        val card = _characterCard.value?.takeIf { it.id == currentSession.characterCardId }
+            ?: characterRepository.getById(currentSession.characterCardId)
+        val globalPlayerName = settingsRepository.getPlayerSetting()
+            .playerName
+            .takeIf { it.isNotBlank() }
+        val playerName = currentSession.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
+        return PlaceholderRenderContext(
+            playerName = playerName,
+            botName = card?.name ?: currentSession.title
+        )
+    }
+
+    private fun ChatMessage.renderWith(context: PlaceholderRenderContext?): ChatMessage =
+        context?.let { PlaceholderRenderer.renderMessage(this, it.playerName, it.botName) } ?: this
+
+    private fun List<ChatMessage>.renderWith(context: PlaceholderRenderContext?): List<ChatMessage> =
+        if (context == null) this else map { it.renderWith(context) }
 
     fun generateNovelAiImage(anchorMessageId: String) {
         val active = _imageGeneration.value
@@ -470,7 +498,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val outlets = engine.collectOutlets(activated)
 
         val prompt = if (allEntries.isEmpty()) null else {
-            val playerName = ChatBarApp.instance.settingsRepository.getPlayerSetting().playerName.takeIf { it.isNotBlank() }
+            val globalPlayerName = ChatBarApp.instance.settingsRepository.getPlayerSetting()
+                .playerName
+                .takeIf { it.isNotBlank() }
+            val playerName = session.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
             engine.buildWorldBookPrompt(allEntries, card.name, playerName)
         }
 
@@ -542,6 +573,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             _characterCard.value = charCard
             val appSettings = settingsRepository.getAppSettings()
+            val playerSettingObj = settingsRepository.getPlayerSetting()
+            val activePlayerSetting = currentSession.playerSetting?.takeIf { it.isNotBlank() }
+                ?: playerSettingObj.globalPersona
+            val activePlayerName = currentSession.playerName?.takeIf { it.isNotBlank() }
+                ?: playerSettingObj.playerName
+            val activePlayerNameOrNull = activePlayerName.takeIf { it.isNotBlank() }
+            val renderSessionText: (String) -> String = { text ->
+                PlaceholderRenderer.render(text, activePlayerNameOrNull, charCard.name)
+            }
 
             // 确定要使用的 LLM 模型
             val configurationStatus = modelResolver.status(appSettings)
@@ -604,15 +644,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .filterNot { it.id == alternativeTargetMessageId }
             val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
             val contextMsgs = contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
+            val renderedContextMsgs = contextMsgs.map {
+                PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.name)
+            }
             val currentRetrievalUserContent = when {
                 persistUserMessage -> finalUserContent
                 alternativeTargetMessageId != null -> contextMsgs.lastOrNull {
                     it.role == MessageRole.USER
                 }?.displayContent ?: content
                 else -> content
-            }
+            }.let(renderSessionText)
             val retrievalCredentialMsgs = buildRagRetrievalCredentialMessages(
-                contextMsgs = contextMsgs,
+                contextMsgs = renderedContextMsgs,
                 currentUserMessageId = userMsg.id,
                 currentUserContent = currentRetrievalUserContent
             )
@@ -809,11 +852,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
                 // 5. 组装 System Prompt
-                val playerSettingObj = settingsRepository.getPlayerSetting()
-                val activePlayerSetting = currentSession.playerSetting?.takeIf { it.isNotBlank() }
-                    ?: playerSettingObj.globalPersona
-                val activePlayerName = currentSession.playerName?.takeIf { it.isNotBlank() }
-                    ?: playerSettingObj.playerName
                 val activeFormatId = currentSession.formatCardId
                     ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
@@ -881,7 +919,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 for (msg in historyMsgs) {
                     val role = msg.role.name.lowercase()
-                    val text = msg.displayContent
+                    val text = renderSessionText(msg.displayContent)
                     if (msg.images.isNotEmpty() &&
                         modelConfig.isMultimodal &&
                         msg.role == MessageRole.USER
@@ -927,17 +965,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
                     persistUserMessage -> {
-                        currentUserContent = finalUserContent
+                        currentUserContent = renderSessionText(finalUserContent)
                         currentUserImages = userMsgImages
                         true
                     }
                     regenTargetUserMsg != null -> {
-                        currentUserContent = regenTargetUserMsg.displayContent
+                        currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
                         currentUserImages = regenTargetUserMsg.images
                         true
                     }
                     content.isNotBlank() -> {
-                        currentUserContent = content
+                        currentUserContent = renderSessionText(content)
                         currentUserImages = emptyList()
                         true
                     }
@@ -1003,24 +1041,27 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 id = assistantMsgId,
                                 sessionId = sessionId,
                                 role = MessageRole.ASSISTANT,
-                                content = accumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                content = renderSessionText(accumulatedText),
+                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
+                                    ?.let(renderSessionText),
                                 createdAt = streamStartedAt,
                                 updatedAt = System.currentTimeMillis()
                             )
                         }
                         is StreamEvent.Delta -> {
                             accumulatedText += event.text
+                            val renderedAccumulatedText = renderSessionText(accumulatedText)
                             _streamingMessage.value = ChatMessage(
                                 id = assistantMsgId,
                                 sessionId = sessionId,
                                 role = MessageRole.ASSISTANT,
-                                content = accumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                content = renderedAccumulatedText,
+                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
+                                    ?.let(renderSessionText),
                                 createdAt = streamStartedAt,
                                 updatedAt = System.currentTimeMillis()
                             )
-                            StreamingNotificationManager.update(ctx, accumulatedText, sessionId)
+                            StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
                         }
                         is StreamEvent.Error -> {
                             throw Exception(event.message)
@@ -1028,7 +1069,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         is StreamEvent.Done -> {
                             ChatBarApp.instance.streamingStopRequested.value = false
                             if (accumulatedText.isNotBlank()) {
-                                StreamingNotificationManager.showComplete(ctx, accumulatedText)
+                                StreamingNotificationManager.showComplete(ctx, renderSessionText(accumulatedText))
                             }
                             // 流生成完毕，保存到数据库
                             val assistantMsg = ChatMessage(
@@ -1269,8 +1310,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         } else {
                             emptyList()
                         }
+                        val renderContext = placeholderRenderContext()
                         AiBackgroundWorkManager.run(sessionId) {
-                            ragManager.indexSingleMessageMemory(updatedMessage, contextMessages, sessionId, embeddingConfig)
+                            ragManager.indexSingleMessageMemory(
+                                updatedMessage.renderWith(renderContext),
+                                contextMessages.renderWith(renderContext),
+                                sessionId,
+                                embeddingConfig
+                            )
                         }
                     } catch (_: Exception) {
                         ragManager.deleteMemoryForMessage(messageId)
@@ -1326,13 +1373,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             .filter { it.id !in existingMemoryIds }
             .takeLast(4)
 
+        val renderContext = placeholderRenderContext()
         for (message in toIndex) {
             val messageIndex = allMessages.indexOfFirst { it.id == message.id }
             val contextStart = (messageIndex - 4).coerceAtLeast(0)
             val contextMessages = allMessages.subList(contextStart, messageIndex)
             ragManager.indexSingleMessageMemory(
-                message = message,
-                contextMessages = contextMessages,
+                message = message.renderWith(renderContext),
+                contextMessages = contextMessages.renderWith(renderContext),
                 sessionId = sessionId,
                 embeddingConfig = embeddingConfig
             )
