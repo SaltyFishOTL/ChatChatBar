@@ -124,32 +124,8 @@ object SillyTavernCardParser {
     }
 
     fun extractCharaChunk(pngBytes: ByteArray): String? {
-        if (pngBytes.size < 8 || pngBytes[0] != 0x89.toByte()) return null
-
-        var pos = 8
-        while (pos + 8 < pngBytes.size) {
-            val length = ((pngBytes[pos].toInt() and 0xFF) shl 24) or
-                ((pngBytes[pos + 1].toInt() and 0xFF) shl 16) or
-                ((pngBytes[pos + 2].toInt() and 0xFF) shl 8) or
-                (pngBytes[pos + 3].toInt() and 0xFF)
-            val typeBytes = pngBytes.sliceArray(pos + 4 until pos + 8)
-            val type = String(typeBytes, Charsets.US_ASCII)
-
-            if (type == "tEXt" && pos + 8 + length <= pngBytes.size) {
-                val data = pngBytes.sliceArray(pos + 8 until pos + 8 + length)
-                val nullIdx = data.indexOf(0.toByte())
-                if (nullIdx > 0) {
-                    val keyword = String(data.sliceArray(0 until nullIdx), Charsets.US_ASCII)
-                    if (keyword.equals("Chara", ignoreCase = true)) {
-                        val b64 = String(data.sliceArray(nullIdx + 1 until data.size), Charsets.UTF_8)
-                        return String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
-                    }
-                }
-            }
-
-            pos += 12 + length
-        }
-        return null
+        val b64 = PngTextChunks.extractTextChunk(pngBytes, "Chara", ignoreCase = true) ?: return null
+        return String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
     }
 
     private fun JsonObject.string(key: String): String =

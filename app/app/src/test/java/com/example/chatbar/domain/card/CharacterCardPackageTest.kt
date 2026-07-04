@@ -3,6 +3,7 @@ package com.example.chatbar.domain.card
 import com.example.chatbar.data.local.entity.PresetManifest
 import com.example.chatbar.data.local.entity.PresetType
 import java.io.File
+import java.util.Base64
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -60,6 +61,31 @@ class CharacterCardPackageTest {
 
         assertTrue(error is IllegalArgumentException)
         assertTrue(error?.message.orEmpty().contains("schemaVersion"))
+    }
+
+    @Test
+    fun chatBarPngTextChunkRoundTripsPackagePayload() {
+        val png = Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+/p9sAAAAASUVORK5CYII="
+        )
+        val packageData = CharacterCardPackage(
+            card = PackagedCharacterCard(
+                name = "PNG 角色",
+                characters = listOf(PackagedCharacter(name = "角色"))
+            )
+        )
+        val rawJson = json.encodeToString(CharacterCardPackage.serializer(), packageData)
+        val payload = Base64.getEncoder().encodeToString(rawJson.toByteArray(Charsets.UTF_8))
+
+        val exported = PngTextChunks.insertTextChunk(png, PngTextChunks.CHATBAR_CHARACTER_KEYWORD, payload)
+        val extracted = requireNotNull(PngTextChunks.extractTextChunk(exported, PngTextChunks.CHATBAR_CHARACTER_KEYWORD))
+        val decoded = json.decodeFromString(
+            CharacterCardPackage.serializer(),
+            String(Base64.getDecoder().decode(extracted), Charsets.UTF_8)
+        )
+
+        assertTrue(PngTextChunks.isPng(exported))
+        assertEquals(packageData, decoded)
     }
 
     @Test

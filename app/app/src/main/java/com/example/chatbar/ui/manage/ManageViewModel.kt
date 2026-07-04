@@ -16,6 +16,7 @@ import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
+import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
@@ -171,9 +172,19 @@ class ManageViewModel : ViewModel() {
         com.example.chatbar.domain.card.CharacterCardImportRequest(characterTransfers.decode(rawJson))
 
     suspend fun decodeCharacterImport(uri: android.net.Uri, context: android.content.Context): com.example.chatbar.domain.card.CharacterCardImportRequest {
-        val rawJson = runCatching {
-            context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+        val bytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
         }.getOrNull()
+        if (bytes != null) {
+            characterTransfers.decodePng(bytes)?.let {
+                return com.example.chatbar.domain.card.CharacterCardImportRequest(it)
+            }
+        }
+
+        val rawJson = bytes?.toString(Charsets.UTF_8)
+            ?: runCatching {
+                context.contentResolver.openInputStream(uri)?.bufferedReader()?.use { it.readText() }
+            }.getOrNull()
 
         if (rawJson != null) {
             runCatching {
@@ -298,6 +309,8 @@ class ManageViewModel : ViewModel() {
     }
 
     suspend fun exportCharacterCardJson(id: String): String = characterTransfers.exportJson(id)
+    suspend fun exportCharacterCardPng(id: String, options: CharacterCardPngExportOptions): ByteArray =
+        characterTransfers.exportPng(id, options)
 
     // ===== 格式卡 CRUD =====
     fun deleteFormatCard(id: String) {

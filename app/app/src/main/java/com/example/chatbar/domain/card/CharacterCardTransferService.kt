@@ -10,6 +10,7 @@ import com.example.chatbar.data.repository.CharacterRepository
 import com.example.chatbar.data.repository.WorldBookRepository
 import com.example.chatbar.domain.rag.RagRepository
 import java.io.File
+import java.util.Base64 as JvmBase64
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -27,8 +28,29 @@ class CharacterCardTransferService(
         json.encodeToString(CharacterCardPackage.serializer(), packageCard(card))
     }
 
+    suspend fun exportPng(
+        id: String,
+        options: CharacterCardPngExportOptions = CharacterCardPngExportOptions()
+    ): ByteArray = withContext(Dispatchers.IO) {
+        val card = repository.getById(id) ?: error("角色卡不存在")
+        val packageJson = json.encodeToString(CharacterCardPackage.serializer(), packageCard(card))
+        val renderedPng = CharacterCardPngRenderer.render(app, card, options)
+        val payload = JvmBase64.getEncoder().encodeToString(packageJson.toByteArray(Charsets.UTF_8))
+        PngTextChunks.insertTextChunk(renderedPng, PngTextChunks.CHATBAR_CHARACTER_KEYWORD, payload)
+    }
+
     fun decode(rawJson: String): CharacterCardPackage =
         json.decodeFromString(CharacterCardPackage.serializer(), rawJson).also(CharacterCardPackage::validateForImport)
+
+    fun decodePng(pngBytes: ByteArray): CharacterCardPackage? {
+        val payload = PngTextChunks.extractTextChunk(pngBytes, PngTextChunks.CHATBAR_CHARACTER_KEYWORD) ?: return null
+        val rawJson = if (payload.trimStart().startsWith("{")) {
+            payload
+        } else {
+            String(JvmBase64.getDecoder().decode(payload), Charsets.UTF_8)
+        }
+        return decode(rawJson)
+    }
 
     suspend fun duplicate(id: String): CharacterCard = withContext(Dispatchers.IO) {
         val source = repository.getById(id) ?: error("角色卡不存在")

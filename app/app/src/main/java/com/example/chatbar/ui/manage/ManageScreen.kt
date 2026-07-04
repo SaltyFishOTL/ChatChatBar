@@ -7,10 +7,12 @@ import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -28,6 +30,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -41,15 +44,23 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.example.chatbar.CharacterEditRoute
 import com.example.chatbar.ChatRoute
 import com.example.chatbar.FormatCardEditRoute
 import com.example.chatbar.ModelEditRoute
+import com.example.chatbar.R
 import com.example.chatbar.TutorialRoute
 import com.example.chatbar.WorldBookEditRoute
 import com.example.chatbar.data.local.entity.AppSettings
@@ -64,6 +75,7 @@ import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.card.CharacterCardImportRequest
+import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.ui.home.CharacterAvatar
@@ -88,6 +100,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
+import java.io.File
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -146,6 +159,8 @@ fun ManageScreen(
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var exportCharacterId by remember { mutableStateOf<String?>(null) }
+    var pendingCharacterExport by remember { mutableStateOf<CharacterCard?>(null) }
+    var characterExportOptions by remember { mutableStateOf(CharacterCardPngExportOptions()) }
     var exportFormatId by remember { mutableStateOf<String?>(null) }
     var exportWorldBookId by remember { mutableStateOf<String?>(null) }
     var exportWorldBookAsStId by remember { mutableStateOf<String?>(null) }
@@ -172,12 +187,14 @@ fun ManageScreen(
         }
     }
 
-    val exportCharacter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportCharacter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
         val id = exportCharacterId.also { exportCharacterId = null }
         if (uri != null && id != null) scope.launch {
             runCatching {
-                context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportCharacterCardJson(id).toByteArray()) }
-            }.onSuccess { message = "角色卡已导出。" }.onFailure { message = "导出失败：${it.message}" }
+                context.contentResolver.openOutputStream(uri)?.use {
+                    it.write(viewModel.exportCharacterCardPng(id, characterExportOptions))
+                }
+            }.onSuccess { message = "角色卡 PNG 已导出。" }.onFailure { message = "导出失败：${it.message}" }
         }
     }
     val importCharacter = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -290,8 +307,7 @@ fun ManageScreen(
             Box(Modifier.weight(1f)) {
                 when (tab) {
                     0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
-                        exportCharacterId = card.id
-                        exportCharacter.launch("${safeName(card.name)}.chatbar-character.json")
+                        pendingCharacterExport = card
                     }, { onNavigate(CharacterEditRoute(it)) }, { id ->
                         deleteTarget = DeleteTarget.Character(id, characters.firstOrNull { it.id == id }?.name ?: "未命名角色")
                     }, { id -> viewModel.duplicateCharacterCard(id) { onNavigate(CharacterEditRoute(it)) } }, { id ->
@@ -448,10 +464,185 @@ fun ManageScreen(
             }
         }
     }
+    pendingCharacterExport?.let { card ->
+        CharacterPngExportDialog(
+            card = card,
+            options = characterExportOptions,
+            onOptionsChange = { characterExportOptions = it },
+            onDismiss = { pendingCharacterExport = null },
+            onExport = {
+                exportCharacterId = card.id
+                pendingCharacterExport = null
+                exportCharacter.launch("${safeName(card.name)}.chatbar-character.png")
+            }
+        )
+    }
     message?.let {
         CbDialog(onDismissRequest = { message = null }, title = "导入 / 导出", confirm = { CbButton("知道了", { message = null }) }) {
             CbText(it, color = ChatBarTheme.colors.mutedForeground)
         }
+    }
+}
+
+@Composable
+private fun CharacterPngExportDialog(
+    card: CharacterCard,
+    options: CharacterCardPngExportOptions,
+    onOptionsChange: (CharacterCardPngExportOptions) -> Unit,
+    onDismiss: () -> Unit,
+    onExport: () -> Unit
+) {
+    val normalized = options.normalized()
+    val hasBackground = card.chatBackground?.let(::File)?.isFile == true
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "导出角色卡 PNG",
+        modifier = Modifier.heightIn(max = 780.dp),
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = { CbButton("导出 PNG", onExport) }
+    ) {
+        Column(
+            Modifier
+                .heightIn(max = 590.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            CharacterPngPreview(card, normalized)
+            if (!hasBackground) {
+                CbText("未设置默认聊天背景，当前预览使用品牌底色。", color = ChatBarTheme.colors.warning, style = ChatBarTheme.typography.caption)
+            }
+            CbField("导出尺寸") {
+                val sizes = listOf(1024, 1536, 2048)
+                CbSelect(normalized.sizePx, sizes, { "${it} x ${it}" }, { onOptionsChange(normalized.copy(sizePx = it)) })
+            }
+            ExportSliderField(
+                label = "渐变高度",
+                valueText = "${(normalized.gradientHeight * 100).roundToInt()}%",
+                value = normalized.gradientHeight,
+                range = 0.25f..0.68f,
+                onChange = { onOptionsChange(normalized.copy(gradientHeight = it)) }
+            )
+            ExportSliderField(
+                label = "渐变强度",
+                valueText = "${(normalized.gradientStrength * 100).roundToInt()}%",
+                value = normalized.gradientStrength,
+                range = 0.45f..0.9f,
+                onChange = { onOptionsChange(normalized.copy(gradientStrength = it)) }
+            )
+            ExportSliderField(
+                label = "图标大小",
+                valueText = "${(normalized.logoScale * 100).roundToInt()}%",
+                value = normalized.logoScale,
+                range = 0.07f..0.14f,
+                onChange = { onOptionsChange(normalized.copy(logoScale = it)) }
+            )
+            ExportSliderField(
+                label = "标题大小",
+                valueText = "${(normalized.titleScale * 100).roundToInt()}%",
+                value = normalized.titleScale,
+                range = 0.04f..0.08f,
+                onChange = { onOptionsChange(normalized.copy(titleScale = it)) }
+            )
+        }
+    }
+}
+
+@Composable
+private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngExportOptions) {
+    val backgroundFile = remember(card.chatBackground) {
+        card.chatBackground?.let(::File)?.takeIf(File::isFile)
+    }
+    val gradientStart = (1f - options.gradientHeight).coerceIn(0f, 1f)
+    val logoSize = ((options.logoScale / 0.095f) * 54f).coerceIn(40f, 78f).dp
+    val titleSize = ((options.titleScale / 0.052f) * 20f).coerceIn(16f, 28f).sp
+    Box(
+        Modifier
+            .fillMaxWidth()
+            .aspectRatio(1f)
+            .clip(RoundedCornerShape(14.dp))
+            .background(ChatBarTheme.colors.surfaceSubtle)
+    ) {
+        if (backgroundFile != null) {
+            AsyncImage(
+                model = backgroundFile,
+                contentDescription = "默认聊天背景",
+                modifier = Modifier.fillMaxSize(),
+                contentScale = ContentScale.Crop
+            )
+        } else {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(
+                        Brush.linearGradient(
+                            listOf(
+                                Color(0xFF12181D),
+                                Color(0xFF2D6058),
+                                Color(0xFF0A0E12)
+                            )
+                        )
+                    )
+            )
+        }
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(
+                    Brush.verticalGradient(
+                        colorStops = arrayOf(
+                            0f to Color.Transparent,
+                            gradientStart to Color.Transparent,
+                            1f to Color.Black.copy(alpha = options.gradientStrength)
+                        )
+                    )
+                )
+        )
+        Row(
+            Modifier
+                .align(Alignment.BottomStart)
+                .padding(20.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Box(
+                Modifier
+                    .size(logoSize)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(Color.Black.copy(alpha = 0.32f)),
+                contentAlignment = Alignment.Center
+            ) {
+                Image(
+                    painter = painterResource(R.mipmap.ic_launcher),
+                    contentDescription = "ChatChatBar",
+                    modifier = Modifier.fillMaxSize(0.86f)
+                )
+            }
+            Spacer(Modifier.width(12.dp))
+            CbText(
+                card.name.ifBlank { "未命名角色" },
+                modifier = Modifier.weight(1f),
+                color = Color.White,
+                style = ChatBarTheme.typography.title.copy(fontSize = titleSize, lineHeight = (titleSize.value + 6f).sp),
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun ExportSliderField(
+    label: String,
+    valueText: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onChange: (Float) -> Unit
+) {
+    Column {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.label)
+            CbText(valueText, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        CbSlider(value, onChange, range, contentDescription = label)
     }
 }
 
