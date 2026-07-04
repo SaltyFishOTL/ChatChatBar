@@ -49,6 +49,7 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
@@ -56,7 +57,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.example.chatbar.BuildConfig
 import com.example.chatbar.CharacterEditRoute
+import com.example.chatbar.ChatBarApp
 import com.example.chatbar.ChatRoute
 import com.example.chatbar.FormatCardEditRoute
 import com.example.chatbar.ModelEditRoute
@@ -78,6 +81,9 @@ import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
+import com.example.chatbar.domain.update.AppUpdateChecker
+import com.example.chatbar.domain.update.AppUpdateInfo
+import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -961,6 +967,11 @@ private fun SettingsTab(
     var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.toFloat()) }
     var docThreshold by remember { mutableFloatStateOf(settings.docRagSimilarityThreshold) }
     var ragMode by remember { mutableFloatStateOf(settings.ragInjectionMode.toModeIndex().toFloat()) }
+    val context = LocalContext.current
+    val uriHandler = LocalUriHandler.current
+    val scope = rememberCoroutineScope()
+    var checkingUpdate by remember { mutableStateOf(false) }
+    var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     LaunchedEffect(
         player.playerName,
         player.globalPersona,
@@ -1137,7 +1148,55 @@ private fun SettingsTab(
                 }
             }
         }
+        SettingsSection("应用更新") {
+            CbText(
+                "当前版本：${BuildConfig.VERSION_NAME}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CbButton(
+                    text = if (checkingUpdate) "检查中..." else "检查更新",
+                    onClick = {
+                        if (checkingUpdate) return@CbButton
+                        checkingUpdate = true
+                        scope.launch {
+                            runCatching {
+                                ChatBarApp.instance.appUpdateChecker.checkLatestRelease()
+                            }.onSuccess { result ->
+                                if (result == null) {
+                                    Toast.makeText(context, "无更新", Toast.LENGTH_SHORT).show()
+                                } else {
+                                    updateInfo = result
+                                }
+                            }.onFailure { error ->
+                                Toast.makeText(context, "检查更新失败：${error.message}", Toast.LENGTH_SHORT).show()
+                            }
+                            checkingUpdate = false
+                        }
+                    },
+                    enabled = !checkingUpdate,
+                    variant = ButtonVariant.Outline
+                )
+                if (checkingUpdate) CbSpinner(Modifier.size(24.dp))
+            }
+        }
         Spacer(Modifier.height(80.dp))
+    }
+    updateInfo?.let { info ->
+        AppUpdateDialog(
+            updateInfo = info,
+            onDismiss = { updateInfo = null },
+            onOpenRelease = {
+                val releaseUrl = info.releaseUrl.ifBlank { AppUpdateChecker.DEFAULT_RELEASES_URL }
+                runCatching {
+                    uriHandler.openUri(releaseUrl)
+                }.onFailure {
+                    Toast.makeText(context, "无法打开 GitHub Release 页面", Toast.LENGTH_SHORT).show()
+                }
+                updateInfo = null
+            }
+        )
     }
 }
 

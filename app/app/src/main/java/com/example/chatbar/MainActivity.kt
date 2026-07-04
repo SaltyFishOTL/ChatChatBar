@@ -11,11 +11,8 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
-import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
@@ -32,13 +29,9 @@ import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.resolveDarkTheme
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
-import com.example.chatbar.ui.kit.ButtonVariant
-import com.example.chatbar.ui.kit.CbButton
-import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbLoadingState
-import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
-import com.example.chatbar.ui.kit.ChatBarSpacing
+import com.example.chatbar.ui.components.AppUpdateDialog
 import kotlinx.coroutines.flow.MutableStateFlow
 
 class MainActivity : ComponentActivity() {
@@ -134,45 +127,5 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
-    }
-}
-
-@Composable
-private fun AppUpdateDialog(
-    updateInfo: AppUpdateInfo,
-    onDismiss: () -> Unit,
-    onOpenRelease: () -> Unit
-) {
-    CbDialog(
-        onDismissRequest = onDismiss,
-        title = "发现新版本",
-        confirm = {
-            CbButton(
-                text = "去更新",
-                onClick = onOpenRelease
-            )
-        },
-        dismiss = {
-            CbButton(
-                text = "稍后",
-                onClick = onDismiss,
-                variant = ButtonVariant.Ghost
-            )
-        }
-    ) {
-        CbText(
-            text = "当前版本：${updateInfo.currentVersion}",
-            color = ChatBarTheme.colors.mutedForeground
-        )
-        Spacer(Modifier.height(ChatBarSpacing.sm))
-        CbText(
-            text = "最新版本：${updateInfo.latestVersion}",
-            color = ChatBarTheme.colors.foreground
-        )
-        Spacer(Modifier.height(ChatBarSpacing.md))
-        CbText(
-            text = "可前往 GitHub Releases 下载更新。",
-            color = ChatBarTheme.colors.mutedForeground
-        )
     }
 }
