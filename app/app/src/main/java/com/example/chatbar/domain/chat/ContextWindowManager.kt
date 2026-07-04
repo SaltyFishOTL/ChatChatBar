@@ -11,6 +11,10 @@ import com.example.chatbar.data.local.entity.ChatMessage
  * - 判断是否需要刷新系统提示词
  */
 class ContextWindowManager {
+    data class PromptMessageGroups(
+        val historyMessages: List<ChatMessage>,
+        val previousMessage: ChatMessage?
+    )
 
     /**
      * 获取最近的消息（发送给 LLM 的上下文）
@@ -25,6 +29,31 @@ class ContextWindowManager {
     ): List<ChatMessage> {
         if (allMessages.size <= windowSize) return allMessages
         return allMessages.takeLast(windowSize)
+    }
+
+    fun getPromptMessageGroups(
+        contextMessages: List<ChatMessage>,
+        latestMessageId: String?
+    ): PromptMessageGroups {
+        val latestIndex = latestMessageId
+            ?.let { id -> contextMessages.indexOfLast { it.id == id } }
+            ?.takeIf { it >= 0 }
+        val previousIndex = if (latestIndex != null) {
+            latestIndex - 1
+        } else {
+            contextMessages.lastIndex
+        }
+        val previousMessage = previousIndex
+            .takeIf { it >= 0 }
+            ?.let { contextMessages[it] }
+        val excludedIds = mutableSetOf<String>()
+        latestMessageId?.let { excludedIds.add(it) }
+        previousMessage?.id?.let { excludedIds.add(it) }
+
+        return PromptMessageGroups(
+            historyMessages = contextMessages.filterNot { it.id in excludedIds },
+            previousMessage = previousMessage
+        )
     }
 
     /**

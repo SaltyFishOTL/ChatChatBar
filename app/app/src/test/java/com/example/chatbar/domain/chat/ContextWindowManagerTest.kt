@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
+import junit.framework.TestCase.assertNull
 import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
@@ -32,6 +33,36 @@ class ContextWindowManagerTest {
     fun shouldRefreshSystemPrompt_onlyWhenMessageCountExceedsWindow() {
         assertFalse(manager.shouldRefreshSystemPrompt(messageCount = 2, windowSize = 2))
         assertTrue(manager.shouldRefreshSystemPrompt(messageCount = 3, windowSize = 2))
+    }
+
+    @Test
+    fun getPromptMessageGroups_whenLatestInContext_movesPreviousAfterSystemPrompt() {
+        val messages = messages(5)
+
+        val groups = manager.getPromptMessageGroups(messages, latestMessageId = "message-4")
+
+        assertEquals(listOf("0", "1", "2"), groups.historyMessages.map { it.content })
+        assertEquals("3", groups.previousMessage?.content)
+    }
+
+    @Test
+    fun getPromptMessageGroups_whenLatestIsSynthetic_movesLastContextMessageAfterSystemPrompt() {
+        val messages = messages(5)
+
+        val groups = manager.getPromptMessageGroups(messages, latestMessageId = null)
+
+        assertEquals(listOf("0", "1", "2", "3"), groups.historyMessages.map { it.content })
+        assertEquals("4", groups.previousMessage?.content)
+    }
+
+    @Test
+    fun getPromptMessageGroups_whenLatestHasNoPrevious_keepsHistoryEmpty() {
+        val messages = messages(1)
+
+        val groups = manager.getPromptMessageGroups(messages, latestMessageId = "message-0")
+
+        assertEquals(emptyList<ChatMessage>(), groups.historyMessages)
+        assertNull(groups.previousMessage)
     }
 
     private fun messages(count: Int): List<ChatMessage> =

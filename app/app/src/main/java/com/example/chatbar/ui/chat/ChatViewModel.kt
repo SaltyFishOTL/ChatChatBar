@@ -910,14 +910,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
                     contextMsgs.lastOrNull { it.role == MessageRole.USER }
                 } else null
-
-                // 1. 过往消息（放在最上方，排除当前/重新生成触发的用户消息）
-                val historyMsgs = when {
-                    persistUserMessage -> contextMsgs.filterNot { it.id == userMsg.id }
-                    regenTargetUserMsg != null -> contextMsgs.filterNot { it.id == regenTargetUserMsg.id }
-                    else -> contextMsgs
+                val latestMessageId = when {
+                    persistUserMessage -> userMsg.id
+                    regenTargetUserMsg != null -> regenTargetUserMsg.id
+                    else -> null
                 }
-                for (msg in historyMsgs) {
+                val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
+                    contextMessages = contextMsgs,
+                    latestMessageId = latestMessageId
+                )
+
+                suspend fun addContextMessage(msg: ChatMessage) {
                     val role = msg.role.name.lowercase()
                     val text = renderSessionText(msg.displayContent)
                     if (msg.images.isNotEmpty() &&
@@ -943,7 +946,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 2. System prompt（中间位置）
+                // 1. 过往消息（放在最上方，排除上一条消息和当前/重新生成触发的用户消息）
+                for (msg in promptMessageGroups.historyMessages) {
+                    addContextMessage(msg)
+                }
+
+                // 2. System prompt（中间位置），随后补上一条消息提升过渡权重
                 apiMessages.add(ChatApiMessage.text("system", systemPrompt))
                 if (characterImageRefs.isNotEmpty() && modelConfig.isMultimodal) {
                     val imageBase64s = characterImageRefs.mapNotNull { (_, imagePath) ->
@@ -958,6 +966,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }.trim()
                         apiMessages.add(ChatApiMessage.withImages("user", imagePrompt, imageBase64s))
                     }
+                }
+                val previousContextMessage = promptMessageGroups.previousMessage
+                if (previousContextMessage != null) {
+                    addContextMessage(previousContextMessage)
                 }
 
                 // 3. 本次用户输入（始终放在最底部，追加隐式指令）
