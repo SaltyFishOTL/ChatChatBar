@@ -5,6 +5,8 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.ImageUnderstandingResult
+import com.example.chatbar.domain.chat.ImageUnderstandingService
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
@@ -50,10 +52,18 @@ data class CharacterAutoFillCharacterDraft(
     val imagePrompt: String = ""
 )
 
+data class CharacterAutoFillImageContext(
+    val hasSourceImages: Boolean = false,
+    val descriptions: List<String> = emptyList()
+) {
+    fun hasContent(): Boolean = hasSourceImages || descriptions.any(String::isNotBlank)
+}
+
 class CharacterAutoFillService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
     private val researchService: CharacterResearchService? = null,
+    private val imageUnderstandingService: ImageUnderstandingService? = null,
     private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
@@ -70,17 +80,20 @@ class CharacterAutoFillService(
     suspend fun generate(
         userInput: String,
         currentCard: CharacterCard,
-        modelOverride: ModelConfig? = null
+        modelOverride: ModelConfig? = null,
+        imageBase64s: List<String> = emptyList()
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
-        require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
+        require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
         val model = resolveModel(modelOverride)
-        val researchBrief = buildResearchBrief(userInput, currentCard, model)
+        val imageContext = prepareImageContext(imageBase64s, model)
+        val researchBrief = if (userInput.isNotBlank()) buildResearchBrief(userInput, currentCard, model) else null
+        val userPrompt = buildUserPrompt(userInput, currentCard, researchBrief, imageContext.promptContext)
 
         val raw = chatService.completeText(
             messages = listOf(
                 ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
-                ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
+                userPrompt.toChatApiMessage(imageContext.directImageBase64s)
             ),
             modelConfig = model,
             maxTokens = 6000,
@@ -94,19 +107,26 @@ class CharacterAutoFillService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
+        imageBase64s: List<String> = emptyList(),
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onRawText: (String) -> Unit
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
-        require(userInput.isNotBlank()) { "请输入角色信息或想玩的角色" }
+        require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
         val model = resolveModel(modelOverride)
-        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+        val imageContext = prepareImageContext(imageBase64s, model, onStatus)
+        val researchBrief = if (userInput.isNotBlank()) {
+            buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+        } else {
+            null
+        }
         onStatus("生成角色卡")
 
+        val userPrompt = buildUserPrompt(userInput, currentCard, researchBrief, imageContext.promptContext)
         val messages = listOf(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
-            ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
+            userPrompt.toChatApiMessage(imageContext.directImageBase64s)
         )
         val raw = StringBuilder()
         var streamError: String? = null
@@ -184,6 +204,33 @@ class CharacterAutoFillService(
 
     private fun parseGeneratedDraft(raw: String): CharacterAutoFillDraft? =
         parseDraft(raw, json)
+
+    private suspend fun prepareImageContext(
+        imageBase64s: List<String>,
+        model: ModelConfig,
+        onStatus: suspend (String) -> Unit = {}
+    ): PreparedAutoFillImageContext {
+        val images = imageBase64s.filter(String::isNotBlank)
+        if (images.isEmpty()) return PreparedAutoFillImageContext()
+        val result = imageUnderstandingService?.prepare(
+            imageBase64s = images,
+            generationModel = model,
+            requireUnderstanding = true,
+            announceDirect = true,
+            onStatus = onStatus
+        ) ?: if (model.isMultimodal) {
+            ImageUnderstandingResult(directImageBase64s = images)
+        } else {
+            error("当前模型不支持多模态，且未配置可用的视觉模型，无法基于图片生成")
+        }
+        return PreparedAutoFillImageContext(
+            promptContext = CharacterAutoFillImageContext(
+                hasSourceImages = result.hasSourceImages,
+                descriptions = result.descriptions
+            ),
+            directImageBase64s = result.directImageBase64s
+        )
+    }
 
     companion object {
         private val defaultJson = Json {
@@ -266,10 +313,20 @@ class CharacterAutoFillService(
             userInput: String,
             currentCard: CharacterCard,
             externalResearch: ResearchBrief? = null,
+            imageContext: CharacterAutoFillImageContext? = null,
             promptJson: Json = defaultPromptJson
         ): String =
             buildJsonObject {
                 put("request", userInput.trim())
+                imageContext?.takeIf(CharacterAutoFillImageContext::hasContent)?.let { context ->
+                    put(
+                        "sourceImageInstructions",
+                        PromptTemplates.CHARACTER_AUTO_FILL_SOURCE_IMAGE_INSTRUCTIONS
+                    )
+                    if (context.descriptions.isNotEmpty()) {
+                        put("sourceImageDescription", context.descriptions.joinToString("\n"))
+                    }
+                }
                 put("fillTargets", currentCard.buildFillTargets())
                 put("lockedContext", promptJson.parseToJsonElement(promptJson.encodeToString(currentCard.toLockedDraft())))
                 put("defaultNaiStyle", PromptTemplates.DEFAULT_CHARACTER_NAI_STYLE_PROMPT.trim())
@@ -293,9 +350,26 @@ class CharacterAutoFillService(
         idFactory: () -> String = { UUID.randomUUID().toString() }
     ): CharacterCard = CharacterAutoFillService.mergeInto(current, draft, idFactory)
 
-    fun buildUserPrompt(userInput: String, currentCard: CharacterCard, externalResearch: ResearchBrief? = null): String =
-        CharacterAutoFillService.buildPromptPayload(userInput, currentCard, externalResearch, promptJson)
+    fun buildUserPrompt(
+        userInput: String,
+        currentCard: CharacterCard,
+        externalResearch: ResearchBrief? = null,
+        imageContext: CharacterAutoFillImageContext? = null
+    ): String =
+        CharacterAutoFillService.buildPromptPayload(userInput, currentCard, externalResearch, imageContext, promptJson)
 }
+
+private data class PreparedAutoFillImageContext(
+    val promptContext: CharacterAutoFillImageContext = CharacterAutoFillImageContext(),
+    val directImageBase64s: List<String> = emptyList()
+)
+
+private fun String.toChatApiMessage(imageBase64s: List<String>): ChatApiMessage =
+    if (imageBase64s.isNotEmpty()) {
+        ChatApiMessage.withImages("user", this, imageBase64s)
+    } else {
+        ChatApiMessage.text("user", this)
+    }
 
 private fun CharacterCard.toLockedDraft(): CharacterAutoFillDraft =
     CharacterAutoFillDraft(

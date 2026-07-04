@@ -2,21 +2,20 @@ package com.example.chatbar.ui.chat
 
 import android.net.Uri
 import android.content.Context
-import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.os.PowerManager
 import android.provider.Settings
-import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.ImageUnderstandingResult
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
@@ -36,7 +35,6 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
-import java.io.ByteArrayOutputStream
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -75,6 +73,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val promptAssembler = ChatBarApp.instance.promptAssembler
     private val contextWindowManager = ChatBarApp.instance.contextWindowManager
     private val streamingChatService = ChatBarApp.instance.streamingChatService
+    private val imageUnderstandingService = ChatBarApp.instance.imageUnderstandingService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
@@ -629,20 +628,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 userMsgImages.addAll(imagePaths)
                 
                 if (!modelConfig.isMultimodal) {
-                    // 纯文本模型且有图片，需要调用视觉模型转描述
-                    val visionModelConfig = modelResolver.auxiliaryChatModel(modelConfig.visionModelId, appSettings)
-                    
-                    if (visionModelConfig != null && visionModelConfig.isMultimodal) {
-                        addSystemMessage("正在使用视觉模型 [${visionModelConfig.displayName}] 解析图片...")
-                        try {
-                            val base64 = encodeImageToBase64(imagePaths.first())
-                            val description = streamingChatService.describeImage(base64, visionModelConfig)
-                            finalUserContent += "\n[用户附图描述: $description]"
-                        } catch (e: Exception) {
-                            addSystemMessage("图片解析失败: ${e.message}。将作为无图消息发送。")
+                    try {
+                        val imageUnderstanding = imageUnderstandingService.prepare(
+                            imageBase64s = listOf(encodeImageToBase64(imagePaths.first())),
+                            generationModel = modelConfig,
+                            requireUnderstanding = false,
+                            onStatus = { addSystemMessage(it) }
+                        )
+                        if (imageUnderstanding.descriptions.isNotEmpty()) {
+                            finalUserContent += "\n[用户附图描述: ${imageUnderstanding.descriptions.joinToString("\n")}]"
+                        } else if (!imageUnderstanding.unavailableReason.isNullOrBlank()) {
+                            addSystemMessage("${imageUnderstanding.unavailableReason}，将作为无图消息发送。")
                         }
-                    } else {
-                        addSystemMessage("当前模型不支持多模态，且未配置关联的视觉模型，图片描述功能失效。")
+                    } catch (e: Exception) {
+                        addSystemMessage("图片解析失败: ${e.message}。将作为无图消息发送。")
                     }
                 }
             }
@@ -905,20 +904,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ?.takeIf { it.isNotBlank() && File(it).exists() }
                         ?.let { character.name to it }
                 }
-                if (characterImageRefs.isNotEmpty() && !modelConfig.isMultimodal) {
-                    val visionModelConfig = modelResolver.auxiliaryChatModel(modelConfig.visionModelId, appSettings)
-                    if (visionModelConfig != null && visionModelConfig.isMultimodal) {
-                        val descriptions = characterImageRefs.mapNotNull { (characterName, imagePath) ->
-                            runCatching {
-                                "$characterName: " + streamingChatService.describeImage(
-                                    encodeImageToBase64(imagePath),
-                                    visionModelConfig
-                                )
-                            }.getOrNull()
-                        }
-                        if (descriptions.isNotEmpty()) {
-                            systemPrompt += "\n\n【角色外观图片描述】\n" + descriptions.joinToString("\n")
-                        }
+                val characterImageBase64s = characterImageRefs.mapNotNull { (characterName, imagePath) ->
+                    runCatching { characterName to encodeImageToBase64(imagePath) }.getOrNull()
+                }
+                val characterImageUnderstanding = if (characterImageBase64s.isNotEmpty()) {
+                    imageUnderstandingService.prepare(
+                        imageBase64s = characterImageBase64s.map { it.second },
+                        generationModel = modelConfig,
+                        requireUnderstanding = false
+                    )
+                } else {
+                    ImageUnderstandingResult()
+                }
+                if (characterImageUnderstanding.descriptions.isNotEmpty()) {
+                    val descriptions = characterImageBase64s.mapIndexedNotNull { index, (characterName, _) ->
+                        characterImageUnderstanding.descriptions.getOrNull(index)
+                            ?.substringAfter(": ", characterImageUnderstanding.descriptions[index])
+                            ?.let { "$characterName: $it" }
+                    }
+                    if (descriptions.isNotEmpty()) {
+                        systemPrompt += "\n\n【角色外观图片描述】\n" + descriptions.joinToString("\n")
                     }
                 }
 
@@ -972,19 +977,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                 // 2. System prompt（中间位置），随后补上一条消息提升过渡权重
                 apiMessages.add(ChatApiMessage.text("system", systemPrompt))
-                if (characterImageRefs.isNotEmpty() && modelConfig.isMultimodal) {
-                    val imageBase64s = characterImageRefs.mapNotNull { (_, imagePath) ->
-                        runCatching { encodeImageToBase64(imagePath) }.getOrNull()
-                    }
-                    if (imageBase64s.isNotEmpty()) {
+                if (characterImageUnderstanding.directImageBase64s.isNotEmpty()) {
                         val imagePrompt = buildString {
                             appendLine("以下图片来自当前角色卡的人物外观设定。请把它们视为 System Prompt 中角色设定的一部分。")
-                            characterImageRefs.forEachIndexed { index, (characterName, _) ->
+                            characterImageBase64s.forEachIndexed { index, (characterName, _) ->
                                 appendLine("图片 ${index + 1}: $characterName")
                             }
                         }.trim()
-                        apiMessages.add(ChatApiMessage.withImages("user", imagePrompt, imageBase64s))
-                    }
+                    apiMessages.add(
+                        ChatApiMessage.withImages(
+                            "user",
+                            imagePrompt,
+                            characterImageUnderstanding.directImageBase64s
+                        )
+                    )
                 }
                 val previousContextMessage = promptMessageGroups.previousMessage
                 if (previousContextMessage != null) {
@@ -1826,12 +1832,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private suspend fun encodeImageToBase64(path: String): String = withContext(Dispatchers.IO) {
-        val file = File(path)
-        if (!file.exists()) throw IllegalArgumentException("图片文件不存在: $path")
-        val bitmap = BitmapFactory.decodeFile(file.absolutePath)
-        val outputStream = ByteArrayOutputStream()
-        bitmap.compress(Bitmap.CompressFormat.JPEG, 80, outputStream)
-        Base64.encodeToString(outputStream.toByteArray(), Base64.NO_WRAP)
+        ImageFileEncoder.encodeToJpegBase64(path)
     }
 }
 

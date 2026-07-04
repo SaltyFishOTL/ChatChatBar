@@ -47,6 +47,9 @@ class EffectiveModelResolver(
                 ?.toModelConfig(appSettings)
     }
 
+    suspend fun auxiliaryChatModel(id: String?): ModelConfig? =
+        auxiliaryChatModel(id, settings.getAppSettings())
+
     suspend fun retrievalModel(): ModelConfig? = retrievalModel(settings.getAppSettings())
 
     suspend fun retrievalModel(appSettings: AppSettings): ModelConfig? =

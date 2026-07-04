@@ -21,6 +21,7 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -233,13 +234,14 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         editMode = target
     }
 
-    fun generateAutoFillDraft(userInput: String, modelId: String? = null) {
+    fun generateAutoFillDraft(userInput: String, modelId: String? = null, imagePath: String? = null) {
         if (editMode != CharacterEditMode.STRUCTURED) {
             _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
             return
         }
-        if (userInput.isBlank()) {
-            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息或想玩的角色")
+        val sourceImagePath = imagePath?.takeIf(String::isNotBlank)
+        if (userInput.isBlank() && sourceImagePath == null) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息或上传图片")
             return
         }
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
@@ -268,10 +270,26 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             var progressLines = listOf(statusText)
             var latestResearchDebug: ResearchDebugSnapshot? = null
             try {
+                val imageBase64s = sourceImagePath?.let { path ->
+                    currentStatusText = "正在读取上传图片"
+                    progressLines = progressLines.appendProgressLine(currentStatusText)
+                    updateAutoFillStateIfCurrent(generationToken) {
+                        it.copy(
+                            isGenerating = true,
+                            streamingText = latestRawText,
+                            statusText = currentStatusText,
+                            progressLines = progressLines,
+                            researchDebug = latestResearchDebug,
+                            modelId = selectedModelId
+                        )
+                    }
+                    listOf(ImageFileEncoder.encodeToJpegBase64(path))
+                }.orEmpty()
                 val draft = characterAutoFillService.generateStreaming(
                     userInput = userInput,
                     currentCard = buildCurrentCard(markDirty = false),
                     modelOverride = selectedModel,
+                    imageBase64s = imageBase64s,
                     onStatus = { nextStatus ->
                         currentStatusText = nextStatus
                         progressLines = progressLines.appendProgressLine(nextStatus)
@@ -640,6 +658,21 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         }
         deleteAutoFillCandidateImage(coverImagePath)
         _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    fun deleteTransientImage(path: String?) {
+        if (path.isNullOrBlank()) return
+        viewModelScope.launch(Dispatchers.IO) {
+            runCatching {
+                val file = File(path)
+                val imagesDir = File(ChatBarApp.instance.filesDir, "images")
+                val filePath = file.canonicalPath
+                val imagesDirPath = imagesDir.canonicalPath
+                if (file.exists() && filePath.startsWith(imagesDirPath + File.separator)) {
+                    file.delete()
+                }
+            }
+        }
     }
 
     private fun updateAutoFillStateIfCurrent(

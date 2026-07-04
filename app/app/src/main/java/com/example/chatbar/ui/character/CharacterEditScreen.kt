@@ -482,6 +482,8 @@ fun CharacterEditScreen(
                 showAutoFillDialog = false
                 viewModel.clearAutoFillDraft()
             },
+            onPickImage = { callback -> pickImage(callback) },
+            onDeleteImage = viewModel::deleteTransientImage,
             onGenerate = viewModel::generateAutoFillDraft,
             onGenerateCover = viewModel::generateAutoFillCoverImageCandidate,
             onCancel = viewModel::cancelAutoFillGeneration,
@@ -665,13 +667,16 @@ private fun CharacterAutoFillDialog(
     models: List<ModelConfig>,
     defaultModelId: String?,
     onDismiss: () -> Unit,
-    onGenerate: (String, String?) -> Unit,
+    onPickImage: (((String) -> Unit) -> Unit),
+    onDeleteImage: (String?) -> Unit,
+    onGenerate: (String, String?, String?) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
     onApply: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
+    var sourceImagePath by remember { mutableStateOf<String?>(null) }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
     val modelOptions = remember(models, defaultModelId) {
         val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
@@ -681,6 +686,13 @@ private fun CharacterAutoFillDialog(
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
     val busy = state.isGenerating || state.coverImage.isGenerating
+    fun clearSourceImage() {
+        onDeleteImage(sourceImagePath)
+        sourceImagePath = null
+    }
+    DisposableEffect(sourceImagePath) {
+        onDispose { onDeleteImage(sourceImagePath) }
+    }
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
@@ -692,7 +704,12 @@ private fun CharacterAutoFillDialog(
         }
     }
     CbDialog(
-        onDismissRequest = { if (!busy) onDismiss() },
+        onDismissRequest = {
+            if (!busy) {
+                clearSourceImage()
+                onDismiss()
+            }
+        },
         title = "AI 自动填充",
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = {
@@ -701,13 +718,23 @@ private fun CharacterAutoFillDialog(
             } else if (state.coverImage.isGenerating) {
                 CbButton("取消封面设计", onCancelCover, variant = ButtonVariant.Destructive)
             } else {
-                CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
+                CbButton(
+                    "关闭",
+                    {
+                        clearSourceImage()
+                        onDismiss()
+                    },
+                    variant = ButtonVariant.Ghost
+                )
             }
         },
         confirm = {
             CbButton(
                 "应用",
-                onApply,
+                {
+                    clearSourceImage()
+                    onApply()
+                },
                 enabled = state.draft != null && !busy
             )
         },
@@ -739,6 +766,21 @@ private fun CharacterAutoFillDialog(
                     minLines = 6
                 )
             }
+            CbField("参考图片") {
+                ImagePickerPanel(
+                    imagePath = sourceImagePath,
+                    height = 112.dp,
+                    onPick = {
+                        if (!busy) {
+                            onPickImage { path ->
+                                clearSourceImage()
+                                sourceImagePath = path
+                            }
+                        }
+                    },
+                    onClear = { if (!busy) clearSourceImage() }
+                )
+            }
             if (state.isGenerating) {
                 CbButton(
                     "取消生成",
@@ -750,9 +792,9 @@ private fun CharacterAutoFillDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成候选",
-                        { onGenerate(input, selectedModel.id) },
+                        { onGenerate(input, selectedModel.id, sourceImagePath) },
                         modifier = Modifier.weight(1f),
-                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
+                        enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(

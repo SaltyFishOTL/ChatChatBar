@@ -70,6 +70,7 @@ class CharacterAutoFillServiceTest {
         assertTrue(prompt.contains("角色卡可以包含多个 characters"))
         assertTrue(prompt.contains("fillTargets.createCharacters"))
         assertTrue(prompt.contains("每个 fillTargets.characters 项只对应一个已有角色槽位"))
+        assertTrue(prompt.contains("sourceImageInstructions/sourceImageDescription"))
         listOf(
             "document",
             "world book",
@@ -192,6 +193,35 @@ class CharacterAutoFillServiceTest {
         assertFalse(
             CharacterAutoFillService.buildPromptPayload("fill", current, ResearchBrief())
                 .contains("externalResearch")
+        )
+    }
+
+    @Test
+    fun `prompt payload includes source image context only when image exists`() {
+        val current = card()
+        val payload = CharacterAutoFillService.buildPromptPayload(
+            userInput = "",
+            currentCard = current,
+            imageContext = CharacterAutoFillImageContext(
+                hasSourceImages = true,
+                descriptions = listOf("银发少女，黑色制服，站在雨夜街道。")
+            )
+        )
+        val root = Json.parseToJsonElement(payload).jsonObject
+
+        assertEquals("", root.getValue("request").jsonPrimitive.content)
+        assertTrue(root.containsKey("sourceImageInstructions"))
+        assertEquals(
+            PromptTemplates.CHARACTER_AUTO_FILL_SOURCE_IMAGE_INSTRUCTIONS,
+            root.getValue("sourceImageInstructions").jsonPrimitive.content
+        )
+        assertEquals(
+            "银发少女，黑色制服，站在雨夜街道。",
+            root.getValue("sourceImageDescription").jsonPrimitive.content
+        )
+        assertFalse(
+            CharacterAutoFillService.buildPromptPayload("fill", current)
+                .contains("sourceImageInstructions")
         )
     }
 
