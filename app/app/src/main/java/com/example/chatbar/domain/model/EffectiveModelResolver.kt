@@ -9,7 +9,8 @@ import com.example.chatbar.data.repository.SettingsRepository
 
 data class ModelConfigurationStatus(
     val isUsable: Boolean,
-    val errors: List<String> = emptyList()
+    val errors: List<String> = emptyList(),
+    val warnings: List<String> = emptyList()
 )
 
 class EffectiveModelResolver(
@@ -53,13 +54,14 @@ class EffectiveModelResolver(
     suspend fun retrievalModel(): ModelConfig? = retrievalModel(settings.getAppSettings())
 
     suspend fun retrievalModel(appSettings: AppSettings): ModelConfig? =
-        models.getRetrievalModel()?.withEffectiveApiKey(appSettings)
+        (models.getRetrievalModel()?.withEffectiveApiKey(appSettings)
             ?: presets.catalog.retrievalModel?.takeIf(::isConfigured)?.toModelConfig(appSettings)
+        )?.takeIf { it.apiKey.isNotBlank() }
 
     suspend fun embeddingModel(): EmbeddingConfig? = embeddingModel(settings.getAppSettings())
 
     suspend fun embeddingModel(appSettings: AppSettings): EmbeddingConfig? =
-        models.getEmbeddingModel()?.withEffectiveApiKey(appSettings)
+        (models.getEmbeddingModel()?.withEffectiveApiKey(appSettings)
             ?: presets.catalog.embeddingModel?.takeIf { PresetModelPolicy.isConfigured(it.modelName) }?.let {
                 EmbeddingConfig(
                     id = presetRef(it.modelKey),
@@ -70,6 +72,7 @@ class EffectiveModelResolver(
                     dimensions = it.dimensions
                 )
             }
+        )?.takeIf { it.apiKey.isNotBlank() }
 
     suspend fun status(): ModelConfigurationStatus = status(settings.getAppSettings())
 
@@ -77,15 +80,7 @@ class EffectiveModelResolver(
         val default = defaultChatModel(appSettings)
         val retrieval = retrievalModel(appSettings)
         val embedding = embeddingModel(appSettings)
-        val errors = buildList {
-            if (default == null) add("未配置可用默认对话模型")
-            else if (default.apiKey.isBlank()) add("默认对话模型/API Key 未配置")
-            if (retrieval == null) add("检索规划模型未配置")
-            else if (retrieval.apiKey.isBlank()) add("检索规划模型/API Key 未配置")
-            if (embedding == null) add("向量模型未配置，RAG 将不可用")
-            else if (embedding.apiKey.isBlank()) add("向量模型/API Key 未配置，RAG 将不可用")
-        }
-        return ModelConfigurationStatus(errors.isEmpty(), errors)
+        return modelConfigurationStatus(default, retrieval, embedding)
     }
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
@@ -139,4 +134,24 @@ class EffectiveModelResolver(
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
         copy(apiKey = apiKey.trim().ifBlank { effectivePresetApiKey(appSettings) })
+}
+
+internal fun modelConfigurationStatus(
+    default: ModelConfig?,
+    retrieval: ModelConfig?,
+    embedding: EmbeddingConfig?
+): ModelConfigurationStatus {
+    val errors = buildList {
+        if (default == null) add("未配置可用默认对话模型")
+        else if (default.apiKey.isBlank()) add("默认对话模型/API Key 未配置")
+    }
+    val warnings = buildList {
+        if (retrieval == null) add("检索规划模型未配置，RAG 检索规划将回退到对话模型")
+        if (embedding == null) add("向量模型未配置，RAG 将不可用")
+    }
+    return ModelConfigurationStatus(
+        isUsable = errors.isEmpty(),
+        errors = errors,
+        warnings = warnings
+    )
 }

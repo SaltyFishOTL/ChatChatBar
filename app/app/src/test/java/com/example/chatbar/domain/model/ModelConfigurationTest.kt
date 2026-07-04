@@ -114,4 +114,42 @@ class ModelConfigurationTest {
         assertEquals(null, model.sourcePresetKey)
         assertEquals(null, model.sourcePresetVersion)
     }
+
+    @Test fun chatModelKeyKeepsConfigurationUsableWhenSupportModelsMissing() {
+        val status = modelConfigurationStatus(
+            default = model(apiKey = "model-key"),
+            retrieval = null,
+            embedding = null
+        )
+
+        assertTrue(status.isUsable)
+        assertEquals(emptyList<String>(), status.errors)
+        assertEquals(
+            listOf(
+                "检索规划模型未配置，RAG 检索规划将回退到对话模型",
+                "向量模型未配置，RAG 将不可用"
+            ),
+            status.warnings
+        )
+    }
+
+    @Test fun blankChatModelKeyStillBlocksChat() {
+        val status = modelConfigurationStatus(
+            default = model(apiKey = ""),
+            retrieval = null,
+            embedding = null
+        )
+
+        assertFalse(status.isUsable)
+        assertEquals(listOf("默认对话模型/API Key 未配置"), status.errors)
+    }
+
+    private fun model(apiKey: String): ModelConfig = ModelConfig(
+        id = "m1",
+        displayName = "M",
+        baseUrl = "https://example.test/v1",
+        apiKey = apiKey,
+        modelName = "provider/model",
+        createdAt = 1L
+    )
 }
