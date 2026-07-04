@@ -1,0 +1,117 @@
+name: Release APK
+
+on:
+  workflow_dispatch:
+    inputs:
+      versionName:
+        description: "Version, for example 1.0.2"
+        required: true
+        type: string
+      releaseNotes:
+        description: "Release notes"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.versionName }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish release
+    runs-on: ubuntu-latest
+    env:
+      VERSION_NAME: ${{ inputs.versionName }}
+      RELEASE_NOTES: ${{ inputs.releaseNotes }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Validate version
+        run: |
+          set -euo pipefail
+          if [[ ! "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){2}([.-][0-9A-Za-z]+)?$ ]]; then
+            echo "Version must look like 1.0.2"
+            exit 1
+          fi
+          git fetch --tags --force
+          if git rev-parse -q --verify "refs/tags/v$VERSION_NAME" >/dev/null; then
+            echo "Tag v$VERSION_NAME already exists"
+            exit 1
+          fi
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: sdkmanager "platforms;android-36" "build-tools;36.0.0"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Bump Android version
+        id: version
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path("app/app/build.gradle.kts")
+          text = path.read_text(encoding="utf-8")
+          code_match = re.search(r'versionCode = (\d+)', text)
+          if not code_match:
+              raise SystemExit("versionCode not found")
+
+          next_code = int(code_match.group(1)) + 1
+          version_name = os.environ["VERSION_NAME"]
+          text = re.sub(r'versionCode = \d+', f'versionCode = {next_code}', text, count=1)
+          text = re.sub(r'versionName = "[^"]+"', f'versionName = "{version_name}"', text, count=1)
+          path.write_text(text, encoding="utf-8")
+
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
+              output.write(f"versionCode={next_code}\n")
+          PY
+
+      - name: Test and build debug APK
+        working-directory: app
+        run: |
+          chmod +x gradlew
+          ./gradlew test assembleDebug --no-daemon --stacktrace
+
+      - name: Prepare release asset
+        run: |
+          cp app/app/build/outputs/apk/debug/app-debug.apk "ChatBar-${VERSION_NAME}-debug.apk"
+
+      - name: Commit version bump and tag
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add app/app/build.gradle.kts
+          git commit -m "Release ${VERSION_NAME}"
+          git tag -a "v${VERSION_NAME}" -m "ChatBar ${VERSION_NAME}"
+          git push origin HEAD:${GITHUB_REF_NAME}
+          git push origin "v${VERSION_NAME}"
+
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION_NAME}" \
+            "ChatBar-${VERSION_NAME}-debug.apk#ChatBar-${VERSION_NAME}-debug.apk" \
+            --title "ChatBar ${VERSION_NAME}" \
+            --notes "${RELEASE_NOTES}"
