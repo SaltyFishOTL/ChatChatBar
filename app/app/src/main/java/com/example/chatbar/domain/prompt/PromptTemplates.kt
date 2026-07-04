@@ -98,7 +98,7 @@ masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan
 """
 
     const val CHARACTER_AUTO_FILL_SOURCE_IMAGE_INSTRUCTIONS =
-        "若存在上传图片，角色卡设计必须优先围绕图片可见内容；用户文字只作为补充约束，不要设计与图片明显冲突的外貌、服装、身份或场景。"
+        "若存在上传图片，角色卡设计必须优先围绕图片内容场景拓展想象；用户文字只作为补充约束，不要设计与图片明显冲突的外貌、服装、身份或场景。"
 
     const val CHARACTER_AUTO_FILL_SYSTEM_PROMPT = """
 你要为角色扮演设计扮演卡片：只输出一个合法 JSON 对象；不要 Markdown，不要解释，不要在 JSON 外写任何文字。
