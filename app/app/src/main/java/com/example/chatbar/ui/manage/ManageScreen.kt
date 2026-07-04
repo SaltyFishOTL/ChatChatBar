@@ -51,6 +51,8 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.text.font.Font
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -561,6 +563,7 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
     val gradientStart = (1f - options.gradientHeight).coerceIn(0f, 1f)
     val logoSize = ((options.logoScale / 0.095f) * 54f).coerceIn(40f, 78f).dp
     val titleSize = ((options.titleScale / 0.052f) * 20f).coerceIn(16f, 28f).sp
+    val titleFontFamily = remember { FontFamily(Font(R.font.xiaolang_tianqiong)) }
     Box(
         Modifier
             .fillMaxWidth()
@@ -627,7 +630,11 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
                 card.name.ifBlank { "未命名角色" },
                 modifier = Modifier.weight(1f),
                 color = Color.White,
-                style = ChatBarTheme.typography.title.copy(fontSize = titleSize, lineHeight = (titleSize.value + 6f).sp),
+                style = ChatBarTheme.typography.title.copy(
+                    fontSize = titleSize,
+                    lineHeight = (titleSize.value + 6f).sp,
+                    fontFamily = titleFontFamily
+                ),
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )

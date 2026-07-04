@@ -11,6 +11,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
@@ -30,6 +31,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -154,6 +156,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         loadSessionData()
         refreshConfigurations()
         observeSessionChanges()
+        observeCharacterCardChanges()
         observeSettingsChanges()
     }
 
@@ -171,6 +174,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             settingsRepository.appSettings.collect { settings ->
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
+            }
+        }
+    }
+
+    private fun observeCharacterCardChanges() {
+        viewModelScope.launch {
+            characterRepository.initialize()
+            combine(_session, characterRepository.characters) { session, cards ->
+                session?.let { activeSession ->
+                    cards.firstOrNull { it.id == activeSession.characterCardId }
+                }
+            }.collect { card ->
+                if (_session.value != null) {
+                    _characterCard.value = card
+                    _isArchived.value = card == null
+                }
             }
         }
     }
@@ -1699,7 +1718,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         viewModelScope.launch {
             try {
-                val currentCard = _characterCard.value
+                val loadedCard = _characterCard.value
+                    ?: throw IllegalStateException("当前会话没有可更新的角色卡")
+                val currentCard = characterRepository.getById(loadedCard.id)
                     ?: throw IllegalStateException("当前会话没有可更新的角色卡")
                 val localPath = copyImageIntoCharacterCardStorage(
                     sourcePath = imagePath,
@@ -1711,7 +1732,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     CharacterCardImageTarget.BACKGROUND -> currentCard.copy(chatBackground = localPath)
                 }
                 characterRepository.update(updated)
-                _characterCard.value = characterRepository.getById(updated.id) ?: updated
+                val persisted = characterRepository.getById(updated.id) ?: updated
+                _characterCard.value = persisted
+                if (target == CharacterCardImageTarget.BACKGROUND) {
+                    syncSessionBackgroundOverride(
+                        previousCardBackground = currentCard.chatBackground,
+                        newCardBackground = localPath
+                    )
+                }
                 onResult(
                     true,
                     when (target) {
@@ -1723,6 +1751,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 if (error is CancellationException) throw error
                 onResult(false, error.message ?: "替换图片失败")
             }
+        }
+    }
+
+    private suspend fun syncSessionBackgroundOverride(
+        previousCardBackground: String?,
+        newCardBackground: String
+    ) {
+        val currentSession = _session.value ?: return
+        val nextBackground = CharacterCardImagePolicy.sessionBackgroundOverrideAfterCardBackgroundChange(
+            sessionBackground = currentSession.chatBackground,
+            previousCardBackground = previousCardBackground,
+            newCardBackground = newCardBackground
+        )
+        if (nextBackground != currentSession.chatBackground) {
+            val updatedSession = currentSession.copy(chatBackground = nextBackground)
+            chatRepository.updateSession(updatedSession)
+            _session.value = updatedSession
         }
     }
 

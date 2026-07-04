@@ -41,6 +41,16 @@ import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 
+data class CharacterCoverImageUiState(
+    val isGenerating: Boolean = false,
+    val preview: ByteArray? = null,
+    val progress: Float = 0f,
+    val path: String? = null,
+    val promptText: String = "",
+    val error: String? = null,
+    val statusText: String = ""
+)
+
 data class CharacterAutoFillUiState(
     val isGenerating: Boolean = false,
     val draft: CharacterAutoFillDraft? = null,
@@ -50,12 +60,7 @@ data class CharacterAutoFillUiState(
     val progressLines: List<String> = emptyList(),
     val researchDebug: ResearchDebugSnapshot? = null,
     val modelId: String? = null,
-    val isGeneratingCoverImage: Boolean = false,
-    val coverImagePreview: ByteArray? = null,
-    val coverImageProgress: Float = 0f,
-    val coverImagePath: String? = null,
-    val coverImagePromptText: String = "",
-    val coverImageError: String? = null
+    val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
 
 data class CharacterRewriteUiState(
@@ -65,8 +70,11 @@ data class CharacterRewriteUiState(
     val streamingText: String = "",
     val statusText: String = "",
     val progressLines: List<String> = emptyList(),
-    val researchDebug: ResearchDebugSnapshot? = null
+    val researchDebug: ResearchDebugSnapshot? = null,
+    val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
+
+private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 
 class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
@@ -85,6 +93,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     private var autoFillGenerationToken = 0
     private var rewriteJob: Job? = null
     private var rewriteGenerationToken = 0
+    private var coverImageJob: Job? = null
+    private var coverImageGenerationToken = 0
+    private var coverImageTarget: CoverImageTarget? = null
 
     private val _characterCard = MutableStateFlow<CharacterCard?>(null)
     val characterCard: StateFlow<CharacterCard?> = _characterCard.asStateFlow()
@@ -100,6 +111,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
 
     private val _rewriteState = MutableStateFlow(CharacterRewriteUiState())
     val rewriteState: StateFlow<CharacterRewriteUiState> = _rewriteState.asStateFlow()
+
+    private val _coverImageState = MutableStateFlow(CharacterCoverImageUiState())
+    val coverImageState: StateFlow<CharacterCoverImageUiState> = _coverImageState.asStateFlow()
 
     private val _autoFillModels = MutableStateFlow<List<ModelConfig>>(emptyList())
     val autoFillModels: StateFlow<List<ModelConfig>> = _autoFillModels.asStateFlow()
@@ -235,10 +249,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             return
         }
         val selectedModelId = selectedModel?.id
-        val previousCoverImagePath = _autoFillState.value.coverImagePath
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
-        deleteAutoFillCandidateImage(previousCoverImagePath)
+        deleteAutoFillCandidateImage(_autoFillState.value.coverImage.path)
         val generationToken = autoFillGenerationToken
         val statusText = selectedModel?.autoFillLabel()
             ?.let { "正在使用 $it 生成角色卡候选" }
@@ -294,26 +307,13 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     }
                 )
                 if (generationToken == autoFillGenerationToken) {
-                    val mergedCard = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
-                    val needsCoverImage = avatar.isNullOrBlank() || chatBackground.isNullOrBlank()
                     _autoFillState.value = CharacterAutoFillUiState(
-                        isGenerating = needsCoverImage,
                         draft = draft,
                         streamingText = latestRawText,
-                        statusText = if (needsCoverImage) "正在生成头像和聊天背景" else "",
                         progressLines = progressLines.appendProgressLine("角色卡候选已生成"),
                         researchDebug = latestResearchDebug,
-                        modelId = selectedModelId,
-                        isGeneratingCoverImage = needsCoverImage
+                        modelId = selectedModelId
                     )
-                    if (needsCoverImage) {
-                        generateAutoFillCoverImageCandidate(
-                            card = mergedCard,
-                            modelOverride = selectedModel,
-                            selectedModelId = selectedModelId,
-                            generationToken = generationToken
-                        )
-                    }
                 }
             } catch (_: CancellationException) {
                 if (generationToken == autoFillGenerationToken) {
@@ -349,19 +349,14 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         if (!state.isGenerating) return
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
-        deleteAutoFillCandidateImage(state.coverImagePath)
+        deleteAutoFillCandidateImage(state.coverImage.path)
         _autoFillState.value = state.copy(
             isGenerating = false,
             draft = null,
             error = "已取消生成",
             statusText = "已取消生成",
             progressLines = state.progressLines.appendProgressLine("已取消生成"),
-            isGeneratingCoverImage = false,
-            coverImagePreview = null,
-            coverImageProgress = 0f,
-            coverImagePath = null,
-            coverImagePromptText = "",
-            coverImageError = null
+            coverImage = CharacterCoverImageUiState()
         )
     }
 
@@ -379,131 +374,270 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         defaultImagePrompt = merged.defaultImagePrompt
         charactersList.clear()
         charactersList.addAll(merged.characters)
-        state.coverImagePath?.takeIf(String::isNotBlank)?.let { path ->
-            var used = false
-            if (avatar.isNullOrBlank()) {
-                avatar = path
-                used = true
-            }
-            if (chatBackground.isNullOrBlank()) {
-                chatBackground = path
-                used = true
-            }
-            if (!used) deleteAutoFillCandidateImage(path)
+        state.coverImage.path?.takeIf(String::isNotBlank)?.let { path ->
+            avatar = path
+            chatBackground = path
         }
         _autoFillState.value = CharacterAutoFillUiState()
     }
 
-    private suspend fun generateAutoFillCoverImageCandidate(
+    fun generateCurrentCoverImage(modelId: String? = null) {
+        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
+            _coverImageState.value = CharacterCoverImageUiState(error = error)
+        } ?: return
+        startCoverImageGeneration(
+            target = CoverImageTarget.Current,
+            card = buildCurrentCard(markDirty = false),
+            modelOverride = selectedModel,
+            selectedModelId = selectedModelId
+        )
+    }
+
+    fun generateAutoFillCoverImageCandidate(modelId: String? = null) {
+        val state = _autoFillState.value
+        val draft = state.draft ?: run {
+            _autoFillState.value = state.copy(
+                coverImage = CharacterCoverImageUiState(error = "请先生成角色卡候选")
+            )
+            return
+        }
+        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
+            _autoFillState.value = _autoFillState.value.copy(
+                coverImage = CharacterCoverImageUiState(error = error)
+            )
+        } ?: return
+        val mergedCard = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
+        startCoverImageGeneration(
+            target = CoverImageTarget.AutoFill,
+            card = mergedCard,
+            modelOverride = selectedModel,
+            selectedModelId = selectedModelId,
+            previousCandidatePath = state.coverImage.path
+        )
+    }
+
+    fun generateRewriteCoverImageCandidate(modelId: String? = null) {
+        val state = _rewriteState.value
+        val draft = state.draft ?: run {
+            _rewriteState.value = state.copy(
+                coverImage = CharacterCoverImageUiState(error = "请先生成改写候选")
+            )
+            return
+        }
+        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
+            _rewriteState.value = _rewriteState.value.copy(
+                coverImage = CharacterCoverImageUiState(error = error)
+            )
+        } ?: return
+        val mergedCard = characterRewriteService.mergeInto(buildCurrentCard(markDirty = false), draft)
+        startCoverImageGeneration(
+            target = CoverImageTarget.Rewrite,
+            card = mergedCard,
+            modelOverride = selectedModel,
+            selectedModelId = selectedModelId,
+            previousCandidatePath = state.coverImage.path
+        )
+    }
+
+    fun cancelCoverImageGeneration() {
+        val target = coverImageTarget ?: return
+        coverImageGenerationToken += 1
+        coverImageJob?.cancel()
+        coverImageJob = null
+        putCoverImageState(
+            target,
+            currentCoverImageState(target).copy(
+                isGenerating = false,
+                error = "已取消封面设计",
+                statusText = "已取消封面设计"
+            )
+        )
+        coverImageTarget = null
+    }
+
+    private fun resolveCoverModelSelection(
+        modelId: String?,
+        onError: (String) -> Unit
+    ): Pair<ModelConfig?, String?>? {
+        if (modelId == null) return null to null
+        val selectedModel = _autoFillModels.value.firstOrNull { it.id == modelId }
+        if (selectedModel == null) {
+            onError("所选模型不可用，请重新选择")
+            refreshAutoFillModels()
+            return null
+        }
+        return selectedModel to selectedModel.id
+    }
+
+    private fun startCoverImageGeneration(
+        target: CoverImageTarget,
         card: CharacterCard,
         modelOverride: ModelConfig?,
         selectedModelId: String?,
-        generationToken: Int
+        previousCandidatePath: String? = null
     ) {
-        try {
-            val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
-            val settings = settingsRepository.getAppSettings()
-            val model = modelOverride ?: modelResolver.resolveChatModel(selectedModelId, settings)
-            if (token == null || model == null || model.apiKey.isBlank()) {
-                val missing = mutableListOf<String>()
-                if (token == null) missing += "NovelAI Token"
-                if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
-                updateAutoFillStateIfCurrent(generationToken) {
-                    it.copy(
-                        isGenerating = false,
-                        isGeneratingCoverImage = false,
-                        coverImageError = "缺少${missing.joinToString("、")}，未生成头像和背景",
-                        statusText = "角色卡候选已生成"
-                    )
-                }
-                return
-            }
-            AiBackgroundWorkManager.run(card.id) {
-                updateAutoFillStateIfCurrent(generationToken) {
-                    it.copy(
-                        statusText = "正在设计头像和聊天背景 Prompt",
-                        isGenerating = true,
-                        isGeneratingCoverImage = true
-                    )
-                }
-                val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) { promptDraft ->
-                    updateAutoFillStateIfCurrent(generationToken) {
+        coverImageGenerationToken += 1
+        val generationToken = coverImageGenerationToken
+        coverImageJob?.cancel()
+        if (target != CoverImageTarget.Current) {
+            deleteAutoFillCandidateImage(previousCandidatePath)
+        }
+        coverImageTarget = target
+        putCoverImageState(
+            target,
+            CharacterCoverImageUiState(
+                isGenerating = true,
+                statusText = "正在设计封面 Prompt"
+            )
+        )
+        coverImageJob = viewModelScope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
+                val settings = settingsRepository.getAppSettings()
+                val model = modelOverride ?: modelResolver.resolveChatModel(selectedModelId, settings)
+                if (token == null || model == null || model.apiKey.isBlank()) {
+                    val missing = mutableListOf<String>()
+                    if (token == null) missing += "NovelAI Token"
+                    if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
+                    updateCoverImageStateIfCurrent(generationToken, target) {
                         it.copy(
-                            coverImagePromptText = promptDraft,
-                            statusText = "正在设计头像和聊天背景 Prompt"
+                            isGenerating = false,
+                            error = "缺少${missing.joinToString("、")}，未生成封面",
+                            statusText = "封面未生成"
+                        )
+                    }
+                    return@launch
+                }
+                AiBackgroundWorkManager.run(card.id) {
+                    updateCoverImageStateIfCurrent(generationToken, target) {
+                        it.copy(
+                            isGenerating = true,
+                            statusText = "正在设计封面 Prompt"
+                        )
+                    }
+                    val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) { promptDraft ->
+                        updateCoverImageStateIfCurrent(generationToken, target) {
+                            it.copy(
+                                promptText = promptDraft,
+                                statusText = "正在设计封面 Prompt"
+                            )
+                        }
+                    }
+                    updateCoverImageStateIfCurrent(generationToken, target) {
+                        it.copy(statusText = "正在调用 NovelAI 生成封面")
+                    }
+                    val seed = novelAiImageService.newSeed()
+                    var finalImage: ByteArray? = null
+                    novelAiImageService.generate(token, prompt, seed).collect { event ->
+                        when (event) {
+                            is NovelAiImageEvent.Intermediate -> {
+                                finalImage = event.image
+                                updateCoverImageStateIfCurrent(generationToken, target) {
+                                    it.copy(
+                                        preview = event.image,
+                                        progress = event.progress,
+                                        statusText = "正在流式生成封面"
+                                    )
+                                }
+                            }
+                            is NovelAiImageEvent.Final -> {
+                                finalImage = event.image
+                                updateCoverImageStateIfCurrent(generationToken, target) {
+                                    it.copy(
+                                        preview = event.image,
+                                        progress = 1f,
+                                        statusText = "正在保存封面"
+                                    )
+                                }
+                            }
+                            is NovelAiImageEvent.Error -> error(event.message)
+                        }
+                    }
+                    if (generationToken != coverImageGenerationToken) return@run
+                    val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+                    val path = withContext(Dispatchers.IO) {
+                        novelAiImageStorage.save(card.id, bytes)
+                    }
+                    if (generationToken != coverImageGenerationToken) {
+                        withContext(Dispatchers.IO) {
+                            novelAiImageStorage.deleteIfOwned(path)
+                        }
+                        return@run
+                    }
+                    if (target == CoverImageTarget.Current) {
+                        avatar = path
+                        chatBackground = path
+                    }
+                    updateCoverImageStateIfCurrent(generationToken, target) {
+                        it.copy(
+                            isGenerating = false,
+                            path = path,
+                            preview = bytes,
+                            progress = 1f,
+                            statusText = if (target == CoverImageTarget.Current) {
+                                "封面已生成并设为头像和聊天背景"
+                            } else {
+                                "封面候选已生成"
+                            }
                         )
                     }
                 }
-                updateAutoFillStateIfCurrent(generationToken) {
-                    it.copy(statusText = "正在调用 NovelAI 生成头像和聊天背景")
-                }
-                val seed = novelAiImageService.newSeed()
-                var finalImage: ByteArray? = null
-                novelAiImageService.generate(token, prompt, seed).collect { event ->
-                    when (event) {
-                        is NovelAiImageEvent.Intermediate -> {
-                            finalImage = event.image
-                            updateAutoFillStateIfCurrent(generationToken) {
-                                it.copy(
-                                    coverImagePreview = event.image,
-                                    coverImageProgress = event.progress,
-                                    statusText = "正在流式生成头像和聊天背景"
-                                )
-                            }
-                        }
-                        is NovelAiImageEvent.Final -> {
-                            finalImage = event.image
-                            updateAutoFillStateIfCurrent(generationToken) {
-                                it.copy(
-                                    coverImagePreview = event.image,
-                                    coverImageProgress = 1f,
-                                    statusText = "正在保存头像和聊天背景候选"
-                                )
-                            }
-                        }
-                        is NovelAiImageEvent.Error -> error(event.message)
-                    }
-                }
-                if (generationToken != autoFillGenerationToken) return@run
-                val bytes = finalImage ?: error("NovelAI 未返回最终图片")
-                val path = withContext(Dispatchers.IO) {
-                    novelAiImageStorage.save(card.id, bytes)
-                }
-                if (generationToken != autoFillGenerationToken) {
-                    withContext(Dispatchers.IO) {
-                        novelAiImageStorage.deleteIfOwned(path)
-                    }
-                    return@run
-                }
-                updateAutoFillStateIfCurrent(generationToken) {
+            } catch (_: CancellationException) {
+                // State is updated by cancelCoverImageGeneration or the next generation.
+            } catch (error: Throwable) {
+                updateCoverImageStateIfCurrent(generationToken, target) {
                     it.copy(
                         isGenerating = false,
-                        isGeneratingCoverImage = false,
-                        coverImagePath = path,
-                        coverImagePreview = bytes,
-                        coverImageProgress = 1f,
-                        statusText = "角色卡候选和头像/背景候选已生成"
+                        error = error.message ?: "封面生成失败",
+                        statusText = "封面生成失败"
                     )
                 }
-            }
-        } catch (error: Throwable) {
-            if (error is CancellationException) throw error
-            updateAutoFillStateIfCurrent(generationToken) {
-                it.copy(
-                    isGenerating = false,
-                    isGeneratingCoverImage = false,
-                    coverImageError = error.message ?: "头像/背景生成失败",
-                    statusText = "角色卡候选已生成，头像/背景生成失败"
-                )
+            } finally {
+                if (generationToken == coverImageGenerationToken) {
+                    coverImageJob = null
+                    coverImageTarget = null
+                }
             }
         }
     }
 
+    private fun currentCoverImageState(target: CoverImageTarget): CharacterCoverImageUiState =
+        when (target) {
+            CoverImageTarget.Current -> _coverImageState.value
+            CoverImageTarget.AutoFill -> _autoFillState.value.coverImage
+            CoverImageTarget.Rewrite -> _rewriteState.value.coverImage
+        }
+
+    private fun putCoverImageState(target: CoverImageTarget, state: CharacterCoverImageUiState) {
+        when (target) {
+            CoverImageTarget.Current -> _coverImageState.value = state
+            CoverImageTarget.AutoFill -> {
+                _autoFillState.value = _autoFillState.value.copy(coverImage = state)
+            }
+            CoverImageTarget.Rewrite -> {
+                _rewriteState.value = _rewriteState.value.copy(coverImage = state)
+            }
+        }
+    }
+
+    private fun updateCoverImageStateIfCurrent(
+        generationToken: Int,
+        target: CoverImageTarget,
+        transform: (CharacterCoverImageUiState) -> CharacterCoverImageUiState
+    ) {
+        if (generationToken == coverImageGenerationToken) {
+            putCoverImageState(target, transform(currentCoverImageState(target)))
+        }
+    }
+
     fun clearAutoFillDraft() {
-        val coverImagePath = _autoFillState.value.coverImagePath
+        val coverImagePath = _autoFillState.value.coverImage.path
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
         autoFillJob = null
+        if (coverImageTarget == CoverImageTarget.AutoFill) {
+            cancelCoverImageGeneration()
+        }
         deleteAutoFillCandidateImage(coverImagePath)
         _autoFillState.value = CharacterAutoFillUiState()
     }
@@ -637,7 +771,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     }
 
     fun applyRewriteDraft() {
-        val draft = _rewriteState.value.draft ?: return
+        val state = _rewriteState.value
+        val draft = state.draft ?: return
         val merged = characterRewriteService.mergeInto(buildCurrentCard(markDirty = false), draft)
         name = merged.name
         greeting = merged.greeting
@@ -648,6 +783,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             charactersList.clear()
             charactersList.addAll(merged.characters)
         }
+        state.coverImage.path?.takeIf(String::isNotBlank)?.let { path ->
+            avatar = path
+            chatBackground = path
+        }
         _rewriteState.value = CharacterRewriteUiState()
     }
 
@@ -655,6 +794,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         rewriteGenerationToken += 1
         rewriteJob?.cancel()
         rewriteJob = null
+        if (coverImageTarget == CoverImageTarget.Rewrite) {
+            cancelCoverImageGeneration()
+        }
+        deleteAutoFillCandidateImage(_rewriteState.value.coverImage.path)
         _rewriteState.value = CharacterRewriteUiState()
     }
 

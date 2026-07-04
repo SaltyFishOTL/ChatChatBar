@@ -139,7 +139,7 @@ object CharacterCardPngRenderer {
         val textPaint = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = Color.WHITE
             textSize = size * options.titleScale
-            typeface = Typeface.create(Typeface.DEFAULT, Typeface.BOLD)
+            typeface = titleTypeface(context)
             setShadowLayer(size * 0.008f, 0f, size * 0.003f, Color.argb(210, 0, 0, 0))
         }
         val layout = StaticLayout.Builder
@@ -179,4 +179,8 @@ object CharacterCardPngRenderer {
         layout.draw(canvas)
         canvas.restore()
     }
+
+    private fun titleTypeface(context: Context): Typeface =
+        runCatching { context.resources.getFont(R.font.xiaolang_tianqiong) }
+            .getOrElse { Typeface.create(Typeface.DEFAULT, Typeface.BOLD) }
 }

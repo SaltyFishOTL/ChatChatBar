@@ -99,6 +99,7 @@ fun CharacterEditScreen(
     val indexingStatus by viewModel.indexingStatus.collectAsState()
     val autoFillState by viewModel.autoFillState.collectAsState()
     val rewriteState by viewModel.rewriteState.collectAsState()
+    val coverImageState by viewModel.coverImageState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
@@ -206,22 +207,32 @@ fun CharacterEditScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SectionTitle("角色卡信息")
-            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        if (viewModel.editMode == CharacterEditMode.STRUCTURED) "AI 自动填充" else "AI 自动填充（仅分段模式）",
+                        { openAutoFillDialog() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isSaving && viewModel.editMode == CharacterEditMode.STRUCTURED,
+                        variant = if (viewModel.editMode == CharacterEditMode.STRUCTURED) ButtonVariant.Default else ButtonVariant.Outline
+                    )
+                    CbButton(
+                        "AI 自动改写",
+                        { openRewriteDialog() },
+                        modifier = Modifier.weight(1f),
+                        enabled = !isSaving,
+                        variant = ButtonVariant.Secondary
+                    )
+                }
                 CbButton(
-                    if (viewModel.editMode == CharacterEditMode.STRUCTURED) "AI 自动填充" else "AI 自动填充（仅分段模式）",
-                    { openAutoFillDialog() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !isSaving && viewModel.editMode == CharacterEditMode.STRUCTURED,
-                    variant = if (viewModel.editMode == CharacterEditMode.STRUCTURED) ButtonVariant.Default else ButtonVariant.Outline
-                )
-                CbButton(
-                    "AI 自动改写",
-                    { openRewriteDialog() },
-                    modifier = Modifier.weight(1f),
-                    enabled = !isSaving,
-                    variant = ButtonVariant.Secondary
+                    "AI设计封面",
+                    { viewModel.generateCurrentCoverImage() },
+                    modifier = Modifier.fillMaxWidth(),
+                    enabled = !isSaving && !coverImageState.isGenerating,
+                    variant = ButtonVariant.Outline
                 )
             }
+            CoverImagePreview(coverImageState, title = "当前封面")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier.size(64.dp).clickable { pickImage { viewModel.avatar = it } },
@@ -472,7 +483,9 @@ fun CharacterEditScreen(
                 viewModel.clearAutoFillDraft()
             },
             onGenerate = viewModel::generateAutoFillDraft,
+            onGenerateCover = viewModel::generateAutoFillCoverImageCandidate,
             onCancel = viewModel::cancelAutoFillGeneration,
+            onCancelCover = viewModel::cancelCoverImageGeneration,
             onApply = {
                 viewModel.applyAutoFillDraft()
                 showAutoFillDialog = false
@@ -489,7 +502,9 @@ fun CharacterEditScreen(
                 viewModel.clearRewriteDraft()
             },
             onGenerate = viewModel::generateRewriteDraft,
+            onGenerateCover = viewModel::generateRewriteCoverImageCandidate,
             onCancel = viewModel::cancelRewriteGeneration,
+            onCancelCover = viewModel::cancelCoverImageGeneration,
             onApply = {
                 viewModel.applyRewriteDraft()
                 showRewriteDialog = false
@@ -651,7 +666,9 @@ private fun CharacterAutoFillDialog(
     defaultModelId: String?,
     onDismiss: () -> Unit,
     onGenerate: (String, String?) -> Unit,
+    onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
+    onCancelCover: () -> Unit,
     onApply: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
@@ -663,6 +680,7 @@ private fun CharacterAutoFillDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
+    val busy = state.isGenerating || state.coverImage.isGenerating
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
@@ -674,12 +692,14 @@ private fun CharacterAutoFillDialog(
         }
     }
     CbDialog(
-        onDismissRequest = { if (!state.isGenerating) onDismiss() },
+        onDismissRequest = { if (!busy) onDismiss() },
         title = "AI 自动填充",
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = {
             if (state.isGenerating) {
                 CbButton("取消生成", onCancel, variant = ButtonVariant.Destructive)
+            } else if (state.coverImage.isGenerating) {
+                CbButton("取消封面设计", onCancelCover, variant = ButtonVariant.Destructive)
             } else {
                 CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
             }
@@ -688,7 +708,7 @@ private fun CharacterAutoFillDialog(
             CbButton(
                 "应用",
                 onApply,
-                enabled = state.draft != null && !state.isGenerating
+                enabled = state.draft != null && !busy
             )
         },
         dismissOnClickOutside = false,
@@ -719,12 +739,31 @@ private fun CharacterAutoFillDialog(
                     minLines = 6
                 )
             }
-            CbButton(
-                if (state.isGenerating) "取消生成" else "生成候选",
-                { if (state.isGenerating) onCancel() else onGenerate(input, selectedModel.id) },
-                enabled = state.isGenerating || input.isNotBlank(),
-                variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
-            )
+            if (state.isGenerating) {
+                CbButton(
+                    "取消生成",
+                    onCancel,
+                    enabled = true,
+                    variant = ButtonVariant.Destructive
+                )
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "生成候选",
+                        { onGenerate(input, selectedModel.id) },
+                        modifier = Modifier.weight(1f),
+                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Secondary
+                    )
+                    CbButton(
+                        "AI设计封面",
+                        { onGenerateCover(selectedModel.id) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.draft != null && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Outline
+                    )
+                }
+            }
             if (state.progressLines.isNotEmpty()) {
                 GenerationProgressPanel(
                     active = state.isGenerating,
@@ -757,7 +796,7 @@ private fun CharacterAutoFillDialog(
                     )
                 }
             }
-            AutoFillCoverImagePreview(state)
+            CoverImagePreview(state.coverImage, title = "封面候选")
             state.draft?.let { draft ->
                 CbDivider()
                 AutoFillDraftPreview(draft)
@@ -773,7 +812,9 @@ private fun CharacterRewriteDialog(
     defaultModelId: String?,
     onDismiss: () -> Unit,
     onGenerate: (String, String?) -> Unit,
+    onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
+    onCancelCover: () -> Unit,
     onApply: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
@@ -785,6 +826,7 @@ private fun CharacterRewriteDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
+    val busy = state.isGenerating || state.coverImage.isGenerating
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
@@ -796,12 +838,14 @@ private fun CharacterRewriteDialog(
         }
     }
     CbDialog(
-        onDismissRequest = { if (!state.isGenerating) onDismiss() },
+        onDismissRequest = { if (!busy) onDismiss() },
         title = "AI 自动改写",
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = {
             if (state.isGenerating) {
                 CbButton("取消生成", onCancel, variant = ButtonVariant.Destructive)
+            } else if (state.coverImage.isGenerating) {
+                CbButton("取消封面设计", onCancelCover, variant = ButtonVariant.Destructive)
             } else {
                 CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
             }
@@ -810,7 +854,7 @@ private fun CharacterRewriteDialog(
             CbButton(
                 "应用改写",
                 onApply,
-                enabled = state.draft != null && !state.isGenerating
+                enabled = state.draft != null && !busy
             )
         },
         dismissOnClickOutside = false,
@@ -841,12 +885,31 @@ private fun CharacterRewriteDialog(
                     minLines = 6
                 )
             }
-            CbButton(
-                if (state.isGenerating) "取消生成" else "生成改写",
-                { if (state.isGenerating) onCancel() else onGenerate(input, selectedModel.id) },
-                enabled = state.isGenerating || input.isNotBlank(),
-                variant = if (state.isGenerating) ButtonVariant.Destructive else ButtonVariant.Secondary
-            )
+            if (state.isGenerating) {
+                CbButton(
+                    "取消生成",
+                    onCancel,
+                    enabled = true,
+                    variant = ButtonVariant.Destructive
+                )
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "生成改写",
+                        { onGenerate(input, selectedModel.id) },
+                        modifier = Modifier.weight(1f),
+                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Secondary
+                    )
+                    CbButton(
+                        "AI设计封面",
+                        { onGenerateCover(selectedModel.id) },
+                        modifier = Modifier.weight(1f),
+                        enabled = state.draft != null && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Outline
+                    )
+                }
+            }
             if (state.progressLines.isNotEmpty()) {
                 GenerationProgressPanel(
                     active = state.isGenerating,
@@ -879,6 +942,7 @@ private fun CharacterRewriteDialog(
                     )
                 }
             }
+            CoverImagePreview(state.coverImage, title = "封面候选")
             state.draft?.let { draft ->
                 CbDivider()
                 RewriteCandidatePreview(draft)
@@ -1028,23 +1092,23 @@ private fun AutoFillRawStreamPreview(rawText: String) {
 }
 
 @Composable
-private fun AutoFillCoverImagePreview(state: CharacterAutoFillUiState) {
-    val imageModel: Any? = state.coverImagePreview ?: state.coverImagePath
-    val hasImageStatus = state.isGeneratingCoverImage ||
+private fun CoverImagePreview(state: CharacterCoverImageUiState, title: String) {
+    val imageModel: Any? = state.preview ?: state.path
+    val hasImageStatus = state.isGenerating ||
         imageModel != null ||
-        state.coverImageError?.isNotBlank() == true ||
-        state.coverImagePromptText.isNotBlank()
+        state.error?.isNotBlank() == true ||
+        state.promptText.isNotBlank()
     if (!hasImageStatus) return
     CbSurface(
         Modifier.fillMaxWidth(),
         color = ChatBarTheme.colors.muted,
         border = BorderStroke(
             1.dp,
-            if (state.coverImageError.isNullOrBlank()) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive
+            if (state.error.isNullOrBlank()) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive
         )
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            CbText("头像/背景候选", style = ChatBarTheme.typography.heading)
+            CbText(title, style = ChatBarTheme.typography.heading)
             imageModel?.let { model ->
                 Box(
                     Modifier
@@ -1057,19 +1121,19 @@ private fun AutoFillCoverImagePreview(state: CharacterAutoFillUiState) {
                     AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 }
             }
-            if (state.isGeneratingCoverImage) {
-                CbProgress(state.coverImageProgress.coerceAtLeast(0.04f))
+            if (state.isGenerating) {
+                CbProgress(state.progress.coerceAtLeast(0.04f))
                 CbText(
-                    state.statusText.ifBlank { "正在生成头像和聊天背景" },
+                    state.statusText.ifBlank { "正在生成封面" },
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
             }
-            state.coverImageError?.takeIf(String::isNotBlank)?.let { error ->
+            state.error?.takeIf(String::isNotBlank)?.let { error ->
                 CbText(error, color = ChatBarTheme.colors.destructive)
             }
-            if (imageModel == null && state.coverImagePromptText.isNotBlank()) {
-                CbText(state.coverImagePromptText, color = ChatBarTheme.colors.mutedForeground)
+            if (imageModel == null && state.promptText.isNotBlank()) {
+                CbText(state.promptText, color = ChatBarTheme.colors.mutedForeground)
             }
         }
     }

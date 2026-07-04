@@ -42,6 +42,7 @@ import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.R
 import com.example.chatbar.ChatRoute
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.PlaceholderRenderer
@@ -78,6 +79,7 @@ fun HomeScreen(
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
     val characterNamesById = remember(characters) { characters.associate { it.id to it.name } }
+    val characterCardsById = remember(characters) { characters.associateBy { it.id } }
 
     fun renderSessionText(session: ChatSession, text: String): String =
         PlaceholderRenderer.render(
@@ -113,6 +115,7 @@ fun HomeScreen(
             } else {
                 SessionList(
                     sessions = sessions,
+                    characterCardsById = characterCardsById,
                     onOpen = { onNavigate(ChatRoute(it.id)) },
                     onAction = { actionSession = it },
                     renderSessionText = ::renderSessionText
@@ -223,6 +226,7 @@ fun HomeScreen(
 @Composable
 private fun SessionList(
     sessions: List<ChatSession>,
+    characterCardsById: Map<String, CharacterCard>,
     onOpen: (ChatSession) -> Unit,
     onAction: (ChatSession) -> Unit,
     renderSessionText: (ChatSession, String) -> String
@@ -236,12 +240,12 @@ private fun SessionList(
     ) {
         if (pinned.isNotEmpty()) {
             item {
-                SessionGroup("置顶", pinned, true, onOpen, onAction, renderSessionText)
+                SessionGroup("置顶", pinned, true, characterCardsById, onOpen, onAction, renderSessionText)
             }
         }
         if (recent.isNotEmpty()) {
             item {
-                SessionGroup("最近对话", recent, false, onOpen, onAction, renderSessionText)
+                SessionGroup("最近对话", recent, false, characterCardsById, onOpen, onAction, renderSessionText)
             }
         }
     }
@@ -252,6 +256,7 @@ private fun SessionGroup(
     title: String,
     sessions: List<ChatSession>,
     pinned: Boolean,
+    characterCardsById: Map<String, CharacterCard>,
     onOpen: (ChatSession) -> Unit,
     onAction: (ChatSession) -> Unit,
     renderSessionText: (ChatSession, String) -> String
@@ -264,7 +269,14 @@ private fun SessionGroup(
     ) {
         Column {
             sessions.forEachIndexed { index, session ->
-                SessionItem(session, pinned, { onOpen(session) }, { onAction(session) }, renderSessionText)
+                SessionItem(
+                    session = session,
+                    showPinned = pinned,
+                    characterCard = characterCardsById[session.characterCardId],
+                    onClick = { onOpen(session) },
+                    onLongClick = { onAction(session) },
+                    renderSessionText = renderSessionText
+                )
                 if (index != sessions.lastIndex) CbDivider(Modifier.padding(horizontal = 12.dp))
             }
         }
@@ -276,17 +288,24 @@ private fun SessionGroup(
 fun SessionItem(
     session: ChatSession,
     showPinned: Boolean = false,
+    characterCard: CharacterCard? = null,
     onClick: () -> Unit,
     onLongClick: () -> Unit,
     renderSessionText: (ChatSession, String) -> String = { _, text -> text }
 ) {
-    var avatar by remember { mutableStateOf<String?>(null) }
-    var archived by remember { mutableStateOf(false) }
-    LaunchedEffect(session.characterCardId) {
-        val card = ChatBarApp.instance.characterRepository.getById(session.characterCardId)
-        avatar = card?.avatar
-        archived = card == null
+    var loadedCard by remember(session.characterCardId) { mutableStateOf<CharacterCard?>(null) }
+    var archived by remember(session.characterCardId) { mutableStateOf(false) }
+    LaunchedEffect(session.characterCardId, characterCard?.updatedAt, characterCard?.avatar) {
+        if (characterCard != null) {
+            loadedCard = characterCard
+            archived = false
+        } else {
+            val card = ChatBarApp.instance.characterRepository.getById(session.characterCardId)
+            loadedCard = card
+            archived = card == null
+        }
     }
+    val displayCard = characterCard ?: loadedCard
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -294,7 +313,7 @@ fun SessionItem(
             .padding(12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CharacterAvatar(avatar, Modifier.size(42.dp))
+        CharacterAvatar(displayCard?.avatar, Modifier.size(42.dp))
         Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
