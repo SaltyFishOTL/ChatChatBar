@@ -2,6 +2,9 @@ package com.example.chatbar.domain.update
 
 import com.example.chatbar.BuildConfig
 import com.example.chatbar.domain.ProxyAwareClient
+import java.net.URI
+import java.net.URLDecoder
+import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -34,41 +37,104 @@ class AppUpdateChecker(
     }
 
     suspend fun checkLatestRelease(): AppUpdateInfo? = withContext(Dispatchers.IO) {
+        val webAttempt = runCatching { fetchLatestReleaseFromWebRedirect() }
+        val release = webAttempt.getOrNull()
+            ?: run {
+                val apiAttempt = runCatching { fetchLatestReleaseFromApi() }
+                apiAttempt.getOrNull()
+                    ?: handleLookupFailures(webAttempt.exceptionOrNull(), apiAttempt.exceptionOrNull())
+            }
+            ?: return@withContext null
+
+        if (release.draft || release.prerelease) return@withContext null
+
+        val latestVersion = release.tagName.ifBlank { release.name }.trim()
+        if (latestVersion.isBlank()) return@withContext null
+
+        if (isReleaseVersionNewer(latestVersion, currentVersion)) {
+            AppUpdateInfo(
+                currentVersion = currentVersion,
+                latestVersion = latestVersion,
+                releaseUrl = release.htmlUrl.ifBlank { releasesUrl(owner, repo) },
+                releaseName = release.name.ifBlank { latestVersion }
+            )
+        } else {
+            null
+        }
+    }
+
+    private fun fetchLatestReleaseFromWebRedirect(): GitHubRelease? {
+        val request = Request.Builder()
+            .url(webLatestReleaseUrl())
+            .header("Accept", "text/html,application/xhtml+xml")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", userAgent())
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (response.code == 404) return null
+            if (!response.isSuccessful) throw httpException("GitHub Release 页面", response.code)
+
+            val releaseUrl = response.request.url.toString()
+            val tagName = releaseTagFromUrl(releaseUrl) ?: return null
+            return GitHubRelease(
+                tagName = tagName,
+                htmlUrl = releaseUrl,
+                name = tagName
+            )
+        }
+    }
+
+    private fun fetchLatestReleaseFromApi(): GitHubRelease? {
         val request = Request.Builder()
             .url(apiLatestReleaseUrl())
             .header("Accept", "application/vnd.github+json")
-            .header("User-Agent", "ChatBar/$currentVersion")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", userAgent())
             .get()
             .build()
 
         client.newCall(request).execute().use { response ->
             val body = response.body?.string().orEmpty()
-            if (response.code == 404) return@withContext null
+            if (response.code == 404) return null
             if (!response.isSuccessful) {
-                throw AppUpdateCheckException("GitHub release check failed: HTTP ${response.code}")
+                throw httpException("GitHub API", response.code)
             }
 
-            val release = json.decodeFromString(GitHubRelease.serializer(), body)
-            if (release.draft || release.prerelease) return@withContext null
-
-            val latestVersion = release.tagName.ifBlank { release.name }.trim()
-            if (latestVersion.isBlank()) return@withContext null
-
-            if (isReleaseVersionNewer(latestVersion, currentVersion)) {
-                AppUpdateInfo(
-                    currentVersion = currentVersion,
-                    latestVersion = latestVersion,
-                    releaseUrl = release.htmlUrl.ifBlank { releasesUrl(owner, repo) },
-                    releaseName = release.name.ifBlank { latestVersion }
-                )
-            } else {
-                null
-            }
+            return json.decodeFromString(GitHubRelease.serializer(), body)
         }
     }
 
     private fun apiLatestReleaseUrl(): String {
         return "https://api.github.com/repos/$owner/$repo/releases/latest"
+    }
+
+    private fun webLatestReleaseUrl(): String {
+        return "https://github.com/$owner/$repo/releases/latest"
+    }
+
+    private fun userAgent(): String {
+        return "ChatBar/$currentVersion"
+    }
+
+    private fun httpException(source: String, code: Int): AppUpdateCheckException {
+        val hint = if (code == 403) "，可能是 GitHub 限流或网络拦截" else ""
+        return AppUpdateCheckException("$source HTTP $code$hint")
+    }
+
+    private fun handleLookupFailures(
+        webError: Throwable?,
+        apiError: Throwable?
+    ): GitHubRelease? {
+        if (webError == null && apiError == null) return null
+        val webMessage = webError?.message ?: "无结果"
+        val apiMessage = apiError?.message ?: "无结果"
+        throw AppUpdateCheckException(
+            "GitHub 更新检查失败：网页通道 $webMessage；API 通道 $apiMessage",
+            apiError ?: webError
+        )
     }
 
     companion object {
@@ -80,7 +146,7 @@ class AppUpdateChecker(
     }
 }
 
-class AppUpdateCheckException(message: String) : Exception(message)
+class AppUpdateCheckException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 @Serializable
 private data class GitHubRelease(
@@ -123,4 +189,14 @@ private fun normalizedVersionParts(version: String): List<Int>? {
         part.toIntOrNull() ?: return null
     }
     return parts
+}
+
+internal fun releaseTagFromUrl(url: String): String? {
+    val rawPath = runCatching { URI(url).rawPath }.getOrNull() ?: return null
+    val segments = rawPath.split('/').filter { it.isNotBlank() }
+    val releasesIndex = segments.indexOf("releases")
+    if (releasesIndex < 0 || segments.getOrNull(releasesIndex + 1) != "tag") return null
+
+    val rawTag = segments.getOrNull(releasesIndex + 2)?.takeIf { it.isNotBlank() } ?: return null
+    return URLDecoder.decode(rawTag.replace("+", "%2B"), StandardCharsets.UTF_8.name())
 }

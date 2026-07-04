@@ -22,4 +22,17 @@ class AppUpdateCheckerTest {
     fun `older release is not update`() {
         assertFalse(isReleaseVersionNewer("0.9.9", "1.0.0"))
     }
+
+    @Test
+    fun `release tag is extracted from github release url`() {
+        assertEquals(
+            "v1.0.1",
+            releaseTagFromUrl("https://github.com/SaltyFishOTL/ChatChatBar/releases/tag/v1.0.1")
+        )
+    }
+
+    @Test
+    fun `non release tag url has no release tag`() {
+        assertEquals(null, releaseTagFromUrl("https://github.com/SaltyFishOTL/ChatChatBar/releases/latest"))
+    }
 }
