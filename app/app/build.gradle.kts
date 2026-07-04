@@ -12,7 +12,7 @@ android {
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = "1.0.0"
         val bundledSiliconFlowKey = providers.gradleProperty("CHATBAR_SILICONFLOW_API_KEY")
             .orElse(providers.environmentVariable("CHATBAR_SILICONFLOW_API_KEY"))
             .orElse("")

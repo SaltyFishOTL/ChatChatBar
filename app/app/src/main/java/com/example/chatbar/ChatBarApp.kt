@@ -11,6 +11,7 @@ import com.example.chatbar.domain.deletion.DeletionCoordinator
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.search.*
+import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
@@ -102,6 +103,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var characterResearchService: CharacterResearchService
         private set
+    lateinit var appUpdateChecker: AppUpdateChecker
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -133,6 +136,7 @@ class ChatBarApp : Application() {
         searchBackend = MediaWikiSearchBackend()
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
+        appUpdateChecker = AppUpdateChecker()
 
         ragManager = RagManager(
             chunkingEngine = chunkingEngine,
