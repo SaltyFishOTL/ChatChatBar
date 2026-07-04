@@ -7,6 +7,15 @@ plugins {
 android {
     namespace = "com.example.chatbar"
     compileSdk = 36
+    val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
+    val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
+    val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
+    val releaseKeyPassword = providers.environmentVariable("ANDROID_KEY_PASSWORD")
+    val hasReleaseSigning = releaseKeystorePath.isPresent &&
+        releaseKeystorePassword.isPresent &&
+        releaseKeyAlias.isPresent &&
+        releaseKeyPassword.isPresent
+
     defaultConfig {
         applicationId = "com.example.chatbar"
         minSdk = 26
@@ -22,8 +31,22 @@ android {
         buildConfigField("String", "SILICONFLOW_API_KEY", "\"$bundledSiliconFlowKey\"")
     }
 
+    signingConfigs {
+        if (hasReleaseSigning) {
+            create("release") {
+                storeFile = file(releaseKeystorePath.get())
+                storePassword = releaseKeystorePassword.get()
+                keyAlias = releaseKeyAlias.get()
+                keyPassword = releaseKeyPassword.get()
+            }
+        }
+    }
+
     buildTypes {
         release {
+            if (hasReleaseSigning) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
