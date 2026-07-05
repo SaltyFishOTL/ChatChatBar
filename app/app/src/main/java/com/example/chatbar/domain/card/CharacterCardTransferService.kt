@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.RagIndexStatus
+import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.repository.CharacterRepository
 import com.example.chatbar.data.repository.WorldBookRepository
 import com.example.chatbar.domain.rag.RagRepository
@@ -193,26 +194,22 @@ class CharacterCardTransferService(
                 DocumentInfo.create(packaged.fileName, file.absolutePath, packaged.fileType).copy(id = docId, addedAt = now)
             }
             val card = packageData.card
+            val availableWorldBooks = worldBookRepository.getAll().toMutableList()
             val importedWorldBooks = (packageData.worldBooks + listOfNotNull(card.characterBook))
                 .distinctBy { it.id }
                 .map { source ->
-                    val existingNames = worldBookRepository.getAll().map { it.name }
-                    val fallbackName = "${name} 世界书"
-                    val requested = source.name.ifBlank { fallbackName }
-                    val worldBookName = if (existingNames.any { NamePolicy.isSame(it, requested) }) {
-                        NamePolicy.nextCopyName(requested, existingNames)
-                    } else {
-                        NamePolicy.normalize(requested)
-                    }
-                    source.copy(
-                        id = UUID.randomUUID().toString(),
-                        name = worldBookName,
-                        entries = source.entries.map { it.copy(id = UUID.randomUUID().toString()) },
-                        sourcePresetKey = presetKey,
-                        sourcePresetVersion = presetVersion,
-                        createdAt = now,
-                        updatedAt = now
-                    ).also { worldBookRepository.save(it) }
+                    WorldBookReusePolicy.findReusable(source, availableWorldBooks)
+                        ?: createImportedWorldBook(
+                            source = source,
+                            cardName = name,
+                            presetKey = presetKey,
+                            presetVersion = presetVersion,
+                            now = now,
+                            existingNames = availableWorldBooks.map { it.name }
+                        ).also {
+                            worldBookRepository.save(it)
+                            availableWorldBooks += it
+                        }
                 }
             return CharacterCard(
                 id = id,
@@ -267,6 +264,35 @@ class CharacterCardTransferService(
             createdFiles.forEach(File::delete)
             throw error
         }
+    }
+
+    private fun createImportedWorldBook(
+        source: WorldBook,
+        cardName: String,
+        presetKey: String?,
+        presetVersion: Int?,
+        now: Long,
+        existingNames: List<String>
+    ): WorldBook {
+        val fallbackName = "$cardName 世界书"
+        val requested = source.name.ifBlank { fallbackName }
+        val worldBookName = if (existingNames.any { NamePolicy.isSame(it, requested) }) {
+            NamePolicy.nextCopyName(requested, existingNames)
+        } else {
+            NamePolicy.normalize(requested)
+        }
+        val sourcePresetKey = source.sourcePresetKey?.takeIf { it.isNotBlank() }
+        val resolvedPresetKey = sourcePresetKey ?: presetKey?.takeIf { it.isNotBlank() }
+        val resolvedPresetVersion = if (sourcePresetKey != null) source.sourcePresetVersion else presetVersion
+        return source.copy(
+            id = UUID.randomUUID().toString(),
+            name = worldBookName,
+            entries = source.entries.map { it.copy(id = UUID.randomUUID().toString()) },
+            sourcePresetKey = resolvedPresetKey,
+            sourcePresetVersion = resolvedPresetVersion,
+            createdAt = now,
+            updatedAt = now
+        )
     }
 
     private fun materializeImages(

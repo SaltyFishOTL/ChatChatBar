@@ -190,7 +190,7 @@ fun ChatScreen(
         messages.takeLast(contextWindowSize.coerceAtLeast(1)).filter { it.role == MessageRole.ASSISTANT && it.alternatives.size > 1 }.map { it.id }.toSet()
     }
     val regenerableId = messages.lastOrNull()?.takeIf { it.role == MessageRole.ASSISTANT }?.id
-    val imageGenerationRunning = imageGeneration != null && imageGeneration?.phase != ImageGenerationPhase.FAILED
+    val imageGenerationRunning = imageGeneration?.isTerminal == false
     val imageGenerationAnchorExists = remember(messages, imageGeneration?.anchorMessageId) {
         val anchorId = imageGeneration?.anchorMessageId
         anchorId != null && messages.any { it.id == anchorId }
@@ -300,7 +300,8 @@ fun ChatScreen(
                     imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
                         NovelAiGenerationCard(generation,
                             onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
-                            onDismiss = { viewModel.dismissNovelAiImageGeneration() }
+                            onDismiss = { viewModel.dismissNovelAiImageGeneration() },
+                            onCancel = { viewModel.cancelNovelAiImageGeneration() }
                         )
                     }
                 }
@@ -316,7 +317,8 @@ fun ChatScreen(
                     item(key = "novelai-generation") {
                         NovelAiGenerationCard(generation,
                             onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
-                            onDismiss = { viewModel.dismissNovelAiImageGeneration() }
+                            onDismiss = { viewModel.dismissNovelAiImageGeneration() },
+                            onCancel = { viewModel.cancelNovelAiImageGeneration() }
                         )
                     }
                 }
@@ -483,12 +485,18 @@ fun ChatScreen(
 }
 
 @Composable
-private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Unit, onDismiss: () -> Unit) {
+private fun NovelAiGenerationCard(
+    state: ImageGenerationState,
+    onRetry: () -> Unit,
+    onDismiss: () -> Unit,
+    onCancel: () -> Unit
+) {
     val label = when (state.phase) {
         ImageGenerationPhase.DESIGNING -> "正在设计 NovelAI Prompt"
         ImageGenerationPhase.GENERATING -> "NovelAI 正在生成"
         ImageGenerationPhase.STREAMING -> "流式预览 ${(state.progress * 100).toInt()}%"
         ImageGenerationPhase.SAVING -> "正在保存图片"
+        ImageGenerationPhase.CANCELLED -> "已停止生图"
         ImageGenerationPhase.FAILED -> "生图失败"
     }
     CbSurface(
@@ -506,7 +514,7 @@ private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Un
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state.phase != ImageGenerationPhase.FAILED) CbSpinner(Modifier.size(18.dp))
+                if (!state.isTerminal) CbSpinner(Modifier.size(18.dp))
                 CbText(
                     label,
                     color = if (state.phase == ImageGenerationPhase.FAILED) ChatBarTheme.colors.destructive else ChatBarTheme.colors.mutedForeground,
@@ -532,7 +540,12 @@ private fun NovelAiGenerationCard(state: ImageGenerationState, onRetry: () -> Un
                 }
             }
             state.error?.let { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
-            if (state.phase == ImageGenerationPhase.FAILED) {
+            if (state.isCancellable) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton("停止", onCancel, variant = ButtonVariant.Outline)
+                }
+            }
+            if (state.isTerminal) {
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton("重试", onRetry, variant = ButtonVariant.Outline)
                     CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)

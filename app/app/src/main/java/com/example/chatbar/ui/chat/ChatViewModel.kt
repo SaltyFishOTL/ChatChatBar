@@ -44,6 +44,7 @@ enum class ImageGenerationPhase {
     GENERATING,
     STREAMING,
     SAVING,
+    CANCELLED,
     FAILED
 }
 
@@ -55,6 +56,19 @@ data class ImageGenerationState(
     val progress: Float = 0f,
     val error: String? = null
 )
+
+val ImageGenerationState.isTerminal: Boolean
+    get() = phase == ImageGenerationPhase.FAILED || phase == ImageGenerationPhase.CANCELLED
+
+val ImageGenerationState.isCancellable: Boolean
+    get() = when (phase) {
+        ImageGenerationPhase.DESIGNING,
+        ImageGenerationPhase.GENERATING,
+        ImageGenerationPhase.STREAMING -> true
+        ImageGenerationPhase.SAVING,
+        ImageGenerationPhase.CANCELLED,
+        ImageGenerationPhase.FAILED -> false
+    }
 
 /**
  * 聊天会话 ViewModel
@@ -145,6 +159,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var draftTouched = false
     private var draftSaveSequence = 0
     private var responseJob: Job? = null
+    private var imageGenerationJob: Job? = null
 
     private data class PlaceholderRenderContext(
         val playerName: String?,
@@ -269,8 +284,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun generateNovelAiImage(anchorMessageId: String) {
         val active = _imageGeneration.value
-        if (active != null && active.phase != ImageGenerationPhase.FAILED) return
-        ChatBarApp.instance.applicationScope.launch {
+        if (active != null && !active.isTerminal) return
+        _imageGeneration.value = ImageGenerationState(anchorMessageId, ImageGenerationPhase.DESIGNING)
+        val job = ChatBarApp.instance.applicationScope.launch {
             val token = novelAiCredentials.load()
             val currentSession = chatRepository.getSession(sessionId)
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
@@ -290,7 +306,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             try {
                 AiBackgroundWorkManager.run(sessionId) {
-                _imageGeneration.value = ImageGenerationState(anchorMessageId, ImageGenerationPhase.DESIGNING)
                 val prompt = novelAiPromptDesigner.design(
                     chatRepository.getMessages(sessionId),
                     anchorMessageId,
@@ -414,6 +429,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 )
             }
         }
+        imageGenerationJob = job
+        job.invokeOnCompletion {
+            if (imageGenerationJob == job) imageGenerationJob = null
+        }
     }
 
     private fun debugPrompt(prompt: NovelAiPromptPlan): String = buildString {
@@ -436,6 +455,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun dismissNovelAiImageGeneration() {
         _imageGeneration.value = null
+    }
+
+    fun cancelNovelAiImageGeneration() {
+        val current = _imageGeneration.value?.takeIf { it.isCancellable } ?: return
+        _imageGeneration.value = current.copy(
+            phase = ImageGenerationPhase.CANCELLED,
+            error = null
+        )
+        imageGenerationJob?.cancel(CancellationException("用户停止生图"))
+        imageGenerationJob = null
     }
 
     fun dismissBatteryOptimizationHint() {

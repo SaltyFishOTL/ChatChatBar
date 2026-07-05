@@ -138,7 +138,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                         ChatScreen(sessionId = key.sessionId, onBack = ::popBackStack)
                     }
                     entry<CharacterEditRoute> { key ->
-                        CharacterEditScreen(characterId = key.characterId, onBack = ::popBackStack)
+                        CharacterEditScreen(characterId = key.characterId, draftId = key.draftId, onBack = ::popBackStack)
                     }
                     entry<ModelEditRoute> { key ->
                         ModelEditScreen(modelId = key.modelId, onBack = ::popBackStack)

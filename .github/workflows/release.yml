@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       versionName:
-        description: "Version, for example 1.0.2"
+        description: "Version, for example 1.0.2 or v1.0.2"
         required: true
         type: string
       releaseNotes:
@@ -37,10 +37,24 @@ jobs:
       - name: Validate version
         run: |
           set -euo pipefail
-          if [[ ! "$VERSION_NAME" =~ ^[0-9]+(\.[0-9]+){2}([.-][0-9A-Za-z]+)?$ ]]; then
-            echo "Version must look like 1.0.2"
-            exit 1
-          fi
+          normalized_version="$(python3 - <<'PY'
+          import os
+          import re
+          import sys
+
+          version = os.environ["VERSION_NAME"].strip()
+          if version.lower().startswith("v"):
+              version = version[1:]
+
+          if not re.fullmatch(r"[0-9]+(\.[0-9]+){2}([.-][0-9A-Za-z]+)?", version):
+              print("Version must look like 1.0.2 or v1.0.2")
+              sys.exit(1)
+
+          print(version)
+          PY
+          )"
+          VERSION_NAME="${normalized_version}"
+          echo "VERSION_NAME=${VERSION_NAME}" >> "${GITHUB_ENV}"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/v$VERSION_NAME" >/dev/null; then
             echo "Tag v$VERSION_NAME already exists"

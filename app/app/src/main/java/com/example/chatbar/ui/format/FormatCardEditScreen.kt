@@ -81,7 +81,7 @@ fun FormatCardEditScreen(
                 }
             )
         }
-    ) {
+    ) { bottomInset ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -134,6 +134,7 @@ fun FormatCardEditScreen(
                 }
                 CbSwitch(viewModel.isDefault, { viewModel.isDefault = it })
             }
+            Spacer(Modifier.height(bottomInset))
         }
     }
 

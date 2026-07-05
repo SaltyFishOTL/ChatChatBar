@@ -1276,12 +1276,20 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     else -> "jpg"
                 }
 
-                val localFile = File(imagesDir, "img_${System.currentTimeMillis()}.$extension")
-                contentResolver.openInputStream(uri)?.use { input ->
-                    localFile.outputStream().use { output -> input.copyTo(output) }
+                val localFile = File(imagesDir, "img_${java.util.UUID.randomUUID()}.$extension")
+                withContext(Dispatchers.IO) {
+                    val input = contentResolver.openInputStream(uri)
+                        ?: error("无法读取所选图片")
+                    input.use { inputStream ->
+                        localFile.outputStream().use { output -> inputStream.copyTo(output) }
+                    }
+                    check(localFile.exists() && localFile.length() > 0L) { "图片复制失败" }
                 }
                 onSuccess(localFile.absolutePath)
-            } catch (_: Exception) {
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _indexingStatus.value = "拷贝图片文件失败：${e.message ?: "未知错误"}"
             } finally {
                 _isSaving.value = false
             }

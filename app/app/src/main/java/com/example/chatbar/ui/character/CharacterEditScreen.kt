@@ -90,9 +90,13 @@ import com.example.chatbar.ui.kit.FullscreenTextEditor
 @Composable
 fun CharacterEditScreen(
     characterId: String?,
+    draftId: String = "",
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: CharacterEditViewModel = viewModel(key = characterId, factory = CharacterEditViewModelFactory(characterId))
+    viewModel: CharacterEditViewModel = viewModel(
+        key = characterId?.let { "edit:$it" } ?: "new:${draftId.ifBlank { "default" }}",
+        factory = CharacterEditViewModelFactory(characterId)
+    )
 ) {
     val isSaving by viewModel.isSaving.collectAsState()
     val card by viewModel.characterCard.collectAsState()
@@ -197,7 +201,7 @@ fun CharacterEditScreen(
                 }
             )
         }
-    ) {
+    ) { bottomInset ->
         Column(
             modifier = Modifier
                 .fillMaxSize()
@@ -412,6 +416,7 @@ fun CharacterEditScreen(
                     )
                 }
             }
+            Spacer(Modifier.height(bottomInset))
         }
     }
 
@@ -690,8 +695,9 @@ private fun CharacterAutoFillDialog(
         onDeleteImage(sourceImagePath)
         sourceImagePath = null
     }
-    DisposableEffect(sourceImagePath) {
-        onDispose { onDeleteImage(sourceImagePath) }
+    val retainedSourceImagePath = sourceImagePath
+    DisposableEffect(retainedSourceImagePath) {
+        onDispose { onDeleteImage(retainedSourceImagePath) }
     }
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {

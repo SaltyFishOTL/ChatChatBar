@@ -299,7 +299,7 @@ fun ManageScreen(
         floatingActionButton = {
             if (tab < 4) CbFab(AppIcons.Add, "新建", {
                 when (tab) {
-                    0 -> onNavigate(CharacterEditRoute(null))
+                    0 -> onNavigate(CharacterEditRoute(draftId = UUID.randomUUID().toString()))
                     1 -> addFormat = true
                     2 -> onNavigate(WorldBookEditRoute(null))
                     3 -> onNavigate(ModelEditRoute(null))

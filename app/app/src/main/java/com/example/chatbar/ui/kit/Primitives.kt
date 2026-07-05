@@ -12,7 +12,6 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -39,6 +38,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.style.TextOverflow
@@ -311,12 +311,14 @@ fun CbScaffold(
     modifier: Modifier = Modifier,
     topBar: @Composable () -> Unit = {},
     floatingActionButton: @Composable () -> Unit = {},
-    content: @Composable (PaddingValues) -> Unit
+    content: @Composable (Dp) -> Unit
 ) {
+    val density = LocalDensity.current
+    val bottomInset = with(density) { WindowInsets.navigationBars.getBottom(this).toDp() }
     Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         Column(Modifier.fillMaxSize()) {
             topBar()
-            Box(Modifier.weight(1f)) { content(PaddingValues()) }
+            Box(Modifier.weight(1f)) { content(bottomInset) }
         }
         Box(
             modifier = Modifier

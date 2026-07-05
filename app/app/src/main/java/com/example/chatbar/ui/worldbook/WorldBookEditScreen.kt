@@ -88,7 +88,7 @@ fun WorldBookEditScreen(
                 }
             )
         }
-    ) {
+    ) { bottomInset ->
         Column(
             Modifier
                 .fillMaxSize()
@@ -129,7 +129,7 @@ fun WorldBookEditScreen(
                     }
                 }
             }
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(24.dp + bottomInset))
         }
     }
 
