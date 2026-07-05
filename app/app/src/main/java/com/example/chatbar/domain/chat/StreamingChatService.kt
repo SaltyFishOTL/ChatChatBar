@@ -419,6 +419,26 @@ class StreamingChatService {
         }.start()
     }
 
+    suspend fun describeImageStreaming(
+        imageBase64: String,
+        modelConfig: ModelConfig,
+        onDelta: (String) -> Unit = {}
+    ): String {
+        val raw = completeTextStreaming(
+            messages = listOf(
+                ChatApiMessage.withImage(
+                    role = "user",
+                    text = PromptTemplates.IMAGE_DESCRIPTION_PROMPT,
+                    imageBase64 = imageBase64
+                )
+            ),
+            modelConfig = modelConfig,
+            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS,
+            onDelta = onDelta
+        )
+        return compactImageDescription(raw)
+    }
+
     /**
      * 非流式文本补全，用于短任务：RAG 联想判断、query planning、图片描述等。
      */

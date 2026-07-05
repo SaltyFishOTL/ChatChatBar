@@ -33,12 +33,14 @@ class CharacterResearchPlanner(
         currentCard: CharacterCard,
         modelConfig: ModelConfig,
         maxQueries: Int,
-        onStatus: (String) -> Unit
+        onStatus: (String) -> Unit,
+        onRawText: (String) -> Unit
     ): CharacterResearchPlanResult = withContext(Dispatchers.IO) {
         var rawResponse = ""
         runCatching {
             var reasoningNotified = false
             var contentNotified = false
+            val visibleText = StringBuilder()
             onStatus("AI 正在规划搜索")
             rawResponse = chatService.completeTextStreaming(
                 messages = listOf(
@@ -54,7 +56,9 @@ class CharacterResearchPlanner(
                 maxThinkingTokens = 64,
                 thinkingBudget = 64,
                 reasoningEffort = "low",
-                onDelta = {
+                onDelta = { chunk ->
+                    visibleText.append(chunk)
+                    onRawText(visibleText.toString())
                     if (!contentNotified) {
                         contentNotified = true
                         onStatus("AI 正在输出搜索规划")

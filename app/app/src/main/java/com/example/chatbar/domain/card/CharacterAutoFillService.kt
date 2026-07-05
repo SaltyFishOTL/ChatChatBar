@@ -110,14 +110,15 @@ class CharacterAutoFillService(
         imageBase64s: List<String> = emptyList(),
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onRawText: (String) -> Unit
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
         val model = resolveModel(modelOverride)
-        val imageContext = prepareImageContext(imageBase64s, model, onStatus)
+        val imageContext = prepareImageContext(imageBase64s, model, onStatus, onVisibleOutput)
         val researchBrief = if (userInput.isNotBlank()) {
-            buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+            buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug, onVisibleOutput)
         } else {
             null
         }
@@ -184,7 +185,8 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         generationModel: ModelConfig,
         onStatus: (String) -> Unit = {},
-        onResearchDebug: (ResearchDebugSnapshot) -> Unit = {}
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> }
     ): ResearchBrief? {
         val service = researchService ?: return null
         val researchModel = runCatching { modelResolver.retrievalModel() }
@@ -197,7 +199,8 @@ class CharacterAutoFillService(
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 onDebug = onResearchDebug,
-                onStatus = onStatus
+                onStatus = onStatus,
+                onVisibleOutput = onVisibleOutput
             )
         }.getOrNull()
     }
@@ -208,7 +211,8 @@ class CharacterAutoFillService(
     private suspend fun prepareImageContext(
         imageBase64s: List<String>,
         model: ModelConfig,
-        onStatus: suspend (String) -> Unit = {}
+        onStatus: suspend (String) -> Unit = {},
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> }
     ): PreparedAutoFillImageContext {
         val images = imageBase64s.filter(String::isNotBlank)
         if (images.isEmpty()) return PreparedAutoFillImageContext()
@@ -217,7 +221,10 @@ class CharacterAutoFillService(
             generationModel = model,
             requireUnderstanding = true,
             announceDirect = true,
-            onStatus = onStatus
+            onStatus = onStatus,
+            onDescriptionText = { index, text ->
+                onVisibleOutput("image-description-$index", "图片识别输出", text)
+            }
         ) ?: if (model.isMultimodal) {
             ImageUnderstandingResult(directImageBase64s = images)
         } else {

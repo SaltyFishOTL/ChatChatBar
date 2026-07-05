@@ -25,13 +25,15 @@ class LlmResearchBriefSummarizer(
         plan: CharacterResearchPlan,
         sources: List<ResearchSource>,
         modelConfig: ModelConfig,
-        onStatus: (String) -> Unit
+        onStatus: (String) -> Unit,
+        onRawText: (String) -> Unit
     ): ResearchBriefResult = withContext(Dispatchers.IO) {
         if (sources.isEmpty()) return@withContext ResearchBriefResult(failureReason = "sources empty")
         var rawResponse = ""
         runCatching {
             var reasoningNotified = false
             var contentNotified = false
+            val visibleText = StringBuilder()
             rawResponse = chatService.completeTextStreaming(
                 messages = listOf(
                     ChatApiMessage.text("system", PromptTemplates.characterResearchBriefSystemPrompt()),
@@ -43,7 +45,9 @@ class LlmResearchBriefSummarizer(
                 maxThinkingTokens = 128,
                 thinkingBudget = 128,
                 reasoningEffort = "low",
-                onDelta = {
+                onDelta = { chunk ->
+                    visibleText.append(chunk)
+                    onRawText(visibleText.toString())
                     if (!contentNotified) {
                         contentNotified = true
                         onStatus("AI 正在输出资料整理结果")

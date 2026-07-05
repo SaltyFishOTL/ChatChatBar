@@ -68,11 +68,12 @@ class CharacterRewriteService(
         modelOverride: ModelConfig? = null,
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onRawText: (String) -> Unit
     ): CharacterRewriteDraft = withContext(Dispatchers.IO) {
         require(userInput.isNotBlank()) { "请输入改写要求" }
         val model = resolveModel(modelOverride)
-        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug)
+        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug, onVisibleOutput)
         onStatus("改写角色卡")
         val messages = listOf(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_REWRITE_SYSTEM_PROMPT),
@@ -139,7 +140,8 @@ class CharacterRewriteService(
         currentCard: CharacterCard,
         generationModel: ModelConfig,
         onStatus: (String) -> Unit,
-        onResearchDebug: (ResearchDebugSnapshot) -> Unit
+        onResearchDebug: (ResearchDebugSnapshot) -> Unit,
+        onVisibleOutput: (String, String, String) -> Unit
     ): ResearchBrief? {
         val service = researchService ?: return null
         val researchModel = runCatching { modelResolver.retrievalModel() }
@@ -152,7 +154,8 @@ class CharacterRewriteService(
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 onDebug = onResearchDebug,
-                onStatus = onStatus
+                onStatus = onStatus,
+                onVisibleOutput = onVisibleOutput
             )
         }.getOrNull()
     }

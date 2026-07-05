@@ -279,7 +279,7 @@ class NovelAiPromptDesigner(
     }
 }
 
-private fun CharacterCard.hasImageDesignSource(): Boolean =
+internal fun CharacterCard.hasImageDesignSource(): Boolean =
     name.isNotBlank() ||
         basicSetting.isNotBlank() ||
         greeting.isNotBlank() ||

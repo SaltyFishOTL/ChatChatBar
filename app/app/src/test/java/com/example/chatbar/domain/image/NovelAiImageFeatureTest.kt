@@ -97,6 +97,26 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
+    fun `character card cover source rejects empty cards`() {
+        val emptyCard = CharacterCard(
+            id = "card",
+            name = "",
+            greeting = "",
+            characters = listOf(CharacterInfo.create("")),
+            createdAt = 1,
+            updatedAt = 1
+        )
+
+        assertFalse(emptyCard.hasImageDesignSource())
+        assertTrue(emptyCard.copy(name = "夜雨诊所").hasImageDesignSource())
+        assertTrue(
+            emptyCard.copy(
+                characters = listOf(CharacterInfo.create("").copy(appearance = "银发，灰蓝眼"))
+            ).hasImageDesignSource()
+        )
+    }
+
+    @Test
     fun `length prefixed decoder handles fragmented and combined frames`() {
         val first = byteArrayOf(1, 2, 3)
         val second = byteArrayOf(4, 5)

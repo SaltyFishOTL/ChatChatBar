@@ -24,6 +24,7 @@ class CharacterResearchService(
         currentCard: CharacterCard,
         modelConfig: ModelConfig,
         onDebug: (ResearchDebugSnapshot) -> Unit = {},
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
         val settings = settingsProvider()
@@ -35,7 +36,14 @@ class CharacterResearchService(
         val maxQueries = DEFAULT_MAX_QUERIES
         val maxResults = settings.webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
 
-        val planResult = planner.plan(userInput, currentCard, modelConfig, maxQueries, onStatus)
+        val planResult = planner.plan(
+            userInput = userInput,
+            currentCard = currentCard,
+            modelConfig = modelConfig,
+            maxQueries = maxQueries,
+            onStatus = onStatus,
+            onRawText = { text -> onVisibleOutput("research-plan", "搜索规划输出", text) }
+        )
         val plan = planResult.plan ?: fallbackPlan(userInput, currentCard, maxQueries, planResult.failureReason)
         if (plan == null) {
             onStatus("搜索规划失败，且没有可用保底关键词，跳过搜索")
@@ -115,7 +123,15 @@ class CharacterResearchService(
 
         onStatus("正在清洗并压缩百科资料：${sources.size} 个来源")
         val summaryResult = runCatching {
-            summarizer.summarize(userInput, currentCard, plan, sources, modelConfig, onStatus)
+            summarizer.summarize(
+                request = userInput,
+                currentCard = currentCard,
+                plan = plan,
+                sources = sources,
+                modelConfig = modelConfig,
+                onStatus = onStatus,
+                onRawText = { text -> onVisibleOutput("research-brief", "资料整理输出", text) }
+            )
         }.getOrElse { error ->
             ResearchBriefResult(failureReason = error.message ?: error::class.java.simpleName)
         }

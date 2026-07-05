@@ -21,7 +21,8 @@ class ImageUnderstandingService(
         generationModel: ModelConfig,
         requireUnderstanding: Boolean,
         announceDirect: Boolean = false,
-        onStatus: suspend (String) -> Unit = {}
+        onStatus: suspend (String) -> Unit = {},
+        onDescriptionText: (Int, String) -> Unit = { _, _ -> }
     ): ImageUnderstandingResult {
         val images = imageBase64s.filter(String::isNotBlank)
         if (images.isEmpty()) return ImageUnderstandingResult()
@@ -43,13 +44,18 @@ class ImageUnderstandingService(
         val descriptions = mutableListOf<String>()
         images.forEachIndexed { index, imageBase64 ->
             val description = runCatching {
-                chatService.describeImage(imageBase64, visionModel)
+                val visibleText = StringBuilder()
+                chatService.describeImageStreaming(imageBase64, visionModel) { chunk ->
+                    visibleText.append(chunk)
+                    onDescriptionText(index, visibleText.toString())
+                }
             }.getOrElse { error ->
                 val reason = "图片解析失败: ${error.message ?: error::class.java.simpleName}"
                 if (requireUnderstanding) throw RuntimeException(reason, error)
                 return ImageUnderstandingResult(unavailableReason = reason)
             }.trim()
             if (description.isNotBlank()) {
+                onDescriptionText(index, description)
                 descriptions += if (images.size == 1) description else "图片 ${index + 1}: $description"
             }
         }

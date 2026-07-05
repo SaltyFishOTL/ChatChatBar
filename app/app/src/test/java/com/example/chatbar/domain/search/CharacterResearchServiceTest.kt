@@ -128,6 +128,21 @@ class CharacterResearchServiceTest {
         assertTrue(snapshots.any { it.briefFailureReason == "summary parse failed" })
     }
 
+    @Test
+    fun `research relays visible planner and summary output`() = runTest {
+        val service = service(settings = AppSettings(webSearchEnabled = true))
+        val outputs = mutableListOf<String>()
+
+        service.research(
+            userInput = "request",
+            currentCard = card(),
+            modelConfig = model(),
+            onVisibleOutput = { key, _, text -> outputs += "$key:$text" }
+        )
+
+        assertTrue(outputs.contains("research-plan:{\"needSearch\":true}"))
+        assertTrue(outputs.contains("research-brief:{\"facts\":[\"compressed fact\"]}"))
+    }
 
     @Test
     fun `research does not emit default successful setup statuses`() = runTest {
@@ -213,19 +228,23 @@ class CharacterResearchServiceTest {
             currentCard: CharacterCard,
             modelConfig: ModelConfig,
             maxQueries: Int,
-            onStatus: (String) -> Unit
-        ): CharacterResearchPlanResult = CharacterResearchPlanResult(
-            plan = CharacterResearchPlan(
-                needSearch = true,
-                reason = "Need facts",
-                queries = listOf(
-                    CharacterResearchQuery(
-                        query = "canon query",
-                        priority = 1
+            onStatus: (String) -> Unit,
+            onRawText: (String) -> Unit
+        ): CharacterResearchPlanResult {
+            onRawText("{\"needSearch\":true}")
+            return CharacterResearchPlanResult(
+                plan = CharacterResearchPlan(
+                    needSearch = true,
+                    reason = "Need facts",
+                    queries = listOf(
+                        CharacterResearchQuery(
+                            query = "canon query",
+                            priority = 1
+                        )
                     )
                 )
             )
-        )
+        }
     }
 
     private class FailingPlanner : CharacterResearchPlanProvider {
@@ -234,7 +253,8 @@ class CharacterResearchServiceTest {
             currentCard: CharacterCard,
             modelConfig: ModelConfig,
             maxQueries: Int,
-            onStatus: (String) -> Unit
+            onStatus: (String) -> Unit,
+            onRawText: (String) -> Unit
         ): CharacterResearchPlanResult = CharacterResearchPlanResult(failureReason = "bad planner")
     }
 
@@ -244,7 +264,8 @@ class CharacterResearchServiceTest {
             currentCard: CharacterCard,
             modelConfig: ModelConfig,
             maxQueries: Int,
-            onStatus: (String) -> Unit
+            onStatus: (String) -> Unit,
+            onRawText: (String) -> Unit
         ): CharacterResearchPlanResult = CharacterResearchPlanResult(
             plan = CharacterResearchPlan(
                 needSearch = true,
@@ -299,11 +320,15 @@ class CharacterResearchServiceTest {
             plan: CharacterResearchPlan,
             sources: List<ResearchSource>,
             modelConfig: ModelConfig,
-            onStatus: (String) -> Unit
-        ): ResearchBriefResult = if (returnNull) {
-            ResearchBriefResult(failureReason = failureReason)
-        } else {
-            ResearchBriefResult(brief = brief.copy(sources = sources))
+            onStatus: (String) -> Unit,
+            onRawText: (String) -> Unit
+        ): ResearchBriefResult {
+            onRawText("{\"facts\":[\"compressed fact\"]}")
+            return if (returnNull) {
+                ResearchBriefResult(failureReason = failureReason)
+            } else {
+                ResearchBriefResult(brief = brief.copy(sources = sources))
+            }
         }
     }
 }

@@ -3,19 +3,30 @@ package com.example.chatbar.ui.character
 import com.example.chatbar.ui.kit.AppIcons
 
 import android.app.Activity
+import android.content.Context
+import android.graphics.BitmapFactory
+import android.graphics.ImageDecoder
 import android.net.Uri
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -27,6 +38,7 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
@@ -47,11 +59,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -65,6 +84,12 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.image.ImageCropFractionRect
+import com.example.chatbar.domain.image.ImageCropOffset
+import com.example.chatbar.domain.image.ImageCropSize
+import com.example.chatbar.domain.image.clampCropOffset
+import com.example.chatbar.domain.image.coverDisplaySize
+import com.example.chatbar.domain.image.imageCropFractionRect
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -86,6 +111,30 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+
+private data class PendingImagePick(
+    val cropTarget: CharacterImageCropTarget?,
+    val onImage: (String) -> Unit
+)
+
+private data class PendingImageCrop(
+    val uri: Uri,
+    val target: CharacterImageCropTarget,
+    val onImage: (String) -> Unit
+)
+
+private enum class CharacterImageCropTarget(
+    val title: String,
+    val aspectRatio: Float,
+    val outputWidth: Int,
+    val outputHeight: Int,
+    val circular: Boolean
+) {
+    Avatar("裁剪头像", 1f, 512, 512, true),
+    Background("裁剪聊天背景", 9f / 16f, 1080, 1920, false)
+}
 
 @Composable
 fun CharacterEditScreen(
@@ -118,7 +167,8 @@ fun CharacterEditScreen(
     var deleteCharacter by remember { mutableStateOf<Pair<Int, String>?>(null) }
     var deleteDocument by remember { mutableStateOf<DocumentInfo?>(null) }
     var confirmClearDocuments by remember { mutableStateOf(false) }
-    var imageCallback by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var pendingImagePick by remember { mutableStateOf<PendingImagePick?>(null) }
+    var pendingImageCrop by remember { mutableStateOf<PendingImageCrop?>(null) }
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
@@ -146,13 +196,26 @@ fun CharacterEditScreen(
     }
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        uri?.let { viewModel.copyUriToLocalFile(it) { path -> imageCallback?.invoke(path) } }
+        val pick = pendingImagePick
+        pendingImagePick = null
+        if (uri != null && pick != null) {
+            val target = pick.cropTarget
+            if (target == null) {
+                viewModel.copyUriToLocalFile(uri, pick.onImage)
+            } else {
+                pendingImageCrop = PendingImageCrop(uri, target, pick.onImage)
+            }
+        }
     }
     val directoryPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         uri?.let(viewModel::importDocumentsFromFolder)
     }
     fun pickImage(callback: (String) -> Unit) {
-        imageCallback = callback
+        pendingImagePick = PendingImagePick(null, callback)
+        imagePicker.launch("image/*")
+    }
+    fun pickCroppedImage(target: CharacterImageCropTarget, callback: (String) -> Unit) {
+        pendingImagePick = PendingImagePick(target, callback)
         imagePicker.launch("image/*")
     }
     fun openAutoFillDialog() {
@@ -239,7 +302,9 @@ fun CharacterEditScreen(
             CoverImagePreview(coverImageState, title = "当前封面")
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
-                    modifier = Modifier.size(64.dp).clickable { pickImage { viewModel.avatar = it } },
+                    modifier = Modifier.size(64.dp).clickable {
+                        pickCroppedImage(CharacterImageCropTarget.Avatar) { viewModel.avatar = it }
+                    },
                     contentAlignment = Alignment.Center
                 ) {
                     CharacterAvatar(viewModel.avatar, Modifier.fillMaxSize())
@@ -265,7 +330,9 @@ fun CharacterEditScreen(
                 ImagePickerPanel(
                     imagePath = viewModel.chatBackground,
                     height = 112.dp,
-                    onPick = { pickImage { viewModel.chatBackground = it } },
+                    onPick = {
+                        pickCroppedImage(CharacterImageCropTarget.Background) { viewModel.chatBackground = it }
+                    },
                     onClear = { viewModel.chatBackground = null }
                 )
             }
@@ -601,6 +668,24 @@ fun CharacterEditScreen(
             confirmClearDocuments = false
         }
     }
+    pendingImageCrop?.let { request ->
+        CharacterImageCropDialog(
+            uri = request.uri,
+            target = request.target,
+            onDismiss = { pendingImageCrop = null },
+            onConfirm = { rect ->
+                viewModel.cropUriToLocalFile(
+                    uri = request.uri,
+                    cropRect = rect,
+                    outputWidth = request.target.outputWidth,
+                    outputHeight = request.target.outputHeight
+                ) { path ->
+                    request.onImage(path)
+                    pendingImageCrop = null
+                }
+            }
+        )
+    }
     if (isSaving) {
         CbDialog(onDismissRequest = {}, title = "请稍候") {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -614,6 +699,173 @@ fun CharacterEditScreen(
 
 @Composable
 private fun SectionTitle(text: String) = CbText(text, color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+
+@Composable
+private fun CharacterImageCropDialog(
+    uri: Uri,
+    target: CharacterImageCropTarget,
+    onDismiss: () -> Unit,
+    onConfirm: (ImageCropFractionRect) -> Unit
+) {
+    val context = LocalContext.current
+    val density = LocalDensity.current
+    val colors = ChatBarTheme.colors
+    var sourceSize by remember(uri) { mutableStateOf<ImageCropSize?>(null) }
+    var loadFailed by remember(uri) { mutableStateOf(false) }
+    var frameSize by remember(uri, target) { mutableStateOf(IntSize.Zero) }
+    var scale by remember(uri, target) { mutableStateOf(1f) }
+    var offset by remember(uri, target) { mutableStateOf(Offset.Zero) }
+
+    LaunchedEffect(uri) {
+        loadFailed = false
+        sourceSize = loadImageCropSize(context, uri)
+        loadFailed = sourceSize == null
+    }
+    LaunchedEffect(sourceSize, frameSize.width, frameSize.height) {
+        if (sourceSize != null && frameSize.width > 0 && frameSize.height > 0) {
+            scale = 1f
+            offset = Offset.Zero
+        }
+    }
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val size = sourceSize ?: return@rememberTransformableState
+        if (frameSize.width <= 0 || frameSize.height <= 0) return@rememberTransformableState
+        val nextScale = (scale * zoomChange).coerceIn(1f, 6f)
+        val clamped = clampCropOffset(
+            offset = ImageCropOffset(offset.x + panChange.x, offset.y + panChange.y),
+            sourceWidth = size.width,
+            sourceHeight = size.height,
+            frameWidth = frameSize.width.toFloat(),
+            frameHeight = frameSize.height.toFloat(),
+            userScale = nextScale
+        )
+        scale = nextScale
+        offset = Offset(clamped.x, clamped.y)
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(colors.background)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                CbIconButton(AppIcons.Close, "取消裁剪", onDismiss, tint = colors.foreground)
+                CbText(target.title, style = ChatBarTheme.typography.heading)
+                CbIconButton(
+                    AppIcons.Check,
+                    "确认裁剪",
+                    {
+                        val size = sourceSize ?: return@CbIconButton
+                        if (frameSize.width <= 0 || frameSize.height <= 0) return@CbIconButton
+                        onConfirm(
+                            imageCropFractionRect(
+                                sourceWidth = size.width,
+                                sourceHeight = size.height,
+                                frameWidth = frameSize.width.toFloat(),
+                                frameHeight = frameSize.height.toFloat(),
+                                userScale = scale,
+                                offset = ImageCropOffset(offset.x, offset.y)
+                            )
+                        )
+                    },
+                    enabled = sourceSize != null && frameSize.width > 0 && frameSize.height > 0,
+                    tint = colors.primary
+                )
+            }
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                val maxWidthPx = with(density) { maxWidth.toPx() }
+                val maxHeightPx = with(density) { maxHeight.toPx() }
+                val heightFromWidth = maxWidthPx / target.aspectRatio
+                val cropWidthPx: Float
+                val cropHeightPx: Float
+                if (heightFromWidth <= maxHeightPx) {
+                    cropWidthPx = maxWidthPx
+                    cropHeightPx = heightFromWidth
+                } else {
+                    cropHeightPx = maxHeightPx
+                    cropWidthPx = cropHeightPx * target.aspectRatio
+                }
+                val cropWidthDp = with(density) { cropWidthPx.toDp() }
+                val cropHeightDp = with(density) { cropHeightPx.toDp() }
+                val shape: Shape = if (target.circular) CircleShape else RoundedCornerShape(14.dp)
+                Box(
+                    Modifier
+                        .size(width = cropWidthDp, height = cropHeightDp)
+                        .clip(shape)
+                        .background(Color.Black)
+                        .border(1.dp, colors.border, shape)
+                        .transformable(transformState)
+                        .onSizeChanged { frameSize = it },
+                    contentAlignment = Alignment.Center
+                ) {
+                    val size = sourceSize
+                    if (size == null) {
+                        if (loadFailed) {
+                            CbText("图片无法读取", color = Color.White)
+                        } else {
+                            CbSpinner()
+                        }
+                    } else if (frameSize.width > 0 && frameSize.height > 0) {
+                        val display = coverDisplaySize(
+                            sourceWidth = size.width,
+                            sourceHeight = size.height,
+                            frameWidth = frameSize.width.toFloat(),
+                            frameHeight = frameSize.height.toFloat()
+                        )
+                        AsyncImage(
+                            model = uri,
+                            contentDescription = null,
+                            modifier = Modifier
+                                .requiredSize(
+                                    width = with(density) { display.width.toDp() },
+                                    height = with(density) { display.height.toDp() }
+                                )
+                                .graphicsLayer {
+                                    scaleX = scale
+                                    scaleY = scale
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                },
+                            contentScale = ContentScale.FillBounds
+                        )
+                    } else {
+                        CbSpinner()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private suspend fun loadImageCropSize(context: Context, uri: Uri): ImageCropSize? = withContext(Dispatchers.IO) {
+    runCatching {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            val bitmap = ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+            try {
+                ImageCropSize(bitmap.width.toFloat(), bitmap.height.toFloat())
+            } finally {
+                bitmap.recycle()
+            }
+        } else {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            context.contentResolver.openInputStream(uri)?.use { input ->
+                BitmapFactory.decodeStream(input, null, options)
+            }
+            if (options.outWidth > 0 && options.outHeight > 0) {
+                ImageCropSize(options.outWidth.toFloat(), options.outHeight.toFloat())
+            } else {
+                null
+            }
+        }
+    }.getOrNull()
+}
 
 @Composable
 private fun ImagePickerPanel(imagePath: String?, height: androidx.compose.ui.unit.Dp, onPick: () -> Unit, onClear: () -> Unit) {
@@ -666,6 +918,21 @@ private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: ()
     }
 }
 
+private fun ScrollState.isNearBottom(thresholdPx: Int): Boolean =
+    maxValue - value <= thresholdPx
+
+private fun Modifier.pauseStreamingAutoScrollOnUserDrag(enabled: Boolean, onUserDrag: () -> Unit): Modifier =
+    if (!enabled) {
+        this
+    } else {
+        pointerInput(enabled) {
+            awaitEachGesture {
+                val down = awaitFirstDown(requireUnconsumed = false)
+                awaitTouchSlopOrCancellation(down.id) { _, _ -> onUserDrag() }
+            }
+        }
+    }
+
 @Composable
 private fun CharacterAutoFillDialog(
     state: CharacterAutoFillUiState,
@@ -690,6 +957,8 @@ private fun CharacterAutoFillDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
+    val autoScrollBottomThresholdPx = with(LocalDensity.current) { 48.dp.roundToPx() }
+    var followStreamingOutput by remember { mutableStateOf(true) }
     val busy = state.isGenerating || state.coverImage.isGenerating
     fun clearSourceImage() {
         onDeleteImage(sourceImagePath)
@@ -704,8 +973,18 @@ private fun CharacterAutoFillDialog(
             selectedModelId = null
         }
     }
-    LaunchedEffect(state.streamingText, state.progressLines.size) {
-        if (state.isGenerating && (state.streamingText.isNotBlank() || state.progressLines.isNotEmpty())) {
+    LaunchedEffect(state.isGenerating) {
+        if (state.isGenerating) {
+            followStreamingOutput = true
+        }
+    }
+    LaunchedEffect(bodyScroll.value, bodyScroll.maxValue, state.isGenerating) {
+        if (!state.isGenerating || bodyScroll.isNearBottom(autoScrollBottomThresholdPx)) {
+            followStreamingOutput = true
+        }
+    }
+    LaunchedEffect(state.streamingText, state.visibleOutputs, state.progressLines.size) {
+        if (followStreamingOutput && state.isGenerating && (state.streamingText.isNotBlank() || state.visibleOutputs.isNotEmpty() || state.progressLines.isNotEmpty())) {
             bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
@@ -751,6 +1030,7 @@ private fun CharacterAutoFillDialog(
             Modifier
                 .fillMaxWidth()
                 .heightIn(max = 620.dp)
+                .pauseStreamingAutoScrollOnUserDrag(state.isGenerating) { followStreamingOutput = false }
                 .verticalScroll(bodyScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -825,6 +1105,9 @@ private fun CharacterAutoFillDialog(
                     CbText(state.statusText.ifBlank { "正在生成角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
             }
+            state.visibleOutputs.forEach { output ->
+                DebugTextBlock(output.title, output.text)
+            }
             state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
                 ResearchDebugPanel(debug)
             }
@@ -874,14 +1157,26 @@ private fun CharacterRewriteDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
+    val autoScrollBottomThresholdPx = with(LocalDensity.current) { 48.dp.roundToPx() }
+    var followStreamingOutput by remember { mutableStateOf(true) }
     val busy = state.isGenerating || state.coverImage.isGenerating
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
         }
     }
-    LaunchedEffect(state.streamingText, state.progressLines.size) {
-        if (state.isGenerating && (state.streamingText.isNotBlank() || state.progressLines.isNotEmpty())) {
+    LaunchedEffect(state.isGenerating) {
+        if (state.isGenerating) {
+            followStreamingOutput = true
+        }
+    }
+    LaunchedEffect(bodyScroll.value, bodyScroll.maxValue, state.isGenerating) {
+        if (!state.isGenerating || bodyScroll.isNearBottom(autoScrollBottomThresholdPx)) {
+            followStreamingOutput = true
+        }
+    }
+    LaunchedEffect(state.streamingText, state.visibleOutputs, state.progressLines.size) {
+        if (followStreamingOutput && state.isGenerating && (state.streamingText.isNotBlank() || state.visibleOutputs.isNotEmpty() || state.progressLines.isNotEmpty())) {
             bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
@@ -912,6 +1207,7 @@ private fun CharacterRewriteDialog(
             Modifier
                 .fillMaxWidth()
                 .heightIn(max = 620.dp)
+                .pauseStreamingAutoScrollOnUserDrag(state.isGenerating) { followStreamingOutput = false }
                 .verticalScroll(bodyScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -970,6 +1266,9 @@ private fun CharacterRewriteDialog(
                     CbSpinner()
                     CbText(state.statusText.ifBlank { "正在改写角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
+            }
+            state.visibleOutputs.forEach { output ->
+                DebugTextBlock(output.title, output.text)
             }
             state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
                 ResearchDebugPanel(debug)

@@ -99,7 +99,8 @@ interface CharacterResearchPlanProvider {
         currentCard: com.example.chatbar.data.local.entity.CharacterCard,
         modelConfig: com.example.chatbar.data.local.entity.ModelConfig,
         maxQueries: Int,
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onRawText: (String) -> Unit = {}
     ): CharacterResearchPlanResult
 }
 
@@ -110,6 +111,7 @@ interface ResearchBriefSummarizer {
         plan: CharacterResearchPlan,
         sources: List<ResearchSource>,
         modelConfig: com.example.chatbar.data.local.entity.ModelConfig,
-        onStatus: (String) -> Unit = {}
+        onStatus: (String) -> Unit = {},
+        onRawText: (String) -> Unit = {}
     ): ResearchBriefResult
 }

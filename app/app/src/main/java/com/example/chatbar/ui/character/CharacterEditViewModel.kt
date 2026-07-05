@@ -1,6 +1,14 @@
 package com.example.chatbar.ui.character
 
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
+import android.graphics.Canvas
+import android.graphics.ImageDecoder
+import android.graphics.Paint
+import android.graphics.Rect
+import android.graphics.RectF
 import android.net.Uri
+import android.os.Build
 import android.provider.DocumentsContract
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -21,8 +29,10 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
@@ -41,6 +51,7 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
+import kotlin.math.roundToInt
 
 data class CharacterCoverImageUiState(
     val isGenerating: Boolean = false,
@@ -52,6 +63,12 @@ data class CharacterCoverImageUiState(
     val statusText: String = ""
 )
 
+data class CharacterAiOutputUiState(
+    val key: String,
+    val title: String,
+    val text: String
+)
+
 data class CharacterAutoFillUiState(
     val isGenerating: Boolean = false,
     val draft: CharacterAutoFillDraft? = null,
@@ -60,6 +77,7 @@ data class CharacterAutoFillUiState(
     val statusText: String = "",
     val progressLines: List<String> = emptyList(),
     val researchDebug: ResearchDebugSnapshot? = null,
+    val visibleOutputs: List<CharacterAiOutputUiState> = emptyList(),
     val modelId: String? = null,
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
@@ -72,6 +90,7 @@ data class CharacterRewriteUiState(
     val statusText: String = "",
     val progressLines: List<String> = emptyList(),
     val researchDebug: ResearchDebugSnapshot? = null,
+    val visibleOutputs: List<CharacterAiOutputUiState> = emptyList(),
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
 
@@ -269,6 +288,13 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             var currentStatusText = statusText
             var progressLines = listOf(statusText)
             var latestResearchDebug: ResearchDebugSnapshot? = null
+            var latestVisibleOutputs = emptyList<CharacterAiOutputUiState>()
+            fun rememberVisibleOutput(key: String, title: String, text: String) {
+                latestVisibleOutputs = latestVisibleOutputs.upsertAiOutput(key, title, text)
+                updateAutoFillStateIfCurrent(generationToken) {
+                    it.copy(visibleOutputs = latestVisibleOutputs)
+                }
+            }
             try {
                 val imageBase64s = sourceImagePath?.let { path ->
                     currentStatusText = "正在读取上传图片"
@@ -280,6 +306,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             statusText = currentStatusText,
                             progressLines = progressLines,
                             researchDebug = latestResearchDebug,
+                            visibleOutputs = latestVisibleOutputs,
                             modelId = selectedModelId
                         )
                     }
@@ -300,6 +327,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 statusText = nextStatus,
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
+                                visibleOutputs = latestVisibleOutputs,
                                 modelId = selectedModelId
                             )
                         }
@@ -310,6 +338,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             _autoFillState.value = _autoFillState.value.copy(researchDebug = snapshot)
                         }
                     },
+                    onVisibleOutput = { key, title, text ->
+                        rememberVisibleOutput(key, title, text)
+                    },
                     onRawText = { rawText ->
                         latestRawText = rawText
                         if (generationToken == autoFillGenerationToken) {
@@ -319,6 +350,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 statusText = currentStatusText,
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
+                                visibleOutputs = latestVisibleOutputs,
                                 modelId = selectedModelId
                             )
                         }
@@ -330,6 +362,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("角色卡候选已生成"),
                         researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs,
                         modelId = selectedModelId
                     )
                 }
@@ -341,6 +374,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         statusText = "已取消生成",
                         progressLines = progressLines.appendProgressLine("已取消生成"),
                         researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs,
                         modelId = selectedModelId
                     )
                 }
@@ -351,6 +385,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("生成失败"),
                         researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs,
                         modelId = selectedModelId
                     )
                 }
@@ -494,6 +529,16 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         selectedModelId: String?,
         previousCandidatePath: String? = null
     ) {
+        if (!card.hasImageDesignSource()) {
+            putCoverImageState(
+                target,
+                CharacterCoverImageUiState(
+                    error = "请先填写角色卡内容，再设计封面",
+                    statusText = "封面未生成"
+                )
+            )
+            return
+        }
         coverImageGenerationToken += 1
         val generationToken = coverImageGenerationToken
         coverImageJob?.cancel()
@@ -718,6 +763,13 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             var currentStatusText = statusText
             var progressLines = listOf(statusText)
             var latestResearchDebug: ResearchDebugSnapshot? = null
+            var latestVisibleOutputs = emptyList<CharacterAiOutputUiState>()
+            fun rememberVisibleOutput(key: String, title: String, text: String) {
+                latestVisibleOutputs = latestVisibleOutputs.upsertAiOutput(key, title, text)
+                if (generationToken == rewriteGenerationToken) {
+                    _rewriteState.value = _rewriteState.value.copy(visibleOutputs = latestVisibleOutputs)
+                }
+            }
             try {
                 val draft = characterRewriteService.rewriteStreaming(
                     userInput = userInput,
@@ -732,7 +784,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 streamingText = latestRawText,
                                 statusText = nextStatus,
                                 progressLines = progressLines,
-                                researchDebug = latestResearchDebug
+                                researchDebug = latestResearchDebug,
+                                visibleOutputs = latestVisibleOutputs
                             )
                         }
                     },
@@ -742,6 +795,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             _rewriteState.value = _rewriteState.value.copy(researchDebug = snapshot)
                         }
                     },
+                    onVisibleOutput = { key, title, text ->
+                        rememberVisibleOutput(key, title, text)
+                    },
                     onRawText = { rawText ->
                         latestRawText = rawText
                         if (generationToken == rewriteGenerationToken) {
@@ -750,7 +806,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                                 streamingText = rawText,
                                 statusText = currentStatusText,
                                 progressLines = progressLines,
-                                researchDebug = latestResearchDebug
+                                researchDebug = latestResearchDebug,
+                                visibleOutputs = latestVisibleOutputs
                             )
                         }
                     }
@@ -760,7 +817,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         draft = draft,
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("改写候选已生成"),
-                        researchDebug = latestResearchDebug
+                        researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs
                     )
                 }
             } catch (_: CancellationException) {
@@ -770,7 +828,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         streamingText = latestRawText,
                         statusText = "已取消生成",
                         progressLines = progressLines.appendProgressLine("已取消生成"),
-                        researchDebug = latestResearchDebug
+                        researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs
                     )
                 }
             } catch (error: Throwable) {
@@ -779,7 +838,8 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         error = error.message ?: "AI 自动改写失败",
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("改写失败"),
-                        researchDebug = latestResearchDebug
+                        researchDebug = latestResearchDebug,
+                        visibleOutputs = latestVisibleOutputs
                     )
                 }
             } finally {
@@ -1295,12 +1355,102 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             }
         }
     }
+
+    fun cropUriToLocalFile(
+        uri: Uri,
+        cropRect: ImageCropFractionRect,
+        outputWidth: Int,
+        outputHeight: Int,
+        onSuccess: (String) -> Unit
+    ) {
+        viewModelScope.launch {
+            _isSaving.value = true
+            try {
+                val context = ChatBarApp.instance
+                val imagesDir = File(context.filesDir, "images")
+                if (!imagesDir.exists()) imagesDir.mkdirs()
+                val localFile = File(imagesDir, "img_${java.util.UUID.randomUUID()}.jpg")
+
+                withContext(Dispatchers.IO) {
+                    val source = decodeBitmapFromUri(uri)
+                    val output = Bitmap.createBitmap(outputWidth, outputHeight, Bitmap.Config.ARGB_8888)
+                    try {
+                        val sourceRect = cropRect.toBitmapRect(source.width, source.height)
+                        val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
+                        Canvas(output).drawBitmap(
+                            source,
+                            sourceRect,
+                            RectF(0f, 0f, outputWidth.toFloat(), outputHeight.toFloat()),
+                            paint
+                        )
+                        localFile.outputStream().use { stream ->
+                            check(output.compress(Bitmap.CompressFormat.JPEG, 92, stream)) { "图片裁剪保存失败" }
+                        }
+                        check(localFile.exists() && localFile.length() > 0L) { "图片裁剪保存失败" }
+                    } finally {
+                        source.recycle()
+                        output.recycle()
+                    }
+                }
+                onSuccess(localFile.absolutePath)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _indexingStatus.value = "裁剪图片失败：${e.message ?: "未知错误"}"
+            } finally {
+                _isSaving.value = false
+            }
+        }
+    }
+
+    private fun decodeBitmapFromUri(uri: Uri): Bitmap {
+        val context = ChatBarApp.instance
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+            ImageDecoder.decodeBitmap(ImageDecoder.createSource(context.contentResolver, uri)) { decoder, _, _ ->
+                decoder.allocator = ImageDecoder.ALLOCATOR_SOFTWARE
+            }
+        } else {
+            val input = context.contentResolver.openInputStream(uri)
+                ?: error("无法读取所选图片")
+            input.use { stream ->
+                BitmapFactory.decodeStream(stream) ?: error("图片文件无法读取")
+            }
+        }
+    }
+}
+
+private fun ImageCropFractionRect.toBitmapRect(width: Int, height: Int): Rect {
+    val safeLeft = left.coerceIn(0f, 1f)
+    val safeTop = top.coerceIn(0f, 1f)
+    val safeRight = right.coerceIn(safeLeft, 1f)
+    val safeBottom = bottom.coerceIn(safeTop, 1f)
+    val l = (safeLeft * width).roundToInt().coerceIn(0, width - 1)
+    val t = (safeTop * height).roundToInt().coerceIn(0, height - 1)
+    val r = (safeRight * width).roundToInt().coerceIn(l + 1, width)
+    val b = (safeBottom * height).roundToInt().coerceIn(t + 1, height)
+    return Rect(l, t, r, b)
 }
 
 private fun List<String>.appendProgressLine(line: String): List<String> {
     val normalized = line.replace(Regex("\\s+"), " ").trim()
     if (normalized.isBlank() || lastOrNull() == normalized) return this
     return (this + normalized).takeLast(14)
+}
+
+private fun List<CharacterAiOutputUiState>.upsertAiOutput(
+    key: String,
+    title: String,
+    text: String
+): List<CharacterAiOutputUiState> {
+    if (text.isBlank()) return this
+    val normalized = text.trim()
+    val next = CharacterAiOutputUiState(key, title, normalized)
+    val index = indexOfFirst { it.key == key }
+    return if (index >= 0) {
+        toMutableList().also { it[index] = next }
+    } else {
+        this + next
+    }
 }
 
 private fun ModelConfig.autoFillLabel(): String =
