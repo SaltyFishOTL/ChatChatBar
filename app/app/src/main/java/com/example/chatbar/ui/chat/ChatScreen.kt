@@ -70,6 +70,7 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.core.content.FileProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
@@ -581,10 +582,20 @@ private fun FullImageDialog(
                 },
                 modifier = Modifier.fillMaxWidth()
             )
+            Spacer(Modifier.size(8.dp))
+            CbButton(
+                "分享图片",
+                {
+                    showImageActions = false
+                    shareImage(context, path)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Secondary
+            )
             if (onSetCardAvatar != null) {
                 Spacer(Modifier.size(8.dp))
                 CbButton(
-                    "将此图片替换为角色卡头像",
+                    "替换为头像",
                     {
                         showImageActions = false
                         onSetCardAvatar()
@@ -596,7 +607,7 @@ private fun FullImageDialog(
             if (onSetCardBackground != null) {
                 Spacer(Modifier.size(8.dp))
                 CbButton(
-                    "将此图片替换为角色卡背景",
+                    "替换为背景",
                     {
                         showImageActions = false
                         onSetCardBackground()
@@ -657,6 +668,38 @@ private fun FullImageDialog(
             )
         }
     }
+}
+
+private fun shareImage(context: android.content.Context, path: String) {
+    try {
+        val sourceFile = File(path)
+        if (!sourceFile.exists()) {
+            Toast.makeText(context, "图片文件不存在", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            sourceFile
+        )
+        val mimeType = imageMimeType(sourceFile)
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = mimeType
+            putExtra(Intent.EXTRA_STREAM, uri)
+            clipData = android.content.ClipData.newUri(context.contentResolver, "ChatBar image", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "分享图片"))
+    } catch (e: Exception) {
+        Toast.makeText(context, "分享失败: ${e.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+private fun imageMimeType(file: File): String = when (file.extension.lowercase()) {
+    "jpg", "jpeg" -> "image/jpeg"
+    "webp" -> "image/webp"
+    "gif" -> "image/gif"
+    else -> "image/png"
 }
 
 private fun saveImageToGallery(context: android.content.Context, path: String) {
