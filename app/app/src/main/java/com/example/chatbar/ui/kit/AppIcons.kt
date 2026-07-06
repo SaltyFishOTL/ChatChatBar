@@ -17,6 +17,7 @@ import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.FileText
 import com.composables.icons.lucide.Image
 import com.composables.icons.lucide.ImagePlus
+import com.composables.icons.lucide.Import
 import com.composables.icons.lucide.LogIn
 import com.composables.icons.lucide.LogOut
 import com.composables.icons.lucide.Lucide
@@ -53,12 +54,14 @@ object AppIcons {
     val Download: ImageVector get() = Lucide.Download
     val Edit: ImageVector get() = Lucide.Pencil
     val Error: ImageVector get() = Lucide.CircleAlert
+    val Export: ImageVector get() = Lucide.Upload
     val ExpandLess: ImageVector get() = Lucide.ChevronUp
     val ExpandMore: ImageVector get() = Lucide.ChevronDown
     val Face: ImageVector get() = Lucide.Smile
     val Forum: ImageVector get() = Lucide.MessageCircle
     val HelpOutline: ImageVector get() = Lucide.CircleQuestionMark
     val Image: ImageVector get() = Lucide.Image
+    val Import: ImageVector get() = Lucide.Import
     val KeyboardArrowDown: ImageVector get() = Lucide.ChevronDown
     val KeyboardArrowRight: ImageVector get() = Lucide.ChevronRight
     val Login: ImageVector get() = Lucide.LogIn

@@ -1,6 +1,8 @@
 package com.example.chatbar.domain.community
 
 import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.net.Uri
 import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
@@ -10,7 +12,9 @@ import com.example.chatbar.data.repository.WorldBookRepository
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.card.CharacterCardTransferService
 import com.example.chatbar.domain.card.FormatCardTransferService
+import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.WorldBookTransferService
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.net.URLDecoder
 import java.net.URLEncoder
@@ -100,28 +104,41 @@ class CommunityService(
 
     suspend fun listItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
         checkConfigured()
+        queryItems(authorUserId = null, accessToken = null)
+    }
+
+    suspend fun listMyItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
+        checkConfigured()
+        val session = requireSession()
+        queryItems(authorUserId = session.userId, accessToken = session.accessToken)
+    }
+
+    private fun queryItems(authorUserId: String?, accessToken: String?): List<CommunityItem> {
+        val authorFilter = authorUserId?.let { "&author_user_id=eq.${urlEncode(it)}" }.orEmpty()
         val request = Request.Builder()
-            .url("$baseUrl/rest/v1/community_items?select=*&order=created_at.desc&limit=100")
+            .url("$baseUrl/rest/v1/community_items?select=*&order=created_at.desc&limit=100$authorFilter")
             .header("apikey", anonKey)
-            .header("Authorization", "Bearer $anonKey")
+            .header("Authorization", "Bearer ${accessToken ?: anonKey}")
             .header("Accept", "application/json")
             .get()
             .build()
         val body = executeForBody(request, "读取社区列表")
-        json.decodeFromString(ListSerializer(CommunityItemDto.serializer()), body)
+        return json.decodeFromString(ListSerializer(CommunityItemDto.serializer()), body)
             .map(CommunityItemDto::toDomain)
     }
 
     suspend fun localCandidates(type: CommunityItemType): List<CommunityUploadCandidate> = withContext(Dispatchers.IO) {
         when (type) {
-            CommunityItemType.CHARACTER -> characterRepository.getAll().map { card ->
-                CommunityUploadCandidate(
-                    id = card.id,
-                    type = type,
-                    title = card.name,
-                    subtitle = "${card.characters.size} 人物 / ${card.customDocuments.size} 文档"
-                )
-            }
+            CommunityItemType.CHARACTER -> characterRepository.getAll()
+                .filterNot { it.isCommunityDownload }
+                .map { card ->
+                    CommunityUploadCandidate(
+                        id = card.id,
+                        type = type,
+                        title = card.name,
+                        subtitle = "${card.characters.size} 人物 / ${card.customDocuments.size} 文档"
+                    )
+                }
 
             CommunityItemType.FORMAT -> formatCardRepository.getAll().map { card ->
                 CommunityUploadCandidate(
@@ -156,6 +173,7 @@ class CommunityService(
         when (type) {
             CommunityItemType.CHARACTER -> {
                 val card = characterRepository.getById(localId) ?: error("角色卡不存在")
+                require(!card.isCommunityDownload) { "下载角色卡不能上传，请先复制为本地角色卡" }
                 sourceName = card.name
                 packageText = characterTransfers.exportJson(localId)
                 preview = card.avatar?.let(::previewFromPath)
@@ -196,6 +214,38 @@ class CommunityService(
     suspend fun submitDraft(draft: CommunityPackageDraft): CommunityItem = withContext(Dispatchers.IO) {
         checkConfigured()
         val session = requireSession()
+        publishDraft(draft = draft, session = session, itemId = null)
+    }
+
+    suspend fun updateDraft(item: CommunityItem, draft: CommunityPackageDraft): CommunityItem = withContext(Dispatchers.IO) {
+        checkConfigured()
+        val session = requireSession()
+        require(item.authorUserId == session.userId) { "只能更新自己上传的条目" }
+        require(item.type == draft.type) { "不能用不同类型覆盖社区条目" }
+        publishDraft(draft = draft, session = session, itemId = item.id)
+    }
+
+    suspend fun deleteItem(item: CommunityItem) = withContext(Dispatchers.IO) {
+        checkConfigured()
+        val session = requireSession()
+        require(item.authorUserId == session.userId) { "只能删除自己上传的条目" }
+        val body = json.encodeToString(CommunityDeleteRequest(action = "delete", itemId = item.id))
+        val request = Request.Builder()
+            .url("$baseUrl/functions/v1/submit-community-item")
+            .header("apikey", anonKey)
+            .header("Authorization", "Bearer ${session.accessToken}")
+            .header("Content-Type", JSON_MEDIA_TYPE.toString())
+            .post(body.toRequestBody(JSON_MEDIA_TYPE))
+            .build()
+        executeForBody(request, "删除社区条目")
+    }
+
+    private fun publishDraft(
+        draft: CommunityPackageDraft,
+        session: CommunitySession,
+        itemId: String?
+    ): CommunityItem {
+        ensureNoCharacterNameConflict(draft, itemId, session.accessToken)
         val filePath = storagePath(session.userId, draft.type, draft.title, "json")
         uploadObject(
             bucket = PACKAGE_BUCKET,
@@ -211,6 +261,7 @@ class CommunityService(
             path
         }
         val payload = CommunitySubmitRequest(
+            itemId = itemId,
             type = draft.type.wireName,
             title = draft.title,
             description = draft.description,
@@ -231,7 +282,25 @@ class CommunityService(
             .post(body.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val responseBody = executeForBody(request, "发布社区条目")
-        json.decodeFromString(CommunityItemDto.serializer(), responseBody).toDomain()
+        return json.decodeFromString(CommunityItemDto.serializer(), responseBody).toDomain()
+    }
+
+    private fun ensureNoCharacterNameConflict(
+        draft: CommunityPackageDraft,
+        itemId: String?,
+        accessToken: String
+    ) {
+        if (draft.type != CommunityItemType.CHARACTER) return
+        val existing = queryItems(authorUserId = null, accessToken = accessToken)
+            .firstOrNull { item ->
+                item.id != itemId &&
+                    item.type == CommunityItemType.CHARACTER &&
+                    (
+                        NamePolicy.isSame(item.title, draft.title) ||
+                            NamePolicy.isSame(item.sourceLocalName, draft.sourceLocalName)
+                        )
+            }
+        require(existing == null) { "社区已有同名角色卡：${existing?.title}" }
     }
 
     suspend fun downloadPackage(item: CommunityItem): String = withContext(Dispatchers.IO) {
@@ -244,6 +313,12 @@ class CommunityService(
         val body = executeForBody(request, "下载社区包")
         runCatching { incrementDownloadCount(item.id) }
         body
+    }
+
+    fun previewUrl(item: CommunityItem): String? {
+        val path = item.previewPath?.takeIf(String::isNotBlank) ?: return null
+        if (!configured) return null
+        return "$baseUrl/storage/v1/object/public/$PREVIEW_BUCKET/${encodePath(path)}"
     }
 
     private suspend fun requireSession(): CommunitySession {
@@ -353,12 +428,59 @@ class CommunityService(
 
     private fun previewFromPath(path: String): CommunityPreviewDraft? {
         val file = File(path)
-        if (!file.isFile || file.length() <= 0L || file.length() > MAX_PREVIEW_BYTES) return null
+        if (!file.isFile || file.length() <= 0L || file.length() > MAX_PREVIEW_SOURCE_BYTES) return null
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        val width = bounds.outWidth
+        val height = bounds.outHeight
+        if (width <= 0 || height <= 0) return null
+        val decodeOptions = BitmapFactory.Options().apply {
+            inPreferredConfig = Bitmap.Config.RGB_565
+            inSampleSize = previewSampleSize(width, height)
+        }
+        val decoded = BitmapFactory.decodeFile(file.absolutePath, decodeOptions) ?: return null
+        val preview = scalePreview(decoded)
+        if (preview !== decoded) decoded.recycle()
+        val bytes = compressPreview(preview)
+        preview.recycle()
+        if (bytes.isEmpty() || bytes.size > MAX_PREVIEW_UPLOAD_BYTES) return null
         return CommunityPreviewDraft(
-            fileName = file.name.ifBlank { "avatar.jpg" },
-            bytes = file.readBytes(),
-            contentType = contentTypeFor(file)
+            fileName = "preview.jpg",
+            bytes = bytes,
+            contentType = "image/jpeg"
         )
+    }
+
+    private fun previewSampleSize(width: Int, height: Int): Int {
+        var sample = 1
+        while (width / sample > PREVIEW_MAX_DIMENSION * 2 || height / sample > PREVIEW_MAX_DIMENSION * 2) {
+            sample *= 2
+        }
+        return sample
+    }
+
+    private fun scalePreview(bitmap: Bitmap): Bitmap {
+        val maxSide = maxOf(bitmap.width, bitmap.height)
+        if (maxSide <= PREVIEW_MAX_DIMENSION) return bitmap
+        val scale = PREVIEW_MAX_DIMENSION.toFloat() / maxSide.toFloat()
+        val targetWidth = (bitmap.width * scale).toInt().coerceAtLeast(1)
+        val targetHeight = (bitmap.height * scale).toInt().coerceAtLeast(1)
+        return Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+    }
+
+    private fun compressPreview(bitmap: Bitmap): ByteArray {
+        var quality = PREVIEW_JPEG_QUALITY
+        while (quality >= PREVIEW_MIN_JPEG_QUALITY) {
+            val output = ByteArrayOutputStream()
+            if (bitmap.compress(Bitmap.CompressFormat.JPEG, quality, output)) {
+                val bytes = output.toByteArray()
+                if (bytes.size <= MAX_PREVIEW_UPLOAD_BYTES || quality == PREVIEW_MIN_JPEG_QUALITY) {
+                    return bytes
+                }
+            }
+            quality -= 10
+        }
+        return ByteArray(0)
     }
 
     private fun storagePath(
@@ -379,14 +501,6 @@ class CommunityService(
             .trim('_')
             .take(MAX_PATH_PART)
             .ifBlank { "item" }
-
-    private fun contentTypeFor(file: File): String =
-        when (file.extension.lowercase()) {
-            "png" -> "image/png"
-            "webp" -> "image/webp"
-            "gif" -> "image/gif"
-            else -> "image/jpeg"
-        }
 
     private fun Uri.callbackParams(): Map<String, String> = buildMap {
         queryParameterNames.forEach { name ->
@@ -432,7 +546,11 @@ class CommunityService(
         private const val MAX_ERROR_BODY = 600
         private const val MAX_TAGS = 8
         private const val MAX_PATH_PART = 80
-        private const val MAX_PREVIEW_BYTES = 3L * 1024L * 1024L
+        private const val MAX_PREVIEW_SOURCE_BYTES = 20L * 1024L * 1024L
+        private const val MAX_PREVIEW_UPLOAD_BYTES = 160 * 1024
+        private const val PREVIEW_MAX_DIMENSION = 256
+        private const val PREVIEW_JPEG_QUALITY = 56
+        private const val PREVIEW_MIN_JPEG_QUALITY = 36
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }

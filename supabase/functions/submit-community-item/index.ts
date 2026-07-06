@@ -1,11 +1,15 @@
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const PACKAGE_BUCKET = "community-packages";
+const PREVIEW_BUCKET = "community-previews";
 const MAX_PACKAGE_BYTES = 20 * 1024 * 1024;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 type ItemType = "character" | "format" | "world_book";
 
 type SubmitRequest = {
+  action?: "delete" | null;
+  item_id?: string | null;
   type: ItemType;
   title: string;
   description?: string;
@@ -18,9 +22,36 @@ type SubmitRequest = {
   schema_version: number;
 };
 
+type NormalizedSubmitRequest = {
+  item_id: string | null;
+  type: ItemType;
+  title: string;
+  description: string;
+  tags: string[];
+  source_local_name: string;
+  file_path: string;
+  preview_path: string | null;
+  sha256: string;
+  size_bytes: number;
+  schema_version: number;
+};
+
+type CommunityItemRecord = {
+  id: string;
+  type: ItemType;
+  file_path: string;
+  preview_path: string | null;
+};
+
+type CommunityNameRecord = {
+  id: string;
+  title: string;
+  source_local_name: string;
+};
+
 Deno.serve(async (req) => {
   if (req.method === "OPTIONS") return response(null, 204);
-  if (req.method !== "POST") return response({ error: "Method not allowed" }, 405);
+  if (req.method !== "POST" && req.method !== "DELETE") return response({ error: "Method not allowed" }, 405);
 
   const authHeader = req.headers.get("Authorization") ?? "";
   const token = authHeader.replace(/^Bearer\s+/i, "").trim();
@@ -40,11 +71,19 @@ Deno.serve(async (req) => {
   if (userError || !userData.user) return response({ error: "Unauthorized" }, 401);
   const user = userData.user;
 
+  if (req.method === "DELETE") {
+    return deleteCommunityItem(req, admin, user.id);
+  }
+
   let body: SubmitRequest;
   try {
     body = await req.json();
   } catch {
     return response({ error: "Invalid JSON" }, 400);
+  }
+
+  if (body.action === "delete") {
+    return deleteCommunityItemById(body.item_id, admin, user.id);
   }
 
   const normalized = normalizeRequest(body);
@@ -57,6 +96,23 @@ Deno.serve(async (req) => {
   }
   if (item.preview_path && !item.preview_path.startsWith(ownerPrefix)) {
     return response({ error: "preview_path must be under current user folder" }, 403);
+  }
+
+  let existing: CommunityItemRecord | null = null;
+  if (item.item_id) {
+    const owned = await getOwnedCommunityItem(admin, item.item_id, user.id);
+    if ("error" in owned) return response({ error: owned.error }, owned.status);
+    existing = owned.item;
+    if (existing.type !== item.type) {
+      return response({ error: "type cannot change" }, 400);
+    }
+  }
+
+  const conflict = await findCharacterNameConflict(admin, item, item.item_id);
+  if ("error" in conflict) return response({ error: conflict.error }, 400);
+  if (conflict.item) {
+    await cleanupRejectedObjects(admin, item, existing);
+    return response({ error: `Character name already exists: ${conflict.item.title}` }, 409);
   }
 
   const { data: objectData, error: downloadError } = await admin
@@ -96,22 +152,38 @@ Deno.serve(async (req) => {
     firstString(user.email) ??
     "Discord user";
 
+  const row = {
+    type: item.type,
+    title: item.title,
+    description: item.description,
+    tags: item.tags,
+    author_user_id: user.id,
+    author_name: authorName,
+    source_local_name: item.source_local_name,
+    file_path: item.file_path,
+    preview_path: item.preview_path,
+    sha256: item.sha256,
+    size_bytes: item.size_bytes,
+    schema_version: item.schema_version,
+  };
+
+  if (existing) {
+    const { data: updated, error: updateError } = await admin
+      .from("community_items")
+      .update(row)
+      .eq("id", existing.id)
+      .eq("author_user_id", user.id)
+      .select("*")
+      .single();
+
+    if (updateError) return response({ error: updateError.message }, 400);
+    await cleanupOldObjects(admin, existing, item);
+    return response(updated, 200);
+  }
+
   const { data: inserted, error: insertError } = await admin
     .from("community_items")
-    .insert({
-      type: item.type,
-      title: item.title,
-      description: item.description,
-      tags: item.tags,
-      author_user_id: user.id,
-      author_name: authorName,
-      source_local_name: item.source_local_name,
-      file_path: item.file_path,
-      preview_path: item.preview_path,
-      sha256: item.sha256,
-      size_bytes: item.size_bytes,
-      schema_version: item.schema_version,
-    })
+    .insert(row)
     .select("*")
     .single();
 
@@ -119,7 +191,128 @@ Deno.serve(async (req) => {
   return response(inserted, 200);
 });
 
-function normalizeRequest(body: SubmitRequest): { value: Required<SubmitRequest> } | { error: string } {
+async function deleteCommunityItem(req: Request, admin: ReturnType<typeof createClient>, userId: string): Promise<Response> {
+  const itemId = trim(new URL(req.url).searchParams.get("id"));
+  return deleteCommunityItemById(itemId, admin, userId);
+}
+
+async function deleteCommunityItemById(
+  itemIdRaw: unknown,
+  admin: ReturnType<typeof createClient>,
+  userId: string,
+): Promise<Response> {
+  const itemId = trim(itemIdRaw);
+  if (!itemId || !UUID_PATTERN.test(itemId)) return response({ error: "Invalid id" }, 400);
+
+  const owned = await getOwnedCommunityItem(admin, itemId, userId);
+  if ("error" in owned) return response({ error: owned.error }, owned.status);
+
+  const { data: deleted, error: deleteError } = await admin
+    .from("community_items")
+    .delete()
+    .eq("id", itemId)
+    .eq("author_user_id", userId)
+    .select("*")
+    .single();
+
+  if (deleteError) return response({ error: deleteError.message }, 400);
+  await removeObjectRefs(admin, [
+    { bucket: PACKAGE_BUCKET, path: owned.item.file_path },
+    ...(owned.item.preview_path ? [{ bucket: PREVIEW_BUCKET, path: owned.item.preview_path }] : []),
+  ]);
+  return response(deleted, 200);
+}
+
+async function getOwnedCommunityItem(
+  admin: ReturnType<typeof createClient>,
+  itemId: string,
+  userId: string,
+): Promise<{ item: CommunityItemRecord } | { error: string; status: number }> {
+  const { data, error } = await admin
+    .from("community_items")
+    .select("id,type,file_path,preview_path")
+    .eq("id", itemId)
+    .eq("author_user_id", userId)
+    .single();
+
+  if (error || !data) return { error: "Community item not found", status: 404 };
+  return { item: data as CommunityItemRecord };
+}
+
+async function cleanupOldObjects(
+  admin: ReturnType<typeof createClient>,
+  previous: CommunityItemRecord,
+  next: NormalizedSubmitRequest,
+) {
+  const refs: Array<{ bucket: string; path: string }> = [];
+  if (previous.file_path !== next.file_path) {
+    refs.push({ bucket: PACKAGE_BUCKET, path: previous.file_path });
+  }
+  if (previous.preview_path && previous.preview_path !== next.preview_path) {
+    refs.push({ bucket: PREVIEW_BUCKET, path: previous.preview_path });
+  }
+  await removeObjectRefs(admin, refs);
+}
+
+async function cleanupRejectedObjects(
+  admin: ReturnType<typeof createClient>,
+  rejected: NormalizedSubmitRequest,
+  existing: CommunityItemRecord | null,
+) {
+  const refs: Array<{ bucket: string; path: string }> = [];
+  if (!existing || existing.file_path !== rejected.file_path) {
+    refs.push({ bucket: PACKAGE_BUCKET, path: rejected.file_path });
+  }
+  if (rejected.preview_path && (!existing || existing.preview_path !== rejected.preview_path)) {
+    refs.push({ bucket: PREVIEW_BUCKET, path: rejected.preview_path });
+  }
+  await removeObjectRefs(admin, refs);
+}
+
+async function findCharacterNameConflict(
+  admin: ReturnType<typeof createClient>,
+  item: NormalizedSubmitRequest,
+  exceptId: string | null,
+): Promise<{ item: CommunityNameRecord | null } | { error: string }> {
+  if (item.type !== "character") return { item: null };
+
+  const { data, error } = await admin
+    .from("community_items")
+    .select("id,title,source_local_name")
+    .eq("type", "character");
+
+  if (error) return { error: error.message };
+  const title = normalizeName(item.title);
+  const sourceName = normalizeName(item.source_local_name);
+  const duplicate = (data as CommunityNameRecord[] | null)?.find((row) => {
+    if (row.id === exceptId) return false;
+    const rowTitle = normalizeName(row.title);
+    const rowSource = normalizeName(row.source_local_name);
+    return rowTitle === title || rowSource === sourceName || rowTitle === sourceName || rowSource === title;
+  });
+  return { item: duplicate ?? null };
+}
+
+async function removeObjectRefs(
+  admin: ReturnType<typeof createClient>,
+  refs: Array<{ bucket: string; path: string }>,
+) {
+  const grouped = new Map<string, string[]>();
+  for (const ref of refs) {
+    const paths = grouped.get(ref.bucket) ?? [];
+    paths.push(ref.path);
+    grouped.set(ref.bucket, paths);
+  }
+
+  for (const [bucket, paths] of grouped) {
+    const { error } = await admin.storage.from(bucket).remove(paths);
+    if (error) console.warn(`Storage cleanup failed for ${bucket}: ${error.message}`);
+  }
+}
+
+function normalizeRequest(body: SubmitRequest): { value: NormalizedSubmitRequest } | { error: string } {
+  const itemId = body.item_id ? trim(body.item_id) : null;
+  if (itemId && !UUID_PATTERN.test(itemId)) return { error: "Invalid item_id" };
   const type = body.type;
   if (!["character", "format", "world_book"].includes(type)) return { error: "Invalid type" };
   const title = trim(body.title);
@@ -141,6 +334,7 @@ function normalizeRequest(body: SubmitRequest): { value: Required<SubmitRequest>
   }
   return {
     value: {
+      item_id: itemId,
       type,
       title,
       description,
@@ -203,6 +397,10 @@ function trim(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
+function normalizeName(value: unknown): string {
+  return trim(value).replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 function firstString(value: unknown): string | null {
   const text = trim(value);
   return text.length > 0 ? text : null;
@@ -215,7 +413,7 @@ function response(body: unknown, status = 200): Response {
       "Content-Type": "application/json",
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Headers": "authorization, x-client-info, apikey, content-type",
-      "Access-Control-Allow-Methods": "POST, OPTIONS",
+      "Access-Control-Allow-Methods": "POST, DELETE, OPTIONS",
     },
   });
 }

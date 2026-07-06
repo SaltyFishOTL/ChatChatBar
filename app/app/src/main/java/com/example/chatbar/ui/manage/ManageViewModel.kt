@@ -17,6 +17,8 @@ import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
+import com.example.chatbar.domain.community.CommunityItem
+import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
@@ -60,6 +62,7 @@ class ManageViewModel : ViewModel() {
     private val characterTransfers = ChatBarApp.instance.characterCardTransferService
     private val formatTransfers = ChatBarApp.instance.formatCardTransferService
     private val worldBookTransfers = ChatBarApp.instance.worldBookTransferService
+    private val communityService = ChatBarApp.instance.communityService
     private val presetCatalog = ChatBarApp.instance.presetCatalogService
     private val presetModelCatalog = ChatBarApp.instance.presetModelCatalogService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
@@ -102,6 +105,8 @@ class ManageViewModel : ViewModel() {
     val apiTestStatus: StateFlow<String?> = _apiTestStatus
     private val _importProgress = MutableStateFlow<String?>(null)
     val importProgress: StateFlow<String?> = _importProgress
+    private val _communityCharacterUpdates = MutableStateFlow<Map<String, CommunityItem>>(emptyMap())
+    val communityCharacterUpdates: StateFlow<Map<String, CommunityItem>> = _communityCharacterUpdates
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
 
     val appSettings: StateFlow<AppSettings> = settingsRepository.appSettings
@@ -136,6 +141,7 @@ class ManageViewModel : ViewModel() {
             _worldBookPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.WORLD_BOOK)
             _modelPresets.value = presetModelCatalog.entries()
             refreshEffectiveModels()
+            refreshCommunityCharacterUpdates()
         }
     }
 
@@ -167,6 +173,27 @@ class ManageViewModel : ViewModel() {
     }
 
     fun characterHasUpdate(card: CharacterCard): Boolean = presetCatalog.hasUpdate(card.sourcePresetKey, card.sourcePresetVersion)
+    fun characterCommunityUpdate(card: CharacterCard): CommunityItem? = _communityCharacterUpdates.value[card.id]
+
+    fun updateCommunityCharacter(id: String, onResult: (String) -> Unit = {}) {
+        viewModelScope.launch {
+            _importProgress.value = "正在更新社区角色卡…"
+            runCatching {
+                val card = updateCommunityCharacterInternal(id)
+                refreshCommunityCharacterUpdates()
+                card
+            }.fold(
+                onSuccess = { card ->
+                    _importProgress.value = null
+                    onResult("已更新：${card.name}")
+                },
+                onFailure = { error ->
+                    _importProgress.value = null
+                    onResult("更新失败：${error.message}")
+                }
+            )
+        }
+    }
 
     suspend fun decodeCharacterImport(rawJson: String) =
         com.example.chatbar.domain.card.CharacterCardImportRequest(characterTransfers.decode(rawJson))
@@ -216,6 +243,8 @@ class ManageViewModel : ViewModel() {
         return card
     }
     suspend fun overwriteCharacter(id: String, data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard {
+        val existing = characterRepository.getById(id)
+        require(existing?.isCommunityDownload != true) { "下载角色卡不能被本地导入覆盖，请复制后编辑" }
         val card = characterTransfers.overwrite(id, data.packageData, data.presetKey, data.presetVersion)
         startBackgroundRebuild(card)
         return card
@@ -330,6 +359,53 @@ class ManageViewModel : ViewModel() {
         val data = presetCatalog.formatPackage(entry)
         return data.copy(sourcePresetKey = entry.presetKey, sourcePresetVersion = entry.version)
     }
+
+    private suspend fun refreshCommunityCharacterUpdates() {
+        if (!communityService.configured) {
+            _communityCharacterUpdates.value = emptyMap()
+            return
+        }
+        val downloads = characterRepository.getAll().filter { it.isCommunityDownload }
+        if (downloads.isEmpty()) {
+            _communityCharacterUpdates.value = emptyMap()
+            return
+        }
+        runCatching {
+            val ids = downloads.mapNotNull { it.communityItemId }.toSet()
+            communityService.listItems()
+                .filter { it.type == CommunityItemType.CHARACTER && it.id in ids }
+                .associateBy { it.id }
+        }.onSuccess { remoteById ->
+            _communityCharacterUpdates.value = downloads.mapNotNull { card ->
+                val item = remoteById[card.communityItemId] ?: return@mapNotNull null
+                val sameSha = item.sha256.isNotBlank() && item.sha256 == card.communityItemSha256
+                val sameUpdated = item.updatedAt.isNotBlank() && item.updatedAt == card.communityItemUpdatedAt
+                if (sameSha && sameUpdated) null else card.id to item
+            }.toMap()
+        }
+    }
+
+    private suspend fun updateCommunityCharacterInternal(id: String): CharacterCard {
+        val existing = characterRepository.getById(id) ?: error("角色卡不存在")
+        val itemId = existing.communityItemId?.takeIf(String::isNotBlank) ?: error("不是社区下载角色卡")
+        val item = _communityCharacterUpdates.value[id]
+            ?: communityService.listItems().firstOrNull { it.id == itemId && it.type == CommunityItemType.CHARACTER }
+            ?: error("社区条目不存在或不可访问")
+        val raw = communityService.downloadPackage(item)
+        val packageData = characterTransfers.decode(raw)
+        val updated = characterTransfers.overwrite(existing.id, packageData).withCommunitySource(item)
+        characterRepository.save(updated)
+        startBackgroundRebuild(updated)
+        return updated
+    }
+
+    private fun CharacterCard.withCommunitySource(item: CommunityItem): CharacterCard =
+        copy(
+            communityItemId = item.id,
+            communityItemUpdatedAt = item.updatedAt,
+            communityItemSha256 = item.sha256,
+            communityItemTitle = item.title
+        )
 
     // ===== 世界书 CRUD =====
     fun duplicateWorldBook(id: String) { viewModelScope.launch { worldBookTransfers.duplicate(id) } }

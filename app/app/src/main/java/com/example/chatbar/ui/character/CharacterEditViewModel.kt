@@ -220,6 +220,10 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     }
 
     fun saveCharacterCard(onSuccess: () -> Unit) {
+        if (_characterCard.value?.isCommunityDownload == true) {
+            _indexingStatus.value = "下载角色卡只读，请复制后编辑"
+            return
+        }
         if (validateForSave().isNotEmpty()) return
         _isSaving.value = true
 

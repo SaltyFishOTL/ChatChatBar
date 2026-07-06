@@ -46,6 +46,21 @@ on public.community_items
 for select
 using (true);
 
+drop policy if exists "community_items_authenticated_update_own" on public.community_items;
+create policy "community_items_authenticated_update_own"
+on public.community_items
+for update
+to authenticated
+using (author_user_id = auth.uid())
+with check (author_user_id = auth.uid());
+
+drop policy if exists "community_items_authenticated_delete_own" on public.community_items;
+create policy "community_items_authenticated_delete_own"
+on public.community_items
+for delete
+to authenticated
+using (author_user_id = auth.uid());
+
 insert into storage.buckets (id, name, public, file_size_limit, allowed_mime_types)
 values
     ('community-packages', 'community-packages', true, 20971520, array['application/json']),
@@ -68,6 +83,30 @@ on storage.objects
 for insert
 to authenticated
 with check (
+    bucket_id in ('community-packages', 'community-previews')
+    and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "community_packages_authenticated_update_own" on storage.objects;
+create policy "community_packages_authenticated_update_own"
+on storage.objects
+for update
+to authenticated
+using (
+    bucket_id in ('community-packages', 'community-previews')
+    and (storage.foldername(name))[1] = auth.uid()::text
+)
+with check (
+    bucket_id in ('community-packages', 'community-previews')
+    and (storage.foldername(name))[1] = auth.uid()::text
+);
+
+drop policy if exists "community_packages_authenticated_delete_own" on storage.objects;
+create policy "community_packages_authenticated_delete_own"
+on storage.objects
+for delete
+to authenticated
+using (
     bucket_id in ('community-packages', 'community-previews')
     and (storage.foldername(name))[1] = auth.uid()::text
 );

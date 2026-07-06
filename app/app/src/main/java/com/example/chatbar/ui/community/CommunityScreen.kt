@@ -2,8 +2,11 @@ package com.example.chatbar.ui.community
 
 import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,14 +29,20 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.community.CommunityPendingImport
@@ -45,6 +54,7 @@ import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbCard
 import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbScaffold
@@ -67,6 +77,9 @@ fun CommunityScreen(
     val candidates by viewModel.candidates.collectAsState()
     val context = LocalContext.current
     val uriHandler = LocalUriHandler.current
+    var actionItem by remember { mutableStateOf<CommunityItem?>(null) }
+    var updateItem by remember { mutableStateOf<CommunityItem?>(null) }
+    var deleteItem by remember { mutableStateOf<CommunityItem?>(null) }
 
     LaunchedEffect(state.message) {
         val message = state.message ?: return@LaunchedEffect
@@ -74,7 +87,8 @@ fun CommunityScreen(
         viewModel.clearMessage()
     }
 
-    val filteredItems = state.items.filtered(state.query, state.selectedType)
+    val visibleItems = if (state.selectedSection == CommunitySection.MINE) state.myItems else state.items
+    val filteredItems = visibleItems.filtered(state.query, state.selectedType)
 
     CbScaffold(
         topBar = {
@@ -124,8 +138,10 @@ fun CommunityScreen(
             }
             SearchAndFilters(
                 query = state.query,
+                selectedSection = state.selectedSection,
                 selectedType = state.selectedType,
                 onQueryChange = viewModel::setQuery,
+                onSectionSelected = viewModel::setSection,
                 onTypeSelected = viewModel::setTypeFilter
             )
             Spacer(Modifier.height(ChatBarSpacing.md))
@@ -140,19 +156,71 @@ fun CommunityScreen(
                     contentPadding = PaddingValues(bottom = bottomInset + ChatBarSpacing.xl)
                 ) {
                     if (filteredItems.isEmpty()) {
-                        item { EmptyCommunityState() }
+                        item {
+                            EmptyCommunityState(
+                                section = state.selectedSection,
+                                loggedIn = session != null
+                            )
+                        }
                     } else {
                         items(filteredItems, key = { it.id }) { item ->
+                            val mine = session?.userId == item.authorUserId
                             CommunityItemCard(
                                 item = item,
+                                previewUrl = viewModel.previewUrl(item),
                                 busy = state.busy,
-                                onDownload = { viewModel.prepareImport(item) }
+                                mine = mine && state.selectedSection == CommunitySection.MINE,
+                                onDownload = { viewModel.prepareImport(item) },
+                                onManage = if (mine && state.selectedSection == CommunitySection.MINE) {
+                                    { actionItem = item }
+                                } else {
+                                    null
+                                }
                             )
                         }
                     }
                 }
             }
         }
+    }
+
+    actionItem?.let { item ->
+        CommunityItemActionDialog(
+            item = item,
+            onDismiss = { actionItem = null },
+            onUpdate = {
+                updateItem = item
+                actionItem = null
+            },
+            onDelete = {
+                deleteItem = item
+                actionItem = null
+            }
+        )
+    }
+
+    updateItem?.let { item ->
+        ConfirmUpdateDialog(
+            item = item,
+            busy = state.busy,
+            onDismiss = { updateItem = null },
+            onConfirm = {
+                viewModel.updateCommunityItem(item)
+                updateItem = null
+            }
+        )
+    }
+
+    deleteItem?.let { item ->
+        ConfirmDeleteDialog(
+            item = item,
+            busy = state.busy,
+            onDismiss = { deleteItem = null },
+            onConfirm = {
+                viewModel.deleteCommunityItem(item)
+                deleteItem = null
+            }
+        )
     }
 
     if (state.uploadOpen) {
@@ -184,10 +252,18 @@ fun CommunityScreen(
 @Composable
 private fun SearchAndFilters(
     query: String,
+    selectedSection: CommunitySection,
     selectedType: CommunityItemType?,
     onQueryChange: (String) -> Unit,
+    onSectionSelected: (CommunitySection) -> Unit,
     onTypeSelected: (CommunityItemType?) -> Unit
 ) {
+    CbTabs(
+        items = CommunitySection.entries.map { it.label },
+        selectedIndex = CommunitySection.entries.indexOf(selectedSection).coerceAtLeast(0),
+        onSelected = { index -> onSectionSelected(CommunitySection.entries[index]) }
+    )
+    Spacer(Modifier.height(ChatBarSpacing.sm))
     CbInput(
         value = query,
         onValueChange = onQueryChange,
@@ -214,18 +290,37 @@ private fun SearchAndFilters(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun CommunityItemCard(
     item: CommunityItem,
+    previewUrl: String?,
     busy: Boolean,
-    onDownload: () -> Unit
+    mine: Boolean,
+    onDownload: () -> Unit,
+    onManage: (() -> Unit)?
 ) {
     CbCard(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(
+                if (onManage != null) {
+                    Modifier.combinedClickable(onClick = {}, onLongClick = onManage)
+                } else {
+                    Modifier
+                }
+            ),
         border = BorderStroke(1.dp, ChatBarTheme.colors.border.copy(alpha = 0.72f)),
         elevation = ChatBarElevation.low
     ) {
         Row(verticalAlignment = Alignment.Top) {
+            if (item.type == CommunityItemType.CHARACTER && previewUrl != null) {
+                CommunityPreviewImage(
+                    url = previewUrl,
+                    contentDescription = "${item.title} 预览图"
+                )
+                Spacer(Modifier.width(ChatBarSpacing.md))
+            }
             Column(Modifier.weight(1f)) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     TypePill(item.type)
@@ -266,14 +361,137 @@ private fun CommunityItemCard(
                 )
             }
             Spacer(Modifier.width(ChatBarSpacing.md))
-            CbButton(
-                text = "下载",
-                onClick = onDownload,
-                enabled = !busy,
-                size = ButtonSize.Sm,
-                variant = ButtonVariant.Secondary
-            )
+            Column(horizontalAlignment = Alignment.End) {
+                CbButton(
+                    text = "下载",
+                    onClick = onDownload,
+                    enabled = !busy,
+                    size = ButtonSize.Sm,
+                    variant = ButtonVariant.Secondary
+                )
+                if (mine && onManage != null) {
+                    Spacer(Modifier.height(ChatBarSpacing.sm))
+                    CbIconButton(
+                        imageVector = AppIcons.Edit,
+                        contentDescription = "管理社区条目",
+                        onClick = onManage,
+                        enabled = !busy
+                    )
+                }
+            }
         }
+    }
+}
+
+@Composable
+private fun CommunityPreviewImage(
+    url: String,
+    contentDescription: String
+) {
+    Box(
+        modifier = Modifier
+            .size(width = 72.dp, height = 96.dp)
+            .clip(RoundedCornerShape(ChatBarShape.sm))
+            .background(ChatBarTheme.colors.surfaceSubtle)
+            .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
+    ) {
+        AsyncImage(
+            model = url,
+            contentDescription = contentDescription,
+            contentScale = ContentScale.Crop,
+            modifier = Modifier.fillMaxSize()
+        )
+    }
+}
+
+@Composable
+private fun CommunityItemActionDialog(
+    item: CommunityItem,
+    onDismiss: () -> Unit,
+    onUpdate: () -> Unit,
+    onDelete: () -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = item.title,
+        dismiss = {
+            CbButton("取消", onDismiss, variant = ButtonVariant.Ghost)
+        }
+    ) {
+        ActionRow(
+            icon = AppIcons.Refresh,
+            title = "用同名本地卡覆盖",
+            onClick = onUpdate
+        )
+        ActionRow(
+            icon = AppIcons.Delete,
+            title = "删除",
+            destructive = true,
+            onClick = onDelete
+        )
+    }
+}
+
+@Composable
+private fun ConfirmUpdateDialog(
+    item: CommunityItem,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "覆盖社区条目",
+        dismiss = {
+            CbButton("取消", onDismiss, variant = ButtonVariant.Ghost, enabled = !busy)
+        },
+        confirm = {
+            CbButton("覆盖", onConfirm, enabled = !busy, variant = ButtonVariant.Destructive)
+        }
+    ) {
+        CbText(
+            "将用本地同名${item.type.label}覆盖“${item.title}”。社区下载包会更新，下载次数保留。",
+            color = ChatBarTheme.colors.mutedForeground
+        )
+    }
+}
+
+@Composable
+private fun ConfirmDeleteDialog(
+    item: CommunityItem,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "删除社区条目",
+        dismiss = {
+            CbButton("取消", onDismiss, variant = ButtonVariant.Ghost, enabled = !busy)
+        },
+        confirm = {
+            CbButton("删除", onConfirm, enabled = !busy, variant = ButtonVariant.Destructive)
+        }
+    ) {
+        CbText("确定删除“${item.title}”？", color = ChatBarTheme.colors.mutedForeground)
+    }
+}
+
+@Composable
+private fun ActionRow(
+    icon: ImageVector,
+    title: String,
+    destructive: Boolean = false,
+    onClick: () -> Unit
+) {
+    val color = if (destructive) ChatBarTheme.colors.destructive else ChatBarTheme.colors.foreground
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(vertical = ChatBarSpacing.md),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbIcon(icon, null, Modifier.size(18.dp), color)
+        Spacer(Modifier.width(ChatBarSpacing.md))
+        CbText(title, color = color)
     }
 }
 
@@ -478,11 +696,21 @@ private fun ConfigMissingState() {
 }
 
 @Composable
-private fun EmptyCommunityState() {
+private fun EmptyCommunityState(section: CommunitySection, loggedIn: Boolean) {
+    val title = when {
+        section == CommunitySection.MINE && loggedIn -> "暂无我的上传"
+        section == CommunitySection.MINE -> "登录后查看我的上传"
+        else -> "暂无条目"
+    }
+    val description = when {
+        section == CommunitySection.MINE && loggedIn -> "上传角色卡、格式卡或世界书后会出现在这里"
+        section == CommunitySection.MINE -> "使用 Discord 登录后可管理自己上传的内容"
+        else -> "换个筛选或刷新试试"
+    }
     CbCard(Modifier.fillMaxWidth()) {
-        CbText("暂无条目", style = ChatBarTheme.typography.title)
+        CbText(title, style = ChatBarTheme.typography.title)
         Spacer(Modifier.height(ChatBarSpacing.sm))
-        CbText("换个筛选或刷新试试", color = ChatBarTheme.colors.mutedForeground)
+        CbText(description, color = ChatBarTheme.colors.mutedForeground)
     }
 }
 

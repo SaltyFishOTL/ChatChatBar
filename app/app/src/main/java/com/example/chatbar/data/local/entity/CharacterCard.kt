@@ -39,9 +39,16 @@ data class CharacterCard(
     val ragIndexTotal: Int = 0,
     val ragIndexMessage: String? = null,
     val ragIndexedAt: Long? = null,
+    val communityItemId: String? = null,
+    val communityItemUpdatedAt: String? = null,
+    val communityItemSha256: String? = null,
+    val communityItemTitle: String? = null,
     val createdAt: Long,
     val updatedAt: Long
 ) {
+    val isCommunityDownload: Boolean
+        get() = !communityItemId.isNullOrBlank()
+
     companion object {
         @OptIn(ExperimentalUuidApi::class)
         fun create(

@@ -23,12 +23,19 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
+enum class CommunitySection(val label: String) {
+    ALL("全部"),
+    MINE("我的")
+}
+
 data class CommunityUiState(
     val configured: Boolean = false,
     val items: List<CommunityItem> = emptyList(),
+    val myItems: List<CommunityItem> = emptyList(),
     val loading: Boolean = false,
     val busy: Boolean = false,
     val query: String = "",
+    val selectedSection: CommunitySection = CommunitySection.ALL,
     val selectedType: CommunityItemType? = null,
     val uploadOpen: Boolean = false,
     val uploadType: CommunityItemType = CommunityItemType.CHARACTER,
@@ -63,6 +70,15 @@ class CommunityViewModel : ViewModel() {
 
     init {
         viewModelScope.launch {
+            service.session.collect { session ->
+                if (session == null) {
+                    _state.update { it.copy(myItems = emptyList(), selectedSection = CommunitySection.ALL) }
+                } else {
+                    refreshMine()
+                }
+            }
+        }
+        viewModelScope.launch {
             characterRepository.initialize()
             formatCardRepository.initialize()
             worldBookRepository.initialize()
@@ -85,9 +101,13 @@ class CommunityViewModel : ViewModel() {
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, message = null) }
-            runCatching { service.listItems() }.fold(
-                onSuccess = { items ->
-                    _state.update { it.copy(items = items, loading = false) }
+            runCatching {
+                val items = service.listItems()
+                val myItems = if (service.session.value != null) service.listMyItems() else emptyList()
+                items to myItems
+            }.fold(
+                onSuccess = { (items, myItems) ->
+                    _state.update { it.copy(items = items, myItems = myItems, loading = false) }
                 },
                 onFailure = { error ->
                     _state.update { it.copy(loading = false, message = error.message ?: "社区列表加载失败") }
@@ -98,6 +118,15 @@ class CommunityViewModel : ViewModel() {
 
     fun setQuery(value: String) {
         _state.update { it.copy(query = value) }
+    }
+
+    fun setSection(section: CommunitySection) {
+        if (section == CommunitySection.MINE && service.session.value == null) {
+            _state.update { it.copy(selectedSection = section, message = "Discord 登录后查看我的上传") }
+            return
+        }
+        _state.update { it.copy(selectedSection = section) }
+        if (section == CommunitySection.MINE) refreshMine()
     }
 
     fun setTypeFilter(type: CommunityItemType?) {
@@ -168,7 +197,8 @@ class CommunityViewModel : ViewModel() {
                         it.copy(
                             busy = false,
                             uploadOpen = false,
-                            items = listOf(item) + it.items.filterNot { existing -> existing.id == item.id },
+                            items = upsertItem(it.items, item),
+                            myItems = upsertItem(it.myItems, item),
                             message = "已发布：${item.title}"
                         )
                     }
@@ -176,6 +206,63 @@ class CommunityViewModel : ViewModel() {
                 },
                 onFailure = { error ->
                     _state.update { it.copy(busy = false, message = error.message ?: "上传失败") }
+                }
+            )
+        }
+    }
+
+    fun updateCommunityItem(item: CommunityItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, message = null) }
+            runCatching {
+                val candidate = findSameNameCandidate(item)
+                    ?: error("未找到同名本地${item.type.label}：${item.sourceLocalName.ifBlank { item.title }}")
+                val draft = service.buildDraft(
+                    type = item.type,
+                    localId = candidate.id,
+                    title = item.title,
+                    description = item.description,
+                    tags = item.tags
+                )
+                service.updateDraft(item, draft)
+            }.fold(
+                onSuccess = { updated ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            items = upsertItem(it.items, updated),
+                            myItems = upsertItem(it.myItems, updated),
+                            message = "已更新：${updated.title}"
+                        )
+                    }
+                    loadCandidates(item.type)
+                },
+                onFailure = { error ->
+                    _state.update { it.copy(busy = false, message = error.message ?: "更新失败") }
+                }
+            )
+        }
+    }
+
+    fun deleteCommunityItem(item: CommunityItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(busy = true, message = null) }
+            runCatching {
+                service.deleteItem(item)
+                item
+            }.fold(
+                onSuccess = { deleted ->
+                    _state.update {
+                        it.copy(
+                            busy = false,
+                            items = it.items.filterNot { existing -> existing.id == deleted.id },
+                            myItems = it.myItems.filterNot { existing -> existing.id == deleted.id },
+                            message = "已删除：${deleted.title}"
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _state.update { it.copy(busy = false, message = error.message ?: "删除失败") }
                 }
             )
         }
@@ -256,7 +343,8 @@ class CommunityViewModel : ViewModel() {
                             characterTransfers.overwrite(pending.conflictId, request.packageData)
                         } else {
                             characterTransfers.importNew(request.packageData)
-                        }
+                        }.withCommunitySource(pending.item)
+                        characterRepository.save(card)
                         startCharacterRagWork(card)
                         card.name
                     }
@@ -301,9 +389,29 @@ class CommunityViewModel : ViewModel() {
         _state.update { it.copy(message = null) }
     }
 
+    fun previewUrl(item: CommunityItem): String? =
+        service.previewUrl(item)
+
+    private fun refreshMine() {
+        if (!service.configured || service.session.value == null) return
+        viewModelScope.launch {
+            runCatching { service.listMyItems() }.fold(
+                onSuccess = { myItems -> _state.update { it.copy(myItems = myItems) } },
+                onFailure = { error -> _state.update { it.copy(message = error.message ?: "我的上传加载失败") } }
+            )
+        }
+    }
+
     private fun loadCandidates(type: CommunityItemType = _state.value.uploadType) {
         viewModelScope.launch {
             runCatching { service.localCandidates(type) }.onSuccess { _candidates.value = it }
+        }
+    }
+
+    private suspend fun findSameNameCandidate(item: CommunityItem): CommunityUploadCandidate? {
+        val sourceName = item.sourceLocalName.ifBlank { item.title }
+        return service.localCandidates(item.type).firstOrNull { candidate ->
+            NamePolicy.isSame(candidate.title, sourceName) || NamePolicy.isSame(candidate.title, item.title)
         }
     }
 
@@ -406,4 +514,15 @@ class CommunityViewModel : ViewModel() {
             .filter(String::isNotBlank)
             .distinct()
             .take(8)
+
+    private fun upsertItem(items: List<CommunityItem>, item: CommunityItem): List<CommunityItem> =
+        listOf(item) + items.filterNot { existing -> existing.id == item.id }
+
+    private fun CharacterCard.withCommunitySource(item: CommunityItem): CharacterCard =
+        copy(
+            communityItemId = item.id,
+            communityItemUpdatedAt = item.updatedAt,
+            communityItemSha256 = item.sha256,
+            communityItemTitle = item.title
+        )
 }

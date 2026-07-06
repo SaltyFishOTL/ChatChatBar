@@ -94,6 +94,8 @@ data class CommunityItemDto(
 
 @Serializable
 data class CommunitySubmitRequest(
+    @SerialName("item_id")
+    val itemId: String? = null,
     val type: String,
     val title: String,
     val description: String,
@@ -109,6 +111,13 @@ data class CommunitySubmitRequest(
     val sizeBytes: Long,
     @SerialName("schema_version")
     val schemaVersion: Int
+)
+
+@Serializable
+data class CommunityDeleteRequest(
+    val action: String,
+    @SerialName("item_id")
+    val itemId: String
 )
 
 @Serializable

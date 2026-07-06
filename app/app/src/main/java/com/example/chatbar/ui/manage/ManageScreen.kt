@@ -83,6 +83,7 @@ import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
+import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
@@ -149,6 +150,7 @@ fun ManageScreen(
     val apiTestStatus by viewModel.apiTestStatus.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val importProgress by viewModel.importProgress.collectAsState()
+    val communityCharacterUpdates by viewModel.communityCharacterUpdates.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by rememberSaveable { mutableIntStateOf(0) }
@@ -290,10 +292,10 @@ fun ManageScreen(
                 actions = {
                     CbIconButton(AppIcons.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
                     if (tab == 4) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
-                    if (tab == 0) CbIconButton(AppIcons.UploadFile, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 1) CbIconButton(AppIcons.UploadFile, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 2) CbIconButton(AppIcons.UploadFile, "导入世界书", { importWorldBook.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 3) CbIconButton(AppIcons.UploadFile, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 0) CbIconButton(AppIcons.Import, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 1) CbIconButton(AppIcons.Import, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 2) CbIconButton(AppIcons.Import, "导入世界书", { importWorldBook.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 3) CbIconButton(AppIcons.Import, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                 }
             )
         },
@@ -315,11 +317,20 @@ fun ManageScreen(
             })
             Box(Modifier.weight(1f)) {
                 when (tab) {
-                    0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
+                    0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, viewModel::characterCommunityUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         pendingCharacterExport = card
-                    }, { onNavigate(CharacterEditRoute(it)) }, { id ->
+                    }, { id ->
+                        val card = characters.firstOrNull { it.id == id }
+                        if (card?.isCommunityDownload == true) {
+                            message = "下载角色卡只读。复制后可编辑本地副本。"
+                        } else {
+                            onNavigate(CharacterEditRoute(id))
+                        }
+                    }, { id ->
                         deleteTarget = DeleteTarget.Character(id, characters.firstOrNull { it.id == id }?.name ?: "未命名角色")
                     }, { id -> viewModel.duplicateCharacterCard(id) { onNavigate(CharacterEditRoute(it)) } }, { id ->
+                        viewModel.updateCommunityCharacter(id) { result -> message = result }
+                    }, { id ->
                         viewModel.createSessionForCharacter(id) { onNavigate(ChatRoute(it)) }
                     }, { entry -> scope.launch {
                         val data = viewModel.recoverCharacterPreset(entry)
@@ -432,15 +443,25 @@ fun ManageScreen(
         ) { CbText(body, color = ChatBarTheme.colors.mutedForeground) }
     }
     pendingCharacterImport?.let { (data, existing) ->
+        val readOnlyConflict = existing?.isCommunityDownload == true
         CbDialog(
             onDismissRequest = { pendingCharacterImport = null },
             title = "角色卡名称冲突",
             dismiss = { CbButton("取消", { pendingCharacterImport = null }, variant = ButtonVariant.Ghost) }
         ) {
-            CbText("已存在“${existing?.name}”。选择覆盖原卡并保留历史关联，或创建自动编号的新卡。", color = ChatBarTheme.colors.mutedForeground)
+            CbText(
+                if (readOnlyConflict) {
+                    "已存在社区下载角色卡“${existing.name}”。下载卡只读，不能被本地导入覆盖；可创建自动编号的新卡。"
+                } else {
+                    "已存在“${existing?.name}”。选择覆盖原卡并保留历史关联，或创建自动编号的新卡。"
+                },
+                color = ChatBarTheme.colors.mutedForeground
+            )
             Spacer(Modifier.height(14.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbButton("覆盖现有卡", { scope.launch { viewModel.overwriteCharacter(existing!!.id, data); pendingCharacterImport = null } }, variant = ButtonVariant.Destructive)
+                if (!readOnlyConflict) {
+                    CbButton("覆盖现有卡", { scope.launch { viewModel.overwriteCharacter(existing!!.id, data); pendingCharacterImport = null } }, variant = ButtonVariant.Destructive)
+                }
                 CbButton("创建新卡", { scope.launch { viewModel.importCharacterAsNew(data); pendingCharacterImport = null } })
             }
         }
@@ -666,6 +687,7 @@ private fun CharacterTab(
     cards: List<CharacterCard>,
     presets: List<PresetEntry>,
     hasUpdate: (CharacterCard) -> Boolean,
+    communityUpdate: (CharacterCard) -> CommunityItem?,
     modelUsable: Boolean,
     modelError: String?,
     importProgress: String?,
@@ -673,6 +695,7 @@ private fun CharacterTab(
     onEdit: (String) -> Unit,
     onDelete: (String) -> Unit,
     onDuplicate: (String) -> Unit,
+    onCommunityUpdate: (String) -> Unit,
     onStart: (String) -> Unit,
     onRecover: (PresetEntry) -> Unit
 ) {
@@ -710,14 +733,30 @@ private fun CharacterTab(
                 })
             }
             items(cards, key = { it.id }) { card ->
+                val remoteUpdate = communityUpdate(card)
+                val isDownloaded = card.isCommunityDownload
+                val editClick: (() -> Unit)? = if (isDownloaded) null else ({ onEdit(card.id) })
                 EntityRow(
                     title = card.name,
                     subtitle = if (card.editMode.name == "FREEFORM") "自由人物设定 · ${card.customDocuments.size} 份文档" else "${card.characters.size} 个人物 · ${card.customDocuments.size} 份文档",
-                    badge = if (hasUpdate(card)) "有更新" else null,
+                    badge = when {
+                        remoteUpdate != null -> "可更新"
+                        hasUpdate(card) -> "有更新"
+                        isDownloaded -> "社区"
+                        else -> null
+                    },
                 leading = { CharacterAvatar(card.avatar, Modifier.size(42.dp)) },
-                onClick = { onEdit(card.id) },
+                onClick = editClick,
                 onLongClick = { menuCard = card },
                 actions = {
+                    if (remoteUpdate != null) {
+                        CbIconButton(
+                            AppIcons.Refresh,
+                            "更新",
+                            { onCommunityUpdate(card.id) },
+                            tint = ChatBarTheme.colors.primary
+                        )
+                    }
                     CbIconButton(
                         AppIcons.PlayArrow,
                         "开始聊天",
@@ -730,12 +769,14 @@ private fun CharacterTab(
         }
     }
     menuCard?.let { card ->
-        CardActionDialog(card.name, { menuCard = null }, listOf(
-            "编辑" to { onEdit(card.id) },
-            "复制" to { onDuplicate(card.id) },
-            "导出" to { onExport(card) },
-            "删除" to { onDelete(card.id) }
-        ))
+        val actions = buildList {
+            if (!card.isCommunityDownload) add("编辑" to { onEdit(card.id) })
+            communityUpdate(card)?.let { add("更新" to { onCommunityUpdate(card.id) }) }
+            add("复制" to { onDuplicate(card.id) })
+            add("导出" to { onExport(card) })
+            add("删除" to { onDelete(card.id) })
+        }
+        CardActionDialog(card.name, { menuCard = null }, actions)
     }
 }
 
@@ -831,7 +872,6 @@ private fun WorldBookTab(
                 onClick = { onEdit(book.id) },
                 onLongClick = { menuBook = book },
                 actions = {
-                    CbIconButton(AppIcons.Download, "导出", { onExport(book) })
                     CbIconButton(AppIcons.Edit, "编辑", { onEdit(book.id) }, tint = ChatBarTheme.colors.primary)
                     CbIconButton(AppIcons.Delete, "删除", { onDelete(book.id) }, tint = ChatBarTheme.colors.destructive)
                 }
@@ -907,7 +947,6 @@ private fun ModelsTab(
                 else -> null
             }, onClick = { onEditModel(model.id) }, onLongClick = { menuModel = model }, actions = {
                 CbIconButton(AppIcons.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
-                CbIconButton(AppIcons.Download, "导出", { onExportModel(model) })
                 CbIconButton(AppIcons.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
                 CbIconButton(AppIcons.Delete, "删除", { onDeleteModel(model.id) }, tint = ChatBarTheme.colors.destructive)
             })
