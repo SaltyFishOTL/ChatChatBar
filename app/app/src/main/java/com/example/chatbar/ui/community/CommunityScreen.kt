@@ -122,33 +122,37 @@ fun CommunityScreen(
                                         Toast.makeText(context, "无法打开 Discord 登录", Toast.LENGTH_SHORT).show()
                                     }
                             },
-                            enabled = state.configured && !state.busy
+                            enabled = state.enabled && state.configured && !state.busy
                         )
                     } else {
                         CbIconButton(
                             imageVector = AppIcons.Logout,
                             contentDescription = "退出登录",
                             onClick = viewModel::signOut,
-                            enabled = !state.busy
+                            enabled = state.enabled && !state.busy
                         )
                         CbIconButton(
                             imageVector = AppIcons.UploadFile,
                             contentDescription = "上传",
                             onClick = viewModel::openUpload,
-                            enabled = state.configured && !state.busy
+                            enabled = state.enabled && state.configured && !state.busy
                         )
                     }
                     CbIconButton(
                         imageVector = AppIcons.Refresh,
                         contentDescription = "刷新",
                         onClick = viewModel::refresh,
-                        enabled = state.configured && !state.loading && !state.busy
+                        enabled = state.enabled && state.configured && !state.loading && !state.busy
                     )
                 }
             )
         }
     ) { bottomInset ->
         Column(Modifier.fillMaxSize().padding(ChatBarSpacing.lg)) {
+            if (!state.enabled) {
+                CommunityDisabledState()
+                return@CbScaffold
+            }
             if (!state.configured) {
                 ConfigMissingState()
                 return@CbScaffold
@@ -927,6 +931,18 @@ private fun ImportDialog(
                 CbText("处理中", color = ChatBarTheme.colors.mutedForeground)
             }
         }
+    }
+}
+
+@Composable
+private fun CommunityDisabledState() {
+    CbCard(Modifier.fillMaxWidth()) {
+        CbText("社区已关闭", style = ChatBarTheme.typography.title)
+        Spacer(Modifier.height(ChatBarSpacing.sm))
+        CbText(
+            "后端全局开关已关闭，社区入口和网络请求已暂停",
+            color = ChatBarTheme.colors.mutedForeground
+        )
     }
 }
 

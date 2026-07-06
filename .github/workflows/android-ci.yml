@@ -39,6 +39,9 @@ jobs:
         run: chmod +x gradlew
 
       - name: Test and package debug APK
+        env:
+          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
+          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
         run: ./gradlew test compileDebugAndroidTestKotlin assembleDebug --no-daemon --stacktrace
 
       - name: Upload debug APK

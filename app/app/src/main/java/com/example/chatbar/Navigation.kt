@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
@@ -46,6 +47,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     val initialRoute: NavKey = if (tutorialCompleted) HomeRoute else TutorialRoute(firstLaunch = true)
     val backStack = rememberNavBackStack(initialRoute)
     val currentRoute = backStack.lastOrNull() ?: HomeRoute
+    val communityEnabled by ChatBarApp.instance.communityService.enabled.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
@@ -58,24 +60,31 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     }
 
     fun showRoot(route: NavKey) {
+        val targetRoute = if (route == CommunityRoute && !communityEnabled) HomeRoute else route
         while (backStack.size > 1) {
             backStack.removeAt(backStack.lastIndex)
         }
         if (backStack.isEmpty()) {
-            backStack.add(route)
+            backStack.add(targetRoute)
         } else {
-            backStack[0] = route
+            backStack[0] = targetRoute
         }
     }
 
     fun pushRoute(route: NavKey) {
-        backStack.add(route as NavKey)
+        backStack.add(route)
+    }
+
+    LaunchedEffect(communityEnabled, currentRoute) {
+        if (!communityEnabled && currentRoute == CommunityRoute) {
+            showRoot(HomeRoute)
+        }
     }
 
     BackHandler(
         enabled = backStack.size == 1 && (
             currentRoute == HomeRoute ||
-                currentRoute == CommunityRoute ||
+                (communityEnabled && currentRoute == CommunityRoute) ||
                 currentRoute == ManageRoute
             )
     ) {
@@ -166,8 +175,11 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         if (currentRoute == HomeRoute || currentRoute == CommunityRoute || currentRoute == ManageRoute) {
             BottomNavBar(
                 currentRoute = currentRoute,
+                communityEnabled = communityEnabled,
                 onNavigate = { route ->
-                    if (backStack.lastOrNull() != route) {
+                    if (route == CommunityRoute && !communityEnabled) {
+                        showRoot(HomeRoute)
+                    } else if (backStack.lastOrNull() != route) {
                         showRoot(route)
                     }
                 }

@@ -13,10 +13,12 @@ Use this skill for Community feature work. Preserve the MVP contract: public bro
 
 - Root route: `CommunityRoute` in `app/app/src/main/java/com/example/chatbar/NavigationKeys.kt`.
 - Navigation wiring: `app/app/src/main/java/com/example/chatbar/Navigation.kt`.
-- Bottom tab order: `聊天 / 社区 / 管理` in `ui/components/BottomNavBar.kt`.
+- Bottom tab order when backend says enabled: `聊天 / 社区 / 管理` in `ui/components/BottomNavBar.kt`; Community is hidden when `community_runtime_config.enabled` is false.
 - UI: `app/app/src/main/java/com/example/chatbar/ui/community/CommunityScreen.kt`.
 - State/import/upload logic: `ui/community/CommunityViewModel.kt`.
 - Network/auth/storage service: `domain/community/CommunityService.kt`.
+- Global emergency switch: `community_runtime_config` table plus `set_community_enabled` RPC in Supabase; `toggle-community.bat` uses service-role REST when configured, otherwise Supabase CLI linked-project auth, and Android reads status through `CommunityService.enabled`.
+- If `community_runtime_config` is missing (`PGRST205`), Android treats Community as enabled legacy mode and logs a warning; emergency switch remains inactive until the SQL is deployed.
 - Models and local package validation: `domain/community/CommunityModels.kt`.
 - App wiring: `ChatBarApp.communityService`.
 - OAuth deep link: `MainActivity.handleCommunityAuthCallback`, manifest scheme `chatbar://auth/callback`.
@@ -27,6 +29,7 @@ Use this skill for Community feature work. Preserve the MVP contract: public bro
 ## Product Contract
 
 - Community is root-level, same level as Chat and Manage.
+- Community can be hidden/disabled globally at runtime by `community_runtime_config.enabled`; disabling removes the bottom tab after the next status poll, redirects an open Community root back to Chat, stops warm prefetch, blocks new Android Community network requests, sets Community Storage buckets private, and makes the submit Edge Function return 503.
 - Anonymous users can browse, search, filter, download, and import.
 - Community list loads paged metadata only from `community_items`; do not prefetch package JSON in list rendering. App startup warms the first metadata page and its preview images. The Community list prefetches the next metadata page and preview images when the user nears the end of the visible list. Card details are loaded on item click with `CommunityService.readPackage`, which must not increment download count.
 - Upload requires Discord OAuth through Supabase Auth.
@@ -54,6 +57,12 @@ Supabase project currently used for testing:
 - `source_local_name`, `file_path`, `preview_path`, `sha256`, `size_bytes`
 - `schema_version`, `download_count`, `created_at`, `updated_at`
 
+`community_runtime_config` fields:
+
+- `id` fixed as `community`, `enabled`, `message`, `updated_at`
+- Anonymous/authenticated clients may read it. Only service-role/admin tooling should write it.
+- `set_community_enabled(next_enabled, next_message)` updates the config row and flips `community-packages` / `community-previews` bucket `public` flags together; only `service_role` may execute it.
+
 Storage buckets:
 
 - `community-packages`: public JSON package objects, max 20 MB.
@@ -68,6 +77,7 @@ Edge Function:
 - For character inserts/updates, rejects duplicate normalized title/source-local-name conflicts with other community character items and cleans up rejected uploaded objects.
 - `POST` with `{"action":"delete","item_id":"..."}` deletes an owned community item and cleans up Storage objects. `DELETE?id=<community_item_id>` is kept as a compatibility path only.
 - If request/body/storage validation changes, update both `CommunityService.submitDraft` and Edge Function together.
+- `submit-community-item` checks `community_runtime_config.enabled` before auth-sensitive mutations and returns `503` when Community is disabled.
 
 ## Build Configuration
 
@@ -127,7 +137,8 @@ Discord `Client Secret` lives in Supabase Auth provider settings, not this repo.
 
 - Update `supabase/community_schema.sql` for table, bucket, policy, or RPC changes.
 - Update Edge Function when the published payload or validation changes.
-- Re-deploy:
+- Re-deploy backend changes in the same turn when Supabase credentials/network access are available. SQL/schema changes must be applied with `supabase db query --linked --workdir . --file supabase/community_schema.sql`; Edge Function changes must be deployed too. If credentials are missing, report the exact blocker instead of leaving deployment implicit.
+- Re-deploy Edge Function:
 
 ```powershell
 npx.cmd --yes supabase functions deploy submit-community-item --project-ref rrlxofrrgfnhjfyrqvry --use-api

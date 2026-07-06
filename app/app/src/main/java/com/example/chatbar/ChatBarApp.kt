@@ -1,6 +1,7 @@
 package com.example.chatbar
 
 import android.app.Application
+import android.util.Log
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import com.example.chatbar.data.repository.*
@@ -187,8 +188,22 @@ class ChatBarApp : Application() {
             json = transferJson
         )
         applicationScope.launch {
-            communityService.prefetchFirstItemsPage()?.let { page ->
-                CommunityPreviewCache.prefetchItems(this@ChatBarApp, communityService, page.items)
+            communityService.monitorEnabledStatus()
+        }
+        applicationScope.launch {
+            communityService.enabled.collect { enabled ->
+                if (enabled) {
+                    runCatching {
+                        communityService.prefetchFirstItemsPage()?.let { page ->
+                            CommunityPreviewCache.prefetchItems(this@ChatBarApp, communityService, page.items)
+                        }
+                    }.onFailure { error ->
+                        Log.w(TAG, "Community warm prefetch failed", error)
+                        communityService.clearWarmCache()
+                    }
+                } else {
+                    communityService.clearWarmCache()
+                }
             }
         }
         presetCatalogService = PresetCatalogService(
@@ -228,6 +243,7 @@ class ChatBarApp : Application() {
     }
     
     companion object {
+        private const val TAG = "ChatBarApp"
         lateinit var instance: ChatBarApp
             private set
         var batteryOptimizationHintShown = false

@@ -33,6 +33,7 @@ enum class CommunitySection(val label: String) {
 }
 
 data class CommunityUiState(
+    val enabled: Boolean = true,
     val configured: Boolean = false,
     val items: List<CommunityItem> = emptyList(),
     val myItems: List<CommunityItem> = emptyList(),
@@ -88,7 +89,12 @@ class CommunityViewModel : ViewModel() {
     private val settingsRepository = app.settingsRepository
     private val modelResolver = app.effectiveModelResolver
 
-    private val _state = MutableStateFlow(CommunityUiState(configured = service.configured))
+    private val _state = MutableStateFlow(
+        CommunityUiState(
+            enabled = service.enabled.value,
+            configured = service.configured
+        )
+    )
     val state: StateFlow<CommunityUiState> = _state
 
     private val _candidates = MutableStateFlow<List<CommunityUploadCandidate>>(emptyList())
@@ -103,6 +109,41 @@ class CommunityViewModel : ViewModel() {
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), service.session.value)
 
     init {
+        viewModelScope.launch {
+            service.enabled.collect { enabled ->
+                if (enabled) {
+                    _state.update { it.copy(enabled = true, message = null) }
+                    if (service.configured && _state.value.items.isEmpty()) {
+                        loadItemsPage(reset = true, preferWarmCache = true)
+                    }
+                } else {
+                    itemsPageLoading = false
+                    myItemsPageLoading = false
+                    itemsNextOffset = 0
+                    myItemsNextOffset = 0
+                    _candidates.value = emptyList()
+                    _state.update {
+                        it.copy(
+                            enabled = false,
+                            items = emptyList(),
+                            myItems = emptyList(),
+                            loading = false,
+                            loadingMore = false,
+                            hasMoreItems = true,
+                            hasMoreMyItems = true,
+                            busy = false,
+                            selectedSection = CommunitySection.ALL,
+                            uploadOpen = false,
+                            pendingImport = null,
+                            detailItem = null,
+                            detail = null,
+                            detailLoading = false,
+                            message = "后端全局开关已关闭"
+                        )
+                    }
+                }
+            }
+        }
         viewModelScope.launch {
             service.session.collect { session ->
                 if (session == null) {
@@ -120,7 +161,6 @@ class CommunityViewModel : ViewModel() {
                 }
             }
         }
-        loadItemsPage(reset = true, preferWarmCache = true)
         viewModelScope.launch {
             characterRepository.initialize()
             formatCardRepository.initialize()
@@ -136,6 +176,10 @@ class CommunityViewModel : ViewModel() {
     }
 
     fun refresh() {
+        if (!service.enabled.value) {
+            _state.update { it.copy(loading = false, loadingMore = false, message = "后端全局开关已关闭") }
+            return
+        }
         if (!service.configured) {
             _state.update { it.copy(loading = false, message = "请先配置 Supabase") }
             return
@@ -148,6 +192,7 @@ class CommunityViewModel : ViewModel() {
     }
 
     fun loadNextPage() {
+        if (!service.enabled.value) return
         val snapshot = _state.value
         if (snapshot.selectedSection == CommunitySection.MINE) {
             if (service.session.value != null) loadMyItemsPage(reset = false)
@@ -161,6 +206,10 @@ class CommunityViewModel : ViewModel() {
     }
 
     fun setSection(section: CommunitySection) {
+        if (!service.enabled.value) {
+            _state.update { it.copy(message = "后端全局开关已关闭") }
+            return
+        }
         if (section == CommunitySection.MINE && service.session.value == null) {
             _state.update { it.copy(selectedSection = section, message = "Discord 登录后查看我的上传") }
             return
@@ -178,6 +227,10 @@ class CommunityViewModel : ViewModel() {
     }
 
     fun openUpload() {
+        if (!service.enabled.value) {
+            _state.update { it.copy(message = "后端全局开关已关闭") }
+            return
+        }
         if (!service.configured) {
             _state.update { it.copy(message = "请先配置 Supabase") }
             return
@@ -471,12 +524,12 @@ class CommunityViewModel : ViewModel() {
         service.previewUrl(item)
 
     private fun refreshMine() {
-        if (!service.configured || service.session.value == null) return
+        if (!service.enabled.value || !service.configured || service.session.value == null) return
         loadMyItemsPage(reset = true)
     }
 
     private fun loadItemsPage(reset: Boolean, preferWarmCache: Boolean) {
-        if (!service.configured || itemsPageLoading) return
+        if (!service.enabled.value || !service.configured || itemsPageLoading) return
         val snapshot = _state.value
         if (!reset && !snapshot.hasMoreItems) return
         itemsPageLoading = true
@@ -491,26 +544,30 @@ class CommunityViewModel : ViewModel() {
             }
             runCatching { service.listItemsPage(offset, COMMUNITY_PAGE_SIZE, preferWarmCache = preferWarmCache) }.fold(
                 onSuccess = { page ->
-                    prefetchPreviews(page.items)
-                    if (reset) itemsNextOffset = 0
-                    itemsNextOffset = page.nextOffset
-                    _state.update {
-                        val nextItems = if (reset) page.items else (it.items + page.items).distinctBy { item -> item.id }
-                        it.copy(
-                            items = nextItems,
-                            hasMoreItems = page.hasMore,
-                            loading = false,
-                            loadingMore = false
-                        )
+                    if (service.enabled.value) {
+                        prefetchPreviews(page.items)
+                        if (reset) itemsNextOffset = 0
+                        itemsNextOffset = page.nextOffset
+                        _state.update {
+                            val nextItems = if (reset) page.items else (it.items + page.items).distinctBy { item -> item.id }
+                            it.copy(
+                                items = nextItems,
+                                hasMoreItems = page.hasMore,
+                                loading = false,
+                                loadingMore = false
+                            )
+                        }
                     }
                 },
                 onFailure = { error ->
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            loadingMore = false,
-                            message = error.message ?: "社区列表加载失败"
-                        )
+                    if (service.enabled.value) {
+                        _state.update {
+                            it.copy(
+                                loading = false,
+                                loadingMore = false,
+                                message = error.message ?: "社区列表加载失败"
+                            )
+                        }
                     }
                 }
             )
@@ -519,7 +576,7 @@ class CommunityViewModel : ViewModel() {
     }
 
     private fun loadMyItemsPage(reset: Boolean) {
-        if (!service.configured || service.session.value == null || myItemsPageLoading) return
+        if (!service.enabled.value || !service.configured || service.session.value == null || myItemsPageLoading) return
         val snapshot = _state.value
         if (!reset && !snapshot.hasMoreMyItems) return
         myItemsPageLoading = true
@@ -534,26 +591,30 @@ class CommunityViewModel : ViewModel() {
             }
             runCatching { service.listMyItemsPage(offset, COMMUNITY_PAGE_SIZE) }.fold(
                 onSuccess = { page ->
-                    prefetchPreviews(page.items)
-                    if (reset) myItemsNextOffset = 0
-                    myItemsNextOffset = page.nextOffset
-                    _state.update {
-                        val nextItems = if (reset) page.items else (it.myItems + page.items).distinctBy { item -> item.id }
-                        it.copy(
-                            myItems = nextItems,
-                            hasMoreMyItems = page.hasMore,
-                            loading = false,
-                            loadingMore = false
-                        )
+                    if (service.enabled.value) {
+                        prefetchPreviews(page.items)
+                        if (reset) myItemsNextOffset = 0
+                        myItemsNextOffset = page.nextOffset
+                        _state.update {
+                            val nextItems = if (reset) page.items else (it.myItems + page.items).distinctBy { item -> item.id }
+                            it.copy(
+                                myItems = nextItems,
+                                hasMoreMyItems = page.hasMore,
+                                loading = false,
+                                loadingMore = false
+                            )
+                        }
                     }
                 },
                 onFailure = { error ->
-                    _state.update {
-                        it.copy(
-                            loading = false,
-                            loadingMore = false,
-                            message = error.message ?: "我的上传加载失败"
-                        )
+                    if (service.enabled.value) {
+                        _state.update {
+                            it.copy(
+                                loading = false,
+                                loadingMore = false,
+                                message = error.message ?: "我的上传加载失败"
+                            )
+                        }
                     }
                 }
             )
@@ -562,6 +623,7 @@ class CommunityViewModel : ViewModel() {
     }
 
     private fun loadCandidates(type: CommunityItemType = _state.value.uploadType) {
+        if (!service.enabled.value) return
         viewModelScope.launch {
             runCatching { service.localCandidates(type) }.onSuccess { _candidates.value = it }
         }

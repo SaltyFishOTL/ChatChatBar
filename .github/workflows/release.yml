@@ -108,6 +108,17 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
 
+      - name: Validate Supabase configuration
+        env:
+          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
+          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${CHATBAR_SUPABASE_URL}" || -z "${CHATBAR_SUPABASE_ANON_KEY}" ]]; then
+            echo "Missing CHATBAR_SUPABASE_URL or CHATBAR_SUPABASE_ANON_KEY repository secret"
+            exit 1
+          fi
+
       - name: Test and build signed release APK
         working-directory: app
         env:
@@ -115,6 +126,8 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
+          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
         run: |
           chmod +x gradlew
           ./gradlew test assembleRelease --no-daemon --stacktrace

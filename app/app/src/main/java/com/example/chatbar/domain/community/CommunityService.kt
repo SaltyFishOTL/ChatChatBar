@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.util.Log
 import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.repository.CharacterRepository
@@ -22,6 +23,7 @@ import java.nio.charset.StandardCharsets
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,22 +60,76 @@ class CommunityService(
     private val redirectUri = BuildConfig.SUPABASE_REDIRECT_URI.trim()
     private val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _session = MutableStateFlow(loadSession())
+    private val _enabled = MutableStateFlow(baseUrl.isNotBlank() && anonKey.isNotBlank())
 
     val configured: Boolean = baseUrl.isNotBlank() && anonKey.isNotBlank()
+    val enabled: StateFlow<Boolean> = _enabled.asStateFlow()
     val session: StateFlow<CommunitySession?> = _session.asStateFlow()
     @Volatile
     private var warmedItemsPage: WarmedCommunityPage? = null
+    @Volatile
+    private var disabledMessage: String = "社区已关闭"
+    @Volatile
+    private var statusLoadedAt: Long = 0L
 
     fun discordLoginUrl(): String {
-        checkConfigured()
+        check(configured) { "请先配置 CHATBAR_SUPABASE_URL 和 CHATBAR_SUPABASE_ANON_KEY" }
+        check(enabled.value) { disabledMessage }
         return "$baseUrl/auth/v1/authorize" +
             "?provider=discord" +
             "&redirect_to=${urlEncode(redirectUri)}" +
             "&scopes=${urlEncode("identify")}"
     }
 
+    suspend fun monitorEnabledStatus() {
+        while (true) {
+            runCatching { refreshEnabledStatus(force = true) }
+                .onFailure { error -> Log.w(TAG, "Community status refresh failed", error) }
+            delay(STATUS_POLL_INTERVAL_MS)
+        }
+    }
+
+    suspend fun refreshEnabledStatus(force: Boolean = false): Boolean = withContext(Dispatchers.IO) {
+        if (!configured) {
+            _enabled.value = false
+            disabledMessage = "请先配置 Supabase"
+            return@withContext false
+        }
+        val now = System.currentTimeMillis()
+        if (!force && now - statusLoadedAt <= STATUS_CACHE_TTL_MS) {
+            return@withContext enabled.value
+        }
+        val request = Request.Builder()
+            .url("$baseUrl/rest/v1/community_runtime_config?id=eq.community&select=enabled,message,updated_at")
+            .header("apikey", anonKey)
+            .header("Authorization", "Bearer $anonKey")
+            .header("Accept", "application/json")
+            .get()
+            .build()
+        val rows = runCatching {
+            val body = executeForBody(request, "读取社区状态")
+            json.decodeFromString(ListSerializer(CommunityRuntimeConfigDto.serializer()), body)
+        }.getOrElse { error ->
+            if (error.isMissingRuntimeConfig()) {
+                statusLoadedAt = now
+                disabledMessage = ""
+                _enabled.value = true
+                Log.w(TAG, "Community runtime config missing; using legacy enabled mode", error)
+                return@withContext true
+            }
+            throw error
+        }
+        val config = rows.firstOrNull()
+        val nextEnabled = config?.enabled ?: true
+        disabledMessage = config?.message?.takeIf(String::isNotBlank) ?: "社区已关闭"
+        statusLoadedAt = now
+        _enabled.value = nextEnabled
+        if (!nextEnabled) clearWarmCache()
+        nextEnabled
+    }
+
     suspend fun handleAuthCallback(uri: Uri): CommunitySession = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val params = uri.callbackParams()
         params["error_description"]?.let { error(it) }
         params["error"]?.let { error(it) }
@@ -105,12 +161,12 @@ class CommunityService(
     }
 
     suspend fun listItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         queryItems(authorUserId = null, accessToken = null, offset = 0, limit = DEFAULT_LIST_LIMIT).items
     }
 
     suspend fun prefetchFirstItemsPage(limit: Int = DEFAULT_PAGE_SIZE): CommunityItemPage? = withContext(Dispatchers.IO) {
-        if (!configured) return@withContext null
+        if (!configured || !refreshEnabledStatus()) return@withContext null
         val safeLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
         warmedItemsPage
             ?.takeIf { it.limit == safeLimit && System.currentTimeMillis() - it.loadedAt <= WARM_CACHE_TTL_MS }
@@ -132,7 +188,7 @@ class CommunityService(
         limit: Int,
         preferWarmCache: Boolean = false
     ): CommunityItemPage = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val safeLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
         if (preferWarmCache && offset == 0) {
             warmedItemsPage
@@ -148,13 +204,13 @@ class CommunityService(
     }
 
     suspend fun listMyItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val session = requireSession()
         queryItems(authorUserId = session.userId, accessToken = session.accessToken, offset = 0, limit = DEFAULT_LIST_LIMIT).items
     }
 
     suspend fun listMyItemsPage(offset: Int, limit: Int): CommunityItemPage = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val session = requireSession()
         queryItems(authorUserId = session.userId, accessToken = session.accessToken, offset = offset, limit = limit)
     }
@@ -266,13 +322,13 @@ class CommunityService(
     }
 
     suspend fun submitDraft(draft: CommunityPackageDraft): CommunityItem = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val session = requireSession()
         publishDraft(draft = draft, session = session, itemId = null)
     }
 
     suspend fun updateDraft(item: CommunityItem, draft: CommunityPackageDraft): CommunityItem = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val session = requireSession()
         require(item.authorUserId == session.userId) { "只能更新自己上传的条目" }
         require(item.type == draft.type) { "不能用不同类型覆盖社区条目" }
@@ -280,7 +336,7 @@ class CommunityService(
     }
 
     suspend fun deleteItem(item: CommunityItem) = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val session = requireSession()
         require(item.authorUserId == session.userId) { "只能删除自己上传的条目" }
         val body = json.encodeToString(CommunityDeleteRequest(action = "delete", itemId = item.id))
@@ -362,7 +418,7 @@ class CommunityService(
     suspend fun downloadPackage(item: CommunityItem): String = fetchPackage(item, countDownload = true)
 
     private suspend fun fetchPackage(item: CommunityItem, countDownload: Boolean): String = withContext(Dispatchers.IO) {
-        checkConfigured()
+        checkAvailable()
         val request = Request.Builder()
             .url("$baseUrl/storage/v1/object/public/$PACKAGE_BUCKET/${encodePath(item.filePath)}")
             .header("apikey", anonKey)
@@ -375,8 +431,12 @@ class CommunityService(
 
     fun previewUrl(item: CommunityItem): String? {
         val path = item.previewPath?.takeIf(String::isNotBlank) ?: return null
-        if (!configured) return null
+        if (!configured || !enabled.value) return null
         return "$baseUrl/storage/v1/object/public/$PREVIEW_BUCKET/${encodePath(path)}"
+    }
+
+    fun clearWarmCache() {
+        warmedItemsPage = null
     }
 
     private suspend fun requireSession(): CommunitySession {
@@ -470,6 +530,12 @@ class CommunityService(
         }
     }
 
+    private fun Throwable.isMissingRuntimeConfig(): Boolean {
+        val text = message.orEmpty()
+        return text.contains("PGRST205") &&
+            text.contains("community_runtime_config")
+    }
+
     private fun loadSession(): CommunitySession? =
         prefs.getString(KEY_SESSION, null)?.let { raw ->
             runCatching { json.decodeFromString(CommunitySession.serializer(), raw) }.getOrNull()
@@ -478,6 +544,11 @@ class CommunityService(
     private fun saveSession(session: CommunitySession) {
         prefs.edit().putString(KEY_SESSION, json.encodeToString(CommunitySession.serializer(), session)).apply()
         _session.value = session
+    }
+
+    private suspend fun checkAvailable() {
+        checkConfigured()
+        check(refreshEnabledStatus()) { disabledMessage }
     }
 
     private fun checkConfigured() {
@@ -599,6 +670,7 @@ class CommunityService(
     companion object {
         private const val PREFS_NAME = "community_session"
         private const val KEY_SESSION = "session"
+        private const val TAG = "CommunityService"
         private const val PACKAGE_BUCKET = "community-packages"
         private const val PREVIEW_BUCKET = "community-previews"
         private const val COMMUNITY_ITEM_SELECT =
@@ -606,6 +678,8 @@ class CommunityService(
         private const val DEFAULT_LIST_LIMIT = 100
         private const val DEFAULT_PAGE_SIZE = 20
         private const val MAX_PAGE_SIZE = 100
+        private const val STATUS_CACHE_TTL_MS = 5_000L
+        private const val STATUS_POLL_INTERVAL_MS = 5_000L
         private const val WARM_CACHE_TTL_MS = 60_000L
         private const val MAX_ERROR_BODY = 600
         private const val MAX_TAGS = 8
@@ -623,6 +697,12 @@ private data class WarmedCommunityPage(
     val limit: Int,
     val page: CommunityItemPage,
     val loadedAt: Long
+)
+
+@Serializable
+private data class CommunityRuntimeConfigDto(
+    val enabled: Boolean = true,
+    val message: String = ""
 )
 
 @Serializable

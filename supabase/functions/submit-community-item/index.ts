@@ -2,6 +2,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const PACKAGE_BUCKET = "community-packages";
 const PREVIEW_BUCKET = "community-previews";
+const CONFIG_TABLE = "community_runtime_config";
 const MAX_PACKAGE_BYTES = 20 * 1024 * 1024;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -66,6 +67,12 @@ Deno.serve(async (req) => {
   const admin = createClient(supabaseUrl, serviceRoleKey, {
     auth: { persistSession: false },
   });
+
+  const availability = await getCommunityAvailability(admin);
+  if ("error" in availability) return response({ error: availability.error }, 500);
+  if (!availability.enabled) {
+    return response({ error: availability.message || "Community is disabled" }, 503);
+  }
 
   const { data: userData, error: userError } = await admin.auth.getUser(token);
   if (userError || !userData.user) return response({ error: "Unauthorized" }, 401);
@@ -190,6 +197,22 @@ Deno.serve(async (req) => {
   if (insertError) return response({ error: insertError.message }, 400);
   return response(inserted, 200);
 });
+
+async function getCommunityAvailability(
+  admin: ReturnType<typeof createClient>,
+): Promise<{ enabled: boolean; message: string } | { error: string }> {
+  const { data, error } = await admin
+    .from(CONFIG_TABLE)
+    .select("enabled,message")
+    .eq("id", "community")
+    .maybeSingle();
+
+  if (error) return { error: error.message };
+  return {
+    enabled: data?.enabled ?? true,
+    message: typeof data?.message === "string" ? data.message : "",
+  };
+}
 
 async function deleteCommunityItem(req: Request, admin: ReturnType<typeof createClient>, userId: string): Promise<Response> {
   const itemId = trim(new URL(req.url).searchParams.get("id"));

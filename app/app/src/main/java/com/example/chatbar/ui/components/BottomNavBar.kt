@@ -49,6 +49,7 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 fun BottomNavBar(
     currentRoute: NavKey,
     onNavigate: (NavKey) -> Unit,
+    communityEnabled: Boolean = true,
     modifier: Modifier = Modifier
 ) {
     val colors = ChatBarTheme.colors
@@ -67,11 +68,14 @@ fun BottomNavBar(
             horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            listOf(
-                NavItem("聊天", AppIcons.Chat, HomeRoute),
-                NavItem("社区", AppIcons.Star, CommunityRoute),
-                NavItem("管理", AppIcons.Settings, ManageRoute)
-            ).forEach { item ->
+            val navItems = buildList {
+                add(NavItem("聊天", AppIcons.Chat, HomeRoute))
+                if (communityEnabled) {
+                    add(NavItem("社区", AppIcons.Star, CommunityRoute))
+                }
+                add(NavItem("管理", AppIcons.Settings, ManageRoute))
+            }
+            navItems.forEach { item ->
                 val selected = currentRoute == item.route
                 val tint by animateColorAsState(
                     if (selected) colors.primary else colors.mutedForeground,
