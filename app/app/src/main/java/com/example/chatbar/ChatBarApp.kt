@@ -185,6 +185,9 @@ class ChatBarApp : Application() {
             worldBookTransfers = worldBookTransferService,
             json = transferJson
         )
+        applicationScope.launch {
+            communityService.prefetchFirstItemsPage()
+        }
         presetCatalogService = PresetCatalogService(
             this,
             jsonFileStorage,

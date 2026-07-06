@@ -61,6 +61,8 @@ class CommunityService(
 
     val configured: Boolean = baseUrl.isNotBlank() && anonKey.isNotBlank()
     val session: StateFlow<CommunitySession?> = _session.asStateFlow()
+    @Volatile
+    private var warmedItemsPage: WarmedCommunityPage? = null
 
     fun discordLoginUrl(): String {
         checkConfigured()
@@ -104,27 +106,72 @@ class CommunityService(
 
     suspend fun listItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
         checkConfigured()
-        queryItems(authorUserId = null, accessToken = null)
+        queryItems(authorUserId = null, accessToken = null, offset = 0, limit = DEFAULT_LIST_LIMIT).items
+    }
+
+    suspend fun prefetchFirstItemsPage(limit: Int = DEFAULT_PAGE_SIZE) = withContext(Dispatchers.IO) {
+        if (!configured) return@withContext
+        if (warmedItemsPage != null) return@withContext
+        runCatching {
+            warmedItemsPage = WarmedCommunityPage(
+                limit = limit.coerceIn(1, MAX_PAGE_SIZE),
+                page = queryItems(authorUserId = null, accessToken = null, offset = 0, limit = limit),
+                loadedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    suspend fun listItemsPage(
+        offset: Int,
+        limit: Int,
+        preferWarmCache: Boolean = false
+    ): CommunityItemPage = withContext(Dispatchers.IO) {
+        checkConfigured()
+        if (preferWarmCache && offset == 0) {
+            warmedItemsPage
+                ?.takeIf { it.limit == limit && System.currentTimeMillis() - it.loadedAt <= WARM_CACHE_TTL_MS }
+                ?.page
+                ?.let { return@withContext it }
+        }
+        val page = queryItems(authorUserId = null, accessToken = null, offset = offset, limit = limit)
+        if (offset == 0) {
+            warmedItemsPage = WarmedCommunityPage(limit.coerceIn(1, MAX_PAGE_SIZE), page, System.currentTimeMillis())
+        }
+        page
     }
 
     suspend fun listMyItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
         checkConfigured()
         val session = requireSession()
-        queryItems(authorUserId = session.userId, accessToken = session.accessToken)
+        queryItems(authorUserId = session.userId, accessToken = session.accessToken, offset = 0, limit = DEFAULT_LIST_LIMIT).items
     }
 
-    private fun queryItems(authorUserId: String?, accessToken: String?): List<CommunityItem> {
+    suspend fun listMyItemsPage(offset: Int, limit: Int): CommunityItemPage = withContext(Dispatchers.IO) {
+        checkConfigured()
+        val session = requireSession()
+        queryItems(authorUserId = session.userId, accessToken = session.accessToken, offset = offset, limit = limit)
+    }
+
+    private fun queryItems(authorUserId: String?, accessToken: String?, offset: Int, limit: Int): CommunityItemPage {
         val authorFilter = authorUserId?.let { "&author_user_id=eq.${urlEncode(it)}" }.orEmpty()
+        val safeOffset = offset.coerceAtLeast(0)
+        val safeLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
         val request = Request.Builder()
-            .url("$baseUrl/rest/v1/community_items?select=*&order=created_at.desc&limit=100$authorFilter")
+            .url("$baseUrl/rest/v1/community_items?select=$COMMUNITY_ITEM_SELECT$authorFilter&order=created_at.desc&offset=$safeOffset&limit=${safeLimit + 1}")
             .header("apikey", anonKey)
             .header("Authorization", "Bearer ${accessToken ?: anonKey}")
             .header("Accept", "application/json")
             .get()
             .build()
         val body = executeForBody(request, "读取社区列表")
-        return json.decodeFromString(ListSerializer(CommunityItemDto.serializer()), body)
+        val decoded = json.decodeFromString(ListSerializer(CommunityItemDto.serializer()), body)
             .map(CommunityItemDto::toDomain)
+        val pageItems = decoded.take(safeLimit)
+        return CommunityItemPage(
+            items = pageItems,
+            nextOffset = safeOffset + pageItems.size,
+            hasMore = decoded.size > safeLimit
+        )
     }
 
     suspend fun localCandidates(type: CommunityItemType): List<CommunityUploadCandidate> = withContext(Dispatchers.IO) {
@@ -291,7 +338,7 @@ class CommunityService(
         accessToken: String
     ) {
         if (draft.type != CommunityItemType.CHARACTER) return
-        val existing = queryItems(authorUserId = null, accessToken = accessToken)
+        val existing = queryItems(authorUserId = null, accessToken = accessToken, offset = 0, limit = DEFAULT_LIST_LIMIT).items
             .firstOrNull { item ->
                 item.id != itemId &&
                     item.type == CommunityItemType.CHARACTER &&
@@ -303,7 +350,11 @@ class CommunityService(
         require(existing == null) { "社区已有同名角色卡：${existing?.title}" }
     }
 
-    suspend fun downloadPackage(item: CommunityItem): String = withContext(Dispatchers.IO) {
+    suspend fun readPackage(item: CommunityItem): String = fetchPackage(item, countDownload = false)
+
+    suspend fun downloadPackage(item: CommunityItem): String = fetchPackage(item, countDownload = true)
+
+    private suspend fun fetchPackage(item: CommunityItem, countDownload: Boolean): String = withContext(Dispatchers.IO) {
         checkConfigured()
         val request = Request.Builder()
             .url("$baseUrl/storage/v1/object/public/$PACKAGE_BUCKET/${encodePath(item.filePath)}")
@@ -311,7 +362,7 @@ class CommunityService(
             .get()
             .build()
         val body = executeForBody(request, "下载社区包")
-        runCatching { incrementDownloadCount(item.id) }
+        if (countDownload) runCatching { incrementDownloadCount(item.id) }
         body
     }
 
@@ -543,17 +594,29 @@ class CommunityService(
         private const val KEY_SESSION = "session"
         private const val PACKAGE_BUCKET = "community-packages"
         private const val PREVIEW_BUCKET = "community-previews"
+        private const val COMMUNITY_ITEM_SELECT =
+            "id,type,title,description,tags,author_user_id,author_name,source_local_name,file_path,preview_path,sha256,size_bytes,schema_version,download_count,created_at,updated_at"
+        private const val DEFAULT_LIST_LIMIT = 100
+        private const val DEFAULT_PAGE_SIZE = 20
+        private const val MAX_PAGE_SIZE = 100
+        private const val WARM_CACHE_TTL_MS = 60_000L
         private const val MAX_ERROR_BODY = 600
         private const val MAX_TAGS = 8
         private const val MAX_PATH_PART = 80
         private const val MAX_PREVIEW_SOURCE_BYTES = 20L * 1024L * 1024L
-        private const val MAX_PREVIEW_UPLOAD_BYTES = 160 * 1024
-        private const val PREVIEW_MAX_DIMENSION = 256
+        private const val MAX_PREVIEW_UPLOAD_BYTES = 80 * 1024
+        private const val PREVIEW_MAX_DIMENSION = 160
         private const val PREVIEW_JPEG_QUALITY = 56
-        private const val PREVIEW_MIN_JPEG_QUALITY = 36
+        private const val PREVIEW_MIN_JPEG_QUALITY = 40
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
     }
 }
+
+private data class WarmedCommunityPage(
+    val limit: Int,
+    val page: CommunityItemPage,
+    val loadedAt: Long
+)
 
 @Serializable
 private data class SupabaseUser(

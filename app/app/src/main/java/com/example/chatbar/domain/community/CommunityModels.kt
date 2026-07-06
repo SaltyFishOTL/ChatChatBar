@@ -42,6 +42,12 @@ data class CommunityItem(
     val updatedAt: String
 )
 
+data class CommunityItemPage(
+    val items: List<CommunityItem>,
+    val nextOffset: Int,
+    val hasMore: Boolean
+)
+
 @Serializable
 data class CommunityItemDto(
     val id: String = "",

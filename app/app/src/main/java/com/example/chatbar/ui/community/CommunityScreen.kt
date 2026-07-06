@@ -8,9 +8,11 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -23,6 +25,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -32,6 +35,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -89,6 +93,18 @@ fun CommunityScreen(
 
     val visibleItems = if (state.selectedSection == CommunitySection.MINE) state.myItems else state.items
     val filteredItems = visibleItems.filtered(state.query, state.selectedType)
+    val listState = rememberLazyListState()
+    val activeHasMore = if (state.selectedSection == CommunitySection.MINE) state.hasMoreMyItems else state.hasMoreItems
+
+    LaunchedEffect(state.selectedSection, filteredItems.size, activeHasMore) {
+        snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
+            .collect { lastVisibleIndex ->
+                val shouldPrefetch = filteredItems.isNotEmpty() &&
+                    activeHasMore &&
+                    lastVisibleIndex >= filteredItems.lastIndex - PREFETCH_VISIBLE_THRESHOLD
+                if (shouldPrefetch) viewModel.loadNextPage()
+            }
+    }
 
     CbScaffold(
         topBar = {
@@ -145,13 +161,14 @@ fun CommunityScreen(
                 onTypeSelected = viewModel::setTypeFilter
             )
             Spacer(Modifier.height(ChatBarSpacing.md))
-            if (state.loading) {
+            if (state.loading && filteredItems.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CbSpinner(Modifier.size(32.dp))
                 }
             } else {
                 LazyColumn(
                     modifier = Modifier.fillMaxSize(),
+                    state = listState,
                     verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md),
                     contentPadding = PaddingValues(bottom = bottomInset + ChatBarSpacing.xl)
                 ) {
@@ -170,6 +187,7 @@ fun CommunityScreen(
                                 previewUrl = viewModel.previewUrl(item),
                                 busy = state.busy,
                                 mine = mine && state.selectedSection == CommunitySection.MINE,
+                                onOpen = { viewModel.openDetail(item) },
                                 onDownload = { viewModel.prepareImport(item) },
                                 onManage = if (mine && state.selectedSection == CommunitySection.MINE) {
                                     { actionItem = item }
@@ -177,6 +195,11 @@ fun CommunityScreen(
                                     null
                                 }
                             )
+                        }
+                        if (state.loadingMore || (state.loading && filteredItems.isNotEmpty())) {
+                            item(key = "community-page-loading") {
+                                PageLoadingRow()
+                            }
                         }
                     }
                 }
@@ -247,6 +270,35 @@ fun CommunityScreen(
             onOverwrite = { viewModel.importPending(asOverwrite = true) }
         )
     }
+
+    state.detailItem?.let { item ->
+        CommunityDetailDialog(
+            item = item,
+            detail = state.detail,
+            loading = state.detailLoading,
+            busy = state.busy,
+            onDismiss = viewModel::dismissDetail,
+            onDownload = {
+                viewModel.dismissDetail()
+                viewModel.prepareImport(item)
+            }
+        )
+    }
+}
+
+private const val PREFETCH_VISIBLE_THRESHOLD = 6
+
+@Composable
+private fun PageLoadingRow() {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = ChatBarSpacing.md),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbSpinner(Modifier.size(20.dp))
+        Spacer(Modifier.width(ChatBarSpacing.sm))
+        CbText("加载更多", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+    }
 }
 
 @Composable
@@ -297,52 +349,63 @@ private fun CommunityItemCard(
     previewUrl: String?,
     busy: Boolean,
     mine: Boolean,
+    onOpen: () -> Unit,
     onDownload: () -> Unit,
     onManage: (() -> Unit)?
 ) {
+    val characterPreviewUrl = previewUrl.takeIf { item.type == CommunityItemType.CHARACTER }
     CbCard(
         modifier = Modifier
             .fillMaxWidth()
-            .then(
-                if (onManage != null) {
-                    Modifier.combinedClickable(onClick = {}, onLongClick = onManage)
-                } else {
-                    Modifier
-                }
-            ),
+            .combinedClickable(onClick = onOpen, onLongClick = onManage),
         border = BorderStroke(1.dp, ChatBarTheme.colors.border.copy(alpha = 0.72f)),
         elevation = ChatBarElevation.low
     ) {
-        Row(verticalAlignment = Alignment.Top) {
-            if (item.type == CommunityItemType.CHARACTER && previewUrl != null) {
-                CommunityPreviewImage(
-                    url = previewUrl,
-                    contentDescription = "${item.title} 预览图"
-                )
-                Spacer(Modifier.width(ChatBarSpacing.md))
+        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
+            if (characterPreviewUrl != null) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+                ) {
+                    CommunityPreviewImage(
+                        url = characterPreviewUrl,
+                        contentDescription = "${item.title} 预览图"
+                    )
+                    CbButton(
+                        text = "下载",
+                        onClick = onDownload,
+                        enabled = !busy,
+                        size = ButtonSize.Sm,
+                        variant = ButtonVariant.Secondary
+                    )
+                }
             }
-            Column(Modifier.weight(1f)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
                     TypePill(item.type)
-                    Spacer(Modifier.width(ChatBarSpacing.sm))
                     CbText(
-                        item.title,
-                        style = ChatBarTheme.typography.title,
+                        item.authorName.ifBlank { "匿名" },
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
+                CbText(
+                    item.title,
+                    style = ChatBarTheme.typography.title,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
                 if (item.description.isNotBlank()) {
-                    Spacer(Modifier.height(ChatBarSpacing.sm))
                     CbText(
                         item.description,
                         color = ChatBarTheme.colors.mutedForeground,
-                        maxLines = 3,
+                        maxLines = 2,
                         overflow = TextOverflow.Ellipsis
                     )
                 }
                 if (item.tags.isNotEmpty()) {
-                    Spacer(Modifier.height(ChatBarSpacing.sm))
                     CbText(
                         item.tags.joinToString("  #", prefix = "#"),
                         color = ChatBarTheme.colors.primary,
@@ -351,31 +414,39 @@ private fun CommunityItemCard(
                         overflow = TextOverflow.Ellipsis
                     )
                 }
-                Spacer(Modifier.height(ChatBarSpacing.sm))
                 CbText(
-                    "${item.authorName} · ${formatBytes(item.sizeBytes)} · ${item.downloadCount} 次下载 · ${item.createdAt.take(10)}",
+                    "${formatBytes(item.sizeBytes)} · ${item.downloadCount} 次下载 · ${item.createdAt.take(10)}",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.width(ChatBarSpacing.md))
-            Column(horizontalAlignment = Alignment.End) {
-                CbButton(
-                    text = "下载",
-                    onClick = onDownload,
-                    enabled = !busy,
-                    size = ButtonSize.Sm,
-                    variant = ButtonVariant.Secondary
-                )
+        }
+        if (characterPreviewUrl == null || (mine && onManage != null)) {
+            Spacer(Modifier.height(ChatBarSpacing.md))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (characterPreviewUrl == null) {
+                    CbButton(
+                        text = "下载",
+                        onClick = onDownload,
+                        enabled = !busy,
+                        size = ButtonSize.Sm,
+                        variant = ButtonVariant.Secondary
+                    )
+                }
                 if (mine && onManage != null) {
-                    Spacer(Modifier.height(ChatBarSpacing.sm))
-                    CbIconButton(
-                        imageVector = AppIcons.Edit,
-                        contentDescription = "管理社区条目",
+                    Spacer(Modifier.weight(1f))
+                    CbButton(
+                        text = "管理",
                         onClick = onManage,
-                        enabled = !busy
+                        enabled = !busy,
+                        size = ButtonSize.Sm,
+                        variant = ButtonVariant.Ghost
                     )
                 }
             }
@@ -390,7 +461,7 @@ private fun CommunityPreviewImage(
 ) {
     Box(
         modifier = Modifier
-            .size(width = 72.dp, height = 96.dp)
+            .size(52.dp)
             .clip(RoundedCornerShape(ChatBarShape.sm))
             .background(ChatBarTheme.colors.surfaceSubtle)
             .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
@@ -402,6 +473,177 @@ private fun CommunityPreviewImage(
             modifier = Modifier.fillMaxSize()
         )
     }
+}
+
+@Composable
+private fun CommunityDetailDialog(
+    item: CommunityItem,
+    detail: CommunityItemDetail?,
+    loading: Boolean,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onDownload: () -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = item.title,
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismiss = {
+            CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost, enabled = !loading)
+        },
+        confirm = {
+            CbButton("下载", onDownload, enabled = !busy && !loading, variant = ButtonVariant.Secondary)
+        }
+    ) {
+        Column(
+            Modifier
+                .heightIn(max = 560.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                TypePill(item.type)
+                CbText(
+                    "${item.authorName} · ${formatBytes(item.sizeBytes)} · ${item.downloadCount} 次下载",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            if (item.description.isNotBlank()) DetailField("简介", item.description)
+            if (item.tags.isNotEmpty()) DetailField("标签", item.tags.joinToString("  #", prefix = "#"))
+            if (loading || detail == null) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CbSpinner(Modifier.size(20.dp))
+                    Spacer(Modifier.width(ChatBarSpacing.sm))
+                    CbText("正在加载卡内容", color = ChatBarTheme.colors.mutedForeground)
+                }
+            } else {
+                when (detail) {
+                    is CommunityItemDetail.Character -> CharacterDetailContent(detail)
+                    is CommunityItemDetail.Format -> FormatDetailContent(detail)
+                    is CommunityItemDetail.WorldBook -> WorldBookDetailContent(detail)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CharacterDetailContent(detail: CommunityItemDetail.Character) {
+    val card = detail.data.card
+    DetailSection("角色卡") {
+        DetailField("名称", card.name)
+        DetailField("编辑模式", if (card.editMode.name == "FREEFORM") "自由模式" else "分段模式")
+        DetailField("作者", card.creator)
+        DetailField("版本", card.characterVersion)
+        DetailField("开场白", card.greeting)
+        if (card.alternateGreetings.isNotEmpty()) {
+            DetailField("备用开场白", card.alternateGreetings.joinToString("\n\n"))
+        }
+        DetailField("基本设定", card.basicSetting)
+        DetailField("自由人物设定", card.freeformCharacterText)
+        DetailField("系统提示词", card.systemPrompt)
+        DetailField("历史后置指令", card.postHistoryInstructions)
+        DetailField("对话示例", card.mesExample)
+        DetailField("创作者备注", card.creatorNotes)
+        DetailField("NovelAI 默认风格提示词", card.defaultImagePrompt)
+    }
+    DetailSection("人物 ${card.characters.size}") {
+        card.characters.forEachIndexed { index, character ->
+            DetailField("${index + 1}. ${character.name}", buildString {
+                appendLabeled("简介", character.profile)
+                appendLabeled("外貌", character.appearance)
+                appendLabeled("服装", character.clothing)
+                appendLabeled("能力", character.abilities)
+                appendLabeled("习惯", character.habits)
+                appendLabeled("背景", character.background)
+                appendLabeled("关系", character.relationships)
+                appendLabeled("语气", character.speakingStyle)
+                appendLabeled("生图提示词", character.imagePrompt)
+            })
+        }
+    }
+    if (detail.data.worldBooks.isNotEmpty()) {
+        DetailSection("绑定世界书 ${detail.data.worldBooks.size}") {
+            detail.data.worldBooks.forEach { book ->
+                DetailField(book.name, "${book.entries.size} 条目")
+            }
+        }
+    }
+    if (detail.data.documents.isNotEmpty()) {
+        DetailSection("参考文档 ${detail.data.documents.size}") {
+            detail.data.documents.forEach { doc ->
+                DetailField("${doc.fileName} (${doc.fileType})", doc.content.trimForDetail())
+            }
+        }
+    }
+}
+
+@Composable
+private fun FormatDetailContent(detail: CommunityItemDetail.Format) {
+    DetailSection("格式卡") {
+        DetailField("名称", detail.data.name)
+        DetailField("内容", detail.data.content)
+    }
+}
+
+@Composable
+private fun WorldBookDetailContent(detail: CommunityItemDetail.WorldBook) {
+    val book = detail.data.book
+    DetailSection("世界书") {
+        DetailField("名称", book.name)
+        DetailField("简介", book.description)
+        DetailField("参数", "扫描 ${book.scanDepth} 条 · ${book.entries.size} 条目")
+    }
+    DetailSection("条目 ${book.entries.size}") {
+        book.entries.forEachIndexed { index, entry ->
+            DetailField("${index + 1}. ${entry.name.ifBlank { "未命名条目" }}", buildString {
+                appendLabeled("触发词", entry.keys.joinToString(", "))
+                appendLabeled("内容", entry.content)
+                appendLabeled("位置", entry.position.name)
+                appendLabeled("顺序", entry.insertionOrder.toString())
+                appendLabeled("概率", "${entry.probability}%")
+                appendLabeled("备注", entry.comment)
+            })
+        }
+    }
+}
+
+@Composable
+private fun DetailSection(title: String, content: @Composable ColumnScope.() -> Unit) {
+    CbSurface(
+        modifier = Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.surfaceSubtle,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(ChatBarSpacing.md), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+            CbText(title, style = ChatBarTheme.typography.label)
+            content()
+        }
+    }
+}
+
+@Composable
+private fun DetailField(label: String, value: String) {
+    val text = value.trimForDetail()
+    if (text.isBlank()) return
+    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+        CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        CbText(text)
+    }
+}
+
+private fun String.trimForDetail(limit: Int = 1600): String {
+    val text = trim()
+    if (text.length <= limit) return text
+    return text.take(limit).trimEnd() + "\n…内容过长，已截断"
+}
+
+private fun StringBuilder.appendLabeled(label: String, value: String) {
+    val text = value.trim()
+    if (text.isBlank()) return
+    if (isNotEmpty()) append("\n\n")
+    append(label).append("：").append(text)
 }
 
 @Composable

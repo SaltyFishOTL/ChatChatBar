@@ -28,6 +28,7 @@ Use this skill for Community feature work. Preserve the MVP contract: public bro
 
 - Community is root-level, same level as Chat and Manage.
 - Anonymous users can browse, search, filter, download, and import.
+- Community list loads paged metadata only from `community_items`; do not prefetch package JSON in list rendering. App startup warms the first metadata page, and the Community list prefetches the next page when the user nears the end of the visible list. Card details are loaded on item click with `CommunityService.readPackage`, which must not increment download count.
 - Upload requires Discord OAuth through Supabase Auth.
 - Upload source must be visible, non-deleted app-local `CharacterCard`, `FormatCard`, or `WorldBook`. Never add local file picker upload.
 - Downloaded community `CharacterCard`s carry `communityItemId`, `communityItemUpdatedAt`, `communityItemSha256`, and `communityItemTitle`. Treat them as read-only: no edit, no local import overwrite, no upload. Copy/duplicate creates a local original with cleared community source metadata.
@@ -56,7 +57,7 @@ Supabase project currently used for testing:
 Storage buckets:
 
 - `community-packages`: public JSON package objects, max 20 MB.
-- `community-previews`: public optional preview images, max 3 MB bucket limit. Android client uploads low-resolution JPEG previews only, currently 256px max side and about 160 KB max.
+- `community-previews`: public optional preview images, max 3 MB bucket limit. Android client uploads low-resolution JPEG previews only, currently 160px max side and about 80 KB max.
 
 Edge Function:
 
@@ -108,11 +109,13 @@ Discord `Client Secret` lives in Supabase Auth provider settings, not this repo.
 - Owner overwrite must use the same item type and a same-name local candidate.
 - Character upload candidates must exclude downloaded community cards.
 - Character preview upload must stay low-resolution and compressed; never upload the original avatar image as the community preview.
+- Character community preview currently comes from the card avatar, not the chat background. Render it as a small square avatar preview in lists, with download action below the preview and item-click opening detail.
 - Treat fallback paths as failures. Do not hide failed upload/storage/function steps.
 
 ### Download/Import Changes
 
 - Download package from `community-packages`.
+- Detail preview reads package content from `community-packages` without incrementing download count.
 - Decode with existing transfer services.
 - Detect conflicts with `NamePolicy.isSame`.
 - Import through existing `importNew` / `overwrite` transfer APIs.
@@ -151,6 +154,7 @@ Manual checks:
 
 - Community tab opens without `Supabase 未配置`.
 - Logged-out user can refresh/list/download.
+- Community list shows readable long titles and opens a detail dialog on item click. Detail dialog shows decoded character/format/world-book content without increasing download count.
 - Logged-out user cannot see upload action.
 - Discord login returns through `chatbar://auth/callback`.
 - Logged-in user can upload each type once.

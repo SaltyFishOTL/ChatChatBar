@@ -6,8 +6,11 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.DocumentRagStatus
 import com.example.chatbar.data.local.entity.RagIndexStatus
+import com.example.chatbar.domain.card.CharacterCardPackage
 import com.example.chatbar.domain.card.CharacterCardImportRequest
+import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityImportPayload
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
@@ -33,6 +36,9 @@ data class CommunityUiState(
     val items: List<CommunityItem> = emptyList(),
     val myItems: List<CommunityItem> = emptyList(),
     val loading: Boolean = false,
+    val loadingMore: Boolean = false,
+    val hasMoreItems: Boolean = true,
+    val hasMoreMyItems: Boolean = true,
     val busy: Boolean = false,
     val query: String = "",
     val selectedSection: CommunitySection = CommunitySection.ALL,
@@ -44,8 +50,30 @@ data class CommunityUiState(
     val uploadDescription: String = "",
     val uploadTags: String = "",
     val pendingImport: CommunityPendingImport? = null,
+    val detailItem: CommunityItem? = null,
+    val detail: CommunityItemDetail? = null,
+    val detailLoading: Boolean = false,
     val message: String? = null
 )
+
+sealed interface CommunityItemDetail {
+    val item: CommunityItem
+
+    data class Character(
+        override val item: CommunityItem,
+        val data: CharacterCardPackage
+    ) : CommunityItemDetail
+
+    data class Format(
+        override val item: CommunityItem,
+        val data: FormatCardPackage
+    ) : CommunityItemDetail
+
+    data class WorldBook(
+        override val item: CommunityItem,
+        val data: WorldBookPackage
+    ) : CommunityItemDetail
+}
 
 class CommunityViewModel : ViewModel() {
     private val app = ChatBarApp.instance
@@ -65,6 +93,11 @@ class CommunityViewModel : ViewModel() {
     private val _candidates = MutableStateFlow<List<CommunityUploadCandidate>>(emptyList())
     val candidates: StateFlow<List<CommunityUploadCandidate>> = _candidates
 
+    private var itemsNextOffset = 0
+    private var myItemsNextOffset = 0
+    private var itemsPageLoading = false
+    private var myItemsPageLoading = false
+
     val session: StateFlow<CommunitySession?> = service.session
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), service.session.value)
 
@@ -72,18 +105,25 @@ class CommunityViewModel : ViewModel() {
         viewModelScope.launch {
             service.session.collect { session ->
                 if (session == null) {
-                    _state.update { it.copy(myItems = emptyList(), selectedSection = CommunitySection.ALL) }
-                } else {
+                    myItemsNextOffset = 0
+                    myItemsPageLoading = false
+                    _state.update {
+                        it.copy(
+                            myItems = emptyList(),
+                            hasMoreMyItems = true,
+                            selectedSection = CommunitySection.ALL
+                        )
+                    }
+                } else if (_state.value.selectedSection == CommunitySection.MINE) {
                     refreshMine()
                 }
             }
         }
+        loadItemsPage(reset = true, preferWarmCache = true)
         viewModelScope.launch {
             characterRepository.initialize()
             formatCardRepository.initialize()
             worldBookRepository.initialize()
-            loadCandidates()
-            refresh()
         }
     }
 
@@ -99,20 +139,19 @@ class CommunityViewModel : ViewModel() {
             _state.update { it.copy(loading = false, message = "请先配置 Supabase") }
             return
         }
-        viewModelScope.launch {
-            _state.update { it.copy(loading = true, message = null) }
-            runCatching {
-                val items = service.listItems()
-                val myItems = if (service.session.value != null) service.listMyItems() else emptyList()
-                items to myItems
-            }.fold(
-                onSuccess = { (items, myItems) ->
-                    _state.update { it.copy(items = items, myItems = myItems, loading = false) }
-                },
-                onFailure = { error ->
-                    _state.update { it.copy(loading = false, message = error.message ?: "社区列表加载失败") }
-                }
-            )
+        if (_state.value.selectedSection == CommunitySection.MINE && service.session.value != null) {
+            loadMyItemsPage(reset = true)
+        } else {
+            loadItemsPage(reset = true, preferWarmCache = false)
+        }
+    }
+
+    fun loadNextPage() {
+        val snapshot = _state.value
+        if (snapshot.selectedSection == CommunitySection.MINE) {
+            if (service.session.value != null) loadMyItemsPage(reset = false)
+        } else {
+            loadItemsPage(reset = false, preferWarmCache = false)
         }
     }
 
@@ -126,7 +165,11 @@ class CommunityViewModel : ViewModel() {
             return
         }
         _state.update { it.copy(selectedSection = section) }
-        if (section == CommunitySection.MINE) refreshMine()
+        if (section == CommunitySection.MINE) {
+            if (_state.value.myItems.isEmpty()) refreshMine()
+        } else if (_state.value.items.isEmpty()) {
+            loadItemsPage(reset = true, preferWarmCache = true)
+        }
     }
 
     fun setTypeFilter(type: CommunityItemType?) {
@@ -327,6 +370,38 @@ class CommunityViewModel : ViewModel() {
         }
     }
 
+    fun openDetail(item: CommunityItem) {
+        viewModelScope.launch {
+            _state.update { it.copy(detailItem = item, detail = null, detailLoading = true, message = null) }
+            runCatching {
+                val raw = service.readPackage(item)
+                when (item.type) {
+                    CommunityItemType.CHARACTER -> CommunityItemDetail.Character(item, characterTransfers.decode(raw))
+                    CommunityItemType.FORMAT -> CommunityItemDetail.Format(item, formatTransfers.decode(raw))
+                    CommunityItemType.WORLD_BOOK -> CommunityItemDetail.WorldBook(item, worldBookTransfers.decode(raw, item.title))
+                }
+            }.fold(
+                onSuccess = { detail ->
+                    _state.update { it.copy(detail = detail, detailLoading = false) }
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            detailItem = null,
+                            detail = null,
+                            detailLoading = false,
+                            message = error.message ?: "详情加载失败"
+                        )
+                    }
+                }
+            )
+        }
+    }
+
+    fun dismissDetail() {
+        _state.update { it.copy(detailItem = null, detail = null, detailLoading = false) }
+    }
+
     fun dismissImport() {
         _state.update { it.copy(pendingImport = null) }
     }
@@ -394,11 +469,90 @@ class CommunityViewModel : ViewModel() {
 
     private fun refreshMine() {
         if (!service.configured || service.session.value == null) return
+        loadMyItemsPage(reset = true)
+    }
+
+    private fun loadItemsPage(reset: Boolean, preferWarmCache: Boolean) {
+        if (!service.configured || itemsPageLoading) return
+        val snapshot = _state.value
+        if (!reset && !snapshot.hasMoreItems) return
+        itemsPageLoading = true
+        val offset = if (reset) 0 else itemsNextOffset
         viewModelScope.launch {
-            runCatching { service.listMyItems() }.fold(
-                onSuccess = { myItems -> _state.update { it.copy(myItems = myItems) } },
-                onFailure = { error -> _state.update { it.copy(message = error.message ?: "我的上传加载失败") } }
+            _state.update {
+                it.copy(
+                    loading = reset && it.items.isEmpty(),
+                    loadingMore = !reset,
+                    message = null
+                )
+            }
+            runCatching { service.listItemsPage(offset, COMMUNITY_PAGE_SIZE, preferWarmCache = preferWarmCache) }.fold(
+                onSuccess = { page ->
+                    if (reset) itemsNextOffset = 0
+                    itemsNextOffset = page.nextOffset
+                    _state.update {
+                        val nextItems = if (reset) page.items else (it.items + page.items).distinctBy { item -> item.id }
+                        it.copy(
+                            items = nextItems,
+                            hasMoreItems = page.hasMore,
+                            loading = false,
+                            loadingMore = false
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            loadingMore = false,
+                            message = error.message ?: "社区列表加载失败"
+                        )
+                    }
+                }
             )
+            itemsPageLoading = false
+        }
+    }
+
+    private fun loadMyItemsPage(reset: Boolean) {
+        if (!service.configured || service.session.value == null || myItemsPageLoading) return
+        val snapshot = _state.value
+        if (!reset && !snapshot.hasMoreMyItems) return
+        myItemsPageLoading = true
+        val offset = if (reset) 0 else myItemsNextOffset
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    loading = reset && it.myItems.isEmpty(),
+                    loadingMore = !reset,
+                    message = null
+                )
+            }
+            runCatching { service.listMyItemsPage(offset, COMMUNITY_PAGE_SIZE) }.fold(
+                onSuccess = { page ->
+                    if (reset) myItemsNextOffset = 0
+                    myItemsNextOffset = page.nextOffset
+                    _state.update {
+                        val nextItems = if (reset) page.items else (it.myItems + page.items).distinctBy { item -> item.id }
+                        it.copy(
+                            myItems = nextItems,
+                            hasMoreMyItems = page.hasMore,
+                            loading = false,
+                            loadingMore = false
+                        )
+                    }
+                },
+                onFailure = { error ->
+                    _state.update {
+                        it.copy(
+                            loading = false,
+                            loadingMore = false,
+                            message = error.message ?: "我的上传加载失败"
+                        )
+                    }
+                }
+            )
+            myItemsPageLoading = false
         }
     }
 
@@ -525,4 +679,8 @@ class CommunityViewModel : ViewModel() {
             communityItemSha256 = item.sha256,
             communityItemTitle = item.title
         )
+
+    companion object {
+        private const val COMMUNITY_PAGE_SIZE = 20
+    }
 }
