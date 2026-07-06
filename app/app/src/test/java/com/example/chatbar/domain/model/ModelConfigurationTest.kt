@@ -32,6 +32,7 @@ class ModelConfigurationTest {
         assertTrue(settings.webSearchEnabled)
         assertEquals(0, settings.webSearchSettingsVersion)
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
+        assertEquals("", settings.novelAiImageAspectRatio)
     }
 
     @Test fun unversionedSearchSettingsMigrateToWikiEnabled() {

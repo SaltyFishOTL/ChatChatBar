@@ -83,6 +83,7 @@ import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
+import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.components.AppUpdateDialog
@@ -963,6 +964,7 @@ private fun SettingsTab(
     var modelId by remember { mutableStateOf(settings.defaultModelId) }
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var novelAiToken by remember { mutableStateOf("") }
+    var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var webSearchEnabled by remember { mutableStateOf(settings.webSearchEnabled) }
@@ -994,12 +996,14 @@ private fun SettingsTab(
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
         settings.webSearchEnabled,
+        settings.novelAiImageAspectRatio,
         settings.chatBubbleFontScale
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         themeMode = settings.themeMode
+        novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         webSearchEnabled = settings.webSearchEnabled
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
@@ -1011,6 +1015,8 @@ private fun SettingsTab(
     } else {
         contextSize.toInt()
     }
+    val novelAiImageSize = NovelAiImageSizePolicy.parseUserRatio(novelAiImageAspectRatio)
+    val novelAiImageRatioError = NovelAiImageSizePolicy.validationError(novelAiImageAspectRatio)
     val draftSettings = settings.copy(
         defaultModelId = effectiveDefaultModelId,
         presetDefaultModelKey = null,
@@ -1024,7 +1030,8 @@ private fun SettingsTab(
         ragInjectionMode = ragMode.roundToInt().modeValue(),
         defaultContextWindowSize = draftContextWindowSize,
         webSearchEnabled = webSearchEnabled,
-        webSearchMaxResultsPerQuery = 1
+        webSearchMaxResultsPerQuery = 1,
+        novelAiImageAspectRatio = novelAiImageAspectRatio.trim()
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
     val settingsDirty = draftSettings != savedSettingsComparable ||
@@ -1033,6 +1040,10 @@ private fun SettingsTab(
     LaunchedEffect(settingsDirty) { onDirtyChange(settingsDirty) }
     LaunchedEffect(saveRequest) {
         if (saveRequest > 0) {
+            if (novelAiImageRatioError != null) {
+                Toast.makeText(context, novelAiImageRatioError, Toast.LENGTH_SHORT).show()
+                return@LaunchedEffect
+            }
             onSavePlayer(playerName, persona)
             onSaveSettings(
                 draftSettings.copy(
@@ -1132,6 +1143,20 @@ private fun SettingsTab(
                 color = if (novelAiConfigured) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
+            CbField(
+                "图片比例",
+                description = novelAiImageSize?.let {
+                    "将按 ${it.width}x${it.height} 生成；留空时 AI 自动选择 Normal Portrait、Square 或 Horizontal。"
+                } ?: "留空时 AI 自动选择 Normal Portrait、Square 或 Horizontal；支持 1:1、16:9、832x1216。",
+                error = novelAiImageRatioError
+            ) {
+                CbInput(
+                    novelAiImageAspectRatio,
+                    { novelAiImageAspectRatio = it },
+                    placeholder = "留空自动，或输入 1:1 / 16:9 / 9:16",
+                    isError = novelAiImageRatioError != null
+                )
+            }
             CbField(
                 "Persistent API Token",
                 description = "Token 使用 Android Keystore 加密保存，不写入应用设置 JSON。"

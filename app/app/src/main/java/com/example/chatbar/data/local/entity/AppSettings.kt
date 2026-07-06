@@ -24,7 +24,8 @@ data class AppSettings(
     val tutorialVersion: Int = 0,
     val webSearchSettingsVersion: Int = 0,
     val webSearchEnabled: Boolean = true,
-    val webSearchMaxResultsPerQuery: Int = 1
+    val webSearchMaxResultsPerQuery: Int = 1,
+    val novelAiImageAspectRatio: String = ""
 )
 
 @Serializable

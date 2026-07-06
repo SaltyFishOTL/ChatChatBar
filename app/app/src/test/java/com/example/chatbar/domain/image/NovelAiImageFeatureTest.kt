@@ -48,6 +48,7 @@ class NovelAiImageFeatureTest {
         )
         val designed = DesignedImagePrompt(
             baseCaption = "default-style, 2girls, night street",
+            sizePreset = "HORIZONTAL",
             characters = (1..7).map { DesignedCharacterPrompt("Character $it", "fixed-$it, adjust-$it") } +
                 DesignedCharacterPrompt("Unknown", "ignored")
         )
@@ -56,6 +57,7 @@ class NovelAiImageFeatureTest {
 
         assertEquals("default-style, 2girls, night street", result.baseCaption)
         assertEquals(6, result.characterCaptions.size)
+        assertEquals(NovelAiImageSizePreset.HORIZONTAL, result.sizePreset)
         assertEquals("fixed-1, adjust-1", result.characterCaptions.first().prompt)
         assertFalse(result.characterCaptions.any { "ignored" in it.prompt })
         assertEquals(1f / 7f, result.characterCaptions.first().center.x, 0.001f)
@@ -187,6 +189,31 @@ class NovelAiImageFeatureTest {
             parameters.getValue("v4_prompt").jsonObject
                 .getValue("use_coords").jsonPrimitive.content
         )
+    }
+
+    @Test
+    fun `custom ratio maps to normal sized request dimensions`() {
+        val imageSize = NovelAiImageSizePolicy.parseUserRatio("16:9")
+        val body = NovelAiImageService().buildRequestBody(
+            NovelAiPromptPlan("scene", emptyList()),
+            seed = 42,
+            imageSize = imageSize!!
+        )
+        val parameters = Json.parseToJsonElement(body).jsonObject
+            .getValue("parameters").jsonObject
+
+        assertEquals("1344", parameters.getValue("width").jsonPrimitive.content)
+        assertEquals("768", parameters.getValue("height").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `blank image ratio uses designed preset while invalid input reports error`() {
+        val horizontal = NovelAiImageSizePolicy.resolve("", NovelAiImageSizePreset.HORIZONTAL)
+
+        assertEquals(1216, horizontal.width)
+        assertEquals(832, horizontal.height)
+        assertEquals(null, NovelAiImageSizePolicy.validationError(""))
+        assertTrue(NovelAiImageSizePolicy.validationError("wide")!!.contains("比例格式无效"))
     }
 
     @Test

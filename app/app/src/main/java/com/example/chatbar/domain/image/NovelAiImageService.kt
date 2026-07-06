@@ -10,7 +10,6 @@ import javax.net.ssl.SSLException
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -38,7 +37,12 @@ class NovelAiImageService(
         .writeTimeout(30, TimeUnit.SECONDS)
         .build()
 ) {
-    fun generate(token: String, prompt: NovelAiPromptPlan, seed: Int): Flow<NovelAiImageEvent> = callbackFlow {
+    fun generate(
+        token: String,
+        prompt: NovelAiPromptPlan,
+        seed: Int,
+        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
+    ): Flow<NovelAiImageEvent> = callbackFlow {
         val correlationId = correlationId()
         val request = Request.Builder()
             .url(ENDPOINT)
@@ -46,7 +50,7 @@ class NovelAiImageService(
             .header("Content-Type", "application/json")
             .header("Accept", "application/octet-stream")
             .header("x-correlation-id", correlationId)
-            .post(buildRequestBody(prompt, seed).toRequestBody(JSON_MEDIA_TYPE))
+            .post(buildRequestBody(prompt, seed, imageSize).toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val call = client.newCall(request)
         call.enqueue(object : Callback {
@@ -123,7 +127,11 @@ class NovelAiImageService(
         awaitClose { call.cancel() }
     }
 
-    fun buildRequestBody(prompt: NovelAiPromptPlan, seed: Int = randomSeed()): String {
+    fun buildRequestBody(
+        prompt: NovelAiPromptPlan,
+        seed: Int = randomSeed(),
+        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
+    ): String {
         val negative = deduplicateNegativePrompt(
             "censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, film grain, scan, scan artifacts, worst quality, bad quality, bad anatomy, bad perspective, bad proportions, bad aspect ratio, bad face, bad teeth, bad neck, bad arm, bad leg, bad feet, bad reflection, bad shadow, fewer digits, extra faces, extra eyes, extra mouth, extra teeth, extra ears, extra breasts, extra arms, extra hands, bad hands, wrong hand, extra legs, extra digits, missing limb, missing eye, missing tooth, missing ear, missing finger, mutation, deformed, disfigured, mismatched pupils, unfinished, jpeg artifacts, very displeasing, chromatic aberration, signature, artist name, username, logo, watermark"
         )
@@ -165,8 +173,8 @@ class NovelAiImageService(
             put("action", "generate")
             put("parameters", buildJsonObject {
                 put("params_version", 3)
-                put("width", WIDTH)
-                put("height", HEIGHT)
+                put("width", imageSize.width)
+                put("height", imageSize.height)
                 put("scale", SCALE)
                 put("sampler", "k_euler_ancestral")
                 put("steps", STEPS)
@@ -232,8 +240,6 @@ class NovelAiImageService(
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val ENDPOINT = "https://image.novelai.net/ai/generate-image-stream"
         const val MODEL = "nai-diffusion-4-5-full"
-        const val WIDTH = 832
-        const val HEIGHT = 1216
         const val STEPS = 28
         const val SCALE = 8.0
         fun randomSeed(): Int = kotlin.random.Random.nextInt(0, Int.MAX_VALUE)

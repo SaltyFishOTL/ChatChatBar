@@ -32,6 +32,7 @@ import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -558,6 +559,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
                 val settings = settingsRepository.getAppSettings()
                 val model = modelOverride ?: modelResolver.resolveChatModel(selectedModelId, settings)
+                val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
                 if (token == null || model == null || model.apiKey.isBlank()) {
                     val missing = mutableListOf<String>()
                     if (token == null) missing += "NovelAI Token"
@@ -566,6 +568,16 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         it.copy(
                             isGenerating = false,
                             error = "缺少${missing.joinToString("、")}，未生成封面",
+                            statusText = "封面未生成"
+                        )
+                    }
+                    return@launch
+                }
+                if (imageRatioError != null) {
+                    updateCoverImageStateIfCurrent(generationToken, target) {
+                        it.copy(
+                            isGenerating = false,
+                            error = imageRatioError,
                             statusText = "封面未生成"
                         )
                     }
@@ -586,12 +598,13 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             )
                         }
                     }
+                    val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
                     updateCoverImageStateIfCurrent(generationToken, target) {
                         it.copy(statusText = "正在调用 NovelAI 生成封面")
                     }
                     val seed = novelAiImageService.newSeed()
                     var finalImage: ByteArray? = null
-                    novelAiImageService.generate(token, prompt, seed).collect { event ->
+                    novelAiImageService.generate(token, prompt, seed, imageSize).collect { event ->
                         when (event) {
                             is NovelAiImageEvent.Intermediate -> {
                                 finalImage = event.image

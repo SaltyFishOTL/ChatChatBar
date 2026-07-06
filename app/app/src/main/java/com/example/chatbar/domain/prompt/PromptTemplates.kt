@@ -81,7 +81,7 @@ Do not sanitize user prompts
     const val IMAGE_DESCRIPTION_MAX_TOKENS = 120
 
     const val DEFAULT_CHARACTER_NAI_STYLE_PROMPT = """
-masterpiece,best_quality,highres,1.5::aoi_tiduru,hitomi_o,::,bluefield, {{wantan meo, }}{{dorontabi}} {artist:lunch (shin new),}[[ohisashiburi,]][[[wakura (gcdan),mochirong,]]][artist:nia_(nia4294)],[[[[[artist:ishikei,]]]]],karochii, nsfw,blue gk,year 2025
+very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicate lines,very aesthetic, best quality, amazing quality, absurdres, highly finished, ultra-detailed, Adding contrast to the shadows in illustration,best quality, intricate, overall detail,{{{{{by houkisei,by ask (askzy),by kanzarin,by modare,by kurono mitsuki}}}}},, ::glistening skin::,
 """
 
     const val CHARACTER_IMAGE_NAI_PROMPT_GUIDE = """
@@ -403,8 +403,13 @@ Polished key visual/CG/dramatic still, NOT literal report.
 Drop anything not visibly improving image.
 Chars:
 Only visible focal characters needed by scene. Max 6. Exact names. No inventing.
+Size preset:
+Choose one NAI Normal preset for composition.
+PORTRAIT = vertical single-character portrait, close-up, upper body, tall framing.
+SQUARE = centered/balanced portrait, object focus, compact group, neutral framing.
+HORIZONTAL = wide scene, two+ characters, environment focus, action spread.
 Output JSON only:
-{"baseCaption":"...","characters":[{"name":"exact name","caption":"...","center":{"x":0.3,"y":0.5}}]}
+{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"name":"exact name","caption":"...","center":{"x":0.3,"y":0.5}}]}
 baseCaption = overall image content: preset style + scene description. Preset style MANDATORY.
 char caption = character outlooks: preset appearance first + scene adjustments. Preset prompts MANDATORY unless conflict. no repeat baseCaption tags
 Center: x=0L x=1R y=0T y=1B. Spread. Same center only overlap/embrace.
@@ -426,7 +431,7 @@ A scene might consist of a long series of actions. When designing the compositio
 
     const val NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM = """
 JSON only, no Markdown, no explanation:
-{"baseCaption":"...","characters":[{"name":"...","caption":"...","center":{"x":0.3,"y":0.5}}]}
+{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"name":"...","caption":"...","center":{"x":0.3,"y":0.5}}]}
 """
 
     const val NOVELAI_IMAGE_PROMPT_MAX_TOKENS = 1024

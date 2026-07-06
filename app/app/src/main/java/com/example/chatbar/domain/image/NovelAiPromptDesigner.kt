@@ -21,6 +21,7 @@ import kotlinx.serialization.json.put
 data class DesignedImagePrompt(
     val baseCaption: String = "",
     val scenePrompt: String = "",
+    val sizePreset: String = NovelAiImageSizePreset.PORTRAIT.name,
     val characters: List<DesignedCharacterPrompt> = emptyList()
 ) {
     val effectiveBaseCaption: String get() = baseCaption.ifBlank { scenePrompt }
@@ -50,7 +51,8 @@ data class NovelAiCharacterCaption(
 data class NovelAiPromptPlan(
     val baseCaption: String,
     val characterCaptions: List<NovelAiCharacterCaption>,
-    val designed: DesignedImagePrompt? = null
+    val designed: DesignedImagePrompt? = null,
+    val sizePreset: NovelAiImageSizePreset = NovelAiImageSizePreset.PORTRAIT
 )
 
 class NovelAiPromptDesigner(
@@ -190,8 +192,14 @@ class NovelAiPromptDesigner(
 
         internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan {
             val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
+            val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
             val characters = designed.characters.take(6)
-            if (characters.isEmpty()) return NovelAiPromptPlan(normalizedBase, emptyList(), designed)
+            if (characters.isEmpty()) return NovelAiPromptPlan(
+                normalizedBase,
+                emptyList(),
+                designed,
+                sizePreset
+            )
             val captions = characters.mapIndexedNotNull { index, selected ->
                 selected.effectiveCaption.trim().takeIf(String::isNotBlank)?.let {
                     NovelAiCharacterCaption(
@@ -201,7 +209,7 @@ class NovelAiPromptDesigner(
                     )
                 }
             }
-            return NovelAiPromptPlan(normalizedBase, captions, designed)
+            return NovelAiPromptPlan(normalizedBase, captions, designed, sizePreset)
         }
 
         private fun DesignedCharacterCenter.normalized() = DesignedCharacterCenter(

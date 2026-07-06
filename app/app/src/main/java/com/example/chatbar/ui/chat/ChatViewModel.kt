@@ -17,6 +17,8 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.image.NovelAiImageSize
+import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
@@ -292,6 +294,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
             val model = currentSession?.let { modelResolver.resolveChatModel(it.modelId, settings) }
+            val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
             if (token == null || card == null || model == null || model.apiKey.isBlank()) {
                 val missing = mutableListOf<String>()
                 if (token == null) missing.add("NovelAI Token")
@@ -301,6 +304,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
                     error = "缺少配置：${missing.joinToString("、")} 不可用，无法生图"
+                )
+                return@launch
+            }
+            if (imageRatioError != null) {
+                _imageGeneration.value = ImageGenerationState(
+                    anchorMessageId,
+                    ImageGenerationPhase.FAILED,
+                    error = imageRatioError
                 )
                 return@launch
             }
@@ -320,14 +331,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         _imageGeneration.value = current.copy(promptDraft = draft)
                     }
                 }
+                val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
                 val seed = novelAiImageService.newSeed()
-                val requestBody = novelAiImageService.buildRequestBody(prompt, seed)
+                val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
                     sessionId = sessionId,
                     modelName = "NovelAI Diffusion V4.5 Full",
                     apiUrl = "https://image.novelai.net/ai/generate-image-stream",
                     requestBodyJson = requestBody,
-                    rawAiOutput = debugPrompt(prompt)
+                    rawAiOutput = debugPrompt(prompt, imageSize)
                 )
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
@@ -341,7 +353,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     retry = false
                     val currentSeed = if (attempt == 1) seed else novelAiImageService.newSeed()
                     try {
-                        novelAiImageService.generate(token, prompt, currentSeed).collect { event ->
+                        novelAiImageService.generate(token, prompt, currentSeed, imageSize).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Intermediate -> {
                                     _imageGeneration.value = ImageGenerationState(
@@ -435,7 +447,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    private fun debugPrompt(prompt: NovelAiPromptPlan): String = buildString {
+    private fun debugPrompt(prompt: NovelAiPromptPlan, imageSize: NovelAiImageSize): String = buildString {
+        appendLine("Size: ${imageSize.label} (${imageSize.width}x${imageSize.height})")
         appendLine("Base: ${prompt.baseCaption}")
         prompt.designed?.characters?.forEach { selected ->
             appendLine("Selected ${selected.name}: ${selected.effectiveCaption}")
