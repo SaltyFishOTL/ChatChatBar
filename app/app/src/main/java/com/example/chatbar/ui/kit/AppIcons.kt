@@ -17,12 +17,15 @@ import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.FileText
 import com.composables.icons.lucide.Image
 import com.composables.icons.lucide.ImagePlus
+import com.composables.icons.lucide.LogIn
+import com.composables.icons.lucide.LogOut
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Maximize2
 import com.composables.icons.lucide.MessageCircle
 import com.composables.icons.lucide.Pencil
 import com.composables.icons.lucide.Pin
 import com.composables.icons.lucide.Play
+import com.composables.icons.lucide.RefreshCw
 import com.composables.icons.lucide.Save
 import com.composables.icons.lucide.Send
 import com.composables.icons.lucide.Settings
@@ -58,11 +61,13 @@ object AppIcons {
     val Image: ImageVector get() = Lucide.Image
     val KeyboardArrowDown: ImageVector get() = Lucide.ChevronDown
     val KeyboardArrowRight: ImageVector get() = Lucide.ChevronRight
+    val Login: ImageVector get() = Lucide.LogIn
+    val Logout: ImageVector get() = Lucide.LogOut
     val OpenInFull: ImageVector get() = Lucide.Maximize2
     val PhotoCamera: ImageVector get() = Lucide.Camera
     val PlayArrow: ImageVector get() = Lucide.Play
     val PushPin: ImageVector get() = Lucide.Pin
-    val Refresh: ImageVector get() = Lucide.ArchiveRestore
+    val Refresh: ImageVector get() = Lucide.RefreshCw
     val Restore: ImageVector get() = Lucide.ArchiveRestore
     val Save: ImageVector get() = Lucide.Save
     val Send: ImageVector get() = Lucide.Send

@@ -50,6 +50,15 @@
                 <category android:name="android.intent.category.DEFAULT" />
                 <data android:mimeType="application/json" />
             </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="chatbar"
+                    android:host="auth"
+                    android:path="/callback" />
+            </intent-filter>
         </activity>
     </application>
 

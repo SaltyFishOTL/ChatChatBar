@@ -22,13 +22,22 @@ android {
         targetSdk = 36
         versionCode = 8
         versionName = "1.0.6"
-        val bundledSiliconFlowKey = providers.gradleProperty("CHATBAR_SILICONFLOW_API_KEY")
-            .orElse(providers.environmentVariable("CHATBAR_SILICONFLOW_API_KEY"))
-            .orElse("")
-            .get()
-            .replace("\\", "\\\\")
-            .replace("\"", "\\\"")
+        fun configValue(name: String, defaultValue: String = ""): String =
+            providers.gradleProperty(name)
+                .orElse(providers.environmentVariable(name))
+                .orElse(defaultValue)
+                .get()
+                .replace("\\", "\\\\")
+                .replace("\"", "\\\"")
+
+        val bundledSiliconFlowKey = configValue("CHATBAR_SILICONFLOW_API_KEY")
+        val supabaseUrl = configValue("CHATBAR_SUPABASE_URL")
+        val supabaseAnonKey = configValue("CHATBAR_SUPABASE_ANON_KEY")
+        val supabaseRedirectUri = configValue("CHATBAR_SUPABASE_REDIRECT_URI", "chatbar://auth/callback")
         buildConfigField("String", "SILICONFLOW_API_KEY", "\"$bundledSiliconFlowKey\"")
+        buildConfigField("String", "SUPABASE_URL", "\"$supabaseUrl\"")
+        buildConfigField("String", "SUPABASE_ANON_KEY", "\"$supabaseAnonKey\"")
+        buildConfigField("String", "SUPABASE_REDIRECT_URI", "\"$supabaseRedirectUri\"")
     }
 
     signingConfigs {

@@ -34,6 +34,7 @@ import androidx.compose.ui.semantics.selected
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
 import androidx.navigation3.runtime.NavKey
+import com.example.chatbar.CommunityRoute
 import com.example.chatbar.HomeRoute
 import com.example.chatbar.ManageRoute
 import com.example.chatbar.ui.kit.CbIcon
@@ -68,6 +69,7 @@ fun BottomNavBar(
         ) {
             listOf(
                 NavItem("聊天", AppIcons.Chat, HomeRoute),
+                NavItem("社区", AppIcons.Star, CommunityRoute),
                 NavItem("管理", AppIcons.Settings, ManageRoute)
             ).forEach { item ->
                 val selected = currentRoute == item.route

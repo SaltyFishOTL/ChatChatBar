@@ -29,6 +29,7 @@ import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
 import com.example.chatbar.ui.components.BottomNavBar
+import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
 import com.example.chatbar.ui.chat.ChatScreen
 import com.example.chatbar.ui.manage.ManageScreen
@@ -71,8 +72,15 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         backStack.add(route as NavKey)
     }
 
-    BackHandler(enabled = backStack.size == 1 && (currentRoute == HomeRoute || currentRoute == ManageRoute)) {
+    BackHandler(
+        enabled = backStack.size == 1 && (
+            currentRoute == HomeRoute ||
+                currentRoute == CommunityRoute ||
+                currentRoute == ManageRoute
+            )
+    ) {
         when (currentRoute) {
+            CommunityRoute,
             ManageRoute -> {
                 lastHomeBackPressAt = 0L
                 showRoot(HomeRoute)
@@ -117,6 +125,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     entry<HomeRoute> {
                         HomeScreen(onNavigate = { route -> pushRoute(route as NavKey) })
                     }
+                    entry<CommunityRoute> {
+                        CommunityScreen()
+                    }
                     entry<ManageRoute> {
                         ManageScreen(onNavigate = { route -> pushRoute(route as NavKey) }, sharedUri = sharedUri)
                     }
@@ -152,7 +163,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                 }
             )
         }
-        if (currentRoute == HomeRoute || currentRoute == ManageRoute) {
+        if (currentRoute == HomeRoute || currentRoute == CommunityRoute || currentRoute == ManageRoute) {
             BottomNavBar(
                 currentRoute = currentRoute,
                 onNavigate = { route ->

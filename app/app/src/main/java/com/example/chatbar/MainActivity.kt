@@ -25,6 +25,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.lifecycleScope
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.resolveDarkTheme
 import com.example.chatbar.domain.update.AppUpdateChecker
@@ -33,6 +34,7 @@ import com.example.chatbar.ui.kit.CbLoadingState
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.components.AppUpdateDialog
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     val sharedImportUri = MutableStateFlow<Uri?>(null)
@@ -108,10 +110,14 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
         handleSharedIntent(intent)
     }
 
     private fun handleSharedIntent(intent: Intent) {
+        if (intent.action == Intent.ACTION_VIEW && handleCommunityAuthCallback(intent.data)) {
+            return
+        }
         if (intent.action == Intent.ACTION_SEND) {
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
@@ -123,6 +129,24 @@ class MainActivity : ComponentActivity() {
                 sharedImportUri.value = uri
             }
         }
+    }
+
+    private fun handleCommunityAuthCallback(uri: Uri?): Boolean {
+        if (uri?.scheme != "chatbar" || uri.host != "auth" || uri.path != "/callback") return false
+        lifecycleScope.launch {
+            runCatching {
+                ChatBarApp.instance.communityService.handleAuthCallback(uri)
+            }.fold(
+                onSuccess = {
+                    Toast.makeText(this@MainActivity, "Discord 登录成功", Toast.LENGTH_SHORT).show()
+                },
+                onFailure = { error ->
+                    Log.w(TAG, "Community auth callback failed", error)
+                    Toast.makeText(this@MainActivity, "Discord 登录失败：${error.message}", Toast.LENGTH_LONG).show()
+                }
+            )
+        }
+        return true
     }
 
     companion object {

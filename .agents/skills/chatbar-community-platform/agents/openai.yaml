@@ -1,0 +1,4 @@
+interface:
+  display_name: "Chatbar Community Platform"
+  short_description: "Maintain ChatBar community sharing"
+  default_prompt: "Use $chatbar-community-platform to update ChatBar community sharing safely."

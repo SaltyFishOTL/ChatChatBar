@@ -7,6 +7,7 @@ import com.example.chatbar.data.repository.*
 import com.example.chatbar.domain.rag.*
 import com.example.chatbar.domain.chat.*
 import com.example.chatbar.domain.card.*
+import com.example.chatbar.domain.community.CommunityService
 import com.example.chatbar.domain.deletion.DeletionCoordinator
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
@@ -107,6 +108,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var appUpdateChecker: AppUpdateChecker
         private set
+    lateinit var communityService: CommunityService
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -172,6 +175,16 @@ class ChatBarApp : Application() {
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
         characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)
+        communityService = CommunityService(
+            app = this,
+            characterRepository = characterRepository,
+            formatCardRepository = formatCardRepository,
+            worldBookRepository = worldBookRepository,
+            characterTransfers = characterCardTransferService,
+            formatTransfers = formatCardTransferService,
+            worldBookTransfers = worldBookTransferService,
+            json = transferJson
+        )
         presetCatalogService = PresetCatalogService(
             this,
             jsonFileStorage,
