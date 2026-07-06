@@ -13,6 +13,7 @@ import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
+import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
@@ -186,7 +187,9 @@ class ChatBarApp : Application() {
             json = transferJson
         )
         applicationScope.launch {
-            communityService.prefetchFirstItemsPage()
+            communityService.prefetchFirstItemsPage()?.let { page ->
+                CommunityPreviewCache.prefetchItems(this@ChatBarApp, communityService, page.items)
+            }
         }
         presetCatalogService = PresetCatalogService(
             this,

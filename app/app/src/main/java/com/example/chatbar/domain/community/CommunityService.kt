@@ -109,16 +109,22 @@ class CommunityService(
         queryItems(authorUserId = null, accessToken = null, offset = 0, limit = DEFAULT_LIST_LIMIT).items
     }
 
-    suspend fun prefetchFirstItemsPage(limit: Int = DEFAULT_PAGE_SIZE) = withContext(Dispatchers.IO) {
-        if (!configured) return@withContext
-        if (warmedItemsPage != null) return@withContext
+    suspend fun prefetchFirstItemsPage(limit: Int = DEFAULT_PAGE_SIZE): CommunityItemPage? = withContext(Dispatchers.IO) {
+        if (!configured) return@withContext null
+        val safeLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
+        warmedItemsPage
+            ?.takeIf { it.limit == safeLimit && System.currentTimeMillis() - it.loadedAt <= WARM_CACHE_TTL_MS }
+            ?.page
+            ?.let { return@withContext it }
         runCatching {
+            val page = queryItems(authorUserId = null, accessToken = null, offset = 0, limit = safeLimit)
             warmedItemsPage = WarmedCommunityPage(
-                limit = limit.coerceIn(1, MAX_PAGE_SIZE),
-                page = queryItems(authorUserId = null, accessToken = null, offset = 0, limit = limit),
+                limit = safeLimit,
+                page = page,
                 loadedAt = System.currentTimeMillis()
             )
-        }
+            page
+        }.getOrNull()
     }
 
     suspend fun listItemsPage(
@@ -127,15 +133,16 @@ class CommunityService(
         preferWarmCache: Boolean = false
     ): CommunityItemPage = withContext(Dispatchers.IO) {
         checkConfigured()
+        val safeLimit = limit.coerceIn(1, MAX_PAGE_SIZE)
         if (preferWarmCache && offset == 0) {
             warmedItemsPage
-                ?.takeIf { it.limit == limit && System.currentTimeMillis() - it.loadedAt <= WARM_CACHE_TTL_MS }
+                ?.takeIf { it.limit == safeLimit && System.currentTimeMillis() - it.loadedAt <= WARM_CACHE_TTL_MS }
                 ?.page
                 ?.let { return@withContext it }
         }
-        val page = queryItems(authorUserId = null, accessToken = null, offset = offset, limit = limit)
+        val page = queryItems(authorUserId = null, accessToken = null, offset = offset, limit = safeLimit)
         if (offset == 0) {
-            warmedItemsPage = WarmedCommunityPage(limit.coerceIn(1, MAX_PAGE_SIZE), page, System.currentTimeMillis())
+            warmedItemsPage = WarmedCommunityPage(safeLimit, page, System.currentTimeMillis())
         }
         page
     }

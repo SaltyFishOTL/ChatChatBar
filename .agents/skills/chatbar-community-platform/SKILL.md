@@ -28,7 +28,7 @@ Use this skill for Community feature work. Preserve the MVP contract: public bro
 
 - Community is root-level, same level as Chat and Manage.
 - Anonymous users can browse, search, filter, download, and import.
-- Community list loads paged metadata only from `community_items`; do not prefetch package JSON in list rendering. App startup warms the first metadata page, and the Community list prefetches the next page when the user nears the end of the visible list. Card details are loaded on item click with `CommunityService.readPackage`, which must not increment download count.
+- Community list loads paged metadata only from `community_items`; do not prefetch package JSON in list rendering. App startup warms the first metadata page and its preview images. The Community list prefetches the next metadata page and preview images when the user nears the end of the visible list. Card details are loaded on item click with `CommunityService.readPackage`, which must not increment download count.
 - Upload requires Discord OAuth through Supabase Auth.
 - Upload source must be visible, non-deleted app-local `CharacterCard`, `FormatCard`, or `WorldBook`. Never add local file picker upload.
 - Downloaded community `CharacterCard`s carry `communityItemId`, `communityItemUpdatedAt`, `communityItemSha256`, and `communityItemTitle`. Treat them as read-only: no edit, no local import overwrite, no upload. Copy/duplicate creates a local original with cleared community source metadata.
@@ -110,6 +110,7 @@ Discord `Client Secret` lives in Supabase Auth provider settings, not this repo.
 - Character upload candidates must exclude downloaded community cards.
 - Character preview upload must stay low-resolution and compressed; never upload the original avatar image as the community preview.
 - Character community preview currently comes from the card avatar, not the chat background. Render it as a small square avatar preview in lists, with download action below the preview and item-click opening detail.
+- Preview images use `CommunityPreviewCache` so app-start/page-load prefetch and `AsyncImage` share the same Coil memory/disk cache keys.
 - Treat fallback paths as failures. Do not hide failed upload/storage/function steps.
 
 ### Download/Import Changes

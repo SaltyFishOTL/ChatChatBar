@@ -50,6 +50,7 @@ import coil.compose.AsyncImage
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.community.CommunityPendingImport
+import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.community.CommunityUploadCandidate
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonSize
@@ -459,6 +460,10 @@ private fun CommunityPreviewImage(
     url: String,
     contentDescription: String
 ) {
+    val context = LocalContext.current
+    val request = remember(url, context) {
+        CommunityPreviewCache.request(context, url)
+    }
     Box(
         modifier = Modifier
             .size(52.dp)
@@ -467,7 +472,7 @@ private fun CommunityPreviewImage(
             .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
     ) {
         AsyncImage(
-            model = url,
+            model = request,
             contentDescription = contentDescription,
             contentScale = ContentScale.Crop,
             modifier = Modifier.fillMaxSize()

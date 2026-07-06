@@ -15,6 +15,7 @@ import com.example.chatbar.domain.community.CommunityImportPayload
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.community.CommunityPendingImport
+import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.community.CommunitySession
 import com.example.chatbar.domain.community.CommunityUploadCandidate
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -236,6 +237,7 @@ class CommunityViewModel : ViewModel() {
                 service.submitDraft(draft)
             }.fold(
                 onSuccess = { item ->
+                    prefetchPreviews(listOf(item))
                     _state.update {
                         it.copy(
                             busy = false,
@@ -270,6 +272,7 @@ class CommunityViewModel : ViewModel() {
                 service.updateDraft(item, draft)
             }.fold(
                 onSuccess = { updated ->
+                    prefetchPreviews(listOf(updated))
                     _state.update {
                         it.copy(
                             busy = false,
@@ -488,6 +491,7 @@ class CommunityViewModel : ViewModel() {
             }
             runCatching { service.listItemsPage(offset, COMMUNITY_PAGE_SIZE, preferWarmCache = preferWarmCache) }.fold(
                 onSuccess = { page ->
+                    prefetchPreviews(page.items)
                     if (reset) itemsNextOffset = 0
                     itemsNextOffset = page.nextOffset
                     _state.update {
@@ -530,6 +534,7 @@ class CommunityViewModel : ViewModel() {
             }
             runCatching { service.listMyItemsPage(offset, COMMUNITY_PAGE_SIZE) }.fold(
                 onSuccess = { page ->
+                    prefetchPreviews(page.items)
                     if (reset) myItemsNextOffset = 0
                     myItemsNextOffset = page.nextOffset
                     _state.update {
@@ -560,6 +565,10 @@ class CommunityViewModel : ViewModel() {
         viewModelScope.launch {
             runCatching { service.localCandidates(type) }.onSuccess { _candidates.value = it }
         }
+    }
+
+    private fun prefetchPreviews(items: List<CommunityItem>) {
+        CommunityPreviewCache.prefetchItems(app, service, items)
     }
 
     private suspend fun findSameNameCandidate(item: CommunityItem): CommunityUploadCandidate? {
