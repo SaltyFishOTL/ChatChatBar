@@ -40,8 +40,8 @@ jobs:
 
       - name: Test and package debug APK
         env:
-          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
-          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
+          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL || 'https://rrlxofrrgfnhjfyrqvry.supabase.co' }}
+          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY || 'sb_publishable_J56aQ_JJLnank-dv1olMdg_d87xNQjD' }}
         run: ./gradlew test compileDebugAndroidTestKotlin assembleDebug --no-daemon --stacktrace
 
       - name: Upload debug APK

@@ -26,6 +26,8 @@ jobs:
     env:
       VERSION_NAME: ${{ inputs.versionName }}
       RELEASE_NOTES: ${{ inputs.releaseNotes }}
+      CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL || 'https://rrlxofrrgfnhjfyrqvry.supabase.co' }}
+      CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY || 'sb_publishable_J56aQ_JJLnank-dv1olMdg_d87xNQjD' }}
 
     steps:
       - name: Checkout
@@ -108,17 +110,14 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
 
-      - name: Report Supabase configuration
-        env:
-          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
-          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
+      - name: Validate Supabase configuration
         run: |
           set -euo pipefail
           if [[ -z "${CHATBAR_SUPABASE_URL}" || -z "${CHATBAR_SUPABASE_ANON_KEY}" ]]; then
-            echo "CHATBAR_SUPABASE_URL or CHATBAR_SUPABASE_ANON_KEY is missing; release APK will build with Community disabled."
-          else
-            echo "Supabase configuration found; release APK will include Community backend configuration."
+            echo "Missing CHATBAR_SUPABASE_URL or CHATBAR_SUPABASE_ANON_KEY"
+            exit 1
           fi
+          echo "Supabase configuration ready; release APK will include Community backend configuration."
 
       - name: Test and build signed release APK
         working-directory: app
@@ -127,8 +126,6 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-          CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
-          CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
         run: |
           chmod +x gradlew
           ./gradlew test assembleRelease --no-daemon --stacktrace

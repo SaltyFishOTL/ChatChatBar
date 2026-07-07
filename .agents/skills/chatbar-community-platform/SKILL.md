@@ -95,6 +95,7 @@ Optional:
 ```
 
 Discord `Client Secret` lives in Supabase Auth provider settings, not this repo.
+GitHub Actions release/CI workflows inject the project URL and public publishable key by default, while repository secrets with the same names may override them.
 
 ## Workflows
 
