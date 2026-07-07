@@ -13,7 +13,7 @@ Use this skill for Community feature work. Preserve the MVP contract: public bro
 
 - Root route: `CommunityRoute` in `app/app/src/main/java/com/example/chatbar/NavigationKeys.kt`.
 - Navigation wiring: `app/app/src/main/java/com/example/chatbar/Navigation.kt`.
-- Bottom tab order when backend says enabled: `聊天 / 社区 / 管理` in `ui/components/BottomNavBar.kt`; Community is hidden when `community_runtime_config.enabled` is false.
+- Bottom tab order when backend says enabled: `聊天 / 社区 / 管理` in `ui/components/BottomNavBar.kt`; Community defaults hidden at app start and appears only after backend status reports `community_runtime_config.enabled = true`.
 - UI: `app/app/src/main/java/com/example/chatbar/ui/community/CommunityScreen.kt`.
 - State/import/upload logic: `ui/community/CommunityViewModel.kt`.
 - Network/auth/storage service: `domain/community/CommunityService.kt`.

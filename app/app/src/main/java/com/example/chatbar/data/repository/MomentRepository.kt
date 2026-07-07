@@ -58,6 +58,13 @@ class MomentRepository(private val storage: JsonFileStorage) {
         updatePost(post.copy(userLiked = !post.userLiked))
     }
 
+    suspend fun deletePost(postId: String): MomentPost? {
+        val post = getPost(postId) ?: return null
+        storage.deleteEntity<MomentPost>(POST_TYPE, postId)
+        refreshPosts()
+        return post
+    }
+
     suspend fun deleteForCharacter(cardId: String): List<MomentPost> {
         val posts = getPostsForCard(cardId)
         storage.deleteWhere(POST_TYPE, MomentPost.serializer()) { it.characterCardId == cardId }

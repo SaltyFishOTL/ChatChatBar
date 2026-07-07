@@ -110,7 +110,7 @@ class MomentPromptTemplateTest {
     }
 
     @Test
-    fun momentJudgeUserPrompt_usesMemoryAndPreviousMomentWithoutChatMessages() {
+    fun momentJudgeUserPrompt_usesMemoryPreviousMomentAndLatestMessageOnly() {
         val session = ChatSession(
             id = "session",
             characterCardId = "card",
@@ -129,15 +129,26 @@ class MomentPromptTemplateTest {
             scheduledAt = 1L,
             generatedAt = 1L
         )
+        val latestMessage = ChatMessage(
+            id = "message-2",
+            sessionId = "session",
+            role = MessageRole.USER,
+            content = "最新消息：我已经到后台门口了，外面还有记者。",
+            createdAt = 2L,
+            updatedAt = 2L
+        )
 
         val prompt = PromptTemplates.momentJudgeUserPrompt(
             session = session,
-            latestPost = previous
+            latestPost = previous,
+            latestMessage = latestMessage
         )
 
         assertTrue(prompt.contains("长期记忆：用户和角色刚刚约定不公开关系。"))
         assertTrue(prompt.contains("林澄: 今天风很大。"))
         assertTrue(prompt.contains("图片设计：后台走廊里的随手拍。"))
+        assertTrue(prompt.contains("最新一条消息"))
+        assertTrue(prompt.contains("用户:\n最新消息：我已经到后台门口了，外面还有记者。"))
         assertFalse(prompt.contains("角色卡"))
         assertFalse(prompt.contains("会话"))
         assertFalse(prompt.contains("角色列表"))

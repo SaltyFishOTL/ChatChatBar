@@ -13,13 +13,9 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.ScrollState
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.awaitEachGesture
-import androidx.compose.foundation.gestures.awaitFirstDown
-import androidx.compose.foundation.gestures.awaitTouchSlopOrCancellation
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -69,7 +65,6 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -929,21 +924,6 @@ private fun DocumentRow(document: DocumentInfo, onEdit: () -> Unit, onDelete: ()
     }
 }
 
-private fun ScrollState.isNearBottom(thresholdPx: Int): Boolean =
-    maxValue - value <= thresholdPx
-
-private fun Modifier.pauseStreamingAutoScrollOnUserDrag(enabled: Boolean, onUserDrag: () -> Unit): Modifier =
-    if (!enabled) {
-        this
-    } else {
-        pointerInput(enabled) {
-            awaitEachGesture {
-                val down = awaitFirstDown(requireUnconsumed = false)
-                awaitTouchSlopOrCancellation(down.id) { _, _ -> onUserDrag() }
-            }
-        }
-    }
-
 @Composable
 private fun CharacterAutoFillDialog(
     state: CharacterAutoFillUiState,
@@ -968,8 +948,6 @@ private fun CharacterAutoFillDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
-    val autoScrollBottomThresholdPx = with(LocalDensity.current) { 48.dp.roundToPx() }
-    var followStreamingOutput by remember { mutableStateOf(true) }
     val busy = state.isGenerating || state.coverImage.isGenerating
     fun clearSourceImage() {
         onDeleteImage(sourceImagePath)
@@ -982,21 +960,6 @@ private fun CharacterAutoFillDialog(
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
-        }
-    }
-    LaunchedEffect(state.isGenerating) {
-        if (state.isGenerating) {
-            followStreamingOutput = true
-        }
-    }
-    LaunchedEffect(bodyScroll.value, bodyScroll.maxValue, state.isGenerating) {
-        if (!state.isGenerating || bodyScroll.isNearBottom(autoScrollBottomThresholdPx)) {
-            followStreamingOutput = true
-        }
-    }
-    LaunchedEffect(state.streamingText, state.visibleOutputs, state.progressLines.size) {
-        if (followStreamingOutput && state.isGenerating && (state.streamingText.isNotBlank() || state.visibleOutputs.isNotEmpty() || state.progressLines.isNotEmpty())) {
-            bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
     CbDialog(
@@ -1041,7 +1004,6 @@ private fun CharacterAutoFillDialog(
             Modifier
                 .fillMaxWidth()
                 .heightIn(max = 620.dp)
-                .pauseStreamingAutoScrollOnUserDrag(state.isGenerating) { followStreamingOutput = false }
                 .verticalScroll(bodyScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {
@@ -1168,27 +1130,10 @@ private fun CharacterRewriteDialog(
     }
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
-    val autoScrollBottomThresholdPx = with(LocalDensity.current) { 48.dp.roundToPx() }
-    var followStreamingOutput by remember { mutableStateOf(true) }
     val busy = state.isGenerating || state.coverImage.isGenerating
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
-        }
-    }
-    LaunchedEffect(state.isGenerating) {
-        if (state.isGenerating) {
-            followStreamingOutput = true
-        }
-    }
-    LaunchedEffect(bodyScroll.value, bodyScroll.maxValue, state.isGenerating) {
-        if (!state.isGenerating || bodyScroll.isNearBottom(autoScrollBottomThresholdPx)) {
-            followStreamingOutput = true
-        }
-    }
-    LaunchedEffect(state.streamingText, state.visibleOutputs, state.progressLines.size) {
-        if (followStreamingOutput && state.isGenerating && (state.streamingText.isNotBlank() || state.visibleOutputs.isNotEmpty() || state.progressLines.isNotEmpty())) {
-            bodyScroll.animateScrollTo(bodyScroll.maxValue)
         }
     }
     CbDialog(
@@ -1218,7 +1163,6 @@ private fun CharacterRewriteDialog(
             Modifier
                 .fillMaxWidth()
                 .heightIn(max = 620.dp)
-                .pauseStreamingAutoScrollOnUserDrag(state.isGenerating) { followStreamingOutput = false }
                 .verticalScroll(bodyScroll),
             verticalArrangement = Arrangement.spacedBy(12.dp)
         ) {

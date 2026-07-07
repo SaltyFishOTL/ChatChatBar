@@ -2,6 +2,8 @@ package com.example.chatbar.ui.moments
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +29,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -71,7 +74,11 @@ fun MomentsScreen(
                     contentPadding = PaddingValues(bottom = bottomInset + 88.dp)
                 ) {
                     items(posts, key = { it.id }) { post ->
-                        MomentPostRow(post = post, onToggleLike = { viewModel.toggleLike(post.id) })
+                        MomentPostRow(
+                            post = post,
+                            onToggleLike = { viewModel.toggleLike(post.id) },
+                            onDelete = { viewModel.deletePost(post.id) }
+                        )
                         CbDivider(color = Color(0xFFE9E9E9))
                     }
                 }
@@ -80,10 +87,12 @@ fun MomentsScreen(
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MomentPostRow(
     post: MomentPost,
-    onToggleLike: () -> Unit
+    onToggleLike: () -> Unit,
+    onDelete: () -> Unit
 ) {
     val textColor = Color(0xFF111111)
     val muted = Color(0xFF757575)
@@ -143,6 +152,8 @@ private fun MomentPostRow(
                     }
                 }
                 Spacer(Modifier.weight(1f))
+                MomentDeleteButton(onDelete)
+                Spacer(Modifier.width(2.dp))
                 CbIconButton(
                     imageVector = AppIcons.Heart,
                     contentDescription = if (post.userLiked) "取消点赞" else "点赞",
@@ -158,6 +169,30 @@ private fun MomentPostRow(
                 )
             }
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MomentDeleteButton(onDelete: () -> Unit) {
+    val muted = Color(0xFF757575)
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .combinedClickable(
+                role = Role.Button,
+                onClick = {},
+                onLongClick = onDelete
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        CbIcon(
+            imageVector = AppIcons.Delete,
+            contentDescription = "长按删除",
+            modifier = Modifier.size(15.dp),
+            tint = muted.copy(alpha = 0.42f)
+        )
     }
 }
 

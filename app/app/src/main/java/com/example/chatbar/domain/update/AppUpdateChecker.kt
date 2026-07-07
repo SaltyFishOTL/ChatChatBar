@@ -10,6 +10,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -18,7 +19,15 @@ data class AppUpdateInfo(
     val currentVersion: String,
     val latestVersion: String,
     val releaseUrl: String,
-    val releaseName: String
+    val releaseName: String,
+    val releaseNotes: List<AppReleaseNote> = emptyList()
+)
+
+data class AppReleaseNote(
+    val version: String,
+    val name: String,
+    val body: String,
+    val releaseUrl: String
 )
 
 class AppUpdateChecker(
@@ -37,14 +46,18 @@ class AppUpdateChecker(
     }
 
     suspend fun checkLatestRelease(): AppUpdateInfo? = withContext(Dispatchers.IO) {
-        val webAttempt = runCatching { fetchLatestReleaseFromWebRedirect() }
-        val release = webAttempt.getOrNull()
-            ?: run {
-                val apiAttempt = runCatching { fetchLatestReleaseFromApi() }
-                apiAttempt.getOrNull()
+        val releasesAttempt = runCatching { fetchReleasesFromApi() }
+        val releases = releasesAttempt.getOrNull().orEmpty().filterStable()
+        val release = if (releases.isNotEmpty()) {
+            releases.first()
+        } else {
+            val apiAttempt = runCatching { fetchLatestReleaseFromApi() }
+            apiAttempt.getOrNull() ?: run {
+                val webAttempt = runCatching { fetchLatestReleaseFromWebRedirect() }
+                webAttempt.getOrNull()
                     ?: handleLookupFailures(webAttempt.exceptionOrNull(), apiAttempt.exceptionOrNull())
-            }
-            ?: return@withContext null
+            } ?: return@withContext null
+        }
 
         if (release.draft || release.prerelease) return@withContext null
 
@@ -56,7 +69,12 @@ class AppUpdateChecker(
                 currentVersion = currentVersion,
                 latestVersion = latestVersion,
                 releaseUrl = release.htmlUrl.ifBlank { releasesUrl(owner, repo) },
-                releaseName = release.name.ifBlank { latestVersion }
+                releaseName = release.name.ifBlank { latestVersion },
+                releaseNotes = releaseNotesBetween(
+                    releases = releases.ifEmpty { listOf(release) },
+                    currentVersion = currentVersion,
+                    latestVersion = latestVersion
+                )
             )
         } else {
             null
@@ -107,8 +125,33 @@ class AppUpdateChecker(
         }
     }
 
+    private fun fetchReleasesFromApi(): List<GitHubRelease> {
+        val request = Request.Builder()
+            .url(apiReleasesUrl())
+            .header("Accept", "application/vnd.github+json")
+            .header("X-GitHub-Api-Version", "2022-11-28")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", userAgent())
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (response.code == 404) return emptyList()
+            if (!response.isSuccessful) {
+                throw httpException("GitHub Releases API", response.code)
+            }
+
+            return json.decodeFromString(ListSerializer(GitHubRelease.serializer()), body)
+        }
+    }
+
     private fun apiLatestReleaseUrl(): String {
         return "https://api.github.com/repos/$owner/$repo/releases/latest"
+    }
+
+    private fun apiReleasesUrl(): String {
+        return "https://api.github.com/repos/$owner/$repo/releases?per_page=100"
     }
 
     private fun webLatestReleaseUrl(): String {
@@ -149,15 +192,44 @@ class AppUpdateChecker(
 class AppUpdateCheckException(message: String, cause: Throwable? = null) : Exception(message, cause)
 
 @Serializable
-private data class GitHubRelease(
+internal data class GitHubRelease(
     @SerialName("tag_name")
     val tagName: String = "",
     @SerialName("html_url")
     val htmlUrl: String = "",
     val name: String = "",
+    val body: String = "",
     val draft: Boolean = false,
     val prerelease: Boolean = false
 )
+
+private fun List<GitHubRelease>.filterStable(): List<GitHubRelease> =
+    filter { !it.draft && !it.prerelease && it.versionName().isNotBlank() }
+
+private fun GitHubRelease.versionName(): String =
+    tagName.ifBlank { name }.trim()
+
+internal fun releaseNotesBetween(
+    releases: List<GitHubRelease>,
+    currentVersion: String,
+    latestVersion: String
+): List<AppReleaseNote> =
+    releases
+        .filterStable()
+        .filter { release ->
+            val version = release.versionName()
+            compareReleaseVersions(version, currentVersion) > 0 &&
+                compareReleaseVersions(latestVersion, version) >= 0
+        }
+        .map { release ->
+            val version = release.versionName()
+            AppReleaseNote(
+                version = version,
+                name = release.name.ifBlank { version },
+                body = release.body.trim(),
+                releaseUrl = release.htmlUrl
+            )
+        }
 
 internal fun isReleaseVersionNewer(latestVersion: String, currentVersion: String): Boolean {
     return compareReleaseVersions(latestVersion, currentVersion) > 0

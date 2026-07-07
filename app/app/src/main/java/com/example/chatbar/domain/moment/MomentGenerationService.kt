@@ -76,7 +76,7 @@ class MomentGenerationService(
             .takeLast(3)
         if (contextMessages.isEmpty()) return MomentGenerationResult.Skipped("没有可用于朋友圈生成的交流内容")
 
-        val decision = judgeMoment(session, latestPost, model)
+        val decision = judgeMoment(session, latestPost, contextMessages.lastOrNull(), model)
         if (!decision.shouldPost) {
             return MomentGenerationResult.Skipped(decision.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
@@ -125,7 +125,7 @@ class MomentGenerationService(
                 .takeLast(3)
             require(contextMessages.isNotEmpty()) { "没有可用于朋友圈生成的交流内容" }
 
-            val decision = judgeMomentDebug(session, latestPost, model, exchanges)
+            val decision = judgeMomentDebug(session, latestPost, contextMessages.lastOrNull(), model, exchanges)
             if (!decision.shouldPost) {
                 exchanges += MomentDebugExchange(
                     title = "调试判定处理",
@@ -201,10 +201,11 @@ class MomentGenerationService(
     private suspend fun judgeMoment(
         session: ChatSession,
         latestPost: MomentPost?,
+        latestMessage: ChatMessage?,
         model: ModelConfig
     ): MomentPostDecision {
         val systemPrompt = PromptTemplates.momentJudgeSystemPrompt()
-        val userPrompt = PromptTemplates.momentJudgeUserPrompt(session, latestPost)
+        val userPrompt = PromptTemplates.momentJudgeUserPrompt(session, latestPost, latestMessage)
         val raw = chatService.completeText(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
@@ -219,11 +220,12 @@ class MomentGenerationService(
     private suspend fun judgeMomentDebug(
         session: ChatSession,
         latestPost: MomentPost?,
+        latestMessage: ChatMessage?,
         model: ModelConfig,
         exchanges: MutableList<MomentDebugExchange>
     ): MomentPostDecision {
         val systemPrompt = PromptTemplates.momentJudgeSystemPrompt()
-        val userPrompt = PromptTemplates.momentJudgeUserPrompt(session, latestPost)
+        val userPrompt = PromptTemplates.momentJudgeUserPrompt(session, latestPost, latestMessage)
         val raw = chatService.completeText(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),

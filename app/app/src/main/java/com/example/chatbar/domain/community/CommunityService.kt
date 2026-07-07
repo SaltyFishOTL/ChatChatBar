@@ -60,7 +60,7 @@ class CommunityService(
     private val redirectUri = BuildConfig.SUPABASE_REDIRECT_URI.trim()
     private val prefs = app.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
     private val _session = MutableStateFlow(loadSession())
-    private val _enabled = MutableStateFlow(baseUrl.isNotBlank() && anonKey.isNotBlank())
+    private val _enabled = MutableStateFlow(false)
 
     val configured: Boolean = baseUrl.isNotBlank() && anonKey.isNotBlank()
     val enabled: StateFlow<Boolean> = _enabled.asStateFlow()

@@ -51,7 +51,7 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 fun BottomNavBar(
     currentRoute: NavKey,
     onNavigate: (NavKey) -> Unit,
-    communityEnabled: Boolean = true,
+    communityEnabled: Boolean = false,
     momentsEnabled: Boolean = false,
     chatHasUnread: Boolean = false,
     momentsHasUnread: Boolean = false,
