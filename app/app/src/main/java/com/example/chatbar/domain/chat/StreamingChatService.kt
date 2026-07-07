@@ -38,6 +38,11 @@ import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
 
+private const val PARAM_ENABLE_THINKING = "enable_thinking"
+private const val PARAM_THINKING_BUDGET = "thinking_budget"
+private const val PARAM_MAX_THINKING_TOKENS = "max_thinking_tokens"
+private const val PARAM_REASONING_EFFORT = "reasoning_effort"
+
 // ========================= 数据模型 =========================
 
 /**
@@ -128,6 +133,7 @@ class StreamingChatService {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private const val CONNECT_TIMEOUT = 30L
         private const val READ_TIMEOUT = 120L // SSE 需要较长读取超时
+        private const val IMAGE_DESCRIPTION_OUTPUT_TOKENS = 500
     }
 
     private val json = Json {
@@ -382,9 +388,9 @@ class StreamingChatService {
 
         val requestBody = buildRequestBody(
             messages = messages,
-            modelConfig = modelConfig,
+            modelConfig = modelConfig.forImageDescriptionRequest(),
             stream = false,
-            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS
+            maxTokens = IMAGE_DESCRIPTION_OUTPUT_TOKENS
         )
 
         val request = Request.Builder()
@@ -432,8 +438,8 @@ class StreamingChatService {
                     imageBase64 = imageBase64
                 )
             ),
-            modelConfig = modelConfig,
-            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS,
+            modelConfig = modelConfig.forImageDescriptionRequest(),
+            maxTokens = IMAGE_DESCRIPTION_OUTPUT_TOKENS,
             onDelta = onDelta
         )
         return compactImageDescription(raw)
@@ -734,4 +740,20 @@ class StreamingChatService {
 
         throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
     }
+}
+
+internal fun ModelConfig.forImageDescriptionRequest(): ModelConfig {
+    val nextParams = customParams.toMutableMap().apply {
+        if (containsKey(PARAM_ENABLE_THINKING)) {
+            put(PARAM_ENABLE_THINKING, ParamValue.BooleanValue(false))
+        }
+        remove(PARAM_THINKING_BUDGET)
+        remove(PARAM_MAX_THINKING_TOKENS)
+        remove(PARAM_REASONING_EFFORT)
+    }
+    return copy(
+        customParams = nextParams,
+        enableThinking = enableThinking?.let { false },
+        reasoningEffort = null
+    )
 }
