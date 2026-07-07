@@ -336,6 +336,17 @@ fun CharacterEditScreen(
                     onClear = { viewModel.chatBackground = null }
                 )
             }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("启用朋友圈", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "默认关闭；开启后全局朋友圈会为此角色预排动态。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(viewModel.momentsEnabled, { viewModel.momentsEnabled = it })
+            }
             CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。", onFullscreenEdit = {
                 fullscreenField = "基本设定" to viewModel.basicSetting; fullscreenOnChange = { viewModel.basicSetting = it }
             }) {

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar NovelAI Prompt"
+  short_description: "维护 ChatBar 的 NovelAI 提示词规则"
+  default_prompt: "Use $chatbar-novelai-prompt to update ChatBar NovelAI prompt flow."

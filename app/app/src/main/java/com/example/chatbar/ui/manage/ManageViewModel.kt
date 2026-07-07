@@ -1,5 +1,6 @@
 package com.example.chatbar.ui.manage
 
+import android.content.Context
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
@@ -19,6 +20,10 @@ import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
+import com.example.chatbar.domain.moment.MomentAlarmScheduler
+import com.example.chatbar.domain.moment.MomentBackgroundReliability
+import com.example.chatbar.domain.moment.MomentDebugGenerationResult
+import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
@@ -49,6 +54,16 @@ private data class ExportedModelTemplate(
     val maxOutputTokens: Int? = null
 )
 
+private val characterImportProbeJson = Json {
+    ignoreUnknownKeys = true
+    isLenient = true
+}
+
+data class MomentDebugUiState(
+    val isRunning: Boolean = false,
+    val result: MomentDebugGenerationResult? = null
+)
+
 /**
  * 管理界面 ViewModel - 提供角色、格式卡、模型及系统参数的管理功能
  */
@@ -59,6 +74,9 @@ class ManageViewModel : ViewModel() {
     private val worldBookRepository = ChatBarApp.instance.worldBookRepository
     private val modelRepository = ChatBarApp.instance.modelRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
+    private val chatRepository = ChatBarApp.instance.chatRepository
+    private val momentRepository = ChatBarApp.instance.momentRepository
+    private val momentGenerationService = ChatBarApp.instance.momentGenerationService
     private val characterTransfers = ChatBarApp.instance.characterCardTransferService
     private val formatTransfers = ChatBarApp.instance.formatCardTransferService
     private val worldBookTransfers = ChatBarApp.instance.worldBookTransferService
@@ -109,6 +127,11 @@ class ManageViewModel : ViewModel() {
     val communityCharacterUpdates: StateFlow<Map<String, CommunityItem>> = _communityCharacterUpdates
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
 
+    private val _momentsReliability = MutableStateFlow(MomentReliabilityState())
+    val momentsReliability: StateFlow<MomentReliabilityState> = _momentsReliability
+    private val _momentDebug = MutableStateFlow(MomentDebugUiState())
+    val momentDebug: StateFlow<MomentDebugUiState> = _momentDebug
+
     val appSettings: StateFlow<AppSettings> = settingsRepository.appSettings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppSettings())
 
@@ -142,6 +165,7 @@ class ManageViewModel : ViewModel() {
             _modelPresets.value = presetModelCatalog.entries()
             refreshEffectiveModels()
             refreshCommunityCharacterUpdates()
+            refreshMomentsReliability()
         }
     }
 
@@ -215,7 +239,7 @@ class ManageViewModel : ViewModel() {
 
         if (rawJson != null) {
             runCatching {
-                val doc = Json { ignoreUnknownKeys = true; isLenient = true }.parseToJsonElement(rawJson).jsonObject
+                val doc = characterImportProbeJson.parseToJsonElement(rawJson).jsonObject
                 if (doc.containsKey("schemaVersion") && doc.containsKey("card")) {
                     return decodeCharacterImport(rawJson)
                 }
@@ -579,7 +603,85 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             settingsRepository.saveAppSettings(settings)
             refreshEffectiveModels()
+            refreshMomentsReliability()
+            if (settings.momentsEnabled) {
+                ChatBarApp.instance.momentScheduler.kick("settings")
+            } else {
+                MomentAlarmScheduler.cancel(ChatBarApp.instance)
+            }
         }
+    }
+
+    fun refreshMomentsReliability() {
+        viewModelScope.launch {
+            val settings = settingsRepository.getAppSettings()
+            _momentsReliability.value = MomentBackgroundReliability.check(
+                context = ChatBarApp.instance,
+                autoStartConfirmed = settings.momentsAutoStartConfirmed
+            )
+        }
+    }
+
+    fun openMomentsAutoStartSettings(context: Context) {
+        MomentBackgroundReliability.openAutoStartSettings(context)
+    }
+
+    fun openMomentsBatterySettings(context: Context) {
+        MomentBackgroundReliability.openBatterySettings(context)
+    }
+
+    fun openMomentsNotificationSettings(context: Context) {
+        MomentBackgroundReliability.openNotificationSettings(context)
+    }
+
+    fun confirmMomentsAutoStart() {
+        viewModelScope.launch {
+            val current = settingsRepository.getAppSettings()
+            settingsRepository.saveAppSettings(current.copy(momentsAutoStartConfirmed = true))
+            refreshMomentsReliability()
+        }
+    }
+
+    fun generateDebugMoment(cardId: String) {
+        viewModelScope.launch {
+            _momentDebug.value = MomentDebugUiState(isRunning = true)
+            val result = runCatching {
+                characterRepository.initialize()
+                chatRepository.initialize()
+                momentRepository.initialize()
+                settingsRepository.initialize()
+                val card = characterRepository.getById(cardId) ?: error("角色卡不存在")
+                val session = chatRepository.getAllSessions()
+                    .filter { it.characterCardId == cardId }
+                    .maxByOrNull { it.lastMessageTime ?: it.updatedAt }
+                    ?: error("该角色卡还没有会话")
+                val messages = chatRepository.getMessages(session.id)
+                val settings = settingsRepository.getAppSettings()
+                val model = modelResolver.defaultChatModel(settings)
+                    ?: error("未配置可用默认对话模型")
+                require(model.apiKey.isNotBlank()) { "默认对话模型/API Key 未配置" }
+                val latestPost = momentRepository.latestPostForCard(cardId)
+                AiBackgroundWorkManager.run("moments_debug_$cardId") {
+                    momentGenerationService.debugGenerateNow(
+                        card = card,
+                        session = session,
+                        messages = messages,
+                        latestPost = latestPost,
+                        model = model,
+                        scheduledAt = System.currentTimeMillis()
+                    )
+                }.also { debugResult ->
+                    debugResult.post?.let { momentRepository.savePost(it) }
+                }
+            }.getOrElse { error ->
+                MomentDebugGenerationResult(errorMessage = error.message ?: error.javaClass.simpleName)
+            }
+            _momentDebug.value = MomentDebugUiState(result = result)
+        }
+    }
+
+    fun clearMomentDebug() {
+        _momentDebug.value = MomentDebugUiState()
     }
 
     fun updateModelConfigurationMode(mode: ModelConfigurationMode) {

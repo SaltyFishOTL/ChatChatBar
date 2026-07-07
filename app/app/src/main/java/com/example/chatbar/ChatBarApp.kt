@@ -12,6 +12,7 @@ import com.example.chatbar.domain.community.CommunityService
 import com.example.chatbar.domain.deletion.DeletionCoordinator
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
+import com.example.chatbar.domain.moment.*
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
@@ -49,6 +50,8 @@ class ChatBarApp : Application() {
     lateinit var ragRepository: RagRepository
         private set
     lateinit var worldBookRepository: WorldBookRepository
+        private set
+    lateinit var momentRepository: MomentRepository
         private set
 
     // 领域层服务
@@ -112,6 +115,10 @@ class ChatBarApp : Application() {
         private set
     lateinit var communityService: CommunityService
         private set
+    lateinit var momentGenerationService: MomentGenerationService
+        private set
+    lateinit var momentScheduler: MomentScheduler
+        private set
 
     override fun onCreate() {
         super.onCreate()
@@ -127,6 +134,7 @@ class ChatBarApp : Application() {
         formatCardRepository = FormatCardRepository(jsonFileStorage)
         saveSlotRepository = SaveSlotRepository(jsonFileStorage)
         settingsRepository = SettingsRepository(jsonFileStorage)
+        momentRepository = MomentRepository(jsonFileStorage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
@@ -140,6 +148,13 @@ class ChatBarApp : Application() {
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
+        momentGenerationService = MomentGenerationService(
+            chatService = streamingChatService,
+            promptDesigner = novelAiPromptDesigner,
+            imageService = novelAiImageService,
+            imageStorage = novelAiImageStorage,
+            novelAiCredentials = novelAiCredentialStore
+        )
         searchBackend = MediaWikiSearchBackend()
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
@@ -160,6 +175,16 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        momentScheduler = MomentScheduler(
+            context = this,
+            scope = applicationScope,
+            settingsRepository = settingsRepository,
+            characterRepository = characterRepository,
+            chatRepository = chatRepository,
+            momentRepository = momentRepository,
+            modelResolver = effectiveModelResolver,
+            generationService = momentGenerationService
+        )
         imageUnderstandingService = ImageUnderstandingService(effectiveModelResolver, streamingChatService)
         characterResearchService = CharacterResearchService(
             settingsProvider = { settingsRepository.getAppSettings() },
@@ -222,6 +247,7 @@ class ChatBarApp : Application() {
             chatRepository,
             saveSlotRepository,
             ragRepository,
+            momentRepository,
             novelAiImageStorage
         )
         StreamingNotificationManager.init(this)
@@ -239,6 +265,9 @@ class ChatBarApp : Application() {
                 settingsRepository,
                 presetModelCatalogService
             ).run()
+            settingsRepository.initialize()
+            momentRepository.initialize()
+            momentScheduler.kick("startup")
         }
     }
     

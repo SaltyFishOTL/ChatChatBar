@@ -43,6 +43,7 @@ data class CharacterCard(
     val communityItemUpdatedAt: String? = null,
     val communityItemSha256: String? = null,
     val communityItemTitle: String? = null,
+    val momentsEnabled: Boolean = false,
     val createdAt: Long,
     val updatedAt: Long
 ) {

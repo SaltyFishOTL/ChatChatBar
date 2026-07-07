@@ -199,7 +199,7 @@ object SillyTavernCardMapper {
         val element = doc[key] ?: return emptyList()
         return try {
             when (element) {
-                is JsonArray -> element.mapNotNull { it.jsonPrimitive?.content }
+                is JsonArray -> element.map { it.jsonPrimitive.content }
                 else -> {
                     val raw = element.toString().trim()
                     if (raw.startsWith("[") && raw.endsWith("]")) {

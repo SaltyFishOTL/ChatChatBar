@@ -25,7 +25,12 @@ data class AppSettings(
     val webSearchSettingsVersion: Int = 0,
     val webSearchEnabled: Boolean = true,
     val webSearchMaxResultsPerQuery: Int = 1,
-    val novelAiImageAspectRatio: String = ""
+    val novelAiImageAspectRatio: String = "",
+    val momentsEnabled: Boolean = false,
+    val momentsBackgroundGuideDismissed: Boolean = false,
+    val momentsAutoStartConfirmed: Boolean = false,
+    val lastSeenMomentsAt: Long = 0L,
+    val lastSeenChatAt: Long = 0L
 )
 
 @Serializable

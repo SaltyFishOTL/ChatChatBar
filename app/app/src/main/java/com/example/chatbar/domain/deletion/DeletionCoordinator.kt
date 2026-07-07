@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.repository.CharacterRepository
 import com.example.chatbar.data.repository.ChatRepository
+import com.example.chatbar.data.repository.MomentRepository
 import com.example.chatbar.data.repository.SaveSlotRepository
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.image.NovelAiImageStorage
@@ -21,6 +22,7 @@ class DeletionCoordinator(
     private val chatRepository: ChatRepository,
     private val saveSlotRepository: SaveSlotRepository,
     private val ragRepository: RagRepository,
+    private val momentRepository: MomentRepository,
     private val imageStorage: NovelAiImageStorage
 ) {
     private val cleanupMutex = Mutex()
@@ -67,6 +69,9 @@ class DeletionCoordinator(
                 characterRepository.delete(task.ownerId)
                 task.filePaths.forEach(::deleteOwnedFile)
                 ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, task.ownerId)
+                momentRepository.deleteForCharacter(task.ownerId).mapNotNull { it.imagePath }.forEach { path ->
+                    check(imageStorage.deleteIfOwned(path)) { "无法清理朋友圈图片: $path" }
+                }
             }
 
             PendingDeletionType.SESSION -> {

@@ -158,6 +158,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var postHistoryInstructions by mutableStateOf("")
     var mesExample by mutableStateOf("")
     var creatorNotes by mutableStateOf("")
+    var momentsEnabled by mutableStateOf(false)
     val charactersList = mutableStateListOf<CharacterInfo>()
     val documentsList = mutableStateListOf<DocumentInfo>()
     val selectedWorldBookIds = mutableStateListOf<String>()
@@ -200,6 +201,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     postHistoryInstructions = card.postHistoryInstructions
                     mesExample = card.mesExample
                     creatorNotes = card.creatorNotes
+                    momentsEnabled = card.momentsEnabled
                     charactersList.clear()
                     charactersList.addAll(card.characters)
                     documentsList.clear()
@@ -242,6 +244,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             _characterCard.value = card
             _isSaving.value = false
             startBackgroundIndex(card)
+            if (card.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
             onSuccess()
         }
     }
@@ -1174,6 +1177,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            momentsEnabled = momentsEnabled,
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,
@@ -1200,6 +1204,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
             creatorNotes = creatorNotes,
+            momentsEnabled = momentsEnabled,
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,

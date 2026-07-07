@@ -19,6 +19,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -36,6 +37,7 @@ import androidx.compose.ui.unit.dp
 import androidx.navigation3.runtime.NavKey
 import com.example.chatbar.CommunityRoute
 import com.example.chatbar.HomeRoute
+import com.example.chatbar.MomentsRoute
 import com.example.chatbar.ManageRoute
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbText
@@ -50,6 +52,9 @@ fun BottomNavBar(
     currentRoute: NavKey,
     onNavigate: (NavKey) -> Unit,
     communityEnabled: Boolean = true,
+    momentsEnabled: Boolean = false,
+    chatHasUnread: Boolean = false,
+    momentsHasUnread: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val colors = ChatBarTheme.colors
@@ -69,7 +74,10 @@ fun BottomNavBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             val navItems = buildList {
-                add(NavItem("聊天", AppIcons.Chat, HomeRoute))
+                add(NavItem("聊天", AppIcons.Chat, HomeRoute, chatHasUnread))
+                if (momentsEnabled) {
+                    add(NavItem("朋友圈", AppIcons.Heart, MomentsRoute, momentsHasUnread))
+                }
                 if (communityEnabled) {
                     add(NavItem("社区", AppIcons.Star, CommunityRoute))
                 }
@@ -107,12 +115,24 @@ fun BottomNavBar(
                     contentAlignment = Alignment.Center
                 ) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                        CbIcon(
-                            imageVector = item.icon,
-                            contentDescription = item.label,
-                            modifier = Modifier.size(22.dp),
-                            tint = tint
-                        )
+                        Box(Modifier.size(26.dp), contentAlignment = Alignment.Center) {
+                            CbIcon(
+                                imageVector = item.icon,
+                                contentDescription = if (item.showBadge) "${item.label}，有新内容" else item.label,
+                                modifier = Modifier.size(22.dp),
+                                tint = tint
+                            )
+                            if (item.showBadge) {
+                                Box(
+                                    Modifier
+                                        .align(Alignment.TopEnd)
+                                        .size(8.dp)
+                                        .clip(CircleShape)
+                                        .background(colors.destructive)
+                                        .border(1.dp, colors.surfaceElevated, CircleShape)
+                                )
+                            }
+                        }
                         CbText(
                             item.label,
                             color = tint,
@@ -126,4 +146,9 @@ fun BottomNavBar(
     }
 }
 
-private data class NavItem(val label: String, val icon: ImageVector, val route: NavKey)
+private data class NavItem(
+    val label: String,
+    val icon: ImageVector,
+    val route: NavKey,
+    val showBadge: Boolean = false
+)

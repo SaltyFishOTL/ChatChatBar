@@ -142,7 +142,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 updateSession(
                     session.copy(
                         lastMessagePreview = message.previewText(),
-                        lastMessageTime = message.createdAt
+                        lastMessageTime = message.createdAt,
+                        lastMessageRole = message.role
                     )
                 )
             }
@@ -165,7 +166,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
             updateSession(
                 session.copy(
                     lastMessagePreview = latest?.previewText(),
-                    lastMessageTime = latest?.createdAt
+                    lastMessageTime = latest?.createdAt,
+                    lastMessageRole = latest?.role
                 )
             )
         }
@@ -197,7 +199,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 updateSession(
                     session.copy(
                         lastMessagePreview = updated.previewText(),
-                        lastMessageTime = updated.createdAt
+                        lastMessageTime = updated.createdAt,
+                        lastMessageRole = updated.role
                     )
                 )
             }
@@ -211,7 +214,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
             updateSession(
                 session.copy(
                     lastMessagePreview = latest?.previewText(),
-                    lastMessageTime = latest?.createdAt
+                    lastMessageTime = latest?.createdAt,
+                    lastMessageRole = latest?.role
                 )
             )
         }

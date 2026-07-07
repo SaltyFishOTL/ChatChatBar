@@ -1186,6 +1186,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 session = currentSession,
                                 modelConfig = modelConfig
                             )
+                            ChatBarApp.instance.momentScheduler.kick("chat-reply")
                             
                             try {
                                 _messages.value = chatRepository.getMessages(sessionId)

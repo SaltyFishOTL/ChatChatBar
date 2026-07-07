@@ -34,7 +34,9 @@ import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
 import com.example.chatbar.ui.chat.ChatScreen
 import com.example.chatbar.ui.manage.ManageScreen
+import com.example.chatbar.ui.moments.MomentsScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
+import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.worldbook.WorldBookEditScreen
@@ -48,6 +50,21 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     val backStack = rememberNavBackStack(initialRoute)
     val currentRoute = backStack.lastOrNull() ?: HomeRoute
     val communityEnabled by ChatBarApp.instance.communityService.enabled.collectAsState()
+    val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = com.example.chatbar.data.local.entity.AppSettings())
+    val momentsEnabled = appSettings.momentsEnabled
+    val chatSessions by ChatBarApp.instance.chatRepository.sessions.collectAsState(initial = emptyList())
+    val momentPosts by ChatBarApp.instance.momentRepository.posts.collectAsState(initial = emptyList())
+    val latestAssistantMessageAt = remember(chatSessions) {
+        chatSessions.asSequence()
+            .filter { it.lastMessageRole == MessageRole.ASSISTANT }
+            .mapNotNull { it.lastMessageTime }
+            .maxOrNull() ?: 0L
+    }
+    val latestMomentAt = remember(momentPosts) {
+        momentPosts.maxOfOrNull { it.generatedAt } ?: 0L
+    }
+    val chatHasUnread = currentRoute != HomeRoute && latestAssistantMessageAt > appSettings.lastSeenChatAt
+    val momentsHasUnread = momentsEnabled && currentRoute != MomentsRoute && latestMomentAt > appSettings.lastSeenMomentsAt
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
@@ -60,7 +77,11 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     }
 
     fun showRoot(route: NavKey) {
-        val targetRoute = if (route == CommunityRoute && !communityEnabled) HomeRoute else route
+        val targetRoute = when {
+            route == CommunityRoute && !communityEnabled -> HomeRoute
+            route == MomentsRoute && !momentsEnabled -> HomeRoute
+            else -> route
+        }
         while (backStack.size > 1) {
             backStack.removeAt(backStack.lastIndex)
         }
@@ -75,20 +96,47 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         backStack.add(route)
     }
 
-    LaunchedEffect(communityEnabled, currentRoute) {
-        if (!communityEnabled && currentRoute == CommunityRoute) {
+    LaunchedEffect(communityEnabled, momentsEnabled, currentRoute) {
+        if ((!communityEnabled && currentRoute == CommunityRoute) || (!momentsEnabled && currentRoute == MomentsRoute)) {
             showRoot(HomeRoute)
+        }
+    }
+    LaunchedEffect(Unit) {
+        ChatBarApp.instance.chatRepository.initialize()
+        ChatBarApp.instance.momentRepository.initialize()
+        ChatBarApp.instance.settingsRepository.initialize()
+    }
+    LaunchedEffect(currentRoute, latestAssistantMessageAt) {
+        if (currentRoute == HomeRoute && latestAssistantMessageAt > 0L) {
+            val current = ChatBarApp.instance.settingsRepository.getAppSettings()
+            if (latestAssistantMessageAt > current.lastSeenChatAt) {
+                ChatBarApp.instance.settingsRepository.saveAppSettings(
+                    current.copy(lastSeenChatAt = latestAssistantMessageAt)
+                )
+            }
+        }
+    }
+    LaunchedEffect(currentRoute, latestMomentAt) {
+        if (currentRoute == MomentsRoute && latestMomentAt > 0L) {
+            val current = ChatBarApp.instance.settingsRepository.getAppSettings()
+            if (latestMomentAt > current.lastSeenMomentsAt) {
+                ChatBarApp.instance.settingsRepository.saveAppSettings(
+                    current.copy(lastSeenMomentsAt = latestMomentAt)
+                )
+            }
         }
     }
 
     BackHandler(
         enabled = backStack.size == 1 && (
             currentRoute == HomeRoute ||
+                (momentsEnabled && currentRoute == MomentsRoute) ||
                 (communityEnabled && currentRoute == CommunityRoute) ||
                 currentRoute == ManageRoute
             )
     ) {
         when (currentRoute) {
+            MomentsRoute,
             CommunityRoute,
             ManageRoute -> {
                 lastHomeBackPressAt = 0L
@@ -137,6 +185,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     entry<CommunityRoute> {
                         CommunityScreen()
                     }
+                    entry<MomentsRoute> {
+                        MomentsScreen()
+                    }
                     entry<ManageRoute> {
                         ManageScreen(onNavigate = { route -> pushRoute(route as NavKey) }, sharedUri = sharedUri)
                     }
@@ -172,12 +223,15 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                 }
             )
         }
-        if (currentRoute == HomeRoute || currentRoute == CommunityRoute || currentRoute == ManageRoute) {
+        if (currentRoute == HomeRoute || currentRoute == MomentsRoute || currentRoute == CommunityRoute || currentRoute == ManageRoute) {
             BottomNavBar(
                 currentRoute = currentRoute,
                 communityEnabled = communityEnabled,
+                momentsEnabled = momentsEnabled,
+                chatHasUnread = chatHasUnread,
+                momentsHasUnread = momentsHasUnread,
                 onNavigate = { route ->
-                    if (route == CommunityRoute && !communityEnabled) {
+                    if ((route == CommunityRoute && !communityEnabled) || (route == MomentsRoute && !momentsEnabled)) {
                         showRoot(HomeRoute)
                     } else if (backStack.lastOrNull() != route) {
                         showRoot(route)

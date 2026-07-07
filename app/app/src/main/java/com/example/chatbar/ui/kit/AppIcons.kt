@@ -15,11 +15,13 @@ import com.composables.icons.lucide.CircleQuestionMark
 import com.composables.icons.lucide.Copy
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.FileText
+import com.composables.icons.lucide.Heart
 import com.composables.icons.lucide.Image
 import com.composables.icons.lucide.ImagePlus
 import com.composables.icons.lucide.Import
 import com.composables.icons.lucide.LogIn
 import com.composables.icons.lucide.LogOut
+import com.composables.icons.lucide.Lock
 import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Maximize2
 import com.composables.icons.lucide.MessageCircle
@@ -60,11 +62,13 @@ object AppIcons {
     val Face: ImageVector get() = Lucide.Smile
     val Forum: ImageVector get() = Lucide.MessageCircle
     val HelpOutline: ImageVector get() = Lucide.CircleQuestionMark
+    val Heart: ImageVector get() = Lucide.Heart
     val Image: ImageVector get() = Lucide.Image
     val Import: ImageVector get() = Lucide.Import
     val KeyboardArrowDown: ImageVector get() = Lucide.ChevronDown
     val KeyboardArrowRight: ImageVector get() = Lucide.ChevronRight
     val Login: ImageVector get() = Lucide.LogIn
+    val Lock: ImageVector get() = Lucide.Lock
     val Logout: ImageVector get() = Lucide.LogOut
     val OpenInFull: ImageVector get() = Lucide.Maximize2
     val PhotoCamera: ImageVector get() = Lucide.Camera

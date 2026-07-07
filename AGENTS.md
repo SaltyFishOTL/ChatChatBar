@@ -42,6 +42,8 @@ Add JVM tests in `app/app/src/test` for domain and repository behavior. Add inst
 
 Do not change user-facing prompts, system prompts, prompt templates, or files such as `PromptTemplates.kt` without explicit user approval. If a prompt change seems necessary, first explain the exact problem, the proposed prompt diff, and the expected behavior change; wait for user confirmation before editing. After the user confirms the prompt change, implement it directly as part of the current task. Non-prompt code fixes must not opportunistically rewrite prompts. Prompt text should describe the AI's task, input, output, and quality criteria; do not include irrelevant implementation details such as backend limits, API behavior, UI plumbing, storage, or execution flow unless the user explicitly wants those exposed to the AI.
 
+All newly added hardcoded AI prompts, prompt templates, and prompt-builder text must live in `app/app/src/main/java/com/example/chatbar/domain/prompt/PromptTemplates.kt`. Feature code should call `PromptTemplates` constants/functions instead of embedding prompt text inline, so prompts remain easy for the user to review and edit in one place. New prompt text must be written in Chinese by default; use English only for required protocol tokens, JSON field names, model-facing tag formats such as NovelAI/Danbooru tags, or quoted external identifiers.
+
 ## Fallback Policy
 
 Fallback paths are failure signals, not success paths. When fallback is triggered, first investigate and fix the upstream failure reason, and make the failure visible in status/debug output. Do not optimize fallback behavior to hide broken primary functionality unless the user explicitly asks for graceful degradation.

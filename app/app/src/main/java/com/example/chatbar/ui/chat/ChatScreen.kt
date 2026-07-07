@@ -3,6 +3,7 @@ package com.example.chatbar.ui.chat
 import com.example.chatbar.ui.kit.AppIcons
 
 import android.app.Activity
+import android.media.MediaScannerConnection
 import android.net.Uri
 import android.content.ContentValues
 import android.content.Intent
@@ -734,7 +735,7 @@ private fun saveImageToGallery(context: android.content.Context, path: String) {
             dir.mkdirs()
             val target = File(dir, fileName)
             sourceFile.copyTo(target, overwrite = true)
-            context.sendBroadcast(Intent(Intent.ACTION_MEDIA_SCANNER_SCAN_FILE, Uri.fromFile(target)))
+            MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), null, null)
             Toast.makeText(context, "已保存到 Pictures/ChatBar", Toast.LENGTH_SHORT).show()
         }
     } catch (e: Exception) {

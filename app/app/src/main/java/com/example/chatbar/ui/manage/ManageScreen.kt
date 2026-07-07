@@ -29,6 +29,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -85,9 +86,13 @@ import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.moment.MomentDebugExchange
+import com.example.chatbar.domain.moment.MomentReliabilityLevel
+import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.components.AppUpdateDialog
+import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -149,6 +154,8 @@ fun ManageScreen(
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     val apiTestStatus by viewModel.apiTestStatus.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
+    val momentsReliability by viewModel.momentsReliability.collectAsState()
+    val momentDebug by viewModel.momentDebug.collectAsState()
     val importProgress by viewModel.importProgress.collectAsState()
     val communityCharacterUpdates by viewModel.communityCharacterUpdates.collectAsState()
     val context = LocalContext.current
@@ -384,7 +391,7 @@ fun ManageScreen(
                         onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
                     )
                     4 -> SettingsTab(
-                        settingsSaveRequest, settings, player, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured,
+                        settingsSaveRequest, settings, player, characters, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
                         viewModel::updateThemeMode,
@@ -392,7 +399,14 @@ fun ManageScreen(
                         { settingsDirty = it },
                         viewModel::testSiliconFlowApi,
                         viewModel::saveNovelAiToken,
-                        viewModel::clearNovelAiToken
+                        viewModel::clearNovelAiToken,
+                        viewModel::refreshMomentsReliability,
+                        viewModel::openMomentsAutoStartSettings,
+                        viewModel::openMomentsBatterySettings,
+                        viewModel::openMomentsNotificationSettings,
+                        viewModel::confirmMomentsAutoStart,
+                        viewModel::generateDebugMoment,
+                        viewModel::clearMomentDebug
                     )
                 }
             }
@@ -983,12 +997,15 @@ private fun SettingsTab(
     saveRequest: Int,
     settings: AppSettings,
     player: PlayerSetting,
+    characters: List<CharacterCard>,
     customModels: List<ModelConfig>,
     effectiveModels: List<ModelConfig>,
     formats: List<FormatCard>,
     modelErrors: List<String>,
     apiTestStatus: String?,
     novelAiConfigured: Boolean,
+    momentsReliability: MomentReliabilityState,
+    momentDebug: MomentDebugUiState,
     onSaveSettings: (AppSettings) -> Unit,
     onSavePlayer: (String, String) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
@@ -996,7 +1013,14 @@ private fun SettingsTab(
     onDirtyChange: (Boolean) -> Unit,
     onTestApiKey: (String) -> Unit,
     onSaveNovelAiToken: (String) -> Unit,
-    onClearNovelAiToken: () -> Unit
+    onClearNovelAiToken: () -> Unit,
+    onRefreshMomentsReliability: () -> Unit,
+    onOpenMomentsAutoStartSettings: (android.content.Context) -> Unit,
+    onOpenMomentsBatterySettings: (android.content.Context) -> Unit,
+    onOpenMomentsNotificationSettings: (android.content.Context) -> Unit,
+    onConfirmMomentsAutoStart: () -> Unit,
+    onGenerateDebugMoment: (String) -> Unit,
+    onClearMomentDebug: () -> Unit
 ) {
     var playerName by remember { mutableStateOf(player.playerName) }
     var persona by remember { mutableStateOf(player.globalPersona) }
@@ -1007,6 +1031,9 @@ private fun SettingsTab(
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var webSearchEnabled by remember { mutableStateOf(settings.webSearchEnabled) }
+    var momentsEnabled by remember { mutableStateOf(settings.momentsEnabled) }
+    var momentsBackgroundGuideDismissed by remember { mutableStateOf(settings.momentsBackgroundGuideDismissed) }
+    var momentsAutoStartConfirmed by remember { mutableStateOf(settings.momentsAutoStartConfirmed) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
@@ -1020,6 +1047,14 @@ private fun SettingsTab(
     val scope = rememberCoroutineScope()
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var momentDebugCardId by rememberSaveable { mutableStateOf<String?>(null) }
+    LaunchedEffect(characters) {
+        if (momentDebugCardId == null || characters.none { it.id == momentDebugCardId }) {
+            momentDebugCardId = characters.firstOrNull()?.id
+        }
+    }
+    val selectedMomentDebugCard = characters.firstOrNull { it.id == momentDebugCardId }
+        ?: characters.firstOrNull()
     LaunchedEffect(
         player.playerName,
         player.globalPersona,
@@ -1035,6 +1070,9 @@ private fun SettingsTab(
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
         settings.webSearchEnabled,
+        settings.momentsEnabled,
+        settings.momentsBackgroundGuideDismissed,
+        settings.momentsAutoStartConfirmed,
         settings.novelAiImageAspectRatio,
         settings.chatBubbleFontScale
     ) {
@@ -1044,6 +1082,9 @@ private fun SettingsTab(
         themeMode = settings.themeMode
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         webSearchEnabled = settings.webSearchEnabled
+        momentsEnabled = settings.momentsEnabled
+        momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
+        momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
@@ -1070,7 +1111,10 @@ private fun SettingsTab(
         defaultContextWindowSize = draftContextWindowSize,
         webSearchEnabled = webSearchEnabled,
         webSearchMaxResultsPerQuery = 1,
-        novelAiImageAspectRatio = novelAiImageAspectRatio.trim()
+        novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
+        momentsEnabled = momentsEnabled,
+        momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
+        momentsAutoStartConfirmed = momentsAutoStartConfirmed
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
     val settingsDirty = draftSettings != savedSettingsComparable ||
@@ -1152,6 +1196,141 @@ private fun SettingsTab(
         SettingsSection("玩家") {
             CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
+        }
+        SettingsSection("朋友圈") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("开启朋友圈功能", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "默认关闭；关闭时根 Tab 隐藏，后台不生成。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(momentsEnabled, { enabled ->
+                    momentsEnabled = enabled
+                    if (enabled) onRefreshMomentsReliability()
+                })
+            }
+            if (momentsEnabled) {
+                if (!momentsBackgroundGuideDismissed) {
+                    CbText(
+                        "建议开启自启动、通知和电池优化白名单，后台生成更稳定。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton("不再提醒", { momentsBackgroundGuideDismissed = true }, variant = ButtonVariant.Ghost)
+                }
+                momentsReliability.items.forEach { item ->
+                    val color = when (item.level) {
+                        MomentReliabilityLevel.OK -> ChatBarTheme.colors.primary
+                        MomentReliabilityLevel.WARNING -> ChatBarTheme.colors.warning
+                        MomentReliabilityLevel.BLOCKED -> ChatBarTheme.colors.destructive
+                    }
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Column(Modifier.weight(1f)) {
+                            CbText(item.title, style = ChatBarTheme.typography.label)
+                            CbText(item.detail, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                        }
+                        CbText(
+                            when (item.level) {
+                                MomentReliabilityLevel.OK -> "正常"
+                                MomentReliabilityLevel.WARNING -> "建议处理"
+                                MomentReliabilityLevel.BLOCKED -> "受限"
+                            },
+                            color = color,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton("自启动", { onOpenMomentsAutoStartSettings(context) }, variant = ButtonVariant.Outline)
+                    CbButton("电池", { onOpenMomentsBatterySettings(context) }, variant = ButtonVariant.Outline)
+                    CbButton("通知", { onOpenMomentsNotificationSettings(context) }, variant = ButtonVariant.Outline)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                    CbButton("已处理自启动", {
+                        momentsAutoStartConfirmed = true
+                        onConfirmMomentsAutoStart()
+                    }, variant = if (momentsAutoStartConfirmed) ButtonVariant.Secondary else ButtonVariant.Outline)
+                    CbButton("刷新", onRefreshMomentsReliability, variant = ButtonVariant.Ghost)
+                }
+            }
+        }
+        SettingsSection("朋友圈调试") {
+            CbText(
+                "立即为指定角色卡生成新朋友圈。调试会记录判定结果，但不受排程、限额、48 小时门槛阻断。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            CbField("角色卡") {
+                CbSelect(
+                    selectedMomentDebugCard,
+                    characters,
+                    { it.name.ifBlank { "未命名角色" } },
+                    { momentDebugCardId = it.id }
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                CbButton(
+                    text = if (momentDebug.isRunning) "生成中..." else "立即生成",
+                    onClick = {
+                        selectedMomentDebugCard?.let { onGenerateDebugMoment(it.id) }
+                    },
+                    enabled = selectedMomentDebugCard != null && !momentDebug.isRunning
+                )
+                if (momentDebug.result != null) {
+                    CbButton("清空日志", onClearMomentDebug, variant = ButtonVariant.Ghost)
+                }
+                if (momentDebug.isRunning) CbSpinner(Modifier.size(24.dp))
+            }
+            if (characters.isEmpty()) {
+                CbText("暂无角色卡。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+            momentDebug.result?.let { result ->
+                result.errorMessage?.let { error ->
+                    CbText("生成失败：$error", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+                }
+                result.post?.let { post ->
+                    CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.surfaceSubtle) {
+                        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CbAvatar(
+                                    imagePath = post.senderAvatar,
+                                    contentDescription = post.senderName,
+                                    size = 36.dp,
+                                    rounded = true,
+                                    fallbackIcon = AppIcons.Face
+                                )
+                                Column(Modifier.weight(1f)) {
+                                    CbText(post.senderName, style = ChatBarTheme.typography.label)
+                                    CbText(
+                                        if (post.isPrivate) "仅你可见 · 赞数 ${post.displayLikeCount}" else "公开 · 赞数 ${post.displayLikeCount}",
+                                        color = ChatBarTheme.colors.mutedForeground,
+                                        style = ChatBarTheme.typography.caption
+                                    )
+                                }
+                            }
+                            CbText(post.text, style = ChatBarTheme.typography.body)
+                            val imagePath = post.imagePath?.takeIf { it.isNotBlank() }
+                            if (imagePath != null) {
+                                AsyncImage(
+                                    model = File(imagePath),
+                                    contentDescription = null,
+                                    modifier = Modifier.fillMaxWidth().heightIn(min = 180.dp, max = 320.dp).clip(RoundedCornerShape(6.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                                CbText("图片：$imagePath", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                            } else {
+                                CbText("图片：未生成", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                            }
+                        }
+                    }
+                }
+                result.exchanges.forEach { exchange ->
+                    MomentDebugExchangeBlock(exchange)
+                }
+            }
         }
         SettingsSection("搜索增强") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -1268,6 +1447,39 @@ private fun SettingsTab(
                 updateInfo = null
             }
         )
+    }
+}
+
+@Composable
+private fun MomentDebugExchangeBlock(exchange: MomentDebugExchange) {
+    CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.surfaceElevated, elevation = ChatBarElevation.low) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            CbText(exchange.title, style = ChatBarTheme.typography.label)
+            MomentDebugTextBlock("输入", exchange.input)
+            MomentDebugTextBlock("输出", exchange.output)
+        }
+    }
+}
+
+@Composable
+private fun MomentDebugTextBlock(label: String, text: String) {
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        SelectionContainer {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(ChatBarTheme.colors.background)
+                    .padding(10.dp)
+            ) {
+                CbText(
+                    text.ifBlank { "(空)" },
+                    color = ChatBarTheme.colors.foreground,
+                    style = ChatBarTheme.typography.caption.copy(fontFamily = FontFamily.Monospace)
+                )
+            }
+        }
     }
 }
 
