@@ -108,15 +108,16 @@ jobs:
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
 
-      - name: Validate Supabase configuration
+      - name: Report Supabase configuration
         env:
           CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL }}
           CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY }}
         run: |
           set -euo pipefail
           if [[ -z "${CHATBAR_SUPABASE_URL}" || -z "${CHATBAR_SUPABASE_ANON_KEY}" ]]; then
-            echo "Missing CHATBAR_SUPABASE_URL or CHATBAR_SUPABASE_ANON_KEY repository secret"
-            exit 1
+            echo "CHATBAR_SUPABASE_URL or CHATBAR_SUPABASE_ANON_KEY is missing; release APK will build with Community disabled."
+          else
+            echo "Supabase configuration found; release APK will include Community backend configuration."
           fi
 
       - name: Test and build signed release APK
