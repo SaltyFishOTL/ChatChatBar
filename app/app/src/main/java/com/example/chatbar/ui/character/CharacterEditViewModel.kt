@@ -70,6 +70,42 @@ data class CharacterAiOutputUiState(
     val text: String
 )
 
+data class CharacterRewriteDiffUiState(
+    val sections: List<CharacterRewriteDiffSection> = emptyList()
+)
+
+data class CharacterRewriteDiffSection(
+    val title: String,
+    val kind: CharacterRewriteDiffKind,
+    val rows: List<CharacterRewriteDiffRow>
+)
+
+data class CharacterRewriteDiffRow(
+    val label: String,
+    val before: String,
+    val after: String,
+    val kind: CharacterRewriteDiffKind,
+    val beforeFragments: List<CharacterRewriteDiffFragment> = emptyList(),
+    val afterFragments: List<CharacterRewriteDiffFragment> = emptyList()
+)
+
+data class CharacterRewriteDiffFragment(
+    val text: String,
+    val kind: CharacterRewriteTextDiffKind
+)
+
+enum class CharacterRewriteDiffKind {
+    Added,
+    Removed,
+    Modified
+}
+
+enum class CharacterRewriteTextDiffKind {
+    Unchanged,
+    Added,
+    Removed
+}
+
 data class CharacterAutoFillUiState(
     val isGenerating: Boolean = false,
     val draft: CharacterAutoFillDraft? = null,
@@ -86,6 +122,7 @@ data class CharacterAutoFillUiState(
 data class CharacterRewriteUiState(
     val isGenerating: Boolean = false,
     val draft: CharacterRewriteDraft? = null,
+    val diff: CharacterRewriteDiffUiState = CharacterRewriteDiffUiState(),
     val error: String? = null,
     val streamingText: String = "",
     val statusText: String = "",
@@ -784,6 +821,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             var progressLines = listOf(statusText)
             var latestResearchDebug: ResearchDebugSnapshot? = null
             var latestVisibleOutputs = emptyList<CharacterAiOutputUiState>()
+            val currentCard = buildCurrentCard(markDirty = false)
             fun rememberVisibleOutput(key: String, title: String, text: String) {
                 latestVisibleOutputs = latestVisibleOutputs.upsertAiOutput(key, title, text)
                 if (generationToken == rewriteGenerationToken) {
@@ -793,7 +831,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             try {
                 val draft = characterRewriteService.rewriteStreaming(
                     userInput = userInput,
-                    currentCard = buildCurrentCard(markDirty = false),
+                    currentCard = currentCard,
                     modelOverride = selectedModel,
                     onStatus = { nextStatus ->
                         currentStatusText = nextStatus
@@ -835,6 +873,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                 if (generationToken == rewriteGenerationToken) {
                     _rewriteState.value = CharacterRewriteUiState(
                         draft = draft,
+                        diff = buildRewriteDiff(currentCard, draft),
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("改写候选已生成"),
                         researchDebug = latestResearchDebug,
@@ -912,6 +951,130 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         }
         deleteAutoFillCandidateImage(_rewriteState.value.coverImage.path)
         _rewriteState.value = CharacterRewriteUiState()
+    }
+
+    private fun buildRewriteDiff(
+        current: CharacterCard,
+        draft: CharacterRewriteDraft
+    ): CharacterRewriteDiffUiState {
+        var nextNewCharacterIndex = 1
+        val merged = characterRewriteService.mergeInto(current, draft) {
+            "__rewrite_new_${nextNewCharacterIndex++}"
+        }
+        val sections = mutableListOf<CharacterRewriteDiffSection>()
+        val cardRows = buildCardDiffRows(current, merged)
+        if (cardRows.isNotEmpty()) {
+            sections += CharacterRewriteDiffSection(
+                title = "角色卡字段",
+                kind = CharacterRewriteDiffKind.Modified,
+                rows = cardRows
+            )
+        }
+        if (current.editMode == CharacterEditMode.STRUCTURED) {
+            sections += buildCharacterDiffSections(current.characters, merged.characters)
+        }
+        return CharacterRewriteDiffUiState(sections)
+    }
+
+    private fun buildCardDiffRows(
+        current: CharacterCard,
+        merged: CharacterCard
+    ): List<CharacterRewriteDiffRow> {
+        val rows = mutableListOf<CharacterRewriteDiffRow>()
+        rows.addChangedDiff("角色卡名称", current.name, merged.name)
+        rows.addChangedDiff("开场白", current.greeting, merged.greeting)
+        rows.addChangedDiff("基本设定", current.basicSetting, merged.basicSetting)
+        rows.addChangedDiff("NovelAI 默认风格", current.defaultImagePrompt, merged.defaultImagePrompt)
+        if (current.editMode == CharacterEditMode.FREEFORM) {
+            rows.addChangedDiff("自由人物设定", current.freeformCharacterText, merged.freeformCharacterText)
+        }
+        return rows
+    }
+
+    private fun buildCharacterDiffSections(
+        currentCharacters: List<CharacterInfo>,
+        mergedCharacters: List<CharacterInfo>
+    ): List<CharacterRewriteDiffSection> {
+        val currentById = currentCharacters.associateBy { it.id }
+        val mergedById = mergedCharacters.associateBy { it.id }
+        val sections = mutableListOf<CharacterRewriteDiffSection>()
+        mergedCharacters.forEach { merged ->
+            val current = currentById[merged.id]
+            if (current == null) {
+                val rows = buildAddedCharacterRows(merged)
+                sections += CharacterRewriteDiffSection(
+                    title = "新增人物：${merged.name.ifBlank { "未命名" }}",
+                    kind = CharacterRewriteDiffKind.Added,
+                    rows = rows
+                )
+            } else {
+                val rows = buildChangedCharacterRows(current, merged)
+                if (rows.isNotEmpty()) {
+                    val title = if (current.name != merged.name) {
+                        "人物：${current.name.ifBlank { current.id }} -> ${merged.name.ifBlank { merged.id }}"
+                    } else {
+                        "人物：${merged.name.ifBlank { merged.id }}"
+                    }
+                    sections += CharacterRewriteDiffSection(
+                        title = title,
+                        kind = CharacterRewriteDiffKind.Modified,
+                        rows = rows
+                    )
+                }
+            }
+        }
+        currentCharacters
+            .filter { it.id !in mergedById }
+            .forEach { removed ->
+                sections += CharacterRewriteDiffSection(
+                    title = "删除人物：${removed.name.ifBlank { removed.id }}",
+                    kind = CharacterRewriteDiffKind.Removed,
+                    rows = buildRemovedCharacterRows(removed)
+                )
+            }
+        return sections
+    }
+
+    private fun buildChangedCharacterRows(
+        current: CharacterInfo,
+        merged: CharacterInfo
+    ): List<CharacterRewriteDiffRow> {
+        val rows = mutableListOf<CharacterRewriteDiffRow>()
+        rows.addChangedDiff("姓名", current.name, merged.name)
+        rows.addChangedDiff("简介", current.profile, merged.profile)
+        rows.addChangedDiff("外貌", current.appearance, merged.appearance)
+        rows.addChangedDiff("服装", current.clothing, merged.clothing)
+        rows.addChangedDiff("能力", current.abilities, merged.abilities)
+        rows.addChangedDiff("习惯/爱好", current.habits, merged.habits)
+        rows.addChangedDiff("背景", current.background, merged.background)
+        rows.addChangedDiff("关系", current.relationships, merged.relationships)
+        rows.addChangedDiff("语气", current.speakingStyle, merged.speakingStyle)
+        rows.addChangedDiff("NAI 人物提示词", current.imagePrompt, merged.imagePrompt)
+        return rows
+    }
+
+    private fun buildAddedCharacterRows(character: CharacterInfo): List<CharacterRewriteDiffRow> =
+        buildCharacterRows(character, CharacterRewriteDiffKind.Added)
+
+    private fun buildRemovedCharacterRows(character: CharacterInfo): List<CharacterRewriteDiffRow> =
+        buildCharacterRows(character, CharacterRewriteDiffKind.Removed)
+
+    private fun buildCharacterRows(
+        character: CharacterInfo,
+        kind: CharacterRewriteDiffKind
+    ): List<CharacterRewriteDiffRow> {
+        val rows = mutableListOf<CharacterRewriteDiffRow>()
+        rows.addVisibleDiff("姓名", character.name, kind)
+        rows.addVisibleDiff("简介", character.profile, kind)
+        rows.addVisibleDiff("外貌", character.appearance, kind)
+        rows.addVisibleDiff("服装", character.clothing, kind)
+        rows.addVisibleDiff("能力", character.abilities, kind)
+        rows.addVisibleDiff("习惯/爱好", character.habits, kind)
+        rows.addVisibleDiff("背景", character.background, kind)
+        rows.addVisibleDiff("关系", character.relationships, kind)
+        rows.addVisibleDiff("语气", character.speakingStyle, kind)
+        rows.addVisibleDiff("NAI 人物提示词", character.imagePrompt, kind)
+        return rows
     }
 
     private fun startBackgroundIndex(card: CharacterCard) {
@@ -1477,3 +1640,204 @@ private fun List<CharacterAiOutputUiState>.upsertAiOutput(
 
 private fun ModelConfig.autoFillLabel(): String =
     displayName.ifBlank { modelName.ifBlank { id } }
+
+private const val MAX_INLINE_DIFF_TOKENS = 1600
+
+private fun MutableList<CharacterRewriteDiffRow>.addChangedDiff(
+    label: String,
+    before: String,
+    after: String
+) {
+    if (before == after) return
+    val textDiff = buildTextDiffFragments(before, after)
+    add(
+        CharacterRewriteDiffRow(
+            label = label,
+            before = before,
+            after = after,
+            kind = CharacterRewriteDiffKind.Modified,
+            beforeFragments = textDiff.before,
+            afterFragments = textDiff.after
+        )
+    )
+}
+
+private fun MutableList<CharacterRewriteDiffRow>.addVisibleDiff(
+    label: String,
+    value: String,
+    kind: CharacterRewriteDiffKind
+) {
+    if (value.isBlank()) return
+    add(
+        CharacterRewriteDiffRow(
+            label = label,
+            before = if (kind == CharacterRewriteDiffKind.Removed) value else "",
+            after = if (kind == CharacterRewriteDiffKind.Added) value else "",
+            kind = kind,
+            beforeFragments = if (kind == CharacterRewriteDiffKind.Removed) {
+                listOf(CharacterRewriteDiffFragment(value, CharacterRewriteTextDiffKind.Removed))
+            } else {
+                emptyList()
+            },
+            afterFragments = if (kind == CharacterRewriteDiffKind.Added) {
+                listOf(CharacterRewriteDiffFragment(value, CharacterRewriteTextDiffKind.Added))
+            } else {
+                emptyList()
+            }
+        )
+    )
+}
+
+private data class TextDiffFragments(
+    val before: List<CharacterRewriteDiffFragment>,
+    val after: List<CharacterRewriteDiffFragment>
+)
+
+private fun buildTextDiffFragments(before: String, after: String): TextDiffFragments {
+    val prefixLength = commonPrefixLength(before, after)
+    val suffixLength = commonSuffixLength(before, after, prefixLength)
+    val beforePrefix = before.take(prefixLength)
+    val afterPrefix = after.take(prefixLength)
+    val beforeMiddle = before.substring(prefixLength, before.length - suffixLength)
+    val afterMiddle = after.substring(prefixLength, after.length - suffixLength)
+    val beforeSuffix = before.takeLast(suffixLength)
+    val afterSuffix = after.takeLast(suffixLength)
+
+    val beforeFragments = mutableListOf<CharacterRewriteDiffFragment>()
+    val afterFragments = mutableListOf<CharacterRewriteDiffFragment>()
+    beforeFragments.addFragment(beforePrefix, CharacterRewriteTextDiffKind.Unchanged)
+    afterFragments.addFragment(afterPrefix, CharacterRewriteTextDiffKind.Unchanged)
+
+    val beforeTokens = beforeMiddle.diffTokens()
+    val afterTokens = afterMiddle.diffTokens()
+    if (beforeTokens.size + afterTokens.size <= MAX_INLINE_DIFF_TOKENS) {
+        appendTokenDiff(beforeTokens, afterTokens, beforeFragments, afterFragments)
+    } else {
+        beforeFragments.addFragment(beforeMiddle, CharacterRewriteTextDiffKind.Removed)
+        afterFragments.addFragment(afterMiddle, CharacterRewriteTextDiffKind.Added)
+    }
+
+    beforeFragments.addFragment(beforeSuffix, CharacterRewriteTextDiffKind.Unchanged)
+    afterFragments.addFragment(afterSuffix, CharacterRewriteTextDiffKind.Unchanged)
+    return TextDiffFragments(beforeFragments, afterFragments)
+}
+
+private fun appendTokenDiff(
+    beforeTokens: List<String>,
+    afterTokens: List<String>,
+    beforeFragments: MutableList<CharacterRewriteDiffFragment>,
+    afterFragments: MutableList<CharacterRewriteDiffFragment>
+) {
+    val n = beforeTokens.size
+    val m = afterTokens.size
+    val dp = Array(n + 1) { IntArray(m + 1) }
+    for (i in n - 1 downTo 0) {
+        for (j in m - 1 downTo 0) {
+            dp[i][j] = if (beforeTokens[i] == afterTokens[j]) {
+                dp[i + 1][j + 1] + 1
+            } else {
+                maxOf(dp[i + 1][j], dp[i][j + 1])
+            }
+        }
+    }
+
+    var i = 0
+    var j = 0
+    while (i < n && j < m) {
+        if (beforeTokens[i] == afterTokens[j]) {
+            beforeFragments.addFragment(beforeTokens[i], CharacterRewriteTextDiffKind.Unchanged)
+            afterFragments.addFragment(afterTokens[j], CharacterRewriteTextDiffKind.Unchanged)
+            i += 1
+            j += 1
+        } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+            beforeFragments.addFragment(beforeTokens[i], CharacterRewriteTextDiffKind.Removed)
+            i += 1
+        } else {
+            afterFragments.addFragment(afterTokens[j], CharacterRewriteTextDiffKind.Added)
+            j += 1
+        }
+    }
+    while (i < n) {
+        beforeFragments.addFragment(beforeTokens[i], CharacterRewriteTextDiffKind.Removed)
+        i += 1
+    }
+    while (j < m) {
+        afterFragments.addFragment(afterTokens[j], CharacterRewriteTextDiffKind.Added)
+        j += 1
+    }
+}
+
+private fun MutableList<CharacterRewriteDiffFragment>.addFragment(
+    text: String,
+    kind: CharacterRewriteTextDiffKind
+) {
+    if (text.isEmpty()) return
+    val last = lastOrNull()
+    if (last?.kind == kind) {
+        this[lastIndex] = last.copy(text = last.text + text)
+    } else {
+        add(CharacterRewriteDiffFragment(text, kind))
+    }
+}
+
+private fun String.diffTokens(): List<String> {
+    val tokens = mutableListOf<String>()
+    var index = 0
+    while (index < length) {
+        val char = this[index]
+        when {
+            char == '\r' && getOrNull(index + 1) == '\n' -> {
+                tokens += "\r\n"
+                index += 2
+            }
+            char == '\n' || char == '\r' -> {
+                tokens += char.toString()
+                index += 1
+            }
+            char.isWhitespace() -> {
+                val start = index
+                while (index < length && this[index].isWhitespace() && this[index] != '\n' && this[index] != '\r') {
+                    index += 1
+                }
+                tokens += substring(start, index)
+            }
+            char.isAsciiWordChar() -> {
+                val start = index
+                while (index < length && this[index].isAsciiWordChar()) {
+                    index += 1
+                }
+                tokens += substring(start, index)
+            }
+            Character.isHighSurrogate(char) && index + 1 < length -> {
+                tokens += substring(index, index + 2)
+                index += 2
+            }
+            else -> {
+                tokens += char.toString()
+                index += 1
+            }
+        }
+    }
+    return tokens
+}
+
+private fun Char.isAsciiWordChar(): Boolean =
+    this == '_' || this in '0'..'9' || this in 'A'..'Z' || this in 'a'..'z'
+
+private fun commonPrefixLength(left: String, right: String): Int {
+    val max = minOf(left.length, right.length)
+    var index = 0
+    while (index < max && left[index] == right[index]) {
+        index += 1
+    }
+    return index
+}
+
+private fun commonSuffixLength(left: String, right: String, prefixLength: Int): Int {
+    val max = minOf(left.length, right.length) - prefixLength
+    var count = 0
+    while (count < max && left[left.lastIndex - count] == right[right.lastIndex - count]) {
+        count += 1
+    }
+    return count
+}

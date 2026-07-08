@@ -57,9 +57,6 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 
 ## Prompt Rules
 
-- All new hardcoded AI prompts, prompt templates, and prompt-builder text must live in `PromptTemplates.kt`.
-- New natural-language prompt text must be Chinese by default.
-- Prompt text describes AI task, input, output, and quality criteria. Keep UI plumbing, storage, API limits, and scheduler internals out unless needed by AI output.
 - Use current default chat model and params for 朋友圈 AI. Do not set `thinkingBudget` to 0.
 - Debug generation must expose full AI inputs and outputs.
 - Moment copy: 0-60 Chinese characters, short, private, suggestive, like an accidental life fragment. Do not recap chat logs.

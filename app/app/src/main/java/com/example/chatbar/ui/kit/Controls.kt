@@ -33,17 +33,20 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.composed
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.progressBarRangeInfo
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.setProgress
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 
 @Composable
@@ -157,9 +160,19 @@ fun CbTabs(
     onSelected: (Int) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    Row(modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.sm)) {
+    val safeSelectedIndex = if (items.isEmpty()) 0 else selectedIndex.coerceIn(0, items.lastIndex)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .swipeToAdjacentTab(
+                selectedIndex = safeSelectedIndex,
+                itemCount = items.size,
+                onSelected = onSelected
+            )
+            .padding(horizontal = ChatBarSpacing.sm)
+    ) {
         items.forEachIndexed { index, label ->
-            val selected = index == selectedIndex
+            val selected = index == safeSelectedIndex
             val textColor by animateColorAsState(
                 if (selected) ChatBarTheme.colors.foreground else ChatBarTheme.colors.mutedForeground,
                 animationSpec = tween(ChatBarMotion.normal),
@@ -188,6 +201,42 @@ fun CbTabs(
                     )
                 }
             }
+        }
+    }
+}
+
+fun Modifier.swipeToAdjacentTab(
+    selectedIndex: Int,
+    itemCount: Int,
+    onSelected: (Int) -> Unit,
+    enabled: Boolean = true,
+    threshold: Dp = 72.dp
+): Modifier = composed {
+    val thresholdPx = with(LocalDensity.current) { threshold.toPx() }
+    if (!enabled || itemCount < 2) {
+        Modifier
+    } else {
+        Modifier.pointerInput(selectedIndex, itemCount, enabled, thresholdPx) {
+            var totalDrag = 0f
+            detectHorizontalDragGestures(
+                onDragStart = { totalDrag = 0f },
+                onHorizontalDrag = { change, dragAmount ->
+                    totalDrag += dragAmount
+                    change.consume()
+                },
+                onDragCancel = { totalDrag = 0f },
+                onDragEnd = {
+                    val targetIndex = when {
+                        totalDrag <= -thresholdPx -> selectedIndex + 1
+                        totalDrag >= thresholdPx -> selectedIndex - 1
+                        else -> selectedIndex
+                    }
+                    if (targetIndex != selectedIndex && targetIndex in 0 until itemCount) {
+                        onSelected(targetIndex)
+                    }
+                    totalDrag = 0f
+                }
+            )
         }
     }
 }

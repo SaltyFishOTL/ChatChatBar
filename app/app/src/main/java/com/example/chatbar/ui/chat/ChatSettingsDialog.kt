@@ -71,6 +71,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import com.example.chatbar.ui.kit.swipeToAdjacentTab
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -228,42 +229,52 @@ fun ChatSettingsDialog(
                 val tabs = if (longTermMemoryEnabled) listOf("参数与设定", "长期记忆", "存档") else listOf("参数与设定", "存档")
                 if (tab >= tabs.size) tab = tabs.lastIndex
                 CbTabs(tabs, tab, { tab = it })
-                if (tab == 0) {
-                    SettingsContent(
-                        modelId, { modelId = it }, defaultModelId, models,
-                        formatId, { formatId = it }, defaultFormatId, formats,
-                        worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
-                        replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
-                        supplementary, { supplementary = it },
-                        playerName, { playerName = it }, playerSetting, { playerSetting = it },
-                        background, { backgroundPicker.launch("image/*") }, { background = "" },
-                        longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
-                        ::openFullscreen
-                    )
-                } else if (longTermMemoryEnabled && tab == 1) {
-                    LongTermMemoryContent(longTermMemory, { longTermMemory = it })
-                } else {
-                    SavesContent(
-                        slots = slots,
-                        name = slotName,
-                        onName = { slotName = it },
-                        description = slotDescription,
-                        onDescription = { slotDescription = it },
-                        status = archiveStatus,
-                        onCreate = {
-                            viewModel.createSaveSlot(slotName, slotDescription)
-                            slotName = ""; slotDescription = ""
-                            archiveStatus = "存档已创建。"
-                        },
-                        onImport = { importSaveSlot.launch(arrayOf("application/json", "text/*", "*/*")) },
-                        onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
-                        onDelete = { deleteSlot = it },
-                        onExport = { slot ->
-                            exportSlotId = slot.id
-                            exportSaveSlot.launch("${safeArchiveFileName(renderSessionText(slot.name))}.json")
-                        },
-                        renderText = ::renderSessionText
-                    )
+                Box(
+                    Modifier
+                        .weight(1f)
+                        .swipeToAdjacentTab(
+                            selectedIndex = tab,
+                            itemCount = tabs.size,
+                            onSelected = { tab = it }
+                        )
+                ) {
+                    if (tab == 0) {
+                        SettingsContent(
+                            modelId, { modelId = it }, defaultModelId, models,
+                            formatId, { formatId = it }, defaultFormatId, formats,
+                            worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
+                            replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
+                            supplementary, { supplementary = it },
+                            playerName, { playerName = it }, playerSetting, { playerSetting = it },
+                            background, { backgroundPicker.launch("image/*") }, { background = "" },
+                            longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
+                            ::openFullscreen
+                        )
+                    } else if (longTermMemoryEnabled && tab == 1) {
+                        LongTermMemoryContent(longTermMemory, { longTermMemory = it })
+                    } else {
+                        SavesContent(
+                            slots = slots,
+                            name = slotName,
+                            onName = { slotName = it },
+                            description = slotDescription,
+                            onDescription = { slotDescription = it },
+                            status = archiveStatus,
+                            onCreate = {
+                                viewModel.createSaveSlot(slotName, slotDescription)
+                                slotName = ""; slotDescription = ""
+                                archiveStatus = "存档已创建。"
+                            },
+                            onImport = { importSaveSlot.launch(arrayOf("application/json", "text/*", "*/*")) },
+                            onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
+                            onDelete = { deleteSlot = it },
+                            onExport = { slot ->
+                                exportSlotId = slot.id
+                                exportSaveSlot.launch("${safeArchiveFileName(renderSessionText(slot.name))}.json")
+                            },
+                            renderText = ::renderSessionText
+                        )
+                    }
                 }
             }
 

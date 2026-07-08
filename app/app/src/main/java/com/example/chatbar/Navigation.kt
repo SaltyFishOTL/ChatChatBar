@@ -41,6 +41,7 @@ import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.worldbook.WorldBookEditScreen
 import com.example.chatbar.ui.tutorial.TutorialScreen
+import com.example.chatbar.ui.kit.swipeToAdjacentTab
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -63,6 +64,15 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     val latestMomentAt = remember(momentPosts) {
         momentPosts.maxOfOrNull { it.generatedAt } ?: 0L
     }
+    val rootRoutes = remember(communityEnabled, momentsEnabled) {
+        buildList<NavKey> {
+            add(HomeRoute)
+            if (momentsEnabled) add(MomentsRoute)
+            if (communityEnabled) add(CommunityRoute)
+            add(ManageRoute)
+        }
+    }
+    val currentRootIndex = rootRoutes.indexOf(currentRoute)
     val chatHasUnread = currentRoute != HomeRoute && latestAssistantMessageAt > appSettings.lastSeenChatAt
     val momentsHasUnread = momentsEnabled && currentRoute != MomentsRoute && latestMomentAt > appSettings.lastSeenMomentsAt
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -90,6 +100,10 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         } else {
             backStack[0] = targetRoute
         }
+    }
+
+    fun showRootAt(index: Int) {
+        rootRoutes.getOrNull(index)?.let(::showRoot)
     }
 
     fun pushRoute(route: NavKey) {
@@ -155,8 +169,15 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         }
     }
 
+    val rootSwipeModifier = Modifier.swipeToAdjacentTab(
+        selectedIndex = currentRootIndex.coerceAtLeast(0),
+        itemCount = rootRoutes.size,
+        onSelected = ::showRootAt,
+        enabled = currentRootIndex >= 0
+    )
+
     Column(modifier = Modifier.fillMaxSize()) {
-        Box(modifier = Modifier.weight(1f)) {
+        Box(modifier = Modifier.weight(1f).then(rootSwipeModifier)) {
             NavDisplay(
                 backStack = backStack,
                 onBack = ::popBackStack,
@@ -223,13 +244,14 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                 }
             )
         }
-        if (currentRoute == HomeRoute || currentRoute == MomentsRoute || currentRoute == CommunityRoute || currentRoute == ManageRoute) {
+        if (currentRootIndex >= 0) {
             BottomNavBar(
                 currentRoute = currentRoute,
                 communityEnabled = communityEnabled,
                 momentsEnabled = momentsEnabled,
                 chatHasUnread = chatHasUnread,
                 momentsHasUnread = momentsHasUnread,
+                modifier = rootSwipeModifier,
                 onNavigate = { route ->
                     if ((route == CommunityRoute && !communityEnabled) || (route == MomentsRoute && !momentsEnabled)) {
                         showRoot(HomeRoute)

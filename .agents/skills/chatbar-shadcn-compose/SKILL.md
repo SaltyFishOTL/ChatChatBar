@@ -11,6 +11,13 @@ Implement shadcn's open-code, semantic-token, variant-driven component model in 
 
 Read [references/shadcn-compose.md](references/shadcn-compose.md) before creating or changing UI kit components. Read relevant existing screen and ViewModel before migration.
 
+## ChatBar Screen Quick Path
+
+1. If feature location is unclear, use `chatbar-feature-map` first.
+2. Read target `*Screen.kt` and paired `*ViewModel.kt` before broad search.
+3. For cross-layer features, read relevant domain service/repository after screen state flow is clear.
+4. Use focused `rg -n "term" path` searches. On Windows, avoid regex alternation, pipes, and command chaining.
+
 ## Workflow
 
 1. Inventory screen behavior, states, controls, callbacks, insets, keyboard handling, scrolling, and accessibility semantics.
@@ -33,6 +40,17 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 - Use Android minimum touch target of 48dp even when visual control is smaller.
 - Use dialogs for focused decisions; sheets for mobile action lists and dense settings.
 - Use `Field` anatomy for forms: label, control, description, error.
+
+## Verification
+
+For UI-visible changes, run from `app/`:
+
+```powershell
+.\gradlew.bat :app:compileDebugKotlin --rerun-tasks
+powershell -ExecutionPolicy Bypass -File .\ci.ps1 -SkipAssemble
+```
+
+If an Android device is connected, use `chatbar-emulator-test` data-preserving install flow.
 
 ## Migration Gate
 

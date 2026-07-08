@@ -116,6 +116,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.swipeToAdjacentTab
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -175,6 +176,10 @@ fun ManageScreen(
         3 to "\u6a21\u578b",
         4 to "\u8bbe\u7f6e"
     )
+    val selectedTabIndex = visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0)
+    fun selectTabIndex(index: Int) {
+        visibleTabs.getOrNull(index)?.let { tab = it.first }
+    }
     var addFormat by remember { mutableStateOf(false) }
     var editEmbedding by remember { mutableStateOf<EmbeddingConfig?>(null) }
     var showEmbedding by remember { mutableStateOf(false) }
@@ -326,11 +331,16 @@ fun ManageScreen(
         }
     ) {
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-            CbTabs(visibleTabs.map { it.second }, visibleTabs.indexOfFirst { it.first == tab }.coerceAtLeast(0), { newIdx ->
-                val newTabId = visibleTabs[newIdx].first
-                tab = newTabId
-            })
-            Box(Modifier.weight(1f)) {
+            CbTabs(visibleTabs.map { it.second }, selectedTabIndex, ::selectTabIndex)
+            Box(
+                Modifier
+                    .weight(1f)
+                    .swipeToAdjacentTab(
+                        selectedIndex = selectedTabIndex,
+                        itemCount = visibleTabs.size,
+                        onSelected = ::selectTabIndex
+                    )
+            ) {
                 when (tab) {
                     0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, viewModel::characterCommunityUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         pendingCharacterExport = card

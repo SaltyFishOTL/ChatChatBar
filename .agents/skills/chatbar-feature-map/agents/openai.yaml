@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Feature Map"
+  short_description: "Jump to likely files by feature"
+  default_prompt: "Use this skill to locate ChatBar feature entry points before broad repository search."

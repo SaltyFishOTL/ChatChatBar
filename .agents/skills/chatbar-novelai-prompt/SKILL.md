@@ -16,14 +16,6 @@ Use before editing NovelAI-related prompt flow:
 
 Do not use this skill for non-NAI image planning, UI, storage, scheduling, memory, chat behavior, or feature policy unless those changes alter NovelAI prompt construction.
 
-## Prompt Ownership
-
-- Put new hardcoded prompts, prompt templates, and prompt-builder text in `PromptTemplates.kt`.
-- Feature code must call `PromptTemplates`; do not hide prompt text inside services, repositories, ViewModels, or Composables.
-- New natural-language prompt text must be Chinese by default.
-- English allowed only for protocol tokens, JSON keys, model tag formats, external IDs, and NovelAI/booru tags when required by model behavior.
-- Do not rewrite unrelated existing prompts while touching NAI flow.
-
 ## Shared NovelAI Entry
 
 - `NOVELAI_IMAGE_PROMPT_SYSTEM` is the shared system prompt for NovelAI tag design.

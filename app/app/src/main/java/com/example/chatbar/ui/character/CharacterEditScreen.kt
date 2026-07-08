@@ -42,6 +42,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
@@ -65,6 +66,10 @@ import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
@@ -1247,6 +1252,8 @@ private fun CharacterRewriteDialog(
             CoverImagePreview(state.coverImage, title = "封面候选")
             state.draft?.let { draft ->
                 CbDivider()
+                RewriteDiffPreview(state.diff)
+                CbDivider()
                 RewriteCandidatePreview(draft)
             }
         }
@@ -1887,3 +1894,148 @@ private data class AutoFillModelOption(val id: String?, val label: String)
 
 private fun ModelConfig.autoFillLabel(): String =
     displayName.ifBlank { modelName.ifBlank { id } }
+
+@Composable
+private fun RewriteDiffPreview(diff: CharacterRewriteDiffUiState) {
+    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        CbText("改写 Diff", style = ChatBarTheme.typography.heading)
+        if (diff.sections.isEmpty()) {
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                color = ChatBarTheme.colors.muted,
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                CbText(
+                    "未检测到字段变化。",
+                    Modifier.padding(12.dp),
+                    color = ChatBarTheme.colors.mutedForeground
+                )
+            }
+        } else {
+            diff.sections.forEach { section ->
+                RewriteDiffSectionView(section)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RewriteDiffSectionView(section: CharacterRewriteDiffSection) {
+    val kindColor = rewriteDiffKindColor(section.kind)
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        border = BorderStroke(1.dp, kindColor.copy(alpha = 0.55f))
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbText(section.title, Modifier.weight(1f), style = ChatBarTheme.typography.heading)
+                CbText(
+                    rewriteDiffKindLabel(section.kind),
+                    color = kindColor,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            section.rows.forEach { row ->
+                RewriteDiffRowView(row)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RewriteDiffRowView(row: CharacterRewriteDiffRow) {
+    val kindColor = rewriteDiffKindColor(row.kind)
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CbText(row.label, Modifier.weight(1f), color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbText(rewriteDiffKindLabel(row.kind), color = kindColor, style = ChatBarTheme.typography.caption)
+        }
+        when (row.kind) {
+            CharacterRewriteDiffKind.Modified -> {
+                RewriteDiffValue("- 原文", row.beforeFragments, ChatBarTheme.colors.destructive, "（原为空）")
+                RewriteDiffValue("+ 改写后", row.afterFragments, ChatBarTheme.colors.success, "（清空）")
+            }
+            CharacterRewriteDiffKind.Added -> {
+                RewriteDiffValue("+ 新增", row.afterFragments, ChatBarTheme.colors.success, "（空）")
+            }
+            CharacterRewriteDiffKind.Removed -> {
+                RewriteDiffValue("- 删除", row.beforeFragments, ChatBarTheme.colors.destructive, "（空）")
+            }
+        }
+    }
+}
+
+@Composable
+private fun RewriteDiffValue(
+    label: String,
+    fragments: List<CharacterRewriteDiffFragment>,
+    accentColor: Color,
+    emptyText: String
+) {
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .background(ChatBarTheme.colors.surfaceSubtle, RoundedCornerShape(8.dp))
+            .border(BorderStroke(1.dp, accentColor.copy(alpha = 0.28f)), RoundedCornerShape(8.dp))
+            .padding(8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        CbText(label, color = accentColor, style = ChatBarTheme.typography.caption)
+        RewriteDiffAnnotatedText(fragments, emptyText)
+    }
+}
+
+@Composable
+private fun RewriteDiffAnnotatedText(
+    fragments: List<CharacterRewriteDiffFragment>,
+    emptyText: String
+) {
+    val colors = ChatBarTheme.colors
+    val text = buildAnnotatedString {
+        if (fragments.isEmpty()) {
+            withStyle(SpanStyle(color = colors.mutedForeground)) {
+                append(emptyText)
+            }
+        } else {
+            fragments.forEach { fragment ->
+                withStyle(
+                    when (fragment.kind) {
+                        CharacterRewriteTextDiffKind.Unchanged -> SpanStyle(color = colors.foreground)
+                        CharacterRewriteTextDiffKind.Added -> SpanStyle(
+                            color = colors.success,
+                            background = colors.success.copy(alpha = 0.16f)
+                        )
+                        CharacterRewriteTextDiffKind.Removed -> SpanStyle(
+                            color = colors.destructive,
+                            background = colors.destructive.copy(alpha = 0.16f)
+                        )
+                    }
+                ) {
+                    append(fragment.text)
+                }
+            }
+        }
+    }
+    BasicText(
+        text = text,
+        style = ChatBarTheme.typography.body.copy(
+            color = colors.foreground,
+            fontFamily = FontFamily.Monospace
+        )
+    )
+}
+
+@Composable
+private fun rewriteDiffKindColor(kind: CharacterRewriteDiffKind): Color =
+    when (kind) {
+        CharacterRewriteDiffKind.Added -> ChatBarTheme.colors.success
+        CharacterRewriteDiffKind.Removed -> ChatBarTheme.colors.destructive
+        CharacterRewriteDiffKind.Modified -> ChatBarTheme.colors.primary
+    }
+
+private fun rewriteDiffKindLabel(kind: CharacterRewriteDiffKind): String =
+    when (kind) {
+        CharacterRewriteDiffKind.Added -> "新增"
+        CharacterRewriteDiffKind.Removed -> "删除"
+        CharacterRewriteDiffKind.Modified -> "修改"
+    }

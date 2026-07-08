@@ -72,6 +72,7 @@ import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.swipeToAdjacentTab
 
 @Composable
 fun CommunityScreen(
@@ -96,6 +97,11 @@ fun CommunityScreen(
     val filteredItems = visibleItems.filtered(state.query, state.selectedType)
     val listState = rememberLazyListState()
     val activeHasMore = if (state.selectedSection == CommunitySection.MINE) state.hasMoreMyItems else state.hasMoreItems
+    val selectedSectionIndex = CommunitySection.entries.indexOf(state.selectedSection).coerceAtLeast(0)
+
+    fun selectSectionIndex(index: Int) {
+        CommunitySection.entries.getOrNull(index)?.let(viewModel::setSection)
+    }
 
     LaunchedEffect(state.selectedSection, filteredItems.size, activeHasMore) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }
@@ -166,13 +172,18 @@ fun CommunityScreen(
                 onTypeSelected = viewModel::setTypeFilter
             )
             Spacer(Modifier.height(ChatBarSpacing.md))
+            val sectionSwipeModifier = Modifier.swipeToAdjacentTab(
+                selectedIndex = selectedSectionIndex,
+                itemCount = CommunitySection.entries.size,
+                onSelected = ::selectSectionIndex
+            )
             if (state.loading && filteredItems.isEmpty()) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxSize().then(sectionSwipeModifier), contentAlignment = Alignment.Center) {
                     CbSpinner(Modifier.size(32.dp))
                 }
             } else {
                 LazyColumn(
-                    modifier = Modifier.fillMaxSize(),
+                    modifier = Modifier.fillMaxSize().then(sectionSwipeModifier),
                     state = listState,
                     verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md),
                     contentPadding = PaddingValues(bottom = bottomInset + ChatBarSpacing.xl)
