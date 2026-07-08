@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageService
@@ -55,6 +56,22 @@ data class MomentDebugGenerationResult(
     val exchanges: List<MomentDebugExchange> = emptyList()
 )
 
+enum class MomentGenerationProgressPhase {
+    JUDGING,
+    WRITING,
+    DESIGNING_IMAGE,
+    GENERATING_IMAGE,
+    SAVING,
+    DONE
+}
+
+data class MomentGenerationProgress(
+    val phase: MomentGenerationProgressPhase,
+    val message: String,
+    val streamedText: String = "",
+    val progress: Float = 0f
+)
+
 class MomentGenerationService(
     private val chatService: StreamingChatService,
     private val promptDesigner: NovelAiPromptDesigner,
@@ -70,43 +87,101 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         scheduledAt: Long
+    ): MomentGenerationResult = generateInternal(
+        card = card,
+        session = session,
+        messages = messages,
+        latestPost = latestPost,
+        model = model,
+        scheduledAt = scheduledAt,
+        streamText = false,
+        onProgress = {}
+    )
+
+    suspend fun generateStreaming(
+        card: CharacterCard,
+        session: ChatSession,
+        messages: List<ChatMessage>,
+        latestPost: MomentPost?,
+        model: ModelConfig,
+        scheduledAt: Long,
+        onProgress: (MomentGenerationProgress) -> Unit
+    ): MomentGenerationResult = generateInternal(
+        card = card,
+        session = session,
+        messages = messages,
+        latestPost = latestPost,
+        model = model,
+        scheduledAt = scheduledAt,
+        streamText = true,
+        onProgress = onProgress
+    )
+
+    private suspend fun generateInternal(
+        card: CharacterCard,
+        session: ChatSession,
+        messages: List<ChatMessage>,
+        latestPost: MomentPost?,
+        model: ModelConfig,
+        scheduledAt: Long,
+        streamText: Boolean,
+        onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult {
         val contextMessages = messages
             .filter { it.role != MessageRole.SYSTEM && it.displayContent.isNotBlank() }
             .takeLast(3)
         if (contextMessages.isEmpty()) return MomentGenerationResult.Skipped("没有可用于朋友圈生成的交流内容")
 
-        val decision = judgeMoment(session, latestPost, contextMessages.lastOrNull(), model)
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.JUDGING, "正在判断是否适合发布"))
+        val decision = judgeMoment(session, latestPost, contextMessages.lastOrNull(), model, streamText, onProgress)
         if (!decision.shouldPost) {
             return MomentGenerationResult.Skipped(decision.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
-        val draft = designMoment(card, session, contextMessages, latestPost, model)
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.WRITING, "正在生成朋友圈文案"))
+        val draft = designMoment(card, session, contextMessages, latestPost, model, streamText, onProgress)
         if (!draft.shouldPost) {
             return MomentGenerationResult.Skipped(draft.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
         val text = draft.text.compactMomentText()
-        if (text.isBlank()) return MomentGenerationResult.Skipped("AI 未生成朋友圈文案")
+        if (text.isBlank()) error("AI 未生成朋友圈文案")
+        val normalizedDraft = draft.copy(text = text)
         val token = novelAiCredentials.load()
-            ?: error("NovelAI Token 未配置")
+        if (token == null) {
+            val post = createPost(card, session, normalizedDraft, prompt = null, imagePath = null, scheduledAt = scheduledAt)
+            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成无图朋友圈", progress = 1f))
+            return MomentGenerationResult.Posted(post)
+        }
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
         val prompt = promptDesigner.designForMoment(
             card = card,
-            momentImageBrief = draft.imageBrief,
+            momentImageBrief = normalizedDraft.imageBrief,
             model = model
         )
         val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
         var finalImage: ByteArray? = null
         var errorMessage: String? = null
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.GENERATING_IMAGE, "正在生成图片"))
         imageService.generate(token, prompt, imageService.newSeed(), imageSize).collect { event ->
             when (event) {
                 is NovelAiImageEvent.Final -> finalImage = event.image
                 is NovelAiImageEvent.Error -> errorMessage = event.message
-                is NovelAiImageEvent.Intermediate -> Unit
+                is NovelAiImageEvent.Intermediate -> {
+                    onProgress(
+                        MomentGenerationProgress(
+                            phase = MomentGenerationProgressPhase.GENERATING_IMAGE,
+                            message = "图片生成 ${(event.progress * 100).toInt()}%",
+                            progress = event.progress
+                        )
+                    )
+                }
             }
         }
         errorMessage?.let { error(it) }
         val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
         val imagePath = imageStorage.save("moments_${card.id}", bytes)
-        val post = createPost(card, session, draft.copy(text = text), prompt, imagePath, scheduledAt)
+        val post = createPost(card, session, normalizedDraft, prompt, imagePath, scheduledAt)
+        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "朋友圈生成完成", progress = 1f))
         return MomentGenerationResult.Posted(post)
     }
 
@@ -139,7 +214,15 @@ class MomentGenerationService(
             require(text.isNotBlank()) { "AI 未生成朋友圈文案" }
             val normalizedDraft = draft.copy(text = text)
             val token = novelAiCredentials.load()
-                ?: error("NovelAI Token 未配置")
+            if (token == null) {
+                exchanges += MomentDebugExchange(
+                    title = "NovelAI 生图",
+                    input = "NovelAI Token 未配置",
+                    output = "跳过图片生成，保存无图朋友圈。"
+                )
+                val post = createPost(card, session, normalizedDraft, prompt = null, imagePath = null, scheduledAt = scheduledAt)
+                return@runCatching MomentDebugGenerationResult(post = post, exchanges = exchanges)
+            }
             val promptDebug = promptDesigner.designForMomentDebug(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,
@@ -202,16 +285,20 @@ class MomentGenerationService(
         session: ChatSession,
         latestPost: MomentPost?,
         latestMessage: ChatMessage?,
-        model: ModelConfig
+        model: ModelConfig,
+        streamText: Boolean = false,
+        onProgress: (MomentGenerationProgress) -> Unit = {}
     ): MomentPostDecision {
         val systemPrompt = PromptTemplates.momentJudgeSystemPrompt()
         val userPrompt = PromptTemplates.momentJudgeUserPrompt(session, latestPost, latestMessage)
-        val raw = chatService.completeText(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", userPrompt)
-            ),
-            modelConfig = model
+        val raw = completeMomentText(
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            model = model,
+            streamText = streamText,
+            phase = MomentGenerationProgressPhase.JUDGING,
+            message = "正在判断是否适合发布",
+            onProgress = onProgress
         )
         return parseDecision(raw)
             ?: error("朋友圈判断 AI 返回 JSON 无法解析: ${raw.take(500)}")
@@ -247,19 +334,62 @@ class MomentGenerationService(
         session: ChatSession,
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
-        model: ModelConfig
+        model: ModelConfig,
+        streamText: Boolean = false,
+        onProgress: (MomentGenerationProgress) -> Unit = {}
     ): MomentDraft {
         val systemPrompt = PromptTemplates.momentGenerationSystemPrompt()
         val userPrompt = PromptTemplates.momentGenerationUserPrompt(card, session, messages, latestPost)
-        val raw = chatService.completeText(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", userPrompt)
-            ),
-            modelConfig = model
+        val raw = completeMomentText(
+            systemPrompt = systemPrompt,
+            userPrompt = userPrompt,
+            model = model,
+            streamText = streamText,
+            phase = MomentGenerationProgressPhase.WRITING,
+            message = "正在生成朋友圈文案",
+            onProgress = onProgress
         )
         return parseDraft(raw)
             ?: error("朋友圈 AI 返回 JSON 无法解析: ${raw.take(500)}")
+    }
+
+    private suspend fun completeMomentText(
+        systemPrompt: String,
+        userPrompt: String,
+        model: ModelConfig,
+        streamText: Boolean,
+        phase: MomentGenerationProgressPhase,
+        message: String,
+        onProgress: (MomentGenerationProgress) -> Unit
+    ): String {
+        val request = listOf(
+            ChatApiMessage.text("system", systemPrompt),
+            ChatApiMessage.text("user", userPrompt)
+        )
+        if (!streamText) {
+            return chatService.completeText(messages = request, modelConfig = model)
+        }
+        val streamed = StringBuilder()
+        var errorMessage: String? = null
+        chatService.streamText(messages = request, modelConfig = model).collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> {
+                    streamed.append(event.text)
+                    onProgress(
+                        MomentGenerationProgress(
+                            phase = phase,
+                            message = message,
+                            streamedText = streamed.toString()
+                        )
+                    )
+                }
+                is StreamEvent.Error -> errorMessage = event.message
+                StreamEvent.Done,
+                is StreamEvent.ReasoningDelta -> Unit
+            }
+        }
+        errorMessage?.let { error(it) }
+        return streamed.toString()
     }
 
     private suspend fun designMomentDebug(
@@ -321,8 +451,8 @@ class MomentGenerationService(
         card: CharacterCard,
         session: ChatSession,
         draft: MomentDraft,
-        prompt: NovelAiPromptPlan,
-        imagePath: String,
+        prompt: NovelAiPromptPlan?,
+        imagePath: String?,
         scheduledAt: Long
     ): MomentPost {
         val sender = selectSender(card, draft.senderName)
@@ -341,7 +471,7 @@ class MomentGenerationService(
                 ?: card.avatar?.takeIf(String::isNotBlank),
             text = draft.text,
             imagePath = imagePath,
-            imagePrompt = prompt.baseCaption,
+            imagePrompt = prompt?.baseCaption.orEmpty(),
             imageBrief = draft.imageBrief,
             isPrivate = draft.isPrivate,
             baseLikeCount = baseLikes,

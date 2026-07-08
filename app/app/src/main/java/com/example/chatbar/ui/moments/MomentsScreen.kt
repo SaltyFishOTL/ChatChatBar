@@ -15,6 +15,7 @@ import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -43,10 +44,15 @@ import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.components.EmptyState
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.kit.AppIcons
+import com.example.chatbar.ui.kit.ButtonSize
+import com.example.chatbar.ui.kit.ButtonVariant
+import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbScaffold
+import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -61,6 +67,7 @@ fun MomentsScreen(
     viewModel: MomentsViewModel = viewModel()
 ) {
     val posts by viewModel.posts.collectAsState()
+    val retryStates by viewModel.retryStates.collectAsState()
     val context = LocalContext.current
     val expandedImage = remember { mutableStateOf<Pair<MomentPost, String>?>(null) }
     LaunchedEffect(Unit) { viewModel.refresh() }
@@ -83,8 +90,10 @@ fun MomentsScreen(
                     items(posts, key = { it.id }) { post ->
                         MomentPostRow(
                             post = post,
+                            retryState = retryStates[post.id],
                             onToggleLike = { viewModel.toggleLike(post.id) },
                             onDelete = { viewModel.deletePost(post.id) },
+                            onRetry = { viewModel.retryPlaceholder(post.id) },
                             onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path }
                         )
                         CbDivider(color = Color(0xFFE9E9E9))
@@ -115,8 +124,10 @@ fun MomentsScreen(
 @Composable
 private fun MomentPostRow(
     post: MomentPost,
+    retryState: MomentRetryUiState?,
     onToggleLike: () -> Unit,
     onDelete: () -> Unit,
+    onRetry: () -> Unit,
     onOpenImage: (MomentPost, String) -> Unit
 ) {
     val textColor = Color(0xFF111111)
@@ -141,61 +152,143 @@ private fun MomentPostRow(
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            if (post.text.isNotBlank()) {
-                CbText(
-                    post.text,
-                    color = textColor,
-                    style = ChatBarTheme.typography.body
-                )
+            if (post.isPlaceholder) {
+                MomentPlaceholderBlock(post, retryState)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbText(
+                        formatMomentTime(post.generatedAt),
+                        color = muted,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    Spacer(Modifier.weight(1f))
+                    MomentDeleteButton(onDelete)
+                    Spacer(Modifier.width(4.dp))
+                    CbButton(
+                        text = if (retryState?.isRunning == true) "生成中" else "重新生成",
+                        onClick = onRetry,
+                        enabled = retryState?.isRunning != true,
+                        variant = ButtonVariant.Secondary,
+                        size = ButtonSize.Sm
+                    )
+                }
+            } else {
+                if (post.text.isNotBlank()) {
+                    CbText(
+                        post.text,
+                        color = textColor,
+                        style = ChatBarTheme.typography.body
+                    )
+                }
+                post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                    AsyncImage(
+                        model = File(path),
+                        contentDescription = post.imageBrief.ifBlank { post.text },
+                        modifier = Modifier
+                            .fillMaxWidth(0.74f)
+                            .aspectRatio(1f)
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color(0xFFF1F1F1))
+                            .clickable { onOpenImage(post, path) },
+                        contentScale = ContentScale.Crop
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbText(
+                        formatMomentTime(post.generatedAt),
+                        color = muted,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    if (post.isPrivate) {
+                        Spacer(Modifier.width(8.dp))
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color(0xFFF5F5F5)).padding(horizontal = 5.dp, vertical = 2.dp)
+                        ) {
+                            CbIcon(AppIcons.Lock, null, Modifier.size(12.dp), muted)
+                            Spacer(Modifier.width(3.dp))
+                            CbText("仅你可见", color = muted, style = ChatBarTheme.typography.caption)
+                        }
+                    }
+                    Spacer(Modifier.weight(1f))
+                    MomentDeleteButton(onDelete)
+                    Spacer(Modifier.width(2.dp))
+                    CbIconButton(
+                        imageVector = AppIcons.Heart,
+                        contentDescription = if (post.userLiked) "取消点赞" else "点赞",
+                        onClick = onToggleLike,
+                        modifier = Modifier.size(34.dp),
+                        tint = if (post.userLiked) Color(0xFFE5484D) else Color(0xFF576B95)
+                    )
+                    CbText(
+                        post.displayLikeCount.toString(),
+                        color = muted,
+                        style = ChatBarTheme.typography.caption,
+                        modifier = Modifier.clickable(onClick = onToggleLike)
+                    )
+                }
             }
-            post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
-                AsyncImage(
-                    model = File(path),
-                    contentDescription = post.imageBrief.ifBlank { post.text },
-                    modifier = Modifier
-                        .fillMaxWidth(0.74f)
-                        .aspectRatio(1f)
-                        .clip(RoundedCornerShape(4.dp))
-                        .background(Color(0xFFF1F1F1))
-                        .clickable { onOpenImage(post, path) },
-                    contentScale = ContentScale.Crop
-                )
+        }
+    }
+}
+
+@Composable
+private fun MomentPlaceholderBlock(
+    post: MomentPost,
+    retryState: MomentRetryUiState?
+) {
+    val running = retryState?.isRunning == true
+    Column(
+        modifier = Modifier
+            .fillMaxWidth(0.88f)
+            .clip(RoundedCornerShape(6.dp))
+            .background(Color(0xFFF6F6F6))
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (running) {
+                CbSpinner(Modifier.size(16.dp))
+            } else {
+                CbIcon(AppIcons.Error, null, Modifier.size(16.dp), ChatBarTheme.colors.warning)
             }
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically
+            CbText(
+                if (running) retryState.phaseLabel.ifBlank { "正在重新生成" } else "这条朋友圈生成失败",
+                color = if (running) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.label
+            )
+        }
+        if (!running) {
+            CbText(
+                retryState?.errorMessage ?: post.failureReason ?: "未知错误",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption,
+                maxLines = 3,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+        if (running && retryState.progress > 0f) {
+            CbProgress(retryState.progress)
+        }
+        val streamed = retryState?.streamedText?.takeIf(String::isNotBlank)
+        if (running && streamed != null) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp, max = 112.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(Color.White)
+                    .padding(8.dp)
             ) {
                 CbText(
-                    formatMomentTime(post.generatedAt),
-                    color = muted,
+                    compactRetryStream(streamed),
+                    color = Color(0xFF333333),
                     style = ChatBarTheme.typography.caption
-                )
-                if (post.isPrivate) {
-                    Spacer(Modifier.width(8.dp))
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color(0xFFF5F5F5)).padding(horizontal = 5.dp, vertical = 2.dp)
-                    ) {
-                        CbIcon(AppIcons.Lock, null, Modifier.size(12.dp), muted)
-                        Spacer(Modifier.width(3.dp))
-                        CbText("仅你可见", color = muted, style = ChatBarTheme.typography.caption)
-                    }
-                }
-                Spacer(Modifier.weight(1f))
-                MomentDeleteButton(onDelete)
-                Spacer(Modifier.width(2.dp))
-                CbIconButton(
-                    imageVector = AppIcons.Heart,
-                    contentDescription = if (post.userLiked) "取消点赞" else "点赞",
-                    onClick = onToggleLike,
-                    modifier = Modifier.size(34.dp),
-                    tint = if (post.userLiked) Color(0xFFE5484D) else Color(0xFF576B95)
-                )
-                CbText(
-                    post.displayLikeCount.toString(),
-                    color = muted,
-                    style = ChatBarTheme.typography.caption,
-                    modifier = Modifier.clickable(onClick = onToggleLike)
                 )
             }
         }
@@ -236,3 +329,6 @@ private fun formatMomentTime(timeMs: Long): String {
         else -> SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(Date(timeMs))
     }
 }
+
+private fun compactRetryStream(text: String): String =
+    text.replace(Regex("\\s+"), " ").trim().takeLast(260)

@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.MomentTask
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
+import junit.framework.TestCase.assertNull
 import junit.framework.TestCase.assertTrue
 import kotlinx.serialization.decodeFromString
 import kotlinx.serialization.json.Json
@@ -68,6 +69,39 @@ class MomentPolicyTest {
         assertFalse(settings.momentsEnabled)
         assertFalse(settings.momentsAutoStartConfirmed)
         assertFalse(card.momentsEnabled)
+    }
+
+    @Test
+    fun oldMomentPostJson_defaultsToNonPlaceholder() {
+        val json = Json { ignoreUnknownKeys = true }
+
+        val post = json.decodeFromString<MomentPost>(
+            """{"id":"post","characterCardId":"card","sessionId":"session","senderName":"角色","text":"动态","scheduledAt":1,"generatedAt":1}"""
+        )
+
+        assertFalse(post.isPlaceholder)
+        assertNull(post.failureReason)
+    }
+
+    @Test
+    fun placeholderPost_hasFailureReasonAndNoContent() {
+        val post = MomentPost.createPlaceholder(
+            characterCardId = "card",
+            sessionId = "session",
+            senderCharacterId = "sender",
+            senderName = "角色",
+            senderAvatar = "avatar.png",
+            failureReason = "生图失败",
+            scheduledAt = 123L,
+            generatedAt = 456L
+        )
+
+        assertTrue(post.isPlaceholder)
+        assertEquals("生图失败", post.failureReason)
+        assertEquals("", post.text)
+        assertNull(post.imagePath)
+        assertEquals(123L, post.scheduledAt)
+        assertEquals(456L, post.generatedAt)
     }
 
     private fun task(status: MomentTaskStatus, scheduledAt: Long) = MomentTask(

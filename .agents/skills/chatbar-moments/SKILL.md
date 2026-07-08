@@ -38,8 +38,10 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Limits: per-card max 4 posts/day; global max 18 posts/day.
 - Catch-up generation is not separately capped; process due scheduled items one by one.
 - Count pending, completed, and failed tasks when enforcing daily schedule limits.
-- `MomentScheduler.runOnce()` is normal worker path: ensure schedules, process due tasks, ensure schedules again, then schedule next alarm.
+- Moments do not generate while app is not running. Do not use boot/package/alarm receivers to start generation in background.
+- `MomentScheduler.runOnce()` is foreground/startup catch-up path: cancel legacy alarms, ensure schedules, process due tasks, then ensure schedules again.
 - `ensureFutureSchedules()` creates real pending schedule records for preview/debug and scheduler preparation. It must not process due tasks.
+- `ensureFutureSchedules()` must not schedule background alarms.
 - Debug timeline may display next 12 hours, but do not silently change underlying schedule horizon without checking scheduler behavior.
 
 ## Prompt Rules
@@ -54,10 +56,11 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 ## Image Rules
 
 - Moment AI outputs image intent/brief only.
+- If NovelAI token is not configured, save text-only moment instead of failing image generation.
 - NovelAI prompt design uses shared `NOVELAI_IMAGE_PROMPT_SYSTEM` via `PromptTemplates.novelAiImagePromptSystem(...)`.
 - Do not add `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE` or feature-specific NovelAI system prompts.
 - If moments need visual guidance, add only small modifiers: photo style, private/life-slice feeling, composition, candid/low-angle/door-gap/mirror/distant/phone snapshot when suitable.
-- NovelAI failure should stay visible as failed/retry state; do not hide primary failure with a success-looking fallback.
+- Text/image generation failure should create a visible placeholder moment with failure reason and retry action; do not hide primary failure with a success-looking fallback.
 
 ## UI Rules
 
@@ -65,6 +68,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Timeline should resemble WeChat/QQ Moments: white background, avatar, nickname, copy, single image, time, like button, like count.
 - No comment input, no comment list, no reply-to-chat, no long-term-memory entry.
 - Like toggles local state. Public moment display count changes with local like; private moment base remains 0 and may show only local-liked state if product explicitly asks.
+- Placeholder failed moments show retry action and stream retry progress; they should not look like successful posts.
 - Bottom 朋友圈 and chat tabs show red dot when unread items exist.
 - Deletion stays unobtrusive; current product uses long-press delete for single post.
 - Moment image interactions should reuse shared chat image preview module where possible: open large image, zoom, save/share, set as card avatar/background.

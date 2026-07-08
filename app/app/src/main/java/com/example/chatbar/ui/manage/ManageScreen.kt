@@ -1219,52 +1219,19 @@ private fun SettingsTab(
                 }
                 CbSwitch(momentsEnabled, { enabled ->
                     momentsEnabled = enabled
-                    if (enabled) onRefreshMomentsReliability()
                 })
             }
             if (momentsEnabled) {
-                if (!momentsBackgroundGuideDismissed) {
-                    CbText(
-                        "建议开启自启动、通知和电池优化白名单，后台生成更稳定。",
-                        color = ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.caption
-                    )
-                    CbButton("不再提醒", { momentsBackgroundGuideDismissed = true }, variant = ButtonVariant.Ghost)
-                }
-                momentsReliability.items.forEach { item ->
-                    val color = when (item.level) {
-                        MomentReliabilityLevel.OK -> ChatBarTheme.colors.primary
-                        MomentReliabilityLevel.WARNING -> ChatBarTheme.colors.warning
-                        MomentReliabilityLevel.BLOCKED -> ChatBarTheme.colors.destructive
-                    }
-                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Column(Modifier.weight(1f)) {
-                            CbText(item.title, style = ChatBarTheme.typography.label)
-                            CbText(item.detail, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-                        }
-                        CbText(
-                            when (item.level) {
-                                MomentReliabilityLevel.OK -> "正常"
-                                MomentReliabilityLevel.WARNING -> "建议处理"
-                                MomentReliabilityLevel.BLOCKED -> "受限"
-                            },
-                            color = color,
-                            style = ChatBarTheme.typography.caption
-                        )
-                    }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CbButton("自启动", { onOpenMomentsAutoStartSettings(context) }, variant = ButtonVariant.Outline)
-                    CbButton("电池", { onOpenMomentsBatterySettings(context) }, variant = ButtonVariant.Outline)
-                    CbButton("通知", { onOpenMomentsNotificationSettings(context) }, variant = ButtonVariant.Outline)
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                    CbButton("已处理自启动", {
-                        momentsAutoStartConfirmed = true
-                        onConfirmMomentsAutoStart()
-                    }, variant = if (momentsAutoStartConfirmed) ButtonVariant.Secondary else ButtonVariant.Outline)
-                    CbButton("刷新", onRefreshMomentsReliability, variant = ButtonVariant.Ghost)
-                }
+                CbText(
+                    "应用运行时按排程补生成到期朋友圈；应用未运行时不会后台调用对话模型或 NovelAI。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbText(
+                    "未配置 NovelAI Token 时只生成文字；生成失败会在朋友圈显示占位，可手动重试。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
             }
         }
         SettingsSection("朋友圈调试") {

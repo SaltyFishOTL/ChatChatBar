@@ -5,6 +5,7 @@ import android.util.Log
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MomentTask
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.data.repository.CharacterRepository
@@ -48,16 +49,15 @@ class MomentScheduler(
         characterRepository.initialize()
         chatRepository.initialize()
         momentRepository.initialize()
+        MomentAlarmScheduler.cancel(appContext)
         val settings = settingsRepository.getAppSettings()
         if (!settings.momentsEnabled) {
-            MomentAlarmScheduler.cancel(appContext)
             return@withLock
         }
 
         ensureSchedules(now)
         processDueTasks(now)
         ensureSchedules(System.currentTimeMillis())
-        MomentAlarmScheduler.scheduleNext(appContext, momentRepository.nextPendingTask()?.scheduledAt)
         Log.d(TAG, "Moment scheduler complete: $reason")
     }
 
@@ -66,11 +66,11 @@ class MomentScheduler(
         characterRepository.initialize()
         chatRepository.initialize()
         momentRepository.initialize()
+        MomentAlarmScheduler.cancel(appContext)
         val settings = settingsRepository.getAppSettings()
         if (!settings.momentsEnabled) return@withLock
 
         ensureSchedules(now)
-        MomentAlarmScheduler.scheduleNext(appContext, momentRepository.nextPendingTask()?.scheduledAt)
         Log.d(TAG, "Moment future schedules ensured: $reason")
     }
 
@@ -138,14 +138,14 @@ class MomentScheduler(
             momentRepository.updateTask(task.copy(status = MomentTaskStatus.SKIPPED, failureReason = "角色未开启朋友圈或已删除"))
             return
         }
-        val session = latestActiveSession(card, now)
+        val session = chatRepository.getSession(task.sessionId) ?: latestActiveSession(card, now)
         if (session == null) {
-            momentRepository.updateTask(task.copy(status = MomentTaskStatus.SKIPPED, failureReason = "48 小时内无交流"))
+            momentRepository.updateTask(task.copy(status = MomentTaskStatus.SKIPPED, failureReason = "会话已删除或 48 小时内无交流"))
             return
         }
         val model = resolveModel(settings)
         if (model == null || model.apiKey.isBlank()) {
-            momentRepository.updateTask(task.copy(status = MomentTaskStatus.FAILED, failureReason = "未配置可用默认对话模型/API Key"))
+            saveFailurePlaceholder(task, card, session, "未配置可用默认对话模型/API Key")
             return
         }
 
@@ -183,10 +183,35 @@ class MomentScheduler(
             },
             onFailure = { error ->
                 if (error is CancellationException) throw error
-                momentRepository.updateTask(
-                    running.copy(status = MomentTaskStatus.FAILED, failureReason = error.message ?: error.javaClass.simpleName)
-                )
+                saveFailurePlaceholder(running, card, session, error.message ?: error.javaClass.simpleName)
             }
+        )
+    }
+
+    private suspend fun saveFailurePlaceholder(
+        task: MomentTask,
+        card: CharacterCard,
+        session: ChatSession,
+        reason: String
+    ) {
+        val sender = card.characters.firstOrNull()
+        val placeholder = MomentPost.createPlaceholder(
+            characterCardId = card.id,
+            sessionId = session.id,
+            senderCharacterId = sender?.id,
+            senderName = sender?.name?.takeIf(String::isNotBlank) ?: card.name.ifBlank { "朋友圈" },
+            senderAvatar = sender?.appearanceImage?.takeIf(String::isNotBlank)
+                ?: card.avatar?.takeIf(String::isNotBlank),
+            failureReason = reason,
+            scheduledAt = task.scheduledAt
+        )
+        momentRepository.savePost(placeholder)
+        momentRepository.updateTask(
+            task.copy(
+                status = MomentTaskStatus.FAILED,
+                postId = placeholder.id,
+                failureReason = reason
+            )
         )
     }
 

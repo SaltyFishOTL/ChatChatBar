@@ -19,6 +19,8 @@ data class MomentPost(
     val isPrivate: Boolean = false,
     val baseLikeCount: Int = 0,
     val userLiked: Boolean = false,
+    val isPlaceholder: Boolean = false,
+    val failureReason: String? = null,
     val generationReason: String = "",
     val scheduledAt: Long,
     val generatedAt: Long,
@@ -59,6 +61,36 @@ data class MomentPost(
             isPrivate = isPrivate,
             baseLikeCount = if (isPrivate) 0 else baseLikeCount.coerceAtLeast(0),
             generationReason = generationReason,
+            scheduledAt = scheduledAt,
+            generatedAt = generatedAt
+        )
+
+        @OptIn(ExperimentalUuidApi::class)
+        fun createPlaceholder(
+            characterCardId: String,
+            sessionId: String,
+            senderCharacterId: String?,
+            senderName: String,
+            senderAvatar: String?,
+            failureReason: String,
+            scheduledAt: Long,
+            generatedAt: Long = System.currentTimeMillis()
+        ): MomentPost = MomentPost(
+            id = Uuid.random().toString(),
+            characterCardId = characterCardId,
+            sessionId = sessionId,
+            senderCharacterId = senderCharacterId,
+            senderName = senderName,
+            senderAvatar = senderAvatar,
+            text = "",
+            imagePath = null,
+            imagePrompt = "",
+            imageBrief = "",
+            isPrivate = false,
+            baseLikeCount = 0,
+            isPlaceholder = true,
+            failureReason = failureReason,
+            generationReason = failureReason,
             scheduledAt = scheduledAt,
             generatedAt = generatedAt
         )

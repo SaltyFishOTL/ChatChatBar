@@ -39,7 +39,9 @@ class MomentRepository(private val storage: JsonFileStorage) {
         getAllPosts().filter { it.characterCardId == cardId }
 
     suspend fun latestPostForCard(cardId: String): MomentPost? =
-        getPostsForCard(cardId).maxByOrNull { it.generatedAt }
+        getPostsForCard(cardId)
+            .filterNot { it.isPlaceholder }
+            .maxByOrNull { it.generatedAt }
 
     suspend fun savePost(post: MomentPost) {
         storage.saveEntity(POST_TYPE, post.id, post, MomentPost.serializer())
@@ -88,6 +90,9 @@ class MomentRepository(private val storage: JsonFileStorage) {
         getAllTasks()
             .filter { it.status == MomentTaskStatus.PENDING }
             .minByOrNull { it.scheduledAt }
+
+    suspend fun taskForPost(postId: String): MomentTask? =
+        getAllTasks().firstOrNull { it.postId == postId }
 
     suspend fun saveTask(task: MomentTask) {
         storage.saveEntity(TASK_TYPE, task.id, task, MomentTask.serializer())
