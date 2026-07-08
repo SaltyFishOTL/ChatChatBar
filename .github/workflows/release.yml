@@ -88,18 +88,37 @@ jobs:
 
           path = Path("app/app/build.gradle.kts")
           text = path.read_text(encoding="utf-8")
-          code_match = re.search(r'versionCode = (\d+)', text)
+          code_match = re.search(r'val\s+baseVersionCode\s*=\s*(\d+)', text)
           if not code_match:
-              raise SystemExit("versionCode not found")
+              raise SystemExit("baseVersionCode not found")
 
           next_code = int(code_match.group(1)) + 1
           version_name = os.environ["VERSION_NAME"]
-          text = re.sub(r'versionCode = \d+', f'versionCode = {next_code}', text, count=1)
-          text = re.sub(r'versionName = "[^"]+"', f'versionName = "{version_name}"', text, count=1)
+          text, code_updates = re.subn(
+              r'val\s+baseVersionCode\s*=\s*\d+',
+              f'val baseVersionCode = {next_code}',
+              text,
+              count=1,
+          )
+          version_pattern = re.compile(
+              r'(versionName\s*=\s*providers\.gradleProperty\("CHATBAR_VERSION_NAME"\)\s*'
+              r'\n\s*\.orElse\(providers\.environmentVariable\("CHATBAR_VERSION_NAME"\)\)\s*'
+              r'\n\s*\.orElse\(")[^"]+("\)\s*'
+              r'\n\s*\.get\(\))'
+          )
+          text, version_updates = version_pattern.subn(
+              lambda match: f"{match.group(1)}{version_name}{match.group(2)}",
+              text,
+              count=1,
+          )
+          if code_updates != 1:
+              raise SystemExit("baseVersionCode update failed")
+          if version_updates != 1:
+              raise SystemExit("versionName default update failed")
           path.write_text(text, encoding="utf-8")
-
           with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as output:
               output.write(f"versionCode={next_code}\n")
+              output.write(f"versionName={version_name}\n")
           PY
 
       - name: Decode release keystore
@@ -126,6 +145,8 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          CHATBAR_VERSION_CODE: ${{ steps.version.outputs.versionCode }}
+          CHATBAR_VERSION_NAME: ${{ steps.version.outputs.versionName }}
         run: |
           chmod +x gradlew
           ./gradlew test assembleRelease --no-daemon --stacktrace
