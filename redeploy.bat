@@ -86,6 +86,7 @@ if %ERRORLEVEL% neq 0 (
     set "FAIL_CODE=%ERRORLEVEL%"
     goto fail
 )
+call :refresh_launcher_cache
 "%ADB%" shell am start -n com.example.chatbar/.MainActivity
 if %ERRORLEVEL% neq 0 (
     set "FAIL_MESSAGE=Install succeeded, but launch failed."
@@ -170,6 +171,12 @@ del "%VERSION_LOG%" >nul 2>nul
 if not defined DEVICE_VERSION_CODE exit /b 1
 if not defined DEVICE_VERSION_NAME exit /b 1
 echo Device version detected: %DEVICE_VERSION_NAME% ^(versionCode %DEVICE_VERSION_CODE%^).
+exit /b 0
+
+:refresh_launcher_cache
+rem ColorOS/OPPO launcher can keep a stale grey "installing" shortcut after adb reinstall.
+"%ADB%" shell am force-stop com.android.launcher >nul 2>nul
+"%ADB%" shell am force-stop com.android.launcher3 >nul 2>nul
 exit /b 0
 
 :fail
