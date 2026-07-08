@@ -621,7 +621,14 @@ class ManageViewModel : ViewModel() {
     // ===== 全局设置更新 =====
     fun updateAppSettings(settings: AppSettings) {
         viewModelScope.launch {
+            val previous = settingsRepository.getAppSettings()
+            val momentFrequencyChanged =
+                previous.momentsMinDelayHours != settings.momentsMinDelayHours ||
+                    previous.momentsMaxDelayHours != settings.momentsMaxDelayHours
             settingsRepository.saveAppSettings(settings)
+            if (momentFrequencyChanged) {
+                momentRepository.deletePendingFutureTasks(System.currentTimeMillis())
+            }
             refreshEffectiveModels()
             refreshMomentsReliability()
             if (settings.momentsEnabled) {

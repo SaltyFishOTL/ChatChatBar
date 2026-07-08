@@ -34,7 +34,8 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 
 ## Scheduler Rules
 
-- Candidate frequency: per enabled card every 2-13 hours.
+- Candidate frequency: per enabled card defaults to every 2-13 hours and is user-adjustable in settings.
+- When frequency settings change, delete only future pending schedule tasks and regenerate them with the new range; do not delete due/running/completed/failed history.
 - Limits: per-card max 4 posts/day; global max 18 posts/day.
 - Catch-up generation is not separately capped; process due scheduled items one by one.
 - Count pending, completed, and failed tasks when enforcing daily schedule limits.
@@ -44,6 +45,15 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - `ensureFutureSchedules()` creates real pending schedule records for preview/debug and scheduler preparation. It must not process due tasks.
 - `ensureFutureSchedules()` must not schedule background alarms.
 - Debug timeline may display next 12 hours, but do not silently change underlying schedule horizon without checking scheduler behavior.
+
+## Fast Investigation Patterns
+
+- Empty future preview: check global `momentsEnabled`, per-card `momentsEnabled`, active-session gate, pending task rows, preview window length, and daily limit counts before changing generation.
+- Default enable changes require all layers: entity default, edit/create ViewModel initial value, JSON missing-field compatibility, and explicit persisted false preservation.
+- Settings exposure changes require persisted `AppSettings`, domain normalization, scheduler/repository propagation, UI controls, and tests for old settings JSON.
+- Frequency changes should invalidate future pending schedules only; keep due/running/completed/failed records as audit and limit history.
+- Schedule limit bugs often come from counting linked task plus generated post twice; count linked task once and count orphan posts only for legacy/debug data.
+- Dependent UI should gate on global feature enable while keeping the global switch always reachable.
 
 ## Prompt Rules
 
@@ -66,6 +76,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 ## UI Rules
 
 - Root tabs when enabled: `聊天 / 朋友圈 / 社区 / 管理`.
+- Management settings must keep the global enable switch visible; detailed 朋友圈 settings and debug generation sections show only when global `momentsEnabled` is on.
 - Timeline should resemble WeChat/QQ Moments: white background, avatar, nickname, copy, single image, time, like button, like count.
 - No comment input, no comment list, no reply-to-chat, no long-term-memory entry.
 - Like toggles local state. Public moment display count changes with local like; private moment base remains 0 and may show only local-liked state if product explicitly asks.

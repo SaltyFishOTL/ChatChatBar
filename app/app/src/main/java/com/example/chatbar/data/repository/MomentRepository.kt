@@ -75,6 +75,11 @@ class MomentRepository(private val storage: JsonFileStorage) {
         return posts
     }
 
+    suspend fun deletePendingFutureTasks(now: Long): Int =
+        storage.deleteWhere(TASK_TYPE, MomentTask.serializer()) {
+            it.status == MomentTaskStatus.PENDING && it.scheduledAt > now
+        }
+
     suspend fun getAllTasks(): List<MomentTask> =
         storage.loadAll(TASK_TYPE, MomentTask.serializer())
 

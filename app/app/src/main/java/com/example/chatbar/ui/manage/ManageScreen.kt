@@ -87,6 +87,7 @@ import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.moment.MomentDebugExchange
+import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityLevel
 import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.update.AppUpdateChecker
@@ -1042,6 +1043,12 @@ private fun SettingsTab(
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var webSearchEnabled by remember { mutableStateOf(settings.webSearchEnabled) }
     var momentsEnabled by remember { mutableStateOf(settings.momentsEnabled) }
+    val initialMomentDelayRange = MomentPolicy.normalizedDelayHours(
+        settings.momentsMinDelayHours,
+        settings.momentsMaxDelayHours
+    )
+    var momentsMinDelayHours by remember { mutableFloatStateOf(initialMomentDelayRange.minHours.toFloat()) }
+    var momentsMaxDelayHours by remember { mutableFloatStateOf(initialMomentDelayRange.maxHours.toFloat()) }
     var momentsBackgroundGuideDismissed by remember { mutableStateOf(settings.momentsBackgroundGuideDismissed) }
     var momentsAutoStartConfirmed by remember { mutableStateOf(settings.momentsAutoStartConfirmed) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
@@ -1081,6 +1088,8 @@ private fun SettingsTab(
         settings.ragInjectionMode,
         settings.webSearchEnabled,
         settings.momentsEnabled,
+        settings.momentsMinDelayHours,
+        settings.momentsMaxDelayHours,
         settings.momentsBackgroundGuideDismissed,
         settings.momentsAutoStartConfirmed,
         settings.novelAiImageAspectRatio,
@@ -1093,6 +1102,12 @@ private fun SettingsTab(
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         webSearchEnabled = settings.webSearchEnabled
         momentsEnabled = settings.momentsEnabled
+        val momentDelayRange = MomentPolicy.normalizedDelayHours(
+            settings.momentsMinDelayHours,
+            settings.momentsMaxDelayHours
+        )
+        momentsMinDelayHours = momentDelayRange.minHours.toFloat()
+        momentsMaxDelayHours = momentDelayRange.maxHours.toFloat()
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
@@ -1107,6 +1122,10 @@ private fun SettingsTab(
     }
     val novelAiImageSize = NovelAiImageSizePolicy.parseUserRatio(novelAiImageAspectRatio)
     val novelAiImageRatioError = NovelAiImageSizePolicy.validationError(novelAiImageAspectRatio)
+    val draftMomentDelayRange = MomentPolicy.normalizedDelayHours(
+        momentsMinDelayHours.roundToInt(),
+        momentsMaxDelayHours.roundToInt()
+    )
     val draftSettings = settings.copy(
         defaultModelId = effectiveDefaultModelId,
         presetDefaultModelKey = null,
@@ -1123,6 +1142,8 @@ private fun SettingsTab(
         webSearchMaxResultsPerQuery = 1,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
         momentsEnabled = momentsEnabled,
+        momentsMinDelayHours = draftMomentDelayRange.minHours,
+        momentsMaxDelayHours = draftMomentDelayRange.maxHours,
         momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
         momentsAutoStartConfirmed = momentsAutoStartConfirmed
     )
@@ -1207,7 +1228,7 @@ private fun SettingsTab(
             CbField("玩家名称") { CbInput(playerName, { playerName = it }, placeholder = "旅行者") }
             CbField("玩家全局设定") { CbInput(persona, { persona = it }, singleLine = false, minLines = 3) }
         }
-        SettingsSection("朋友圈") {
+        SettingsSection("朋友圈功能") {
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
                     CbText("开启朋友圈功能", style = ChatBarTheme.typography.label)
@@ -1221,7 +1242,38 @@ private fun SettingsTab(
                     momentsEnabled = enabled
                 })
             }
-            if (momentsEnabled) {
+        }
+        if (momentsEnabled) {
+            SettingsSection("朋友圈设置") {
+                CbText(
+                    "当前排程：${formatMomentFrequency(draftMomentDelayRange.minHours, draftMomentDelayRange.maxHours)}尝试一次。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                SliderField(
+                    "最短间隔：${draftMomentDelayRange.minHours} 小时",
+                    momentsMinDelayHours,
+                    MomentPolicy.MIN_CONFIG_DELAY_HOURS.toFloat()..MomentPolicy.MAX_CONFIG_DELAY_HOURS.toFloat(),
+                    MomentPolicy.MAX_CONFIG_DELAY_HOURS - MomentPolicy.MIN_CONFIG_DELAY_HOURS - 1
+                ) { value ->
+                    val next = value.roundToInt()
+                        .coerceIn(MomentPolicy.MIN_CONFIG_DELAY_HOURS, MomentPolicy.MAX_CONFIG_DELAY_HOURS)
+                        .toFloat()
+                    momentsMinDelayHours = next
+                    if (momentsMaxDelayHours < next) momentsMaxDelayHours = next
+                }
+                SliderField(
+                    "最长间隔：${draftMomentDelayRange.maxHours} 小时",
+                    momentsMaxDelayHours,
+                    MomentPolicy.MIN_CONFIG_DELAY_HOURS.toFloat()..MomentPolicy.MAX_CONFIG_DELAY_HOURS.toFloat(),
+                    MomentPolicy.MAX_CONFIG_DELAY_HOURS - MomentPolicy.MIN_CONFIG_DELAY_HOURS - 1
+                ) { value ->
+                    val next = value.roundToInt()
+                        .coerceIn(MomentPolicy.MIN_CONFIG_DELAY_HOURS, MomentPolicy.MAX_CONFIG_DELAY_HOURS)
+                        .toFloat()
+                    momentsMaxDelayHours = next
+                    if (momentsMinDelayHours > next) momentsMinDelayHours = next
+                }
                 CbText(
                     "应用运行时按排程补生成到期朋友圈；应用未运行时不会后台调用对话模型或 NovelAI。",
                     color = ChatBarTheme.colors.mutedForeground,
@@ -1234,7 +1286,8 @@ private fun SettingsTab(
                 )
             }
         }
-        SettingsSection("朋友圈调试") {
+        if (momentsEnabled) {
+            SettingsSection("朋友圈调试") {
             CbText(
                 "立即为指定角色卡生成新朋友圈。调试会记录判定结果，但不受排程、限额、48 小时门槛阻断。",
                 color = ChatBarTheme.colors.mutedForeground,
@@ -1308,9 +1361,10 @@ private fun SettingsTab(
                         }
                     }
                 }
-                result.exchanges.forEach { exchange ->
-                    MomentDebugExchangeBlock(exchange)
-                }
+            result.exchanges.forEach { exchange ->
+                MomentDebugExchangeBlock(exchange)
+            }
+        }
             }
         }
         SettingsSection("搜索增强") {
@@ -1530,6 +1584,9 @@ private fun formatMomentScheduleDistance(timeMs: Long, nowMs: Long): String {
         else -> "即将到达"
     }
 }
+
+private fun formatMomentFrequency(minHours: Int, maxHours: Int): String =
+    if (minHours == maxHours) "每 ${minHours} 小时" else "每 ${minHours}-${maxHours} 小时"
 
 @Composable
 private fun MomentDebugExchangeBlock(exchange: MomentDebugExchange) {

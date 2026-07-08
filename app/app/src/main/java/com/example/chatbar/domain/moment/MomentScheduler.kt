@@ -2,6 +2,7 @@ package com.example.chatbar.domain.moment
 
 import android.content.Context
 import android.util.Log
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.ModelConfig
@@ -55,9 +56,9 @@ class MomentScheduler(
             return@withLock
         }
 
-        ensureSchedules(now)
+        ensureSchedules(now, settings)
         processDueTasks(now)
-        ensureSchedules(System.currentTimeMillis())
+        ensureSchedules(System.currentTimeMillis(), settings)
         Log.d(TAG, "Moment scheduler complete: $reason")
     }
 
@@ -70,11 +71,11 @@ class MomentScheduler(
         val settings = settingsRepository.getAppSettings()
         if (!settings.momentsEnabled) return@withLock
 
-        ensureSchedules(now)
+        ensureSchedules(now, settings)
         Log.d(TAG, "Moment future schedules ensured: $reason")
     }
 
-    private suspend fun ensureSchedules(now: Long) {
+    private suspend fun ensureSchedules(now: Long, settings: AppSettings) {
         val horizon = now + MomentPolicy.SCHEDULE_HORIZON_MS
         val cards = characterRepository.getAll()
             .filter { it.momentsEnabled }
@@ -98,7 +99,12 @@ class MomentScheduler(
             var cursor = (cardTimes.maxOrNull() ?: now).coerceAtLeast(now)
             var guard = 0
             while (cursor < horizon && guard++ < 128) {
-                val scheduledAt = cursor + MomentPolicy.nextDelayMs(card.id, cursor)
+                val scheduledAt = cursor + MomentPolicy.nextDelayMs(
+                    seed = card.id,
+                    cursorMs = cursor,
+                    minDelayHours = settings.momentsMinDelayHours,
+                    maxDelayHours = settings.momentsMaxDelayHours
+                )
                 cursor = scheduledAt
                 if (scheduledAt > horizon) break
                 val cardDayCount = MomentPolicy.countForDay(cardTimes, scheduledAt)

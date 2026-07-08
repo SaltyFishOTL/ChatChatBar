@@ -32,6 +32,32 @@ class MomentPolicyTest {
     }
 
     @Test
+    fun nextDelay_usesConfiguredHourRange() {
+        val delay = MomentPolicy.nextDelayMs(
+            seed = "card-a",
+            cursorMs = 12345L,
+            minDelayHours = 3,
+            maxDelayHours = 3
+        )
+
+        assertEquals(3L * 60L * 60L * 1000L, delay)
+    }
+
+    @Test
+    fun normalizedDelayHours_clampsAndOrdersRange() {
+        val reversed = MomentPolicy.normalizedDelayHours(20, 5)
+        val tooLarge = MomentPolicy.normalizedDelayHours(99, 1)
+        val tooSmall = MomentPolicy.normalizedDelayHours(-3, -1)
+
+        assertEquals(20, reversed.minHours)
+        assertEquals(20, reversed.maxHours)
+        assertEquals(MomentPolicy.MAX_CONFIG_DELAY_HOURS, tooLarge.minHours)
+        assertEquals(MomentPolicy.MAX_CONFIG_DELAY_HOURS, tooLarge.maxHours)
+        assertEquals(MomentPolicy.MIN_CONFIG_DELAY_HOURS, tooSmall.minHours)
+        assertEquals(MomentPolicy.MIN_CONFIG_DELAY_HOURS, tooSmall.maxHours)
+    }
+
+    @Test
     fun privateMomentLikeCount_isAlwaysZero() {
         assertEquals(0, MomentPolicy.likeCount("celebrity", "seed", isPrivate = true))
     }
@@ -93,6 +119,8 @@ class MomentPolicyTest {
         )
 
         assertFalse(settings.momentsEnabled)
+        assertEquals(MomentPolicy.DEFAULT_MIN_DELAY_HOURS, settings.momentsMinDelayHours)
+        assertEquals(MomentPolicy.DEFAULT_MAX_DELAY_HOURS, settings.momentsMaxDelayHours)
         assertFalse(settings.momentsAutoStartConfirmed)
         assertTrue(card.momentsEnabled)
         assertFalse(disabledCard.momentsEnabled)
