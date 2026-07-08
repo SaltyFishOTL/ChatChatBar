@@ -9,6 +9,7 @@ import kotlin.uuid.Uuid
  */
 @Serializable
 data class SaveSlot(
+    val schemaVersion: Int = 2,
     val id: String,
     val sessionId: String,
     val name: String,
@@ -26,7 +27,10 @@ data class SaveSlot(
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
     val contextWindowSize: Int? = null,
+    val extraWorldBookIds: List<String> = emptyList(),
+    val timedWorldInfo: Map<String, TimedEffectState> = emptyMap(),
     val messages: List<ChatMessage> = emptyList(),
+    val imageResources: Map<String, SaveSlotImageResource> = emptyMap(),
     val vectorChunks: List<VectorChunk> = emptyList(), // 记忆状态
     val createdAt: Long
 ) {
@@ -49,3 +53,9 @@ data class SaveSlot(
         )
     }
 }
+
+@Serializable
+data class SaveSlotImageResource(
+    val fileName: String,
+    val data: String
+)

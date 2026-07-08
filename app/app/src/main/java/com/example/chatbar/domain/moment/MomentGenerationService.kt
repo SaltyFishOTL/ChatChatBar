@@ -337,7 +337,8 @@ class MomentGenerationService(
             sessionId = session.id,
             senderCharacterId = sender?.id,
             senderName = sender?.name?.takeIf(String::isNotBlank) ?: draft.senderName.ifBlank { card.name },
-            senderAvatar = sender?.appearanceImage ?: card.avatar,
+            senderAvatar = sender?.appearanceImage?.takeIf(String::isNotBlank)
+                ?: card.avatar?.takeIf(String::isNotBlank),
             text = draft.text,
             imagePath = imagePath,
             imagePrompt = prompt.baseCaption,

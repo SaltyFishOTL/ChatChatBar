@@ -61,6 +61,19 @@ class MomentScheduler(
         Log.d(TAG, "Moment scheduler complete: $reason")
     }
 
+    suspend fun ensureFutureSchedules(reason: String = "preview", now: Long = System.currentTimeMillis()) = mutex.withLock {
+        settingsRepository.initialize()
+        characterRepository.initialize()
+        chatRepository.initialize()
+        momentRepository.initialize()
+        val settings = settingsRepository.getAppSettings()
+        if (!settings.momentsEnabled) return@withLock
+
+        ensureSchedules(now)
+        MomentAlarmScheduler.scheduleNext(appContext, momentRepository.nextPendingTask()?.scheduledAt)
+        Log.d(TAG, "Moment future schedules ensured: $reason")
+    }
+
     private suspend fun ensureSchedules(now: Long) {
         val horizon = now + MomentPolicy.SCHEDULE_HORIZON_MS
         val cards = characterRepository.getAll()

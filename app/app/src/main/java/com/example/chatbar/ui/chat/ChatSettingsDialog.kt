@@ -41,9 +41,11 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.runtime.rememberCoroutineScope
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.FormatCard
@@ -73,6 +75,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.launch
 
 @Composable
 fun ChatSettingsDialog(
@@ -90,6 +93,8 @@ fun ChatSettingsDialog(
     val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
     var modelId by remember { mutableStateOf(session?.modelId) }
     var formatId by remember { mutableStateOf(session?.formatCardId) }
@@ -105,12 +110,46 @@ fun ChatSettingsDialog(
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
     var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
+    var archiveStatus by remember { mutableStateOf<String?>(null) }
+    var exportSlotId by remember { mutableStateOf<String?>(null) }
 
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> background = path } }
+    }
+    val exportSaveSlot = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+        val slotId = exportSlotId.also { exportSlotId = null }
+        if (uri != null && slotId != null) {
+            scope.launch {
+                runCatching {
+                    val raw = viewModel.exportSaveSlotJson(slotId)
+                    context.contentResolver.openOutputStream(uri)?.use { output ->
+                        output.write(raw.toByteArray(Charsets.UTF_8))
+                    } ?: error("无法写入文件")
+                }.fold(
+                    onSuccess = { archiveStatus = "存档已导出。" },
+                    onFailure = { archiveStatus = "导出失败：${it.message}" }
+                )
+            }
+        }
+    }
+    val importSaveSlot = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            scope.launch {
+                runCatching {
+                    val raw = context.contentResolver.openInputStream(uri)
+                        ?.bufferedReader(Charsets.UTF_8)
+                        ?.use { it.readText() }
+                        ?: error("文件为空")
+                    viewModel.importSaveSlotJson(raw)
+                }.fold(
+                    onSuccess = { archiveStatus = "已导入存档：${it.name}" },
+                    onFailure = { archiveStatus = "导入失败：${it.message}" }
+                )
+            }
+        }
     }
     LaunchedEffect(Unit) { viewModel.refreshConfigurations() }
     LaunchedEffect(session) {
@@ -210,12 +249,19 @@ fun ChatSettingsDialog(
                         onName = { slotName = it },
                         description = slotDescription,
                         onDescription = { slotDescription = it },
+                        status = archiveStatus,
                         onCreate = {
                             viewModel.createSaveSlot(slotName, slotDescription)
                             slotName = ""; slotDescription = ""
+                            archiveStatus = "存档已创建。"
                         },
+                        onImport = { importSaveSlot.launch(arrayOf("application/json", "text/*", "*/*")) },
                         onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
                         onDelete = { deleteSlot = it },
+                        onExport = { slot ->
+                            exportSlotId = slot.id
+                            exportSaveSlot.launch("${safeArchiveFileName(renderSessionText(slot.name))}.json")
+                        },
                         renderText = ::renderSessionText
                     )
                 }
@@ -391,9 +437,12 @@ private fun SavesContent(
     onName: (String) -> Unit,
     description: String,
     onDescription: (String) -> Unit,
+    status: String?,
     onCreate: () -> Unit,
+    onImport: () -> Unit,
     onLoad: (SaveSlot) -> Unit,
     onDelete: (SaveSlot) -> Unit,
+    onExport: (SaveSlot) -> Unit,
     renderText: (String) -> String
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -402,7 +451,13 @@ private fun SavesContent(
                 CbText("创建存档", style = ChatBarTheme.typography.heading)
                 CbField("名称") { CbInput(name, onName, placeholder = "大战前夕") }
                 CbField("备注") { CbInput(description, onDescription, placeholder = "可选") }
-                CbButton("创建", onCreate, enabled = name.isNotBlank())
+                status?.let {
+                    CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                }
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton("创建", onCreate, enabled = name.isNotBlank())
+                    CbButton("导入 JSON", onImport, variant = ButtonVariant.Outline)
+                }
             }
         }
         Spacer(Modifier.height(16.dp))
@@ -412,14 +467,28 @@ private fun SavesContent(
             }
         } else {
             LazyColumn(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                items(slots, key = { it.id }) { slot -> SaveSlotItem(slot, { onLoad(slot) }, { onDelete(slot) }, renderText) }
+                items(slots, key = { it.id }) { slot ->
+                    SaveSlotItem(
+                        slot = slot,
+                        onLoad = { onLoad(slot) },
+                        onExport = { onExport(slot) },
+                        onDelete = { onDelete(slot) },
+                        renderText = renderText
+                    )
+                }
             }
         }
     }
 }
 
 @Composable
-fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit, renderText: (String) -> String = { it }) {
+fun SaveSlotItem(
+    slot: SaveSlot,
+    onLoad: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
+    renderText: (String) -> String = { it }
+) {
     CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted, border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
@@ -434,6 +503,7 @@ fun SaveSlotItem(slot: SaveSlot, onLoad: () -> Unit, onDelete: () -> Unit, rende
                 )
             }
             CbIconButton(AppIcons.Restore, "读档", onLoad, tint = ChatBarTheme.colors.primary)
+            CbIconButton(AppIcons.Export, "导出 JSON", onExport, tint = ChatBarTheme.colors.primary)
             CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
         }
     }
@@ -459,3 +529,5 @@ private fun DefaultAwareSelect(
 }
 
 private data class IdOption(val id: String?, val label: String)
+private fun safeArchiveFileName(value: String): String =
+    value.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "chat-save-slot" }

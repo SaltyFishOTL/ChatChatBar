@@ -24,6 +24,7 @@ import com.example.chatbar.domain.moment.MomentAlarmScheduler
 import com.example.chatbar.domain.moment.MomentBackgroundReliability
 import com.example.chatbar.domain.moment.MomentDebugGenerationResult
 import com.example.chatbar.domain.moment.MomentReliabilityState
+import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
@@ -62,6 +63,21 @@ private val characterImportProbeJson = Json {
 data class MomentDebugUiState(
     val isRunning: Boolean = false,
     val result: MomentDebugGenerationResult? = null
+)
+
+data class MomentSchedulePreviewItem(
+    val taskId: String,
+    val cardName: String,
+    val sessionTitle: String,
+    val scheduledAt: Long,
+    val statusLabel: String
+)
+
+data class MomentSchedulePreviewUiState(
+    val isLoading: Boolean = false,
+    val generatedAt: Long = 0L,
+    val items: List<MomentSchedulePreviewItem> = emptyList(),
+    val message: String? = null
 )
 
 /**
@@ -131,6 +147,8 @@ class ManageViewModel : ViewModel() {
     val momentsReliability: StateFlow<MomentReliabilityState> = _momentsReliability
     private val _momentDebug = MutableStateFlow(MomentDebugUiState())
     val momentDebug: StateFlow<MomentDebugUiState> = _momentDebug
+    private val _momentSchedulePreview = MutableStateFlow(MomentSchedulePreviewUiState())
+    val momentSchedulePreview: StateFlow<MomentSchedulePreviewUiState> = _momentSchedulePreview
 
     val appSettings: StateFlow<AppSettings> = settingsRepository.appSettings
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), AppSettings())
@@ -166,6 +184,7 @@ class ManageViewModel : ViewModel() {
             refreshEffectiveModels()
             refreshCommunityCharacterUpdates()
             refreshMomentsReliability()
+            refreshMomentSchedulePreview()
         }
     }
 
@@ -609,6 +628,7 @@ class ManageViewModel : ViewModel() {
             } else {
                 MomentAlarmScheduler.cancel(ChatBarApp.instance)
             }
+            refreshMomentSchedulePreview()
         }
     }
 
@@ -677,11 +697,69 @@ class ManageViewModel : ViewModel() {
                 MomentDebugGenerationResult(errorMessage = error.message ?: error.javaClass.simpleName)
             }
             _momentDebug.value = MomentDebugUiState(result = result)
+            refreshMomentSchedulePreview()
         }
     }
 
     fun clearMomentDebug() {
         _momentDebug.value = MomentDebugUiState()
+    }
+
+    fun refreshMomentSchedulePreview() {
+        viewModelScope.launch {
+            _momentSchedulePreview.value = _momentSchedulePreview.value.copy(isLoading = true, message = null)
+            _momentSchedulePreview.value = runCatching {
+                loadMomentSchedulePreview()
+            }.getOrElse { error ->
+                MomentSchedulePreviewUiState(
+                    generatedAt = System.currentTimeMillis(),
+                    message = "读取排程失败：${error.message ?: error.javaClass.simpleName}"
+                )
+            }
+        }
+    }
+
+    private suspend fun loadMomentSchedulePreview(now: Long = System.currentTimeMillis()): MomentSchedulePreviewUiState {
+        settingsRepository.initialize()
+        characterRepository.initialize()
+        chatRepository.initialize()
+        momentRepository.initialize()
+        val settings = settingsRepository.getAppSettings()
+        if (!settings.momentsEnabled) {
+            return MomentSchedulePreviewUiState(
+                generatedAt = now,
+                message = "全局朋友圈未开启，暂无后续生成安排。"
+            )
+        }
+
+        ChatBarApp.instance.momentScheduler.ensureFutureSchedules("manage-preview", now)
+        val horizon = now + MOMENT_SCHEDULE_PREVIEW_WINDOW_MS
+        val cardsById = characterRepository.getAll().associateBy { it.id }
+        val sessionsById = chatRepository.getAllSessions().associateBy { it.id }
+        val items = momentRepository.getAllTasks()
+            .filter { it.status == MomentTaskStatus.PENDING && it.scheduledAt in now..horizon }
+            .sortedBy { it.scheduledAt }
+            .map { task ->
+                val card = cardsById[task.characterCardId]
+                val session = sessionsById[task.sessionId]
+                MomentSchedulePreviewItem(
+                    taskId = task.id,
+                    cardName = card?.name?.ifBlank { "未命名角色卡" } ?: "已删除角色卡",
+                    sessionTitle = session?.title?.ifBlank { "未命名会话" } ?: "会话已删除",
+                    scheduledAt = task.scheduledAt,
+                    statusLabel = when {
+                        card == null -> "将跳过"
+                        !card.momentsEnabled -> "将跳过"
+                        else -> "待生成"
+                    }
+                )
+            }
+
+        return MomentSchedulePreviewUiState(
+            generatedAt = now,
+            items = items,
+            message = if (items.isEmpty()) "未来 12 小时暂无已排到的朋友圈。" else null
+        )
     }
 
     fun updateModelConfigurationMode(mode: ModelConfigurationMode) {
@@ -757,5 +835,9 @@ class ManageViewModel : ViewModel() {
             val current = settingsRepository.getPlayerSetting()
             settingsRepository.savePlayerSetting(current.copy(playerName = playerName, globalPersona = persona))
         }
+    }
+
+    private companion object {
+        const val MOMENT_SCHEDULE_PREVIEW_WINDOW_MS: Long = 12L * 60L * 60L * 1000L
     }
 }

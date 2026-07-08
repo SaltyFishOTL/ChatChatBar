@@ -30,6 +30,8 @@ Enable USB debugging, connect the device, then run:
 C:\Users\Administrator\AppData\Local\Android\Sdk\platform-tools\adb.exe install -r app\build\outputs\apk\debug\app-debug.apk
 ```
 
+If Android reports `INSTALL_FAILED_VERSION_DOWNGRADE`, use `redeploy.bat` or `emu.cmd`. The scripts first try a downgrade install, then rebuild once with `CHATBAR_VERSION_CODE` and `CHATBAR_VERSION_NAME` matching the device's current app version.
+
 Launch:
 
 ```powershell

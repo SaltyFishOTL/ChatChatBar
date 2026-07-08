@@ -14,7 +14,9 @@ description: Run and test ChatBar on Android emulator without a physical device.
 
 ## Quick Start
 
-Double-click `emu.cmd` at project root, or:
+Double-click `emu.cmd` at project root. It starts the emulator, builds the debug APK, installs it, and falls back to a device-version-matching rebuild if Android reports `INSTALL_FAILED_VERSION_DOWNGRADE`.
+
+Manual equivalent:
 
 ```powershell
 # Start emulator (detached, survives terminal close)
@@ -22,6 +24,9 @@ cmd /c start "" "%LOCALAPPDATA%\Android\Sdk\emulator\emulator.exe" -avd chatbar_
 
 # Wait for boot, then install + launch
 & "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" wait-for-device
+cd app
+.\gradlew.bat assembleDebug
+cd ..
 & "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" install -r app\app\build\outputs\apk\debug\app-debug.apk
 & "%LOCALAPPDATA%\Android\Sdk\platform-tools\adb.exe" shell am start -n com.example.chatbar/.MainActivity
 ```
@@ -61,11 +66,13 @@ Check results at `app/app/build/test-results/test/`.
 
 ### 2. Build and Install on Emulator
 
+Run from project root:
+
 ```powershell
-cd app
-.\gradlew.bat assembleDebug
-& "$env:LOCALAPPDATA\Android\Sdk\platform-tools\adb.exe" install -r app\build\outputs\apk\debug\app-debug.apk
+.\emu.cmd
 ```
+
+If installing manually and Android returns `INSTALL_FAILED_VERSION_DOWNGRADE`, prefer `emu.cmd` or `redeploy.bat`. They first try `adb install -r -d`; if the device still rejects, they read the device's current `versionCode` and `versionName`, then rebuild the APK once with `CHATBAR_VERSION_CODE` and `CHATBAR_VERSION_NAME` matching the device.
 
 ### 3. Run Instrumented Tests
 
@@ -153,7 +160,7 @@ The AVD config must include `hw.keyboard = yes` for physical keyboard support. V
 |---------|-------|
 | Emulator slow | Verify AEHD: `& "$env:LOCALAPPDATA\Android\Sdk\emulator\emulator-check.exe" accel` should return 0 |
 | ADB no device | `adb kill-server` then `adb start-server`, or restart emulator |
-| APK install fails | Ensure APK exists at `app/app/build/outputs/apk/debug/app-debug.apk` |
+| APK install fails | Ensure APK exists at `app/app/build/outputs/apk/debug/app-debug.apk`; for `INSTALL_FAILED_VERSION_DOWNGRADE`, use `emu.cmd` or `redeploy.bat` so the data-preserving reinstall fallback runs |
 | Gradle build fails | JDK 17 required: `java --version` must show 17.x |
 | Keyboard not working | Set `hw.keyboard = yes` in config.ini and cold boot |
 | Emulator exits with terminal | Launch via `cmd /c start "" ...` or double-click `emu.cmd` |

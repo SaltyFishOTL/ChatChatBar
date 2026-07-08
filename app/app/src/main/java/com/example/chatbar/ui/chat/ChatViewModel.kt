@@ -4,11 +4,15 @@ import android.net.Uri
 import android.content.Context
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Base64
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.domain.card.CharacterCardImageTarget
 import com.example.chatbar.domain.card.CharacterCardImagePolicy
+import com.example.chatbar.domain.card.CharacterCardImageUpdater
+import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ImageUnderstandingResult
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
@@ -37,6 +41,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.Locale
 import java.util.UUID
@@ -95,6 +100,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val saveSlotJson = Json {
+        ignoreUnknownKeys = true
+        prettyPrint = true
+        encodeDefaults = true
+    }
 
     // UI 状态
     private val _session = MutableStateFlow<ChatSession?>(null)
@@ -1317,7 +1327,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
             currentMessages.firstOrNull { it.id == messageId }
                 ?.images
-                ?.forEach(novelAiImageStorage::deleteIfOwned)
+                ?.forEach { deleteDisposableChatImage(it) }
             _messages.value = _messages.value.filter { it.id != messageId }
             chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
@@ -1340,7 +1350,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
-            novelAiImageStorage.deleteIfOwned(imagePath)
+            deleteDisposableChatImage(imagePath)
             if (remaining.isEmpty() && message.content.isBlank()) {
                 chatRepository.deleteMessage(messageId, sessionId)
             } else {
@@ -1365,7 +1375,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 updatedAt = System.currentTimeMillis()
             )
 
-            oldMessage.images.filterNot(imagePaths::contains).forEach(novelAiImageStorage::deleteIfOwned)
+            oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
 
             chatRepository.updateMessage(updatedMessage)
             refreshMessages()
@@ -1472,7 +1482,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             // 1. 删除所有聊天消息
             val msgs = chatRepository.getMessages(sessionId)
             msgs.forEach { message ->
-                message.images.forEach(novelAiImageStorage::deleteIfOwned)
+                message.images.forEach { deleteDisposableChatImage(it) }
                 chatRepository.deleteMessage(message.id, sessionId)
             }
             
@@ -1607,6 +1617,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             val curSession = _session.value ?: return@launch
             val messagesList = chatRepository.getMessages(sessionId)
+            val packaged = packageSaveSlotImages(curSession, messagesList)
             
             // 获取当前的向量记忆库快照
             val vectorChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
@@ -1615,7 +1626,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 sessionId = sessionId,
                 name = name,
                 description = description,
-                messages = messagesList,
+                messages = packaged.messages,
                 vectorChunks = vectorChunks
             )
             // 覆盖当前的设定值
@@ -1632,11 +1643,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 replyLength = curSession.replyLength,
                 replyLanguage = curSession.replyLanguage,
                 roleplayStyle = curSession.roleplayStyle,
-                chatBackground = curSession.chatBackground,
+                chatBackground = packaged.chatBackground,
                 longTermMemoryEnabled = curSession.longTermMemoryEnabled,
                 longTermMemory = curSession.longTermMemory,
                 longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
-                contextWindowSize = curSession.contextWindowSize
+                contextWindowSize = curSession.contextWindowSize,
+                extraWorldBookIds = curSession.extraWorldBookIds,
+                timedWorldInfo = curSession.timedWorldInfo,
+                imageResources = packaged.resources
             )
 
             saveSlotRepository.save(finalizedSlot)
@@ -1650,38 +1664,54 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun loadSaveSlot(slot: SaveSlot) {
         viewModelScope.launch {
             val curSession = _session.value ?: return@launch
+            val materializedSlot = materializeSaveSlotImages(slot)
+            val preservedImages = materializedSlot.messages
+                .flatMap { it.images }
+                .toSet() + listOfNotNull(materializedSlot.chatBackground)
             
             // 1. 清空当前对话所有的消息和向量块
             val currentMsgs = chatRepository.getMessages(sessionId)
-            currentMsgs.forEach { chatRepository.deleteMessage(it.id, sessionId) }
+            currentMsgs.forEach { message ->
+                message.images
+                    .filterNot { it in preservedImages }
+                    .forEach { deleteDisposableChatImage(it) }
+                chatRepository.deleteMessage(message.id, sessionId)
+            }
+            curSession.chatBackground
+                ?.takeIf { it !in preservedImages }
+                ?.let { deleteDisposableChatImage(it) }
             ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, sessionId)
 
             // 2. 写入存档里的消息
-            slot.messages.forEach { msg ->
+            materializedSlot.messages.forEach { msg ->
                 chatRepository.addMessage(msg.copy(sessionId = sessionId))
             }
 
             // 3. 写入存档里的记忆向量块
-            val updatedChunks = slot.vectorChunks.map { it.copy(sourceId = sessionId) }
+            val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
             ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
 
             // 4. 恢复设定覆盖
+            val latest = materializedSlot.messages.lastOrNull()
             val restoredSession = curSession.copy(
-                playerSetting = slot.playerSetting,
-                playerName = slot.playerName,
-                supplementarySetting = slot.supplementarySetting,
-                modelId = slot.modelId,
-                formatCardId = slot.formatCardId,
-                replyLength = slot.replyLength,
-                replyLanguage = slot.replyLanguage,
-                roleplayStyle = slot.roleplayStyle,
-                chatBackground = slot.chatBackground,
-                longTermMemoryEnabled = slot.longTermMemoryEnabled,
-                longTermMemory = slot.longTermMemory,
-                longTermMemoryUpdatedThroughMessageId = slot.longTermMemoryUpdatedThroughMessageId,
-                contextWindowSize = slot.contextWindowSize ?: curSession.contextWindowSize,
-                lastMessagePreview = slot.messages.lastOrNull()?.content?.take(100),
-                lastMessageTime = slot.messages.lastOrNull()?.createdAt
+                playerSetting = materializedSlot.playerSetting,
+                playerName = materializedSlot.playerName,
+                supplementarySetting = materializedSlot.supplementarySetting,
+                modelId = materializedSlot.modelId,
+                formatCardId = materializedSlot.formatCardId,
+                replyLength = materializedSlot.replyLength,
+                replyLanguage = materializedSlot.replyLanguage,
+                roleplayStyle = materializedSlot.roleplayStyle,
+                chatBackground = materializedSlot.chatBackground,
+                longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
+                longTermMemory = materializedSlot.longTermMemory,
+                longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,
+                contextWindowSize = materializedSlot.contextWindowSize ?: curSession.contextWindowSize,
+                extraWorldBookIds = materializedSlot.extraWorldBookIds,
+                timedWorldInfo = materializedSlot.timedWorldInfo,
+                lastMessagePreview = latest?.saveSlotPreviewText(),
+                lastMessageTime = latest?.createdAt,
+                lastMessageRole = latest?.role
             )
             chatRepository.updateSession(restoredSession)
             
@@ -1699,6 +1729,166 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             refreshSaveSlots()
         }
     }
+
+    suspend fun exportSaveSlotJson(slotId: String): String = withContext(Dispatchers.IO) {
+        val slot = saveSlotRepository.getById(slotId) ?: error("存档不存在")
+        val packaged = packageSaveSlotImageRefs(
+            chatBackground = slot.chatBackground,
+            messages = slot.messages,
+            existingResources = slot.imageResources
+        )
+        val portable = slot.copy(
+            chatBackground = packaged.chatBackground,
+            messages = packaged.messages,
+            imageResources = packaged.resources
+        )
+        saveSlotJson.encodeToString(SaveSlot.serializer(), portable)
+    }
+
+    suspend fun importSaveSlotJson(rawJson: String): SaveSlot {
+        val decoded = withContext(Dispatchers.IO) {
+            saveSlotJson.decodeFromString(SaveSlot.serializer(), rawJson)
+        }
+        validateSaveSlotImport(decoded)
+        val currentNames = saveSlotRepository.getBySessionId(sessionId).map { it.name }
+        val requestedName = decoded.name.ifBlank { "导入存档" }
+        val importedName = if (currentNames.any { NamePolicy.isSame(it, requestedName) }) {
+            NamePolicy.nextCopyName(requestedName, currentNames)
+        } else {
+            NamePolicy.normalize(requestedName)
+        }
+        val imported = decoded.copy(
+            id = UUID.randomUUID().toString(),
+            sessionId = sessionId,
+            name = importedName,
+            messages = decoded.messages.map { it.copy(sessionId = sessionId) },
+            vectorChunks = decoded.vectorChunks.map { it.copy(sourceId = sessionId) },
+            createdAt = System.currentTimeMillis()
+        )
+        saveSlotRepository.save(imported)
+        _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
+        return imported
+    }
+
+    private data class PackagedSaveSlotImages(
+        val chatBackground: String?,
+        val messages: List<ChatMessage>,
+        val resources: Map<String, SaveSlotImageResource>
+    )
+
+    private suspend fun packageSaveSlotImages(
+        session: ChatSession,
+        messages: List<ChatMessage>
+    ): PackagedSaveSlotImages = packageSaveSlotImageRefs(
+        chatBackground = session.chatBackground,
+        messages = messages
+    )
+
+    private suspend fun packageSaveSlotImageRefs(
+        chatBackground: String?,
+        messages: List<ChatMessage>,
+        existingResources: Map<String, SaveSlotImageResource> = emptyMap()
+    ): PackagedSaveSlotImages = withContext(Dispatchers.IO) {
+        val resources = linkedMapOf<String, SaveSlotImageResource>().apply { putAll(existingResources) }
+        val resourceIdsByPath = linkedMapOf<String, String>()
+
+        fun packageImage(path: String?, preferredId: String): String? {
+            val sourcePath = path?.takeIf(String::isNotBlank) ?: return null
+            resourceIdsByPath[sourcePath]?.let { return it }
+            val file = File(sourcePath)
+            if (!file.isFile) return sourcePath
+            val resourceId = uniqueResourceId(preferredId, resources.keys)
+            resources[resourceId] = SaveSlotImageResource(
+                fileName = file.name.ifBlank { "$resourceId.jpg" },
+                data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+            )
+            resourceIdsByPath[sourcePath] = resourceId
+            return resourceId
+        }
+
+        PackagedSaveSlotImages(
+            chatBackground = packageImage(chatBackground, "chat-background"),
+            messages = messages.mapIndexed { messageIndex, message ->
+                message.copy(
+                    images = message.images.mapIndexed { imageIndex, path ->
+                        packageImage(path, "message-$messageIndex-image-$imageIndex") ?: path
+                    }
+                )
+            },
+            resources = resources
+        )
+    }
+
+    private suspend fun materializeSaveSlotImages(slot: SaveSlot): SaveSlot = withContext(Dispatchers.IO) {
+        if (slot.imageResources.isEmpty()) return@withContext slot
+        val createdFiles = mutableListOf<File>()
+        try {
+            val pathsByResourceId = slot.imageResources.mapValues { (resourceId, image) ->
+                val file = createSaveSlotImageFile(slot.id, resourceId, image.fileName)
+                createdFiles += file
+                file.writeBytes(Base64.decode(image.data, Base64.DEFAULT))
+                file.absolutePath
+            }
+            slot.copy(
+                chatBackground = slot.chatBackground?.let { pathsByResourceId[it] ?: it },
+                messages = slot.messages.map { message ->
+                    message.copy(images = message.images.map { pathsByResourceId[it] ?: it })
+                }
+            )
+        } catch (error: Throwable) {
+            createdFiles.forEach { it.delete() }
+            throw error
+        }
+    }
+
+    private fun createSaveSlotImageFile(slotId: String, resourceId: String, fileName: String): File {
+        val directory = File(ChatBarApp.instance.filesDir, "images/save_slots/${safeFileSegment(slotId)}")
+            .also(File::mkdirs)
+        val extension = File(fileName).extension
+            .lowercase(Locale.ROOT)
+            .takeIf { it.matches(Regex("[a-z0-9]{1,10}")) }
+            ?: "jpg"
+        return File(directory, "${safeFileSegment(resourceId)}_${UUID.randomUUID()}.$extension")
+    }
+
+    private fun validateSaveSlotImport(slot: SaveSlot) {
+        require(slot.schemaVersion in 1..2) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
+        require(slot.name.isNotBlank()) { "存档名称不能为空" }
+        require(slot.messages.all { it.id.isNotBlank() }) { "存档包含空消息 ID" }
+        require(slot.messages.map { it.id }.distinct().size == slot.messages.size) { "存档包含重复消息 ID" }
+        require(slot.imageResources.all { (id, image) -> id.isNotBlank() && image.fileName.isNotBlank() && image.data.isNotBlank() }) {
+            "图片资源 ID、文件名和数据不能为空"
+        }
+    }
+
+    private fun uniqueResourceId(preferredId: String, usedIds: Set<String>): String {
+        val base = preferredId.ifBlank { "image" }
+        if (base !in usedIds) return base
+        var index = 2
+        while ("$base-$index" in usedIds) index++
+        return "$base-$index"
+    }
+
+    private fun deleteDisposableChatImage(path: String): Boolean {
+        if (novelAiImageStorage.deleteIfOwned(path)) return true
+        val file = File(path)
+        return runCatching {
+            val imagesRoot = File(ChatBarApp.instance.filesDir, "images").canonicalFile
+            val saveSlotRoot = File(imagesRoot, "save_slots").canonicalFile
+            val canonicalFile = file.canonicalFile
+            val parent = canonicalFile.parentFile?.canonicalFile
+            val owned = canonicalFile.path.startsWith(saveSlotRoot.path + File.separator) ||
+                (parent == imagesRoot && canonicalFile.name.startsWith("chat_img_"))
+            owned && (!file.exists() || file.delete())
+        }.getOrDefault(false)
+    }
+
+    private fun safeFileSegment(value: String): String =
+        value.replace(Regex("[^A-Za-z0-9._-]"), "_").ifBlank { "image" }
+
+    private fun ChatMessage.saveSlotPreviewText(): String =
+        displayContent.takeIf { it.isNotBlank() }?.take(100)
+            ?: if (images.isNotEmpty()) "[图片]" else ""
 
     /**
      * 重建当前角色卡的 RAG 索引
@@ -1771,22 +1961,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ?: throw IllegalStateException("当前会话没有可更新的角色卡")
                 val currentCard = characterRepository.getById(loadedCard.id)
                     ?: throw IllegalStateException("当前会话没有可更新的角色卡")
-                val localPath = copyImageIntoCharacterCardStorage(
-                    sourcePath = imagePath,
+                val persisted = CharacterCardImageUpdater.replace(
+                    context = ChatBarApp.instance,
+                    characterRepository = characterRepository,
                     cardId = currentCard.id,
+                    sourcePath = imagePath,
                     target = target
                 )
-                val updated = when (target) {
-                    CharacterCardImageTarget.AVATAR -> currentCard.copy(avatar = localPath)
-                    CharacterCardImageTarget.BACKGROUND -> currentCard.copy(chatBackground = localPath)
-                }
-                characterRepository.update(updated)
-                val persisted = characterRepository.getById(updated.id) ?: updated
                 _characterCard.value = persisted
                 if (target == CharacterCardImageTarget.BACKGROUND) {
                     syncSessionBackgroundOverride(
                         previousCardBackground = currentCard.chatBackground,
-                        newCardBackground = localPath
+                        newCardBackground = persisted.chatBackground.orEmpty()
                     )
                 }
                 onResult(
@@ -1818,28 +2004,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             chatRepository.updateSession(updatedSession)
             _session.value = updatedSession
         }
-    }
-
-    private suspend fun copyImageIntoCharacterCardStorage(
-        sourcePath: String,
-        cardId: String,
-        target: CharacterCardImageTarget
-    ): String = withContext(Dispatchers.IO) {
-        val source = File(sourcePath)
-        if (!source.exists()) throw IllegalArgumentException("图片文件不存在")
-        val extension = source.extension.takeIf { it.isNotBlank() } ?: "png"
-        val directory = File(
-            ChatBarApp.instance.filesDir,
-            "images/character_cards/${cardId.safeFileSegment()}"
-        ).also(File::mkdirs)
-        val targetFile = File(
-            directory,
-            "${target.filePrefix}_${System.currentTimeMillis()}_${UUID.randomUUID()}.$extension"
-        )
-        source.inputStream().use { input ->
-            targetFile.outputStream().use { output -> input.copyTo(output) }
-        }
-        targetFile.absolutePath
     }
 
     fun copyUriToLocalFile(uri: Uri, onSuccess: (String) -> Unit) {
@@ -1878,13 +2042,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         ImageFileEncoder.encodeToJpegBase64(path)
     }
 }
-
-private enum class CharacterCardImageTarget(val filePrefix: String) {
-    AVATAR("avatar"),
-    BACKGROUND("background")
-}
-
-private fun String.safeFileSegment(): String = replace(Regex("[^A-Za-z0-9._-]"), "_")
 
 private fun VectorChunk.messageIds(): Set<String> {
     val metadataIds = metadata["messageIds"]

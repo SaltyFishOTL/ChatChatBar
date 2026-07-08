@@ -116,6 +116,9 @@ import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.launch
@@ -156,6 +159,7 @@ fun ManageScreen(
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val momentsReliability by viewModel.momentsReliability.collectAsState()
     val momentDebug by viewModel.momentDebug.collectAsState()
+    val momentSchedulePreview by viewModel.momentSchedulePreview.collectAsState()
     val importProgress by viewModel.importProgress.collectAsState()
     val communityCharacterUpdates by viewModel.communityCharacterUpdates.collectAsState()
     val context = LocalContext.current
@@ -290,6 +294,9 @@ fun ManageScreen(
     }
 
     LaunchedEffect(Unit) { viewModel.refreshAll() }
+    LaunchedEffect(tab, settings.momentsEnabled) {
+        if (tab == 4) viewModel.refreshMomentSchedulePreview()
+    }
 
     CbScaffold(
         modifier = modifier,
@@ -391,7 +398,7 @@ fun ManageScreen(
                         onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
                     )
                     4 -> SettingsTab(
-                        settingsSaveRequest, settings, player, characters, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug,
+                        settingsSaveRequest, settings, player, characters, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug, momentSchedulePreview,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
                         viewModel::updateThemeMode,
@@ -405,6 +412,7 @@ fun ManageScreen(
                         viewModel::openMomentsBatterySettings,
                         viewModel::openMomentsNotificationSettings,
                         viewModel::confirmMomentsAutoStart,
+                        viewModel::refreshMomentSchedulePreview,
                         viewModel::generateDebugMoment,
                         viewModel::clearMomentDebug
                     )
@@ -1006,6 +1014,7 @@ private fun SettingsTab(
     novelAiConfigured: Boolean,
     momentsReliability: MomentReliabilityState,
     momentDebug: MomentDebugUiState,
+    momentSchedulePreview: MomentSchedulePreviewUiState,
     onSaveSettings: (AppSettings) -> Unit,
     onSavePlayer: (String, String) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
@@ -1019,6 +1028,7 @@ private fun SettingsTab(
     onOpenMomentsBatterySettings: (android.content.Context) -> Unit,
     onOpenMomentsNotificationSettings: (android.content.Context) -> Unit,
     onConfirmMomentsAutoStart: () -> Unit,
+    onRefreshMomentSchedulePreview: () -> Unit,
     onGenerateDebugMoment: (String) -> Unit,
     onClearMomentDebug: () -> Unit
 ) {
@@ -1263,6 +1273,10 @@ private fun SettingsTab(
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
+            MomentSchedulePreviewBlock(
+                state = momentSchedulePreview,
+                onRefresh = onRefreshMomentSchedulePreview
+            )
             CbField("角色卡") {
                 CbSelect(
                     selectedMomentDebugCard,
@@ -1447,6 +1461,106 @@ private fun SettingsTab(
                 updateInfo = null
             }
         )
+    }
+}
+
+@Composable
+private fun MomentSchedulePreviewBlock(
+    state: MomentSchedulePreviewUiState,
+    onRefresh: () -> Unit
+) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(6.dp))
+            .background(ChatBarTheme.colors.surfaceSubtle)
+            .padding(10.dp),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Column(Modifier.weight(1f)) {
+                CbText("未来 12 小时安排", style = ChatBarTheme.typography.label)
+                CbText(
+                    "按已保存设置和当前 pending 任务生成预览。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbButton(
+                text = if (state.isLoading) "刷新中" else "刷新安排",
+                onClick = onRefresh,
+                enabled = !state.isLoading,
+                variant = ButtonVariant.Ghost
+            )
+        }
+        if (state.isLoading) {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbSpinner(Modifier.size(18.dp))
+                CbText("正在读取排程", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+        }
+        state.message?.let { message ->
+            CbText(message, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        state.items.forEach { item ->
+            MomentSchedulePreviewRow(item, state.generatedAt)
+        }
+        if (state.generatedAt > 0L) {
+            CbText(
+                "读取于 ${formatMomentScheduleTime(state.generatedAt)}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+    }
+}
+
+@Composable
+private fun MomentSchedulePreviewRow(
+    item: MomentSchedulePreviewItem,
+    nowMs: Long
+) {
+    val statusColor = if (item.statusLabel == "待生成") {
+        ChatBarTheme.colors.primary
+    } else {
+        ChatBarTheme.colors.warning
+    }
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Column(Modifier.width(72.dp)) {
+            CbText(formatMomentScheduleTime(item.scheduledAt), style = ChatBarTheme.typography.caption)
+            CbText(
+                formatMomentScheduleDistance(item.scheduledAt, nowMs),
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+        Column(Modifier.weight(1f)) {
+            CbText(item.cardName, style = ChatBarTheme.typography.label, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            CbText(item.sessionTitle, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        }
+        CbText(item.statusLabel, color = statusColor, style = ChatBarTheme.typography.caption)
+    }
+}
+
+private fun formatMomentScheduleTime(timeMs: Long): String =
+    SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(Date(timeMs))
+
+private fun formatMomentScheduleDistance(timeMs: Long, nowMs: Long): String {
+    val diff = (timeMs - nowMs).coerceAtLeast(0L)
+    val hours = diff / (60L * 60L * 1000L)
+    val minutes = (diff % (60L * 60L * 1000L)) / (60L * 1000L)
+    return when {
+        hours > 0L -> "${hours}小时${minutes}分后"
+        minutes > 0L -> "${minutes}分钟后"
+        else -> "即将到达"
     }
 }
 
