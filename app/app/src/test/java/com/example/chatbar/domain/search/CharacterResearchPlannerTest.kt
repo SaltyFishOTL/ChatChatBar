@@ -15,8 +15,7 @@ class CharacterResearchPlannerTest {
     fun `research prompt templates render editable placeholders`() {
         val plannerSystem = PromptTemplates.characterResearchPlannerSystemPrompt(maxQueries = 3)
         val plannerUser = PromptTemplates.characterResearchPlannerUserPrompt(
-            userInput = "design a canon role",
-            currentCardSummary = "名称：demo"
+            userInput = "design a canon role"
         )
         val source = PromptTemplates.characterResearchBriefSource(
             sourceId = "S1",
@@ -25,14 +24,13 @@ class CharacterResearchPlannerTest {
         )
         val briefUser = PromptTemplates.characterResearchBriefUserPrompt(
             request = "rewrite",
-            currentCardSummary = "名称：demo",
             sources = source
         )
 
         assertTrue(plannerSystem.contains("最多 3 个查询"))
         assertFalse(plannerSystem.contains("{{maxQueries}}"))
         assertTrue(plannerUser.contains("design a canon role"))
-        assertTrue(plannerUser.contains("名称：demo"))
+        assertFalse(plannerUser.contains("{{userInput}}"))
         assertTrue(briefUser.contains("[S1] Source"))
         assertTrue(briefUser.contains("检索目标"))
         assertFalse(briefUser.contains("{{sources}}"))

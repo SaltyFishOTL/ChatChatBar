@@ -33,6 +33,7 @@ import com.example.chatbar.ui.components.BottomNavBar
 import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
 import com.example.chatbar.ui.chat.ChatScreen
+import com.example.chatbar.ui.imageprompt.ImagePromptToolScreen
 import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.moments.MomentsScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
@@ -211,6 +212,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     }
                     entry<ManageRoute> {
                         ManageScreen(onNavigate = { route -> pushRoute(route as NavKey) }, sharedUri = sharedUri)
+                    }
+                    entry<ImagePromptToolRoute> {
+                        ImagePromptToolScreen(onBack = ::popBackStack)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(

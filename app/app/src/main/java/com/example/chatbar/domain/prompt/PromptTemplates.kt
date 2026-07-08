@@ -288,27 +288,21 @@ very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicat
         )
 
     fun characterResearchPlannerUserPrompt(
-        userInput: String,
-        currentCardSummary: String
+        userInput: String
     ): String =
         renderPromptTemplate(
             CHARACTER_RESEARCH_PLANNER_USER_PROMPT,
-            mapOf(
-                "userInput" to userInput.trim(),
-                "currentCardSummary" to currentCardSummary
-            )
+            mapOf("userInput" to userInput.trim())
         ).take(8000)
 
     fun characterResearchBriefUserPrompt(
         request: String,
-        currentCardSummary: String,
         sources: String
     ): String =
         renderPromptTemplate(
             CHARACTER_RESEARCH_BRIEF_USER_PROMPT,
             mapOf(
                 "request" to request.trim(),
-                "currentCardSummary" to currentCardSummary,
                 "sources" to sources
             )
         ).take(12000)
@@ -562,8 +556,8 @@ IP chars:
 EXACT Danbooru tag: name_(series). Non-standard = invalid.
 Skip redundant: hair/eyes carried by char tag.
 Official outfit tags optional. Omit = more variety.
-Non-default outfit -> MANDATORY alternate_costume.
-Changed hair -> MANDATORY alternate_hairstyle.
+Non-default outfit -> MANDATORY alternate_costume - only use when necessary
+Changed hair -> MANDATORY alternate_hairstyle - only use when necessary
 Multi-char: every IP char needs full Danbooru tag or degrades to generic.
 Viewpoint exclusion (remove invisible):
 from_behind/back -> no expression, eye color, face marks

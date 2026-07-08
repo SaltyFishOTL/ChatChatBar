@@ -47,7 +47,7 @@ class CharacterResearchPlanner(
                     ChatApiMessage.text("system", PromptTemplates.characterResearchPlannerSystemPrompt(maxQueries)),
                     ChatApiMessage.text(
                         "user",
-                        PromptTemplates.characterResearchPlannerUserPrompt(userInput, currentCard.researchSummary())
+                        PromptTemplates.characterResearchPlannerUserPrompt(userInput)
                     )
                 ),
                 modelConfig = modelConfig,

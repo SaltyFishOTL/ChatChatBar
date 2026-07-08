@@ -37,7 +37,7 @@ class LlmResearchBriefSummarizer(
             rawResponse = chatService.completeTextStreaming(
                 messages = listOf(
                     ChatApiMessage.text("system", PromptTemplates.characterResearchBriefSystemPrompt()),
-                    ChatApiMessage.text("user", summaryUserPrompt(request, currentCard, plan, sources))
+                    ChatApiMessage.text("user", summaryUserPrompt(request, plan, sources))
                 ),
                 modelConfig = modelConfig,
                 maxTokens = 1200,
@@ -91,12 +91,10 @@ class LlmResearchBriefSummarizer(
 
     private fun summaryUserPrompt(
         request: String,
-        currentCard: CharacterCard,
         plan: CharacterResearchPlan,
         sources: List<ResearchSource>
     ): String = PromptTemplates.characterResearchBriefUserPrompt(
         request = request,
-        currentCardSummary = currentCard.researchSummary(),
         sources = sources.joinToString(separator = "\n\n") { source ->
             PromptTemplates.characterResearchBriefSource(
                 sourceId = source.sourceId,

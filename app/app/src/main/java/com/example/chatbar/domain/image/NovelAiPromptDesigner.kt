@@ -212,6 +212,43 @@ class NovelAiPromptDesigner(
         )
     }
 
+    suspend fun designForPromptTool(
+        imageDescription: String,
+        stylePrompt: String,
+        characterPrompt: String,
+        model: ModelConfig,
+        onContentDelta: (String) -> Unit = {},
+        onReasoningDelta: (String) -> Unit = {}
+    ): NovelAiPromptPlan {
+        val request = promptToolInputText(
+            imageDescription = imageDescription,
+            stylePrompt = stylePrompt,
+            characterPrompt = characterPrompt
+        )
+        require(request.isNotBlank()) { "请输入图片描述、画风或角色提示词" }
+        val systemPrompt = PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.trim()
+        val userPrompt = PromptTemplates.novelAiImagePromptConversation(
+            listOf(
+                ChatMessage.create(
+                    sessionId = PROMPT_TOOL_SESSION_ID,
+                    role = MessageRole.USER,
+                    content = request
+                )
+            )
+        )
+        val raw = streamCompletion(
+            messages = listOf(
+                ChatApiMessage.text("system", systemPrompt),
+                ChatApiMessage.text("user", userPrompt)
+            ),
+            model = model,
+            onContentDelta = onContentDelta,
+            onReasoningDelta = onReasoningDelta
+        )
+        val designed = parseOrRepair(raw, model, onContentDelta, onReasoningDelta)
+        return convert(designed)
+    }
+
     private suspend fun parseOrRepair(
         raw: String,
         model: ModelConfig,
@@ -228,6 +265,28 @@ class NovelAiPromptDesigner(
             ),
             model = model,
             onDelta = onDelta
+        )
+        return parse(repaired) ?: error("对话 AI 返回的生图 Prompt JSON 无法解析，原始内容: ${raw.take(500)}")
+    }
+
+    private suspend fun parseOrRepair(
+        raw: String,
+        model: ModelConfig,
+        onContentDelta: (String) -> Unit,
+        onReasoningDelta: (String) -> Unit
+    ): DesignedImagePrompt {
+        parse(raw)?.let { return it }
+        val repaired = streamCompletion(
+            messages = listOf(
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+                ),
+                ChatApiMessage.text("user", raw)
+            ),
+            model = model,
+            onContentDelta = onContentDelta,
+            onReasoningDelta = onReasoningDelta
         )
         return parse(repaired) ?: error("对话 AI 返回的生图 Prompt JSON 无法解析，原始内容: ${raw.take(500)}")
     }
@@ -270,6 +329,22 @@ class NovelAiPromptDesigner(
         )
     }
 
+    private suspend fun streamCompletion(
+        messages: List<ChatApiMessage>,
+        model: ModelConfig,
+        onContentDelta: (String) -> Unit,
+        onReasoningDelta: (String) -> Unit
+    ): String {
+        return collectPromptText(
+            events = chatService.streamText(
+                messages = messages,
+                modelConfig = model
+            ),
+            onDelta = onContentDelta,
+            onReasoningDelta = onReasoningDelta
+        )
+    }
+
     private fun parse(raw: String): DesignedImagePrompt? {
         val candidate = raw.trim()
             .removePrefix("```json").removePrefix("```")
@@ -295,7 +370,10 @@ class NovelAiPromptDesigner(
             return listOf(msg)
         }
 
-        internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan {
+        internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan =
+            convert(designed)
+
+        internal fun convert(designed: DesignedImagePrompt): NovelAiPromptPlan {
             val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
             val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
             val characters = designed.characters.take(6)
@@ -398,6 +476,18 @@ class NovelAiPromptDesigner(
             appendLine("[user]")
             appendLine(userPrompt)
         }.trim()
+
+        internal fun promptToolInputText(
+            imageDescription: String,
+            stylePrompt: String,
+            characterPrompt: String
+        ): String =
+            listOf(imageDescription, stylePrompt, characterPrompt)
+                .map(String::trim)
+                .filter(String::isNotBlank)
+                .joinToString("\n\n")
+
+        private const val PROMPT_TOOL_SESSION_ID = "image-prompt-tool"
     }
 }
 
@@ -417,7 +507,8 @@ internal fun CharacterCard.hasImageDesignSource(): Boolean =
 
 internal suspend fun collectPromptText(
     events: Flow<StreamEvent>,
-    onDelta: (String) -> Unit
+    onDelta: (String) -> Unit,
+    onReasoningDelta: ((String) -> Unit)? = null
 ): String {
     val content = StringBuilder()
     val reasoning = StringBuilder()
@@ -429,7 +520,11 @@ internal suspend fun collectPromptText(
             }
             is StreamEvent.ReasoningDelta -> {
                 reasoning.append(event.text)
-                onDelta("[思考] " + reasoning.toString())
+                if (onReasoningDelta != null) {
+                    onReasoningDelta(reasoning.toString())
+                } else {
+                    onDelta("[思考] " + reasoning.toString())
+                }
             }
             is StreamEvent.Error -> error(event.message)
             StreamEvent.Done -> Unit

@@ -42,6 +42,7 @@ import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.R
 import com.example.chatbar.ChatRoute
+import com.example.chatbar.ImagePromptToolRoute
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.PlayerSetting
@@ -53,6 +54,7 @@ import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbFab
 import com.example.chatbar.ui.kit.CbIcon
+import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbScaffold
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
@@ -101,6 +103,14 @@ fun HomeScreen(
                         modifier = Modifier
                             .padding(start = ChatBarSpacing.sm)
                             .size(26.dp)
+                    )
+                },
+                actions = {
+                    CbIconButton(
+                        AppIcons.Image,
+                        "跑图工具",
+                        { onNavigate(ImagePromptToolRoute) },
+                        tint = ChatBarTheme.colors.mutedForeground
                     )
                 }
             )
