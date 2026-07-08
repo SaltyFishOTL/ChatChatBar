@@ -3,6 +3,7 @@ package com.example.chatbar.ui.kit
 import androidx.compose.ui.graphics.vector.ImageVector
 import com.composables.icons.lucide.ArchiveRestore
 import com.composables.icons.lucide.ArrowLeft
+import com.composables.icons.lucide.ArrowUpToLine
 import com.composables.icons.lucide.Bug
 import com.composables.icons.lucide.Camera
 import com.composables.icons.lucide.Check
@@ -45,6 +46,8 @@ object AppIcons {
     val Add: ImageVector get() = Lucide.CirclePlus
     val AddPhotoAlternate: ImageVector get() = Lucide.ImagePlus
     val ArrowBack: ImageVector get() = Lucide.ArrowLeft
+    val ArrowUp: ImageVector get() = Lucide.ChevronUp
+    val ArrowUpToLine: ImageVector get() = Lucide.ArrowUpToLine
     val Article: ImageVector get() = Lucide.FileText
     val BugReport: ImageVector get() = Lucide.Bug
     val Chat: ImageVector get() = Lucide.MessageCircle

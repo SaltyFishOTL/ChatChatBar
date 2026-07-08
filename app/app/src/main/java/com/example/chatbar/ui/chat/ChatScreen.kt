@@ -52,8 +52,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
@@ -147,6 +149,24 @@ fun ChatScreen(
         }
     }
 
+    suspend fun scrollToPreviousMessage() {
+        val messageCount = messages.size
+        if (messageCount <= 0) return
+        val firstVisible = listState.firstVisibleItemIndex
+        val lastMessageIndex = messageCount - 1
+        val target = when {
+            firstVisible > lastMessageIndex -> lastMessageIndex
+            firstVisible > 0 -> firstVisible - 1
+            listState.firstVisibleItemScrollOffset > 0 -> 0
+            else -> 0
+        }
+        listState.animateScrollToItem(target)
+    }
+
+    suspend fun scrollToFirstMessage() {
+        if (messages.isNotEmpty()) listState.animateScrollToItem(0)
+    }
+
     val chatImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> selectedImages.add(path) } }
     }
@@ -163,6 +183,9 @@ fun ChatScreen(
             val last = info.visibleItemsInfo.lastOrNull()
             info.totalItemsCount == 0 || (last != null && last.index == info.totalItemsCount - 1 && last.offset + last.size <= info.viewportEndOffset + 16)
         }
+    }
+    val canJumpToEarlier by remember {
+        derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
     }
     val latestComplete = !isResponding && streamingMessage == null && messages.isNotEmpty()
     val backgroundPath = session?.chatBackground ?: characterCard?.chatBackground
@@ -315,6 +338,14 @@ fun ChatScreen(
                         CbSurface(color = ChatBarTheme.colors.card, shape = RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)) { TypingIndicator() }
                     }
                 }
+            }
+            if (messages.isNotEmpty()) {
+                ChatJumpControls(
+                    canJump = canJumpToEarlier,
+                    onPreviousMessage = { scope.launch { scrollToPreviousMessage() } },
+                    onFirstMessage = { scope.launch { scrollToFirstMessage() } },
+                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp)
+                )
             }
             if (!isAtBottom) {
                 Box(
@@ -469,6 +500,59 @@ fun ChatScreen(
                 CbButton("重新生成", { actionMessageId = null; viewModel.regenerateLastResponse() }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
         }
+    }
+}
+
+@Composable
+private fun ChatJumpControls(
+    canJump: Boolean,
+    onPreviousMessage: () -> Unit,
+    onFirstMessage: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    CbSurface(
+        modifier = modifier,
+        color = ChatBarTheme.colors.card.copy(alpha = 0.48f),
+        shape = RoundedCornerShape(8.dp),
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border.copy(alpha = 0.46f))
+    ) {
+        Row(Modifier.padding(1.dp), verticalAlignment = Alignment.CenterVertically) {
+            ChatJumpIconButton(
+                imageVector = AppIcons.ArrowUp,
+                contentDescription = "跳到上一条消息",
+                enabled = canJump,
+                onClick = onPreviousMessage
+            )
+            ChatJumpIconButton(
+                imageVector = AppIcons.ArrowUpToLine,
+                contentDescription = "跳到第一条消息",
+                enabled = canJump,
+                onClick = onFirstMessage
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChatJumpIconButton(
+    imageVector: ImageVector,
+    contentDescription: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    val tint = if (enabled) {
+        ChatBarTheme.colors.mutedForeground
+    } else {
+        ChatBarTheme.colors.mutedForeground.copy(alpha = 0.36f)
+    }
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .clip(RoundedCornerShape(5.dp))
+            .clickable(enabled = enabled, role = Role.Button, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        CbIcon(imageVector, contentDescription, Modifier.size(15.dp), tint)
     }
 }
 
