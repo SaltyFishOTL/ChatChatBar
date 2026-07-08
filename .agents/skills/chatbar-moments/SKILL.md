@@ -22,7 +22,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 ## Product Rules
 
 - Global `momentsEnabled` defaults false. When off, hide root 朋友圈 Tab and do not generate.
-- Character `momentsEnabled` defaults false. Character must be manually enabled.
+- Character `momentsEnabled` defaults true. Existing persisted characters with explicit false stay disabled.
 - AI judges only current timing/progress suitability. Do not judge whether character owns a phone or can post.
 - Active gate: session has user/AI exchange within 48 hours.
 - Progress gate: if previous moment exists, judge whether latest state has enough new progress.
@@ -38,6 +38,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Limits: per-card max 4 posts/day; global max 18 posts/day.
 - Catch-up generation is not separately capped; process due scheduled items one by one.
 - Count pending, completed, and failed tasks when enforcing daily schedule limits.
+- Do not double-count a generated post and its linked task for daily limits; count orphan posts only for legacy/debug data without a task.
 - Moments do not generate while app is not running. Do not use boot/package/alarm receivers to start generation in background.
 - `MomentScheduler.runOnce()` is foreground/startup catch-up path: cancel legacy alarms, ensure schedules, process due tasks, then ensure schedules again.
 - `ensureFutureSchedules()` creates real pending schedule records for preview/debug and scheduler preparation. It must not process due tasks.

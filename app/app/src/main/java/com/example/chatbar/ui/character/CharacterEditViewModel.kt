@@ -158,7 +158,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var postHistoryInstructions by mutableStateOf("")
     var mesExample by mutableStateOf("")
     var creatorNotes by mutableStateOf("")
-    var momentsEnabled by mutableStateOf(false)
+    var momentsEnabled by mutableStateOf(true)
     val charactersList = mutableStateListOf<CharacterInfo>()
     val documentsList = mutableStateListOf<DocumentInfo>()
     val selectedWorldBookIds = mutableStateListOf<String>()

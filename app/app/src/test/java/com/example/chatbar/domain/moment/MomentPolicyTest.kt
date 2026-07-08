@@ -58,17 +58,44 @@ class MomentPolicyTest {
     }
 
     @Test
-    fun newSettingsAndCharacterFields_defaultOffForOldJson() {
+    fun linkedPostAndTask_countOnlyOnceForScheduleLimits() {
+        val post = post(isPrivate = false, baseLikeCount = 0, userLiked = false).copy(
+            id = "post-linked",
+            scheduledAt = 1_000L
+        )
+        val task = task(MomentTaskStatus.COMPLETED, scheduledAt = 1_000L).copy(postId = post.id)
+
+        val scheduled = MomentPolicy.scheduledTimesForLimit(posts = listOf(post), tasks = listOf(task))
+
+        assertEquals(listOf(1_000L), scheduled)
+    }
+
+    @Test
+    fun orphanPost_stillCountsForScheduleLimits() {
+        val post = post(isPrivate = false, baseLikeCount = 0, userLiked = false).copy(scheduledAt = 1_000L)
+        val task = task(MomentTaskStatus.PENDING, scheduledAt = 2_000L)
+
+        val scheduled = MomentPolicy.scheduledTimesForLimit(posts = listOf(post), tasks = listOf(task))
+
+        assertEquals(listOf(2_000L, 1_000L), scheduled)
+    }
+
+    @Test
+    fun newSettingsDefaultOffAndCharacterDefaultOnForOldJson() {
         val json = Json { ignoreUnknownKeys = true }
 
         val settings = json.decodeFromString<AppSettings>("{}")
         val card = json.decodeFromString<CharacterCard>(
             """{"id":"card","name":"角色","createdAt":1,"updatedAt":1}"""
         )
+        val disabledCard = json.decodeFromString<CharacterCard>(
+            """{"id":"card-disabled","name":"角色","momentsEnabled":false,"createdAt":1,"updatedAt":1}"""
+        )
 
         assertFalse(settings.momentsEnabled)
         assertFalse(settings.momentsAutoStartConfirmed)
-        assertFalse(card.momentsEnabled)
+        assertTrue(card.momentsEnabled)
+        assertFalse(disabledCard.momentsEnabled)
     }
 
     @Test

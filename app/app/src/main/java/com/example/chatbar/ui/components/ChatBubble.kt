@@ -7,10 +7,13 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -32,6 +35,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -86,7 +90,13 @@ fun ChatBubble(
     onImageClick: ((String) -> Unit)? = null,
     onImageLongPress: ((String) -> Unit)? = null,
     onGenerateImage: (() -> Unit)? = null,
-    imageGenerationEnabled: Boolean = true
+    imageGenerationEnabled: Boolean = true,
+    selectionMode: Boolean = false,
+    selected: Boolean = false,
+    selectionEnabled: Boolean = true,
+    onToggleSelected: (() -> Unit)? = null,
+    showActions: Boolean = true,
+    exportMode: Boolean = false
 ) {
     val isUser = message.role == MessageRole.USER
     val shape = RoundedCornerShape(
@@ -98,52 +108,80 @@ fun ChatBubble(
     val contentSegments = remember(message.id, message.currentAlternativeIndex, message.displayContent) {
         parseRoleplayContent(message.displayContent)
     }
-    Column(
-        modifier = modifier.fillMaxWidth().padding(vertical = 5.dp),
-        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    val canToggleSelection = selectionMode && onToggleSelected != null && (selectionEnabled || selected)
+    Box(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .let {
+                if (selectionMode && onToggleSelected != null) {
+                    it.combinedClickable(
+                        enabled = canToggleSelection,
+                        onClick = { onToggleSelected() },
+                        onLongClick = {}
+                    )
+                } else {
+                    it
+                }
+            }
     ) {
         Column(
-            Modifier
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+        ) {
+            Column(
+                Modifier
                 .widthIn(max = 300.dp)
                 .background(
                     (if (isUser) ChatBarTheme.colors.primary else ChatBarTheme.colors.card)
                         .copy(alpha = 0.6f),
                     shape
                 )
-                .combinedClickable(
-                    enabled = onLongPress != null,
-                    onClick = {},
-                    onLongClick = { onLongPress?.invoke() }
-                )
+                .let {
+                    if (selected) {
+                        it.border(1.5.dp, ChatBarTheme.colors.primary, shape)
+                    } else {
+                        it
+                    }
+                }
+                .let {
+                    if (selectionMode && onToggleSelected != null) {
+                        it.combinedClickable(
+                            enabled = canToggleSelection,
+                            onClick = { onToggleSelected() },
+                            onLongClick = {}
+                        )
+                    } else {
+                        it.combinedClickable(
+                            enabled = onLongPress != null,
+                            onClick = {},
+                            onLongClick = { onLongPress?.invoke() }
+                        )
+                    }
+                }
                 .semantics {
                     contentDescription = if (isUser) "用户消息" else "助手消息"
                 }
                 .padding(horizontal = 12.dp, vertical = 10.dp)
-        ) {
-            message.images.forEach { imagePath ->
-                val imageRatio = remember(imagePath) { imageAspectRatio(imagePath) }
-                AsyncImage(
-                    model = File(imagePath),
-                    contentDescription = "消息图片",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(bottom = 8.dp)
-                        .aspectRatio(imageRatio)
-                        .clip(RoundedCornerShape(8.dp))
-                        .combinedClickable(
-                            onClick = { onImageClick?.invoke(imagePath) },
-                            onLongClick = { onImageLongPress?.invoke(imagePath) }
-                        ),
-                    contentScale = ContentScale.Fit
-                )
-            }
-            if (!isUser && !message.reasoningContent.isNullOrBlank()) {
+            ) {
+                message.images.forEach { imagePath ->
+                    MessageImage(
+                        imagePath = imagePath,
+                        selectionMode = selectionMode,
+                        exportMode = exportMode,
+                        onImageClick = onImageClick,
+                        onImageLongPress = onImageLongPress
+                    )
+                }
+                if (!isUser && !message.reasoningContent.isNullOrBlank()) {
                 var expanded by remember(message.id) { mutableStateOf(false) }
+                val reasoningInteractive = !selectionMode && !exportMode
                 Column(
                     Modifier
                         .padding(bottom = 8.dp)
                         .background(ChatBarTheme.colors.accent, RoundedCornerShape(8.dp))
                         .combinedClickable(
+                            enabled = reasoningInteractive,
                             onClick = { expanded = !expanded },
                             onLongClick = { onLongPress?.invoke() }
                         )
@@ -173,89 +211,92 @@ fun ChatBubble(
                         }
                     }
                 }
-            }
-            val context = LocalContext.current
-            val foregroundColor = ChatBarTheme.colors.foreground
-            val primaryColor = ChatBarTheme.colors.primary
-            val appContext = context.applicationContext
-            val markwon = remember(appContext) {
-                Markwon.builder(appContext)
-                    .usePlugin(HtmlPlugin.create())
-                    .usePlugin(object : AbstractMarkwonPlugin() {
-                        override fun configureTheme(builder: MarkwonTheme.Builder) {
-                            builder.linkColor(primaryColor.toArgb())
-                            builder.isLinkUnderlined(false)
-                        }
-                    })
-                    .build()
-            }
-            contentSegments.forEachIndexed { index, segment ->
-                key(message.id, message.currentAlternativeIndex, index) {
-                    when (segment) {
-                        is RoleplayContentSegment.Markdown -> AndroidView(
-                            factory = { ctx ->
-                                TextView(ctx).apply {
-                                    textSize = 14f * fontScale
-                                    setLineSpacing(2f, 1.08f)
-                                    linksClickable = false
-                                    isClickable = false
-                                    isLongClickable = false
-                                }
-                            },
-                            update = { textView ->
-                                textView.setOnClickListener(null)
-                                textView.setOnLongClickListener(null)
-                                textView.isClickable = false
-                                textView.isLongClickable = false
-                                textView.setTextColor(if (isUser) Color.White.toArgb() else foregroundColor.toArgb())
-                                markwon.setMarkdown(textView, sanitizeRoleplayMarkdown(segment.text, true))
-                                applyAccentColorToMarkedRanges(textView, primaryColor.toArgb())
-                                textView.linksClickable = false
-                                textView.movementMethod = null
+                }
+                val context = LocalContext.current
+                val foregroundColor = ChatBarTheme.colors.foreground
+                val primaryColor = ChatBarTheme.colors.primary
+                val appContext = context.applicationContext
+                val markwon = remember(appContext) {
+                    Markwon.builder(appContext)
+                        .usePlugin(HtmlPlugin.create())
+                        .usePlugin(object : AbstractMarkwonPlugin() {
+                            override fun configureTheme(builder: MarkwonTheme.Builder) {
+                                builder.linkColor(primaryColor.toArgb())
+                                builder.isLinkUnderlined(false)
                             }
-                        )
-                        is RoleplayContentSegment.Status -> RoleplayStatusPanel(
-                            text = segment.text,
-                            onLongPress = onLongPress
-                        )
+                        })
+                        .build()
+                }
+                contentSegments.forEachIndexed { index, segment ->
+                    key(message.id, message.currentAlternativeIndex, index) {
+                        when (segment) {
+                            is RoleplayContentSegment.Markdown -> AndroidView(
+                                factory = { ctx ->
+                                    TextView(ctx).apply {
+                                        textSize = 14f * fontScale
+                                        setLineSpacing(2f, 1.08f)
+                                        linksClickable = false
+                                        isClickable = false
+                                        isLongClickable = false
+                                    }
+                                },
+                                update = { textView ->
+                                    textView.setOnClickListener(null)
+                                    textView.setOnLongClickListener(null)
+                                    textView.isClickable = false
+                                    textView.isLongClickable = false
+                                    textView.setTextColor(if (isUser) Color.White.toArgb() else foregroundColor.toArgb())
+                                    markwon.setMarkdown(textView, sanitizeRoleplayMarkdown(segment.text, true))
+                                    applyAccentColorToMarkedRanges(textView, primaryColor.toArgb())
+                                    textView.linksClickable = false
+                                    textView.movementMethod = null
+                                }
+                            )
+                            is RoleplayContentSegment.Status -> RoleplayStatusPanel(
+                                text = segment.text,
+                                onLongPress = onLongPress,
+                                interactive = !selectionMode && !exportMode
+                            )
+                        }
                     }
                 }
             }
-        }
-        Row(
-            modifier = Modifier.fillMaxWidth().widthIn(max = 300.dp).padding(top = 3.dp, start = 8.dp, end = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(6.dp)
-        ) {
-            CbText(
-                timeFormatter.format(Date(message.createdAt)),
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
-            )
-            if (!isUser && message.alternatives.size > 1 && onPreviousAlternative != null && onNextAlternative != null) {
-                val canPrevious = message.currentAlternativeIndex > 0
-                val canNext = message.currentAlternativeIndex < message.alternatives.lastIndex
-                CbSurface(shape = RoundedCornerShape(8.dp), color = ChatBarTheme.colors.accent) {
-                    Row(Modifier.padding(horizontal = 7.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CbText("‹", color = if (canPrevious) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canPrevious) { onPreviousAlternative() })
-                        CbText("${message.currentAlternativeIndex + 1}/${message.alternatives.size}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-                        CbText("›", color = if (canNext) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canNext) { onNextAlternative() })
+            Row(
+                modifier = Modifier.fillMaxWidth().widthIn(max = 300.dp).padding(top = 3.dp, start = 8.dp, end = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                CbText(
+                    timeFormatter.format(Date(message.createdAt)),
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                if (showActions && !isUser && message.alternatives.size > 1 && onPreviousAlternative != null && onNextAlternative != null) {
+                    val canPrevious = message.currentAlternativeIndex > 0
+                    val canNext = message.currentAlternativeIndex < message.alternatives.lastIndex
+                    CbSurface(shape = RoundedCornerShape(8.dp), color = ChatBarTheme.colors.accent) {
+                        Row(Modifier.padding(horizontal = 7.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CbText("‹", color = if (canPrevious) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canPrevious) { onPreviousAlternative() })
+                            CbText("${message.currentAlternativeIndex + 1}/${message.alternatives.size}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                            CbText("›", color = if (canNext) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canNext) { onNextAlternative() })
+                        }
                     }
                 }
-            }
-            Spacer(Modifier.weight(1f))
-            val clipboardManager = LocalClipboardManager.current
-            val ctx = LocalContext.current
-            CbIconButton(
-                AppIcons.ContentCopy,
-                "复制消息",
-                onClick = {
-                    clipboardManager.setText(AnnotatedString(message.displayContent))
-                    Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
-                },
-                tint = ChatBarTheme.colors.mutedForeground
-            )
-            if (!isUser && onGenerateImage != null) {
+                Spacer(Modifier.weight(1f))
+                val clipboardManager = LocalClipboardManager.current
+                val ctx = LocalContext.current
+                if (showActions) {
+                    CbIconButton(
+                        AppIcons.ContentCopy,
+                        "复制消息",
+                        onClick = {
+                            clipboardManager.setText(AnnotatedString(message.displayContent))
+                            Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                        },
+                        tint = ChatBarTheme.colors.mutedForeground
+                    )
+                }
+                if (showActions && !isUser && onGenerateImage != null) {
                 CbIconButton(
                     AppIcons.Image,
                     "根据此消息生成图片",
@@ -263,14 +304,111 @@ fun ChatBubble(
                     enabled = imageGenerationEnabled,
                     tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
                 )
+                }
             }
+        }
+        if (selectionMode) {
+            Box(
+                Modifier
+                    .matchParentSize()
+                    .combinedClickable(
+                        enabled = canToggleSelection,
+                        onClick = { onToggleSelected?.invoke() },
+                        onLongClick = {}
+                    )
+            )
+            SelectionMark(
+                selected = selected,
+                enabled = selectionEnabled || selected,
+                modifier = Modifier
+                    .align(if (isUser) Alignment.TopEnd else Alignment.TopStart)
+                    .padding(top = 2.dp, start = if (isUser) 0.dp else 2.dp, end = if (isUser) 2.dp else 0.dp)
+            )
         }
     }
 }
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
+private fun MessageImage(
+    imagePath: String,
+    selectionMode: Boolean,
+    exportMode: Boolean,
+    onImageClick: ((String) -> Unit)?,
+    onImageLongPress: ((String) -> Unit)?
+) {
+    val imageRatio = remember(imagePath) { imageAspectRatio(imagePath) }
+    val imageModifier = Modifier
+        .fillMaxWidth()
+        .padding(bottom = 8.dp)
+        .aspectRatio(imageRatio)
+        .clip(RoundedCornerShape(8.dp))
+    if (exportMode) {
+        val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath)?.asImageBitmap() }
+        if (bitmap != null) {
+            Image(
+                bitmap = bitmap,
+                contentDescription = "消息图片",
+                modifier = imageModifier,
+                contentScale = ContentScale.Fit
+            )
+        } else {
+            CbSurface(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp).padding(bottom = 8.dp),
+                color = ChatBarTheme.colors.muted,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                CbText(
+                    "图片文件不存在",
+                    modifier = Modifier.padding(12.dp),
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+        }
+    } else {
+        AsyncImage(
+            model = File(imagePath),
+            contentDescription = "消息图片",
+            modifier = imageModifier.combinedClickable(
+                enabled = !selectionMode,
+                onClick = { onImageClick?.invoke(imagePath) },
+                onLongClick = { onImageLongPress?.invoke(imagePath) }
+            ),
+            contentScale = ContentScale.Fit
+        )
+    }
+}
+
+@Composable
+private fun SelectionMark(selected: Boolean, enabled: Boolean, modifier: Modifier = Modifier) {
+    val borderColor = if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border
+    val fillColor = when {
+        selected -> ChatBarTheme.colors.primary
+        enabled -> ChatBarTheme.colors.card
+        else -> ChatBarTheme.colors.muted
+    }
+    Box(
+        modifier = modifier
+            .size(24.dp)
+            .clip(RoundedCornerShape(12.dp))
+            .background(fillColor)
+            .border(1.dp, borderColor, RoundedCornerShape(12.dp)),
+        contentAlignment = Alignment.Center
+    ) {
+        if (selected) {
+            CbIcon(AppIcons.Check, "已选中", Modifier.size(15.dp), ChatBarTheme.colors.primaryForeground)
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun RoleplayStatusPanel(
+    text: String,
+    onLongPress: (() -> Unit)?,
+    interactive: Boolean = true
+) {
     var expanded by remember(text) { mutableStateOf(false) }
     Column(
         Modifier
@@ -278,6 +416,7 @@ private fun RoleplayStatusPanel(text: String, onLongPress: (() -> Unit)?) {
             .padding(top = 6.dp)
             .background(ChatBarTheme.colors.accent.copy(alpha = 0.78f), RoundedCornerShape(8.dp))
             .combinedClickable(
+                enabled = interactive,
                 onClick = { expanded = !expanded },
                 onLongClick = { onLongPress?.invoke() }
             )

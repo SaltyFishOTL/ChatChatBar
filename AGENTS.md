@@ -30,6 +30,15 @@ Use PowerShell from `app/`:
 - `ci.ps1 -SkipAssemble`: tests plus Android test compilation.
 - `ci.ps1`: full local verification. JDK 17 required.
 
+## Post-Change Device Testing
+
+After completing a feature or fix, if `adb devices -l` shows a connected Android device, automatically rebuild, reinstall, and launch ChatBar for manual testing. Use data-preserving install only:
+
+- Release-owned installs: run `.\redeploy.bat --no-pause` from the project root.
+- Current debug/test install state: run `.\gradlew.bat assembleDebug` from `app/`, then `adb install --no-streaming -r -d app/app/build/outputs/apk/debug/app-debug.apk`, then `adb shell am start -n com.example.chatbar/.MainActivity`.
+
+Stop on `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Do not uninstall, clear data, or switch signing keys unless the user explicitly confirms the data risk.
+
 ## Coding Style & Naming Conventions
 
 Use Kotlin with standard 4-space indentation. Keep package names under `com.example.chatbar`. Name Compose screens `*Screen`, ViewModels `*ViewModel`, factories `*ViewModelFactory`, repositories `*Repository`, and tests `*Test`. Prefer existing `ui/kit` components and app theme primitives before adding new UI styles. Keep domain logic out of Composables; place chat, RAG, model, card, and image behavior in `domain/`.

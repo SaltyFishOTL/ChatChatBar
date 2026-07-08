@@ -23,6 +23,7 @@ import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.moment.MomentAlarmScheduler
 import com.example.chatbar.domain.moment.MomentBackgroundReliability
 import com.example.chatbar.domain.moment.MomentDebugGenerationResult
+import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -732,11 +733,16 @@ class ManageViewModel : ViewModel() {
             )
         }
 
+        val cards = characterRepository.getAll()
+        val enabledCards = cards.filter { it.momentsEnabled }
+        val enabledCardIds = enabledCards.map { it.id }.toSet()
+        val sessions = chatRepository.getAllSessions()
         ChatBarApp.instance.momentScheduler.ensureFutureSchedules("manage-preview", now)
         val horizon = now + MOMENT_SCHEDULE_PREVIEW_WINDOW_MS
-        val cardsById = characterRepository.getAll().associateBy { it.id }
-        val sessionsById = chatRepository.getAllSessions().associateBy { it.id }
-        val items = momentRepository.getAllTasks()
+        val cardsById = cards.associateBy { it.id }
+        val sessionsById = sessions.associateBy { it.id }
+        val allTasks = momentRepository.getAllTasks()
+        val items = allTasks
             .filter { it.status == MomentTaskStatus.PENDING && it.scheduledAt in now..horizon }
             .sortedBy { it.scheduledAt }
             .map { task ->
@@ -754,11 +760,31 @@ class ManageViewModel : ViewModel() {
                     }
                 )
             }
+        val activeEnabledCardIds = sessions
+            .filter { session ->
+                session.characterCardId in enabledCardIds &&
+                    MomentPolicy.isRecentlyActive(session.lastMessageTime, now)
+            }
+            .map { it.characterCardId }
+            .toSet()
+        val nextPendingOutsideWindow = allTasks
+            .filter {
+                it.characterCardId in enabledCardIds &&
+                    it.status == MomentTaskStatus.PENDING &&
+                    it.scheduledAt > horizon
+            }
+            .minByOrNull { it.scheduledAt }
 
         return MomentSchedulePreviewUiState(
             generatedAt = now,
             items = items,
-            message = if (items.isEmpty()) "未来 12 小时暂无已排到的朋友圈。" else null
+            message = when {
+                items.isNotEmpty() -> null
+                enabledCards.isEmpty() -> "全局朋友圈已开启，但还没有角色卡开启朋友圈。请在角色卡编辑页开启。"
+                activeEnabledCardIds.isEmpty() -> "已开启朋友圈的角色暂无 48 小时内活跃会话，暂不排程。"
+                nextPendingOutsideWindow != null -> "未来 12 小时暂无已排到的朋友圈；下一条任务在 12 小时窗口之外。"
+                else -> "未来 12 小时暂无已排到的朋友圈。"
+            }
         )
     }
 

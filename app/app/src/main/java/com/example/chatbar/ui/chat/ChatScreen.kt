@@ -55,10 +55,13 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
@@ -70,6 +73,8 @@ import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.TypingIndicator
+import com.example.chatbar.ui.components.saveImageToGallery
+import com.example.chatbar.ui.components.shareImage
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
@@ -83,6 +88,7 @@ import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -112,6 +118,8 @@ fun ChatScreen(
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val context = LocalContext.current
+    val rootView = LocalView.current
 
     var input by remember(sessionId) { mutableStateOf(TextFieldValue("")) }
     val selectedImages = remember { mutableStateListOf<String>() }
@@ -128,6 +136,13 @@ fun ChatScreen(
     var viewportAnchor by remember { mutableStateOf(0 to 0) }
     var restoringViewport by remember { mutableStateOf(false) }
     var initialScrollDone by remember(sessionId) { mutableStateOf(false) }
+    var screenshotSelectionMode by remember(sessionId) { mutableStateOf(false) }
+    var selectedScreenshotMessageIds by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
+    var screenshotHeightPx by remember(sessionId) { mutableStateOf(0) }
+    var screenshotHeightMeasuring by remember(sessionId) { mutableStateOf(false) }
+    var screenshotGenerating by remember(sessionId) { mutableStateOf(false) }
+    var screenshotPreviewPath by remember(sessionId) { mutableStateOf<String?>(null) }
+    var screenshotPreviewName by remember(sessionId) { mutableStateOf<String?>(null) }
 
     LaunchedEffect(draftInput) {
         if (input.text != draftInput) {
@@ -176,6 +191,14 @@ fun ChatScreen(
 
     BackHandler(enabled = editingMessage != null) { editingMessage = null; editingImages.clear() }
     BackHandler(enabled = fullComposer) { fullComposer = false }
+    BackHandler(enabled = screenshotPreviewPath != null) {
+        screenshotPreviewPath = null
+        screenshotPreviewName = null
+    }
+    BackHandler(enabled = screenshotSelectionMode && screenshotPreviewPath == null) {
+        screenshotSelectionMode = false
+        selectedScreenshotMessageIds = emptySet()
+    }
 
     val isAtBottom by remember {
         derivedStateOf {
@@ -206,9 +229,170 @@ fun ChatScreen(
         val anchorId = imageGeneration?.anchorMessageId
         anchorId != null && messages.any { it.id == anchorId }
     }
+    val selectableScreenshotIds = remember(messages) {
+        messages.filter(ChatMessage::isSelectableForChatScreenshot).map { it.id }.toSet()
+    }
+    val screenshotHeightLimitReached = screenshotHeightPx >= CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX
+
+    fun screenshotWidthPx(): Int =
+        rootView.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
+
+    fun renderedScreenshotMessages(ids: Set<String>): List<ChatMessage> =
+        orderedChatScreenshotMessages(messages, ids).map { message ->
+            PlaceholderRenderer.renderMessage(message, renderPlayerName, renderBotName)
+        }
+
+    suspend fun measureScreenshotHeight(ids: Set<String>): Int {
+        val renderedMessages = renderedScreenshotMessages(ids)
+        if (renderedMessages.isEmpty()) return 0
+        return measureChatLongScreenshotHeight(
+            context = context,
+            request = ChatLongScreenshotRequest(
+                title = renderedTitle,
+                messages = renderedMessages,
+                backgroundPath = backgroundPath,
+                widthPx = screenshotWidthPx(),
+                fontScale = bubbleFontScale,
+                fileName = "measure.png"
+            )
+        )
+    }
+
+    fun showScreenshotHeightLimitToast(heightPx: Int) {
+        Toast.makeText(
+            context,
+            "已选高度 ${heightPx}px 超过上限 ${CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX}px，请少选一点",
+            Toast.LENGTH_SHORT
+        ).show()
+    }
+
+    fun applyScreenshotSelectionAfterHeightCheck(nextIds: Set<String>) {
+        if (nextIds.isEmpty()) {
+            selectedScreenshotMessageIds = emptySet()
+            screenshotHeightPx = 0
+            return
+        }
+        scope.launch {
+            screenshotHeightMeasuring = true
+            try {
+                val height = measureScreenshotHeight(nextIds)
+                if (height > CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX) {
+                    showScreenshotHeightLimitToast(height)
+                } else {
+                    screenshotSelectionMode = true
+                    selectedScreenshotMessageIds = nextIds
+                    screenshotHeightPx = height
+                }
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                Toast.makeText(context, "测量长截图高度失败: ${error.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                screenshotHeightMeasuring = false
+            }
+        }
+    }
+
+    fun toggleScreenshotSelection(messageId: String) {
+        val nextIds = toggleChatScreenshotSelection(
+            currentIds = selectedScreenshotMessageIds,
+            messageId = messageId,
+            selectableIds = selectableScreenshotIds
+        )
+        if (messageId in selectedScreenshotMessageIds) {
+            selectedScreenshotMessageIds = nextIds
+            if (nextIds.isEmpty()) screenshotHeightPx = 0
+        } else {
+            applyScreenshotSelectionAfterHeightCheck(nextIds)
+        }
+    }
+
+    fun enterScreenshotSelection(messageId: String) {
+        if (messageId !in selectableScreenshotIds) {
+            Toast.makeText(context, "这条消息不能加入长截图", Toast.LENGTH_SHORT).show()
+            return
+        }
+        applyScreenshotSelectionAfterHeightCheck(setOf(messageId))
+    }
+
+    fun exitScreenshotSelection() {
+        screenshotSelectionMode = false
+        selectedScreenshotMessageIds = emptySet()
+        screenshotHeightPx = 0
+        screenshotHeightMeasuring = false
+        screenshotPreviewPath = null
+        screenshotPreviewName = null
+    }
+
+    fun previewLongScreenshot() {
+        val selectedMessages = orderedChatScreenshotMessages(messages, selectedScreenshotMessageIds)
+        if (selectedMessages.isEmpty()) {
+            Toast.makeText(context, "请选择至少一条消息", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val renderedMessages = renderedScreenshotMessages(selectedScreenshotMessageIds)
+        val widthPx = screenshotWidthPx()
+        val fileName = buildChatScreenshotFileName(renderedTitle)
+        scope.launch {
+            screenshotGenerating = true
+            try {
+                val measuredHeight = measureScreenshotHeight(selectedScreenshotMessageIds)
+                screenshotHeightPx = measuredHeight
+                if (measuredHeight > CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX) {
+                    showScreenshotHeightLimitToast(measuredHeight)
+                    return@launch
+                }
+                val file = renderChatLongScreenshot(
+                    context = context,
+                    request = ChatLongScreenshotRequest(
+                        title = renderedTitle,
+                        messages = renderedMessages,
+                        backgroundPath = backgroundPath,
+                        widthPx = widthPx,
+                        fontScale = bubbleFontScale,
+                        fileName = fileName
+                    )
+                )
+                screenshotPreviewPath = file.absolutePath
+                screenshotPreviewName = file.name
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                Toast.makeText(context, "长截图生成失败: ${error.message}", Toast.LENGTH_SHORT).show()
+            } finally {
+                screenshotGenerating = false
+            }
+        }
+    }
 
     LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) {
         if (!restoringViewport) viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+    }
+    LaunchedEffect(messages) {
+        val cleaned = cleanChatScreenshotSelection(selectedScreenshotMessageIds, messages)
+        if (cleaned != selectedScreenshotMessageIds) selectedScreenshotMessageIds = cleaned
+    }
+    LaunchedEffect(
+        screenshotSelectionMode,
+        selectedScreenshotMessageIds,
+        messages,
+        renderedTitle,
+        backgroundPath,
+        bubbleFontScale,
+        renderPlayerName,
+        renderBotName
+    ) {
+        if (!screenshotSelectionMode || selectedScreenshotMessageIds.isEmpty()) {
+            screenshotHeightPx = 0
+            return@LaunchedEffect
+        }
+        screenshotHeightMeasuring = true
+        try {
+            screenshotHeightPx = measureScreenshotHeight(selectedScreenshotMessageIds)
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            Toast.makeText(context, "测量长截图高度失败: ${error.message}", Toast.LENGTH_SHORT).show()
+        } finally {
+            screenshotHeightMeasuring = false
+        }
     }
     LaunchedEffect(messages.size) {
         if (!initialScrollDone && messages.isNotEmpty()) {
@@ -289,24 +473,34 @@ fun ChatScreen(
                     val renderedMessage = remember(message, renderPlayerName, renderBotName) {
                         PlaceholderRenderer.renderMessage(message, renderPlayerName, renderBotName)
                     }
+                    val selectableForScreenshot = message.isSelectableForChatScreenshot()
+                    val selectedForScreenshot = message.id in selectedScreenshotMessageIds
+                    val screenshotSelectionEnabled = selectedForScreenshot ||
+                        (!screenshotHeightMeasuring && !screenshotHeightLimitReached)
                     ChatBubble(
                         message = renderedMessage,
                         fontScale = bubbleFontScale,
-                        onLongPress = { if (!isResponding) actionMessageId = message.id },
-                        onImageClick = { expandedImagePath = it },
+                        onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
+                        onImageClick = if (screenshotSelectionMode) null else ({ path -> expandedImagePath = path }),
                         onImageLongPress = { path ->
-                            if (!isResponding) deleteImageTarget = message.id to path
+                            if (!isResponding && !screenshotSelectionMode) deleteImageTarget = message.id to path
                         },
-                        onPreviousAlternative = if (message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, -1) }) else null,
-                        onNextAlternative = if (message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, 1) }) else null,
+                        onPreviousAlternative = if (!screenshotSelectionMode && message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, -1) }) else null,
+                        onNextAlternative = if (!screenshotSelectionMode && message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, 1) }) else null,
                         onGenerateImage = if (
+                            !screenshotSelectionMode &&
                             novelAiConfigured &&
                             !isArchived &&
                             isModelUsable &&
                             renderedMessage.role == MessageRole.ASSISTANT &&
                             renderedMessage.displayContent.isNotBlank()
                         ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
-                        imageGenerationEnabled = !imageGenerationRunning
+                        imageGenerationEnabled = !imageGenerationRunning,
+                        selectionMode = screenshotSelectionMode && selectableForScreenshot,
+                        selected = selectedForScreenshot,
+                        selectionEnabled = screenshotSelectionEnabled,
+                        onToggleSelected = if (selectableForScreenshot) ({ toggleScreenshotSelection(message.id) }) else null,
+                        showActions = !screenshotSelectionMode
                     )
                     imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
                         NovelAiGenerationCard(generation,
@@ -385,24 +579,37 @@ fun ChatScreen(
                 )
             }
         }
-        if (selectedImages.isNotEmpty()) ImageStrip(selectedImages, { selectedImages.remove(it) })
-        ChatComposer(
-            input = input,
-            onInput = {
-                input = it
-                viewModel.updateDraftInput(it.text)
-            },
-            responding = isResponding,
-            enabled = !isArchived && isModelUsable,
-            onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-            onFull = { fullComposer = true },
-            onCancel = viewModel::cancelResponseGeneration,
-            onSend = {
-                if (viewModel.sendMessage(input.text, selectedImages.toList())) {
-                    input = TextFieldValue(""); selectedImages.clear()
+        if (screenshotSelectionMode) {
+            ChatScreenshotSelectionBar(
+                selectedHeightPx = screenshotHeightPx,
+                heightLimitPx = CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX,
+                generating = screenshotGenerating,
+                onPreview = { previewLongScreenshot() },
+                onCancel = { exitScreenshotSelection() },
+                previewEnabled = selectedScreenshotMessageIds.isNotEmpty() &&
+                    screenshotHeightPx in 1..CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX &&
+                    !screenshotHeightMeasuring
+            )
+        } else {
+            if (selectedImages.isNotEmpty()) ImageStrip(selectedImages, { selectedImages.remove(it) })
+            ChatComposer(
+                input = input,
+                onInput = {
+                    input = it
+                    viewModel.updateDraftInput(it.text)
+                },
+                responding = isResponding,
+                enabled = !isArchived && isModelUsable,
+                onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                onFull = { fullComposer = true },
+                onCancel = viewModel::cancelResponseGeneration,
+                onSend = {
+                    if (viewModel.sendMessage(input.text, selectedImages.toList())) {
+                        input = TextFieldValue(""); selectedImages.clear()
+                    }
                 }
-            }
-        )
+            )
+        }
     }
 
     if (settingsOpen) ChatSettingsDialog(viewModel, { settingsOpen = false }, { clearConfirm = true })
@@ -442,7 +649,6 @@ fun ChatScreen(
         }
     }
     expandedImagePath?.let { path ->
-        val context = LocalContext.current
         ImagePreviewDialog(
             path = path,
             onDismiss = { expandedImagePath = null },
@@ -456,6 +662,17 @@ fun ChatScreen(
                     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                 }
             }) else null
+        )
+    }
+    screenshotPreviewPath?.let { path ->
+        ChatLongScreenshotPreviewDialog(
+            path = path,
+            onDismiss = {
+                screenshotPreviewPath = null
+                screenshotPreviewName = null
+            },
+            onSave = { saveImageToGallery(context, path, screenshotPreviewName) },
+            onShare = { shareImage(context, path, "分享长截图") }
         )
     }
     deleteImageTarget?.let { (messageId, path) ->
@@ -491,6 +708,13 @@ fun ChatScreen(
                 target?.let { editingMessage = it; editingText = TextFieldValue(it.displayContent); editingImages.clear(); editingImages.addAll(it.images) }
                 actionMessageId = null
             }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
+            target?.takeIf { it.isSelectableForChatScreenshot() }?.let {
+                Spacer(Modifier.size(8.dp))
+                CbButton("多选", {
+                    enterScreenshotSelection(it.id)
+                    actionMessageId = null
+                }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+            }
             Spacer(Modifier.size(8.dp))
             target?.let {
                 CbButton("删除", { viewModel.deleteMessage(it.id); actionMessageId = null }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
@@ -553,6 +777,89 @@ private fun ChatJumpIconButton(
         contentAlignment = Alignment.Center
     ) {
         CbIcon(imageVector, contentDescription, Modifier.size(15.dp), tint)
+    }
+}
+
+@Composable
+private fun ChatScreenshotSelectionBar(
+    selectedHeightPx: Int,
+    heightLimitPx: Int,
+    generating: Boolean,
+    onPreview: () -> Unit,
+    onCancel: () -> Unit,
+    previewEnabled: Boolean
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(ChatBarTheme.colors.card)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .padding(horizontal = 12.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (generating) CbSpinner(Modifier.size(18.dp))
+        Column(Modifier.weight(1f)) {
+            CbText(
+                "已选高度 ${formatScreenshotHeightPx(selectedHeightPx)} / ${formatScreenshotHeightPx(heightLimitPx)}",
+                style = ChatBarTheme.typography.label
+            )
+            if (selectedHeightPx >= heightLimitPx) {
+                CbText("已达高度上限", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+        }
+        CbButton(
+            "取消",
+            onCancel,
+            enabled = !generating,
+            variant = ButtonVariant.Ghost
+        )
+        CbButton(
+            "预览长截图",
+            onPreview,
+            enabled = previewEnabled && !generating
+        )
+    }
+}
+
+private fun formatScreenshotHeightPx(heightPx: Int): String = "${heightPx.coerceAtLeast(0)}px"
+
+@Composable
+private fun ChatLongScreenshotPreviewDialog(
+    path: String,
+    onDismiss: () -> Unit,
+    onSave: () -> Unit,
+    onShare: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        Box(Modifier.fillMaxSize().background(Color.Black)) {
+            AsyncImage(
+                model = File(path),
+                contentDescription = "长截图预览",
+                modifier = Modifier.fillMaxSize().padding(bottom = 76.dp),
+                contentScale = ContentScale.Fit
+            )
+            Row(
+                Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .background(ChatBarTheme.colors.card)
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+                    .padding(12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbButton("保存", onSave, modifier = Modifier.weight(1f))
+                CbButton("分享", onShare, modifier = Modifier.weight(1f), variant = ButtonVariant.Secondary)
+                CbButton("关闭", onDismiss, modifier = Modifier.weight(1f), variant = ButtonVariant.Ghost)
+            }
+        }
     }
 }
 

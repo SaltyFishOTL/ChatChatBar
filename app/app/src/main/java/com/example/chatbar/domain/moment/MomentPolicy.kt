@@ -52,8 +52,18 @@ object MomentPolicy {
             task.status == MomentTaskStatus.COMPLETED ||
             task.status == MomentTaskStatus.FAILED
 
-    fun scheduledTimesForLimit(posts: List<MomentPost>, tasks: List<MomentTask>): List<Long> =
-        posts.map { it.scheduledAt } + tasks.filter(::shouldCountTask).map { it.scheduledAt }
+    fun scheduledTimesForLimit(posts: List<MomentPost>, tasks: List<MomentTask>): List<Long> {
+        val countedTasks = tasks.filter(::shouldCountTask)
+        val taskPostIds = countedTasks.mapNotNull { it.postId }.toSet()
+        val orphanPosts = posts.filterNot { post ->
+            post.id in taskPostIds ||
+                countedTasks.any { task ->
+                    task.characterCardId == post.characterCardId &&
+                        task.scheduledAt == post.scheduledAt
+                }
+        }
+        return countedTasks.map { it.scheduledAt } + orphanPosts.map { it.scheduledAt }
+    }
 
     private const val DAY_MS = 24L * 60L * 60L * 1000L
 }
