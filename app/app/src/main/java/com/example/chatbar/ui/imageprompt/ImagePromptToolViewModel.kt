@@ -3,6 +3,7 @@ package com.example.chatbar.ui.imageprompt
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
@@ -33,6 +34,8 @@ data class ImagePromptToolUiState(
     val imageDescription: String = "",
     val stylePrompt: String = "",
     val characterPrompt: String = "",
+    val characterCards: List<CharacterCard> = emptyList(),
+    val selectedCharacterCardId: String? = null,
     val models: List<ModelConfig> = emptyList(),
     val selectedModelId: String? = null,
     val modelErrors: List<String> = emptyList(),
@@ -68,6 +71,7 @@ data class ImagePromptToolPromptPart(
 
 class ImagePromptToolViewModel : ViewModel() {
     private val settingsRepository = ChatBarApp.instance.settingsRepository
+    private val characterRepository = ChatBarApp.instance.characterRepository
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val promptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
@@ -82,6 +86,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private var imageJob: Job? = null
 
     init {
+        observeCharacterCards()
         observeModelConfiguration()
     }
 
@@ -98,7 +103,20 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun selectModel(modelId: String) {
+        if (_uiState.value.isBusy) return
         updateInput { it.copy(selectedModelId = modelId) }
+    }
+
+    fun importCharacterCardPrompts(cardId: String) {
+        if (_uiState.value.isBusy) return
+        val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
+        updateInput {
+            it.copy(
+                selectedCharacterCardId = card.id,
+                stylePrompt = card.defaultImagePrompt.trim(),
+                characterPrompt = card.characterImagePromptText()
+            )
+        }
     }
 
     fun designPrompt() {
@@ -299,6 +317,21 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
+    private fun observeCharacterCards() {
+        viewModelScope.launch {
+            characterRepository.initialize()
+            characterRepository.characters.collect { cards ->
+                _uiState.update { state ->
+                    state.copy(
+                        characterCards = cards,
+                        selectedCharacterCardId = state.selectedCharacterCardId
+                            ?.takeIf { selected -> cards.any { it.id == selected } }
+                    )
+                }
+            }
+        }
+    }
+
     private fun updateInput(transform: (ImagePromptToolUiState) -> ImagePromptToolUiState) {
         _uiState.update {
             transform(it).copy(
@@ -337,6 +370,15 @@ class ImagePromptToolViewModel : ViewModel() {
         joinToString("\n\n") { part ->
             "${part.title}:\n${part.text}"
         }
+
+    private fun CharacterCard.characterImagePromptText(): String =
+        characters
+            .mapNotNull { character ->
+                character.imagePrompt.trim()
+                    .takeIf(String::isNotBlank)
+                    ?.let { prompt -> "${character.name}:\n$prompt" }
+            }
+            .joinToString("\n\n")
 
     private companion object {
         const val PROMPT_TOOL_IMAGE_SESSION_ID = "image-prompt-tool"

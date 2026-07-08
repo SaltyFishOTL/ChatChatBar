@@ -32,6 +32,7 @@ import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -60,6 +61,7 @@ fun ImagePromptToolScreen(
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
     val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
+    val selectedCharacterCard = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId }
 
     Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         CbTopBar(
@@ -87,6 +89,8 @@ fun ImagePromptToolScreen(
                     onDescription = viewModel::updateImageDescription,
                     onStyle = viewModel::updateStylePrompt,
                     onCharacter = viewModel::updateCharacterPrompt,
+                    selectedCharacterCard = selectedCharacterCard,
+                    onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
                     onModel = { viewModel.selectModel(it.id) },
                     onGeneratePrompt = viewModel::designPrompt
                 )
@@ -148,6 +152,8 @@ private fun PromptInputPanel(
     onDescription: (String) -> Unit,
     onStyle: (String) -> Unit,
     onCharacter: (String) -> Unit,
+    selectedCharacterCard: CharacterCard?,
+    onImportCharacterCard: (CharacterCard) -> Unit,
     onModel: (ModelConfig) -> Unit,
     onGeneratePrompt: () -> Unit
 ) {
@@ -164,6 +170,15 @@ private fun PromptInputPanel(
                     enabled = !state.isBusy,
                     singleLine = false,
                     minLines = 3
+                )
+            }
+            CbField("导入角色卡提示词") {
+                CbSelect(
+                    value = selectedCharacterCard,
+                    options = state.characterCards,
+                    optionLabel = { it.name },
+                    onValueChange = onImportCharacterCard,
+                    placeholder = if (state.characterCards.isEmpty()) "暂无角色卡" else "选择角色卡"
                 )
             }
             CbField("画风") {
