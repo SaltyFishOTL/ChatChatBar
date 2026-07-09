@@ -75,6 +75,7 @@ class NovelAiPromptDesigner(
         anchorMessageId: String,
         card: CharacterCard,
         model: ModelConfig,
+        playerName: String? = null,
         sessionId: String? = null,
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
@@ -91,7 +92,7 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val userPrompt = PromptTemplates.novelAiImagePromptConversation(context)
+        val userPrompt = PromptTemplates.novelAiImagePromptConversation(context, playerName)
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),

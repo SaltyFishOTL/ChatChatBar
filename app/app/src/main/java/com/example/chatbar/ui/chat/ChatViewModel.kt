@@ -305,6 +305,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val settings = settingsRepository.getAppSettings()
             val model = currentSession?.let { modelResolver.resolveChatModel(it.modelId, settings) }
             val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
+            val globalPlayerName = settingsRepository.getPlayerSetting()
+                .playerName
+                .takeIf { it.isNotBlank() }
+            val playerName = currentSession?.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
             if (token == null || card == null || model == null || model.apiKey.isBlank()) {
                 val missing = mutableListOf<String>()
                 if (token == null) missing.add("NovelAI Token")
@@ -332,6 +336,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     anchorMessageId,
                     card,
                     model,
+                    playerName = playerName,
                     sessionId = sessionId
                 ) { draft ->
                     val current = _imageGeneration.value

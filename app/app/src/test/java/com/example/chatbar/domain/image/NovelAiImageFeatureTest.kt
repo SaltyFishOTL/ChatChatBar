@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.chat.StreamEvent
 import java.nio.ByteBuffer
 import kotlinx.coroutines.flow.flowOf
@@ -116,6 +117,21 @@ class NovelAiImageFeatureTest {
                 characters = listOf(CharacterInfo.create("").copy(appearance = "银发，灰蓝眼"))
             ).hasImageDesignSource()
         )
+    }
+
+    @Test
+    fun `conversation prompt restores player name placeholder`() {
+        val prompt = PromptTemplates.novelAiImagePromptConversation(
+            messages = listOf(
+                message("1", MessageRole.USER, "我是林远。"),
+                message("2", MessageRole.ASSISTANT, "林远靠近窗边。")
+            ),
+            playerName = "林远"
+        )
+
+        assertTrue(prompt.contains("User: 我是\$username。"))
+        assertTrue(prompt.contains("Assistant: \$username靠近窗边。"))
+        assertFalse(prompt.contains("林远"))
     }
 
     @Test

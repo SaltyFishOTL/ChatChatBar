@@ -543,7 +543,7 @@ global scene
 | char B
 ```
 Overrides tag order. Mandatory for 2+ visible chars.
-Interaction: source#N:action, target#N:reaction, mutual#:action. N=1-based index. No names after #.
+Interaction: [source#N:action, target#N:reaction, mutual#:action. N=1-based index. No names after #.]
 Write correct total count even if camera on one char (2girls for interaction) — prevents floating body parts.
 Viewpoint per-char in block.
 Single char: omit interaction tags.
@@ -635,12 +635,20 @@ JSON only, no Markdown, no explanation:
             }
         }
 
-    fun novelAiImagePromptConversation(messages: List<ChatMessage>): String = buildString {
+    fun novelAiImagePromptConversation(
+        messages: List<ChatMessage>,
+        playerName: String? = null
+    ): String = buildString {
         appendLine("Design an image for this scene. Recent messages:")
         messages.forEach {
             val role = if (it.role == MessageRole.USER) "User" else "Assistant"
-            appendLine("$role: ${it.displayContent}")
+            appendLine("$role: ${restoreUsernamePlaceholder(it.displayContent, playerName)}")
         }
+    }
+
+    private fun restoreUsernamePlaceholder(text: String, playerName: String?): String {
+        val name = playerName?.trim()?.takeIf(String::isNotEmpty) ?: return text
+        return text.replace(name, "\$username")
     }
 
     const val LONG_TERM_MEMORY_UPDATE_SYSTEM = """
