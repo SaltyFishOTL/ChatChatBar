@@ -7,7 +7,7 @@ plugins {
 android {
     namespace = "com.example.chatbar"
     compileSdk = 36
-    val baseVersionCode = 13
+    val baseVersionCode = 14
     val releaseKeystorePath = providers.environmentVariable("ANDROID_KEYSTORE_PATH")
     val releaseKeystorePassword = providers.environmentVariable("ANDROID_KEYSTORE_PASSWORD")
     val releaseKeyAlias = providers.environmentVariable("ANDROID_KEY_ALIAS")
@@ -35,7 +35,7 @@ android {
             ?: baseVersionCode
         versionName = providers.gradleProperty("CHATBAR_VERSION_NAME")
             .orElse(providers.environmentVariable("CHATBAR_VERSION_NAME"))
-            .orElse("1.1.6")
+            .orElse("1.1.7")
             .get()
         fun configValue(name: String, defaultValue: String = ""): String =
             providers.gradleProperty(name)
