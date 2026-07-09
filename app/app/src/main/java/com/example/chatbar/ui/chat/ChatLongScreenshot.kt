@@ -42,7 +42,12 @@ data class ChatLongScreenshotRequest(
     val backgroundPath: String?,
     val widthPx: Int,
     val fontScale: Float,
-    val fileName: String
+    val fileName: String,
+    val playerName: String? = null,
+    val botName: String = "",
+    val botAvatarPath: String? = null,
+    val selectedBlockIds: Set<String> = emptySet(),
+    val expandedStatusBlockIds: Set<String> = emptySet()
 )
 
 const val CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX = 32_000
@@ -153,7 +158,13 @@ private fun ChatLongScreenshotContent(request: ChatLongScreenshotRequest) {
                 ChatBubble(
                     message = message,
                     fontScale = request.fontScale,
+                    renderPlayerName = request.playerName,
+                    renderBotName = request.botName,
+                    botAvatarPath = request.botAvatarPath,
                     showActions = false,
+                    showMessageMeta = request.selectedBlockIds.isEmpty(),
+                    blockFilterIds = request.selectedBlockIds.ifEmpty { null },
+                    expandedStatusBlockIds = request.expandedStatusBlockIds,
                     exportMode = true
                 )
             }

@@ -3,28 +3,33 @@ package com.example.chatbar.ui.components
 import com.example.chatbar.ui.kit.AppIcons
 
 import android.graphics.BitmapFactory
+import android.text.Spannable
+import android.text.Spanned
+import android.text.style.ForegroundColorSpan
 import android.widget.TextView
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.Image
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -44,20 +49,25 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.chat.RoleplaySegmentKind
+import com.example.chatbar.domain.chat.RoleplayTextSegment
+import com.example.chatbar.domain.chat.parseRoleplayTextSegments
+import com.example.chatbar.domain.chat.roleplayImageBlockId
+import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
+import com.example.chatbar.domain.chat.roleplayTextBlockId
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
-import android.text.Spannable
-import android.text.Spanned
-import android.text.style.ForegroundColorSpan
 import io.noties.markwon.AbstractMarkwonPlugin
 import io.noties.markwon.Markwon
 import io.noties.markwon.core.MarkwonTheme
@@ -66,6 +76,15 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+
+data class ChatBubbleSegmentAction(
+    val messageId: String,
+    val blockId: String,
+    val start: Int,
+    val endExclusive: Int,
+    val rawText: String,
+    val copyText: String
+)
 
 internal sealed interface RoleplayContentSegment {
     data class Markdown(val text: String) : RoleplayContentSegment
@@ -77,6 +96,7 @@ private val roleplayLinkPattern = Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)")
 private val singleNewlinePattern = Regex("(?<!\n)\n(?!\n)")
 private const val hiddenCommentOpen = "<!--"
 private const val hiddenCommentClose = "-->"
+private const val COLOR_MARKER = '\u200B'
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -96,25 +116,534 @@ fun ChatBubble(
     selectionEnabled: Boolean = true,
     onToggleSelected: (() -> Unit)? = null,
     showActions: Boolean = true,
-    exportMode: Boolean = false
+    exportMode: Boolean = false,
+    renderPlayerName: String? = null,
+    renderBotName: String = "",
+    botAvatarPath: String? = null,
+    onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)? = null,
+    selectedBlockIds: Set<String> = emptySet(),
+    onToggleBlockSelected: ((String) -> Unit)? = null,
+    blockFilterIds: Set<String>? = null,
+    showMessageMeta: Boolean = true,
+    expandedStatusBlockIds: Set<String> = emptySet(),
+    onStatusExpandedChange: ((String, Boolean) -> Unit)? = null
+) {
+    if (message.role == MessageRole.ASSISTANT) {
+        SegmentedAssistantBubble(
+            message = message,
+            modifier = modifier,
+            fontScale = fontScale,
+            renderPlayerName = renderPlayerName,
+            renderBotName = renderBotName,
+            botAvatarPath = botAvatarPath,
+            onLongPress = onLongPress,
+            onPreviousAlternative = onPreviousAlternative,
+            onNextAlternative = onNextAlternative,
+            onImageClick = onImageClick,
+            onImageLongPress = onImageLongPress,
+            onGenerateImage = onGenerateImage,
+            imageGenerationEnabled = imageGenerationEnabled,
+            selectionMode = selectionMode,
+            selectionEnabled = selectionEnabled,
+            showActions = showActions,
+            exportMode = exportMode,
+            onSegmentLongPress = onSegmentLongPress,
+            selectedBlockIds = selectedBlockIds,
+            onToggleBlockSelected = onToggleBlockSelected,
+            blockFilterIds = blockFilterIds,
+            showMessageMeta = showMessageMeta,
+            expandedStatusBlockIds = expandedStatusBlockIds,
+            onStatusExpandedChange = onStatusExpandedChange
+        )
+    } else {
+        LegacyChatBubble(
+            message = message,
+            modifier = modifier,
+            fontScale = fontScale,
+            renderPlayerName = renderPlayerName,
+            renderBotName = renderBotName,
+            onLongPress = onLongPress,
+            onPreviousAlternative = onPreviousAlternative,
+            onNextAlternative = onNextAlternative,
+            onImageClick = onImageClick,
+            onImageLongPress = onImageLongPress,
+            onGenerateImage = onGenerateImage,
+            imageGenerationEnabled = imageGenerationEnabled,
+            selectionMode = selectionMode,
+            selected = selected,
+            selectionEnabled = selectionEnabled,
+            onToggleSelected = onToggleSelected,
+            showActions = showActions,
+            exportMode = exportMode,
+            selectedBlockIds = selectedBlockIds,
+            onToggleBlockSelected = onToggleBlockSelected,
+            blockFilterIds = blockFilterIds,
+            showMessageMeta = showMessageMeta
+        )
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SegmentedAssistantBubble(
+    message: ChatMessage,
+    modifier: Modifier,
+    fontScale: Float,
+    renderPlayerName: String?,
+    renderBotName: String,
+    botAvatarPath: String?,
+    onLongPress: (() -> Unit)?,
+    onPreviousAlternative: (() -> Unit)?,
+    onNextAlternative: (() -> Unit)?,
+    onImageClick: ((String) -> Unit)?,
+    onImageLongPress: ((String) -> Unit)?,
+    onGenerateImage: (() -> Unit)?,
+    imageGenerationEnabled: Boolean,
+    selectionMode: Boolean,
+    selectionEnabled: Boolean,
+    showActions: Boolean,
+    exportMode: Boolean,
+    onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)?,
+    selectedBlockIds: Set<String>,
+    onToggleBlockSelected: ((String) -> Unit)?,
+    blockFilterIds: Set<String>?,
+    showMessageMeta: Boolean,
+    expandedStatusBlockIds: Set<String>,
+    onStatusExpandedChange: ((String, Boolean) -> Unit)?
+) {
+    val rawContent = message.displayContent
+    val textSegments = remember(message.id, message.currentAlternativeIndex, rawContent) {
+        parseRoleplayTextSegments(rawContent)
+    }
+    val visibleTextBlockCount = textSegments.indices.count { index ->
+        blockFilterIds == null || roleplayTextBlockId(message.id, index) in blockFilterIds
+    }
+    val visibleImageBlockCount = message.images.indices.count { index ->
+        blockFilterIds == null || roleplayImageBlockId(message.id, index) in blockFilterIds
+    }
+    if (visibleTextBlockCount == 0 && visibleImageBlockCount == 0 && blockFilterIds != null) return
+
+    BoxWithConstraints(
+        modifier = modifier
+            .fillMaxWidth()
+            .padding(vertical = 5.dp)
+            .semantics { contentDescription = "助手消息" }
+    ) {
+        val dialogueMaxWidth = maxWidth * 0.86f
+        val thoughtMaxWidth = maxWidth * 0.72f
+        val narrationMaxWidth = maxWidth * 0.96f
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.Start,
+            verticalArrangement = Arrangement.spacedBy(5.dp)
+        ) {
+            if (!exportMode && !message.reasoningContent.isNullOrBlank()) {
+                ReasoningPanel(
+                    messageId = message.id,
+                    reasoningContent = PlaceholderRenderer.render(message.reasoningContent, renderPlayerName, renderBotName),
+                    onLongPress = onLongPress,
+                    interactive = !selectionMode
+                )
+            }
+            message.images.forEachIndexed { index, imagePath ->
+                val blockId = roleplayImageBlockId(message.id, index)
+                if (blockFilterIds == null || blockId in blockFilterIds) {
+                    MessageImageBlock(
+                        imagePath = imagePath,
+                        blockId = blockId,
+                        maxWidth = dialogueMaxWidth,
+                        selectionMode = selectionMode,
+                        selected = blockId in selectedBlockIds,
+                        selectionEnabled = selectionEnabled || blockId in selectedBlockIds,
+                        onToggleSelected = onToggleBlockSelected,
+                        exportMode = exportMode,
+                        onImageClick = onImageClick,
+                        onImageLongPress = onImageLongPress
+                    )
+                }
+            }
+            textSegments.forEachIndexed { index, segment ->
+                val blockId = roleplayTextBlockId(message.id, index)
+                if (blockFilterIds == null || blockId in blockFilterIds) {
+                    val rawFragment = rawContent.substring(
+                        segment.start.coerceIn(0, rawContent.length),
+                        segment.endExclusive.coerceIn(segment.start.coerceIn(0, rawContent.length), rawContent.length)
+                    )
+                    val copyText = PlaceholderRenderer.render(rawFragment, renderPlayerName, renderBotName)
+                    val displayText = PlaceholderRenderer.render(segment.displayText, renderPlayerName, renderBotName)
+                    SegmentBubble(
+                        messageId = message.id,
+                        blockId = blockId,
+                        segment = segment,
+                        displayText = displayText,
+                        rawText = rawFragment,
+                        copyText = copyText,
+                        botAvatarPath = botAvatarPath,
+                        renderBotName = renderBotName,
+                        fontScale = fontScale,
+                        dialogueMaxWidth = dialogueMaxWidth,
+                        thoughtMaxWidth = thoughtMaxWidth,
+                        narrationMaxWidth = narrationMaxWidth,
+                        selectionMode = selectionMode,
+                        selected = blockId in selectedBlockIds,
+                        selectionEnabled = selectionEnabled || blockId in selectedBlockIds,
+                        onToggleSelected = onToggleBlockSelected,
+                        exportMode = exportMode,
+                        onLongPress = onLongPress,
+                        onSegmentLongPress = onSegmentLongPress,
+                        expanded = blockId in expandedStatusBlockIds,
+                        onExpandedChange = onStatusExpandedChange?.let { callback ->
+                            { expanded -> callback(blockId, expanded) }
+                        }
+                    )
+                }
+            }
+            if (showMessageMeta) {
+                MessageMetaRow(
+                    message = message,
+                    isUser = false,
+                    maxWidth = dialogueMaxWidth,
+                    showActions = showActions,
+                    showCopy = false,
+                    onPreviousAlternative = onPreviousAlternative,
+                    onNextAlternative = onNextAlternative,
+                    onGenerateImage = onGenerateImage,
+                    imageGenerationEnabled = imageGenerationEnabled
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SegmentBubble(
+    messageId: String,
+    blockId: String,
+    segment: RoleplayTextSegment,
+    displayText: String,
+    rawText: String,
+    copyText: String,
+    botAvatarPath: String?,
+    renderBotName: String,
+    fontScale: Float,
+    dialogueMaxWidth: Dp,
+    thoughtMaxWidth: Dp,
+    narrationMaxWidth: Dp,
+    selectionMode: Boolean,
+    selected: Boolean,
+    selectionEnabled: Boolean,
+    onToggleSelected: ((String) -> Unit)?,
+    exportMode: Boolean,
+    onLongPress: (() -> Unit)?,
+    onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)?,
+    expanded: Boolean,
+    onExpandedChange: ((Boolean) -> Unit)?
+) {
+    var localExpanded by remember(blockId) { mutableStateOf(false) }
+    val effectiveExpanded = if (onExpandedChange != null) expanded else localExpanded
+    val updateExpanded: (Boolean) -> Unit = { next ->
+        if (onExpandedChange != null) {
+            onExpandedChange(next)
+        } else {
+            localExpanded = next
+        }
+    }
+    val shape = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION -> RoundedCornerShape(12.dp)
+        RoleplaySegmentKind.DIALOGUE -> RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)
+        RoleplaySegmentKind.THOUGHT -> RoundedCornerShape(10.dp, 10.dp, 10.dp, 4.dp)
+        RoleplaySegmentKind.STATUS -> RoundedCornerShape(12.dp)
+    }
+    val maxWidth = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS -> narrationMaxWidth
+        RoleplaySegmentKind.DIALOGUE -> dialogueMaxWidth
+        RoleplaySegmentKind.THOUGHT -> thoughtMaxWidth
+    }
+    val alignment = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS -> Alignment.Center
+        RoleplaySegmentKind.DIALOGUE, RoleplaySegmentKind.THOUGHT -> Alignment.CenterStart
+    }
+    val background = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION -> Color.Transparent
+        RoleplaySegmentKind.STATUS -> ChatBarTheme.colors.muted.copy(alpha = 0.72f)
+        RoleplaySegmentKind.DIALOGUE -> ChatBarTheme.colors.card.copy(alpha = 0.72f)
+        RoleplaySegmentKind.THOUGHT -> ChatBarTheme.colors.muted.copy(alpha = 0.56f)
+    }
+    val textColor = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION -> ChatBarTheme.colors.foreground.copy(alpha = 0.78f)
+        RoleplaySegmentKind.THOUGHT -> ChatBarTheme.colors.mutedForeground
+        else -> ChatBarTheme.colors.foreground
+    }
+    val textSize = when (segment.kind) {
+        RoleplaySegmentKind.NARRATION -> 13f
+        RoleplaySegmentKind.THOUGHT -> 12f
+        else -> 14f
+    }
+    val canToggleSelection = selectionMode && onToggleSelected != null && selectionEnabled
+    val canLongPress = !selectionMode && !exportMode && (onSegmentLongPress != null || onLongPress != null)
+    val showAvatar = (segment.kind == RoleplaySegmentKind.DIALOGUE || segment.kind == RoleplaySegmentKind.THOUGHT) &&
+        (!botAvatarPath.isNullOrBlank() || renderBotName.isNotBlank())
+    val surfaceModifier = if (segment.kind == RoleplaySegmentKind.NARRATION) {
+        Modifier.widthIn(min = maxWidth, max = maxWidth)
+    } else {
+        Modifier.widthIn(max = maxWidth)
+    }
+    val handleLongPress = {
+        if (canLongPress) {
+            onSegmentLongPress?.invoke(
+                ChatBubbleSegmentAction(
+                    messageId = messageId,
+                    blockId = blockId,
+                    start = segment.start,
+                    endExclusive = segment.endExclusive,
+                    rawText = rawText,
+                    copyText = copyText
+                )
+            ) ?: onLongPress?.invoke()
+        }
+    }
+    Box(
+        modifier = Modifier.fillMaxWidth(),
+        contentAlignment = alignment
+    ) {
+        if (showAvatar) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Top
+            ) {
+                CharacterChatAvatar(
+                    avatarPath = botAvatarPath,
+                    name = renderBotName,
+                    exportMode = exportMode
+                )
+                SegmentBubbleSurface(
+                    modifier = surfaceModifier,
+                    shape = shape,
+                    background = background,
+                    selected = selected,
+                    blockId = blockId,
+                    selectionMode = selectionMode,
+                    canToggleSelection = canToggleSelection,
+                    onToggleSelected = onToggleSelected,
+                    canLongPress = canLongPress,
+                    onLongPress = handleLongPress,
+                    segmentKind = segment.kind,
+                    displayText = displayText,
+                    textColor = textColor,
+                    textSize = textSize * fontScale,
+                    lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
+                    expanded = effectiveExpanded,
+                    onExpandedChange = updateExpanded,
+                    exportMode = exportMode
+                )
+            }
+        } else {
+            SegmentBubbleSurface(
+                modifier = surfaceModifier,
+                shape = shape,
+                background = background,
+                selected = selected,
+                blockId = blockId,
+                selectionMode = selectionMode,
+                canToggleSelection = canToggleSelection,
+                onToggleSelected = onToggleSelected,
+                canLongPress = canLongPress,
+                onLongPress = handleLongPress,
+                segmentKind = segment.kind,
+                displayText = displayText,
+                textColor = textColor,
+                textSize = textSize * fontScale,
+                lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
+                expanded = effectiveExpanded,
+                onExpandedChange = updateExpanded,
+                exportMode = exportMode
+            )
+        }
+        if (selectionMode) {
+            SelectionMark(
+                selected = selected,
+                enabled = selectionEnabled,
+                modifier = Modifier
+                    .align(if (segment.kind == RoleplaySegmentKind.NARRATION || segment.kind == RoleplaySegmentKind.STATUS) Alignment.TopCenter else Alignment.TopStart)
+                    .padding(top = 2.dp, start = 2.dp)
+            )
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun SegmentBubbleSurface(
+    modifier: Modifier,
+    shape: RoundedCornerShape,
+    background: Color,
+    selected: Boolean,
+    blockId: String,
+    selectionMode: Boolean,
+    canToggleSelection: Boolean,
+    onToggleSelected: ((String) -> Unit)?,
+    canLongPress: Boolean,
+    onLongPress: () -> Unit,
+    segmentKind: RoleplaySegmentKind,
+    displayText: String,
+    textColor: Color,
+    textSize: Float,
+    lineSpacingExtra: Float,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    exportMode: Boolean
+) {
+    Box(
+        modifier = modifier
+            .background(background, shape)
+            .let { if (selected) it.border(1.5.dp, ChatBarTheme.colors.primary, shape) else it }
+            .combinedClickable(
+                enabled = canToggleSelection || canLongPress,
+                onClick = { if (canToggleSelection) onToggleSelected?.invoke(blockId) },
+                onLongClick = onLongPress
+            )
+            .semantics { contentDescription = "助手消息" }
+            .padding(
+                horizontal = when (segmentKind) {
+                    RoleplaySegmentKind.NARRATION -> 4.dp
+                    RoleplaySegmentKind.THOUGHT -> 10.dp
+                    else -> 12.dp
+                },
+                vertical = when (segmentKind) {
+                    RoleplaySegmentKind.NARRATION -> 4.dp
+                    RoleplaySegmentKind.THOUGHT -> 8.dp
+                    else -> 10.dp
+                }
+            )
+    ) {
+        if (segmentKind == RoleplaySegmentKind.STATUS) {
+            RoleplayStatusPanel(
+                text = displayText,
+                expanded = expanded,
+                onExpandedChange = onExpandedChange,
+                onLongPress = onLongPress,
+                interactive = !selectionMode && !exportMode
+            )
+        } else {
+            RoleplayMarkdownText(
+                text = displayText,
+                color = textColor,
+                fontSize = textSize,
+                lineSpacingExtra = lineSpacingExtra
+            )
+        }
+    }
+}
+
+@Composable
+private fun CharacterChatAvatar(
+    avatarPath: String?,
+    name: String,
+    exportMode: Boolean
+) {
+    val avatarSize = 32.dp
+    val shape = CircleShape
+    val cleanPath = avatarPath?.takeIf { it.isNotBlank() }
+    val avatarFile = cleanPath?.let(::File)?.takeIf { it.exists() }
+    Box(
+        modifier = Modifier
+            .size(avatarSize)
+            .clip(shape)
+            .background(ChatBarTheme.colors.muted)
+            .border(1.dp, ChatBarTheme.colors.border.copy(alpha = 0.7f), shape),
+        contentAlignment = Alignment.Center
+    ) {
+        if (avatarFile != null) {
+            if (exportMode) {
+                val bitmap = remember(avatarFile.absolutePath) {
+                    BitmapFactory.decodeFile(avatarFile.absolutePath)?.asImageBitmap()
+                }
+                if (bitmap != null) {
+                    Image(
+                        bitmap = bitmap,
+                        contentDescription = "角色头像",
+                        modifier = Modifier.size(avatarSize).clip(shape),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    AvatarInitial(name)
+                }
+            } else {
+                AsyncImage(
+                    model = avatarFile,
+                    contentDescription = "角色头像",
+                    modifier = Modifier.size(avatarSize).clip(shape),
+                    contentScale = ContentScale.Crop
+                )
+            }
+        } else {
+            AvatarInitial(name)
+        }
+    }
+}
+
+@Composable
+private fun AvatarInitial(name: String) {
+    CbText(
+        name.trim().take(1).ifBlank { "?" },
+        color = ChatBarTheme.colors.mutedForeground,
+        style = ChatBarTheme.typography.label
+    )
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun LegacyChatBubble(
+    message: ChatMessage,
+    modifier: Modifier,
+    fontScale: Float,
+    renderPlayerName: String?,
+    renderBotName: String,
+    onLongPress: (() -> Unit)?,
+    onPreviousAlternative: (() -> Unit)?,
+    onNextAlternative: (() -> Unit)?,
+    onImageClick: ((String) -> Unit)?,
+    onImageLongPress: ((String) -> Unit)?,
+    onGenerateImage: (() -> Unit)?,
+    imageGenerationEnabled: Boolean,
+    selectionMode: Boolean,
+    selected: Boolean,
+    selectionEnabled: Boolean,
+    onToggleSelected: (() -> Unit)?,
+    showActions: Boolean,
+    exportMode: Boolean,
+    selectedBlockIds: Set<String>,
+    onToggleBlockSelected: ((String) -> Unit)?,
+    blockFilterIds: Set<String>?,
+    showMessageMeta: Boolean
 ) {
     val isUser = message.role == MessageRole.USER
+    val renderedContent = PlaceholderRenderer.render(message.displayContent, renderPlayerName, renderBotName)
+    val contentSegments = remember(message.id, message.currentAlternativeIndex, renderedContent) {
+        parseRoleplayContent(renderedContent)
+    }
     val shape = RoundedCornerShape(
         topStart = 10.dp,
         topEnd = 10.dp,
         bottomStart = if (isUser) 10.dp else 3.dp,
         bottomEnd = if (isUser) 3.dp else 10.dp
     )
-    val contentSegments = remember(message.id, message.currentAlternativeIndex, message.displayContent) {
-        parseRoleplayContent(message.displayContent)
+    val legacyTextBlockId = roleplayLegacyTextBlockId(message.id)
+    val showText = renderedContent.isNotBlank() && (blockFilterIds == null || legacyTextBlockId in blockFilterIds)
+    val visibleImageCount = message.images.indices.count { index ->
+        blockFilterIds == null || roleplayImageBlockId(message.id, index) in blockFilterIds
     }
+    if (!showText && visibleImageCount == 0 && blockFilterIds != null) return
+
     val canToggleSelection = selectionMode && onToggleSelected != null && (selectionEnabled || selected)
     Box(
         modifier = modifier
             .fillMaxWidth()
             .padding(vertical = 5.dp)
             .let {
-                if (selectionMode && onToggleSelected != null) {
+                if (selectionMode && onToggleSelected != null && onToggleBlockSelected == null) {
                     it.combinedClickable(
                         enabled = canToggleSelection,
                         onClick = { onToggleSelected() },
@@ -125,198 +654,99 @@ fun ChatBubble(
                 }
             }
     ) {
-        Column(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
-        ) {
+        BoxWithConstraints {
+            val bubbleMaxWidth = maxWidth * 0.86f
             Column(
-                Modifier
-                .widthIn(max = 300.dp)
-                .background(
-                    (if (isUser) ChatBarTheme.colors.primary else ChatBarTheme.colors.card)
-                        .copy(alpha = 0.6f),
-                    shape
-                )
-                .let {
-                    if (selected) {
-                        it.border(1.5.dp, ChatBarTheme.colors.primary, shape)
-                    } else {
-                        it
-                    }
-                }
-                .let {
-                    if (selectionMode && onToggleSelected != null) {
-                        it.combinedClickable(
-                            enabled = canToggleSelection,
-                            onClick = { onToggleSelected() },
-                            onLongClick = {}
-                        )
-                    } else {
-                        it.combinedClickable(
-                            enabled = onLongPress != null,
-                            onClick = {},
-                            onLongClick = { onLongPress?.invoke() }
-                        )
-                    }
-                }
-                .semantics {
-                    contentDescription = if (isUser) "用户消息" else "助手消息"
-                }
-                .padding(horizontal = 12.dp, vertical = 10.dp)
+                modifier = Modifier.fillMaxWidth(),
+                horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
             ) {
-                message.images.forEach { imagePath ->
-                    MessageImage(
-                        imagePath = imagePath,
-                        selectionMode = selectionMode,
-                        exportMode = exportMode,
-                        onImageClick = onImageClick,
-                        onImageLongPress = onImageLongPress
-                    )
-                }
-                if (!isUser && !message.reasoningContent.isNullOrBlank()) {
-                var expanded by remember(message.id) { mutableStateOf(false) }
-                val reasoningInteractive = !selectionMode && !exportMode
                 Column(
                     Modifier
-                        .padding(bottom = 8.dp)
-                        .background(ChatBarTheme.colors.accent, RoundedCornerShape(8.dp))
+                        .widthIn(max = bubbleMaxWidth)
+                        .background(
+                            (if (isUser) ChatBarTheme.colors.primary else ChatBarTheme.colors.card)
+                                .copy(alpha = 0.6f),
+                            shape
+                        )
+                        .let { if (selected) it.border(1.5.dp, ChatBarTheme.colors.primary, shape) else it }
                         .combinedClickable(
-                            enabled = reasoningInteractive,
-                            onClick = { expanded = !expanded },
-                            onLongClick = { onLongPress?.invoke() }
-                        )
-                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                ) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        CbText(
-                            if (expanded) "思考过程" else "思考过程（已折叠）",
-                            color = ChatBarTheme.colors.primary,
-                            style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
-                        )
-                        CbIcon(
-                            if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                            "切换思考过程",
-                            Modifier.size(14.dp),
-                            ChatBarTheme.colors.mutedForeground
-                        )
-                    }
-                    if (expanded) {
-                        Spacer(Modifier.height(4.dp))
-                        SelectionContainer {
-                            CbText(
-                                message.reasoningContent,
-                                color = ChatBarTheme.colors.mutedForeground,
-                                style = ChatBarTheme.typography.caption.copy(lineHeight = 15.sp)
-                            )
-                        }
-                    }
-                }
-                }
-                val context = LocalContext.current
-                val foregroundColor = ChatBarTheme.colors.foreground
-                val primaryColor = ChatBarTheme.colors.primary
-                val appContext = context.applicationContext
-                val markwon = remember(appContext) {
-                    Markwon.builder(appContext)
-                        .usePlugin(HtmlPlugin.create())
-                        .usePlugin(object : AbstractMarkwonPlugin() {
-                            override fun configureTheme(builder: MarkwonTheme.Builder) {
-                                builder.linkColor(primaryColor.toArgb())
-                                builder.isLinkUnderlined(false)
-                            }
-                        })
-                        .build()
-                }
-                contentSegments.forEachIndexed { index, segment ->
-                    key(message.id, message.currentAlternativeIndex, index) {
-                        when (segment) {
-                            is RoleplayContentSegment.Markdown -> AndroidView(
-                                factory = { ctx ->
-                                    TextView(ctx).apply {
-                                        textSize = 14f * fontScale
-                                        setLineSpacing(2f, 1.08f)
-                                        linksClickable = false
-                                        isClickable = false
-                                        isLongClickable = false
-                                    }
-                                },
-                                update = { textView ->
-                                    textView.setOnClickListener(null)
-                                    textView.setOnLongClickListener(null)
-                                    textView.isClickable = false
-                                    textView.isLongClickable = false
-                                    textView.setTextColor(if (isUser) Color.White.toArgb() else foregroundColor.toArgb())
-                                    markwon.setMarkdown(textView, sanitizeRoleplayMarkdown(segment.text, true))
-                                    applyAccentColorToMarkedRanges(textView, primaryColor.toArgb())
-                                    textView.linksClickable = false
-                                    textView.movementMethod = null
+                            enabled = if (selectionMode && onToggleBlockSelected != null) {
+                                showText && (selectionEnabled || legacyTextBlockId in selectedBlockIds)
+                            } else if (selectionMode && onToggleSelected != null) {
+                                canToggleSelection
+                            } else {
+                                onLongPress != null
+                            },
+                            onClick = {
+                                if (selectionMode && onToggleBlockSelected != null && showText) {
+                                    onToggleBlockSelected(legacyTextBlockId)
+                                } else if (selectionMode) {
+                                    onToggleSelected?.invoke()
                                 }
-                            )
-                            is RoleplayContentSegment.Status -> RoleplayStatusPanel(
-                                text = segment.text,
-                                onLongPress = onLongPress,
-                                interactive = !selectionMode && !exportMode
+                            },
+                            onLongClick = { if (!selectionMode) onLongPress?.invoke() }
+                        )
+                        .semantics { contentDescription = if (isUser) "用户消息" else "助手消息" }
+                        .padding(horizontal = 12.dp, vertical = 10.dp)
+                ) {
+                    message.images.forEachIndexed { index, imagePath ->
+                        val blockId = roleplayImageBlockId(message.id, index)
+                        if (blockFilterIds == null || blockId in blockFilterIds) {
+                            MessageImage(
+                                imagePath = imagePath,
+                                selectionMode = selectionMode,
+                                selected = blockId in selectedBlockIds,
+                                selectionEnabled = selectionEnabled || blockId in selectedBlockIds,
+                                blockId = blockId,
+                                onToggleSelected = onToggleBlockSelected,
+                                exportMode = exportMode,
+                                onImageClick = onImageClick,
+                                onImageLongPress = onImageLongPress
                             )
                         }
                     }
-                }
-            }
-            Row(
-                modifier = Modifier.fillMaxWidth().widthIn(max = 300.dp).padding(top = 3.dp, start = 8.dp, end = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(6.dp)
-            ) {
-                CbText(
-                    timeFormatter.format(Date(message.createdAt)),
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
-                )
-                if (showActions && !isUser && message.alternatives.size > 1 && onPreviousAlternative != null && onNextAlternative != null) {
-                    val canPrevious = message.currentAlternativeIndex > 0
-                    val canNext = message.currentAlternativeIndex < message.alternatives.lastIndex
-                    CbSurface(shape = RoundedCornerShape(8.dp), color = ChatBarTheme.colors.accent) {
-                        Row(Modifier.padding(horizontal = 7.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            CbText("‹", color = if (canPrevious) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canPrevious) { onPreviousAlternative() })
-                            CbText("${message.currentAlternativeIndex + 1}/${message.alternatives.size}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-                            CbText("›", color = if (canNext) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f), modifier = Modifier.clickable(enabled = canNext) { onNextAlternative() })
+                    if (showText) {
+                        contentSegments.forEachIndexed { index, segment ->
+                            key(message.id, message.currentAlternativeIndex, index) {
+                                when (segment) {
+                                    is RoleplayContentSegment.Markdown -> RoleplayMarkdownText(
+                                        text = segment.text,
+                                        color = if (isUser) Color.White else ChatBarTheme.colors.foreground,
+                                        fontSize = 14f * fontScale,
+                                        lineSpacingExtra = 2f
+                                    )
+
+                                    is RoleplayContentSegment.Status -> {
+                                        var expanded by remember(message.id, index) { mutableStateOf(false) }
+                                        RoleplayStatusPanel(
+                                            text = segment.text,
+                                            expanded = expanded,
+                                            onExpandedChange = { expanded = it },
+                                            onLongPress = onLongPress,
+                                            interactive = !selectionMode && !exportMode
+                                        )
+                                    }
+                                }
+                            }
                         }
                     }
                 }
-                Spacer(Modifier.weight(1f))
-                val clipboardManager = LocalClipboardManager.current
-                val ctx = LocalContext.current
-                if (showActions) {
-                    CbIconButton(
-                        AppIcons.ContentCopy,
-                        "复制消息",
-                        onClick = {
-                            clipboardManager.setText(AnnotatedString(message.displayContent))
-                            Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
-                        },
-                        tint = ChatBarTheme.colors.mutedForeground
+                if (showMessageMeta) {
+                    MessageMetaRow(
+                        message = message.copy(content = renderedContent),
+                        isUser = isUser,
+                        maxWidth = bubbleMaxWidth,
+                        showActions = showActions,
+                        showCopy = showActions,
+                        onPreviousAlternative = onPreviousAlternative,
+                        onNextAlternative = onNextAlternative,
+                        onGenerateImage = onGenerateImage,
+                        imageGenerationEnabled = imageGenerationEnabled
                     )
-                }
-                if (showActions && !isUser && onGenerateImage != null) {
-                CbIconButton(
-                    AppIcons.Image,
-                    "根据此消息生成图片",
-                    onGenerateImage,
-                    enabled = imageGenerationEnabled,
-                    tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
-                )
                 }
             }
         }
-        if (selectionMode) {
-            Box(
-                Modifier
-                    .matchParentSize()
-                    .combinedClickable(
-                        enabled = canToggleSelection,
-                        onClick = { onToggleSelected?.invoke() },
-                        onLongClick = {}
-                    )
-            )
+        if (selectionMode && onToggleBlockSelected == null) {
             SelectionMark(
                 selected = selected,
                 enabled = selectionEnabled || selected,
@@ -328,11 +758,92 @@ fun ChatBubble(
     }
 }
 
+@Composable
+private fun ReasoningPanel(
+    messageId: String,
+    reasoningContent: String,
+    onLongPress: (() -> Unit)?,
+    interactive: Boolean
+) {
+    var expanded by remember(messageId) { mutableStateOf(false) }
+    Column(
+        Modifier
+            .widthIn(max = 320.dp)
+            .padding(bottom = 3.dp)
+            .background(ChatBarTheme.colors.accent, RoundedCornerShape(8.dp))
+            .combinedClickable(
+                enabled = interactive,
+                onClick = { expanded = !expanded },
+                onLongClick = { onLongPress?.invoke() }
+            )
+            .padding(horizontal = 8.dp, vertical = 6.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            CbText(
+                if (expanded) "思考过程" else "思考过程（已折叠）",
+                color = ChatBarTheme.colors.primary,
+                style = ChatBarTheme.typography.caption.copy(fontWeight = FontWeight.Bold)
+            )
+            CbIcon(
+                if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
+                "切换思考过程",
+                Modifier.size(14.dp),
+                ChatBarTheme.colors.mutedForeground
+            )
+        }
+        if (expanded) {
+            Spacer(Modifier.height(4.dp))
+            SelectionContainer {
+                CbText(
+                    reasoningContent,
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption.copy(lineHeight = 15.sp)
+                )
+            }
+        }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun MessageImageBlock(
+    imagePath: String,
+    blockId: String,
+    maxWidth: Dp,
+    selectionMode: Boolean,
+    selected: Boolean,
+    selectionEnabled: Boolean,
+    onToggleSelected: ((String) -> Unit)?,
+    exportMode: Boolean,
+    onImageClick: ((String) -> Unit)?,
+    onImageLongPress: ((String) -> Unit)?
+) {
+    Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.CenterStart) {
+        Box(Modifier.widthIn(max = maxWidth)) {
+            MessageImage(
+                imagePath = imagePath,
+                selectionMode = selectionMode,
+                selected = selected,
+                selectionEnabled = selectionEnabled,
+                blockId = blockId,
+                onToggleSelected = onToggleSelected,
+                exportMode = exportMode,
+                onImageClick = onImageClick,
+                onImageLongPress = onImageLongPress
+            )
+        }
+    }
+}
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MessageImage(
     imagePath: String,
     selectionMode: Boolean,
+    selected: Boolean,
+    selectionEnabled: Boolean,
+    blockId: String,
+    onToggleSelected: ((String) -> Unit)?,
     exportMode: Boolean,
     onImageClick: ((String) -> Unit)?,
     onImageLongPress: ((String) -> Unit)?
@@ -343,40 +854,60 @@ private fun MessageImage(
         .padding(bottom = 8.dp)
         .aspectRatio(imageRatio)
         .clip(RoundedCornerShape(8.dp))
-    if (exportMode) {
-        val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath)?.asImageBitmap() }
-        if (bitmap != null) {
-            Image(
-                bitmap = bitmap,
+        .let {
+            if (selected) it.border(1.5.dp, ChatBarTheme.colors.primary, RoundedCornerShape(8.dp)) else it
+        }
+    Box {
+        if (exportMode) {
+            val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath)?.asImageBitmap() }
+            if (bitmap != null) {
+                Image(
+                    bitmap = bitmap,
+                    contentDescription = "消息图片",
+                    modifier = imageModifier,
+                    contentScale = ContentScale.Fit
+                )
+            } else {
+                CbSurface(
+                    modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp).padding(bottom = 8.dp),
+                    color = ChatBarTheme.colors.muted,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    CbText(
+                        "图片文件不存在",
+                        modifier = Modifier.padding(12.dp),
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+        } else {
+            AsyncImage(
+                model = File(imagePath),
                 contentDescription = "消息图片",
-                modifier = imageModifier,
+                modifier = imageModifier.combinedClickable(
+                    enabled = selectionMode || onImageClick != null || onImageLongPress != null,
+                    onClick = {
+                        if (selectionMode && onToggleSelected != null && selectionEnabled) {
+                            onToggleSelected(blockId)
+                        } else {
+                            onImageClick?.invoke(imagePath)
+                        }
+                    },
+                    onLongClick = {
+                        if (!selectionMode) onImageLongPress?.invoke(imagePath)
+                    }
+                ),
                 contentScale = ContentScale.Fit
             )
-        } else {
-            CbSurface(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 88.dp).padding(bottom = 8.dp),
-                color = ChatBarTheme.colors.muted,
-                shape = RoundedCornerShape(8.dp)
-            ) {
-                CbText(
-                    "图片文件不存在",
-                    modifier = Modifier.padding(12.dp),
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
-                )
-            }
         }
-    } else {
-        AsyncImage(
-            model = File(imagePath),
-            contentDescription = "消息图片",
-            modifier = imageModifier.combinedClickable(
-                enabled = !selectionMode,
-                onClick = { onImageClick?.invoke(imagePath) },
-                onLongClick = { onImageLongPress?.invoke(imagePath) }
-            ),
-            contentScale = ContentScale.Fit
-        )
+        if (selectionMode) {
+            SelectionMark(
+                selected = selected,
+                enabled = selectionEnabled,
+                modifier = Modifier.align(Alignment.TopStart).padding(2.dp)
+            )
+        }
     }
 }
 
@@ -406,18 +937,18 @@ private fun SelectionMark(selected: Boolean, enabled: Boolean, modifier: Modifie
 @Composable
 private fun RoleplayStatusPanel(
     text: String,
+    expanded: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
     onLongPress: (() -> Unit)?,
     interactive: Boolean = true
 ) {
-    var expanded by remember(text) { mutableStateOf(false) }
     Column(
         Modifier
             .fillMaxWidth()
-            .padding(top = 6.dp)
             .background(ChatBarTheme.colors.accent.copy(alpha = 0.78f), RoundedCornerShape(8.dp))
             .combinedClickable(
                 enabled = interactive,
-                onClick = { expanded = !expanded },
+                onClick = { onExpandedChange(!expanded) },
                 onLongClick = { onLongPress?.invoke() }
             )
             .padding(horizontal = 8.dp, vertical = 6.dp)
@@ -451,82 +982,129 @@ private fun RoleplayStatusPanel(
     }
 }
 
-internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment> {
-    val visibleContent = stripRoleplayHiddenComments(content)
-    if (visibleContent.isEmpty()) return emptyList()
-    val marker = "\u0060\u0060\u0060"
-    val segments = mutableListOf<RoleplayContentSegment>()
-    var cursor = 0
-    while (cursor < visibleContent.length) {
-        val open = visibleContent.indexOf(marker, cursor)
-        if (open < 0) {
-            visibleContent.substring(cursor).takeIf(String::isNotBlank)
-                ?.let { segments += RoleplayContentSegment.Markdown(it) }
-            break
+@Composable
+private fun MessageMetaRow(
+    message: ChatMessage,
+    isUser: Boolean,
+    maxWidth: Dp,
+    showActions: Boolean,
+    showCopy: Boolean,
+    onPreviousAlternative: (() -> Unit)?,
+    onNextAlternative: (() -> Unit)?,
+    onGenerateImage: (() -> Unit)?,
+    imageGenerationEnabled: Boolean
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth().widthIn(max = maxWidth).padding(top = 3.dp, start = 8.dp, end = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(6.dp)
+    ) {
+        CbText(
+            timeFormatter.format(Date(message.createdAt)),
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        if (showActions && !isUser && message.alternatives.size > 1 && onPreviousAlternative != null && onNextAlternative != null) {
+            val canPrevious = message.currentAlternativeIndex > 0
+            val canNext = message.currentAlternativeIndex < message.alternatives.lastIndex
+            CbSurface(shape = RoundedCornerShape(8.dp), color = ChatBarTheme.colors.accent) {
+                Row(Modifier.padding(horizontal = 7.dp, vertical = 2.dp), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CbText(
+                        "‹",
+                        color = if (canPrevious) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f),
+                        modifier = Modifier.clickable(enabled = canPrevious) { onPreviousAlternative() }
+                    )
+                    CbText("${message.currentAlternativeIndex + 1}/${message.alternatives.size}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                    CbText(
+                        "›",
+                        color = if (canNext) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.35f),
+                        modifier = Modifier.clickable(enabled = canNext) { onNextAlternative() }
+                    )
+                }
+            }
         }
-        if (open > cursor) {
-            visibleContent.substring(cursor, open).takeIf(String::isNotBlank)
-                ?.let { segments += RoleplayContentSegment.Markdown(it) }
+        Spacer(Modifier.weight(1f))
+        val clipboardManager = LocalClipboardManager.current
+        val ctx = LocalContext.current
+        if (showCopy) {
+            CbIconButton(
+                AppIcons.ContentCopy,
+                "复制消息",
+                onClick = {
+                    clipboardManager.setText(AnnotatedString(message.displayContent))
+                    Toast.makeText(ctx, "已复制", Toast.LENGTH_SHORT).show()
+                },
+                tint = ChatBarTheme.colors.mutedForeground
+            )
         }
-        val headerEnd = visibleContent.indexOf('\n', open + marker.length)
-        val bodyStart = if (headerEnd >= 0) headerEnd + 1 else open + marker.length
-        val close = visibleContent.indexOf(marker, bodyStart)
-        if (close < 0) {
-            visibleContent.substring(open).takeIf(String::isNotBlank)
-                ?.let { segments += RoleplayContentSegment.Markdown(it) }
-            break
+        if (showActions && !isUser && onGenerateImage != null) {
+            CbIconButton(
+                AppIcons.Image,
+                "根据此消息生成图片",
+                onGenerateImage,
+                enabled = imageGenerationEnabled,
+                tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
+            )
         }
-        segments += RoleplayContentSegment.Status(visibleContent.substring(bodyStart, close).trim())
-        cursor = close + marker.length
     }
-    val result = mutableListOf<RoleplayContentSegment>()
-    for (segment in segments) {
-        if (segment is RoleplayContentSegment.Markdown) {
-            result.addAll(splitMarkdownByHrFences(segment.text))
-        } else {
-            result.add(segment)
-        }
-    }
-    return result.ifEmpty { listOf(RoleplayContentSegment.Markdown(visibleContent)) }
 }
 
-private val hrFencePattern = Regex("(?m)^[ \t]*---[ \t]*$")
-
-private fun splitMarkdownByHrFences(text: String): List<RoleplayContentSegment> {
-    val matches = hrFencePattern.findAll(text).toList()
-    if (matches.isEmpty()) return listOf(RoleplayContentSegment.Markdown(text))
-
-    val segments = mutableListOf<RoleplayContentSegment>()
-    var cursor = 0
-    var i = 0
-    while (i < matches.size) {
-        val fence = matches[i]
-        if (i % 2 == 0) {
-            if (fence.range.first > cursor) {
-                text.substring(cursor, fence.range.first).takeIf(String::isNotBlank)
-                    ?.let { segments += RoleplayContentSegment.Markdown(it) }
-            }
-            cursor = fence.range.last + 1
-        } else {
-            val statusText = text.substring(cursor, fence.range.first).trim()
-            if (statusText.isNotBlank()) {
-                segments += RoleplayContentSegment.Status(statusText)
-            }
-            cursor = fence.range.last + 1
-        }
-        i++
+@Composable
+private fun RoleplayMarkdownText(
+    text: String,
+    color: Color,
+    fontSize: Float,
+    lineSpacingExtra: Float
+) {
+    val context = LocalContext.current
+    val primaryColor = ChatBarTheme.colors.primary
+    val appContext = context.applicationContext
+    val markwon = remember(appContext, primaryColor) {
+        Markwon.builder(appContext)
+            .usePlugin(HtmlPlugin.create())
+            .usePlugin(object : AbstractMarkwonPlugin() {
+                override fun configureTheme(builder: MarkwonTheme.Builder) {
+                    builder.linkColor(primaryColor.toArgb())
+                    builder.isLinkUnderlined(false)
+                }
+            })
+            .build()
     }
-    if (cursor < text.length) {
-        val remaining = text.substring(cursor).trim()
-        if (remaining.isNotBlank()) {
-            if (matches.size % 2 == 1) {
-                segments += RoleplayContentSegment.Status(remaining)
-            } else {
-                segments += RoleplayContentSegment.Markdown(remaining)
+    AndroidView(
+        factory = { ctx ->
+            TextView(ctx).apply {
+                linksClickable = false
+                isClickable = false
+                isLongClickable = false
             }
+        },
+        update = { textView ->
+            textView.textSize = fontSize
+            textView.setLineSpacing(lineSpacingExtra, 1.08f)
+            textView.setOnClickListener(null)
+            textView.setOnLongClickListener(null)
+            textView.isClickable = false
+            textView.isLongClickable = false
+            textView.setTextColor(color.toArgb())
+            markwon.setMarkdown(textView, sanitizeRoleplayMarkdown(text, true))
+            applyAccentColorToMarkedRanges(textView, primaryColor.toArgb())
+            textView.linksClickable = false
+            textView.movementMethod = null
+        }
+    )
+}
+
+internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment> {
+    val parsed = parseRoleplayTextSegments(content)
+    if (parsed.isEmpty()) return emptyList()
+    return parsed.map { segment ->
+        when (segment.kind) {
+            RoleplaySegmentKind.STATUS -> RoleplayContentSegment.Status(segment.displayText)
+            RoleplaySegmentKind.NARRATION,
+            RoleplaySegmentKind.DIALOGUE,
+            RoleplaySegmentKind.THOUGHT -> RoleplayContentSegment.Markdown(segment.rawText)
         }
     }
-    return segments.ifEmpty { listOf(RoleplayContentSegment.Markdown(text)) }
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
@@ -536,8 +1114,7 @@ internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = fa
         return roleplayLinkPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
             val url = match.value.substringAfter("](").substringBefore(")")
-            if (url.isEmpty()) "\u200B[$text]\u200B"
-            else match.value
+            if (url.isEmpty()) "\u200B[$text]\u200B" else match.value
         }
     }
     return withLineBreaks.replace(roleplayLinkPattern, "[$1]")
@@ -603,8 +1180,6 @@ private fun stripRoleplayHiddenComments(content: String): String {
 private fun isHorizontalWhitespace(char: Char): Boolean {
     return char == ' ' || char == '\t' || char == '\r'
 }
-
-private const val COLOR_MARKER = '\u200B'
 
 private fun applyAccentColorToMarkedRanges(textView: TextView, accentColor: Int) {
     val spannable = textView.text as? Spannable ?: return

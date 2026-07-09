@@ -21,6 +21,7 @@ Use this as a first-hop map. Read specific files or skills, then search only if 
 - Character card edit UI: `ui/character/CharacterEditScreen.kt`, `ui/character/CharacterEditViewModel.kt`.
 - Character-card AI auto-fill/rewrite/diff/cover: use `chatbar-character-card-ai`.
 - Chat screen behavior: `ui/chat/ChatScreen.kt`, `ui/chat/ChatViewModel.kt`, `domain/chat/PromptAssembler.kt`.
+- Assistant segmented bubble rendering: `ui/components/ChatBubble.kt`, parser/block IDs in `domain/chat/RoleplayContentSegments.kt`, segment edit/delete in `ui/chat/ChatViewModel.kt`, segment selection/long screenshot in `ui/chat/ChatScreenshotSelection.kt` and `ui/chat/ChatLongScreenshot.kt`. Dialogue/thought avatars flow from `CharacterCard.avatar` through `ChatScreen`/`ChatLongScreenshotRequest`; narration/status hit areas should keep max width even when visuals stay subtle.
 - Chat settings/model selection: `ui/chat/ChatSettingsDialog.kt`, `ui/manage/ManageScreen.kt`, app settings repository/classes.
 - RAG/search/indexing: `domain/rag/RagManager.kt`, `data/repository/RagRepository.kt`, `domain/search/CharacterResearchService.kt`.
 - NovelAI prompt/image: use `chatbar-novelai-prompt`; then read `domain/image/NovelAiPromptDesigner.kt`, `domain/image/NovelAiImageService.kt`.

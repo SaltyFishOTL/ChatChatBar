@@ -2,25 +2,27 @@ package com.example.chatbar.ui.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.roleplayBlockMessageId
+import com.example.chatbar.domain.chat.roleplayScreenshotBlockIds
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.LinkedHashSet
 import java.util.Locale
 
 fun ChatMessage.isSelectableForChatScreenshot(): Boolean =
-    role == MessageRole.USER || role == MessageRole.ASSISTANT
+    roleplayScreenshotBlockIds(this).isNotEmpty()
 
 fun toggleChatScreenshotSelection(
     currentIds: Set<String>,
-    messageId: String,
+    blockId: String,
     selectableIds: Set<String>
 ): Set<String> {
-    if (messageId !in selectableIds) return currentIds
+    if (blockId !in selectableIds) return currentIds
     val next = LinkedHashSet(currentIds)
-    if (messageId in next) {
-        next.remove(messageId)
+    if (blockId in next) {
+        next.remove(blockId)
     } else {
-        next.add(messageId)
+        next.add(blockId)
     }
     return next
 }
@@ -30,16 +32,26 @@ fun cleanChatScreenshotSelection(
     messages: List<ChatMessage>
 ): Set<String> {
     val selectableIds = messages
-        .filter(ChatMessage::isSelectableForChatScreenshot)
-        .mapTo(LinkedHashSet()) { it.id }
+        .flatMap(::roleplayScreenshotBlockIds)
+        .toSet()
     return currentIds.filterTo(LinkedHashSet()) { it in selectableIds }
 }
 
 fun orderedChatScreenshotMessages(
     messages: List<ChatMessage>,
-    selectedIds: Set<String>
+    selectedBlockIds: Set<String>
 ): List<ChatMessage> =
-    messages.filter { it.isSelectableForChatScreenshot() && it.id in selectedIds }
+    messages.filter { message ->
+        message.isSelectableForChatScreenshot() &&
+            selectedBlockIds.any { roleplayBlockMessageId(it) == message.id }
+    }
+
+fun latestRegenerableAssistantMessageId(messages: List<ChatMessage>): String? =
+    messages
+        .asReversed()
+        .firstOrNull { message -> message.displayContent.isNotBlank() || message.images.isEmpty() }
+        ?.takeIf { message -> message.role == MessageRole.ASSISTANT && message.displayContent.isNotBlank() }
+        ?.id
 
 fun buildChatScreenshotFileName(
     title: String,

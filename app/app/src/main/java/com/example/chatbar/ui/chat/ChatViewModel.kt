@@ -18,6 +18,7 @@ import com.example.chatbar.domain.chat.ImageUnderstandingResult
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.StreamEvent
+import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -1372,54 +1373,111 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val oldMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             if (content.isBlank() && imagePaths.isEmpty()) return@launch
 
-            val updatedMessage = oldMessage.copy(
+            applyMessageEdit(
+                oldMessage = oldMessage,
                 content = content,
-                images = imagePaths,
-                alternatives = emptyList(),
-                currentAlternativeIndex = 0,
-                updatedAt = System.currentTimeMillis()
+                imagePaths = imagePaths,
+                deleteRemovedImages = true
             )
+        }
+    }
 
-            oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
-
-            chatRepository.updateMessage(updatedMessage)
-            refreshMessages()
-
-            val isInActiveContext = chatRepository.getMessages(sessionId)
-                .takeLast(effectiveContextWindowSize())
-                .any { it.id == messageId }
-            if (isInActiveContext) {
+    fun editMessageSegment(
+        messageId: String,
+        start: Int,
+        endExclusive: Int,
+        replacement: String
+    ) {
+        viewModelScope.launch {
+            val oldMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            val editOutcome = editRoleplayMessageSegment(
+                message = oldMessage,
+                start = start,
+                endExclusive = endExclusive,
+                replacement = replacement
+            )
+            val updatedMessage = editOutcome.message
+            if (updatedMessage == null) {
+                deleteMessage(messageId)
                 return@launch
             }
 
-            val memoryChunks = ChatBarApp.instance.ragRepository.getChunksByMessageId(messageId)
-            if (memoryChunks.isNotEmpty()) {
-                val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
-                if (embeddingConfig != null) {
-                    try {
-                        val allMessages = chatRepository.getMessages(sessionId)
-                        val messageIndex = allMessages.indexOfFirst { it.id == updatedMessage.id }
-                        val contextStart = (messageIndex - 4).coerceAtLeast(0)
-                        val contextMessages = if (messageIndex >= 0) {
-                            allMessages.subList(contextStart, messageIndex)
-                        } else {
-                            emptyList()
-                        }
-                        val renderContext = placeholderRenderContext()
-                        AiBackgroundWorkManager.run(sessionId) {
-                            ragManager.indexSingleMessageMemory(
-                                updatedMessage.renderWith(renderContext),
-                                contextMessages.renderWith(renderContext),
-                                sessionId,
-                                embeddingConfig
-                            )
-                        }
-                    } catch (_: Exception) {
-                        ragManager.deleteMemoryForMessage(messageId)
+            applyMessageEdit(
+                oldMessage = oldMessage,
+                content = updatedMessage.content,
+                imagePaths = updatedMessage.images,
+                deleteRemovedImages = false,
+                deleteMemoryWhenTextBlank = editOutcome.deleteMemoryForMessage
+            )
+        }
+    }
+
+    private suspend fun applyMessageEdit(
+        oldMessage: ChatMessage,
+        content: String,
+        imagePaths: List<String>,
+        deleteRemovedImages: Boolean,
+        deleteMemoryWhenTextBlank: Boolean = false
+    ) {
+        val updatedMessage = oldMessage.copy(
+            content = content,
+            images = imagePaths,
+            alternatives = emptyList(),
+            currentAlternativeIndex = 0,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        if (deleteRemovedImages) {
+            oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
+        }
+
+        chatRepository.updateMessage(updatedMessage)
+        refreshMessages()
+
+        if (deleteMemoryWhenTextBlank) {
+            ragManager.deleteMemoryForMessage(oldMessage.id)
+            return
+        }
+
+        refreshMemoryAfterMessageEdit(updatedMessage)
+    }
+
+    private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
+        val messageId = updatedMessage.id
+        val isInActiveContext = chatRepository.getMessages(sessionId)
+            .takeLast(effectiveContextWindowSize())
+            .any { it.id == messageId }
+        if (isInActiveContext) {
+            return
+        }
+
+        val memoryChunks = ChatBarApp.instance.ragRepository.getChunksByMessageId(messageId)
+        if (memoryChunks.isNotEmpty()) {
+            val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+            if (embeddingConfig != null) {
+                try {
+                    val allMessages = chatRepository.getMessages(sessionId)
+                    val messageIndex = allMessages.indexOfFirst { it.id == updatedMessage.id }
+                    val contextStart = (messageIndex - 4).coerceAtLeast(0)
+                    val contextMessages = if (messageIndex >= 0) {
+                        allMessages.subList(contextStart, messageIndex)
+                    } else {
+                        emptyList()
                     }
-                } else {
+                    val renderContext = placeholderRenderContext()
+                    AiBackgroundWorkManager.run(sessionId) {
+                        ragManager.indexSingleMessageMemory(
+                            updatedMessage.renderWith(renderContext),
+                            contextMessages.renderWith(renderContext),
+                            sessionId,
+                            embeddingConfig
+                        )
+                    }
+                } catch (_: Exception) {
                     ragManager.deleteMemoryForMessage(messageId)
                 }
+            } else {
+                ragManager.deleteMemoryForMessage(messageId)
             }
         }
     }
