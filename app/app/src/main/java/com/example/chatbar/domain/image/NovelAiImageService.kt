@@ -32,9 +32,9 @@ sealed class NovelAiImageEvent {
 
 class NovelAiImageService(
     private val client: OkHttpClient = ProxyAwareClient.builder()
-        .connectTimeout(30, TimeUnit.SECONDS)
-        .readTimeout(5, TimeUnit.MINUTES)
-        .writeTimeout(30, TimeUnit.SECONDS)
+        .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+        .readTimeout(READ_TIMEOUT_MINUTES, TimeUnit.MINUTES)
+        .writeTimeout(WRITE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .build()
 ) {
     fun generate(
@@ -240,6 +240,9 @@ class NovelAiImageService(
         const val MODEL = "nai-diffusion-4-5-full"
         const val STEPS = 28
         const val SCALE = 8.0
+        const val CONNECT_TIMEOUT_SECONDS = 30L
+        const val READ_TIMEOUT_MINUTES = 10L
+        const val WRITE_TIMEOUT_SECONDS = 30L
         fun randomSeed(): Int = kotlin.random.Random.nextInt(0, Int.MAX_VALUE)
         fun correlationId(): String = (1..6).map { ALPHANUMERIC.random() }.joinToString("")
         const val ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"

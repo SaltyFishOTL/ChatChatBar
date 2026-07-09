@@ -138,7 +138,7 @@ class NovelAiPromptDesigner(
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", characterCardImagePrompt(card))
+                ChatApiMessage.text("user", PromptTemplates.novelAiImagePromptCharacterCard(card))
             ),
             model = model,
             onDelta = onDelta
@@ -430,41 +430,6 @@ class NovelAiPromptDesigner(
         internal fun baseCharacterName(fullName: String): String =
             fullName.split(Regex("""[/;；]""")).first().trim()
 
-        internal fun characterCardImagePrompt(card: CharacterCard): String = buildString {
-            appendLine("Design one reusable character-card cover image from this finalized card.")
-            appendLine("The same image will be used as both avatar and chat background.")
-            appendLine("Make it recognizable, portrait-friendly, and stable: major character identity, appearance, mood, and a light representative background.")
-            appendLine("No UI, no text, no logo, no watermark. Avoid action-heavy story moments.")
-            appendLine()
-            appendField("Card name", card.name)
-            appendField("Basic setting", card.basicSetting)
-            appendField("Opening scene", card.greeting)
-            if (card.editMode == CharacterEditMode.FREEFORM) {
-                appendField("Freeform character text", card.freeformCharacterText)
-            } else {
-                card.characters.take(6).forEachIndexed { index, character ->
-                    appendLine()
-                    appendLine("Character ${index + 1}:")
-                    appendField("Name", character.name)
-                    appendField("Profile", character.profile)
-                    appendField("Appearance", character.appearance)
-                    appendField("Clothing", character.clothing)
-                    appendField("Abilities", character.abilities)
-                    appendField("Habits", character.habits)
-                    appendField("Background", character.background)
-                    appendField("Relationships", character.relationships)
-                    appendField("Speaking style", character.speakingStyle)
-                    appendField("Image prompt", character.imagePrompt)
-                }
-            }
-        }
-
-
-        private fun StringBuilder.appendField(label: String, value: String) {
-            val text = value.trim().take(1200)
-            if (text.isNotEmpty()) appendLine("$label: $text")
-        }
-
         private fun buildDesignRequestJson(systemPrompt: String, userPrompt: String): String =
             buildJsonObject {
                 put("messages", kotlinx.serialization.json.buildJsonArray {
@@ -505,14 +470,10 @@ internal fun CharacterCard.hasImageDesignSource(): Boolean =
     name.isNotBlank() ||
         basicSetting.isNotBlank() ||
         greeting.isNotBlank() ||
-        freeformCharacterText.isNotBlank() ||
-        characters.any {
-            it.name.isNotBlank() ||
-                it.profile.isNotBlank() ||
-                it.appearance.isNotBlank() ||
-                it.clothing.isNotBlank() ||
-                it.background.isNotBlank() ||
-                it.imagePrompt.isNotBlank()
+        if (editMode == CharacterEditMode.FREEFORM) {
+            freeformCharacterText.isNotBlank()
+        } else {
+            characters.any { it.imagePrompt.isNotBlank() }
         }
 
 internal suspend fun collectPromptText(

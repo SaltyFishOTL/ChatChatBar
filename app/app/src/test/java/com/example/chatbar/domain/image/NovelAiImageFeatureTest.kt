@@ -70,7 +70,7 @@ class NovelAiImageFeatureTest {
         val card = CharacterCard(
             id = "card",
             name = "夜雨诊所",
-            greeting = "雨夜里，林雾推开诊室门。",
+            greeting = "雨夜里，诊室门被推开。",
             basicSetting = "都市怪谈诊所，冷淡女医生与来访者建立危险信任。",
             characters = listOf(
                 CharacterInfo(
@@ -89,12 +89,16 @@ class NovelAiImageFeatureTest {
             updatedAt = 1
         )
 
-        val prompt = NovelAiPromptDesigner.characterCardImagePrompt(card)
+        val prompt = PromptTemplates.novelAiImagePromptCharacterCard(card)
 
         assertTrue(prompt.contains("夜雨诊所"))
         assertTrue(prompt.contains("都市怪谈诊所"))
-        assertTrue(prompt.contains("林雾"))
+        assertTrue(prompt.contains("Character 1 image prompt"))
         assertTrue(prompt.contains("silver hair"))
+        assertFalse(prompt.contains("林雾"))
+        assertFalse(prompt.contains("怪谈医生"))
+        assertFalse(prompt.contains("银发，灰蓝眼，冷淡表情"))
+        assertFalse(prompt.contains("白大褂，黑色高领"))
         assertFalse(prompt.contains("secret-notes.txt"))
         assertFalse(prompt.contains("hidden-world"))
     }
@@ -112,9 +116,14 @@ class NovelAiImageFeatureTest {
 
         assertFalse(emptyCard.hasImageDesignSource())
         assertTrue(emptyCard.copy(name = "夜雨诊所").hasImageDesignSource())
-        assertTrue(
+        assertFalse(
             emptyCard.copy(
                 characters = listOf(CharacterInfo.create("").copy(appearance = "银发，灰蓝眼"))
+            ).hasImageDesignSource()
+        )
+        assertTrue(
+            emptyCard.copy(
+                characters = listOf(CharacterInfo.create("").copy(imagePrompt = "1girl, silver hair, blue-gray eyes"))
             ).hasImageDesignSource()
         )
     }

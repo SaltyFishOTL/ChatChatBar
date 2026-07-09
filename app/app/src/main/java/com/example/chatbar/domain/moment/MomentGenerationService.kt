@@ -12,12 +12,14 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageService
+import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.data.security.NovelAiCredentialStore
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -94,7 +96,7 @@ class MomentGenerationService(
         latestPost = latestPost,
         model = model,
         scheduledAt = scheduledAt,
-        streamText = false,
+        streamText = true,
         onProgress = {}
     )
 
@@ -158,31 +160,54 @@ class MomentGenerationService(
             model = model
         )
         val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
-        var finalImage: ByteArray? = null
-        var errorMessage: String? = null
-        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.GENERATING_IMAGE, "正在生成图片"))
-        imageService.generate(token, prompt, imageService.newSeed(), imageSize).collect { event ->
-            when (event) {
-                is NovelAiImageEvent.Final -> finalImage = event.image
-                is NovelAiImageEvent.Error -> errorMessage = event.message
-                is NovelAiImageEvent.Intermediate -> {
-                    onProgress(
-                        MomentGenerationProgress(
-                            phase = MomentGenerationProgressPhase.GENERATING_IMAGE,
-                            message = "图片生成 ${(event.progress * 100).toInt()}%",
-                            progress = event.progress
-                        )
-                    )
-                }
-            }
-        }
-        errorMessage?.let { error(it) }
-        val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+        val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
         val imagePath = imageStorage.save("moments_${card.id}", bytes)
         val post = createPost(card, session, normalizedDraft, prompt, imagePath, scheduledAt)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "朋友圈生成完成", progress = 1f))
         return MomentGenerationResult.Posted(post)
+    }
+
+    private suspend fun generateImageWithRetry(
+        token: String,
+        prompt: NovelAiPromptPlan,
+        imageSize: NovelAiImageSize,
+        onProgress: (MomentGenerationProgress) -> Unit
+    ): ByteArray {
+        var lastError = "NovelAI 未返回最终图片"
+        repeat(IMAGE_GENERATION_ATTEMPTS) { attempt ->
+            val retryLabel = if (attempt == 0) "" else "（重试 ${attempt + 1}/$IMAGE_GENERATION_ATTEMPTS）"
+            var finalImage: ByteArray? = null
+            var errorMessage: String? = null
+            onProgress(
+                MomentGenerationProgress(
+                    MomentGenerationProgressPhase.GENERATING_IMAGE,
+                    "正在生成图片$retryLabel"
+                )
+            )
+            imageService.generate(token, prompt, imageService.newSeed(), imageSize).collect { event ->
+                when (event) {
+                    is NovelAiImageEvent.Final -> finalImage = event.image
+                    is NovelAiImageEvent.Error -> errorMessage = event.message
+                    is NovelAiImageEvent.Intermediate -> {
+                        onProgress(
+                            MomentGenerationProgress(
+                                phase = MomentGenerationProgressPhase.GENERATING_IMAGE,
+                                message = "图片生成 ${(event.progress * 100).toInt()}%$retryLabel",
+                                progress = event.progress
+                            )
+                        )
+                    }
+                }
+            }
+            finalImage?.let { return it }
+            lastError = errorMessage ?: "NovelAI 未返回最终图片"
+            if (!lastError.isTransientMomentImageFailure() || attempt == IMAGE_GENERATION_ATTEMPTS - 1) {
+                error(lastError)
+            }
+            delay(IMAGE_RETRY_DELAY_MS)
+        }
+        error(lastError)
     }
 
     suspend fun debugGenerateNow(
@@ -489,9 +514,29 @@ class MomentGenerationService(
         appendLine(userPrompt)
     }.trim()
 
+    private companion object {
+        const val IMAGE_GENERATION_ATTEMPTS = 2
+        const val IMAGE_RETRY_DELAY_MS = 1500L
+    }
 }
 
 private fun String.compactMomentText(): String =
     replace(Regex("\\s+"), " ")
         .trim()
         .take(60)
+
+internal fun String.isTransientMomentImageFailure(): Boolean {
+    val text = lowercase()
+    return listOf(
+        "timeout",
+        "timed out",
+        "超时",
+        "断开",
+        "eof",
+        "reset",
+        "无法连接",
+        "网关",
+        "暂不可用",
+        "未返回最终图片"
+    ).any { it in text }
+}

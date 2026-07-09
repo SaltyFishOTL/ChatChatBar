@@ -495,8 +495,28 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             target = CoverImageTarget.Current,
             card = buildCurrentCard(markDirty = false),
             modelOverride = selectedModel,
-            selectedModelId = selectedModelId
+            selectedModelId = selectedModelId,
+            previousCandidatePath = _coverImageState.value.path
         )
+    }
+
+    fun applyCurrentCoverImageCandidate() {
+        val path = _coverImageState.value.path?.takeIf(String::isNotBlank) ?: run {
+            _coverImageState.value = _coverImageState.value.copy(error = "没有可应用的封面候选")
+            return
+        }
+        avatar = path
+        chatBackground = path
+        _coverImageState.value = CharacterCoverImageUiState()
+    }
+
+    fun clearCurrentCoverImageCandidate() {
+        if (coverImageTarget == CoverImageTarget.Current && _coverImageState.value.isGenerating) {
+            cancelCoverImageGeneration()
+            return
+        }
+        deleteAutoFillCandidateImage(_coverImageState.value.path)
+        _coverImageState.value = CharacterCoverImageUiState()
     }
 
     fun generateAutoFillCoverImageCandidate(modelId: String? = null) {
@@ -595,9 +615,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         coverImageGenerationToken += 1
         val generationToken = coverImageGenerationToken
         coverImageJob?.cancel()
-        if (target != CoverImageTarget.Current) {
-            deleteAutoFillCandidateImage(previousCandidatePath)
-        }
+        deleteAutoFillCandidateImage(previousCandidatePath)
         coverImageTarget = target
         putCoverImageState(
             target,
@@ -692,10 +710,6 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                         }
                         return@run
                     }
-                    if (target == CoverImageTarget.Current) {
-                        avatar = path
-                        chatBackground = path
-                    }
                     updateCoverImageStateIfCurrent(generationToken, target) {
                         it.copy(
                             isGenerating = false,
@@ -703,7 +717,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                             preview = bytes,
                             progress = 1f,
                             statusText = if (target == CoverImageTarget.Current) {
-                                "封面已生成并设为头像和聊天背景"
+                                "封面候选已生成，等待应用"
                             } else {
                                 "封面候选已生成"
                             }

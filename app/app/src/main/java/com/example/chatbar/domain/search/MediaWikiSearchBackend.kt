@@ -119,10 +119,10 @@ class MediaWikiSearchBackend : SearchBackend {
         emptyList()
     }
 
-    override suspend fun extract(urls: List<String>): List<SearchExtract> = withContext(Dispatchers.IO) {
+    override suspend fun extract(urls: List<String>, maxPages: Int): List<SearchExtract> = withContext(Dispatchers.IO) {
         val refs = urls.mapNotNull(::parseMediaWikiUrl)
             .distinctBy { "${it.site.id}:${normalizeTitle(it.title)}" }
-            .take(MAX_EXTRACT_PAGES)
+            .take(maxPages.coerceAtLeast(0))
         if (refs.isEmpty()) return@withContext emptyList()
 
         val errors = mutableListOf<String>()
@@ -456,7 +456,6 @@ class MediaWikiSearchBackend : SearchBackend {
         const val UTF8 = "UTF-8"
         const val USER_AGENT = "ChatBar/1.0 (Android; character-card research)"
         const val MAX_RESULTS_PER_QUERY = 1
-        const val MAX_EXTRACT_PAGES = 3
         const val MIN_DEEP_EXTRACT_CHARS = 1600
         const val MAX_EXTRACT_CHARS = 12_000
     }

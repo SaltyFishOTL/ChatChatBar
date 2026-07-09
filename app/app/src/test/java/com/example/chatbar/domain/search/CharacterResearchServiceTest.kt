@@ -175,7 +175,7 @@ class CharacterResearchServiceTest {
     }
 
     @Test
-    fun `research uses fixed twenty query cap and one result per query`() = runTest {
+    fun `research uses fixed ten item cap and one result per query`() = runTest {
         val backend = FakeSearchBackend()
         val service = service(
             settings = AppSettings(webSearchEnabled = true),
@@ -186,14 +186,34 @@ class CharacterResearchServiceTest {
         val brief = service.research("request", card(), model())
 
         requireNotNull(brief)
-        assertEquals((1..20).map { "q$it" }, backend.searchCalls.map { it.query })
+        assertEquals((1..10).map { "q$it" }, backend.searchCalls.map { it.query })
         assertTrue(backend.searchCalls.all { it.maxResults == 1 })
+    }
+
+    @Test
+    fun `research keeps up to ten final sources`() = runTest {
+        val backend = DistinctSearchBackend()
+        val service = service(
+            settings = AppSettings(webSearchEnabled = true),
+            planner = MultiQueryPlanner(queryCount = 12),
+            backend = backend
+        )
+
+        val brief = service.research("request", card(), model())
+
+        requireNotNull(brief)
+        assertEquals(10, backend.searchCalls.size)
+        assertEquals(10, backend.extractCalls.single().size)
+        assertEquals(listOf(10), backend.extractMaxPagesCalls)
+        assertEquals(10, brief.sources.size)
+        assertTrue(brief.sources.all { it.excerpt.length > 900 })
+        assertTrue(brief.sources.last().excerpt.contains("stable fact 10"))
     }
 
     private fun service(
         settings: AppSettings,
         planner: CharacterResearchPlanProvider = FakePlanner(),
-        backend: FakeSearchBackend = FakeSearchBackend(),
+        backend: SearchBackend = FakeSearchBackend(),
         summarizer: ResearchBriefSummarizer = FakeSummarizer()
     ): CharacterResearchService = CharacterResearchService(
         settingsProvider = { settings },
@@ -283,6 +303,7 @@ class CharacterResearchServiceTest {
     ) : SearchBackend {
         val searchCalls = mutableListOf<SearchBackendQuery>()
         val extractCalls = mutableListOf<List<String>>()
+        val extractMaxPagesCalls = mutableListOf<Int>()
 
         override suspend fun search(query: SearchBackendQuery): List<SearchHit> {
             searchCalls += query
@@ -297,11 +318,42 @@ class CharacterResearchServiceTest {
             )
         }
 
-        override suspend fun extract(urls: List<String>): List<SearchExtract> {
+        override suspend fun extract(urls: List<String>, maxPages: Int): List<SearchExtract> {
             extractCalls += urls
+            extractMaxPagesCalls += maxPages
             if (failExtract) error("extract failed")
-            return urls.map { url ->
+            return urls.take(maxPages).map { url ->
                 SearchExtract(url = url, rawContent = "stable fact from extract")
+            }
+        }
+    }
+
+    private class DistinctSearchBackend : SearchBackend {
+        val searchCalls = mutableListOf<SearchBackendQuery>()
+        val extractCalls = mutableListOf<List<String>>()
+        val extractMaxPagesCalls = mutableListOf<Int>()
+
+        override suspend fun search(query: SearchBackendQuery): List<SearchHit> {
+            searchCalls += query
+            val index = query.query.removePrefix("q").toInt()
+            return listOf(
+                SearchHit(
+                    title = "Source $index",
+                    url = "https://example.com/source-$index",
+                    content = "stable fact $index from search",
+                    score = 100.0 - index
+                )
+            )
+        }
+
+        override suspend fun extract(urls: List<String>, maxPages: Int): List<SearchExtract> {
+            extractCalls += urls
+            extractMaxPagesCalls += maxPages
+            return urls.take(maxPages).mapIndexed { index, url ->
+                SearchExtract(
+                    url = url,
+                    rawContent = "stable fact ${index + 1} from extract " + "detail ".repeat(300)
+                )
             }
         }
     }

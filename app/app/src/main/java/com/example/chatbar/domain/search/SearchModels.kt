@@ -90,7 +90,7 @@ data class ResearchBriefResult(
 interface SearchBackend {
     suspend fun search(query: SearchBackendQuery): List<SearchHit>
 
-    suspend fun extract(urls: List<String>): List<SearchExtract>
+    suspend fun extract(urls: List<String>, maxPages: Int): List<SearchExtract>
 }
 
 interface CharacterResearchPlanProvider {

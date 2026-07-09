@@ -89,7 +89,7 @@ class LlmResearchBriefSummarizer(
         }
     }
 
-    private fun summaryUserPrompt(
+    internal fun summaryUserPrompt(
         request: String,
         plan: CharacterResearchPlan,
         sources: List<ResearchSource>

@@ -37,6 +37,29 @@ class CharacterResearchPlannerTest {
     }
 
     @Test
+    fun `research prompt templates keep long planner input and brief sources`() {
+        val plannerTail = "PLANNER_TAIL_MARKER"
+        val plannerUser = PromptTemplates.characterResearchPlannerUserPrompt(
+            userInput = "planner detail ".repeat(700) + plannerTail
+        )
+        val sources = (1..10).joinToString("\n\n") { index ->
+            PromptTemplates.characterResearchBriefSource(
+                sourceId = "S$index",
+                title = "Source $index",
+                excerpt = "source $index detail ".repeat(260) + "SOURCE_${index}_TAIL_MARKER"
+            )
+        }
+        val briefUser = PromptTemplates.characterResearchBriefUserPrompt(
+            request = "rewrite",
+            sources = sources
+        )
+
+        assertTrue(plannerUser.contains(plannerTail))
+        assertTrue(briefUser.contains("Source 10"))
+        assertTrue(briefUser.contains("SOURCE_10_TAIL_MARKER"))
+    }
+
+    @Test
     fun `parsePlan accepts fenced json sorts and caps queries`() {
         val raw = """
             planning:

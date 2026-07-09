@@ -7,9 +7,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-private const val DEFAULT_MAX_QUERIES = 20
+private const val MAX_RESEARCH_ITEMS = 10
 private const val MAX_EFFECTIVE_RESULTS_PER_QUERY = 1
-private const val MAX_FINAL_SOURCES = 3
 private const val FIRST_PASS_EXCERPT_CHARS = 1200
 private const val FINAL_EXCERPT_CHARS = 4000
 
@@ -33,18 +32,18 @@ class CharacterResearchService(
             return@withContext null
         }
 
-        val maxQueries = DEFAULT_MAX_QUERIES
+        val maxResearchItems = MAX_RESEARCH_ITEMS
         val maxResults = settings.webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
 
         val planResult = planner.plan(
             userInput = userInput,
             currentCard = currentCard,
             modelConfig = modelConfig,
-            maxQueries = maxQueries,
+            maxQueries = maxResearchItems,
             onStatus = onStatus,
             onRawText = { text -> onVisibleOutput("research-plan", "搜索规划输出", text) }
         )
-        val plan = planResult.plan ?: fallbackPlan(userInput, currentCard, maxQueries, planResult.failureReason)
+        val plan = planResult.plan ?: fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
         if (plan == null) {
             onStatus("搜索规划失败，且没有可用保底关键词，跳过搜索")
             return@withContext null
@@ -57,7 +56,7 @@ class CharacterResearchService(
             return@withContext null
         }
 
-        val queries = plan.queries.take(maxQueries)
+        val queries = plan.queries.take(maxResearchItems)
         onStatus(
             buildString {
                 append("AI 决定搜索 ${queries.size} 个关键词")
@@ -95,7 +94,7 @@ class CharacterResearchService(
         val firstPassSources = ResearchCleaner.toResearchSources(
             hits = hits,
             extracts = emptyList(),
-            maxSources = MAX_FINAL_SOURCES,
+            maxSources = maxResearchItems,
             maxExcerptChars = FIRST_PASS_EXCERPT_CHARS
         )
         val extracts = if (firstPassSources.isEmpty()) {
@@ -103,7 +102,10 @@ class CharacterResearchService(
         } else {
             onStatus("正在抽取百科正文：${firstPassSources.size} 个来源")
             runCatching {
-                backend.extract(firstPassSources.map { it.url })
+                backend.extract(
+                    urls = firstPassSources.map { it.url },
+                    maxPages = maxResearchItems
+                )
             }.getOrElse { error ->
                 onStatus("百科正文抽取失败，改用搜索摘要：${error.message ?: error::class.java.simpleName}")
                 emptyList()
@@ -112,7 +114,7 @@ class CharacterResearchService(
         val sources = ResearchCleaner.toResearchSources(
             hits = hits,
             extracts = extracts,
-            maxSources = MAX_FINAL_SOURCES,
+            maxSources = maxResearchItems,
             maxExcerptChars = FINAL_EXCERPT_CHARS
         )
         if (sources.isEmpty()) {

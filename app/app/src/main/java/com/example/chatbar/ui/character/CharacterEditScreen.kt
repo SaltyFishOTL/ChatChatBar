@@ -91,6 +91,7 @@ import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
 import com.example.chatbar.domain.image.imageCropFractionRect
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -136,6 +137,12 @@ private enum class CharacterImageCropTarget(
     Background("裁剪聊天背景", 9f / 16f, 1080, 1920, false)
 }
 
+private sealed class PendingCoverImageGeneration {
+    object Current : PendingCoverImageGeneration()
+    data class AutoFill(val modelId: String?) : PendingCoverImageGeneration()
+    data class Rewrite(val modelId: String?) : PendingCoverImageGeneration()
+}
+
 @Composable
 fun CharacterEditScreen(
     characterId: String?,
@@ -179,6 +186,7 @@ fun CharacterEditScreen(
     var editWorldBookEntryIndex by remember { mutableStateOf<Int?>(null) }
     var deleteWorldBookEntryIndex by remember { mutableStateOf<Int?>(null) }
     var showWorldBookEntryDialog by remember { mutableStateOf(false) }
+    var pendingCoverImageGeneration by remember { mutableStateOf<PendingCoverImageGeneration?>(null) }
     var lastBackPressAt by remember { mutableStateOf(0L) }
 
     BackHandler {
@@ -293,13 +301,19 @@ fun CharacterEditScreen(
                 }
                 CbButton(
                     "AI设计封面",
-                    { viewModel.generateCurrentCoverImage() },
+                    { pendingCoverImageGeneration = PendingCoverImageGeneration.Current },
                     modifier = Modifier.fillMaxWidth(),
                     enabled = !isSaving && !coverImageState.isGenerating,
                     variant = ButtonVariant.Outline
                 )
             }
-            CoverImagePreview(coverImageState, title = "当前封面")
+            CoverImagePreview(
+                state = coverImageState,
+                title = "当前封面候选",
+                onCancel = viewModel::cancelCoverImageGeneration,
+                onApply = viewModel::applyCurrentCoverImageCandidate,
+                onDiscard = viewModel::clearCurrentCoverImageCandidate
+            )
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
                     modifier = Modifier.size(64.dp).clickable {
@@ -333,7 +347,12 @@ fun CharacterEditScreen(
                     onPick = {
                         pickCroppedImage(CharacterImageCropTarget.Background) { viewModel.chatBackground = it }
                     },
-                    onClear = { viewModel.chatBackground = null }
+                    onClear = { viewModel.chatBackground = null },
+                    onDownload = {
+                        viewModel.chatBackground?.let { path ->
+                            saveImageToGallery(context, path)
+                        }
+                    }
                 )
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -583,7 +602,9 @@ fun CharacterEditScreen(
             onPickImage = { callback -> pickImage(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
             onGenerate = viewModel::generateAutoFillDraft,
-            onGenerateCover = viewModel::generateAutoFillCoverImageCandidate,
+            onGenerateCover = { modelId ->
+                pendingCoverImageGeneration = PendingCoverImageGeneration.AutoFill(modelId)
+            },
             onCancel = viewModel::cancelAutoFillGeneration,
             onCancelCover = viewModel::cancelCoverImageGeneration,
             onApply = {
@@ -602,7 +623,9 @@ fun CharacterEditScreen(
                 viewModel.clearRewriteDraft()
             },
             onGenerate = viewModel::generateRewriteDraft,
-            onGenerateCover = viewModel::generateRewriteCoverImageCandidate,
+            onGenerateCover = { modelId ->
+                pendingCoverImageGeneration = PendingCoverImageGeneration.Rewrite(modelId)
+            },
             onCancel = viewModel::cancelRewriteGeneration,
             onCancelCover = viewModel::cancelCoverImageGeneration,
             onApply = {
@@ -610,6 +633,47 @@ fun CharacterEditScreen(
                 showRewriteDialog = false
             }
         )
+    }
+    pendingCoverImageGeneration?.let { pending ->
+        val message = when (pending) {
+            PendingCoverImageGeneration.Current ->
+                "将调用 NovelAI 生成图片。生成完成后会作为封面候选显示，应用后才设为头像和默认聊天背景。"
+            is PendingCoverImageGeneration.AutoFill ->
+                "将调用 NovelAI 为自动填充候选生成封面。应用候选时会设为头像和默认聊天背景。"
+            is PendingCoverImageGeneration.Rewrite ->
+                "将调用 NovelAI 为改写候选生成封面。应用改写时会设为头像和默认聊天背景。"
+        }
+        CbDialog(
+            onDismissRequest = { pendingCoverImageGeneration = null },
+            title = "确认生成封面",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { pendingCoverImageGeneration = null },
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton(
+                    "确认生成",
+                    {
+                        pendingCoverImageGeneration = null
+                        when (pending) {
+                            PendingCoverImageGeneration.Current -> viewModel.generateCurrentCoverImage()
+                            is PendingCoverImageGeneration.AutoFill -> {
+                                viewModel.generateAutoFillCoverImageCandidate(pending.modelId)
+                            }
+                            is PendingCoverImageGeneration.Rewrite -> {
+                                viewModel.generateRewriteCoverImageCandidate(pending.modelId)
+                            }
+                        }
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            }
+        ) {
+            CbText(message, color = ChatBarTheme.colors.mutedForeground)
+        }
     }
     if (showDocumentDialog) {
         DocumentDialog(
@@ -894,7 +958,13 @@ private suspend fun loadImageCropSize(context: Context, uri: Uri): ImageCropSize
 }
 
 @Composable
-private fun ImagePickerPanel(imagePath: String?, height: androidx.compose.ui.unit.Dp, onPick: () -> Unit, onClear: () -> Unit) {
+private fun ImagePickerPanel(
+    imagePath: String?,
+    height: androidx.compose.ui.unit.Dp,
+    onPick: () -> Unit,
+    onClear: () -> Unit,
+    onDownload: (() -> Unit)? = null
+) {
     Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
         Box(
             modifier = Modifier.fillMaxWidth().height(height).clip(RoundedCornerShape(10.dp)).background(ChatBarTheme.colors.muted).clickable(onClick = onPick),
@@ -906,7 +976,26 @@ private fun ImagePickerPanel(imagePath: String?, height: androidx.compose.ui.uni
             }
             CbIcon(AppIcons.PhotoCamera, "选择图片", tint = Color.White)
         }
-        if (!imagePath.isNullOrBlank()) CbButton("清除图片", onClear, variant = ButtonVariant.Ghost)
+        if (!imagePath.isNullOrBlank()) {
+            if (onDownload == null) {
+                CbButton("清除图片", onClear, variant = ButtonVariant.Ghost)
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "清除图片",
+                        onClear,
+                        modifier = Modifier.weight(1f),
+                        variant = ButtonVariant.Ghost
+                    )
+                    CbButton(
+                        "下载图片",
+                        onDownload,
+                        modifier = Modifier.weight(1f),
+                        variant = ButtonVariant.Outline
+                    )
+                }
+            }
+        }
     }
 }
 
@@ -1120,7 +1209,11 @@ private fun CharacterAutoFillDialog(
                     )
                 }
             }
-            CoverImagePreview(state.coverImage, title = "封面候选")
+            CoverImagePreview(
+                state = state.coverImage,
+                title = "封面候选",
+                onCancel = onCancelCover
+            )
             state.draft?.let { draft ->
                 CbDivider()
                 AutoFillDraftPreview(draft)
@@ -1264,7 +1357,11 @@ private fun CharacterRewriteDialog(
                     )
                 }
             }
-            CoverImagePreview(state.coverImage, title = "封面候选")
+            CoverImagePreview(
+                state = state.coverImage,
+                title = "封面候选",
+                onCancel = onCancelCover
+            )
             state.draft?.let { draft ->
                 CbDivider()
                 RewriteDiffPreview(state.diff)
@@ -1416,7 +1513,13 @@ private fun AutoFillRawStreamPreview(rawText: String) {
 }
 
 @Composable
-private fun CoverImagePreview(state: CharacterCoverImageUiState, title: String) {
+private fun CoverImagePreview(
+    state: CharacterCoverImageUiState,
+    title: String,
+    onCancel: (() -> Unit)? = null,
+    onApply: (() -> Unit)? = null,
+    onDiscard: (() -> Unit)? = null
+) {
     val imageModel: Any? = state.preview ?: state.path
     val hasImageStatus = state.isGenerating ||
         imageModel != null ||
@@ -1452,6 +1555,32 @@ private fun CoverImagePreview(state: CharacterCoverImageUiState, title: String) 
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
+                if (onCancel != null) {
+                    CbButton(
+                        "取消封面设计",
+                        onCancel,
+                        modifier = Modifier.fillMaxWidth(),
+                        variant = ButtonVariant.Destructive
+                    )
+                }
+            } else if (imageModel != null && onDiscard != null) {
+                val hasSavedCandidate = !state.path.isNullOrBlank()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "取消",
+                        onDiscard,
+                        modifier = Modifier.weight(1f),
+                        variant = ButtonVariant.Ghost
+                    )
+                    if (onApply != null && hasSavedCandidate) {
+                        CbButton(
+                            "应用封面",
+                            onApply,
+                            modifier = Modifier.weight(1f),
+                            variant = ButtonVariant.Default
+                        )
+                    }
+                }
             }
             state.error?.takeIf(String::isNotBlank)?.let { error ->
                 CbText(error, color = ChatBarTheme.colors.destructive)
