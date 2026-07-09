@@ -154,6 +154,7 @@ class MomentScheduler(
             saveFailurePlaceholder(task, card, session, "未配置可用默认对话模型/API Key")
             return
         }
+        val imageModel = resolveImageModel(settings)
 
         val running = task.copy(status = MomentTaskStatus.RUNNING, sessionId = session.id, failureReason = null)
         momentRepository.updateTask(running)
@@ -167,6 +168,7 @@ class MomentScheduler(
                     messages = messages,
                     latestPost = latestPost,
                     model = model,
+                    imageModel = imageModel,
                     scheduledAt = task.scheduledAt
                 )
             }
@@ -235,6 +237,9 @@ class MomentScheduler(
 
     private suspend fun resolveModel(settings: com.example.chatbar.data.local.entity.AppSettings): ModelConfig? =
         modelResolver.defaultChatModel(settings)
+
+    private suspend fun resolveImageModel(settings: com.example.chatbar.data.local.entity.AppSettings): ModelConfig? =
+        modelResolver.defaultImageModel(settings)
 
     private companion object {
         const val TAG = "MomentScheduler"

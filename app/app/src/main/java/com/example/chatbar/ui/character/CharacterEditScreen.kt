@@ -146,8 +146,8 @@ private enum class CharacterImageCropTarget(
 
 private sealed class PendingCoverImageGeneration {
     object Current : PendingCoverImageGeneration()
-    data class AutoFill(val modelId: String?) : PendingCoverImageGeneration()
-    data class Rewrite(val modelId: String?) : PendingCoverImageGeneration()
+    object AutoFill : PendingCoverImageGeneration()
+    object Rewrite : PendingCoverImageGeneration()
 }
 
 @Composable
@@ -713,8 +713,8 @@ fun CharacterEditScreen(
             onPickImage = { callback -> pickImage(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
             onGenerate = viewModel::generateAutoFillDraft,
-            onGenerateCover = { modelId ->
-                pendingCoverImageGeneration = PendingCoverImageGeneration.AutoFill(modelId)
+            onGenerateCover = {
+                pendingCoverImageGeneration = PendingCoverImageGeneration.AutoFill
             },
             onCancel = viewModel::cancelAutoFillGeneration,
             onCancelCover = viewModel::cancelCoverImageGeneration,
@@ -734,8 +734,8 @@ fun CharacterEditScreen(
                 viewModel.clearRewriteDraft()
             },
             onGenerate = viewModel::generateRewriteDraft,
-            onGenerateCover = { modelId ->
-                pendingCoverImageGeneration = PendingCoverImageGeneration.Rewrite(modelId)
+            onGenerateCover = {
+                pendingCoverImageGeneration = PendingCoverImageGeneration.Rewrite
             },
             onCancel = viewModel::cancelRewriteGeneration,
             onCancelCover = viewModel::cancelCoverImageGeneration,
@@ -771,12 +771,8 @@ fun CharacterEditScreen(
                         pendingCoverImageGeneration = null
                         when (pending) {
                             PendingCoverImageGeneration.Current -> viewModel.generateCurrentCoverImage()
-                            is PendingCoverImageGeneration.AutoFill -> {
-                                viewModel.generateAutoFillCoverImageCandidate(pending.modelId)
-                            }
-                            is PendingCoverImageGeneration.Rewrite -> {
-                                viewModel.generateRewriteCoverImageCandidate(pending.modelId)
-                            }
+                            PendingCoverImageGeneration.AutoFill -> viewModel.generateAutoFillCoverImageCandidate()
+                            PendingCoverImageGeneration.Rewrite -> viewModel.generateRewriteCoverImageCandidate()
                         }
                     },
                     variant = ButtonVariant.Destructive
@@ -1401,7 +1397,7 @@ private fun CharacterAutoFillDialog(
                     )
                     CbButton(
                         "AI设计封面",
-                        { onGenerateCover(selectedModel.id) },
+                        { onGenerateCover(null) },
                         modifier = Modifier.weight(1f),
                         enabled = state.draft != null && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
@@ -1549,7 +1545,7 @@ private fun CharacterRewriteDialog(
                     )
                     CbButton(
                         "AI设计封面",
-                        { onGenerateCover(selectedModel.id) },
+                        { onGenerateCover(null) },
                         modifier = Modifier.weight(1f),
                         enabled = state.draft != null && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline

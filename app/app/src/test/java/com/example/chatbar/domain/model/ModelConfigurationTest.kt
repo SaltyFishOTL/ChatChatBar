@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.data.local.entity.resolveDarkTheme
+import com.example.chatbar.data.local.entity.withCurrentModelDefaults
 import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -54,6 +55,22 @@ class ModelConfigurationTest {
 
         assertFalse(settings.webSearchEnabled)
         assertEquals(3, settings.webSearchSettingsVersion)
+    }
+
+    @Test fun legacyDefaultModelBackfillsDefaultImageModel() {
+        val settings = AppSettings(defaultModelId = "chat-model")
+            .withCurrentModelDefaults()
+
+        assertEquals("chat-model", settings.defaultImageModelId)
+    }
+
+    @Test fun explicitDefaultImageModelIsPreserved() {
+        val settings = AppSettings(
+            defaultModelId = "chat-model",
+            defaultImageModelId = "image-model"
+        ).withCurrentModelDefaults()
+
+        assertEquals("image-model", settings.defaultImageModelId)
     }
 
     @Test fun v2SearchSettingsMigrateResultCountToOneWithoutReenabling() {

@@ -40,6 +40,23 @@ class EffectiveModelResolver(
     suspend fun defaultChatModel(appSettings: AppSettings): ModelConfig? =
         defaultChatModel(appSettings, availableChatModels(appSettings))
 
+    suspend fun resolveImageModel(
+        requestedId: String?,
+        appSettings: AppSettings
+    ): ModelConfig? {
+        val available = availableChatModels(appSettings)
+        return available.firstOrNull { it.id == requestedId }
+            ?: defaultImageModel(appSettings, available)
+    }
+
+    suspend fun resolveImageModel(requestedId: String?): ModelConfig? =
+        resolveImageModel(requestedId, settings.getAppSettings())
+
+    suspend fun defaultImageModel(): ModelConfig? = defaultImageModel(settings.getAppSettings())
+
+    suspend fun defaultImageModel(appSettings: AppSettings): ModelConfig? =
+        defaultImageModel(appSettings, availableChatModels(appSettings))
+
     suspend fun auxiliaryChatModel(id: String?, appSettings: AppSettings): ModelConfig? {
         if (id == null) return null
         return models.getModel(id)?.withEffectiveApiKey(appSettings)
@@ -102,6 +119,13 @@ class EffectiveModelResolver(
     private fun defaultChatModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
         val id = appSettings.defaultModelId ?: appSettings.presetDefaultModelKey?.let(::presetRef)
         return available.firstOrNull { it.id == id } ?: available.firstOrNull()
+    }
+
+    private fun defaultImageModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
+        val id = appSettings.defaultImageModelId
+            ?: appSettings.defaultModelId
+            ?: appSettings.presetDefaultModelKey?.let(::presetRef)
+        return available.firstOrNull { it.id == id } ?: defaultChatModel(appSettings, available)
     }
 
     private fun PresetChatModel.toModelConfig(

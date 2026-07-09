@@ -13,6 +13,7 @@ data class ChatSession(
     val characterCardId: String,
     val title: String,
     val modelId: String? = null,
+    val imageModelId: String? = null,
     val formatCardId: String? = null,
     val replyLength: String? = null,         // 回复长度设定
     val replyLanguage: String? = null,       // 回复语言

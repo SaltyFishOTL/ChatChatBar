@@ -84,6 +84,7 @@ class MomentsViewModel : ViewModel() {
                 val settings = settingsRepository.getAppSettings()
                 val model = modelResolver.defaultChatModel(settings) ?: error("未配置可用默认对话模型")
                 require(model.apiKey.isNotBlank()) { "默认对话模型/API Key 未配置" }
+                val imageModel = modelResolver.defaultImageModel(settings)
                 val messages = chatRepository.getMessages(session.id)
                 val latestPost = repository.latestPostForCard(card.id)
                 val result = AiBackgroundWorkManager.run("moments_retry_$id") {
@@ -93,6 +94,7 @@ class MomentsViewModel : ViewModel() {
                         messages = messages,
                         latestPost = latestPost,
                         model = model,
+                        imageModel = imageModel,
                         scheduledAt = placeholder.scheduledAt
                     ) { progress ->
                         setRetryState(

@@ -21,7 +21,7 @@ class ModelConfigurationMigration(
 ) {
     companion object {
         private const val STATE_TYPE = "model_configuration_migration"
-        private const val CURRENT_VERSION = 4
+        private const val CURRENT_VERSION = 5
     }
 
     private val mutex = Mutex()
@@ -43,6 +43,9 @@ class ModelConfigurationMigration(
         if (state.version < 4) {
             importPresetSupportModels()
         }
+        if (state.version < 5) {
+            backfillDefaultImageModel()
+        }
 
         storage.saveSingleton(
             STATE_TYPE,
@@ -60,6 +63,7 @@ class ModelConfigurationMigration(
         settings.saveAppSettings(
             current.copy(
                 modelConfigurationMode = current.modelConfigurationMode.normalized(),
+                defaultImageModelId = current.defaultImageModelId ?: current.defaultModelId,
                 presetDefaultModelKey = presetDefault,
                 defaultEmbeddingId = null
             )
@@ -78,6 +82,7 @@ class ModelConfigurationMigration(
         val next = current.copy(
             modelConfigurationMode = current.modelConfigurationMode.normalized(),
             defaultModelId = defaultModelId,
+            defaultImageModelId = current.defaultImageModelId ?: defaultModelId,
             presetDefaultModelKey = null,
             defaultEmbeddingId = null
         )
@@ -93,5 +98,15 @@ class ModelConfigurationMigration(
     private suspend fun importPresetSupportModels() {
         val version = presets.entries().firstOrNull()?.version ?: presets.catalog.schemaVersion
         models.ensurePresetSupportModels(presets.catalog, version)
+    }
+
+    private suspend fun backfillDefaultImageModel() {
+        val current = settings.getAppSettings()
+        val defaultFromPreset = current.presetDefaultModelKey?.let { PRESET_MODEL_ID_PREFIX + it }
+        val defaultImageModelId = current.defaultImageModelId
+            ?: current.defaultModelId
+            ?: defaultFromPreset
+        val next = current.copy(defaultImageModelId = defaultImageModelId)
+        if (next != current) settings.saveAppSettings(next)
     }
 }

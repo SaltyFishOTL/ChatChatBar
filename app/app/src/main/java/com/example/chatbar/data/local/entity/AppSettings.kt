@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
 @Serializable
 data class AppSettings(
     val defaultModelId: String? = null,
+    val defaultImageModelId: String? = null,
     val modelConfigurationMode: ModelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
     val presetDefaultModelKey: String? = null,
     val siliconFlowApiKey: String = "",
@@ -66,6 +67,13 @@ fun AppSettings.withCurrentWebSearchDefaults(): AppSettings =
             webSearchEnabled = if (webSearchSettingsVersion == 0) true else webSearchEnabled,
             webSearchMaxResultsPerQuery = 1
         )
+    }
+
+fun AppSettings.withCurrentModelDefaults(): AppSettings =
+    if (defaultImageModelId != null || defaultModelId == null) {
+        this
+    } else {
+        copy(defaultImageModelId = defaultModelId)
     }
 
 fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {

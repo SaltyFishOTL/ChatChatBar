@@ -18,6 +18,7 @@ data class SaveSlot(
     val playerSetting: String? = null,
     val supplementarySetting: String? = null,
     val modelId: String? = null,
+    val imageModelId: String? = null,
     val formatCardId: String? = null,
     val replyLength: String? = null,
     val replyLanguage: String? = null,

@@ -3,6 +3,7 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
+import com.example.chatbar.data.local.entity.withCurrentModelDefaults
 import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -49,7 +50,7 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     }
 
     private suspend fun migrateAppSettings(settings: AppSettings): AppSettings {
-        val migrated = settings.withCurrentWebSearchDefaults()
+        val migrated = settings.withCurrentWebSearchDefaults().withCurrentModelDefaults()
         if (migrated == settings) {
             return settings
         }

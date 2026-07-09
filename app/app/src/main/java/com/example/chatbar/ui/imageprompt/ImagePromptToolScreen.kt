@@ -91,7 +91,6 @@ fun ImagePromptToolScreen(
                     onCharacter = viewModel::updateCharacterPrompt,
                     selectedCharacterCard = selectedCharacterCard,
                     onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
-                    onModel = { viewModel.selectModel(it.id) },
                     onGeneratePrompt = viewModel::designPrompt
                 )
             }
@@ -154,7 +153,6 @@ private fun PromptInputPanel(
     onCharacter: (String) -> Unit,
     selectedCharacterCard: CharacterCard?,
     onImportCharacterCard: (CharacterCard) -> Unit,
-    onModel: (ModelConfig) -> Unit,
     onGeneratePrompt: () -> Unit
 ) {
     CbSurface(
@@ -201,13 +199,11 @@ private fun PromptInputPanel(
                     minLines = 3
                 )
             }
-            CbField("设计 AI") {
-                CbSelect(
-                    value = selectedModel,
-                    options = state.models,
-                    optionLabel = { it.displayName },
-                    onValueChange = onModel,
-                    placeholder = "选择对话模型"
+            CbField("默认生图模型") {
+                CbText(
+                    selectedModel?.displayName ?: "未配置默认生图模型",
+                    color = if (selectedModel == null) ChatBarTheme.colors.destructive else ChatBarTheme.colors.foreground,
+                    style = ChatBarTheme.typography.body
                 )
             }
             state.modelErrors.firstOrNull()?.let {

@@ -88,6 +88,7 @@ class MomentGenerationService(
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
         model: ModelConfig,
+        imageModel: ModelConfig?,
         scheduledAt: Long
     ): MomentGenerationResult = generateInternal(
         card = card,
@@ -95,6 +96,7 @@ class MomentGenerationService(
         messages = messages,
         latestPost = latestPost,
         model = model,
+        imageModel = imageModel,
         scheduledAt = scheduledAt,
         streamText = true,
         onProgress = {}
@@ -106,6 +108,7 @@ class MomentGenerationService(
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
         model: ModelConfig,
+        imageModel: ModelConfig?,
         scheduledAt: Long,
         onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult = generateInternal(
@@ -114,6 +117,7 @@ class MomentGenerationService(
         messages = messages,
         latestPost = latestPost,
         model = model,
+        imageModel = imageModel,
         scheduledAt = scheduledAt,
         streamText = true,
         onProgress = onProgress
@@ -125,6 +129,7 @@ class MomentGenerationService(
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
         model: ModelConfig,
+        imageModel: ModelConfig?,
         scheduledAt: Long,
         streamText: Boolean,
         onProgress: (MomentGenerationProgress) -> Unit
@@ -153,11 +158,12 @@ class MomentGenerationService(
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成无图朋友圈", progress = 1f))
             return MomentGenerationResult.Posted(post)
         }
+        require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
         val prompt = promptDesigner.designForMoment(
             card = card,
             momentImageBrief = normalizedDraft.imageBrief,
-            model = model
+            model = imageModel
         )
         val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
         val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
@@ -216,6 +222,7 @@ class MomentGenerationService(
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
         model: ModelConfig,
+        imageModel: ModelConfig?,
         scheduledAt: Long = System.currentTimeMillis()
     ): MomentDebugGenerationResult {
         val exchanges = mutableListOf<MomentDebugExchange>()
@@ -248,10 +255,11 @@ class MomentGenerationService(
                 val post = createPost(card, session, normalizedDraft, prompt = null, imagePath = null, scheduledAt = scheduledAt)
                 return@runCatching MomentDebugGenerationResult(post = post, exchanges = exchanges)
             }
+            require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
             val promptDebug = promptDesigner.designForMomentDebug(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,
-                model = model
+                model = imageModel
             )
             exchanges += promptDebug.exchanges.map { exchange ->
                 MomentDebugExchange(

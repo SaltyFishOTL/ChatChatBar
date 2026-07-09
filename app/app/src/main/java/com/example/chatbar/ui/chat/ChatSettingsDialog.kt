@@ -92,12 +92,14 @@ fun ChatSettingsDialog(
     val characterCard by viewModel.characterCard.collectAsState()
     val globalPlayerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
+    val defaultImageModelId by viewModel.effectiveDefaultImageModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
     var modelId by remember { mutableStateOf(session?.modelId) }
+    var imageModelId by remember { mutableStateOf(session?.imageModelId) }
     var formatId by remember { mutableStateOf(session?.formatCardId) }
     var replyLength by remember { mutableStateOf(session?.replyLength ?: "") }
     var replyLanguage by remember { mutableStateOf(session?.replyLanguage ?: "") }
@@ -155,7 +157,7 @@ fun ChatSettingsDialog(
     LaunchedEffect(Unit) { viewModel.refreshConfigurations() }
     LaunchedEffect(session) {
         session?.let {
-            modelId = it.modelId; formatId = it.formatCardId; replyLength = it.replyLength ?: ""
+            modelId = it.modelId; imageModelId = it.imageModelId; formatId = it.formatCardId; replyLength = it.replyLength ?: ""
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
@@ -167,6 +169,7 @@ fun ChatSettingsDialog(
 
     val settingsDirty = session?.let {
         modelId != it.modelId ||
+            imageModelId != it.imageModelId ||
             formatId != it.formatCardId ||
             replyLength.takeIf(String::isNotBlank) != it.replyLength ||
             replyLanguage.takeIf(String::isNotBlank) != it.replyLanguage ||
@@ -211,6 +214,7 @@ fun ChatSettingsDialog(
                         CbDirtySaveButton(settingsDirty, {
                             viewModel.updateSessionConfig(
                                 modelId = modelId,
+                                imageModelId = imageModelId,
                                 formatCardId = formatId,
                                 replyLength = replyLength.takeIf(String::isNotBlank),
                                 replyLanguage = replyLanguage.takeIf(String::isNotBlank),
@@ -241,6 +245,7 @@ fun ChatSettingsDialog(
                     if (tab == 0) {
                         SettingsContent(
                             modelId, { modelId = it }, defaultModelId, models,
+                            imageModelId, { imageModelId = it }, defaultImageModelId,
                             formatId, { formatId = it }, defaultFormatId, formats,
                             worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
                             replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
@@ -309,6 +314,7 @@ fun ChatSettingsDialog(
 @Composable
 private fun SettingsContent(
     modelId: String?, onModel: (String?) -> Unit, defaultModelId: String?, models: List<ModelConfig>,
+    imageModelId: String?, onImageModel: (String?) -> Unit, defaultImageModelId: String?,
     formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
     worldBooks: List<WorldBook>, inheritedWorldBookIds: List<String>, extraWorldBookIds: List<String>, onExtraWorldBookIds: (List<String>) -> Unit,
     length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
@@ -330,10 +336,19 @@ private fun SettingsContent(
             CbSwitch(longTermMemoryEnabled, onLongTermMemoryEnabled)
         }
         CbDivider()
-        DefaultAwareSelect("对话模型", modelId, defaultModelId, models.map { IdOption(it.id, it.displayName) }, onModel)
+        val modelOptions = models.map { IdOption(it.id, it.displayName) }
+        DefaultAwareSelect("默认对话模型", modelId, defaultModelId, modelOptions, onModel)
         if (modelId != null && models.none { it.id == modelId }) {
             CbText(
                 "原会话模型在当前配置模式不可用，运行时已跟随全局默认。切回原配置模式后可恢复。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+        DefaultAwareSelect("默认生图模型", imageModelId, defaultImageModelId, modelOptions, onImageModel)
+        if (imageModelId != null && models.none { it.id == imageModelId }) {
+            CbText(
+                "原会话生图模型在当前配置模式不可用，运行时已跟随全局默认生图模型。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )

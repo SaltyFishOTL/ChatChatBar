@@ -412,13 +412,14 @@ fun ManageScreen(
                         onDiscardDraft = viewModel::discardEditorDraft
                     )
                     3 -> ModelsTab(
-                        models, settings.defaultModelId, modelPresets, embeddingModel, retrievalModel,
+                        models, settings.defaultModelId, settings.defaultImageModelId, modelPresets, embeddingModel, retrievalModel,
                         onEditModel = { onNavigate(ModelEditRoute(it)) },
                         onExportModel = { model ->
                             exportModelId = model.id
                             exportModel.launch("${safeName(model.displayName)}.chatbar-model-template.json")
                         },
                         onSetDefaultModel = viewModel::setDefaultModel,
+                        onSetDefaultImageModel = viewModel::setDefaultImageModel,
                         onDeleteModel = { id -> deleteTarget = DeleteTarget.Model(id, models.firstOrNull { it.id == id }?.displayName ?: "未命名模型") },
                         onDuplicateModel = { id -> viewModel.duplicateModelConfig(id) { onNavigate(ModelEditRoute(it)) } },
                         onRecoverPresetModels = { viewModel.importPresetModelCatalog { error -> message = error ?: "内置模型已导入。" } },
@@ -999,12 +1000,14 @@ private fun CardActionDialog(title: String, onDismiss: () -> Unit, actions: List
 private fun ModelsTab(
     models: List<ModelConfig>,
     defaultModelId: String?,
+    defaultImageModelId: String?,
     presets: List<PresetEntry>,
     embedding: EmbeddingConfig?,
     retrieval: ModelConfig?,
     onEditModel: (String) -> Unit,
     onExportModel: (ModelConfig) -> Unit,
     onSetDefaultModel: (String) -> Unit,
+    onSetDefaultImageModel: (String) -> Unit,
     onDeleteModel: (String) -> Unit,
     onDuplicateModel: (String) -> Unit,
     onRecoverPresetModels: () -> Unit,
@@ -1017,6 +1020,7 @@ private fun ModelsTab(
     var menuModel by remember { mutableStateOf<ModelConfig?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultModelId = defaultModelId ?: models.firstOrNull()?.id
+    val effectiveDefaultImageModelId = defaultImageModelId ?: effectiveDefaultModelId
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { CbButton(if (showPresets) "收起内置模型" else "恢复内置模型", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
@@ -1036,12 +1040,15 @@ private fun ModelsTab(
         item { SectionTitle("对话模型") }
         items(models, key = { it.id }) { model ->
             val isDefault = model.id == effectiveDefaultModelId
-            EntityRow(model.displayName, "${model.modelName} · ${model.baseUrl}", badge = when {
-                isDefault -> "默认"
-                model.sourcePresetKey != null -> "内置"
-                else -> null
-            }, onClick = { onEditModel(model.id) }, onLongClick = { menuModel = model }, actions = {
-                CbIconButton(AppIcons.Star, if (isDefault) "当前默认" else "设为默认", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
+            val isDefaultImage = model.id == effectiveDefaultImageModelId
+            val badge = buildList {
+                if (isDefault) add("默认对话")
+                if (isDefaultImage) add("默认生图")
+                if (model.sourcePresetKey != null) add("内置")
+            }.joinToString(" / ").takeIf(String::isNotBlank)
+            EntityRow(model.displayName, "${model.modelName} · ${model.baseUrl}", badge = badge, onClick = { onEditModel(model.id) }, onLongClick = { menuModel = model }, actions = {
+                CbIconButton(AppIcons.Star, if (isDefault) "当前默认对话" else "设为默认对话", { onSetDefaultModel(model.id) }, enabled = !isDefault, tint = if (isDefault) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
+                CbIconButton(AppIcons.Image, if (isDefaultImage) "当前默认生图" else "设为默认生图", { onSetDefaultImageModel(model.id) }, enabled = !isDefaultImage, tint = if (isDefaultImage) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground)
                 CbIconButton(AppIcons.Edit, "编辑", { onEditModel(model.id) }, tint = ChatBarTheme.colors.primary)
                 CbIconButton(AppIcons.Delete, "删除", { onDeleteModel(model.id) }, tint = ChatBarTheme.colors.destructive)
             })
@@ -1108,6 +1115,7 @@ private fun SettingsTab(
     var playerName by remember { mutableStateOf(player.playerName) }
     var persona by remember { mutableStateOf(player.globalPersona) }
     var modelId by remember { mutableStateOf(settings.defaultModelId) }
+    var imageModelId by remember { mutableStateOf(settings.defaultImageModelId) }
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var novelAiToken by remember { mutableStateOf("") }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
@@ -1148,6 +1156,7 @@ private fun SettingsTab(
         player.playerName,
         player.globalPersona,
         settings.defaultModelId,
+        settings.defaultImageModelId,
         settings.presetDefaultModelKey,
         settings.siliconFlowApiKey,
         settings.defaultFormatCardId,
@@ -1169,6 +1178,7 @@ private fun SettingsTab(
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
+        imageModelId = settings.defaultImageModelId
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         themeMode = settings.themeMode
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
@@ -1187,6 +1197,7 @@ private fun SettingsTab(
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
     }
     val effectiveDefaultModelId = modelId ?: effectiveModels.firstOrNull()?.id ?: customModels.firstOrNull { it.selectableForChat }?.id
+    val effectiveDefaultImageModelId = imageModelId ?: effectiveDefaultModelId
     val draftContextWindowSize = if (contextSize.toInt() >= 50 && customContextSize.isNotBlank()) {
         customContextSize.toIntOrNull() ?: 50
     } else {
@@ -1200,6 +1211,7 @@ private fun SettingsTab(
     )
     val draftSettings = settings.copy(
         defaultModelId = effectiveDefaultModelId,
+        defaultImageModelId = effectiveDefaultImageModelId,
         presetDefaultModelKey = null,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
         defaultEmbeddingId = null,
@@ -1261,6 +1273,7 @@ private fun SettingsTab(
             CbDivider()
             val modelOptions = effectiveModels.map { IdOption(it.id, it.displayName) }
             RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
+            RequiredSelect("默认生图模型", effectiveDefaultImageModelId, modelOptions, { imageModelId = it })
             OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
             SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
             if (contextSize.toInt() >= 50) {

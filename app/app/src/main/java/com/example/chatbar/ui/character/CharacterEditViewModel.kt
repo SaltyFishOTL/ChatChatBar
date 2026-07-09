@@ -649,15 +649,10 @@ class CharacterEditViewModel(
         _autoFillState.value = CharacterAutoFillUiState()
     }
 
-    fun generateCurrentCoverImage(modelId: String? = null) {
-        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
-            _coverImageState.value = CharacterCoverImageUiState(error = error)
-        } ?: return
+    fun generateCurrentCoverImage(_modelId: String? = null) {
         startCoverImageGeneration(
             target = CoverImageTarget.Current,
             card = buildCurrentCard(markDirty = false),
-            modelOverride = selectedModel,
-            selectedModelId = selectedModelId,
             previousCandidatePath = _coverImageState.value.path
         )
     }
@@ -681,7 +676,7 @@ class CharacterEditViewModel(
         _coverImageState.value = CharacterCoverImageUiState()
     }
 
-    fun generateAutoFillCoverImageCandidate(modelId: String? = null) {
+    fun generateAutoFillCoverImageCandidate(_modelId: String? = null) {
         val state = _autoFillState.value
         val draft = state.draft ?: run {
             _autoFillState.value = state.copy(
@@ -689,22 +684,15 @@ class CharacterEditViewModel(
             )
             return
         }
-        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
-            _autoFillState.value = _autoFillState.value.copy(
-                coverImage = CharacterCoverImageUiState(error = error)
-            )
-        } ?: return
         val mergedCard = characterAutoFillService.mergeInto(buildCurrentCard(markDirty = false), draft)
         startCoverImageGeneration(
             target = CoverImageTarget.AutoFill,
             card = mergedCard,
-            modelOverride = selectedModel,
-            selectedModelId = selectedModelId,
             previousCandidatePath = state.coverImage.path
         )
     }
 
-    fun generateRewriteCoverImageCandidate(modelId: String? = null) {
+    fun generateRewriteCoverImageCandidate(_modelId: String? = null) {
         val state = _rewriteState.value
         val draft = state.draft ?: run {
             _rewriteState.value = state.copy(
@@ -712,17 +700,10 @@ class CharacterEditViewModel(
             )
             return
         }
-        val (selectedModel, selectedModelId) = resolveCoverModelSelection(modelId) { error ->
-            _rewriteState.value = _rewriteState.value.copy(
-                coverImage = CharacterCoverImageUiState(error = error)
-            )
-        } ?: return
         val mergedCard = characterRewriteService.mergeInto(buildCurrentCard(markDirty = false), draft)
         startCoverImageGeneration(
             target = CoverImageTarget.Rewrite,
             card = mergedCard,
-            modelOverride = selectedModel,
-            selectedModelId = selectedModelId,
             previousCandidatePath = state.coverImage.path
         )
     }
@@ -743,25 +724,9 @@ class CharacterEditViewModel(
         coverImageTarget = null
     }
 
-    private fun resolveCoverModelSelection(
-        modelId: String?,
-        onError: (String) -> Unit
-    ): Pair<ModelConfig?, String?>? {
-        if (modelId == null) return null to null
-        val selectedModel = _autoFillModels.value.firstOrNull { it.id == modelId }
-        if (selectedModel == null) {
-            onError("所选模型不可用，请重新选择")
-            refreshAutoFillModels()
-            return null
-        }
-        return selectedModel to selectedModel.id
-    }
-
     private fun startCoverImageGeneration(
         target: CoverImageTarget,
         card: CharacterCard,
-        modelOverride: ModelConfig?,
-        selectedModelId: String?,
         previousCandidatePath: String? = null
     ) {
         if (!card.hasImageDesignSource()) {
@@ -790,12 +755,12 @@ class CharacterEditViewModel(
             try {
                 val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
                 val settings = settingsRepository.getAppSettings()
-                val model = modelOverride ?: modelResolver.resolveChatModel(selectedModelId, settings)
+                val model = modelResolver.defaultImageModel(settings)
                 val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
                 if (token == null || model == null || model.apiKey.isBlank()) {
                     val missing = mutableListOf<String>()
                     if (token == null) missing += "NovelAI Token"
-                    if (model == null || model.apiKey.isBlank()) missing += "对话模型/API Key"
+                    if (model == null || model.apiKey.isBlank()) missing += "默认生图模型/API Key"
                     updateCoverImageStateIfCurrent(generationToken, target) {
                         it.copy(
                             isGenerating = false,

@@ -528,6 +528,14 @@ class ManageViewModel : ViewModel() {
         }
     }
 
+    fun setDefaultImageModel(id: String) {
+        viewModelScope.launch {
+            val current = settingsRepository.getAppSettings()
+            settingsRepository.saveAppSettings(current.copy(defaultImageModelId = id))
+            refreshEffectiveModels()
+        }
+    }
+
     fun importPresetModelCatalog(onDone: (String?) -> Unit = {}) {
         viewModelScope.launch {
             runCatching {
@@ -537,9 +545,11 @@ class ManageViewModel : ViewModel() {
                 modelRepository.restorePresetSupportModels(presetModelCatalog.catalog, version)
                 val current = settingsRepository.getAppSettings()
                 if (current.defaultModelId == null && current.presetDefaultModelKey != null) {
+                    val presetModelId = PRESET_MODEL_ID_PREFIX + current.presetDefaultModelKey
                     settingsRepository.saveAppSettings(
                         current.copy(
-                            defaultModelId = PRESET_MODEL_ID_PREFIX + current.presetDefaultModelKey,
+                            defaultModelId = presetModelId,
+                            defaultImageModelId = current.defaultImageModelId ?: presetModelId,
                             presetDefaultModelKey = null
                         )
                     )
@@ -715,6 +725,7 @@ class ManageViewModel : ViewModel() {
                 val model = modelResolver.defaultChatModel(settings)
                     ?: error("未配置可用默认对话模型")
                 require(model.apiKey.isNotBlank()) { "默认对话模型/API Key 未配置" }
+                val imageModel = modelResolver.defaultImageModel(settings)
                 val latestPost = momentRepository.latestPostForCard(cardId)
                 AiBackgroundWorkManager.run("moments_debug_$cardId") {
                     momentGenerationService.debugGenerateNow(
@@ -723,6 +734,7 @@ class ManageViewModel : ViewModel() {
                         messages = messages,
                         latestPost = latestPost,
                         model = model,
+                        imageModel = imageModel,
                         scheduledAt = System.currentTimeMillis()
                     )
                 }.also { debugResult ->

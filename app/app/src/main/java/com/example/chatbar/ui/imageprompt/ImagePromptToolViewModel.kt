@@ -102,11 +102,6 @@ class ImagePromptToolViewModel : ViewModel() {
         updateInput { it.copy(characterPrompt = value) }
     }
 
-    fun selectModel(modelId: String) {
-        if (_uiState.value.isBusy) return
-        updateInput { it.copy(selectedModelId = modelId) }
-    }
-
     fun importCharacterCardPrompts(cardId: String) {
         if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
@@ -124,7 +119,7 @@ class ImagePromptToolViewModel : ViewModel() {
         val snapshot = _uiState.value
         val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
         if (model == null || model.apiKey.isBlank()) {
-            _uiState.update { it.copy(error = "请选择可用的对话模型") }
+            _uiState.update { it.copy(error = "默认生图模型/API Key 未配置") }
             return
         }
         designJob = viewModelScope.launch {
@@ -298,19 +293,20 @@ class ImagePromptToolViewModel : ViewModel() {
             settingsRepository.initialize()
             settingsRepository.appSettings.collect { settings ->
                 val models = modelResolver.availableChatModels(settings)
-                val status = modelResolver.status(settings)
-                val currentSelected = _uiState.value.selectedModelId
-                val defaultModel = modelResolver.defaultChatModel(settings)
-                val selectedId = currentSelected
-                    ?.takeIf { selected -> models.any { it.id == selected } }
-                    ?: defaultModel?.id
-                    ?: models.firstOrNull()?.id
+                val defaultModel = modelResolver.defaultImageModel(settings)
+                val imageModelErrors = buildList {
+                    if (defaultModel == null) {
+                        add("未配置可用默认生图模型")
+                    } else if (defaultModel.apiKey.isBlank()) {
+                        add("默认生图模型/API Key 未配置")
+                    }
+                }
                 _uiState.update {
                     it.copy(
                         models = models,
-                        selectedModelId = selectedId,
-                        modelErrors = status.errors,
-                        modelUsable = status.isUsable
+                        selectedModelId = defaultModel?.id,
+                        modelErrors = imageModelErrors,
+                        modelUsable = imageModelErrors.isEmpty()
                     )
                 }
             }

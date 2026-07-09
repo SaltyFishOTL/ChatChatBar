@@ -163,6 +163,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _effectiveDefaultModelId = MutableStateFlow<String?>(null)
     val effectiveDefaultModelId: StateFlow<String?> = _effectiveDefaultModelId.asStateFlow()
 
+    private val _effectiveDefaultImageModelId = MutableStateFlow<String?>(null)
+    val effectiveDefaultImageModelId: StateFlow<String?> = _effectiveDefaultImageModelId.asStateFlow()
+
     private val _effectiveDefaultFormatCardId = MutableStateFlow<String?>(null)
     val effectiveDefaultFormatCardId: StateFlow<String?> = _effectiveDefaultFormatCardId.asStateFlow()
 
@@ -247,6 +250,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val availableModels = modelResolver.availableChatModels(settings)
             _availableModels.value = availableModels
             _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
+            _effectiveDefaultImageModelId.value = modelResolver.resolveImageModel(null, settings)?.id
             val formats = formatCardRepository.getAll()
             _availableFormats.value = formats
             _availableWorldBooks.value = worldBookRepository.getAll()
@@ -304,7 +308,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val currentSession = chatRepository.getSession(sessionId)
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
-            val model = currentSession?.let { modelResolver.resolveChatModel(it.modelId, settings) }
+            val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
             val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
             val globalPlayerName = settingsRepository.getPlayerSetting()
                 .playerName
@@ -314,7 +318,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val missing = mutableListOf<String>()
                 if (token == null) missing.add("NovelAI Token")
                 if (card == null) missing.add("角色卡")
-                if (model == null || model.apiKey.isBlank()) missing.add("当前对话模型/API Key")
+                if (model == null || model.apiKey.isBlank()) missing.add("默认生图模型/API Key")
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
@@ -1641,6 +1645,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     fun updateSessionConfig(
         modelId: String?,
+        imageModelId: String?,
         formatCardId: String?,
         replyLength: String?,
         replyLanguage: String?,
@@ -1656,6 +1661,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _session.value?.let { s ->
                 val updated = s.copy(
                     modelId = modelId,
+                    imageModelId = imageModelId,
                     formatCardId = formatCardId,
                     replyLength = replyLength,
                     replyLanguage = replyLanguage?.takeIf { it.isNotBlank() },
@@ -1702,6 +1708,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 playerName = activePlayerName,
                 supplementarySetting = activeSuppSetting,
                 modelId = curSession.modelId,
+                imageModelId = curSession.imageModelId,
                 formatCardId = curSession.formatCardId,
                 replyLength = curSession.replyLength,
                 replyLanguage = curSession.replyLanguage,
@@ -1761,6 +1768,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 playerName = materializedSlot.playerName,
                 supplementarySetting = materializedSlot.supplementarySetting,
                 modelId = materializedSlot.modelId,
+                imageModelId = materializedSlot.imageModelId,
                 formatCardId = materializedSlot.formatCardId,
                 replyLength = materializedSlot.replyLength,
                 replyLanguage = materializedSlot.replyLanguage,
