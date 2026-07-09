@@ -20,6 +20,7 @@ Do not use this skill for non-NAI image planning, UI, storage, scheduling, memor
 
 - `NOVELAI_IMAGE_PROMPT_SYSTEM` is the shared system prompt for NovelAI tag design.
 - Reuse it through `PromptTemplates.novelAiImagePromptSystem(...)`.
+- Default negative tags live in `PromptTemplates.DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`; card-level `CharacterCard.defaultImageNegativePrompt` flows into `NovelAiPromptPlan.negativePrompt`.
 - Do not add feature-specific NovelAI system prompt constants.
 - Do not add full feature-specific NAI templates such as `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE`.
 - If feature needs extra visual guidance, add a small `PromptTemplates` helper that supplies only modifiers: target style, composition preference, mood, brief image intent.

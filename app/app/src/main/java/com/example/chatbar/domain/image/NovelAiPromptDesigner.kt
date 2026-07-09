@@ -52,8 +52,12 @@ data class NovelAiPromptPlan(
     val baseCaption: String,
     val characterCaptions: List<NovelAiCharacterCaption>,
     val designed: DesignedImagePrompt? = null,
-    val sizePreset: NovelAiImageSizePreset = NovelAiImageSizePreset.PORTRAIT
-)
+    val sizePreset: NovelAiImageSizePreset = NovelAiImageSizePreset.PORTRAIT,
+    val negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt()
+) {
+    val effectiveNegativePrompt: String
+        get() = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
+}
 
 data class NovelAiPromptDebugExchange(
     val title: String,
@@ -372,17 +376,22 @@ class NovelAiPromptDesigner(
         }
 
         internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan =
-            convert(designed)
+            convert(designed, card.defaultImageNegativePrompt)
 
-        internal fun convert(designed: DesignedImagePrompt): NovelAiPromptPlan {
+        internal fun convert(
+            designed: DesignedImagePrompt,
+            negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt()
+        ): NovelAiPromptPlan {
             val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
             val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
+            val effectiveNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
             val characters = designed.characters.take(6)
             if (characters.isEmpty()) return NovelAiPromptPlan(
                 normalizedBase,
                 emptyList(),
                 designed,
-                sizePreset
+                sizePreset,
+                effectiveNegativePrompt
             )
             val captions = characters.mapIndexedNotNull { index, selected ->
                 selected.effectiveCaption.trim().takeIf(String::isNotBlank)?.let {
@@ -393,7 +402,7 @@ class NovelAiPromptDesigner(
                     )
                 }
             }
-            return NovelAiPromptPlan(normalizedBase, captions, designed, sizePreset)
+            return NovelAiPromptPlan(normalizedBase, captions, designed, sizePreset, effectiveNegativePrompt)
         }
 
         private fun DesignedCharacterCenter.normalized() = DesignedCharacterCenter(

@@ -373,6 +373,21 @@ fun CharacterEditScreen(
                     minLines = 3
                 )
             }
+            CbField(
+                "NovelAI 默认负面提示词",
+                description = "用于排除质量问题、文字、水印等不想出现的标签。",
+                onFullscreenEdit = {
+                    fullscreenField = "NovelAI 默认负面提示词" to viewModel.defaultImageNegativePrompt; fullscreenOnChange = { viewModel.defaultImageNegativePrompt = it }
+                }
+            ) {
+                CbInput(
+                    viewModel.defaultImageNegativePrompt,
+                    { viewModel.defaultImageNegativePrompt = it },
+                    placeholder = "例如：low quality, watermark, logo, bad anatomy",
+                    singleLine = false,
+                    minLines = 3
+                )
+            }
 
             CbDivider()
             SectionTitle("人物编辑模式")

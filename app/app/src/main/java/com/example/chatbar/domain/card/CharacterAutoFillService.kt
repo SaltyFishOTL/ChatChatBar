@@ -285,6 +285,9 @@ class CharacterAutoFillService(
                         PromptTemplates.DEFAULT_CHARACTER_NAI_STYLE_PROMPT
                     }
                 ),
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+                    current.defaultImageNegativePrompt
+                ),
                 characters = mergeCharacters(current.characters, normalizedDraft.characters, idFactory)
             )
         }

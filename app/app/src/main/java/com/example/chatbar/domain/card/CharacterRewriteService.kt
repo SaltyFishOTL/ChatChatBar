@@ -273,6 +273,9 @@ class CharacterRewriteService(
                     greeting = normalized.greeting.patch(current.greeting),
                     basicSetting = normalized.basicSetting.patch(current.basicSetting),
                     defaultImagePrompt = normalized.defaultImagePrompt.patch(current.defaultImagePrompt),
+                    defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+                        current.defaultImageNegativePrompt
+                    ),
                     characters = mergeStructuredCharacters(current.characters, normalized, idFactory)
                 )
                 CharacterEditMode.FREEFORM -> current.copy(
@@ -280,6 +283,9 @@ class CharacterRewriteService(
                     greeting = normalized.greeting.patch(current.greeting),
                     basicSetting = normalized.basicSetting.patch(current.basicSetting),
                     defaultImagePrompt = normalized.defaultImagePrompt.patch(current.defaultImagePrompt),
+                    defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+                        current.defaultImageNegativePrompt
+                    ),
                     freeformCharacterText = normalized.freeformCharacterText.patch(current.freeformCharacterText)
                 )
             }

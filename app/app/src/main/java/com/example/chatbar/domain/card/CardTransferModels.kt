@@ -26,6 +26,7 @@ data class PackagedCharacterCard(
     val basicSetting: String = "",
     val freeformCharacterText: String = "",
     val defaultImagePrompt: String = "",
+    val defaultImageNegativePrompt: String = "",
     val systemPrompt: String = "",
     val postHistoryInstructions: String = "",
     val mesExample: String = "",

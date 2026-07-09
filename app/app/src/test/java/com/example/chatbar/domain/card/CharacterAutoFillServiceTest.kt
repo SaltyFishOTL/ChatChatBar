@@ -413,6 +413,10 @@ class CharacterAutoFillServiceTest {
 
         assertEquals(PromptTemplates.DEFAULT_CHARACTER_NAI_STYLE_PROMPT.trim(), merged.defaultImagePrompt)
         assertTrue(merged.defaultImagePrompt.isNotBlank())
+        assertEquals(
+            PromptTemplates.defaultCharacterNaiNegativePrompt(),
+            merged.defaultImageNegativePrompt
+        )
     }
 
     private fun card(
@@ -420,6 +424,7 @@ class CharacterAutoFillServiceTest {
         greeting: String = "hello",
         basicSetting: String = "",
         defaultImagePrompt: String = "",
+        defaultImageNegativePrompt: String = "",
         characters: List<CharacterInfo> = emptyList(),
         documents: List<DocumentInfo> = emptyList(),
         worldBookIds: List<String> = emptyList(),
@@ -432,6 +437,7 @@ class CharacterAutoFillServiceTest {
         greeting = greeting,
         basicSetting = basicSetting,
         defaultImagePrompt = defaultImagePrompt,
+        defaultImageNegativePrompt = defaultImageNegativePrompt,
         characters = characters,
         customDocuments = documents,
         worldBookIds = worldBookIds,

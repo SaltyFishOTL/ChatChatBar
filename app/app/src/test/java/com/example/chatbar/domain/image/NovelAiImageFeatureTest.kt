@@ -195,7 +195,10 @@ class NovelAiImageFeatureTest {
         assertEquals("false", parameters.getValue("sm").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("sm_dyn").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("dynamic_thresholding").jsonPrimitive.content)
-        assertTrue(parameters.getValue("negative_prompt").jsonPrimitive.content.isNotBlank())
+        assertEquals(
+            PromptTemplates.defaultCharacterNaiNegativePrompt(),
+            parameters.getValue("negative_prompt").jsonPrimitive.content
+        )
         val character = caption.getValue("char_captions").jsonArray.first().jsonObject
         val center = character.getValue("centers").jsonArray.first().jsonObject
         assertEquals("0.25", center.getValue("x").jsonPrimitive.content)
@@ -205,6 +208,25 @@ class NovelAiImageFeatureTest {
             parameters.getValue("v4_prompt").jsonObject
                 .getValue("use_coords").jsonPrimitive.content
         )
+    }
+
+    @Test
+    fun `request uses custom negative prompt for legacy and v4 captions`() {
+        val body = NovelAiImageService().buildRequestBody(
+            NovelAiPromptPlan(
+                "scene",
+                emptyList(),
+                negativePrompt = "bad hands, bad hands, watermark"
+            ),
+            seed = 42
+        )
+        val parameters = Json.parseToJsonElement(body).jsonObject
+            .getValue("parameters").jsonObject
+        val v4NegativeCaption = parameters.getValue("v4_negative_prompt").jsonObject
+            .getValue("caption").jsonObject
+
+        assertEquals("bad hands, watermark", parameters.getValue("negative_prompt").jsonPrimitive.content)
+        assertEquals("bad hands, watermark", v4NegativeCaption.getValue("base_caption").jsonPrimitive.content)
     }
 
     @Test
@@ -286,6 +308,25 @@ class NovelAiImageFeatureTest {
 
         assertEquals(0.05f, plan.characterCaptions.single().center.x, 0.001f)
         assertEquals(0.95f, plan.characterCaptions.single().center.y, 0.001f)
+    }
+
+    @Test
+    fun `convert carries card negative prompt`() {
+        val card = CharacterCard(
+            id = "card",
+            name = "Card",
+            greeting = "hello",
+            defaultImageNegativePrompt = "low quality, watermark",
+            createdAt = 1,
+            updatedAt = 1
+        )
+
+        val plan = NovelAiPromptDesigner.convert(
+            card,
+            DesignedImagePrompt(baseCaption = "1girl")
+        )
+
+        assertEquals("low quality, watermark", plan.negativePrompt)
     }
 
     @Test

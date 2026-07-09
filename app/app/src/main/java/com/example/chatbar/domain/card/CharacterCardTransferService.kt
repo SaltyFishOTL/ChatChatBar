@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.repository.CharacterRepository
 import com.example.chatbar.data.repository.WorldBookRepository
+import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RagRepository
 import java.io.File
 import java.util.Base64 as JvmBase64
@@ -153,6 +154,7 @@ class CharacterCardTransferService(
                 basicSetting = card.basicSetting,
                 freeformCharacterText = card.freeformCharacterText,
                 defaultImagePrompt = card.defaultImagePrompt,
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(card.defaultImageNegativePrompt),
                 systemPrompt = card.systemPrompt,
                 postHistoryInstructions = card.postHistoryInstructions,
                 mesExample = card.mesExample,
@@ -239,6 +241,7 @@ class CharacterCardTransferService(
                 basicSetting = card.basicSetting,
                 freeformCharacterText = card.freeformCharacterText,
                 defaultImagePrompt = card.defaultImagePrompt,
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(card.defaultImageNegativePrompt),
                 systemPrompt = card.systemPrompt,
                 postHistoryInstructions = card.postHistoryInstructions,
                 mesExample = card.mesExample,

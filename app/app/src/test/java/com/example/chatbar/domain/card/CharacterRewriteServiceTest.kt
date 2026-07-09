@@ -361,6 +361,7 @@ class CharacterRewriteServiceTest {
     fun `rewrite keeps excluded card fields unchanged`() {
         val document = DocumentInfo.create("notes.txt", "/tmp/notes.txt", "txt")
         val current = card(
+            defaultImageNegativePrompt = "old negative",
             documents = listOf(document),
             worldBookIds = listOf("world-1"),
             systemPrompt = "system override",
@@ -372,10 +373,24 @@ class CharacterRewriteServiceTest {
         val merged = CharacterRewriteService.mergeInto(current, draft)
 
         assertEquals(listOf(document), merged.customDocuments)
+        assertEquals("old negative", merged.defaultImageNegativePrompt)
         assertEquals(listOf("world-1"), merged.worldBookIds)
         assertEquals("system override", merged.systemPrompt)
         assertEquals("post override", merged.postHistoryInstructions)
         assertEquals("example", merged.mesExample)
+    }
+
+    @Test
+    fun `rewrite fills blank negative prompt from template default`() {
+        val merged = CharacterRewriteService.mergeInto(
+            card(defaultImageNegativePrompt = ""),
+            CharacterRewriteDraft(name = "新名")
+        )
+
+        assertEquals(
+            PromptTemplates.defaultCharacterNaiNegativePrompt(),
+            merged.defaultImageNegativePrompt
+        )
     }
 
     private fun card(
@@ -384,6 +399,7 @@ class CharacterRewriteServiceTest {
         greeting: String = "hello",
         basicSetting: String = "",
         defaultImagePrompt: String = "",
+        defaultImageNegativePrompt: String = "",
         freeformCharacterText: String = "",
         characters: List<CharacterInfo> = emptyList(),
         documents: List<DocumentInfo> = emptyList(),
@@ -397,6 +413,7 @@ class CharacterRewriteServiceTest {
         greeting = greeting,
         basicSetting = basicSetting,
         defaultImagePrompt = defaultImagePrompt,
+        defaultImageNegativePrompt = defaultImageNegativePrompt,
         freeformCharacterText = freeformCharacterText,
         characters = characters,
         customDocuments = documents,

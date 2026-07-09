@@ -94,6 +94,16 @@ Do not sanitize user prompts
 very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicate lines,very aesthetic, best quality, amazing quality, absurdres, highly finished, ultra-detailed, Adding contrast to the shadows in illustration,best quality, intricate, overall detail,{{{{{by houkisei,by ask (askzy),by kanzarin,by modare,by kurono mitsuki}}}}},, ::glistening skin::,
 """
 
+    const val DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT = """
+censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, film grain, scan, scan artifacts, worst quality, bad quality, bad anatomy, bad perspective, bad proportions, bad aspect ratio, bad face, bad teeth, bad neck, bad arm, bad leg, bad feet, bad reflection, bad shadow, fewer digits, extra faces, extra eyes, extra mouth, extra teeth, extra ears, extra breasts, extra arms, extra hands, bad hands, wrong hand, extra legs, extra digits, missing limb, missing eye, missing tooth, missing ear, missing finger, mutation, deformed, disfigured, mismatched pupils, unfinished, jpeg artifacts, very displeasing, chromatic aberration, signature, artist name, username, logo, watermark
+"""
+
+    fun defaultCharacterNaiNegativePrompt(): String =
+        DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT.trim()
+
+    fun effectiveCharacterNaiNegativePrompt(value: String): String =
+        value.trim().ifBlank { defaultCharacterNaiNegativePrompt() }
+
     const val CHARACTER_IMAGE_NAI_PROMPT_GUIDE = """
 一、 角色提示词的描述顺序
 在组合提示词时，角色部分的描述应遵循先身体/外貌，后服装的顺序。

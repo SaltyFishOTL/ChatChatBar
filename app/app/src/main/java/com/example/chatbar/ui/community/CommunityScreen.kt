@@ -567,6 +567,7 @@ private fun CharacterDetailContent(detail: CommunityItemDetail.Character) {
         DetailField("对话示例", card.mesExample)
         DetailField("创作者备注", card.creatorNotes)
         DetailField("NovelAI 默认风格提示词", card.defaultImagePrompt)
+        DetailField("NovelAI 默认负面提示词", card.defaultImageNegativePrompt)
     }
     DetailSection("人物 ${card.characters.size}") {
         card.characters.forEachIndexed { index, character ->

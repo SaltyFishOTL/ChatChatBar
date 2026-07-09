@@ -132,9 +132,7 @@ class NovelAiImageService(
         seed: Int = randomSeed(),
         imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
     ): String {
-        val negative = deduplicateNegativePrompt(
-            "censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, film grain, scan, scan artifacts, worst quality, bad quality, bad anatomy, bad perspective, bad proportions, bad aspect ratio, bad face, bad teeth, bad neck, bad arm, bad leg, bad feet, bad reflection, bad shadow, fewer digits, extra faces, extra eyes, extra mouth, extra teeth, extra ears, extra breasts, extra arms, extra hands, bad hands, wrong hand, extra legs, extra digits, missing limb, missing eye, missing tooth, missing ear, missing finger, mutation, deformed, disfigured, mismatched pupils, unfinished, jpeg artifacts, very displeasing, chromatic aberration, signature, artist name, username, logo, watermark"
-        )
+        val negative = deduplicateNegativePrompt(prompt.effectiveNegativePrompt)
         val characterCaptions = buildJsonArray {
             prompt.characterCaptions.forEach { caption ->
                 add(buildJsonObject {

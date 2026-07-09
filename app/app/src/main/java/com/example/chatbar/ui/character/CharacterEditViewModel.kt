@@ -34,6 +34,7 @@ import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.hasImageDesignSource
+import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
@@ -191,6 +192,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
     var basicSetting by mutableStateOf("")
     var freeformCharacterText by mutableStateOf("")
     var defaultImagePrompt by mutableStateOf("")
+    var defaultImageNegativePrompt by mutableStateOf(PromptTemplates.defaultCharacterNaiNegativePrompt())
     var systemPrompt by mutableStateOf("")
     var postHistoryInstructions by mutableStateOf("")
     var mesExample by mutableStateOf("")
@@ -234,6 +236,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
                     basicSetting = card.basicSetting
                     freeformCharacterText = card.freeformCharacterText
                     defaultImagePrompt = card.defaultImagePrompt
+                    defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+                        card.defaultImageNegativePrompt
+                    )
                     systemPrompt = card.systemPrompt
                     postHistoryInstructions = card.postHistoryInstructions
                     mesExample = card.mesExample
@@ -470,6 +475,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         greeting = merged.greeting
         basicSetting = merged.basicSetting
         defaultImagePrompt = merged.defaultImagePrompt
+        defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+            merged.defaultImageNegativePrompt
+        )
         charactersList.clear()
         charactersList.addAll(merged.characters)
         state.coverImage.path?.takeIf(String::isNotBlank)?.let { path ->
@@ -930,6 +938,9 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         greeting = merged.greeting
         basicSetting = merged.basicSetting
         defaultImagePrompt = merged.defaultImagePrompt
+        defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
+            merged.defaultImageNegativePrompt
+        )
         freeformCharacterText = merged.freeformCharacterText
         if (editMode == CharacterEditMode.STRUCTURED) {
             charactersList.clear()
@@ -985,6 +996,11 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
         rows.addChangedDiff("开场白", current.greeting, merged.greeting)
         rows.addChangedDiff("基本设定", current.basicSetting, merged.basicSetting)
         rows.addChangedDiff("NovelAI 默认风格", current.defaultImagePrompt, merged.defaultImagePrompt)
+        rows.addChangedDiff(
+            "NovelAI 默认负面",
+            current.defaultImageNegativePrompt,
+            merged.defaultImageNegativePrompt
+        )
         if (current.editMode == CharacterEditMode.FREEFORM) {
             rows.addChangedDiff("自由人物设定", current.freeformCharacterText, merged.freeformCharacterText)
         }
@@ -1336,6 +1352,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
             defaultImagePrompt = defaultImagePrompt,
+            defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(defaultImageNegativePrompt),
             systemPrompt = systemPrompt,
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,
@@ -1363,6 +1380,7 @@ class CharacterEditViewModel(private val characterId: String?) : ViewModel() {
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
             defaultImagePrompt = defaultImagePrompt,
+            defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(defaultImageNegativePrompt),
             systemPrompt = systemPrompt,
             postHistoryInstructions = postHistoryInstructions,
             mesExample = mesExample,

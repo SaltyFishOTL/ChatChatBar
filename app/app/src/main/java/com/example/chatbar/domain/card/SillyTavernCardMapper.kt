@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
+import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -73,6 +74,7 @@ object SillyTavernCardMapper {
             chatBackgroundResourceId = if (st.pngBytes != null) "card-avatar" else null,
             editMode = CharacterEditMode.FREEFORM,
             freeformCharacterText = freeformText,
+            defaultImageNegativePrompt = PromptTemplates.defaultCharacterNaiNegativePrompt(),
             systemPrompt = systemPrompt,
             postHistoryInstructions = postHistory,
             mesExample = mesExample,
