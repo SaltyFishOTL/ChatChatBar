@@ -6,11 +6,14 @@ import androidx.lifecycle.ViewModelProvider
 /**
  * 带有 formatCardId 参数的 FormatCardEditViewModel 工厂类
  */
-class FormatCardEditViewModelFactory(private val formatCardId: String?) : ViewModelProvider.Factory {
+class FormatCardEditViewModelFactory(
+    private val formatCardId: String?,
+    private val draftId: String
+) : ViewModelProvider.Factory {
     @Suppress("UNCHECKED_CAST")
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
         if (modelClass.isAssignableFrom(FormatCardEditViewModel::class.java)) {
-            return FormatCardEditViewModel(formatCardId) as T
+            return FormatCardEditViewModel(formatCardId, draftId) as T
         }
         throw IllegalArgumentException("Unknown ViewModel class")
     }

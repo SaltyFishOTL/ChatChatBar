@@ -52,6 +52,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -84,6 +85,8 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.draft.CharacterOpenModalKind
+import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageCropOffset
 import com.example.chatbar.domain.image.ImageCropSize
@@ -113,7 +116,11 @@ import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 private data class PendingImagePick(
     val cropTarget: CharacterImageCropTarget?,
@@ -151,7 +158,7 @@ fun CharacterEditScreen(
     modifier: Modifier = Modifier,
     viewModel: CharacterEditViewModel = viewModel(
         key = characterId?.let { "edit:$it" } ?: "new:${draftId.ifBlank { "default" }}",
-        factory = CharacterEditViewModelFactory(characterId)
+        factory = CharacterEditViewModelFactory(characterId, draftId)
     )
 ) {
     val isSaving by viewModel.isSaving.collectAsState()
@@ -166,6 +173,7 @@ fun CharacterEditScreen(
     val context = LocalContext.current
 
     var editCharacter by remember { mutableStateOf<CharacterInfo?>(null) }
+    var characterDialogDraft by remember { mutableStateOf<CharacterInfo?>(null) }
     var showCharacterDialog by remember { mutableStateOf(false) }
     var showAutoFillDialog by remember { mutableStateOf(false) }
     var showRewriteDialog by remember { mutableStateOf(false) }
@@ -187,15 +195,52 @@ fun CharacterEditScreen(
     var deleteWorldBookEntryIndex by remember { mutableStateOf<Int?>(null) }
     var showWorldBookEntryDialog by remember { mutableStateOf(false) }
     var pendingCoverImageGeneration by remember { mutableStateOf<PendingCoverImageGeneration?>(null) }
-    var lastBackPressAt by remember { mutableStateOf(0L) }
+    var showExitDialog by remember { mutableStateOf(false) }
+
+    fun requestExit() {
+        if (viewModel.hasLocalChanges || viewModel.draftSavedAt != null) showExitDialog = true else onBack()
+    }
 
     BackHandler {
-        val now = System.currentTimeMillis()
-        if (now - lastBackPressAt <= 2000L) {
-            onBack()
-        } else {
-            lastBackPressAt = now
-            Toast.makeText(context, "再按一次退出编辑（不会保存修改）", Toast.LENGTH_SHORT).show()
+        requestExit()
+    }
+
+    LaunchedEffect(viewModel.restoredOpenModalState) {
+        val state = viewModel.restoredOpenModalState ?: return@LaunchedEffect
+        when (state.kind) {
+            CharacterOpenModalKind.CHARACTER -> {
+                editCharacter = state.character?.let { draft ->
+                    viewModel.charactersList.firstOrNull { it.id == draft.id }
+                }
+                characterDialogDraft = state.character
+                showCharacterDialog = state.character != null
+            }
+            CharacterOpenModalKind.NEW_DOCUMENT -> {
+                editDocName = state.documentName
+                editDocContent = state.documentContent
+                showDocumentDialog = true
+            }
+            CharacterOpenModalKind.EDIT_DOCUMENT -> {
+                val doc = state.documentId?.let { id -> viewModel.documentsList.firstOrNull { it.id == id } }
+                if (doc != null) {
+                    editDocument = doc
+                    editDocName = state.documentName
+                    editDocContent = state.documentContent
+                }
+            }
+        }
+        viewModel.consumeRestoredOpenModalState()
+    }
+
+    LaunchedEffect(viewModel) {
+        var readySeen = false
+        snapshotFlow { characterDraftSnapshot(viewModel) }.collect {
+            if (!viewModel.draftReady) return@collect
+            if (!readySeen) {
+                readySeen = true
+                return@collect
+            }
+            viewModel.scheduleDraftSave()
         }
     }
 
@@ -243,7 +288,7 @@ fun CharacterEditScreen(
             CbTopBar(
                 title = if (characterId == null) "新建角色卡" else "编辑角色卡",
                 statusBarInset = true,
-                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
+                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", ::requestExit) },
                 actions = {
                     CbIconButton(
                         AppIcons.Star,
@@ -282,6 +327,13 @@ fun CharacterEditScreen(
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             SectionTitle("角色卡信息")
+            viewModel.draftSavedAt?.let { savedAt ->
+                CbText(
+                    "草稿已保存 ${formatDraftSavedAt(savedAt)}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
@@ -427,6 +479,10 @@ fun CharacterEditScreen(
                     SectionTitle("人物设定 (${viewModel.charactersList.size})")
                     CbButton("添加人物", {
                         editCharacter = null
+                        characterDialogDraft = CharacterInfo.create("")
+                        viewModel.updateOpenModalState(
+                            CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = characterDialogDraft)
+                        )
                         showCharacterDialog = true
                     }, variant = ButtonVariant.Ghost)
                 }
@@ -436,6 +492,10 @@ fun CharacterEditScreen(
                         canDelete = true,
                         onEdit = {
                             editCharacter = character
+                            characterDialogDraft = character
+                            viewModel.updateOpenModalState(
+                                CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = character)
+                            )
                             showCharacterDialog = true
                         },
                         onDelete = { deleteCharacter = index to (character.name.ifBlank { "未命名角色" }) }
@@ -481,7 +541,12 @@ fun CharacterEditScreen(
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                 SectionTitle("参考文档 (${viewModel.documentsList.size})")
                 Row {
-                    CbIconButton(AppIcons.Add, "新建文档", { showDocumentDialog = true }, tint = ChatBarTheme.colors.primary)
+                    CbIconButton(AppIcons.Add, "新建文档", {
+                        editDocName = ""
+                        editDocContent = ""
+                        viewModel.updateOpenModalState(CharacterOpenModalState(CharacterOpenModalKind.NEW_DOCUMENT))
+                        showDocumentDialog = true
+                    }, tint = ChatBarTheme.colors.primary)
                     CbIconButton(AppIcons.UploadFile, "批量导入", { directoryPicker.launch(null) }, tint = ChatBarTheme.colors.primary)
                     if (viewModel.documentsList.isNotEmpty()) {
                         CbIconButton(AppIcons.DeleteSweep, "清空文档", { confirmClearDocuments = true }, tint = ChatBarTheme.colors.destructive)
@@ -504,6 +569,14 @@ fun CharacterEditScreen(
                         editDocument = document
                         editDocName = document.fileName
                         editDocContent = try { java.io.File(document.filePath).readText() } catch (_: Exception) { "" }
+                        viewModel.updateOpenModalState(
+                            CharacterOpenModalState(
+                                kind = CharacterOpenModalKind.EDIT_DOCUMENT,
+                                documentId = document.id,
+                                documentName = editDocName,
+                                documentContent = editDocContent
+                            )
+                        )
                     },
                     onDelete = { deleteDocument = document }
                 )
@@ -564,26 +637,64 @@ fun CharacterEditScreen(
         DocumentEditScreen(
             title = "编辑参考文档",
             name = editDocName,
-            onNameChange = { editDocName = it },
+            onNameChange = {
+                editDocName = it
+                viewModel.updateOpenModalState(
+                    CharacterOpenModalState(
+                        kind = CharacterOpenModalKind.EDIT_DOCUMENT,
+                        documentId = doc.id,
+                        documentName = editDocName,
+                        documentContent = editDocContent
+                    )
+                )
+            },
             content = editDocContent,
-            onContentChange = { editDocContent = it },
-            onDismiss = { editDocument = null },
+            onContentChange = {
+                editDocContent = it
+                viewModel.updateOpenModalState(
+                    CharacterOpenModalState(
+                        kind = CharacterOpenModalKind.EDIT_DOCUMENT,
+                        documentId = doc.id,
+                        documentName = editDocName,
+                        documentContent = editDocContent
+                    )
+                )
+            },
+            onDismiss = {
+                editDocument = null
+                viewModel.updateOpenModalState(null)
+            },
             onSave = {
                 viewModel.updateDocument(doc, editDocName, editDocContent)
                 editDocument = null
+                viewModel.updateOpenModalState(null)
             }
         )
     }
 
     if (showCharacterDialog) {
+        val characterDraft = characterDialogDraft ?: editCharacter ?: CharacterInfo.create("")
         CharacterDialog(
             original = editCharacter,
-            onDismiss = { showCharacterDialog = false },
+            value = characterDraft,
+            onValueChange = { updated ->
+                characterDialogDraft = updated
+                viewModel.updateOpenModalState(
+                    CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = updated)
+                )
+            },
+            onDismiss = {
+                showCharacterDialog = false
+                characterDialogDraft = null
+                viewModel.updateOpenModalState(null)
+            },
             onPickImage = { callback -> pickImage(callback) },
             onSave = { updated ->
                 val index = viewModel.charactersList.indexOfFirst { it.id == updated.id }
                 if (index >= 0) viewModel.charactersList[index] = updated else viewModel.charactersList.add(updated)
                 showCharacterDialog = false
+                characterDialogDraft = null
+                viewModel.updateOpenModalState(null)
             },
             onFullscreen = { title, text, setter ->
                 charDlgFullscreen = Triple(title, text, setter)
@@ -677,10 +788,36 @@ fun CharacterEditScreen(
     }
     if (showDocumentDialog) {
         DocumentDialog(
-            onDismiss = { showDocumentDialog = false },
+            name = editDocName,
+            content = editDocContent,
+            onNameChange = {
+                editDocName = it
+                viewModel.updateOpenModalState(
+                    CharacterOpenModalState(
+                        kind = CharacterOpenModalKind.NEW_DOCUMENT,
+                        documentName = editDocName,
+                        documentContent = editDocContent
+                    )
+                )
+            },
+            onContentChange = {
+                editDocContent = it
+                viewModel.updateOpenModalState(
+                    CharacterOpenModalState(
+                        kind = CharacterOpenModalKind.NEW_DOCUMENT,
+                        documentName = editDocName,
+                        documentContent = editDocContent
+                    )
+                )
+            },
+            onDismiss = {
+                showDocumentDialog = false
+                viewModel.updateOpenModalState(null)
+            },
             onSave = { name, content ->
                 viewModel.addDocument(name, content)
                 showDocumentDialog = false
+                viewModel.updateOpenModalState(null)
             }
         )
     }
@@ -747,13 +884,13 @@ fun CharacterEditScreen(
         }
     }
     deleteDocument?.let { document ->
-        ConfirmDeleteDialog("删除参考文档", "确定删除“${document.fileName}”？对应 RAG 索引也会清理。", { deleteDocument = null }) {
+        ConfirmDeleteDialog("删除参考文档", "确定从草稿中移除“${document.fileName}”？正式保存后才会清理文件和 RAG。", { deleteDocument = null }) {
             viewModel.deleteDocument(document)
             deleteDocument = null
         }
     }
     if (confirmClearDocuments) {
-        ConfirmDeleteDialog("清空参考文档", "确定清空全部文档和对应 RAG 索引？", { confirmClearDocuments = false }) {
+        ConfirmDeleteDialog("清空参考文档", "确定从草稿中清空全部文档？正式保存后才会清理文件和 RAG。", { confirmClearDocuments = false }) {
             viewModel.clearAllDocuments()
             confirmClearDocuments = false
         }
@@ -776,6 +913,58 @@ fun CharacterEditScreen(
             }
         )
     }
+    viewModel.restoreDraft?.let { draft ->
+        CbDialog(
+            onDismissRequest = viewModel::keepOriginal,
+            title = "发现未保存草稿",
+            dismissOnClickOutside = false
+        ) {
+            CbText(
+                if (viewModel.restoreConflict) {
+                    "“${draft.title}”有未保存草稿，且原角色卡在草稿创建后已更新。恢复草稿不会覆盖原角色卡，正式保存时需要选择覆盖或另存为新卡。"
+                } else {
+                    "“${draft.title}”有未保存草稿。恢复草稿不会覆盖原角色卡，只有点保存才会写入正式内容。"
+                },
+                color = ChatBarTheme.colors.mutedForeground
+            )
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton("恢复草稿", viewModel::restoreDraft, modifier = Modifier.fillMaxWidth())
+                CbButton("查看原内容", viewModel::keepOriginal, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+                CbButton("丢弃草稿", { viewModel.discardDraft() }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+            }
+        }
+    }
+    if (showExitDialog) {
+        CbDialog(
+            onDismissRequest = { showExitDialog = false },
+            title = "退出编辑",
+            dismissOnClickOutside = false
+        ) {
+            CbText("当前修改已自动保存为草稿。", color = ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton("保存草稿并退出", { viewModel.saveDraftAndExit(onBack) }, modifier = Modifier.fillMaxWidth())
+                CbButton("继续编辑", { showExitDialog = false }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+                CbButton("丢弃草稿", { viewModel.discardDraft(onBack) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+            }
+        }
+    }
+    if (viewModel.saveConflict) {
+        CbDialog(
+            onDismissRequest = { viewModel.saveConflict = false },
+            title = "原角色卡已更新",
+            dismissOnClickOutside = false
+        ) {
+            CbText("草稿创建后，原角色卡已有新改动。请选择覆盖原卡或另存为新角色卡。", color = ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.height(12.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton("覆盖原卡", { viewModel.saveConflict = false; viewModel.saveCharacterCard(onBack, forceOverwrite = true) }, modifier = Modifier.fillMaxWidth())
+                CbButton("另存为新卡", { viewModel.saveConflict = false; viewModel.saveCharacterCard(onBack, saveAsNew = true) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+                CbButton("取消", { viewModel.saveConflict = false }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost)
+            }
+        }
+    }
     if (isSaving) {
         CbDialog(onDismissRequest = {}, title = "请稍候") {
             Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
@@ -789,6 +978,51 @@ fun CharacterEditScreen(
 
 @Composable
 private fun SectionTitle(text: String) = CbText(text, color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+
+private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = buildString {
+    append(viewModel.draftReady).append('|')
+    append(viewModel.name).append('|')
+    append(viewModel.greeting).append('|')
+    append(viewModel.alternateGreetings.joinToString("\u001f")).append('|')
+    append(viewModel.avatar.orEmpty()).append('|')
+    append(viewModel.chatBackground.orEmpty()).append('|')
+    append(viewModel.editMode.name).append('|')
+    append(viewModel.basicSetting).append('|')
+    append(viewModel.freeformCharacterText).append('|')
+    append(viewModel.defaultImagePrompt).append('|')
+    append(viewModel.defaultImageNegativePrompt).append('|')
+    append(viewModel.systemPrompt).append('|')
+    append(viewModel.postHistoryInstructions).append('|')
+    append(viewModel.mesExample).append('|')
+    append(viewModel.creatorNotes).append('|')
+    append(viewModel.momentsEnabled).append('|')
+    append(viewModel.charactersList.joinToString("\u001e") {
+        listOf(
+            it.id,
+            it.name,
+            it.profile,
+            it.appearance,
+            it.appearanceImage.orEmpty(),
+            it.clothing,
+            it.abilities,
+            it.habits,
+            it.background,
+            it.relationships,
+            it.speakingStyle,
+            it.imagePrompt
+        ).joinToString("\u001f")
+    }).append('|')
+    append(viewModel.documentsList.joinToString("\u001e") {
+        listOf(it.id, it.fileName, it.filePath, it.fileType, it.ragStatus).joinToString("\u001f")
+    }).append('|')
+    append(viewModel.selectedWorldBookIds.joinToString("\u001f")).append('|')
+    append(viewModel.worldBookEntries.joinToString("\u001e") {
+        listOf(it.id, it.name, it.keys.joinToString(","), it.content, it.enabled.toString()).joinToString("\u001f")
+    })
+}
+
+private fun formatDraftSavedAt(timeMs: Long): String =
+    SimpleDateFormat("HH:mm", Locale.getDefault()).format(Date(timeMs))
 
 @Composable
 private fun CharacterImageCropDialog(
@@ -1720,76 +1954,68 @@ private fun CharacterPreviewField(label: String, value: String) {
 @Composable
 private fun CharacterDialog(
     original: CharacterInfo?,
+    value: CharacterInfo,
+    onValueChange: (CharacterInfo) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
     onSave: (CharacterInfo) -> Unit,
     onFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
-    var name by remember { mutableStateOf(original?.name ?: "") }
-    var profile by remember { mutableStateOf(original?.profile ?: "") }
-    var appearance by remember { mutableStateOf(original?.appearance ?: "") }
-    var image by remember { mutableStateOf(original?.appearanceImage ?: "") }
-    var clothing by remember { mutableStateOf(original?.clothing ?: "") }
-    var abilities by remember { mutableStateOf(original?.abilities ?: "") }
-    var habits by remember { mutableStateOf(original?.habits ?: "") }
-    var background by remember { mutableStateOf(original?.background ?: "") }
-    var relationships by remember { mutableStateOf(original?.relationships ?: "") }
-    var speaking by remember { mutableStateOf(original?.speakingStyle ?: "") }
-    var imagePrompt by remember { mutableStateOf(original?.imagePrompt ?: "") }
     CbDialog(
         onDismissRequest = onDismiss,
         title = if (original == null) "添加人物设定" else "编辑人物设定",
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
         confirm = {
-            CbButton("保存", {
-                onSave(
-                    CharacterInfo(
-                        id = original?.id ?: java.util.UUID.randomUUID().toString(),
-                        name = name,
-                        profile = profile,
-                        appearance = appearance,
-                        appearanceImage = image,
-                        clothing = clothing,
-                        abilities = abilities,
-                        habits = habits,
-                        background = background,
-                        relationships = relationships,
-                        speakingStyle = speaking,
-                        imagePrompt = imagePrompt
-                    )
-                )
-            }, enabled = name.isNotBlank())
+            CbButton("保存", { onSave(value) }, enabled = value.name.isNotBlank())
         }
     ) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            CbField("人物名称") { CbInput(name, { name = it }, placeholder = "例如：阿尔托莉雅") }
-            CbField("简介", onFullscreenEdit = { onFullscreen("简介", profile, { profile = it }) }) { CbInput(profile, { profile = it }, placeholder = "一句话概括身份设定", singleLine = false, minLines = 2) }
+            CbField("人物名称") { CbInput(value.name, { onValueChange(value.copy(name = it)) }, placeholder = "例如：阿尔托莉雅") }
+            CbField("简介", onFullscreenEdit = { onFullscreen("简介", value.profile, { onValueChange(value.copy(profile = it)) }) }) {
+                CbInput(value.profile, { onValueChange(value.copy(profile = it)) }, placeholder = "一句话概括身份设定", singleLine = false, minLines = 2)
+            }
             Box(
-                Modifier.fillMaxWidth().height(100.dp).clip(RoundedCornerShape(8.dp)).background(ChatBarTheme.colors.muted).clickable { onPickImage { image = it } },
+                Modifier.fillMaxWidth().height(100.dp).clip(RoundedCornerShape(8.dp)).background(ChatBarTheme.colors.muted).clickable {
+                    onPickImage { onValueChange(value.copy(appearanceImage = it)) }
+                },
                 contentAlignment = Alignment.Center
             ) {
-                if (image.isNotBlank()) AsyncImage(image, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                if (value.appearanceImage?.isNotBlank() == true) AsyncImage(value.appearanceImage, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
                 else Column(horizontalAlignment = Alignment.CenterHorizontally) {
                     CbIcon(AppIcons.AddPhotoAlternate, null, tint = ChatBarTheme.colors.mutedForeground)
                     CbText("上传设定图", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
                 }
             }
-            CbField("外貌特征", onFullscreenEdit = { onFullscreen("外貌特征", appearance, { appearance = it }) }) { CbInput(appearance, { appearance = it }, singleLine = false, minLines = 2) }
-            CbField("服装", onFullscreenEdit = { onFullscreen("服装", clothing, { clothing = it }) }) { CbInput(clothing, { clothing = it }, singleLine = false, minLines = 2) }
-            CbField("能力", onFullscreenEdit = { onFullscreen("能力", abilities, { abilities = it }) }) { CbInput(abilities, { abilities = it }, singleLine = false, minLines = 2) }
-            CbField("习惯，爱好", onFullscreenEdit = { onFullscreen("习惯，爱好", habits, { habits = it }) }) { CbInput(habits, { habits = it }, singleLine = false, minLines = 2) }
-            CbField("背景经历", onFullscreenEdit = { onFullscreen("背景经历", background, { background = it }) }) { CbInput(background, { background = it }, singleLine = false, minLines = 3) }
-            CbField("人际关系", onFullscreenEdit = { onFullscreen("人际关系", relationships, { relationships = it }) }) { CbInput(relationships, { relationships = it }, singleLine = false, minLines = 2) }
-            CbField("语气与口癖", onFullscreenEdit = { onFullscreen("语气与口癖", speaking, { speaking = it }) }) { CbInput(speaking, { speaking = it }, singleLine = false, minLines = 2) }
+            CbField("外貌特征", onFullscreenEdit = { onFullscreen("外貌特征", value.appearance, { onValueChange(value.copy(appearance = it)) }) }) {
+                CbInput(value.appearance, { onValueChange(value.copy(appearance = it)) }, singleLine = false, minLines = 2)
+            }
+            CbField("服装", onFullscreenEdit = { onFullscreen("服装", value.clothing, { onValueChange(value.copy(clothing = it)) }) }) {
+                CbInput(value.clothing, { onValueChange(value.copy(clothing = it)) }, singleLine = false, minLines = 2)
+            }
+            CbField("能力", onFullscreenEdit = { onFullscreen("能力", value.abilities, { onValueChange(value.copy(abilities = it)) }) }) {
+                CbInput(value.abilities, { onValueChange(value.copy(abilities = it)) }, singleLine = false, minLines = 2)
+            }
+            CbField("习惯，爱好", onFullscreenEdit = { onFullscreen("习惯，爱好", value.habits, { onValueChange(value.copy(habits = it)) }) }) {
+                CbInput(value.habits, { onValueChange(value.copy(habits = it)) }, singleLine = false, minLines = 2)
+            }
+            CbField("背景经历", onFullscreenEdit = { onFullscreen("背景经历", value.background, { onValueChange(value.copy(background = it)) }) }) {
+                CbInput(value.background, { onValueChange(value.copy(background = it)) }, singleLine = false, minLines = 3)
+            }
+            CbField("人际关系", onFullscreenEdit = { onFullscreen("人际关系", value.relationships, { onValueChange(value.copy(relationships = it)) }) }) {
+                CbInput(value.relationships, { onValueChange(value.copy(relationships = it)) }, singleLine = false, minLines = 2)
+            }
+            CbField("语气与口癖", onFullscreenEdit = { onFullscreen("语气与口癖", value.speakingStyle, { onValueChange(value.copy(speakingStyle = it)) }) }) {
+                CbInput(value.speakingStyle, { onValueChange(value.copy(speakingStyle = it)) }, singleLine = false, minLines = 2)
+            }
             CbField(
                 "NovelAI 人物提示词",
                 description = "固定外貌与身份标签。当前服装、动作和表情会由对话 AI 按情景补充。",
-                onFullscreenEdit = { onFullscreen("NovelAI 人物提示词", imagePrompt, { imagePrompt = it }) }
+                onFullscreenEdit = { onFullscreen("NovelAI 人物提示词", value.imagePrompt, { onValueChange(value.copy(imagePrompt = it)) }) }
             ) {
                 CbInput(
-                    imagePrompt,
-                    { imagePrompt = it },
+                    value.imagePrompt,
+                    { onValueChange(value.copy(imagePrompt = it)) },
                     placeholder = "例如：girl, long black hair, blue eyes, hair ribbon",
                     singleLine = false,
                     minLines = 3
@@ -1800,18 +2026,23 @@ private fun CharacterDialog(
 }
 
 @Composable
-private fun DocumentDialog(onDismiss: () -> Unit, onSave: (String, String) -> Unit) {
-    var name by remember { mutableStateOf("") }
-    var content by remember { mutableStateOf("") }
+private fun DocumentDialog(
+    name: String,
+    content: String,
+    onNameChange: (String) -> Unit,
+    onContentChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSave: (String, String) -> Unit
+) {
     CbDialog(
         onDismissRequest = onDismiss,
         title = "新建参考文档",
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
         confirm = { CbButton("保存", { onSave(name, content) }, enabled = name.isNotBlank() && content.isNotBlank()) }
     ) {
-        CbField("文档名称") { CbInput(name, { name = it }, placeholder = "世界观设定.txt") }
+        CbField("文档名称") { CbInput(name, onNameChange, placeholder = "世界观设定.txt") }
         Spacer(Modifier.height(12.dp))
-        CbField("文档内容") { CbInput(content, { content = it }, singleLine = false, minLines = 5) }
+        CbField("文档内容") { CbInput(content, onContentChange, singleLine = false, minLines = 5) }
     }
 }
 

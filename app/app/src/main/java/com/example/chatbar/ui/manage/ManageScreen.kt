@@ -72,6 +72,8 @@ import com.example.chatbar.WorldBookEditRoute
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EmbeddingConfig
+import com.example.chatbar.data.local.entity.EditorDraft
+import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
@@ -144,6 +146,7 @@ fun ManageScreen(
     val characters by viewModel.characterCards.collectAsState()
     val formats by viewModel.formatCards.collectAsState()
     val worldBooks by viewModel.worldBooks.collectAsState()
+    val editorDrafts by viewModel.editorDrafts.collectAsState()
     val models by viewModel.modelConfigs.collectAsState()
     val embeddings by viewModel.embeddingConfigs.collectAsState()
     val embeddingModel by viewModel.embeddingModelConfig.collectAsState()
@@ -180,7 +183,6 @@ fun ManageScreen(
     fun selectTabIndex(index: Int) {
         visibleTabs.getOrNull(index)?.let { tab = it.first }
     }
-    var addFormat by remember { mutableStateOf(false) }
     var editEmbedding by remember { mutableStateOf<EmbeddingConfig?>(null) }
     var showEmbedding by remember { mutableStateOf(false) }
     var showRetrieval by remember { mutableStateOf(false) }
@@ -300,8 +302,24 @@ fun ManageScreen(
     }
 
     LaunchedEffect(Unit) { viewModel.refreshAll() }
+    LaunchedEffect(tab) { viewModel.refreshDrafts() }
     LaunchedEffect(tab, settings.momentsEnabled) {
         if (tab == 4) viewModel.refreshMomentSchedulePreview()
+    }
+
+    fun latestNewDraftId(type: EditorDraftType): String =
+        editorDrafts
+            .filter { it.entityType == type && it.isNew }
+            .maxByOrNull { it.updatedAt }
+            ?.draftSessionId
+            ?: UUID.randomUUID().toString()
+
+    fun openDraft(draft: EditorDraft) {
+        when (draft.entityType) {
+            EditorDraftType.CHARACTER_CARD -> onNavigate(CharacterEditRoute(draft.targetId, draft.draftSessionId))
+            EditorDraftType.FORMAT_CARD -> onNavigate(FormatCardEditRoute(draft.targetId, draft.draftSessionId))
+            EditorDraftType.WORLD_BOOK -> onNavigate(WorldBookEditRoute(draft.targetId, draft.draftSessionId))
+        }
     }
 
     CbScaffold(
@@ -322,9 +340,9 @@ fun ManageScreen(
         floatingActionButton = {
             if (tab < 4) CbFab(AppIcons.Add, "新建", {
                 when (tab) {
-                    0 -> onNavigate(CharacterEditRoute(draftId = UUID.randomUUID().toString()))
-                    1 -> addFormat = true
-                    2 -> onNavigate(WorldBookEditRoute(null))
+                    0 -> onNavigate(CharacterEditRoute(draftId = latestNewDraftId(EditorDraftType.CHARACTER_CARD)))
+                    1 -> onNavigate(FormatCardEditRoute(draftId = latestNewDraftId(EditorDraftType.FORMAT_CARD)))
+                    2 -> onNavigate(WorldBookEditRoute(draftId = latestNewDraftId(EditorDraftType.WORLD_BOOK)))
                     3 -> onNavigate(ModelEditRoute(null))
                 }
             })
@@ -342,7 +360,7 @@ fun ManageScreen(
                     )
             ) {
                 when (tab) {
-                    0 -> CharacterTab(characters, characterPresets, viewModel::characterHasUpdate, viewModel::characterCommunityUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
+                    0 -> CharacterTab(characters, editorDrafts.filter { it.entityType == EditorDraftType.CHARACTER_CARD }, characterPresets, viewModel::characterHasUpdate, viewModel::characterCommunityUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
                         pendingCharacterExport = card
                     }, { id ->
                         val card = characters.firstOrNull { it.id == id }
@@ -361,8 +379,8 @@ fun ManageScreen(
                         val data = viewModel.recoverCharacterPreset(entry)
                         val conflict = viewModel.findCharacterImportConflict(data)
                         if (conflict == null) viewModel.importCharacterAsNew(data) else pendingCharacterImport = data to conflict
-                    } })
-                    1 -> FormatTab(formats, settings.defaultFormatCardId, formatPresets, viewModel::formatHasUpdate, { onNavigate(FormatCardEditRoute(it)) }, { id ->
+                    } }, ::openDraft, viewModel::discardEditorDraft)
+                    1 -> FormatTab(formats, editorDrafts.filter { it.entityType == EditorDraftType.FORMAT_CARD }, settings.defaultFormatCardId, formatPresets, viewModel::formatHasUpdate, { onNavigate(FormatCardEditRoute(it)) }, { id ->
                         deleteTarget = DeleteTarget.Format(id, formats.firstOrNull { it.id == id }?.name ?: "未命名格式")
                     }, viewModel::setFormatCardDefault, viewModel::duplicateFormatCard, { card ->
                         exportFormatId = card.id
@@ -371,9 +389,9 @@ fun ManageScreen(
                         val data = viewModel.recoverFormatPreset(entry)
                         val conflict = viewModel.findFormatNameConflict(data.name)
                         if (conflict == null) viewModel.importFormatAsNew(data) else pendingFormatImport = data to conflict
-                    } })
+                    } }, ::openDraft, viewModel::discardEditorDraft)
                     2 -> WorldBookTab(
-                        worldBooks, worldBookPresets, viewModel::worldBookHasUpdate,
+                        worldBooks, editorDrafts.filter { it.entityType == EditorDraftType.WORLD_BOOK }, worldBookPresets, viewModel::worldBookHasUpdate,
                         onEdit = { onNavigate(WorldBookEditRoute(it)) },
                         onDelete = { id -> deleteTarget = DeleteTarget.World(id, worldBooks.firstOrNull { it.id == id }?.name ?: "未命名世界书") },
                         onDuplicate = viewModel::duplicateWorldBook,
@@ -389,7 +407,9 @@ fun ManageScreen(
                             val data = viewModel.recoverWorldBookPreset(entry)
                             val conflict = viewModel.findWorldBookNameConflict(data.book.name)
                             if (conflict == null) viewModel.importWorldBookAsNew(data) else pendingWorldBookImport = data to conflict
-                        } }
+                        } },
+                        onOpenDraft = ::openDraft,
+                        onDiscardDraft = viewModel::discardEditorDraft
                     )
                     3 -> ModelsTab(
                         models, settings.defaultModelId, modelPresets, embeddingModel, retrievalModel,
@@ -432,11 +452,6 @@ fun ManageScreen(
         }
     }
 
-    if (addFormat) FormatDialog({ addFormat = false }) { name, content ->
-        viewModel.saveFormatCard(name, content) { error ->
-            if (error == null) addFormat = false else message = error
-        }
-    }
     if (showEmbedding) EmbeddingDialog(editEmbedding, { showEmbedding = false }) {
         viewModel.saveEmbeddingConfig(it)
         showEmbedding = false
@@ -718,6 +733,7 @@ private fun ExportSliderField(
 @Composable
 private fun CharacterTab(
     cards: List<CharacterCard>,
+    drafts: List<EditorDraft>,
     presets: List<PresetEntry>,
     hasUpdate: (CharacterCard) -> Boolean,
     communityUpdate: (CharacterCard) -> CommunityItem?,
@@ -730,7 +746,9 @@ private fun CharacterTab(
     onDuplicate: (String) -> Unit,
     onCommunityUpdate: (String) -> Unit,
     onStart: (String) -> Unit,
-    onRecover: (PresetEntry) -> Unit
+    onRecover: (PresetEntry) -> Unit,
+    onOpenDraft: (EditorDraft) -> Unit,
+    onDiscardDraft: (EditorDraft) -> Unit
 ) {
     var menuCard by remember { mutableStateOf<CharacterCard?>(null) }
     var showPresets by remember { mutableStateOf(false) }
@@ -755,6 +773,17 @@ private fun CharacterTab(
                 )
             }
         }
+        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+            EntityRow(
+                title = draft.title,
+                subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
+                badge = "草稿",
+                onClick = { onOpenDraft(draft) },
+                actions = {
+                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                }
+            )
+        }
         item {
             CbButton(if (showPresets) "收起预制角色" else "恢复预制角色", { showPresets = !showPresets }, variant = ButtonVariant.Outline)
         }
@@ -767,12 +796,14 @@ private fun CharacterTab(
             }
             items(cards, key = { it.id }) { card ->
                 val remoteUpdate = communityUpdate(card)
+                val draft = drafts.firstOrNull { it.targetId == card.id }
                 val isDownloaded = card.isCommunityDownload
                 val editClick: (() -> Unit)? = if (isDownloaded) null else ({ onEdit(card.id) })
                 EntityRow(
                     title = card.name,
                     subtitle = if (card.editMode.name == "FREEFORM") "自由人物设定 · ${card.customDocuments.size} 份文档" else "${card.characters.size} 个人物 · ${card.customDocuments.size} 份文档",
                     badge = when {
+                        draft != null -> "有草稿"
                         remoteUpdate != null -> "可更新"
                         hasUpdate(card) -> "有更新"
                         isDownloaded -> "社区"
@@ -817,6 +848,7 @@ private fun CharacterTab(
 @Composable
 private fun FormatTab(
     cards: List<FormatCard>,
+    drafts: List<EditorDraft>,
     defaultFormatId: String?,
     presets: List<PresetEntry>,
     hasUpdate: (FormatCard) -> Boolean,
@@ -825,12 +857,25 @@ private fun FormatTab(
     onDefault: (String) -> Unit,
     onDuplicate: (String) -> Unit,
     onExport: (FormatCard) -> Unit,
-    onRecover: (PresetEntry) -> Unit
+    onRecover: (PresetEntry) -> Unit,
+    onOpenDraft: (EditorDraft) -> Unit,
+    onDiscardDraft: (EditorDraft) -> Unit
 ) {
     var menuCard by remember { mutableStateOf<FormatCard?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultFormatId = defaultFormatId
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+            EntityRow(
+                title = draft.title,
+                subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
+                badge = "草稿",
+                onClick = { onOpenDraft(draft) },
+                actions = {
+                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                }
+            )
+        }
         item { CbButton(if (showPresets) "收起预制格式" else "恢复预制格式", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
             val hasCard = cards.any { it.sourcePresetKey == preset.presetKey }
@@ -841,10 +886,11 @@ private fun FormatTab(
         }
         items(cards, key = { it.id }) { card ->
             val isDefault = card.id == effectiveDefaultFormatId
+            val draft = drafts.firstOrNull { it.targetId == card.id }
             EntityRow(
                 title = card.name,
                 subtitle = card.content.take(80),
-                badge = when { hasUpdate(card) -> "有更新"; isDefault -> "默认"; else -> null },
+                badge = when { draft != null -> "有草稿"; hasUpdate(card) -> "有更新"; isDefault -> "默认"; else -> null },
                 onClick = { onEdit(card.id) },
                 onLongClick = { menuCard = card },
                 actions = { CbButton(if (isDefault) "当前默认" else "设为默认", { onDefault(card.id) }, variant = ButtonVariant.Secondary) }
@@ -865,6 +911,7 @@ private fun FormatTab(
 @Composable
 private fun WorldBookTab(
     books: List<WorldBook>,
+    drafts: List<EditorDraft>,
     presets: List<PresetEntry>,
     hasUpdate: (WorldBook) -> Boolean,
     onEdit: (String) -> Unit,
@@ -872,11 +919,24 @@ private fun WorldBookTab(
     onDuplicate: (String) -> Unit,
     onExport: (WorldBook) -> Unit,
     onExportSt: (WorldBook) -> Unit,
-    onRecover: (PresetEntry) -> Unit
+    onRecover: (PresetEntry) -> Unit,
+    onOpenDraft: (EditorDraft) -> Unit,
+    onDiscardDraft: (EditorDraft) -> Unit
 ) {
     var menuBook by remember { mutableStateOf<WorldBook?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+            EntityRow(
+                title = draft.title,
+                subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
+                badge = "草稿",
+                onClick = { onOpenDraft(draft) },
+                actions = {
+                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                }
+            )
+        }
         item { CbButton(if (showPresets) "收起预制世界书" else "恢复预制世界书", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
             val hasBook = books.any { it.sourcePresetKey == preset.presetKey }
@@ -894,10 +954,12 @@ private fun WorldBookTab(
         }
         items(books, key = { it.id }) { book ->
             val enabledCount = book.entries.count { it.enabled }
+            val draft = drafts.firstOrNull { it.targetId == book.id }
             EntityRow(
                 title = book.name,
                 subtitle = "${book.entries.size} 条目 · 启用 $enabledCount · 扫描 ${book.scanDepth} 条",
                 badge = when {
+                    draft != null -> "有草稿"
                     hasUpdate(book) -> "有更新"
                     book.sourcePresetKey != null -> "内置"
                     else -> null
@@ -1771,3 +1833,4 @@ private fun safeName(value: String) = value.replace(Regex("[\\\\/:*?\"<>|]"), "_
 private fun String.toModeIndex() = when (uppercase()) { "OFF" -> 0; "LIGHT" -> 1; "STRONG" -> 3; else -> 2 }
 private fun Int.modeValue() = when (coerceIn(0, 3)) { 0 -> "OFF"; 1 -> "LIGHT"; 3 -> "STRONG"; else -> "STANDARD" }
 private fun Int.modeLabel() = when (coerceIn(0, 3)) { 0 -> "关闭"; 1 -> "轻量"; 3 -> "强"; else -> "标准" }
+private fun draftTimeLabel(timeMs: Long): String = SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timeMs))

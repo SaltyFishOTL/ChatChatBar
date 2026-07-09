@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.FormatCard
@@ -89,6 +90,8 @@ class ManageViewModel : ViewModel() {
     private val characterRepository = ChatBarApp.instance.characterRepository
     private val formatCardRepository = ChatBarApp.instance.formatCardRepository
     private val worldBookRepository = ChatBarApp.instance.worldBookRepository
+    private val editorDraftRepository = ChatBarApp.instance.editorDraftRepository
+    private val editorDraftAssetService = ChatBarApp.instance.editorDraftAssetService
     private val modelRepository = ChatBarApp.instance.modelRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val chatRepository = ChatBarApp.instance.chatRepository
@@ -117,6 +120,9 @@ class ManageViewModel : ViewModel() {
 
     val worldBooks: StateFlow<List<WorldBook>> = worldBookRepository.worldBooks
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    private val _editorDrafts = MutableStateFlow<List<EditorDraft>>(emptyList())
+    val editorDrafts: StateFlow<List<EditorDraft>> = _editorDrafts
 
     val modelConfigs: StateFlow<List<ModelConfig>> = modelRepository.models
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -175,6 +181,7 @@ class ManageViewModel : ViewModel() {
             characterRepository.initialize()
             formatCardRepository.initialize()
             worldBookRepository.initialize()
+            editorDraftRepository.initialize()
             modelRepository.initialize()
             settingsRepository.initialize()
             presetCatalog.initialize()
@@ -182,10 +189,30 @@ class ManageViewModel : ViewModel() {
             _formatPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.FORMAT)
             _worldBookPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.WORLD_BOOK)
             _modelPresets.value = presetModelCatalog.entries()
+            refreshDraftsNow()
             refreshEffectiveModels()
             refreshCommunityCharacterUpdates()
             refreshMomentsReliability()
             refreshMomentSchedulePreview()
+        }
+    }
+
+    fun refreshDrafts() {
+        viewModelScope.launch {
+            editorDraftRepository.initialize()
+            refreshDraftsNow()
+        }
+    }
+
+    private suspend fun refreshDraftsNow() {
+        _editorDrafts.value = editorDraftRepository.getAll().sortedByDescending { it.updatedAt }
+    }
+
+    fun discardEditorDraft(draft: EditorDraft) {
+        viewModelScope.launch {
+            editorDraftRepository.delete(draft.id)
+            editorDraftAssetService.deleteDraft(draft.draftSessionId)
+            refreshDraftsNow()
         }
     }
 

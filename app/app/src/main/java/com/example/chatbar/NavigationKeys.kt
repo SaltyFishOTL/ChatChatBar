@@ -10,7 +10,7 @@ import kotlinx.serialization.Serializable
 @Serializable data object ImagePromptToolRoute : NavKey
 @Serializable data class ChatRoute(val sessionId: String) : NavKey
 @Serializable data class CharacterEditRoute(val characterId: String? = null, val draftId: String = "") : NavKey
-@Serializable data class FormatCardEditRoute(val formatCardId: String? = null) : NavKey
-@Serializable data class WorldBookEditRoute(val worldBookId: String? = null) : NavKey
+@Serializable data class FormatCardEditRoute(val formatCardId: String? = null, val draftId: String = "") : NavKey
+@Serializable data class WorldBookEditRoute(val worldBookId: String? = null, val draftId: String = "") : NavKey
 @Serializable data class ModelEditRoute(val modelId: String? = null) : NavKey
 @Serializable data class TutorialRoute(val firstLaunch: Boolean = false) : NavKey

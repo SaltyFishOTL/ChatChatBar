@@ -240,10 +240,10 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                         ModelEditScreen(modelId = key.modelId, onBack = ::popBackStack)
                     }
                     entry<FormatCardEditRoute> { key ->
-                        FormatCardEditScreen(formatCardId = key.formatCardId, onBack = ::popBackStack)
+                        FormatCardEditScreen(formatCardId = key.formatCardId, draftId = key.draftId, onBack = ::popBackStack)
                     }
                     entry<WorldBookEditRoute> { key ->
-                        WorldBookEditScreen(worldBookId = key.worldBookId, onBack = ::popBackStack)
+                        WorldBookEditScreen(worldBookId = key.worldBookId, draftId = key.draftId, onBack = ::popBackStack)
                     }
                 }
             )

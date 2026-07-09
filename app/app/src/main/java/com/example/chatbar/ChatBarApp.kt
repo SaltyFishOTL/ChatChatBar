@@ -10,6 +10,7 @@ import com.example.chatbar.domain.chat.*
 import com.example.chatbar.domain.card.*
 import com.example.chatbar.domain.community.CommunityService
 import com.example.chatbar.domain.deletion.DeletionCoordinator
+import com.example.chatbar.domain.draft.EditorDraftAssetService
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.moment.*
@@ -51,6 +52,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var worldBookRepository: WorldBookRepository
         private set
+    lateinit var editorDraftRepository: EditorDraftRepository
+        private set
     lateinit var momentRepository: MomentRepository
         private set
 
@@ -90,6 +93,8 @@ class ChatBarApp : Application() {
     lateinit var characterSessionService: CharacterSessionService
         private set
     lateinit var deletionCoordinator: DeletionCoordinator
+        private set
+    lateinit var editorDraftAssetService: EditorDraftAssetService
         private set
     lateinit var presetModelCatalogService: PresetModelCatalogService
         private set
@@ -138,6 +143,8 @@ class ChatBarApp : Application() {
         novelAiCredentialStore = NovelAiCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
+        editorDraftRepository = EditorDraftRepository(jsonFileStorage)
+        editorDraftAssetService = EditorDraftAssetService(this)
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()
