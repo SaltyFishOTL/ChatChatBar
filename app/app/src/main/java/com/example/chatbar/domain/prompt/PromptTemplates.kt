@@ -890,6 +890,9 @@ JSON only, no Markdown, no explanation:
         return "请按照「${replyLength}」的长度要求构建正文进行回复。"
     }
 
+    fun replyLengthTailSystemPrompt(replyLength: String): String =
+        "严格按照格式要求输出【" + replyLength + "】篇幅的回复。"
+
     fun replyLanguageConstraint(replyLanguage: String): String {
         return "请使用「${replyLanguage}」进行回复。"
     }
