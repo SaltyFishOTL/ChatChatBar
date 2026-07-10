@@ -7,7 +7,7 @@ class PromptTemplatesTest {
     @Test
     fun replyLengthTailSystemPrompt_repeatsConfiguredLengthAtPromptTail() {
         assertEquals(
-            "严格按照格式要求输出【500字】篇幅的回复。",
+            "严格按照格式要求，输出【500字】篇幅的回复。",
             PromptTemplates.replyLengthTailSystemPrompt("500字")
         )
     }

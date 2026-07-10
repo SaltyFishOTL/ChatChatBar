@@ -891,7 +891,7 @@ JSON only, no Markdown, no explanation:
     }
 
     fun replyLengthTailSystemPrompt(replyLength: String): String =
-        "严格按照格式要求输出【" + replyLength + "】篇幅的回复。"
+        "严格按照格式要求，输出【" + replyLength + "】篇幅的回复。"
 
     fun replyLanguageConstraint(replyLanguage: String): String {
         return "请使用「${replyLanguage}」进行回复。"
