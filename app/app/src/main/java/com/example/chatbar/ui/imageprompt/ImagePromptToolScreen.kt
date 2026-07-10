@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -22,6 +24,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -48,6 +53,7 @@ import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
 
 @Composable
@@ -62,85 +68,111 @@ fun ImagePromptToolScreen(
     val clipboard = LocalClipboardManager.current
     val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
     val selectedCharacterCard = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId }
+    var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
 
-    Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-        CbTopBar(
-            title = "跑图工具",
-            navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
-            actions = {
-                if (state.isBusy) {
-                    CbButton(
-                        "停止",
-                        viewModel::cancelActiveTask,
-                        variant = ButtonVariant.Outline
-                    )
+    Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
+        Column(Modifier.fillMaxSize()) {
+            CbTopBar(
+                title = "跑图工具",
+                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
+                actions = {
+                    if (state.isBusy) {
+                        CbButton(
+                            "停止",
+                            viewModel::cancelActiveTask,
+                            variant = ButtonVariant.Outline
+                        )
+                    }
                 }
-            }
-        )
-        LazyColumn(
-            modifier = Modifier.fillMaxSize(),
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp)
-        ) {
-            item {
-                PromptInputPanel(
-                    state = state,
-                    selectedModel = selectedModel,
-                    onDescription = viewModel::updateImageDescription,
-                    onStyle = viewModel::updateStylePrompt,
-                    onCharacter = viewModel::updateCharacterPrompt,
-                    onPreference = viewModel::updateImagePromptPreference,
-                    selectedCharacterCard = selectedCharacterCard,
-                    onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
-                    onGeneratePrompt = viewModel::designPrompt
-                )
-            }
-            if (state.reasoningStream.isNotBlank() || state.isDesigning) {
+            )
+            LazyColumn(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .navigationBarsPadding()
+                    .imePadding(),
+                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
                 item {
-                    StreamPanel(
-                        title = "思维流",
-                        text = state.reasoningStream,
-                        active = state.isDesigning
-                    )
-                }
-            }
-            if (state.resultStream.isNotBlank() || state.isDesigning) {
-                item {
-                    StreamPanel(
-                        title = "结果流",
-                        text = state.resultStream,
-                        active = state.isDesigning
-                    )
-                }
-            }
-            if (state.finalPromptParts.isNotEmpty()) {
-                item {
-                    FinalPromptPanel(
-                        parts = state.finalPromptParts,
-                        canGenerateImage = novelAiConfigured && state.promptPlan != null && !state.isBusy,
-                        imageGenerating = state.isGeneratingImage,
-                        onCopy = {
-                            clipboard.setText(AnnotatedString(state.finalPrompt))
-                            Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
+                    PromptInputPanel(
+                        state = state,
+                        selectedModel = selectedModel,
+                        onDescription = viewModel::updateImageDescription,
+                        onStyle = viewModel::updateStylePrompt,
+                        onCharacter = viewModel::updateCharacterPrompt,
+                        onPreference = viewModel::updateImagePromptPreference,
+                        onFullscreenEdit = { title, text, onChange ->
+                            fullscreenField = title to text
+                            fullscreenOnChange = onChange
                         },
-                        onCopyPart = { part ->
-                            clipboard.setText(AnnotatedString(part.text))
-                            Toast.makeText(context, "已复制 ${part.title}", Toast.LENGTH_SHORT).show()
-                        },
-                        onGenerateImage = viewModel::generateImage
+                        selectedCharacterCard = selectedCharacterCard,
+                        onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
+                        onGeneratePrompt = viewModel::designPrompt
                     )
                 }
-            }
-            if (state.imagePreview != null || state.imagePath != null || state.isGeneratingImage) {
-                item {
-                    ImagePreviewPanel(state)
+                if (state.reasoningStream.isNotBlank() || state.isDesigning) {
+                    item {
+                        StreamPanel(
+                            title = "思维流",
+                            text = state.reasoningStream,
+                            active = state.isDesigning
+                        )
+                    }
+                }
+                if (state.resultStream.isNotBlank() || state.isDesigning) {
+                    item {
+                        StreamPanel(
+                            title = "结果流",
+                            text = state.resultStream,
+                            active = state.isDesigning
+                        )
+                    }
+                }
+                if (state.finalPromptParts.isNotEmpty()) {
+                    item {
+                        FinalPromptPanel(
+                            parts = state.finalPromptParts,
+                            canGenerateImage = novelAiConfigured && state.promptPlan != null && !state.isBusy,
+                            imageGenerating = state.isGeneratingImage,
+                            onCopy = {
+                                clipboard.setText(AnnotatedString(state.finalPrompt))
+                                Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
+                            },
+                            onCopyPart = { part ->
+                                clipboard.setText(AnnotatedString(part.text))
+                                Toast.makeText(context, "已复制 ${part.title}", Toast.LENGTH_SHORT).show()
+                            },
+                            onGenerateImage = viewModel::generateImage
+                        )
+                    }
+                }
+                if (state.imagePreview != null || state.imagePath != null || state.isGeneratingImage) {
+                    item {
+                        ImagePreviewPanel(state)
+                    }
+                }
+                state.error?.let { error ->
+                    item {
+                        ErrorPanel(error, viewModel::dismissError)
+                    }
                 }
             }
-            state.error?.let { error ->
-                item {
-                    ErrorPanel(error, viewModel::dismissError)
+        }
+        fullscreenField?.let { (title, text) ->
+            FullscreenTextEditor(
+                title = title,
+                text = text,
+                onTextChange = { newValue ->
+                    fullscreenOnChange?.invoke(newValue)
+                    fullscreenField = title to newValue
+                },
+                visible = true,
+                onDismiss = {
+                    fullscreenField = null
+                    fullscreenOnChange = null
                 }
-            }
+            )
         }
     }
 }
@@ -153,6 +185,7 @@ private fun PromptInputPanel(
     onStyle: (String) -> Unit,
     onCharacter: (String) -> Unit,
     onPreference: (String) -> Unit,
+    onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
     selectedCharacterCard: CharacterCard?,
     onImportCharacterCard: (CharacterCard) -> Unit,
     onGeneratePrompt: () -> Unit
@@ -162,7 +195,9 @@ private fun PromptInputPanel(
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            CbField("图片描述") {
+            CbField("图片描述", onFullscreenEdit = {
+                onFullscreenEdit("图片描述", state.imageDescription, onDescription)
+            }) {
                 CbInput(
                     value = state.imageDescription,
                     onValueChange = onDescription,
@@ -181,7 +216,9 @@ private fun PromptInputPanel(
                     placeholder = if (state.characterCards.isEmpty()) "暂无角色卡" else "选择角色卡"
                 )
             }
-            CbField("画风") {
+            CbField("画风", onFullscreenEdit = {
+                onFullscreenEdit("画风", state.stylePrompt, onStyle)
+            }) {
                 CbInput(
                     value = state.stylePrompt,
                     onValueChange = onStyle,
@@ -191,7 +228,9 @@ private fun PromptInputPanel(
                     minLines = 2
                 )
             }
-            CbField("角色提示词") {
+            CbField("角色提示词", onFullscreenEdit = {
+                onFullscreenEdit("角色提示词", state.characterPrompt, onCharacter)
+            }) {
                 CbInput(
                     value = state.characterPrompt,
                     onValueChange = onCharacter,
@@ -203,7 +242,10 @@ private fun PromptInputPanel(
             }
             CbField(
                 label = "生图偏好",
-                description = "约束最终 NovelAI Prompt 的格式、标签、权重或构图取舍；不会单独作为画面来源。"
+                description = "约束最终 NovelAI Prompt 的格式、标签、权重或构图取舍；不会单独作为画面来源。",
+                onFullscreenEdit = {
+                    onFullscreenEdit("生图偏好", state.imagePromptPreference, onPreference)
+                }
             ) {
                 CbInput(
                     value = state.imagePromptPreference,

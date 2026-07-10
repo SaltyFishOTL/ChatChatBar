@@ -29,6 +29,11 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 7. Compile after each migrated component or screen. Search for remaining Material 3 imports after each migration batch.
 8. Remove Material 3 dependency only after imports and fully qualified usages reach zero.
 
+## Fullscreen and IME Insets
+
+- Every screen must keep actionable content above gesture/navigation controls and IME. Apply navigation-bar and IME insets to scrolling or bottom-action region, including Android three-button navigation.
+- Every multi-line or otherwise large text input must expose standard `CbField(onFullscreenEdit = ...)` entry and reuse `FullscreenTextEditor`; keep screen state source of truth.
+
 ## API Rules
 
 - Prefer `variant` and `size` enums over Boolean style flags.
