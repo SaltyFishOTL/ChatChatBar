@@ -1154,16 +1154,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     } else if (userPromptText.isNotBlank()) {
                         apiMessages.add(ChatApiMessage.text("user", userPromptText))
                     }
-                    currentSession.replyLength
+                    val replyLength = currentSession.replyLength
                         ?.takeIf { it.isNotBlank() }
-                        ?.let { replyLength ->
-                            apiMessages.add(
-                                ChatApiMessage.text(
-                                    role = "system",
-                                    content = PromptTemplates.replyLengthTailSystemPrompt(replyLength)
-                                )
-                            )
-                        }
+                        ?: "300字短篇"
+                    apiMessages.add(
+                        ChatApiMessage.text(
+                            role = "system",
+                            content = PromptTemplates.replyLengthTailSystemPrompt(replyLength)
+                        )
+                    )
                 }
 
                 // 8. 开启流式响应
