@@ -96,7 +96,7 @@ class EditorDraftRepository(
         targetId = targetId,
         draftSessionId = draftSessionId,
         baseUpdatedAt = base?.updatedAt,
-        baseHash = base?.let { hash(it, CharacterCard.serializer()) },
+        baseHash = base?.let(::characterHash),
         characterPayload = payload,
         draftAssetPaths = draftAssetPaths.distinct(),
         pendingDeletedAssets = pendingDeletedAssets.distinct(),
@@ -141,13 +141,16 @@ class EditorDraftRepository(
     )
 
     fun isChanged(base: CharacterCard?, draft: EditorDraft): Boolean =
-        base != null && draft.baseHash != null && hash(base, CharacterCard.serializer()) != draft.baseHash
+        base != null && draft.baseHash != null && characterHash(base) != draft.baseHash
 
     fun isChanged(base: FormatCard?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && hash(base, FormatCard.serializer()) != draft.baseHash
 
     fun isChanged(base: WorldBook?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && hash(base, WorldBook.serializer()) != draft.baseHash
+
+    private fun characterHash(card: CharacterCard): String =
+        hash(card.copy(pendingSpeakerRenameTasks = emptyList()), CharacterCard.serializer())
 
     private fun <T> hash(value: T, serializer: KSerializer<T>): String {
         val bytes = json.encodeToString(serializer, value).toByteArray(Charsets.UTF_8)

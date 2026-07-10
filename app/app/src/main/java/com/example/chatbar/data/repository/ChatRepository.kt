@@ -4,7 +4,9 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.domain.chat.ChatMessageOrdering
+import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -227,6 +229,47 @@ class ChatRepository(private val storage: JsonFileStorage) {
     /** 获取最近N条消息（用于上下文窗口） */
     suspend fun getRecentMessages(sessionId: String, count: Int): List<ChatMessage> {
         return getMessages(sessionId).takeLast(count)
+    }
+
+    suspend fun rewriteSpeakerTagsForCharacterCard(
+        characterCardId: String,
+        renames: List<SpeakerTagRename>
+    ): Int {
+        if (renames.isEmpty()) return 0
+        initialize()
+        var updatedCount = 0
+        _sessions.value.filter { it.characterCardId == characterCardId }.forEach { session ->
+            val messages = getMessages(session.id)
+            var sessionChanged = false
+            val updatedMessages = messages.map { message ->
+                val content = renameRoleplaySpeakerMarkers(message.content, renames)
+                val alternatives = message.alternatives.map { alternative ->
+                    renameRoleplaySpeakerMarkers(alternative, renames)
+                }
+                if (content == message.content && alternatives == message.alternatives) {
+                    message
+                } else {
+                    updatedCount++
+                    sessionChanged = true
+                    message.copy(
+                        content = content,
+                        alternatives = alternatives,
+                        updatedAt = System.currentTimeMillis()
+                    ).also { saveMessageRecord(it) }
+                }
+            }
+            if (sessionChanged) {
+                val latest = updatedMessages.lastOrNull()
+                updateSession(
+                    session.copy(
+                        lastMessagePreview = latest?.previewText(),
+                        lastMessageTime = latest?.createdAt,
+                        lastMessageRole = latest?.role
+                    )
+                )
+            }
+        }
+        return updatedCount
     }
 
     /** 搜索会话 */

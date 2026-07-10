@@ -11,6 +11,7 @@ import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -27,7 +28,10 @@ import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.RagIndexStatus
+import com.example.chatbar.data.local.entity.SpeakerTagRename
+import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBookEntry
+import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterRewriteDraft
@@ -36,6 +40,8 @@ import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
+import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
@@ -76,6 +82,17 @@ data class CharacterAiOutputUiState(
     val key: String,
     val title: String,
     val text: String
+)
+
+data class CharacterAvatarImageUiState(
+    val characterId: String? = null,
+    val isGenerating: Boolean = false,
+    val preview: ByteArray? = null,
+    val progress: Float = 0f,
+    val path: String? = null,
+    val promptText: String = "",
+    val error: String? = null,
+    val statusText: String = ""
 )
 
 data class CharacterRewriteDiffUiState(
@@ -142,6 +159,13 @@ data class CharacterRewriteUiState(
 
 private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 
+private data class CharacterAvatarPromptInput(
+    val imageDescription: String,
+    val stylePrompt: String,
+    val characterPrompt: String,
+    val previewText: String
+)
+
 class CharacterEditViewModel(
     private val characterId: String?,
     routeDraftId: String
@@ -159,6 +183,7 @@ class CharacterEditViewModel(
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val speakerTagHistoryService = ChatBarApp.instance.speakerTagHistoryService
     private val draftJson = Json {
         ignoreUnknownKeys = true
         encodeDefaults = true
@@ -171,12 +196,15 @@ class CharacterEditViewModel(
     private var coverImageJob: Job? = null
     private var coverImageGenerationToken = 0
     private var coverImageTarget: CoverImageTarget? = null
+    private var avatarImageJob: Job? = null
+    private var avatarImageGenerationToken = 0
     private var baseCard: CharacterCard? = null
     private var loadedDraft: EditorDraft? = null
     private var draftJob: Job? = null
     private val draftSessionId = routeDraftId.ifBlank { UUID.randomUUID().toString() }
     private val pendingDeletedAssets = mutableSetOf<String>()
     private val pendingDeletedDocumentIds = mutableSetOf<String>()
+    private val transientGeneratedAvatarPaths = mutableSetOf<String>()
 
     private val _characterCard = MutableStateFlow<CharacterCard?>(null)
     val characterCard: StateFlow<CharacterCard?> = _characterCard.asStateFlow()
@@ -195,6 +223,9 @@ class CharacterEditViewModel(
 
     private val _coverImageState = MutableStateFlow(CharacterCoverImageUiState())
     val coverImageState: StateFlow<CharacterCoverImageUiState> = _coverImageState.asStateFlow()
+
+    private val _avatarImageState = MutableStateFlow(CharacterAvatarImageUiState())
+    val avatarImageState: StateFlow<CharacterAvatarImageUiState> = _avatarImageState.asStateFlow()
 
     private val _autoFillModels = MutableStateFlow<List<ModelConfig>>(emptyList())
     val autoFillModels: StateFlow<List<ModelConfig>> = _autoFillModels.asStateFlow()
@@ -221,6 +252,7 @@ class CharacterEditViewModel(
     var creatorNotes by mutableStateOf("")
     var momentsEnabled by mutableStateOf(true)
     val charactersList = mutableStateListOf<CharacterInfo>()
+    private val freeformAvatarPromptDrafts = mutableStateMapOf<String, String>()
     val documentsList = mutableStateListOf<DocumentInfo>()
     val selectedWorldBookIds = mutableStateListOf<String>()
     val worldBookEntries = mutableStateListOf<com.example.chatbar.data.local.entity.WorldBookEntry>()
@@ -376,10 +408,39 @@ class CharacterEditViewModel(
                     card
                 }
             }
-            val card = draftAssetService.materializeCharacterAssets(rawCard)
-            characterRepository.save(card)
+            val materializedCard = draftAssetService.materializeCharacterAssets(rawCard)
+            val speakerRenames = buildSpeakerRenames(oldCard, materializedCard)
+            val speakerRenameTask = speakerTagHistoryService.createTask(
+                characterCardId = materializedCard.id,
+                expectedCardUpdatedAt = materializedCard.updatedAt,
+                renames = speakerRenames
+            )
+            val card = materializedCard.copy(
+                pendingSpeakerRenameTasks = materializedCard.pendingSpeakerRenameTasks +
+                    listOfNotNull(speakerRenameTask)
+            )
+            try {
+                characterRepository.save(card)
+            } catch (error: Throwable) {
+                _indexingStatus.value = "角色卡保存失败：${error.message}"
+                _isSaving.value = false
+                return@launch
+            }
+            transientGeneratedAvatarPaths.removeAll(
+                card.characters.mapNotNull(CharacterInfo::appearanceImage).toSet()
+            )
             _characterCard.value = card
-            cleanupAfterCharacterSave(oldCard, card)
+            var speakerRenameFailure: String? = null
+            for (task in card.pendingSpeakerRenameTasks.sortedBy(SpeakerTagRenameTask::createdAt)) {
+                val failure = runCatching { speakerTagHistoryService.execute(card.id, task.id) }.exceptionOrNull()
+                if (failure != null) {
+                    speakerRenameFailure = "角色名已保存，历史消息改名待重试：${failure.message}"
+                    break
+                }
+            }
+            val effectiveCard = characterRepository.getById(card.id) ?: card
+            _characterCard.value = effectiveCard
+            cleanupAfterCharacterSave(oldCard, effectiveCard)
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
             loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
@@ -390,9 +451,13 @@ class CharacterEditViewModel(
             restoredOpenModalState = null
             hasLocalChanges = false
             _isSaving.value = false
-            startBackgroundIndex(card)
-            if (card.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
-            onSuccess()
+            startBackgroundIndex(effectiveCard)
+            if (effectiveCard.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
+            if (speakerRenameFailure == null) {
+                onSuccess()
+            } else {
+                _indexingStatus.value = speakerRenameFailure
+            }
         }
     }
 
@@ -400,6 +465,10 @@ class CharacterEditViewModel(
         val errors = mutableListOf<String>()
         if (name.isBlank()) errors += "角色卡名称不能为空。"
         if (greeting.isBlank()) errors += "开场白不能为空。"
+        val duplicateNames = CharacterSpeakerNamePolicy.duplicateNames(charactersList.toList())
+        if (duplicateNames.isNotEmpty()) {
+            errors += "人物名称不能重复：${duplicateNames.distinct().joinToString("、")}"
+        }
         return errors
     }
 
@@ -647,6 +716,233 @@ class CharacterEditViewModel(
             chatBackground = path
         }
         _autoFillState.value = CharacterAutoFillUiState()
+    }
+
+    fun freeformAvatarPrompt(characterId: String): String =
+        freeformAvatarPromptDrafts[characterId].orEmpty()
+
+    fun updateFreeformAvatarPrompt(characterId: String, value: String) {
+        if (value.isEmpty()) {
+            freeformAvatarPromptDrafts.remove(characterId)
+        } else {
+            freeformAvatarPromptDrafts[characterId] = value
+        }
+    }
+
+    fun generateCharacterAvatar(character: CharacterInfo) {
+        val currentState = _avatarImageState.value
+        if (currentState.isGenerating || !currentState.path.isNullOrBlank()) {
+            _avatarImageState.value = currentState.copy(error = "请先处理当前头像候选")
+            return
+        }
+        val promptInput = if (editMode == CharacterEditMode.FREEFORM) {
+            val manualPrompt = freeformAvatarPrompt(character.id).trim()
+            if (manualPrompt.isEmpty()) {
+                _avatarImageState.value = CharacterAvatarImageUiState(
+                    characterId = character.id,
+                    error = "请先输入完整 NovelAI 正向 Prompt",
+                    statusText = "头像未生成"
+                )
+                return
+            }
+            CharacterAvatarPromptInput(
+                imageDescription = character.name.trim(),
+                stylePrompt = "",
+                characterPrompt = manualPrompt,
+                previewText = PromptTemplates.novelAiCharacterAvatarPositivePrompt(manualPrompt)
+            )
+        } else {
+            val characterPrompt = character.imagePrompt.trim()
+            if (characterPrompt.isEmpty()) {
+                _avatarImageState.value = CharacterAvatarImageUiState(
+                    characterId = character.id,
+                    error = "请先填写 NovelAI 人物提示词",
+                    statusText = "头像未生成"
+                )
+                return
+            }
+            CharacterAvatarPromptInput(
+                imageDescription = character.name.trim(),
+                stylePrompt = defaultImagePrompt,
+                characterPrompt = characterPrompt,
+                previewText = PromptTemplates.novelAiCharacterAvatarPositivePrompt(defaultImagePrompt, characterPrompt)
+            )
+        }
+        startCharacterAvatarGeneration(character.id, promptInput)
+    }
+
+    fun applyCharacterAvatarCandidate(characterId: String): String? {
+        val state = _avatarImageState.value
+        if (state.characterId != characterId) return null
+        val path = state.path?.takeIf(String::isNotBlank) ?: return null
+        transientGeneratedAvatarPaths += path
+        _avatarImageState.value = CharacterAvatarImageUiState()
+        return path
+    }
+
+    fun discardTransientGeneratedAvatar(path: String?, preservedPath: String? = null) {
+        if (path.isNullOrBlank() || path == preservedPath) return
+        if (transientGeneratedAvatarPaths.remove(path)) {
+            novelAiImageStorage.deleteIfOwned(path)
+        }
+    }
+
+    fun clearCharacterAvatarCandidate(characterId: String? = null) {
+        val state = _avatarImageState.value
+        if (characterId != null && state.characterId != characterId) return
+        if (state.isGenerating) {
+            cancelCharacterAvatarGeneration()
+            _avatarImageState.value = CharacterAvatarImageUiState()
+            return
+        }
+        state.path?.let(novelAiImageStorage::deleteIfOwned)
+        _avatarImageState.value = CharacterAvatarImageUiState()
+    }
+
+    fun cancelCharacterAvatarGeneration() {
+        if (!_avatarImageState.value.isGenerating) return
+        avatarImageGenerationToken += 1
+        avatarImageJob?.cancel()
+        avatarImageJob = null
+        _avatarImageState.value = _avatarImageState.value.copy(
+            isGenerating = false,
+            error = "已取消头像生成",
+            statusText = "头像生成已取消"
+        )
+    }
+
+    fun removeCharacterTransientState(characterId: String) {
+        freeformAvatarPromptDrafts.remove(characterId)
+        clearCharacterAvatarCandidate(characterId)
+        charactersList.firstOrNull { it.id == characterId }?.appearanceImage?.let { path ->
+            discardTransientGeneratedAvatar(path)
+        }
+    }
+
+    private fun startCharacterAvatarGeneration(characterId: String, promptInput: CharacterAvatarPromptInput) {
+        avatarImageGenerationToken += 1
+        val generationToken = avatarImageGenerationToken
+        avatarImageJob?.cancel()
+        _avatarImageState.value = CharacterAvatarImageUiState(
+            characterId = characterId,
+            isGenerating = true,
+            promptText = promptInput.previewText,
+            statusText = "正在设计头像 Prompt"
+        )
+        avatarImageJob = viewModelScope.launch {
+            try {
+                val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
+                val settings = settingsRepository.getAppSettings()
+                val model = modelResolver.defaultImageModel(settings)
+                if (token == null || model == null || model.apiKey.isBlank()) {
+                    val missing = mutableListOf<String>()
+                    if (token == null) missing += "NovelAI Token"
+                    if (model == null || model.apiKey.isBlank()) missing += "默认生图模型/API Key"
+                    _avatarImageState.value = _avatarImageState.value.copy(
+                        isGenerating = false,
+                        error = "缺少${missing.joinToString("、")}，未生成头像",
+                        statusText = "头像未生成"
+                    )
+                    return@launch
+                }
+                val card = buildCurrentCard(markDirty = false)
+                AiBackgroundWorkManager.run(card.id) {
+                    val finalPromptRequirement = listOf(
+                        settings.imagePromptToolPreference,
+                        PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
+                    )
+                        .map(String::trim)
+                        .filter(String::isNotEmpty)
+                        .joinToString("\n")
+                    val designedPlan = novelAiPromptDesigner.designForPromptTool(
+                        imageDescription = promptInput.imageDescription,
+                        stylePrompt = promptInput.stylePrompt,
+                        characterPrompt = promptInput.characterPrompt,
+                        finalPromptRequirement = finalPromptRequirement,
+                        model = model,
+                        onContentDelta = { promptDraft ->
+                            if (generationToken == avatarImageGenerationToken) {
+                                _avatarImageState.value = _avatarImageState.value.copy(
+                                    promptText = promptDraft,
+                                    statusText = "正在设计头像 Prompt"
+                                )
+                            }
+                        },
+                        onReasoningDelta = { reasoning ->
+                            if (generationToken == avatarImageGenerationToken) {
+                                _avatarImageState.value = _avatarImageState.value.copy(
+                                    promptText = "[思考] $reasoning",
+                                    statusText = "正在设计头像 Prompt"
+                                )
+                            }
+                        }
+                    )
+                    if (generationToken != avatarImageGenerationToken) return@run
+                    val plan = designedPlan.asCharacterAvatarPlan(defaultImageNegativePrompt)
+                    _avatarImageState.value = _avatarImageState.value.copy(
+                        promptText = plan.debugPromptText(),
+                        statusText = "正在调用 NovelAI 生成头像"
+                    )
+                    val seed = novelAiImageService.newSeed()
+                    var finalImage: ByteArray? = null
+                    novelAiImageService.generate(
+                        token = token,
+                        prompt = plan,
+                        seed = seed,
+                        imageSize = NovelAiImageSizePreset.SQUARE.imageSize
+                    ).collect { event ->
+                        if (generationToken != avatarImageGenerationToken) return@collect
+                        when (event) {
+                            is NovelAiImageEvent.Intermediate -> {
+                                finalImage = event.image
+                                _avatarImageState.value = _avatarImageState.value.copy(
+                                    preview = event.image,
+                                    progress = event.progress,
+                                    statusText = "正在流式生成头像"
+                                )
+                            }
+                            is NovelAiImageEvent.Final -> {
+                                finalImage = event.image
+                                _avatarImageState.value = _avatarImageState.value.copy(
+                                    preview = event.image,
+                                    progress = 1f,
+                                    statusText = "正在保存头像候选"
+                                )
+                            }
+                            is NovelAiImageEvent.Error -> error(event.message)
+                        }
+                    }
+                    if (generationToken != avatarImageGenerationToken) return@run
+                    val bytes = finalImage ?: error("NovelAI 未返回最终图片")
+                    val path = withContext(Dispatchers.IO) {
+                        novelAiImageStorage.save("${card.id}_avatar_$characterId", bytes)
+                    }
+                    if (generationToken != avatarImageGenerationToken) {
+                        withContext(Dispatchers.IO) { novelAiImageStorage.deleteIfOwned(path) }
+                        return@run
+                    }
+                    _avatarImageState.value = _avatarImageState.value.copy(
+                        isGenerating = false,
+                        path = path,
+                        preview = bytes,
+                        progress = 1f,
+                        statusText = "头像候选已生成，等待应用"
+                    )
+                }
+            } catch (_: CancellationException) {
+                // State is updated by cancellation or the next generation.
+            } catch (error: Throwable) {
+                if (generationToken == avatarImageGenerationToken) {
+                    _avatarImageState.value = _avatarImageState.value.copy(
+                        isGenerating = false,
+                        error = error.message ?: "头像生成失败",
+                        statusText = "头像生成失败"
+                    )
+                }
+            } finally {
+                if (generationToken == avatarImageGenerationToken) avatarImageJob = null
+            }
+        }
     }
 
     fun generateCurrentCoverImage(_modelId: String? = null) {
@@ -1506,6 +1802,9 @@ class CharacterEditViewModel(
         )
         worldBookEntries.clear()
         card.characterBook?.entries?.let { worldBookEntries.addAll(it) }
+        card.pendingSpeakerRenameTasks.firstNotNullOfOrNull { task -> task.lastError }?.let { error ->
+            _indexingStatus.value = "历史消息人物改名待重试：$error"
+        }
     }
 
     private suspend fun cleanupAfterCharacterSave(oldCard: CharacterCard?, newCard: CharacterCard) {
@@ -1523,9 +1822,30 @@ class CharacterEditViewModel(
         }
     }
 
+    private fun buildSpeakerRenames(
+        oldCard: CharacterCard?,
+        newCard: CharacterCard
+    ): List<SpeakerTagRename> {
+        val oldById = oldCard?.characters.orEmpty().associateBy(CharacterInfo::id)
+        return newCard.characters.mapNotNull { character ->
+            val old = oldById[character.id] ?: return@mapNotNull null
+            val oldName = old.name.trim()
+            val newName = character.name.trim()
+            if (oldName.isEmpty() || newName.isEmpty() || oldName == newName) return@mapNotNull null
+            SpeakerTagRename(
+                characterId = character.id,
+                oldName = oldName,
+                newName = newName
+            )
+        }
+    }
+
     private fun buildCurrentCard(markDirty: Boolean): CharacterCard {
         val now = System.currentTimeMillis()
         val base = _characterCard.value
+        val normalizedCharacters = charactersList.map { character ->
+            character.copy(name = NamePolicy.normalize(character.name))
+        }
         val dirtyStatus = if (markDirty) RagIndexStatus.NOT_INDEXED.name else base?.ragIndexStatus ?: RagIndexStatus.NOT_INDEXED.name
         val dirtyMessage = if (markDirty) "RAG 索引待重建" else base?.ragIndexMessage
         return base?.copy(
@@ -1547,7 +1867,7 @@ class CharacterEditViewModel(
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,
-            characters = charactersList.toList(),
+            characters = normalizedCharacters,
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,
             ragIndexDone = if (markDirty) 0 else base.ragIndexDone,
@@ -1575,7 +1895,7 @@ class CharacterEditViewModel(
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,
-            characters = charactersList.toList(),
+            characters = normalizedCharacters,
             customDocuments = documentsList.toList(),
             ragIndexStatus = dirtyStatus,
             ragIndexDone = 0,
@@ -1801,6 +2121,16 @@ class CharacterEditViewModel(
             }
         }
     }
+
+    override fun onCleared() {
+        avatarImageGenerationToken += 1
+        avatarImageJob?.cancel()
+        _avatarImageState.value.path?.let(novelAiImageStorage::deleteIfOwned)
+        transientGeneratedAvatarPaths.forEach(novelAiImageStorage::deleteIfOwned)
+        transientGeneratedAvatarPaths.clear()
+        freeformAvatarPromptDrafts.clear()
+        super.onCleared()
+    }
 }
 
 private fun ImageCropFractionRect.toBitmapRect(width: Int, height: Int): Rect {
@@ -1813,6 +2143,38 @@ private fun ImageCropFractionRect.toBitmapRect(width: Int, height: Int): Rect {
     val r = (safeRight * width).roundToInt().coerceIn(l + 1, width)
     val b = (safeBottom * height).roundToInt().coerceIn(t + 1, height)
     return Rect(l, t, r, b)
+}
+
+private fun NovelAiPromptPlan.asCharacterAvatarPlan(negativePrompt: String): NovelAiPromptPlan =
+    copy(
+        baseCaption = appendNovelAiPromptTags(
+            baseCaption,
+            PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
+        ),
+        sizePreset = NovelAiImageSizePreset.SQUARE,
+        negativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
+    )
+
+private fun NovelAiPromptPlan.debugPromptText(): String = buildString {
+    appendLine(baseCaption)
+    characterCaptions.forEachIndexed { index, caption ->
+        appendLine()
+        appendLine("Character ${index + 1}: ${caption.prompt}")
+    }
+}.trim()
+
+private fun appendNovelAiPromptTags(prompt: String, tags: String): String {
+    val existing = prompt.split(',')
+        .map { it.trim().lowercase() }
+        .filter(String::isNotBlank)
+        .toSet()
+    val missing = tags.split(',')
+        .map(String::trim)
+        .filter(String::isNotBlank)
+        .filter { it.lowercase() !in existing }
+    return (listOf(prompt.trim()) + missing)
+        .filter(String::isNotBlank)
+        .joinToString(", ")
 }
 
 private fun List<String>.appendProgressLine(line: String): List<String> {

@@ -2,10 +2,13 @@ package com.example.chatbar.ui.components
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.chat.parseRoleplayTextSegments
 import com.example.chatbar.domain.chat.replaceRoleplaySegmentContent
+import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -75,6 +78,149 @@ class ChatBubbleMarkdownTest {
         assertEquals("[对白](say)", content.substring(dialogue.start, dialogue.endExclusive))
         val thought = result[2]
         assertEquals("『**心声**』", content.substring(thought.start, thought.endExclusive))
+    }
+
+    @Test
+    fun roleplaySegments_attachSpeakerPrefixToDialogueAndThought() {
+        val content = "前<n=\"爱音\"/>\n[你好]() <n=\"灯\"/> 『**好紧张**』"
+
+        val result = parseRoleplayTextSegments(content)
+
+        assertEquals(
+            listOf(
+                RoleplaySegmentKind.NARRATION,
+                RoleplaySegmentKind.DIALOGUE,
+                RoleplaySegmentKind.THOUGHT
+            ),
+            result.map { it.kind }
+        )
+        assertEquals("爱音", result[1].speakerName)
+        assertEquals("<n=\"爱音\"/>\n[你好]()", content.substring(result[1].start, result[1].endExclusive))
+        assertEquals("[你好]()", result[1].displayText)
+        assertEquals("灯", result[2].speakerName)
+        assertEquals("『**好紧张**』", result[2].displayText)
+    }
+
+    @Test
+    fun roleplaySegments_ignoreSpeakerPrefixInsideStatusAndHiddenComments() {
+        val marker = "\u0060\u0060\u0060"
+        val content = "$marker\n<n=\"状态角色\"/>[不拆]()\n$marker\n<!-- <n=\"隐藏角色\"/> -->[对白]()"
+
+        val result = parseRoleplayTextSegments(content)
+
+        assertEquals(RoleplaySegmentKind.STATUS, result[0].kind)
+        assertEquals(null, result[0].speakerName)
+        val dialogue = result.last { it.kind == RoleplaySegmentKind.DIALOGUE }
+        assertEquals(null, dialogue.speakerName)
+        assertEquals("[对白]()", content.substring(dialogue.start, dialogue.endExclusive))
+    }
+
+    @Test
+    fun roleplaySegments_emptySpeakerPrefixStaysEditableButIsUnassigned() {
+        val content = "<n=\"   \"/> [对白]()"
+
+        val segment = parseRoleplayTextSegments(content).single()
+
+        assertEquals("", segment.speakerName)
+        assertEquals(content, content.substring(segment.start, segment.endExclusive))
+    }
+
+    @Test
+    fun roleplaySpeakerMarkers_stripFromRenderedMarkdown() {
+        assertEquals("[对白]() 『**内心**』", stripRoleplaySpeakerMarkers("<n=\"爱音\"/>[对白]() <n=\"爱音\"/>『**内心**』"))
+    }
+
+    @Test
+    fun roleplaySpeakerMarkers_renameOnlyMatchingTags() {
+        val content = "<n=\" Alice \"/>[A]() <n=\"Bob\"/>[B]()"
+
+        val renamed = renameRoleplaySpeakerMarkers(
+            content,
+            listOf(SpeakerTagRename("character", "alice", "Alicia"))
+        )
+
+        assertEquals("<n=\"Alicia\"/>[A]() <n=\"Bob\"/>[B]()", renamed)
+    }
+
+    @Test
+    fun roleplaySpeakerResolution_matchesIgnoringCaseAndFallsBackExplicitly() {
+        val avatars = listOf(
+            ChatBubbleCharacterAvatar("Alice", "/avatar/alice.png"),
+            ChatBubbleCharacterAvatar("Bob", "")
+        )
+
+        val matched = resolveRoleplaySpeaker(" alice ", avatars)
+        val matchedWithoutAvatar = resolveRoleplaySpeaker("bob", avatars)
+        val unknown = resolveRoleplaySpeaker("临时NPC", avatars)
+        val missing = resolveRoleplaySpeaker(
+            speakerName = "",
+            characterAvatars = avatars
+        )
+        val legacy = resolveRoleplaySpeaker(
+            speakerName = null,
+            characterAvatars = avatars,
+            legacyAvatarPath = "/avatar/card.png",
+            legacyAvatarFallbackName = "Card"
+        )
+
+        assertEquals("Alice", matched.displayName)
+        assertEquals("/avatar/alice.png", matched.avatarPath)
+        assertEquals("Bob", matchedWithoutAvatar.displayName)
+        assertEquals(null, matchedWithoutAvatar.avatarPath)
+        assertEquals("临时NPC", unknown.displayName)
+        assertEquals("临时NPC", unknown.avatarFallbackName)
+        assertEquals("未标注", missing.displayName)
+        assertEquals("?", missing.avatarFallbackName)
+        assertNull(legacy.displayName)
+        assertEquals("/avatar/card.png", legacy.avatarPath)
+        assertEquals("Card", legacy.avatarFallbackName)
+    }
+
+    @Test
+    fun roleplaySpeakerResolution_doesNotGuessBetweenDuplicateNames() {
+        val avatars = listOf(
+            ChatBubbleCharacterAvatar("爱音", "/one.png"),
+            ChatBubbleCharacterAvatar(" 爱音 ", "/two.png")
+        )
+
+        val result = resolveRoleplaySpeaker("爱音", avatars)
+
+        assertEquals("爱音", result.displayName)
+        assertEquals(null, result.avatarPath)
+    }
+
+    @Test
+    fun roleplaySpeakerHeaders_groupAdjacentDialogueAndThoughtByName() {
+        val segments = parseRoleplayTextSegments(
+            "<n=\"爱音\"/>[一]() <n=\"爱音\"/>『**二**』 <n=\"灯\"/>[三]()"
+        )
+
+        assertEquals(setOf(0, 2), roleplaySpeakerHeaderIndexes(segments))
+    }
+
+    @Test
+    fun roleplaySpeakerHeaders_groupAdjacentLegacyUnmarkedSegments() {
+        val segments = parseRoleplayTextSegments("[一]() 『**二**』 <n=\"\"/>[三]()")
+
+        assertEquals(setOf(0, 2), roleplaySpeakerHeaderIndexes(segments))
+    }
+
+    @Test
+    fun roleplaySpeakerHeaders_narrationBreaksSameNameGroup() {
+        val segments = parseRoleplayTextSegments(
+            "<n=\"爱音\"/>[一]()旁白<n=\"爱音\"/>[二]()"
+        )
+
+        assertEquals(setOf(0, 2), roleplaySpeakerHeaderIndexes(segments))
+    }
+
+    @Test
+    fun roleplaySpeakerHeaders_filteredMiddleStartsWithHeaderAndKeepsOriginalBoundaries() {
+        val segments = parseRoleplayTextSegments(
+            "<n=\"爱音\"/>[一]() <n=\"爱音\"/>[二]()旁白<n=\"爱音\"/>[三]()"
+        )
+
+        assertEquals(setOf(1, 3), roleplaySpeakerHeaderIndexes(segments, setOf(1, 3)))
     }
 
     @Test
@@ -239,6 +385,16 @@ class ChatBubbleMarkdownTest {
     @Test
     fun roleplaySegmentReplacement_deletesAndCleansBlankLines() {
         val content = "前\n\n[删掉]()\n\n后"
+        val segment = parseRoleplayTextSegments(content).first { it.kind == RoleplaySegmentKind.DIALOGUE }
+
+        val result = replaceRoleplaySegmentContent(content, segment.start, segment.endExclusive, "")
+
+        assertEquals("前\n\n后", result)
+    }
+
+    @Test
+    fun roleplaySegmentReplacement_deletesSpeakerPrefixWithSegment() {
+        val content = "前\n<n=\"爱音\"/>\n[删掉]()\n后"
         val segment = parseRoleplayTextSegments(content).first { it.kind == RoleplaySegmentKind.DIALOGUE }
 
         val result = replaceRoleplaySegmentContent(content, segment.start, segment.endExclusive, "")

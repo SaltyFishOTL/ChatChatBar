@@ -167,6 +167,7 @@ fun CharacterEditScreen(
     val autoFillState by viewModel.autoFillState.collectAsState()
     val rewriteState by viewModel.rewriteState.collectAsState()
     val coverImageState by viewModel.coverImageState.collectAsState()
+    val avatarImageState by viewModel.avatarImageState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
@@ -513,6 +514,33 @@ fun CharacterEditScreen(
                         minLines = 10
                     )
                 }
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    SectionTitle("人物头像册 (${viewModel.charactersList.size})")
+                    CbButton("添加人物", {
+                        editCharacter = null
+                        characterDialogDraft = CharacterInfo.create("")
+                        viewModel.updateOpenModalState(
+                            CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = characterDialogDraft)
+                        )
+                        showCharacterDialog = true
+                    }, variant = ButtonVariant.Ghost)
+                }
+                viewModel.charactersList.forEachIndexed { index, character ->
+                    CharacterRow(
+                        character = character,
+                        canDelete = true,
+                        showProfile = false,
+                        onEdit = {
+                            editCharacter = character
+                            characterDialogDraft = character
+                            viewModel.updateOpenModalState(
+                                CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = character)
+                            )
+                            showCharacterDialog = true
+                        },
+                        onDelete = { deleteCharacter = index to (character.name.ifBlank { "未命名角色" }) }
+                    )
+                }
             }
 
             CbDivider()
@@ -677,6 +705,13 @@ fun CharacterEditScreen(
         CharacterDialog(
             original = editCharacter,
             value = characterDraft,
+            nameConflict = viewModel.charactersList.any { existing ->
+                existing.id != characterDraft.id &&
+                    existing.name.trim().equals(characterDraft.name.trim(), ignoreCase = true)
+            },
+            structured = viewModel.editMode == CharacterEditMode.STRUCTURED,
+            avatarImageState = avatarImageState,
+            freeformAvatarPrompt = viewModel.freeformAvatarPrompt(characterDraft.id),
             onValueChange = { updated ->
                 characterDialogDraft = updated
                 viewModel.updateOpenModalState(
@@ -684,12 +719,50 @@ fun CharacterEditScreen(
                 )
             },
             onDismiss = {
+                viewModel.clearCharacterAvatarCandidate(characterDraft.id)
+                viewModel.discardTransientGeneratedAvatar(
+                    characterDialogDraft?.appearanceImage,
+                    editCharacter?.appearanceImage
+                )
                 showCharacterDialog = false
                 characterDialogDraft = null
                 viewModel.updateOpenModalState(null)
             },
-            onPickImage = { callback -> pickImage(callback) },
+            onPickImage = { callback ->
+                pickCroppedImage(CharacterImageCropTarget.Avatar) { path ->
+                    viewModel.discardTransientGeneratedAvatar(
+                        characterDialogDraft?.appearanceImage,
+                        editCharacter?.appearanceImage
+                    )
+                    callback(path)
+                }
+            },
+            onClearAvatar = { currentPath ->
+                viewModel.discardTransientGeneratedAvatar(currentPath, editCharacter?.appearanceImage)
+            },
+            onFreeformAvatarPromptChange = { value ->
+                viewModel.updateFreeformAvatarPrompt(characterDraft.id, value)
+            },
+            onGenerateAvatar = viewModel::generateCharacterAvatar,
+            onCancelAvatar = viewModel::cancelCharacterAvatarGeneration,
+            onDiscardAvatar = { viewModel.clearCharacterAvatarCandidate(characterDraft.id) },
+            onApplyAvatar = {
+                viewModel.applyCharacterAvatarCandidate(characterDraft.id)?.let { path ->
+                    val currentDraft = characterDialogDraft ?: characterDraft
+                    viewModel.discardTransientGeneratedAvatar(
+                        currentDraft.appearanceImage,
+                        editCharacter?.appearanceImage
+                    )
+                    val updated = currentDraft.copy(appearanceImage = path)
+                    characterDialogDraft = updated
+                    viewModel.updateOpenModalState(
+                        CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = updated)
+                    )
+                }
+            },
+            onSaveAvatarToGallery = { path -> saveImageToGallery(context, path) },
             onSave = { updated ->
+                viewModel.clearCharacterAvatarCandidate(updated.id)
                 val index = viewModel.charactersList.indexOfFirst { it.id == updated.id }
                 if (index >= 0) viewModel.charactersList[index] = updated else viewModel.charactersList.add(updated)
                 showCharacterDialog = false
@@ -875,6 +948,9 @@ fun CharacterEditScreen(
     }
     deleteCharacter?.let { (index, name) ->
         ConfirmDeleteDialog("删除人物设定", "确定删除“$name”的设定？", { deleteCharacter = null }) {
+            viewModel.charactersList.getOrNull(index)?.let { character ->
+                viewModel.removeCharacterTransientState(character.id)
+            }
             viewModel.charactersList.removeAt(index)
             deleteCharacter = null
         }
@@ -1230,16 +1306,24 @@ private fun ImagePickerPanel(
 }
 
 @Composable
-private fun CharacterRow(character: CharacterInfo, canDelete: Boolean, onEdit: () -> Unit, onDelete: () -> Unit) {
+private fun CharacterRow(
+    character: CharacterInfo,
+    canDelete: Boolean,
+    showProfile: Boolean = true,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
     CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             if (!character.appearanceImage.isNullOrBlank()) {
-                AsyncImage(character.appearanceImage, null, Modifier.size(42.dp).clip(RoundedCornerShape(8.dp)), contentScale = ContentScale.Crop)
+                AsyncImage(character.appearanceImage, null, Modifier.size(42.dp).clip(CircleShape), contentScale = ContentScale.Crop)
                 Spacer(Modifier.width(12.dp))
             }
             Column(Modifier.weight(1f)) {
                 CbText(character.name.ifBlank { "未命名角色" }, style = ChatBarTheme.typography.heading)
-                if (character.profile.isNotBlank()) CbText(character.profile, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
+                if (showProfile && character.profile.isNotBlank()) {
+                    CbText(character.profile, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
+                }
             }
             CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)
             if (canDelete) CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
@@ -1948,41 +2032,237 @@ private fun CharacterPreviewField(label: String, value: String) {
 }
 
 @Composable
+private fun CharacterAvatarEditor(
+    character: CharacterInfo,
+    structured: Boolean,
+    state: CharacterAvatarImageUiState,
+    freeformPrompt: String,
+    onPick: () -> Unit,
+    onClear: () -> Unit,
+    onDownloadCurrent: () -> Unit,
+    onFreeformPromptChange: (String) -> Unit,
+    onGenerate: () -> Unit,
+    onCancel: () -> Unit,
+    onDiscard: () -> Unit,
+    onApply: () -> Unit,
+    onDownloadCandidate: (String) -> Unit
+) {
+    val stateBelongsToCharacter = state.characterId == character.id
+    val anotherCandidatePending = state.characterId != null && !stateBelongsToCharacter &&
+        (state.isGenerating || !state.path.isNullOrBlank())
+    val promptReady = if (structured) character.imagePrompt.isNotBlank() else freeformPrompt.isNotBlank()
+    CbField(
+        "人物专属头像",
+        description = "用于聊天对白、内心气泡与朋友圈，不会发送给对话 AI。"
+    ) {
+        CbSurface(
+            Modifier.fillMaxWidth(),
+            color = ChatBarTheme.colors.muted,
+            border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(12.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    Modifier.size(88.dp).clip(CircleShape).background(ChatBarTheme.colors.background),
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (!character.appearanceImage.isNullOrBlank()) {
+                        AsyncImage(
+                            character.appearanceImage,
+                            "${character.name.ifBlank { "人物" }}专属头像",
+                            Modifier.fillMaxSize(),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        CbText(
+                            character.name.trim().take(1).ifBlank { "?" },
+                            style = ChatBarTheme.typography.heading,
+                            color = ChatBarTheme.colors.mutedForeground
+                        )
+                    }
+                }
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CbButton(
+                        if (character.appearanceImage.isNullOrBlank()) "上传头像" else "替换头像",
+                        onPick,
+                        modifier = Modifier.fillMaxWidth(),
+                        variant = ButtonVariant.Outline
+                    )
+                    if (!character.appearanceImage.isNullOrBlank()) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CbButton("移除", onClear, Modifier.weight(1f), variant = ButtonVariant.Ghost)
+                            CbButton("保存相册", onDownloadCurrent, Modifier.weight(1f), variant = ButtonVariant.Ghost)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (!structured) {
+        CbField(
+            "本次头像正向 Prompt",
+            description = "输入完整画风与人物 tags；仅保留到退出当前角色卡编辑页。"
+        ) {
+            CbInput(
+                freeformPrompt,
+                onFreeformPromptChange,
+                placeholder = "输入完整 NovelAI 正向 Prompt",
+                singleLine = false,
+                minLines = 3
+            )
+        }
+    }
+    CbButton(
+        "生成头像候选",
+        onGenerate,
+        modifier = Modifier.fillMaxWidth(),
+        enabled = promptReady && !anotherCandidatePending &&
+            !(stateBelongsToCharacter && (state.isGenerating || !state.path.isNullOrBlank())),
+        variant = ButtonVariant.Secondary
+    )
+    if (!promptReady) {
+        CbText(
+            if (structured) "请先填写 NovelAI 人物提示词。" else "请先输入完整 NovelAI 正向 Prompt。",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+    }
+    if (anotherCandidatePending) {
+        CbText(
+            "另一人物仍有头像生成或候选，请先处理。",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+    }
+    if (stateBelongsToCharacter) {
+        val candidateModel: Any? = state.preview ?: state.path
+        if (candidateModel != null || state.isGenerating || !state.error.isNullOrBlank()) {
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                color = ChatBarTheme.colors.muted,
+                border = BorderStroke(
+                    1.dp,
+                    if (state.error.isNullOrBlank()) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive
+                )
+            ) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText("头像候选", style = ChatBarTheme.typography.heading)
+                    candidateModel?.let { model ->
+                        Box(
+                            Modifier.fillMaxWidth().height(220.dp).clip(RoundedCornerShape(10.dp))
+                                .background(ChatBarTheme.colors.background),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            AsyncImage(model, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                        }
+                    }
+                    if (state.isGenerating) {
+                        CbProgress(state.progress.coerceAtLeast(0.04f))
+                        CbText(
+                            state.statusText.ifBlank { "正在生成头像" },
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                        CbButton(
+                            "取消生成",
+                            onCancel,
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = ButtonVariant.Destructive
+                        )
+                    } else if (!state.path.isNullOrBlank()) {
+                        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            CbButton("丢弃", onDiscard, Modifier.weight(1f), variant = ButtonVariant.Ghost)
+                            CbButton(
+                                "保存相册",
+                                { onDownloadCandidate(state.path) },
+                                Modifier.weight(1f),
+                                variant = ButtonVariant.Outline
+                            )
+                            CbButton("应用", onApply, Modifier.weight(1f))
+                        }
+                    }
+                    state.error?.takeIf(String::isNotBlank)?.let { error ->
+                        CbText(error, color = ChatBarTheme.colors.destructive)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CharacterDialog(
     original: CharacterInfo?,
     value: CharacterInfo,
+    nameConflict: Boolean,
+    structured: Boolean,
+    avatarImageState: CharacterAvatarImageUiState,
+    freeformAvatarPrompt: String,
     onValueChange: (CharacterInfo) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
+    onClearAvatar: (String?) -> Unit,
+    onFreeformAvatarPromptChange: (String) -> Unit,
+    onGenerateAvatar: (CharacterInfo) -> Unit,
+    onCancelAvatar: () -> Unit,
+    onDiscardAvatar: () -> Unit,
+    onApplyAvatar: () -> Unit,
+    onSaveAvatarToGallery: (String) -> Unit,
     onSave: (CharacterInfo) -> Unit,
     onFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
+    val avatarPending = avatarImageState.characterId == value.id &&
+        (avatarImageState.isGenerating || !avatarImageState.path.isNullOrBlank())
     CbDialog(
         onDismissRequest = onDismiss,
-        title = if (original == null) "添加人物设定" else "编辑人物设定",
+        title = when {
+            structured && original == null -> "添加人物设定"
+            structured -> "编辑人物设定"
+            original == null -> "添加人物头像"
+            else -> "编辑人物头像"
+        },
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
         confirm = {
-            CbButton("保存", { onSave(value) }, enabled = value.name.isNotBlank())
+            CbButton(
+                "保存",
+                { onSave(value) },
+                enabled = value.name.isNotBlank() && !nameConflict && !avatarPending
+            )
         }
     ) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("人物名称") { CbInput(value.name, { onValueChange(value.copy(name = it)) }, placeholder = "例如：阿尔托莉雅") }
-            CbField("简介", onFullscreenEdit = { onFullscreen("简介", value.profile, { onValueChange(value.copy(profile = it)) }) }) {
-                CbInput(value.profile, { onValueChange(value.copy(profile = it)) }, placeholder = "一句话概括身份设定", singleLine = false, minLines = 2)
+            if (nameConflict) {
+                CbText("人物名称不能重复。", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
             }
-            Box(
-                Modifier.fillMaxWidth().height(100.dp).clip(RoundedCornerShape(8.dp)).background(ChatBarTheme.colors.muted).clickable {
-                    onPickImage { onValueChange(value.copy(appearanceImage = it)) }
-                },
-                contentAlignment = Alignment.Center
-            ) {
-                if (value.appearanceImage?.isNotBlank() == true) AsyncImage(value.appearanceImage, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                else Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CbIcon(AppIcons.AddPhotoAlternate, null, tint = ChatBarTheme.colors.mutedForeground)
-                    CbText("上传设定图", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            if (structured) {
+                CbField("简介", onFullscreenEdit = { onFullscreen("简介", value.profile, { onValueChange(value.copy(profile = it)) }) }) {
+                    CbInput(value.profile, { onValueChange(value.copy(profile = it)) }, placeholder = "一句话概括身份设定", singleLine = false, minLines = 2)
                 }
             }
+            CharacterAvatarEditor(
+                character = value,
+                structured = structured,
+                state = avatarImageState,
+                freeformPrompt = freeformAvatarPrompt,
+                onPick = { onPickImage { onValueChange(value.copy(appearanceImage = it)) } },
+                onClear = {
+                    onClearAvatar(value.appearanceImage)
+                    onValueChange(value.copy(appearanceImage = null))
+                },
+                onDownloadCurrent = { value.appearanceImage?.let(onSaveAvatarToGallery) },
+                onFreeformPromptChange = onFreeformAvatarPromptChange,
+                onGenerate = { onGenerateAvatar(value) },
+                onCancel = onCancelAvatar,
+                onDiscard = onDiscardAvatar,
+                onApply = onApplyAvatar,
+                onDownloadCandidate = { path -> onSaveAvatarToGallery(path) }
+            )
+            if (structured) {
             CbField("外貌特征", onFullscreenEdit = { onFullscreen("外貌特征", value.appearance, { onValueChange(value.copy(appearance = it)) }) }) {
                 CbInput(value.appearance, { onValueChange(value.copy(appearance = it)) }, singleLine = false, minLines = 2)
             }
@@ -2016,6 +2296,7 @@ private fun CharacterDialog(
                     singleLine = false,
                     minLines = 3
                 )
+            }
             }
         }
     }

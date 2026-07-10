@@ -14,7 +14,6 @@ import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
-import com.example.chatbar.domain.chat.ImageUnderstandingResult
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.StreamEvent
@@ -997,7 +996,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     chatRepository.updateSession(updatedSession)
                     _session.value = updatedSession
                 }
-                var systemPrompt = promptAssembler.assembleSystemPrompt(
+                val systemPrompt = promptAssembler.assembleSystemPrompt(
                     characterCard = charCard,
                     playerSetting = activePlayerSetting,
                     playerName = activePlayerName.takeIf { it.isNotBlank() },
@@ -1014,38 +1013,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     worldBookOutlets = wbOutlets
                 )
 
-                // 6. 截取最近消息构建上下文
-                // 7. 构建发送给接口的 API 消息格式
-                val characterImageRefs = charCard.characters.mapNotNull { character ->
-                    character.appearanceImage
-                        ?.takeIf { it.isNotBlank() && File(it).exists() }
-                        ?.let { character.name to it }
-                }
-                val characterImageBase64s = characterImageRefs.mapNotNull { (characterName, imagePath) ->
-                    runCatching { characterName to encodeImageToBase64(imagePath) }.getOrNull()
-                }
-                val characterImageUnderstanding = if (characterImageBase64s.isNotEmpty()) {
-                    imageUnderstandingService.prepare(
-                        imageBase64s = characterImageBase64s.map { it.second },
-                        generationModel = modelConfig,
-                        requireUnderstanding = false
-                    )
-                } else {
-                    ImageUnderstandingResult()
-                }
-                if (characterImageUnderstanding.descriptions.isNotEmpty()) {
-                    val descriptions = characterImageBase64s.mapIndexedNotNull { index, (characterName, _) ->
-                        characterImageUnderstanding.descriptions.getOrNull(index)
-                            ?.substringAfter(": ", characterImageUnderstanding.descriptions[index])
-                            ?.let { "$characterName: $it" }
-                    }
-                    if (descriptions.isNotEmpty()) {
-                        systemPrompt += "\n\n【角色外观图片描述】\n" + descriptions.joinToString("\n")
-                    }
-                }
-
                 val apiMessages = mutableListOf<ChatApiMessage>()
-                val implicitInstruction = "（严格遵循格式要求、字数要求进行回复）"
 
                 // 重新生成时，找到被重新生成回复所对应的那条用户消息，需将其移至最底部
                 val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
@@ -1094,27 +1062,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                 // 2. System prompt（中间位置），随后补上一条消息提升过渡权重
                 apiMessages.add(ChatApiMessage.text("system", systemPrompt))
-                if (characterImageUnderstanding.directImageBase64s.isNotEmpty()) {
-                        val imagePrompt = buildString {
-                            appendLine("以下图片来自当前角色卡的人物外观设定。请把它们视为 System Prompt 中角色设定的一部分。")
-                            characterImageBase64s.forEachIndexed { index, (characterName, _) ->
-                                appendLine("图片 ${index + 1}: $characterName")
-                            }
-                        }.trim()
-                    apiMessages.add(
-                        ChatApiMessage.withImages(
-                            "user",
-                            imagePrompt,
-                            characterImageUnderstanding.directImageBase64s
-                        )
-                    )
-                }
                 val previousContextMessage = promptMessageGroups.previousMessage
                 if (previousContextMessage != null) {
                     addContextMessage(previousContextMessage)
                 }
 
-                // 3. 本次用户输入（始终放在最底部，追加隐式指令）
+                // 3. 本次用户输入（始终放在最底部，按需前置分段气泡人物标注协议）
                 val currentUserContent: String?
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
@@ -1140,7 +1093,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
                 if (shouldAddUserPrompt && currentUserContent != null) {
-                    val userPromptText = currentUserContent + implicitInstruction
+                    val userPromptText = if (_assistantSegmentedBubblesEnabled.value) {
+                        PromptTemplates.roleplaySpeakerFormatUserPrompt(
+                            characterNames = charCard.characters.map { it.name },
+                            userContent = currentUserContent
+                        )
+                    } else {
+                        currentUserContent
+                    }
                     if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
                         try {
                             val base64 = encodeImageToBase64(currentUserImages.first())

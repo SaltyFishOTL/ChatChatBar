@@ -131,7 +131,7 @@ class CharacterCardTransferService(
                 appearanceImageResourceId = packageImage(
                     character.appearanceImage,
                     "character-$index-appearance",
-                    "人物 ${character.name} 的形象图"
+                    "人物 ${character.name} 的专属头像"
                 ),
                 clothing = character.clothing,
                 abilities = character.abilities,
@@ -217,22 +217,24 @@ class CharacterCardTransferService(
                 id = id,
                 name = NamePolicy.normalize(name),
                 avatar = card.avatarResourceId?.let(imagePathMap::getValue),
-                characters = card.characters.map { character ->
-                    CharacterInfo(
-                        id = UUID.randomUUID().toString(),
-                        name = character.name,
-                        profile = character.profile,
-                        appearance = character.appearance,
-                        appearanceImage = character.appearanceImageResourceId?.let(imagePathMap::getValue),
-                        clothing = character.clothing,
-                        abilities = character.abilities,
-                        habits = character.habits,
-                        background = character.background,
-                        relationships = character.relationships,
-                        speakingStyle = character.speakingStyle,
-                        imagePrompt = character.imagePrompt
-                    )
-                },
+                characters = CharacterSpeakerNamePolicy.normalizeUnique(
+                    card.characters.map { character ->
+                        CharacterInfo(
+                            id = UUID.randomUUID().toString(),
+                            name = character.name,
+                            profile = character.profile,
+                            appearance = character.appearance,
+                            appearanceImage = character.appearanceImageResourceId?.let(imagePathMap::getValue),
+                            clothing = character.clothing,
+                            abilities = character.abilities,
+                            habits = character.habits,
+                            background = character.background,
+                            relationships = character.relationships,
+                            speakingStyle = character.speakingStyle,
+                            imagePrompt = character.imagePrompt
+                        )
+                    }
+                ),
                 customDocuments = documents,
                 greeting = card.greeting,
                 alternateGreetings = card.alternateGreetings,

@@ -1,5 +1,7 @@
 package com.example.chatbar.data.local.entity
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -8,6 +10,7 @@ import kotlin.uuid.Uuid
  * 角色卡片 - 包含一个或多个角色的完整设定
  */
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class CharacterCard(
     val id: String,
     val name: String,
@@ -45,6 +48,8 @@ data class CharacterCard(
     val communityItemSha256: String? = null,
     val communityItemTitle: String? = null,
     val momentsEnabled: Boolean = true,
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val pendingSpeakerRenameTasks: List<SpeakerTagRenameTask> = emptyList(),
     val createdAt: Long,
     val updatedAt: Long
 ) {

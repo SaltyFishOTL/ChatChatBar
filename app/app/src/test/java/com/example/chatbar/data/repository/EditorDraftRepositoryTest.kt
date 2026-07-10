@@ -2,8 +2,11 @@ package com.example.chatbar.data.repository
 
 import android.content.ContextWrapper
 import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.FormatCard
+import com.example.chatbar.data.local.entity.SpeakerTagRename
+import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBook
 import java.io.File
 import kotlinx.coroutines.test.runTest
@@ -88,6 +91,36 @@ class EditorDraftRepositoryTest {
         assertTrue(repo.isChanged(base.copy(description = "外部修改"), draft))
         assertFalse(repo.isChanged(null as WorldBook?, draft))
         assertEquals("""{"index":0}""", repo.getForTarget(EditorDraftType.WORLD_BOOK, base.id)?.openModalState)
+    }
+
+    @Test
+    fun characterBaseHashIgnoresInternalSpeakerRenameTaskState() = runTest {
+        val repo = newRepository()
+        val base = CharacterCard(id = "card", name = "角色", createdAt = 1, updatedAt = 2)
+        val draft = repo.characterDraft(
+            targetId = base.id,
+            draftSessionId = "character-session",
+            payload = base,
+            base = base,
+            draftAssetPaths = emptyList(),
+            pendingDeletedAssets = emptyList(),
+            pendingDeletedDocumentIds = emptyList()
+        )
+        val withPendingTask = base.copy(
+            pendingSpeakerRenameTasks = listOf(
+                SpeakerTagRenameTask(
+                    id = "task",
+                    characterCardId = base.id,
+                    expectedCardUpdatedAt = base.updatedAt,
+                    renames = listOf(SpeakerTagRename("person", "旧名", "新名")),
+                    createdAt = 3,
+                    lastError = "待重试"
+                )
+            )
+        )
+
+        assertFalse(repo.isChanged(withPendingTask, draft))
+        assertTrue(repo.isChanged(withPendingTask.copy(name = "外部修改"), draft))
     }
 
     @Test

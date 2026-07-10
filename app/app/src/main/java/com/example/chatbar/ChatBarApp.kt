@@ -72,6 +72,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var contextWindowManager: ContextWindowManager
         private set
+    lateinit var speakerTagHistoryService: SpeakerTagHistoryService
+        private set
     lateinit var worldBookEngine: WorldBookEngine
         private set
     lateinit var streamingChatService: StreamingChatService
@@ -177,6 +179,10 @@ class ChatBarApp : Application() {
         
         promptAssembler = PromptAssembler()
         contextWindowManager = ContextWindowManager()
+        speakerTagHistoryService = SpeakerTagHistoryService(
+            characterRepository,
+            chatRepository
+        )
         worldBookEngine = WorldBookEngine()
 
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
@@ -260,6 +266,8 @@ class ChatBarApp : Application() {
         StreamingNotificationManager.init(this)
         applicationScope.launch {
             deletionCoordinator.resumePending()
+            CharacterSpeakerMigration(jsonFileStorage, characterRepository).run()
+            speakerTagHistoryService.resumePending()
             WorldBookMigration(
                 jsonFileStorage,
                 characterRepository,

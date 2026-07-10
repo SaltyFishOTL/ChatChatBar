@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -64,6 +65,7 @@ import com.example.chatbar.domain.chat.parseRoleplayTextSegments
 import com.example.chatbar.domain.chat.roleplayImageBlockId
 import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
 import com.example.chatbar.domain.chat.roleplayTextBlockId
+import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbSurface
@@ -86,6 +88,83 @@ data class ChatBubbleSegmentAction(
     val rawText: String,
     val copyText: String
 )
+
+data class ChatBubbleCharacterAvatar(
+    val name: String,
+    val avatarPath: String?
+)
+
+internal data class RoleplaySpeakerPresentation(
+    val displayName: String?,
+    val avatarPath: String?,
+    val avatarFallbackName: String
+)
+
+internal fun resolveRoleplaySpeaker(
+    speakerName: String?,
+    characterAvatars: List<ChatBubbleCharacterAvatar>,
+    legacyAvatarPath: String? = null,
+    legacyAvatarFallbackName: String = ""
+): RoleplaySpeakerPresentation {
+    if (speakerName == null) {
+        return RoleplaySpeakerPresentation(
+            displayName = null,
+            avatarPath = legacyAvatarPath?.takeIf(String::isNotBlank),
+            avatarFallbackName = legacyAvatarFallbackName
+        )
+    }
+    val normalized = speakerName.trim()
+    if (normalized.isEmpty()) {
+        return RoleplaySpeakerPresentation(
+            displayName = "未标注",
+            avatarPath = null,
+            avatarFallbackName = "?"
+        )
+    }
+    val matches = characterAvatars.filter { candidate ->
+        candidate.name.trim().equals(normalized, ignoreCase = true)
+    }
+    val matched = matches.singleOrNull()
+    val displayName = matched?.name?.trim()?.takeIf(String::isNotEmpty) ?: normalized
+    return RoleplaySpeakerPresentation(
+        displayName = displayName,
+        avatarPath = matched?.avatarPath?.takeIf(String::isNotBlank),
+        avatarFallbackName = displayName
+    )
+}
+
+internal fun roleplaySpeakerHeaderIndexes(
+    segments: List<RoleplayTextSegment>,
+    visibleIndexes: Set<Int>? = null
+): Set<Int> {
+    val headers = mutableSetOf<Int>()
+    var groupId = 0
+    var previousWasSpeakerSegment = false
+    var previousSpeakerKey: String? = null
+    var lastRenderedGroupId: Int? = null
+    segments.forEachIndexed { index, segment ->
+        val isSpeakerSegment = segment.kind == RoleplaySegmentKind.DIALOGUE ||
+            segment.kind == RoleplaySegmentKind.THOUGHT
+        val speakerKey = when (val name = segment.speakerName) {
+            null -> "__legacy_unmarked__"
+            else -> name.trim().takeIf(String::isNotEmpty)?.lowercase() ?: "__invalid_marker__"
+        }
+        val continuesGroup = isSpeakerSegment &&
+            previousWasSpeakerSegment &&
+            speakerKey == previousSpeakerKey
+        if (!continuesGroup) groupId++
+        val currentGroupId = groupId.takeIf { isSpeakerSegment }
+        if (visibleIndexes == null || index in visibleIndexes) {
+            if (currentGroupId != null && currentGroupId != lastRenderedGroupId) {
+                headers += index
+            }
+            lastRenderedGroupId = currentGroupId
+        }
+        previousWasSpeakerSegment = isSpeakerSegment
+        previousSpeakerKey = speakerKey
+    }
+    return headers
+}
 
 internal sealed interface RoleplayContentSegment {
     data class Markdown(val text: String) : RoleplayContentSegment
@@ -122,6 +201,7 @@ fun ChatBubble(
     renderPlayerName: String? = null,
     renderBotName: String = "",
     botAvatarPath: String? = null,
+    characterAvatars: List<ChatBubbleCharacterAvatar> = emptyList(),
     assistantSegmentedBubblesEnabled: Boolean = true,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)? = null,
     selectedBlockIds: Set<String> = emptySet(),
@@ -139,6 +219,7 @@ fun ChatBubble(
             renderPlayerName = renderPlayerName,
             renderBotName = renderBotName,
             botAvatarPath = botAvatarPath,
+            characterAvatars = characterAvatars,
             onLongPress = onLongPress,
             onPreviousAlternative = onPreviousAlternative,
             onNextAlternative = onNextAlternative,
@@ -197,6 +278,7 @@ private fun SegmentedAssistantBubble(
     renderPlayerName: String?,
     renderBotName: String,
     botAvatarPath: String?,
+    characterAvatars: List<ChatBubbleCharacterAvatar>,
     onLongPress: (() -> Unit)?,
     onPreviousAlternative: (() -> Unit)?,
     onNextAlternative: (() -> Unit)?,
@@ -268,9 +350,29 @@ private fun SegmentedAssistantBubble(
                     )
                 }
             }
+            val visibleTextSegmentIndexes = textSegments.indices.filterTo(mutableSetOf()) { index ->
+                blockFilterIds == null || roleplayTextBlockId(message.id, index) in blockFilterIds
+            }
+            val speakerHeaderIndexes = roleplaySpeakerHeaderIndexes(
+                textSegments,
+                visibleTextSegmentIndexes.takeIf { blockFilterIds != null }
+            )
             textSegments.forEachIndexed { index, segment ->
                 val blockId = roleplayTextBlockId(message.id, index)
                 if (blockFilterIds == null || blockId in blockFilterIds) {
+                    val speaker = if (
+                        segment.kind == RoleplaySegmentKind.DIALOGUE ||
+                        segment.kind == RoleplaySegmentKind.THOUGHT
+                    ) {
+                        resolveRoleplaySpeaker(
+                            speakerName = segment.speakerName,
+                            characterAvatars = characterAvatars,
+                            legacyAvatarPath = botAvatarPath,
+                            legacyAvatarFallbackName = renderBotName
+                        )
+                    } else {
+                        null
+                    }
                     val rawFragment = rawContent.substring(
                         segment.start.coerceIn(0, rawContent.length),
                         segment.endExclusive.coerceIn(segment.start.coerceIn(0, rawContent.length), rawContent.length)
@@ -284,8 +386,8 @@ private fun SegmentedAssistantBubble(
                         displayText = displayText,
                         rawText = rawFragment,
                         copyText = copyText,
-                        botAvatarPath = botAvatarPath,
-                        renderBotName = renderBotName,
+                        speaker = speaker,
+                        showSpeakerHeader = index in speakerHeaderIndexes,
                         fontScale = fontScale,
                         dialogueMaxWidth = dialogueMaxWidth,
                         thoughtMaxWidth = thoughtMaxWidth,
@@ -331,8 +433,8 @@ private fun SegmentBubble(
     displayText: String,
     rawText: String,
     copyText: String,
-    botAvatarPath: String?,
-    renderBotName: String,
+    speaker: RoleplaySpeakerPresentation?,
+    showSpeakerHeader: Boolean,
     fontScale: Float,
     dialogueMaxWidth: Dp,
     thoughtMaxWidth: Dp,
@@ -389,8 +491,6 @@ private fun SegmentBubble(
     }
     val canToggleSelection = selectionMode && onToggleSelected != null && selectionEnabled
     val canLongPress = !selectionMode && !exportMode && (onSegmentLongPress != null || onLongPress != null)
-    val showAvatar = (segment.kind == RoleplaySegmentKind.DIALOGUE || segment.kind == RoleplaySegmentKind.THOUGHT) &&
-        (!botAvatarPath.isNullOrBlank() || renderBotName.isNotBlank())
     val surfaceModifier = if (segment.kind == RoleplaySegmentKind.NARRATION) {
         Modifier.widthIn(min = maxWidth, max = maxWidth)
     } else {
@@ -414,37 +514,53 @@ private fun SegmentBubble(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = alignment
     ) {
-        if (showAvatar) {
+        if (speaker != null) {
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.Top
             ) {
-                CharacterChatAvatar(
-                    avatarPath = botAvatarPath,
-                    name = renderBotName,
-                    exportMode = exportMode
-                )
-                SegmentBubbleSurface(
-                    modifier = surfaceModifier,
-                    shape = shape,
-                    background = background,
-                    selected = selected,
-                    blockId = blockId,
-                    selectionMode = selectionMode,
-                    canToggleSelection = canToggleSelection,
-                    onToggleSelected = onToggleSelected,
-                    canLongPress = canLongPress,
-                    onLongPress = handleLongPress,
-                    segmentKind = segment.kind,
-                    displayText = displayText,
-                    textColor = textColor,
-                    textSize = textSize * fontScale,
-                    lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
-                    expanded = effectiveExpanded,
-                    onExpandedChange = updateExpanded,
-                    exportMode = exportMode
-                )
+                if (showSpeakerHeader) {
+                    CharacterChatAvatar(
+                        avatarPath = speaker.avatarPath,
+                        name = speaker.avatarFallbackName,
+                        exportMode = exportMode
+                    )
+                } else {
+                    Spacer(Modifier.width(ChatAvatarSize))
+                }
+                Column(
+                    modifier = Modifier.weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(3.dp)
+                ) {
+                    if (showSpeakerHeader && speaker.displayName != null) {
+                        CbText(
+                            speaker.displayName,
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                    SegmentBubbleSurface(
+                        modifier = surfaceModifier,
+                        shape = shape,
+                        background = background,
+                        selected = selected,
+                        blockId = blockId,
+                        selectionMode = selectionMode,
+                        canToggleSelection = canToggleSelection,
+                        onToggleSelected = onToggleSelected,
+                        canLongPress = canLongPress,
+                        onLongPress = handleLongPress,
+                        segmentKind = segment.kind,
+                        displayText = displayText,
+                        textColor = textColor,
+                        textSize = textSize * fontScale,
+                        lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
+                        expanded = effectiveExpanded,
+                        onExpandedChange = updateExpanded,
+                        exportMode = exportMode
+                    )
+                }
             }
         } else {
             SegmentBubbleSurface(
@@ -550,16 +666,14 @@ private fun CharacterChatAvatar(
     name: String,
     exportMode: Boolean
 ) {
-    val avatarSize = 32.dp
     val shape = CircleShape
     val cleanPath = avatarPath?.takeIf { it.isNotBlank() }
     val avatarFile = cleanPath?.let(::File)?.takeIf { it.exists() }
     Box(
         modifier = Modifier
-            .size(avatarSize)
+            .size(ChatAvatarSize)
             .clip(shape)
-            .background(ChatBarTheme.colors.muted)
-            .border(1.dp, ChatBarTheme.colors.border.copy(alpha = 0.7f), shape),
+            .background(ChatBarTheme.colors.muted),
         contentAlignment = Alignment.Center
     ) {
         if (avatarFile != null) {
@@ -571,7 +685,7 @@ private fun CharacterChatAvatar(
                     Image(
                         bitmap = bitmap,
                         contentDescription = "角色头像",
-                        modifier = Modifier.size(avatarSize).clip(shape),
+                        modifier = Modifier.size(ChatAvatarSize).clip(shape),
                         contentScale = ContentScale.Crop
                     )
                 } else {
@@ -581,7 +695,7 @@ private fun CharacterChatAvatar(
                 AsyncImage(
                     model = avatarFile,
                     contentDescription = "角色头像",
-                    modifier = Modifier.size(avatarSize).clip(shape),
+                    modifier = Modifier.size(ChatAvatarSize).clip(shape),
                     contentScale = ContentScale.Crop
                 )
             }
@@ -599,6 +713,8 @@ private fun AvatarInitial(name: String) {
         style = ChatBarTheme.typography.label
     )
 }
+
+private val ChatAvatarSize = 40.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -1161,7 +1277,7 @@ internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment>
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
-    val withoutHiddenComments = stripRoleplayHiddenComments(content)
+    val withoutHiddenComments = stripRoleplayHiddenComments(stripRoleplaySpeakerMarkers(content))
     val withLineBreaks = singleNewlinePattern.replace(withoutHiddenComments, "  \n")
     if (forColoring) {
         return roleplayLinkPattern.replace(withLineBreaks) { match ->

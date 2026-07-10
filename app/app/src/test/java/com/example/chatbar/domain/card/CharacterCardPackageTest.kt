@@ -35,6 +35,7 @@ class CharacterCardPackageTest {
         assertFalse(encoded.contains("customDocuments"))
         assertFalse(encoded.contains("createdAt"))
         assertFalse(encoded.contains("updatedAt"))
+        assertFalse(encoded.contains("pendingSpeakerRenameTasks"))
         assertEquals(packageData, json.decodeFromString(CharacterCardPackage.serializer(), encoded))
     }
 

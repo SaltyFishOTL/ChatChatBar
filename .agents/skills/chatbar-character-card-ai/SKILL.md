@@ -1,6 +1,6 @@
 ---
 name: chatbar-character-card-ai
-description: Maintain ChatBar character-card AI workflows. Use when changing AI auto-fill, AI rewrite, rewrite candidate preview, apply candidate behavior, text diff display, generated cover candidates, character-card merge/materialize logic, or tests around CharacterAutoFillService and CharacterRewriteService.
+description: Maintain ChatBar character-card AI workflows. Use when changing AI auto-fill, AI rewrite, rewrite candidate preview, apply candidate behavior, text diff display, generated cover or per-character avatar candidates, character-card merge/materialize logic, or tests around CharacterAutoFillService and CharacterRewriteService.
 ---
 
 # ChatBar Character Card AI
@@ -12,7 +12,7 @@ Keep AI role-card work narrow. Read these files before broad search.
 - UI dialog, candidate preview, diff display: `app/app/src/main/java/com/example/chatbar/ui/character/CharacterEditScreen.kt`
   - Search anchors: `CharacterAutoFillDialog`, `CharacterRewriteDialog`, `AutoFillDraftPreview`, `RewriteCandidatePreview`, `RewriteDiffPreview`.
 - UI state, generation triggers, candidate apply, cover handoff: `app/app/src/main/java/com/example/chatbar/ui/character/CharacterEditViewModel.kt`
-  - Search anchors: `generateAutoFillDraft`, `generateRewriteDraft`, `applyAutoFillDraft`, `applyRewriteDraft`, `generateRewriteCoverImageCandidate`, `buildRewriteDiff`.
+  - Search anchors: `generateAutoFillDraft`, `generateRewriteDraft`, `applyAutoFillDraft`, `applyRewriteDraft`, `generateRewriteCoverImageCandidate`, `generateCharacterAvatar`, `buildRewriteDiff`.
 - Generation, parsing, materialization, merge: `app/app/src/main/java/com/example/chatbar/domain/card/CharacterAutoFillService.kt`, `app/app/src/main/java/com/example/chatbar/domain/card/CharacterRewriteService.kt`.
 - Tests: `app/app/src/test/java/com/example/chatbar/domain/card/CharacterAutoFillServiceTest.kt`, `app/app/src/test/java/com/example/chatbar/domain/card/CharacterRewriteServiceTest.kt`.
 
@@ -29,6 +29,8 @@ Keep AI role-card work narrow. Read these files before broad search.
 - Existing structured characters must keep stable `id`; new characters get generated ids; deletions use `deleteCharacterIds`.
 - Diff UI should compare `buildCurrentCard(markDirty = false)` against `mergeInto(current, draft)`, not raw AI JSON.
 - Cover candidate applies to both `avatar` and `chatBackground` only when candidate is applied.
+- Per-character avatar candidate uses `NovelAiPromptDesigner`, then NovelAI. Structured mode sends card style + `CharacterInfo.imagePrompt`; freeform mode sends temporary manual positive Prompt. Designer receives global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`; final plan appends the same fixed tags, uses card negative Prompt, and generates square images.
+- `CharacterInfo.appearanceImage` means character-owned chat/Moments avatar. It must not enter chat-model image understanding or character appearance text.
 
 ## Workflow
 

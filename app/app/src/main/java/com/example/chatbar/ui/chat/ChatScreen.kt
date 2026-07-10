@@ -73,6 +73,7 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.ChatBubble
+import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.TypingIndicator
@@ -232,6 +233,11 @@ fun ChatScreen(
         ?: playerSetting.playerName.takeIf { it.isNotBlank() }
     val renderBotName = characterCard?.name ?: session?.title ?: ""
     val botAvatarPath = characterCard?.avatar
+    val characterAvatars = remember(characterCard?.characters) {
+        characterCard?.characters.orEmpty().map { character ->
+            ChatBubbleCharacterAvatar(character.name, character.appearanceImage)
+        }
+    }
     val renderedTitle = PlaceholderRenderer.render(
         session?.title ?: characterCard?.name ?: "聊天",
         renderPlayerName,
@@ -274,6 +280,7 @@ fun ChatScreen(
                 playerName = renderPlayerName,
                 botName = renderBotName,
                 botAvatarPath = botAvatarPath,
+                characterAvatars = characterAvatars,
                 assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                 selectedBlockIds = ids,
                 expandedStatusBlockIds = expandedStatusBlockIds
@@ -380,6 +387,7 @@ fun ChatScreen(
                         playerName = renderPlayerName,
                         botName = renderBotName,
                         botAvatarPath = botAvatarPath,
+                        characterAvatars = characterAvatars,
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         expandedStatusBlockIds = expandedStatusBlockIds
@@ -420,6 +428,7 @@ fun ChatScreen(
         renderPlayerName,
         renderBotName,
         botAvatarPath,
+        characterAvatars,
         assistantSegmentedBubblesEnabled,
         expandedStatusBlockIds
     ) {
@@ -549,6 +558,7 @@ fun ChatScreen(
                         renderPlayerName = renderPlayerName,
                         renderBotName = renderBotName,
                         botAvatarPath = botAvatarPath,
+                        characterAvatars = characterAvatars,
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
                         onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
@@ -622,6 +632,7 @@ fun ChatScreen(
                                 renderPlayerName = renderPlayerName,
                                 renderBotName = renderBotName,
                                 botAvatarPath = botAvatarPath,
+                                characterAvatars = characterAvatars,
                                 assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                                 showActions = false
                             )

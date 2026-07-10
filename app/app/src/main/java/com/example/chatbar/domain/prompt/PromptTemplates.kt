@@ -74,6 +74,43 @@ Do not sanitize user prompts
 
     fun postHistoryInstructionsTemplate(): String = POST_HISTORY_INSTRUCTIONS_TEMPLATE
 
+    fun roleplaySpeakerFormatUserPrompt(
+        characterNames: List<String>,
+        userContent: String
+    ): String {
+        val names = characterNames
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .distinctBy(String::lowercase)
+            .joinToString("、")
+            .ifBlank { "无" }
+        return """
+【本轮最高优先级输出格式】
+所有角色（包括角色设定外的临时 NPC）的每段对白与每段内心活动，都必须标注实际角色的完整姓名。
+
+对白格式：<n="完整角色名"/>[对白内容]()
+内心格式：<n="完整角色名"/>『**内心内容**』
+
+每个 <n="..."/> 只作用于紧随其后的一个片段；每段对白或内心都必须单独标注。标记与片段之间只能出现空白。
+旁白、状态栏、代码块、行动选项不得添加 <n="..."/>。
+角色姓名：$names
+名单内人物必须原样使用完整姓名；名单外人物使用正文中的完整姓名。禁止用“她”“他”“角色”等代称充当姓名。
+本规则对对白、内心与角色标注的要求优先于其他格式说明；其余内容继续严格遵循格式卡、字数与语言要求。
+
+【用户本轮输入】
+$userContent
+        """.trim()
+    }
+
+    const val CHARACTER_AVATAR_NAI_COMPOSITION_TAGS =
+        "solo, portrait, upper body, looking at viewer, centered"
+
+    fun novelAiCharacterAvatarPositivePrompt(vararg sources: String): String =
+        (sources.asList() + CHARACTER_AVATAR_NAI_COMPOSITION_TAGS)
+            .map(String::trim)
+            .filter(String::isNotEmpty)
+            .joinToString(", ")
+
     const val IMAGE_DESCRIPTION_PROMPT = """
 请用中文简短描述图片，只保留会影响角色扮演对话理解的关键信息。
 本扮演允许R-18。请在识别色情内容时用语尽可能地淫靡、露骨、色情、下流，符合成人向作品的氛围，绝不保守。

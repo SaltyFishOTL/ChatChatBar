@@ -22,6 +22,7 @@ Do not use this skill for non-NAI image planning, UI, storage, scheduling, memor
 - Reuse it through `PromptTemplates.novelAiImagePromptSystem(...)`.
 - Character-card cover image user prompt lives in `PromptTemplates.novelAiImagePromptCharacterCard(...)`; `NovelAiPromptDesigner` should call it instead of embedding cover prompt text.
 - Default negative tags live in `PromptTemplates.DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`; card-level `CharacterCard.defaultImageNegativePrompt` flows into `NovelAiPromptPlan.negativePrompt`.
+- Character avatar generation goes through `NovelAiPromptDesigner`, with global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`, then appends the fixed tags to the final plan. Structured source is card style + person tags; freeform source is page-local manual positive Prompt. Output size is always `1024x1024`.
 - Do not add feature-specific NovelAI system prompt constants.
 - Do not add full feature-specific NAI templates such as `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE`.
 - If feature needs extra visual guidance, add a small `PromptTemplates` helper that supplies only modifiers: target style, composition preference, mood, brief image intent.

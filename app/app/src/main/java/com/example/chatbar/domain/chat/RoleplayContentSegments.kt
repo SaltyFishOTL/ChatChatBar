@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.SpeakerTagRename
 
 enum class RoleplaySegmentKind {
     NARRATION,
@@ -15,7 +16,8 @@ data class RoleplayTextSegment(
     val rawText: String,
     val displayText: String,
     val start: Int,
-    val endExclusive: Int
+    val endExclusive: Int,
+    val speakerName: String? = null
 )
 
 data class RoleplaySegmentEditOutcome(
@@ -33,10 +35,15 @@ private data class VisibleRange(
     val endExclusive: Int
 )
 
+private data class RoleplaySpeakerPrefix(
+    val start: Int,
+    val speakerName: String?
+)
+
 fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
     val visible = visibleRoleplayText(content)
     if (visible.text.isBlank()) return emptyList()
-    return splitCodeFenceSegments(visible)
+    val segments = splitCodeFenceSegments(visible)
         .flatMap { segment ->
             if (segment.kind == RoleplaySegmentKind.STATUS) {
                 listOf(segment)
@@ -59,6 +66,24 @@ fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
             }
         }
         .filter { it.rawText.isNotBlank() || it.displayText.isNotBlank() }
+    return attachRoleplaySpeakerPrefixes(content, segments)
+}
+
+fun stripRoleplaySpeakerMarkers(content: String): String =
+    roleplaySpeakerMarkerPattern.replace(content, "")
+
+fun renameRoleplaySpeakerMarkers(
+    content: String,
+    renames: List<SpeakerTagRename>
+): String {
+    if (renames.isEmpty() || content.isEmpty()) return content
+    return roleplaySpeakerMarkerPattern.replace(content) { match ->
+        val currentName = match.groupValues[1].trim()
+        val rename = renames.firstOrNull { item ->
+            item.oldName.trim().equals(currentName, ignoreCase = true)
+        } ?: return@replace match.value
+        "<n=\"${rename.newName.trim()}\"/>"
+    }
 }
 
 fun roleplayImageBlockId(messageId: String, imageIndex: Int): String =
@@ -513,6 +538,61 @@ private fun findDialogueClose(text: String, open: Int, end: Int): Int {
     return parenClose + 1
 }
 
+private fun attachRoleplaySpeakerPrefixes(
+    content: String,
+    segments: List<RoleplayTextSegment>
+): List<RoleplayTextSegment> {
+    val result = mutableListOf<RoleplayTextSegment>()
+    segments.forEach { segment ->
+        if (segment.kind != RoleplaySegmentKind.DIALOGUE && segment.kind != RoleplaySegmentKind.THOUGHT) {
+            result += segment
+            return@forEach
+        }
+
+        val prefix = findRoleplaySpeakerPrefix(content, segment.start)
+        if (prefix == null) {
+            result += segment
+            return@forEach
+        }
+
+        val previous = result.lastOrNull()
+        if (previous?.kind == RoleplaySegmentKind.NARRATION && previous.endExclusive == segment.start) {
+            val removedLength = segment.start - prefix.start
+            val trimmedRaw = previous.rawText.dropLast(removedLength.coerceAtMost(previous.rawText.length))
+            val trimmedDisplay = previous.displayText.dropLast(removedLength.coerceAtMost(previous.displayText.length))
+            result.removeAt(result.lastIndex)
+            if (trimmedRaw.isNotBlank() || trimmedDisplay.isNotBlank()) {
+                result += previous.copy(
+                    rawText = trimmedRaw,
+                    displayText = trimmedDisplay,
+                    endExclusive = prefix.start
+                )
+            }
+        }
+
+        result += segment.copy(
+            rawText = content.substring(prefix.start, segment.endExclusive),
+            start = prefix.start,
+            speakerName = prefix.speakerName
+        )
+    }
+    return result
+}
+
+private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int): RoleplaySpeakerPrefix? {
+    var markerEnd = segmentStart.coerceIn(0, content.length)
+    while (markerEnd > 0 && content[markerEnd - 1].isWhitespace()) markerEnd--
+    if (markerEnd <= 0) return null
+
+    val match = roleplaySpeakerMarkerPattern.findAll(content.substring(0, markerEnd)).lastOrNull()
+        ?: return null
+    if (match.range.last + 1 != markerEnd) return null
+    return RoleplaySpeakerPrefix(
+        start = match.range.first,
+        speakerName = match.groupValues[1].trim()
+    )
+}
+
 private fun isHorizontalWhitespace(char: Char): Boolean =
     char == ' ' || char == '\t' || char == '\r'
 
@@ -526,3 +606,4 @@ private const val LONG_WRAPPER_MIN_ASCII_DASHES = 6
 private const val LONG_WRAPPER_MIN_WIDE_DASHES = 4
 private const val HIDDEN_COMMENT_OPEN = "<!--"
 private const val HIDDEN_COMMENT_CLOSE = "-->"
+private val roleplaySpeakerMarkerPattern = Regex("<n=\"([^\\r\\n]*?)\"\\s*/>")
