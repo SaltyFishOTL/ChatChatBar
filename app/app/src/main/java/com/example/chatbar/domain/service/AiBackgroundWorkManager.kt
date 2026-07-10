@@ -6,6 +6,8 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.example.chatbar.ChatBarApp
 import java.util.concurrent.atomic.AtomicReference
@@ -27,6 +29,7 @@ class BackgroundGenerationProtectionCancellationException(
 
 object AiBackgroundWorkManager {
     private const val FOREGROUND_READY_TIMEOUT_MS = 8_000L
+    private const val NETWORK_LOSS_GRACE_MS = 5_000L
     private const val EXTRA_WORK_GENERATION = "workGeneration"
     private const val TAG = "AiBackgroundWork"
 
@@ -66,20 +69,34 @@ object AiBackgroundWorkManager {
         private val protection: ProtectionSignal
     ) {
         private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+        private val lossHandler = Handler(Looper.getMainLooper())
+        @Volatile private var pendingLossReason: String? = null
+        private val confirmLoss = Runnable {
+            val reason = pendingLossReason ?: return@Runnable
+            if (!hasValidatedInternet()) {
+                protection.fail("$reason（持续 ${NETWORK_LOSS_GRACE_MS / 1000} 秒）")
+            }
+        }
         private var callbackRegistered = false
         private val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
                 if (!capabilities.isValidatedInternet()) {
-                    protection.fail("网络失去互联网验证，已停止生成")
+                    scheduleLossConfirmation("网络失去互联网验证")
+                } else {
+                    cancelLossConfirmation()
                 }
             }
 
+            override fun onAvailable(network: Network) {
+                cancelLossConfirmation()
+            }
+
             override fun onLost(network: Network) {
-                protection.fail("设备网络已断开，已停止生成")
+                scheduleLossConfirmation("设备网络已断开")
             }
 
             override fun onUnavailable() {
-                protection.fail("设备没有可用网络，已停止生成")
+                scheduleLossConfirmation("设备没有可用网络")
             }
         }
 
@@ -105,9 +122,21 @@ object AiBackgroundWorkManager {
         }
 
         fun close() {
+            cancelLossConfirmation()
             if (!callbackRegistered) return
             runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
             callbackRegistered = false
+        }
+
+        private fun scheduleLossConfirmation(reason: String) {
+            pendingLossReason = reason
+            lossHandler.removeCallbacks(confirmLoss)
+            lossHandler.postDelayed(confirmLoss, NETWORK_LOSS_GRACE_MS)
+        }
+
+        private fun cancelLossConfirmation() {
+            pendingLossReason = null
+            lossHandler.removeCallbacks(confirmLoss)
         }
 
         private fun hasValidatedInternet(): Boolean {
