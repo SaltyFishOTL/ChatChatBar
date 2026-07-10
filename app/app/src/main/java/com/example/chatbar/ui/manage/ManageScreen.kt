@@ -1134,6 +1134,7 @@ private fun SettingsTab(
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
+    var assistantSegmentedBubblesEnabled by remember { mutableStateOf(settings.assistantSegmentedBubblesEnabled) }
     var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.toFloat()) }
     var memoryThreshold by remember { mutableFloatStateOf(settings.memoryRagSimilarityThreshold) }
     var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.toFloat()) }
@@ -1174,7 +1175,8 @@ private fun SettingsTab(
         settings.momentsBackgroundGuideDismissed,
         settings.momentsAutoStartConfirmed,
         settings.novelAiImageAspectRatio,
-        settings.chatBubbleFontScale
+        settings.chatBubbleFontScale,
+        settings.assistantSegmentedBubblesEnabled
     ) {
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
@@ -1195,6 +1197,7 @@ private fun SettingsTab(
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
+        assistantSegmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
     }
     val effectiveDefaultModelId = modelId ?: effectiveModels.firstOrNull()?.id ?: customModels.firstOrNull { it.selectableForChat }?.id
     val effectiveDefaultImageModelId = imageModelId ?: effectiveDefaultModelId
@@ -1229,7 +1232,8 @@ private fun SettingsTab(
         momentsMinDelayHours = draftMomentDelayRange.minHours,
         momentsMaxDelayHours = draftMomentDelayRange.maxHours,
         momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
-        momentsAutoStartConfirmed = momentsAutoStartConfirmed
+        momentsAutoStartConfirmed = momentsAutoStartConfirmed,
+        assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
     val settingsDirty = draftSettings != savedSettingsComparable ||
@@ -1292,6 +1296,17 @@ private fun SettingsTab(
             SliderField("记忆相似度：${"%.2f".format(memoryThreshold)}", memoryThreshold, 0.3f..0.95f) { memoryThreshold = it }
         }
         SettingsSection("外观") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("角色回复分段气泡", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "默认开启；关闭后，助手回复按整条消息显示为单个气泡。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(assistantSegmentedBubblesEnabled, { assistantSegmentedBubblesEnabled = it })
+            }
             SliderField("气泡字号：${"%.1f".format(bubbleFontScale)}x", bubbleFontScale, 0.5f..1.5f, 9) {
                 bubbleFontScale = it
                 onBubbleFontScale(it)

@@ -142,6 +142,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _chatBubbleFontScale = MutableStateFlow(1.0f)
     val chatBubbleFontScale: StateFlow<Float> = _chatBubbleFontScale.asStateFlow()
 
+    private val _assistantSegmentedBubblesEnabled = MutableStateFlow(true)
+    val assistantSegmentedBubblesEnabled: StateFlow<Boolean> = _assistantSegmentedBubblesEnabled.asStateFlow()
+
     private val _contextWindowSize = MutableStateFlow(20)
     val contextWindowSize: StateFlow<Int> = _contextWindowSize.asStateFlow()
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
@@ -206,6 +209,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             settingsRepository.appSettings.collect { settings ->
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
+                _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
             }
         }
     }
@@ -236,6 +240,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val settings = settingsRepository.getAppSettings()
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
+            _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
             if (s != null) {
                 val card = characterRepository.getById(s.characterCardId)
                 _characterCard.value = card

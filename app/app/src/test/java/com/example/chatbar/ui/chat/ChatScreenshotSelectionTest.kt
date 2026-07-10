@@ -3,6 +3,7 @@ package com.example.chatbar.ui.chat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
+import com.example.chatbar.domain.chat.roleplayScreenshotBlockIds
 import com.example.chatbar.domain.chat.roleplayTextBlockId
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -46,6 +47,22 @@ class ChatScreenshotSelectionTest {
             listOf(roleplayTextBlockId("assistant", 0), roleplayLegacyTextBlockId("user")),
             cleaned.toList()
         )
+    }
+
+    @Test
+    fun assistantSelection_usesLegacyTextBlockWhenSegmentationDisabled() {
+        val assistant = message(
+            "assistant",
+            MessageRole.ASSISTANT,
+            content = "旁白 [对白]() 『**心理**』"
+        )
+
+        val blockIds = roleplayScreenshotBlockIds(
+            assistant,
+            assistantSegmentedBubblesEnabled = false
+        )
+
+        assertEquals(listOf(roleplayLegacyTextBlockId("assistant")), blockIds)
     }
 
     @Test

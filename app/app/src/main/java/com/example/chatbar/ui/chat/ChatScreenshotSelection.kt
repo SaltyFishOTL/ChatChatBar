@@ -9,8 +9,10 @@ import java.util.Date
 import java.util.LinkedHashSet
 import java.util.Locale
 
-fun ChatMessage.isSelectableForChatScreenshot(): Boolean =
-    roleplayScreenshotBlockIds(this).isNotEmpty()
+fun ChatMessage.isSelectableForChatScreenshot(
+    assistantSegmentedBubblesEnabled: Boolean = true
+): Boolean =
+    roleplayScreenshotBlockIds(this, assistantSegmentedBubblesEnabled).isNotEmpty()
 
 fun toggleChatScreenshotSelection(
     currentIds: Set<String>,
@@ -29,20 +31,22 @@ fun toggleChatScreenshotSelection(
 
 fun cleanChatScreenshotSelection(
     currentIds: Set<String>,
-    messages: List<ChatMessage>
+    messages: List<ChatMessage>,
+    assistantSegmentedBubblesEnabled: Boolean = true
 ): Set<String> {
     val selectableIds = messages
-        .flatMap(::roleplayScreenshotBlockIds)
+        .flatMap { message -> roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled) }
         .toSet()
     return currentIds.filterTo(LinkedHashSet()) { it in selectableIds }
 }
 
 fun orderedChatScreenshotMessages(
     messages: List<ChatMessage>,
-    selectedBlockIds: Set<String>
+    selectedBlockIds: Set<String>,
+    assistantSegmentedBubblesEnabled: Boolean = true
 ): List<ChatMessage> =
     messages.filter { message ->
-        message.isSelectableForChatScreenshot() &&
+        message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled) &&
             selectedBlockIds.any { roleplayBlockMessageId(it) == message.id }
     }
 

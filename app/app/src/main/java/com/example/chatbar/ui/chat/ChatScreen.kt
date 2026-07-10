@@ -110,6 +110,7 @@ fun ChatScreen(
     val isArchived by viewModel.isArchived.collectAsState()
     val isModelUsable by viewModel.isModelUsable.collectAsState()
     val bubbleFontScale by viewModel.chatBubbleFontScale.collectAsState()
+    val assistantSegmentedBubblesEnabled by viewModel.assistantSegmentedBubblesEnabled.collectAsState()
     val modelConfigurationErrors by viewModel.modelConfigurationErrors.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val isResponding by viewModel.isResponding.collectAsState()
@@ -245,8 +246,10 @@ fun ChatScreen(
         val anchorId = imageGeneration?.anchorMessageId
         anchorId != null && messages.any { it.id == anchorId }
     }
-    val selectableScreenshotIds = remember(messages) {
-        messages.flatMap(::roleplayScreenshotBlockIds).toSet()
+    val selectableScreenshotIds = remember(messages, assistantSegmentedBubblesEnabled) {
+        messages.flatMap { message ->
+            roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+        }.toSet()
     }
     val screenshotHeightLimitReached = screenshotHeightPx >= CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX
 
@@ -254,7 +257,7 @@ fun ChatScreen(
         rootView.width.takeIf { it > 0 } ?: context.resources.displayMetrics.widthPixels
 
     fun screenshotMessages(ids: Set<String>): List<ChatMessage> =
-        orderedChatScreenshotMessages(messages, ids)
+        orderedChatScreenshotMessages(messages, ids, assistantSegmentedBubblesEnabled)
 
     suspend fun measureScreenshotHeight(ids: Set<String>): Int {
         val screenshotMessages = screenshotMessages(ids)
@@ -271,6 +274,7 @@ fun ChatScreen(
                 playerName = renderPlayerName,
                 botName = renderBotName,
                 botAvatarPath = botAvatarPath,
+                assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                 selectedBlockIds = ids,
                 expandedStatusBlockIds = expandedStatusBlockIds
             )
@@ -343,7 +347,11 @@ fun ChatScreen(
     }
 
     fun previewLongScreenshot() {
-        val selectedMessages = orderedChatScreenshotMessages(messages, selectedScreenshotBlockIds)
+        val selectedMessages = orderedChatScreenshotMessages(
+            messages,
+            selectedScreenshotBlockIds,
+            assistantSegmentedBubblesEnabled
+        )
         if (selectedMessages.isEmpty()) {
             Toast.makeText(context, "请选择至少一个片段", Toast.LENGTH_SHORT).show()
             return
@@ -372,6 +380,7 @@ fun ChatScreen(
                         playerName = renderPlayerName,
                         botName = renderBotName,
                         botAvatarPath = botAvatarPath,
+                        assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         expandedStatusBlockIds = expandedStatusBlockIds
                     )
@@ -390,9 +399,16 @@ fun ChatScreen(
     LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) {
         if (!restoringViewport) viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
     }
-    LaunchedEffect(messages) {
-        val cleaned = cleanChatScreenshotSelection(selectedScreenshotBlockIds, messages)
-        if (cleaned != selectedScreenshotBlockIds) selectedScreenshotBlockIds = cleaned
+    LaunchedEffect(messages, assistantSegmentedBubblesEnabled) {
+        val cleaned = cleanChatScreenshotSelection(
+            selectedScreenshotBlockIds,
+            messages,
+            assistantSegmentedBubblesEnabled
+        )
+        if (cleaned != selectedScreenshotBlockIds) {
+            selectedScreenshotBlockIds = cleaned
+            if (cleaned.isEmpty()) screenshotSelectionMode = false
+        }
     }
     LaunchedEffect(
         screenshotSelectionMode,
@@ -404,6 +420,7 @@ fun ChatScreen(
         renderPlayerName,
         renderBotName,
         botAvatarPath,
+        assistantSegmentedBubblesEnabled,
         expandedStatusBlockIds
     ) {
         if (!screenshotSelectionMode || selectedScreenshotBlockIds.isEmpty()) {
@@ -519,8 +536,10 @@ fun ChatScreen(
             }
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                 items(messages, key = { it.id }) { message ->
-                    val selectableForScreenshot = message.isSelectableForChatScreenshot()
-                    val messageBlockIds = remember(message) { roleplayScreenshotBlockIds(message) }
+                    val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
+                    val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled) {
+                        roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+                    }
                     val selectedForScreenshot = messageBlockIds.any { it in selectedScreenshotBlockIds }
                     val screenshotSelectionEnabled = selectedForScreenshot ||
                         (!screenshotHeightMeasuring && !screenshotHeightLimitReached)
@@ -530,6 +549,7 @@ fun ChatScreen(
                         renderPlayerName = renderPlayerName,
                         renderBotName = renderBotName,
                         botAvatarPath = botAvatarPath,
+                        assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
                         onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
                         onImageClick = if (screenshotSelectionMode) null else ({ path -> expandedImagePath = path }),
@@ -602,6 +622,7 @@ fun ChatScreen(
                                 renderPlayerName = renderPlayerName,
                                 renderBotName = renderBotName,
                                 botAvatarPath = botAvatarPath,
+                                assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                                 showActions = false
                             )
                         }
@@ -926,10 +947,12 @@ fun ChatScreen(
                 target?.let { editingMessage = it; editingText = TextFieldValue(it.displayContent); editingImages.clear(); editingImages.addAll(it.images) }
                 actionMessageId = null
             }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
-            target?.takeIf { it.isSelectableForChatScreenshot() }?.let {
+            target?.takeIf { it.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled) }?.let {
                 Spacer(Modifier.size(8.dp))
                 CbButton("多选", {
-                    roleplayScreenshotBlockIds(it).firstOrNull()?.let(::enterScreenshotSelection)
+                    roleplayScreenshotBlockIds(it, assistantSegmentedBubblesEnabled)
+                        .firstOrNull()
+                        ?.let(::enterScreenshotSelection)
                     actionMessageId = null
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }

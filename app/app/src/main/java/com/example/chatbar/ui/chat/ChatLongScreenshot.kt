@@ -46,6 +46,7 @@ data class ChatLongScreenshotRequest(
     val playerName: String? = null,
     val botName: String = "",
     val botAvatarPath: String? = null,
+    val assistantSegmentedBubblesEnabled: Boolean = true,
     val selectedBlockIds: Set<String> = emptySet(),
     val expandedStatusBlockIds: Set<String> = emptySet()
 )
@@ -161,6 +162,7 @@ private fun ChatLongScreenshotContent(request: ChatLongScreenshotRequest) {
                     renderPlayerName = request.playerName,
                     renderBotName = request.botName,
                     botAvatarPath = request.botAvatarPath,
+                    assistantSegmentedBubblesEnabled = request.assistantSegmentedBubblesEnabled,
                     showActions = false,
                     showMessageMeta = request.selectedBlockIds.isEmpty(),
                     blockFilterIds = request.selectedBlockIds.ifEmpty { null },

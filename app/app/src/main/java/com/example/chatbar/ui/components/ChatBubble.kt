@@ -122,6 +122,7 @@ fun ChatBubble(
     renderPlayerName: String? = null,
     renderBotName: String = "",
     botAvatarPath: String? = null,
+    assistantSegmentedBubblesEnabled: Boolean = true,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)? = null,
     selectedBlockIds: Set<String> = emptySet(),
     onToggleBlockSelected: ((String) -> Unit)? = null,
@@ -130,7 +131,7 @@ fun ChatBubble(
     expandedStatusBlockIds: Set<String> = emptySet(),
     onStatusExpandedChange: ((String, Boolean) -> Unit)? = null
 ) {
-    if (message.role == MessageRole.ASSISTANT) {
+    if (message.role == MessageRole.ASSISTANT && assistantSegmentedBubblesEnabled) {
         SegmentedAssistantBubble(
             message = message,
             modifier = modifier,

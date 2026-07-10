@@ -22,6 +22,7 @@ data class AppSettings(
     val defaultContextWindowSize: Int = 20,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
+    val assistantSegmentedBubblesEnabled: Boolean = true,
     val tutorialVersion: Int = 0,
     val webSearchSettingsVersion: Int = 0,
     val webSearchEnabled: Boolean = true,
