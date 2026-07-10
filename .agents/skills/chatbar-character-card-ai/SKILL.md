@@ -29,7 +29,7 @@ Keep AI role-card work narrow. Read these files before broad search.
 - Existing structured characters must keep stable `id`; new characters get generated ids; deletions use `deleteCharacterIds`.
 - Diff UI should compare `buildCurrentCard(markDirty = false)` against `mergeInto(current, draft)`, not raw AI JSON.
 - Cover candidate applies to both `avatar` and `chatBackground` only when candidate is applied.
-- Per-character avatar candidate uses `NovelAiPromptDesigner`, then NovelAI. Structured mode sends card style + `CharacterInfo.imagePrompt`; freeform mode sends temporary manual positive Prompt. Designer receives global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`; final plan appends the same fixed tags, uses card negative Prompt, and generates square images.
+- Per-character avatar candidate uses `NovelAiPromptDesigner`, then NovelAI. Structured mode sends card style as `Preset style prompt` and `CharacterInfo.imagePrompt` as `Character preset prompts`; the avatar user task asks the AI to keep them in `baseCaption` and `characters[].caption` unless they explicitly conflict. Freeform mode sends temporary manual positive Prompt through the same shared flow. Designer receives global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`; final plan appends the same fixed tags, uses card negative Prompt, and generates square images.
 - Avatar prompt debugging is in `CharacterAvatarImageUiState`: source input, Designer reasoning, Designer raw output, and final NovelAI positive Prompt are displayed by `CharacterAvatarEditor`.
 - `CharacterInfo.appearanceImage` means character-owned chat/Moments avatar. It must not enter chat-model image understanding or character appearance text.
 

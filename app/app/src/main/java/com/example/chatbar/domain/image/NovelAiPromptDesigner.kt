@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 @Serializable
@@ -235,6 +236,35 @@ class NovelAiPromptDesigner(
             plan = convert(card, designed),
             exchanges = exchanges
         )
+    }
+
+    suspend fun designForCharacterAvatar(
+        characterName: String,
+        stylePrompt: String,
+        characterPrompt: String,
+        finalPromptRequirement: String = "",
+        model: ModelConfig,
+        onContentDelta: (String) -> Unit = {},
+        onReasoningDelta: (String) -> Unit = {}
+    ): NovelAiPromptPlan {
+        require(
+            characterName.isNotBlank() ||
+                stylePrompt.isNotBlank() ||
+                characterPrompt.isNotBlank()
+        ) { "没有可用于头像生图的提示词" }
+        val raw = streamCompletion(
+            messages = characterAvatarDesignMessages(
+                characterName = characterName,
+                stylePrompt = stylePrompt,
+                characterPrompt = characterPrompt,
+                finalPromptRequirement = finalPromptRequirement
+            ),
+            model = model,
+            onContentDelta = onContentDelta,
+            onReasoningDelta = onReasoningDelta
+        )
+        val designed = parseOrRepair(raw, model, onContentDelta, onReasoningDelta)
+        return convert(designed)
     }
 
     suspend fun designForPromptTool(
@@ -491,6 +521,52 @@ class NovelAiPromptDesigner(
             )
         }
 
+        internal fun characterAvatarDesignMessages(
+            characterName: String,
+            stylePrompt: String,
+            characterPrompt: String,
+            finalPromptRequirement: String
+        ): List<ChatApiMessage> {
+            val promptName = baseCharacterName(characterName)
+                .ifBlank { "角色" }
+            val characterPrompts = characterPrompt.trim()
+                .takeIf(String::isNotBlank)
+                ?.let { listOf(promptName to it) }
+                ?: emptyList()
+            return listOf(
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.novelAiImagePromptSystem(
+                        cardDefaultImagePrompt = stylePrompt,
+                        characterImagePrompts = characterPrompts,
+                        structured = characterPrompts.isNotEmpty()
+                    )
+                ),
+                ChatApiMessage.text(
+                    "user",
+                    PromptTemplates.novelAiImagePromptCharacterAvatar(
+                        characterName = promptName,
+                        finalPromptRequirement = finalPromptRequirement
+                    )
+                )
+            )
+        }
+
+        internal fun characterAvatarDesignDebugInput(
+            characterName: String,
+            stylePrompt: String,
+            characterPrompt: String,
+            finalPromptRequirement: String
+        ): String =
+            debugMessages(
+                characterAvatarDesignMessages(
+                    characterName = characterName,
+                    stylePrompt = stylePrompt,
+                    characterPrompt = characterPrompt,
+                    finalPromptRequirement = finalPromptRequirement
+                )
+            )
+
         private fun buildDesignRequestJson(messages: List<ChatApiMessage>): String =
             buildJsonObject {
                 put("messages", kotlinx.serialization.json.buildJsonArray {
@@ -502,6 +578,14 @@ class NovelAiPromptDesigner(
                     }
                 })
             }.toString()
+
+        private fun debugMessages(messages: List<ChatApiMessage>): String = messages
+            .joinToString("\n\n") { message ->
+                val content = runCatching { message.content.jsonPrimitive.content }
+                    .getOrElse { message.content.toString() }
+                "[${message.role}]\n$content"
+            }
+            .trim()
 
         private fun debugMessages(systemPrompt: String, userPrompt: String): String = buildString {
             appendLine("[system]")

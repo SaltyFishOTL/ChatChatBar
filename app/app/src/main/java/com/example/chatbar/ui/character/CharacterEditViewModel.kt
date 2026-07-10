@@ -41,6 +41,7 @@ import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
+import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -165,8 +166,7 @@ private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 private data class CharacterAvatarPromptInput(
     val imageDescription: String,
     val stylePrompt: String,
-    val characterPrompt: String,
-    val previewText: String
+    val characterPrompt: String
 )
 
 class CharacterEditViewModel(
@@ -751,8 +751,7 @@ class CharacterEditViewModel(
             CharacterAvatarPromptInput(
                 imageDescription = character.name.trim(),
                 stylePrompt = "",
-                characterPrompt = manualPrompt,
-                previewText = PromptTemplates.novelAiCharacterAvatarPositivePrompt(manualPrompt)
+                characterPrompt = manualPrompt
             )
         } else {
             val characterPrompt = character.imagePrompt.trim()
@@ -767,8 +766,7 @@ class CharacterEditViewModel(
             CharacterAvatarPromptInput(
                 imageDescription = character.name.trim(),
                 stylePrompt = defaultImagePrompt,
-                characterPrompt = characterPrompt,
-                previewText = PromptTemplates.novelAiCharacterAvatarPositivePrompt(defaultImagePrompt, characterPrompt)
+                characterPrompt = characterPrompt
             )
         }
         startCharacterAvatarGeneration(character.id, promptInput)
@@ -829,7 +827,6 @@ class CharacterEditViewModel(
         _avatarImageState.value = CharacterAvatarImageUiState(
             characterId = characterId,
             isGenerating = true,
-            promptInputText = promptInput.previewText,
             statusText = "正在设计头像 Prompt"
         )
         avatarImageJob = viewModelScope.launch {
@@ -857,8 +854,18 @@ class CharacterEditViewModel(
                         .map(String::trim)
                         .filter(String::isNotEmpty)
                         .joinToString("\n")
-                    val designedPlan = novelAiPromptDesigner.designForPromptTool(
-                        imageDescription = promptInput.imageDescription,
+                    val designerInputPrompt = NovelAiPromptDesigner.characterAvatarDesignDebugInput(
+                        characterName = promptInput.imageDescription,
+                        stylePrompt = promptInput.stylePrompt,
+                        characterPrompt = promptInput.characterPrompt,
+                        finalPromptRequirement = finalPromptRequirement
+                    )
+                    _avatarImageState.value = _avatarImageState.value.copy(
+                        promptInputText = designerInputPrompt,
+                        statusText = "正在设计头像 Prompt"
+                    )
+                    val designedPlan = novelAiPromptDesigner.designForCharacterAvatar(
+                        characterName = promptInput.imageDescription,
                         stylePrompt = promptInput.stylePrompt,
                         characterPrompt = promptInput.characterPrompt,
                         finalPromptRequirement = finalPromptRequirement,

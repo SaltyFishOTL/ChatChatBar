@@ -490,6 +490,16 @@ censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, fi
         appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
     }.trim()
 
+    fun novelAiImagePromptCharacterAvatar(
+        characterName: String,
+        finalPromptRequirement: String = ""
+    ): String = buildString {
+        appendLine("根据当前人物信息生成角色专属头像 NAI Prompt。")
+        appendLine("本任务必须保留系统提供的完整 Preset style prompt 到 `baseCaption`，并保留当前人物的完整 Character preset prompt 到 `characters[].caption`；只有与本次头像画面明确冲突时才可删改。")
+        appendLine("人物：${characterName.trim().ifBlank { "(未命名)" }}")
+        appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
+    }.trim()
+
     fun novelAiImagePromptCharacterCard(
         card: CharacterCard,
         finalPromptRequirement: String = ""
@@ -644,11 +654,12 @@ Tag 顺序：
 
 IP 角色：
 必须使用精确 Danbooru tag：`name_(series)`。非标准写法 = 无效。
-跳过冗余：角色 tag 自带 hair/eyes/cloth, 无需重复。
+跳过冗余：角色 tag 自带 hair/eyes, 不要写（除非情景针对其产生变化）。
 官方服装 tags 可选。省略 = 更多变化。
 非默认服装 -> 必须使用 `alternate_costume`，仅在必要时使用。
 改变发型 -> 必须使用 `alternate_hairstyle`，仅在必要时使用。
 多角色：每个 IP 角色都需要完整 Danbooru tag，否则会退化为 generic。
+
 视角排除规则（移除不可见内容）：
 `from_behind/back` -> 不写 expression、eye color、face marks。
 `upper_body/cowboy_shot` -> 不写 lower body（socks, shoes, skirt）。
@@ -656,14 +667,15 @@ IP 角色：
 `eyes closed/sleeping` -> 不写 eye style/color。
 `helmet/mask` -> 不写被遮住的脸部。
 `${'$'}username POV` -> 不写 user character。
+`IP角色` -> 不写外貌发型。
 裙下暴露 -> 添加 `skirt_lift`（状态，不是手部动作）。
 视角工具（动态优于静态）：
 Shot：`close-up`, `long shot`, `medium shot`, `full body`, `upper body`, `cowboy shot`, `portrait`
 Angle：`straight-on`, `from_side`, `from_below`, `from_above`, `from_behind`, `dutch_angle`
 创作：
 感觉 -> 拆解。默认 `1girl/1boy` 不额外添加服装。但要补充身体细节 + 互动。
-情绪 tags（`nervous`, `melancholy`, `excited`）-> 让模型自行推导肢体语言。比僵硬的物理描述更好。
-减法：只保留构图 + 氛围元素。不要无意义堆砌。
+情绪 tags（`nervous`, `melancholy`, `excited`）-> 让模型自行推导肢体比僵硬的描述好。
+减法：只保留构图 + 氛围元素。不要堆砌。
 冲突：服装与构图冲突 -> 移除。
 构图：
 `baseCaption` 以人数开头：`1girl`; `2girls`; `1boy, 1girl`。
