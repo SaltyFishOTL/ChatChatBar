@@ -74,14 +74,8 @@ object PromptCacheCheckpointPolicy {
 object PromptCacheKeyFactory {
     fun fingerprint(value: String): String = sha256(value)
 
-    fun cacheKey(stableSystemPrompt: String, checkpoint: PromptCacheCheckpoint?): String {
-        val prefix = buildString {
-            append(stableSystemPrompt)
-            append('\n')
-            append(checkpoint?.memorySnapshot.orEmpty())
-        }
-        return "chatbar-${sha256(prefix).take(48)}"
-    }
+    fun cacheKey(stableSystemPrompt: String): String =
+        "chatbar-${sha256(stableSystemPrompt).take(48)}"
 
     private fun sha256(value: String): String = MessageDigest
         .getInstance("SHA-256")

@@ -162,8 +162,7 @@ class PromptAssembler {
         }.trim()
 
         val promptWithOutlets = if (worldBookOutlets.isNotEmpty()) {
-            val outletRegex = Regex("\\{\\{outlet::(\\w+)}}")
-            outletRegex.replace(rawPrompt) { mr ->
+            OUTLET_TOKEN_REGEX.replace(rawPrompt) { mr ->
                 worldBookOutlets[mr.groupValues[1]] ?: mr.value
             }
         } else {

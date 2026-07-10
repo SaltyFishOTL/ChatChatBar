@@ -31,6 +31,19 @@ class ContextWindowManager {
         return allMessages.takeLast(windowSize)
     }
 
+    /**
+     * 缓存前缀中的聊天上下文：保留整个配置窗口，仅移出将要作为最终消息追加的当前用户输入。
+     *
+     * 历史消息必须连续排列，才能在下一回合成为稳定且可复用的提示词前缀。
+     */
+    fun getCacheableHistoryMessages(
+        contextMessages: List<ChatMessage>,
+        latestMessageId: String?
+    ): List<ChatMessage> =
+        latestMessageId?.let { id ->
+            contextMessages.filterNot { it.id == id }
+        } ?: contextMessages
+
     fun getPromptMessageGroups(
         contextMessages: List<ChatMessage>,
         latestMessageId: String?
