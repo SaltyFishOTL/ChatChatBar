@@ -45,6 +45,7 @@ import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
@@ -110,6 +111,7 @@ fun ChatBubble(
     onImageClick: ((String) -> Unit)? = null,
     onImageLongPress: ((String) -> Unit)? = null,
     onGenerateImage: (() -> Unit)? = null,
+    onGenerateImageLongPress: (() -> Unit)? = null,
     imageGenerationEnabled: Boolean = true,
     selectionMode: Boolean = false,
     selected: Boolean = false,
@@ -142,6 +144,7 @@ fun ChatBubble(
             onImageClick = onImageClick,
             onImageLongPress = onImageLongPress,
             onGenerateImage = onGenerateImage,
+            onGenerateImageLongPress = onGenerateImageLongPress,
             imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
             selectionEnabled = selectionEnabled,
@@ -168,6 +171,7 @@ fun ChatBubble(
             onImageClick = onImageClick,
             onImageLongPress = onImageLongPress,
             onGenerateImage = onGenerateImage,
+            onGenerateImageLongPress = onGenerateImageLongPress,
             imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
             selected = selected,
@@ -198,6 +202,7 @@ private fun SegmentedAssistantBubble(
     onImageClick: ((String) -> Unit)?,
     onImageLongPress: ((String) -> Unit)?,
     onGenerateImage: (() -> Unit)?,
+    onGenerateImageLongPress: (() -> Unit)?,
     imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
     selectionEnabled: Boolean,
@@ -308,6 +313,7 @@ private fun SegmentedAssistantBubble(
                     onPreviousAlternative = onPreviousAlternative,
                     onNextAlternative = onNextAlternative,
                     onGenerateImage = onGenerateImage,
+                    onGenerateImageLongPress = onGenerateImageLongPress,
                     imageGenerationEnabled = imageGenerationEnabled
                 )
             }
@@ -607,6 +613,7 @@ private fun LegacyChatBubble(
     onImageClick: ((String) -> Unit)?,
     onImageLongPress: ((String) -> Unit)?,
     onGenerateImage: (() -> Unit)?,
+    onGenerateImageLongPress: (() -> Unit)?,
     imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
     selected: Boolean,
@@ -741,6 +748,7 @@ private fun LegacyChatBubble(
                         onPreviousAlternative = onPreviousAlternative,
                         onNextAlternative = onNextAlternative,
                         onGenerateImage = onGenerateImage,
+                        onGenerateImageLongPress = onGenerateImageLongPress,
                         imageGenerationEnabled = imageGenerationEnabled
                     )
                 }
@@ -992,6 +1000,7 @@ private fun MessageMetaRow(
     onPreviousAlternative: (() -> Unit)?,
     onNextAlternative: (() -> Unit)?,
     onGenerateImage: (() -> Unit)?,
+    onGenerateImageLongPress: (() -> Unit)?,
     imageGenerationEnabled: Boolean
 ) {
     Row(
@@ -1038,14 +1047,57 @@ private fun MessageMetaRow(
             )
         }
         if (showActions && !isUser && onGenerateImage != null) {
-            CbIconButton(
-                AppIcons.Image,
-                "根据此消息生成图片",
-                onGenerateImage,
+            GenerateImageActionButton(
+                onClick = onGenerateImage,
+                onLongClick = onGenerateImageLongPress ?: onGenerateImage,
                 enabled = imageGenerationEnabled,
                 tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
             )
         }
+    }
+}
+
+@Composable
+private fun GenerateImageActionButton(
+    onClick: () -> Unit,
+    onLongClick: () -> Unit,
+    enabled: Boolean,
+    tint: Color
+) {
+    val markerColor = if (enabled) {
+        ChatBarTheme.colors.primary
+    } else {
+        ChatBarTheme.colors.mutedForeground.copy(alpha = 0.45f)
+    }
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(8.dp))
+            .combinedClickable(
+                enabled = enabled,
+                role = Role.Button,
+                onClick = onClick,
+                onLongClick = onLongClick
+            ),
+        contentAlignment = Alignment.Center
+    ) {
+        CbIcon(AppIcons.Image, "点击设置，长按直生", Modifier.size(20.dp), tint)
+        Box(
+            Modifier
+                .align(Alignment.TopEnd)
+                .padding(top = 7.dp, end = 7.dp)
+                .size(6.dp)
+                .clip(CircleShape)
+                .background(markerColor)
+        )
+        Box(
+            Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 6.dp)
+                .size(width = 16.dp, height = 2.dp)
+                .clip(RoundedCornerShape(1.dp))
+                .background(markerColor.copy(alpha = 0.72f))
+        )
     }
 }
 

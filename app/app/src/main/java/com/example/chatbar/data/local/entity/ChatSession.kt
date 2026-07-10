@@ -22,6 +22,7 @@ data class ChatSession(
     val playerName: String? = null,           // 玩家名称覆盖
     val playerSetting: String? = null,        // 个人设定覆盖
     val chatBackground: String? = null,
+    val imagePromptPreference: String = "",
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,

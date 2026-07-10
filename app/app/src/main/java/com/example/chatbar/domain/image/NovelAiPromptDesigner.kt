@@ -81,6 +81,8 @@ class NovelAiPromptDesigner(
         model: ModelConfig,
         playerName: String? = null,
         sessionId: String? = null,
+        imageContentHint: String = "",
+        finalPromptRequirement: String = "",
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         val context = contextForAnchor(messages, anchorMessageId)
@@ -96,7 +98,12 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val userPrompt = PromptTemplates.novelAiImagePromptConversation(context, playerName)
+        val userPrompt = PromptTemplates.novelAiImagePromptConversation(
+            messages = context,
+            playerName = playerName,
+            imageContentHint = imageContentHint,
+            finalPromptRequirement = finalPromptRequirement
+        )
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
@@ -121,6 +128,7 @@ class NovelAiPromptDesigner(
     suspend fun designForCharacterCard(
         card: CharacterCard,
         model: ModelConfig,
+        finalPromptRequirement: String = "",
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         require(card.hasImageDesignSource()) { "没有可用于生图的角色卡内容" }
@@ -138,7 +146,13 @@ class NovelAiPromptDesigner(
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", PromptTemplates.novelAiImagePromptCharacterCard(card))
+                ChatApiMessage.text(
+                    "user",
+                    PromptTemplates.novelAiImagePromptCharacterCard(
+                        card = card,
+                        finalPromptRequirement = finalPromptRequirement
+                    )
+                )
             ),
             model = model,
             onDelta = onDelta
@@ -151,6 +165,7 @@ class NovelAiPromptDesigner(
         card: CharacterCard,
         momentImageBrief: String,
         model: ModelConfig,
+        finalPromptRequirement: String = "",
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         require(momentImageBrief.isNotBlank()) { "没有可用于朋友圈生图的图片设计" }
@@ -168,7 +183,13 @@ class NovelAiPromptDesigner(
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", PromptTemplates.novelAiImagePromptMoment(momentImageBrief))
+                ChatApiMessage.text(
+                    "user",
+                    PromptTemplates.novelAiImagePromptMoment(
+                        momentImageBrief = momentImageBrief,
+                        finalPromptRequirement = finalPromptRequirement
+                    )
+                )
             ),
             model = model,
             onDelta = onDelta
@@ -181,6 +202,7 @@ class NovelAiPromptDesigner(
         card: CharacterCard,
         momentImageBrief: String,
         model: ModelConfig,
+        finalPromptRequirement: String = "",
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptDebugResult {
         require(momentImageBrief.isNotBlank()) { "没有可用于朋友圈生图的图片设计" }
@@ -195,7 +217,10 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val userPrompt = PromptTemplates.novelAiImagePromptMoment(momentImageBrief)
+        val userPrompt = PromptTemplates.novelAiImagePromptMoment(
+            momentImageBrief = momentImageBrief,
+            finalPromptRequirement = finalPromptRequirement
+        )
         val exchanges = mutableListOf<NovelAiPromptDebugExchange>()
         val raw = streamCompletion(
             messages = listOf(
@@ -221,6 +246,7 @@ class NovelAiPromptDesigner(
         imageDescription: String,
         stylePrompt: String,
         characterPrompt: String,
+        finalPromptRequirement: String = "",
         model: ModelConfig,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
@@ -239,7 +265,8 @@ class NovelAiPromptDesigner(
                     role = MessageRole.USER,
                     content = request
                 )
-            )
+            ),
+            finalPromptRequirement = finalPromptRequirement
         )
         val raw = streamCompletion(
             messages = listOf(

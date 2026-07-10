@@ -27,6 +27,7 @@ data class AppSettings(
     val webSearchEnabled: Boolean = true,
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageAspectRatio: String = "",
+    val imagePromptToolPreference: String = "",
     val momentsEnabled: Boolean = false,
     val momentsMinDelayHours: Int = 2,
     val momentsMaxDelayHours: Int = 13,

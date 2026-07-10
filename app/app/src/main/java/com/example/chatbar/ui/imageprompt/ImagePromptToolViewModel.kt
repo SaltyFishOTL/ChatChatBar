@@ -34,6 +34,7 @@ data class ImagePromptToolUiState(
     val imageDescription: String = "",
     val stylePrompt: String = "",
     val characterPrompt: String = "",
+    val imagePromptPreference: String = "",
     val characterCards: List<CharacterCard> = emptyList(),
     val selectedCharacterCardId: String? = null,
     val models: List<ModelConfig> = emptyList(),
@@ -102,6 +103,16 @@ class ImagePromptToolViewModel : ViewModel() {
         updateInput { it.copy(characterPrompt = value) }
     }
 
+    fun updateImagePromptPreference(value: String) {
+        updateInput { it.copy(imagePromptPreference = value) }
+        viewModelScope.launch {
+            val settings = settingsRepository.getAppSettings()
+            if (settings.imagePromptToolPreference != value) {
+                settingsRepository.saveAppSettings(settings.copy(imagePromptToolPreference = value))
+            }
+        }
+    }
+
     fun importCharacterCardPrompts(cardId: String) {
         if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
@@ -142,6 +153,7 @@ class ImagePromptToolViewModel : ViewModel() {
                     imageDescription = snapshot.imageDescription,
                     stylePrompt = snapshot.stylePrompt,
                     characterPrompt = snapshot.characterPrompt,
+                    finalPromptRequirement = snapshot.imagePromptPreference,
                     model = model,
                     onContentDelta = { text ->
                         _uiState.update { it.copy(resultStream = text) }
@@ -306,7 +318,8 @@ class ImagePromptToolViewModel : ViewModel() {
                         models = models,
                         selectedModelId = defaultModel?.id,
                         modelErrors = imageModelErrors,
-                        modelUsable = imageModelErrors.isEmpty()
+                        modelUsable = imageModelErrors.isEmpty(),
+                        imagePromptPreference = settings.imagePromptToolPreference
                     )
                 }
             }

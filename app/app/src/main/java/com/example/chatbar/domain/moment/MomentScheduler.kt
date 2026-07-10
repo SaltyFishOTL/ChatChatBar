@@ -169,7 +169,8 @@ class MomentScheduler(
                     latestPost = latestPost,
                     model = model,
                     imageModel = imageModel,
-                    scheduledAt = task.scheduledAt
+                    scheduledAt = task.scheduledAt,
+                    finalPromptRequirement = settings.imagePromptToolPreference
                 )
             }
         }.fold(

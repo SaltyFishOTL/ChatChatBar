@@ -735,7 +735,8 @@ class ManageViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        scheduledAt = System.currentTimeMillis()
+                        scheduledAt = System.currentTimeMillis(),
+                        finalPromptRequirement = settings.imagePromptToolPreference
                     )
                 }.also { debugResult ->
                     debugResult.post?.let { momentRepository.savePost(it) }

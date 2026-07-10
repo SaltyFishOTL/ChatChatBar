@@ -82,6 +82,7 @@ import com.example.chatbar.domain.chat.roleplayScreenshotBlockIds
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
@@ -153,6 +154,9 @@ fun ChatScreen(
     var screenshotPreviewPath by remember(sessionId) { mutableStateOf<String?>(null) }
     var screenshotPreviewName by remember(sessionId) { mutableStateOf<String?>(null) }
     var expandedStatusBlockIds by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
+    var imagePromptTargetId by remember(sessionId) { mutableStateOf<String?>(null) }
+    var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
+    var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
 
     LaunchedEffect(draftInput) {
         if (input.text != draftInput) {
@@ -541,6 +545,18 @@ fun ChatScreen(
                             isModelUsable &&
                             message.role == MessageRole.ASSISTANT &&
                             message.displayContent.isNotBlank()
+                        ) ({
+                            imagePromptTargetId = message.id
+                            imageContentHintDraft = ""
+                            imagePromptPreferenceDraft = session?.imagePromptPreference.orEmpty()
+                        }) else null,
+                        onGenerateImageLongPress = if (
+                            !screenshotSelectionMode &&
+                            novelAiConfigured &&
+                            !isArchived &&
+                            isModelUsable &&
+                            message.role == MessageRole.ASSISTANT &&
+                            message.displayContent.isNotBlank()
                         ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
                         imageGenerationEnabled = !imageGenerationRunning,
                         selectionMode = screenshotSelectionMode && selectableForScreenshot,
@@ -561,7 +577,13 @@ fun ChatScreen(
                     )
                     imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
                         NovelAiGenerationCard(generation,
-                            onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
+                            onRetry = {
+                                viewModel.generateNovelAiImage(
+                                    anchorMessageId = generation.anchorMessageId,
+                                    imageContentHint = generation.imageContentHint,
+                                    imagePromptPreference = generation.finalPromptRequirement
+                                )
+                            },
                             onDismiss = { viewModel.dismissNovelAiImageGeneration() },
                             onCancel = { viewModel.cancelNovelAiImageGeneration() }
                         )
@@ -588,7 +610,13 @@ fun ChatScreen(
                 imageGeneration?.takeUnless { imageGenerationAnchorExists }?.let { generation ->
                     item(key = "novelai-generation") {
                         NovelAiGenerationCard(generation,
-                            onRetry = { viewModel.generateNovelAiImage(generation.anchorMessageId) },
+                            onRetry = {
+                                viewModel.generateNovelAiImage(
+                                    anchorMessageId = generation.anchorMessageId,
+                                    imageContentHint = generation.imageContentHint,
+                                    imagePromptPreference = generation.finalPromptRequirement
+                                )
+                            },
                             onDismiss = { viewModel.dismissNovelAiImageGeneration() },
                             onCancel = { viewModel.cancelNovelAiImageGeneration() }
                         )
@@ -676,6 +704,65 @@ fun ChatScreen(
                     }
                 }
             )
+        }
+    }
+
+    imagePromptTargetId?.let { targetId ->
+        CbDialog(
+            onDismissRequest = { imagePromptTargetId = null },
+            title = "生图要求",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { imagePromptTargetId = null },
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton(
+                    "生图",
+                    {
+                        val contentHint = imageContentHintDraft
+                        val preference = imagePromptPreferenceDraft
+                        imagePromptTargetId = null
+                        viewModel.generateNovelAiImage(
+                            anchorMessageId = targetId,
+                            imageContentHint = contentHint,
+                            imagePromptPreference = preference,
+                            persistPreference = true
+                        )
+                    },
+                    enabled = !imageGenerationRunning
+                )
+            }
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                CbText(
+                    "长按消息旁的生图按钮可直接生图，并会使用当前会话保存的生图偏好；图片内容提示只影响本次点击生成。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbField("图片内容提示") {
+                    CbInput(
+                        value = imageContentHintDraft,
+                        onValueChange = { imageContentHintDraft = it },
+                        placeholder = "本次画面要额外强调的场景、镜头、构图或取舍",
+                        enabled = !imageGenerationRunning,
+                        singleLine = false,
+                        minLines = 3
+                    )
+                }
+                CbField("生图偏好") {
+                    CbInput(
+                        value = imagePromptPreferenceDraft,
+                        onValueChange = { imagePromptPreferenceDraft = it },
+                        placeholder = "对最终 NovelAI Prompt 的格式、标签、权重或风格要求",
+                        enabled = !imageGenerationRunning,
+                        singleLine = false,
+                        minLines = 3
+                    )
+                }
+            }
         }
     }
 

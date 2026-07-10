@@ -442,14 +442,21 @@ censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, fi
             )
         )
 
-    fun novelAiImagePromptMoment(momentImageBrief: String): String = buildString {
+    fun novelAiImagePromptMoment(
+        momentImageBrief: String,
+        finalPromptRequirement: String = ""
+    ): String = buildString {
         appendLine("根据下面的朋友圈图片设计生成 NAI Prompt。")
         appendLine("目标风格：照片感二次元图、私密生活切片、手机随手拍。")
         appendLine("适合构图：自拍、低角度、镜面、抓拍、偷拍、手持感。")
         appendLine("图片设计：${momentImageBrief.trim()}")
+        appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
     }.trim()
 
-    fun novelAiImagePromptCharacterCard(card: CharacterCard): String = buildString {
+    fun novelAiImagePromptCharacterCard(
+        card: CharacterCard,
+        finalPromptRequirement: String = ""
+    ): String = buildString {
         appendLine("根据当前角色卡信息，设计一张背景图片")
         appendLine("图片使用Portrait比例，同时用作背景和头像")
         appendLine("使其易于辨认，有喜剧效果。不需要出现角色卡中的全部角色，避免图片过于复杂")
@@ -466,6 +473,7 @@ censored, bar censor, mosaic censoring, downscaled, aliasing, artistic error, fi
                 appendCharacterCardCoverField("Character ${index + 1} image prompt", character.imagePrompt)
             }
         }
+        appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
     }.trim()
 
     private fun StringBuilder.appendCharacterCardCoverField(label: String, value: String) {
@@ -684,12 +692,37 @@ JSON only, no Markdown, no explanation:
 
     fun novelAiImagePromptConversation(
         messages: List<ChatMessage>,
-        playerName: String? = null
+        playerName: String? = null,
+        imageContentHint: String = "",
+        finalPromptRequirement: String = ""
     ): String = buildString {
         appendLine("Design an image for this scene. Recent messages:")
         messages.forEach {
             val role = if (it.role == MessageRole.USER) "User" else "Assistant"
             appendLine("$role: ${restoreUsernamePlaceholder(it.displayContent, playerName)}")
+        }
+        appendNovelAiImageManualRequirements(
+            imageContentHint = imageContentHint,
+            finalPromptRequirement = finalPromptRequirement
+        )
+    }
+
+    private fun StringBuilder.appendNovelAiImageManualRequirements(
+        imageContentHint: String = "",
+        finalPromptRequirement: String = ""
+    ) {
+        val contentHint = imageContentHint.trim()
+        val promptRequirement = finalPromptRequirement.trim()
+        if (contentHint.isBlank() && promptRequirement.isBlank()) return
+        appendLine()
+        if (contentHint.isNotBlank()) {
+            appendLine("用户针对本次画面的额外要求（优先级高，作为本次画面取舍依据）：")
+            appendLine(contentHint)
+        }
+        if (promptRequirement.isNotBlank()) {
+            if (contentHint.isNotBlank()) appendLine()
+            appendLine("用户针对最终 NovelAI Prompt 的要求（优先级高，用于约束 tag 选择、构图取舍和输出形态；不要原样解释这段文字）：")
+            appendLine(promptRequirement)
         }
     }
 

@@ -95,7 +95,8 @@ class MomentsViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        scheduledAt = placeholder.scheduledAt
+                        scheduledAt = placeholder.scheduledAt,
+                        finalPromptRequirement = settings.imagePromptToolPreference
                     ) { progress ->
                         setRetryState(
                             id,

@@ -62,7 +62,9 @@ data class ImageGenerationState(
     val previewImage: ByteArray? = null,
     val promptDraft: String = "",
     val progress: Float = 0f,
-    val error: String? = null
+    val error: String? = null,
+    val imageContentHint: String = "",
+    val finalPromptRequirement: String = ""
 )
 
 val ImageGenerationState.isTerminal: Boolean
@@ -299,13 +301,39 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun List<ChatMessage>.renderWith(context: PlaceholderRenderContext?): List<ChatMessage> =
         if (context == null) this else map { it.renderWith(context) }
 
-    fun generateNovelAiImage(anchorMessageId: String) {
+    fun generateNovelAiImage(
+        anchorMessageId: String,
+        imageContentHint: String = "",
+        imagePromptPreference: String? = null,
+        persistPreference: Boolean = false
+    ) {
         val active = _imageGeneration.value
         if (active != null && !active.isTerminal) return
-        _imageGeneration.value = ImageGenerationState(anchorMessageId, ImageGenerationPhase.DESIGNING)
+        val initialPreference = imagePromptPreference ?: _session.value?.imagePromptPreference.orEmpty()
+        _imageGeneration.value = ImageGenerationState(
+            anchorMessageId = anchorMessageId,
+            phase = ImageGenerationPhase.DESIGNING,
+            imageContentHint = imageContentHint,
+            finalPromptRequirement = initialPreference
+        )
         val job = ChatBarApp.instance.applicationScope.launch {
             val token = novelAiCredentials.load()
-            val currentSession = chatRepository.getSession(sessionId)
+            var currentSession = chatRepository.getSession(sessionId)
+            val finalPromptRequirement = imagePromptPreference ?: currentSession?.imagePromptPreference.orEmpty()
+            if (persistPreference && currentSession != null &&
+                currentSession.imagePromptPreference != finalPromptRequirement
+            ) {
+                val updatedSession = currentSession.copy(imagePromptPreference = finalPromptRequirement)
+                chatRepository.updateSession(updatedSession)
+                currentSession = updatedSession
+                _session.value = updatedSession
+            }
+            _imageGeneration.value = ImageGenerationState(
+                anchorMessageId = anchorMessageId,
+                phase = ImageGenerationPhase.DESIGNING,
+                imageContentHint = imageContentHint,
+                finalPromptRequirement = finalPromptRequirement
+            )
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
             val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
@@ -322,7 +350,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
-                    error = "缺少配置：${missing.joinToString("、")} 不可用，无法生图"
+                    error = "缺少配置：${missing.joinToString("、")} 不可用，无法生图",
+                    imageContentHint = imageContentHint,
+                    finalPromptRequirement = finalPromptRequirement
                 )
                 return@launch
             }
@@ -330,7 +360,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
-                    error = imageRatioError
+                    error = imageRatioError,
+                    imageContentHint = imageContentHint,
+                    finalPromptRequirement = finalPromptRequirement
                 )
                 return@launch
             }
@@ -342,7 +374,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     card,
                     model,
                     playerName = playerName,
-                    sessionId = sessionId
+                    sessionId = sessionId,
+                    imageContentHint = imageContentHint,
+                    finalPromptRequirement = finalPromptRequirement
                 ) { draft ->
                     val current = _imageGeneration.value
                     if (current?.anchorMessageId == anchorMessageId &&
@@ -364,7 +398,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.GENERATING,
-                    promptDraft = _imageGeneration.value?.promptDraft.orEmpty()
+                    promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
+                    imageContentHint = imageContentHint,
+                    finalPromptRequirement = finalPromptRequirement
                 )
                 var attempt = 0
                 var retry = true
@@ -381,7 +417,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         ImageGenerationPhase.STREAMING,
                                         previewImage = event.image,
                                         promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                        progress = event.progress
+                                        progress = event.progress,
+                                        imageContentHint = imageContentHint,
+                                        finalPromptRequirement = finalPromptRequirement
                                     )
                                 }
                                 is NovelAiImageEvent.Final -> {
@@ -390,7 +428,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         ImageGenerationPhase.SAVING,
                                         previewImage = event.image,
                                         promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                        progress = 1f
+                                        progress = 1f,
+                                        imageContentHint = imageContentHint,
+                                        finalPromptRequirement = finalPromptRequirement
                                     )
                                     val path = withContext(Dispatchers.IO) {
                                         novelAiImageStorage.save(sessionId, event.image)
@@ -414,14 +454,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         _imageGeneration.value = ImageGenerationState(
                                             anchorMessageId,
                                             ImageGenerationPhase.GENERATING,
-                                            promptDraft = _imageGeneration.value?.promptDraft.orEmpty()
+                                            promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
+                                            imageContentHint = imageContentHint,
+                                            finalPromptRequirement = finalPromptRequirement
                                         )
                                     } else {
                                         _imageGeneration.value = ImageGenerationState(
                                             anchorMessageId,
                                             ImageGenerationPhase.FAILED,
                                             promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                            error = event.message
+                                            error = event.message,
+                                            imageContentHint = imageContentHint,
+                                            finalPromptRequirement = finalPromptRequirement
                                         )
                                     }
                                 }
@@ -434,7 +478,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             _imageGeneration.value = ImageGenerationState(
                                 anchorMessageId,
                                 ImageGenerationPhase.GENERATING,
-                                promptDraft = _imageGeneration.value?.promptDraft.orEmpty()
+                                promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
+                                imageContentHint = imageContentHint,
+                                finalPromptRequirement = finalPromptRequirement
                             )
                         } else {
                         _imageGeneration.value = ImageGenerationState(
@@ -443,7 +489,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             previewImage = _imageGeneration.value?.previewImage,
                             promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
                             progress = _imageGeneration.value?.progress ?: 0f,
-                            error = "生图失败 (网络/连接错误, 第${attempt}次尝试): ${error.message ?: "未知错误"}"
+                            error = "生图失败 (网络/连接错误, 第${attempt}次尝试): ${error.message ?: "未知错误"}",
+                            imageContentHint = imageContentHint,
+                            finalPromptRequirement = finalPromptRequirement
                         )
                         }
                     }
@@ -457,7 +505,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     previewImage = _imageGeneration.value?.previewImage,
                     promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
                     progress = _imageGeneration.value?.progress ?: 0f,
-                    error = "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}"
+                    error = "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}",
+                    imageContentHint = imageContentHint,
+                    finalPromptRequirement = finalPromptRequirement
                 )
             }
         }

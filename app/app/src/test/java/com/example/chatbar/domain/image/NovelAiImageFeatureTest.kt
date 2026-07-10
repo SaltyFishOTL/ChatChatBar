@@ -144,6 +144,61 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
+    fun `blank manual image requirements keep conversation prompt unchanged`() {
+        val messages = listOf(message("1", MessageRole.ASSISTANT, "她站在窗边。"))
+        val base = PromptTemplates.novelAiImagePromptConversation(messages)
+
+        val withBlankRequirements = PromptTemplates.novelAiImagePromptConversation(
+            messages = messages,
+            imageContentHint = " ",
+            finalPromptRequirement = "\n"
+        )
+
+        assertEquals(base, withBlankRequirements)
+    }
+
+    @Test
+    fun `manual image requirements append after scene messages`() {
+        val prompt = PromptTemplates.novelAiImagePromptConversation(
+            messages = listOf(message("1", MessageRole.ASSISTANT, "她站在窗边。")),
+            imageContentHint = "低角度，强调雨夜窗光。",
+            finalPromptRequirement = "baseCaption 先写构图，不要堆砌无关 tags。"
+        )
+
+        assertTrue(prompt.contains("Assistant: 她站在窗边。"))
+        assertTrue(prompt.contains("用户针对本次画面的额外要求"))
+        assertTrue(prompt.contains("低角度，强调雨夜窗光。"))
+        assertTrue(prompt.contains("用户针对最终 NovelAI Prompt 的要求"))
+        assertTrue(prompt.contains("baseCaption 先写构图"))
+        assertTrue(prompt.indexOf("Assistant: 她站在窗边。") < prompt.indexOf("用户针对本次画面的额外要求"))
+    }
+
+    @Test
+    fun `moment and cover prompts include final prompt requirement`() {
+        val requirement = "最终 tags 必须保持简洁。"
+        val momentPrompt = PromptTemplates.novelAiImagePromptMoment(
+            momentImageBrief = "镜中自拍",
+            finalPromptRequirement = requirement
+        )
+        val coverPrompt = PromptTemplates.novelAiImagePromptCharacterCard(
+            card = CharacterCard(
+                id = "card",
+                name = "夜雨诊所",
+                greeting = "雨夜里，诊室门被推开。",
+                defaultImagePrompt = "anime screencap",
+                createdAt = 1,
+                updatedAt = 1
+            ),
+            finalPromptRequirement = requirement
+        )
+
+        assertTrue(momentPrompt.contains("用户针对最终 NovelAI Prompt 的要求"))
+        assertTrue(momentPrompt.contains(requirement))
+        assertTrue(coverPrompt.contains("用户针对最终 NovelAI Prompt 的要求"))
+        assertTrue(coverPrompt.contains(requirement))
+    }
+
+    @Test
     fun `length prefixed decoder handles fragmented and combined frames`() {
         val first = byteArrayOf(1, 2, 3)
         val second = byteArrayOf(4, 5)

@@ -787,7 +787,11 @@ class CharacterEditViewModel(
                             statusText = "正在设计封面 Prompt"
                         )
                     }
-                    val prompt = novelAiPromptDesigner.designForCharacterCard(card, model) { promptDraft ->
+                    val prompt = novelAiPromptDesigner.designForCharacterCard(
+                        card = card,
+                        model = model,
+                        finalPromptRequirement = settings.imagePromptToolPreference
+                    ) { promptDraft ->
                         updateCoverImageStateIfCurrent(generationToken, target) {
                             it.copy(
                                 promptText = promptDraft,

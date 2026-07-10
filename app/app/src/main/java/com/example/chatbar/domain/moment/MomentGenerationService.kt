@@ -89,7 +89,8 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
-        scheduledAt: Long
+        scheduledAt: Long,
+        finalPromptRequirement: String = ""
     ): MomentGenerationResult = generateInternal(
         card = card,
         session = session,
@@ -98,6 +99,7 @@ class MomentGenerationService(
         model = model,
         imageModel = imageModel,
         scheduledAt = scheduledAt,
+        finalPromptRequirement = finalPromptRequirement,
         streamText = true,
         onProgress = {}
     )
@@ -110,6 +112,7 @@ class MomentGenerationService(
         model: ModelConfig,
         imageModel: ModelConfig?,
         scheduledAt: Long,
+        finalPromptRequirement: String = "",
         onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult = generateInternal(
         card = card,
@@ -119,6 +122,7 @@ class MomentGenerationService(
         model = model,
         imageModel = imageModel,
         scheduledAt = scheduledAt,
+        finalPromptRequirement = finalPromptRequirement,
         streamText = true,
         onProgress = onProgress
     )
@@ -131,6 +135,7 @@ class MomentGenerationService(
         model: ModelConfig,
         imageModel: ModelConfig?,
         scheduledAt: Long,
+        finalPromptRequirement: String,
         streamText: Boolean,
         onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult {
@@ -163,7 +168,8 @@ class MomentGenerationService(
         val prompt = promptDesigner.designForMoment(
             card = card,
             momentImageBrief = normalizedDraft.imageBrief,
-            model = imageModel
+            model = imageModel,
+            finalPromptRequirement = finalPromptRequirement
         )
         val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
         val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
@@ -223,7 +229,8 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
-        scheduledAt: Long = System.currentTimeMillis()
+        scheduledAt: Long = System.currentTimeMillis(),
+        finalPromptRequirement: String = ""
     ): MomentDebugGenerationResult {
         val exchanges = mutableListOf<MomentDebugExchange>()
         return runCatching {
@@ -259,7 +266,8 @@ class MomentGenerationService(
             val promptDebug = promptDesigner.designForMomentDebug(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,
-                model = imageModel
+                model = imageModel,
+                finalPromptRequirement = finalPromptRequirement
             )
             exchanges += promptDebug.exchanges.map { exchange ->
                 MomentDebugExchange(

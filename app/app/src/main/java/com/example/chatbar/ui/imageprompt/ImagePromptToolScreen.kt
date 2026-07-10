@@ -89,6 +89,7 @@ fun ImagePromptToolScreen(
                     onDescription = viewModel::updateImageDescription,
                     onStyle = viewModel::updateStylePrompt,
                     onCharacter = viewModel::updateCharacterPrompt,
+                    onPreference = viewModel::updateImagePromptPreference,
                     selectedCharacterCard = selectedCharacterCard,
                     onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
                     onGeneratePrompt = viewModel::designPrompt
@@ -151,6 +152,7 @@ private fun PromptInputPanel(
     onDescription: (String) -> Unit,
     onStyle: (String) -> Unit,
     onCharacter: (String) -> Unit,
+    onPreference: (String) -> Unit,
     selectedCharacterCard: CharacterCard?,
     onImportCharacterCard: (CharacterCard) -> Unit,
     onGeneratePrompt: () -> Unit
@@ -194,6 +196,19 @@ private fun PromptInputPanel(
                     value = state.characterPrompt,
                     onValueChange = onCharacter,
                     placeholder = "角色外貌、服装、Danbooru 标签",
+                    enabled = !state.isBusy,
+                    singleLine = false,
+                    minLines = 3
+                )
+            }
+            CbField(
+                label = "生图偏好",
+                description = "约束最终 NovelAI Prompt 的格式、标签、权重或构图取舍；不会单独作为画面来源。"
+            ) {
+                CbInput(
+                    value = state.imagePromptPreference,
+                    onValueChange = onPreference,
+                    placeholder = "例如：更重视镜头构图，避免长串无关 tags",
                     enabled = !state.isBusy,
                     singleLine = false,
                     minLines = 3
