@@ -10,7 +10,7 @@ data class WorldBook(
     val name: String,
     val description: String = "",
     val entries: List<WorldBookEntry> = emptyList(),
-    val scanDepth: Int = 10,
+    val scanDepth: Int = 3,
     val tokenBudget: Int? = null,
     val recursiveScanning: Boolean = false,
     val caseSensitive: Boolean = false,

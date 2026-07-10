@@ -999,7 +999,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ?: appSettings.defaultFormatCardId
                 val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
 
-                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, currentSession, messages.value, currentSession.timedWorldInfo)
+                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, currentSession, allMsgs, currentSession.timedWorldInfo)
                 if (wbTimed != currentSession.timedWorldInfo) {
                     val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
                     chatRepository.updateSession(updatedSession)
