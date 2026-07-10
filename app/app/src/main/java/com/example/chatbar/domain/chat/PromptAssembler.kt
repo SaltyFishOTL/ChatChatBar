@@ -236,18 +236,6 @@ class PromptAssembler {
         )
     }
 
-    /** 将已冻结的长期记忆快照以原有段落形式送入缓存前缀。 */
-    fun assembleLongTermMemoryCheckpoint(
-        memorySnapshot: String,
-        playerName: String? = null,
-        botName: String = ""
-    ): String = renderLayer(
-        raw = buildLongTermMemoryPromptRaw(memorySnapshot),
-        playerName = playerName,
-        botName = botName,
-        worldBookOutlets = emptyMap()
-    )
-
     private fun buildStableCachePromptRaw(
         characterCard: CharacterCard,
         playerSetting: String?,

@@ -20,6 +20,7 @@ data class AppSettings(
     val docRagSimilarityThreshold: Float = 0.55f,
     val ragInjectionMode: String = "STANDARD",
     val defaultContextWindowSize: Int = 20,
+    val excludeAssistantStatusFromHistory: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
     val assistantSegmentedBubblesEnabled: Boolean = true,

@@ -8,6 +8,7 @@ import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.chat.parseRoleplayTextSegments
 import com.example.chatbar.domain.chat.replaceRoleplaySegmentContent
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
@@ -128,6 +129,16 @@ class ChatBubbleMarkdownTest {
     @Test
     fun roleplaySpeakerMarkers_stripFromRenderedMarkdown() {
         assertEquals("[对白]() 『**内心**』", stripRoleplaySpeakerMarkers("<n=\"爱音\"/>[对白]() <n=\"爱音\"/>『**内心**』"))
+    }
+
+    @Test
+    fun roleplayStatusSegments_stripCodeFenceAndDashWrappedOptions() {
+        val marker = "\u0060\u0060\u0060"
+        val content = "开头\n$marker\n状态栏\n$marker\n中段\n---\n选项 A\n---\n结尾"
+
+        val result = stripRoleplayStatusSegments(content)
+
+        assertEquals("开头\n\n中段\n\n结尾", result)
     }
 
     @Test

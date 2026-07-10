@@ -1133,6 +1133,9 @@ private fun SettingsTab(
     var momentsAutoStartConfirmed by remember { mutableStateOf(settings.momentsAutoStartConfirmed) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
+    var excludeAssistantStatusFromHistory by remember {
+        mutableStateOf(settings.excludeAssistantStatusFromHistory)
+    }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
     var assistantSegmentedBubblesEnabled by remember { mutableStateOf(settings.assistantSegmentedBubblesEnabled) }
     var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.toFloat()) }
@@ -1163,6 +1166,7 @@ private fun SettingsTab(
         settings.defaultFormatCardId,
         settings.themeMode,
         settings.defaultContextWindowSize,
+        settings.excludeAssistantStatusFromHistory,
         settings.memoryRagTopK,
         settings.memoryRagSimilarityThreshold,
         settings.docRagTopK,
@@ -1195,6 +1199,7 @@ private fun SettingsTab(
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
+        excludeAssistantStatusFromHistory = settings.excludeAssistantStatusFromHistory
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
         assistantSegmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
@@ -1225,6 +1230,7 @@ private fun SettingsTab(
         docRagSimilarityThreshold = docThreshold,
         ragInjectionMode = ragMode.roundToInt().modeValue(),
         defaultContextWindowSize = draftContextWindowSize,
+        excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
         webSearchEnabled = webSearchEnabled,
         webSearchMaxResultsPerQuery = 1,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
@@ -1286,6 +1292,20 @@ private fun SettingsTab(
                         customContextSize = newValue.filter { it.isDigit() }
                     }, placeholder = "50")
                 }
+            }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("上下文剔除状态栏", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "默认开启；历史助手消息不发送状态栏和横线选项，上一条助手回复保留完整内容。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(
+                    checked = excludeAssistantStatusFromHistory,
+                    onCheckedChange = { excludeAssistantStatusFromHistory = it }
+                )
             }
         }
         SettingsSection("RAG 检索") {

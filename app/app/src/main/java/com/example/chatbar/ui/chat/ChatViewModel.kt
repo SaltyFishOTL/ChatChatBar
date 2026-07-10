@@ -19,6 +19,7 @@ import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
+import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -1040,14 +1041,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     regenTargetUserMsg != null -> regenTargetUserMsg.id
                     else -> null
                 }
-                val cacheableHistoryMessages = contextWindowManager.getCacheableHistoryMessages(
+                val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
                     contextMessages = contextMsgs,
                     latestMessageId = latestMessageId
                 )
 
-                suspend fun addContextMessage(msg: ChatMessage) {
+                suspend fun addContextMessage(
+                    msg: ChatMessage,
+                    stripAssistantStatus: Boolean = false
+                ) {
                     val role = msg.role.name.lowercase()
-                    val text = renderSessionText(msg.displayContent)
+                    val sourceText = if (stripAssistantStatus && msg.role == MessageRole.ASSISTANT) {
+                        stripRoleplayStatusSegments(msg.displayContent)
+                    } else {
+                        msg.displayContent
+                    }
+                    val text = renderSessionText(sourceText)
                     if (msg.images.isNotEmpty() &&
                         modelConfig.isMultimodal &&
                         msg.role == MessageRole.USER
@@ -1071,20 +1080,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 稳定角色设定在最前，随后完整保留配置的聊天上下文窗口。
+                // 1. 固定设定在最前，再放拆开上一助手后的历史。
                 promptLayers.stableSystemPrompt.takeIf(String::isNotBlank)?.let { stablePrompt ->
                     apiMessages.add(ChatApiMessage.text("system", stablePrompt))
                 }
-                for (msg in cacheableHistoryMessages) {
-                    addContextMessage(msg)
+                for (msg in promptMessageGroups.historyMessages) {
+                    addContextMessage(
+                        msg = msg,
+                        stripAssistantStatus = appSettings.excludeAssistantStatusFromHistory
+                    )
                 }
 
-                // 2. 长期记忆、RAG、世界书等每回合变化资料放在历史之后，避免破坏历史缓存前缀。
+                // 2. 长期记忆、RAG、世界书等动态资料置于历史与上一助手之间。
                 promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
                 }
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))
+                }
+                promptMessageGroups.previousMessage?.let { previousMessage ->
+                    addContextMessage(previousMessage)
                 }
 
                 // 3. 本次用户输入（始终放在最底部，按需前置分段气泡人物标注协议）

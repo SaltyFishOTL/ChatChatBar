@@ -72,6 +72,18 @@ fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
 fun stripRoleplaySpeakerMarkers(content: String): String =
     roleplaySpeakerMarkerPattern.replace(content, "")
 
+/** 移除状态栏与横线包裹的选项块，保留叙事、对白、心理和人物标记。 */
+fun stripRoleplayStatusSegments(content: String): String =
+    parseRoleplayTextSegments(content)
+        .asSequence()
+        .filter { it.kind == RoleplaySegmentKind.STATUS }
+        .map { it.start to it.endExclusive }
+        .distinct()
+        .sortedByDescending { (start, _) -> start }
+        .fold(content) { text, (start, endExclusive) ->
+            replaceRoleplaySegmentContent(text, start, endExclusive, "")
+        }
+
 fun renameRoleplaySpeakerMarkers(
     content: String,
     renames: List<SpeakerTagRename>

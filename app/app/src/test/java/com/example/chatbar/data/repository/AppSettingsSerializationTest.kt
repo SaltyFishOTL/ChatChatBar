@@ -12,6 +12,7 @@ class AppSettingsSerializationTest {
         val decoded = Json.decodeFromString(AppSettings.serializer(), """{"themeMode":"DARK"}""")
 
         assertTrue(decoded.assistantSegmentedBubblesEnabled)
+        assertTrue(decoded.excludeAssistantStatusFromHistory)
     }
 
     @Test
@@ -24,5 +25,17 @@ class AppSettingsSerializationTest {
         val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
 
         assertFalse(decoded.assistantSegmentedBubblesEnabled)
+    }
+
+    @Test
+    fun disabledAssistantStatusHistoryExclusion_roundTrips() {
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(excludeAssistantStatusFromHistory = false)
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertFalse(decoded.excludeAssistantStatusFromHistory)
     }
 }

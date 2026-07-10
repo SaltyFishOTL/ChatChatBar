@@ -36,24 +36,6 @@ class ContextWindowManagerTest {
     }
 
     @Test
-    fun getCacheableHistoryMessages_keepsEntireWindowExceptCurrentUserMessage() {
-        val messages = messages(5)
-
-        val history = manager.getCacheableHistoryMessages(messages, latestMessageId = "message-4")
-
-        assertEquals(listOf("0", "1", "2", "3"), history.map { it.content })
-    }
-
-    @Test
-    fun getCacheableHistoryMessages_keepsEntireWindowWhenCurrentMessageIsSynthetic() {
-        val messages = messages(5)
-
-        val history = manager.getCacheableHistoryMessages(messages, latestMessageId = null)
-
-        assertEquals(listOf("0", "1", "2", "3", "4"), history.map { it.content })
-    }
-
-    @Test
     fun getPromptMessageGroups_whenLatestInContext_movesPreviousAfterSystemPrompt() {
         val messages = messages(5)
 
