@@ -555,6 +555,7 @@ private fun attachRoleplaySpeakerPrefixes(
     segments: List<RoleplayTextSegment>
 ): List<RoleplayTextSegment> {
     val result = mutableListOf<RoleplayTextSegment>()
+    var lastSpeakerName: String? = null
     segments.forEach { segment ->
         if (segment.kind != RoleplaySegmentKind.DIALOGUE && segment.kind != RoleplaySegmentKind.THOUGHT) {
             result += segment
@@ -563,7 +564,7 @@ private fun attachRoleplaySpeakerPrefixes(
 
         val prefix = findRoleplaySpeakerPrefix(content, segment.start)
         if (prefix == null) {
-            result += segment
+            result += segment.copy(speakerName = lastSpeakerName)
             return@forEach
         }
 
@@ -587,6 +588,9 @@ private fun attachRoleplaySpeakerPrefixes(
             start = prefix.start,
             speakerName = prefix.speakerName
         )
+        prefix.speakerName
+            ?.takeIf(String::isNotEmpty)
+            ?.let { lastSpeakerName = it }
     }
     return result
 }
