@@ -29,6 +29,7 @@ import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
+import com.example.chatbar.domain.service.BackgroundGenerationProtectionCancellationException
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
@@ -45,6 +46,7 @@ import kotlinx.serialization.json.Json
 import java.io.File
 import java.util.Locale
 import java.util.UUID
+import kotlin.coroutines.coroutineContext
 
 enum class ImageGenerationPhase {
     DESIGNING,
@@ -733,7 +735,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
             // 确定是否要用 Embedding 做 RAG 检索
             startStreamingForegroundWork()
+            val generationJob = coroutineContext[Job]
+            val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
+                generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
+            }
             try {
+            AiBackgroundWorkManager.awaitForegroundProtection()
             val embeddingConfig = modelResolver.embeddingModel(appSettings)
 
             // 2. 多模态图片处理 (如果是纯文本模型但附带了图片，则先调用视觉模型生成图片描述)
@@ -1245,7 +1252,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             } catch (e: Exception) {
                 ChatBarApp.instance.streamingStopRequested.value = false
                 _isResponding.value = false
-                if (e !is CancellationException) {
+                if (e is BackgroundGenerationProtectionCancellationException) {
+                    addSystemMessage("后台生成已中止：${e.reason}")
+                } else if (e !is CancellationException) {
                     try {
                         if (alternativeTargetMessageId == null) {
                             val errorAssistantMsg = ChatMessage.create(
@@ -1288,6 +1297,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 _streamingMessage.value = null
             } finally {
+                protectionLossHandle?.dispose()
                 ChatBarApp.instance.streamingStopRequested.value = false
                 stopStreamingForegroundWork()
             }

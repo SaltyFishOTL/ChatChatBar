@@ -1,42 +1,276 @@
 package com.example.chatbar.domain.service
 
+import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.os.Build
+import android.util.Log
 import com.example.chatbar.ChatBarApp
-import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.DisposableHandle
+import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.selects.select
+import kotlinx.coroutines.withTimeout
+
+class BackgroundGenerationProtectionException(
+    message: String
+) : IllegalStateException(message)
+
+class BackgroundGenerationProtectionCancellationException(
+    val reason: String
+) : kotlinx.coroutines.CancellationException("后台生成保护失效：$reason")
 
 object AiBackgroundWorkManager {
-    private val activeCount = AtomicInteger(0)
+    private const val FOREGROUND_READY_TIMEOUT_MS = 8_000L
+    private const val EXTRA_WORK_GENERATION = "workGeneration"
+    private const val TAG = "AiBackgroundWork"
 
-    fun start(sessionId: String = "") {
-        val ctx = ChatBarApp.instance
-        if (activeCount.getAndIncrement() == 0) {
-            StreamingNotificationManager.show(ctx, sessionId)
-            ctx.startForegroundService(Intent(ctx, StreamingForegroundService::class.java).apply {
-                putExtra("sessionId", sessionId)
-            })
-        } else {
-            StreamingNotificationManager.show(ctx, sessionId)
+    private data class ForegroundLease(
+        val generation: Long,
+        val ready: CompletableDeferred<Unit>,
+        val protection: ProtectionSignal,
+        val networkGuard: NetworkGuard
+    )
+
+    private class ProtectionSignal {
+        private val lossReason = AtomicReference<String?>(null)
+        private val loss = CompletableDeferred<String>()
+
+        fun fail(reason: String) {
+            if (lossReason.compareAndSet(null, reason)) {
+                loss.complete(reason)
+            }
+        }
+
+        fun throwIfFailed() {
+            lossReason.get()?.let { reason ->
+                throw BackgroundGenerationProtectionException(reason)
+            }
+        }
+
+        suspend fun awaitFailure(): String = loss.await()
+
+        fun observe(onFailure: (String) -> Unit): DisposableHandle =
+            loss.invokeOnCompletion {
+                lossReason.get()?.let(onFailure)
+            }
+    }
+
+    private class NetworkGuard(
+        context: Context,
+        private val protection: ProtectionSignal
+    ) {
+        private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
+        private var callbackRegistered = false
+        private val callback = object : ConnectivityManager.NetworkCallback() {
+            override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
+                if (!capabilities.isValidatedInternet()) {
+                    protection.fail("网络失去互联网验证，已停止生成")
+                }
+            }
+
+            override fun onLost(network: Network) {
+                protection.fail("设备网络已断开，已停止生成")
+            }
+
+            override fun onUnavailable() {
+                protection.fail("设备没有可用网络，已停止生成")
+            }
+        }
+
+        init {
+            if (!hasValidatedInternet()) {
+                protection.fail("未检测到可用网络，未发送模型请求")
+            } else {
+                try {
+                    connectivityManager?.registerDefaultNetworkCallback(callback)
+                    callbackRegistered = connectivityManager != null
+                } catch (error: Exception) {
+                    Log.w(TAG, "Unable to monitor active network", error)
+                    protection.fail("无法监测网络状态，未发送模型请求")
+                }
+            }
+        }
+
+        fun requireValidatedInternet() {
+            if (!hasValidatedInternet()) {
+                protection.fail("网络不可用，未发送模型请求")
+            }
+            protection.throwIfFailed()
+        }
+
+        fun close() {
+            if (!callbackRegistered) return
+            runCatching { connectivityManager?.unregisterNetworkCallback(callback) }
+            callbackRegistered = false
+        }
+
+        private fun hasValidatedInternet(): Boolean {
+            val capabilities = connectivityManager
+                ?.activeNetwork
+                ?.let(connectivityManager::getNetworkCapabilities)
+                ?: return false
+            return capabilities.isValidatedInternet()
         }
     }
 
+    private val lock = Any()
+    private var activeCount = 0
+    private var nextGeneration = 0L
+    private var currentLease: ForegroundLease? = null
+
+    fun start(sessionId: String = "") {
+        acquireForegroundLease(sessionId)
+    }
+
+    private fun acquireForegroundLease(sessionId: String): ForegroundLease = synchronized(lock) {
+        val context = ChatBarApp.instance
+        val lease = if (activeCount == 0) {
+            val protection = ProtectionSignal()
+            ForegroundLease(
+                generation = ++nextGeneration,
+                ready = CompletableDeferred(),
+                protection = protection,
+                networkGuard = NetworkGuard(context, protection)
+            ).also { currentLease = it }
+        } else {
+            checkNotNull(currentLease)
+        }
+        activeCount += 1
+
+        StreamingNotificationManager.show(context, sessionId)
+        if (activeCount == 1) {
+            try {
+                context.startForegroundService(Intent(context, StreamingForegroundService::class.java).apply {
+                    putExtra("sessionId", sessionId)
+                    putExtra(EXTRA_WORK_GENERATION, lease.generation)
+                })
+            } catch (error: Exception) {
+                lease.ready.completeExceptionally(
+                    IllegalStateException("无法启动后台生成前台服务", error)
+                )
+            }
+        }
+        lease
+    }
+
+    internal fun foregroundServiceReady(generation: Long) {
+        synchronized(lock) {
+            currentLease
+                ?.takeIf { it.generation == generation }
+                ?.ready
+                ?.complete(Unit)
+        }
+    }
+
+    internal fun foregroundServiceStartFailed(generation: Long, error: Throwable) {
+        synchronized(lock) {
+            currentLease
+                ?.takeIf { it.generation == generation }
+                ?.ready
+                ?.completeExceptionally(
+                    IllegalStateException("后台生成前台服务启动失败", error)
+                )
+        }
+    }
+
+    internal fun foregroundServiceStopped(generation: Long) {
+        synchronized(lock) {
+            currentLease
+                ?.takeIf { it.generation == generation }
+                ?.protection
+                ?.fail("后台前台服务已停止，已中止生成")
+        }
+    }
+
+    internal fun observeProtectionLoss(onLoss: (String) -> Unit): DisposableHandle? {
+        val protection = synchronized(lock) { currentLease?.protection } ?: return null
+        return protection.observe(onLoss)
+    }
+
+    private suspend fun awaitForegroundProtection(lease: ForegroundLease) {
+        lease.networkGuard.requireValidatedInternet()
+        try {
+            withTimeout(FOREGROUND_READY_TIMEOUT_MS) {
+                lease.ready.await()
+            }
+        } catch (error: TimeoutCancellationException) {
+            Log.w(TAG, "Foreground service did not become ready before generation", error)
+            throw BackgroundGenerationProtectionException("后台生成保护启动超时，未发送模型请求")
+        }
+        lease.networkGuard.requireValidatedInternet()
+    }
+
+    suspend fun awaitForegroundProtection() {
+        val lease = synchronized(lock) {
+            checkNotNull(currentLease) { "没有正在启动的后台生成前台服务" }
+        }
+        awaitForegroundProtection(lease)
+    }
+
     fun finish() {
-        val remaining = activeCount.decrementAndGet()
-        if (remaining > 0) return
-        activeCount.set(0)
-        try {
-            ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
-        } catch (_: Exception) {}
-        try {
-            StreamingNotificationManager.cancel(ChatBarApp.instance)
-        } catch (_: Exception) {}
+        synchronized(lock) {
+            if (activeCount <= 0) {
+                Log.w(TAG, "Ignoring unmatched background-work finish")
+                return
+            }
+            activeCount -= 1
+            if (activeCount > 0) return
+
+            currentLease?.networkGuard?.close()
+            currentLease = null
+            try {
+                ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
+            } catch (_: Exception) {
+            }
+            try {
+                StreamingNotificationManager.cancel(ChatBarApp.instance)
+            } catch (_: Exception) {
+            }
+        }
     }
 
     suspend fun <T> run(sessionId: String = "", block: suspend () -> T): T {
-        start(sessionId)
+        val lease = acquireForegroundLease(sessionId)
         return try {
-            block()
+            awaitForegroundProtection(lease)
+            runWhileProtected(lease, block)
         } finally {
             finish()
         }
     }
+
+    private suspend fun <T> runWhileProtected(
+        lease: ForegroundLease,
+        block: suspend () -> T
+    ): T = coroutineScope {
+        lease.protection.throwIfFailed()
+        val blockJob = async { block() }
+        val lossJob = async { lease.protection.awaitFailure() }
+        try {
+            select {
+                blockJob.onAwait { it }
+                lossJob.onAwait { reason ->
+                    throw BackgroundGenerationProtectionException(reason)
+                }
+            }
+        } finally {
+            lossJob.cancel()
+            blockJob.cancel()
+        }
+    }
+
+    internal fun workGenerationFrom(intent: Intent?): Long =
+        intent?.getLongExtra(EXTRA_WORK_GENERATION, -1L) ?: -1L
+
+    private fun NetworkCapabilities.isValidatedInternet(): Boolean =
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
+                hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
 }
