@@ -58,6 +58,7 @@ private val tutorialPages = listOf(
                 steps = listOf(
                     "设置默认模型、格式卡和玩家设定",
                     "申请并配置硅基流动 API",
+                    "进阶单元：使用非硅基流动 API，并配置新模型",
                     "申请并配置 NovelAI Token",
                     "添加 RAG 文档、刷新索引和关闭 RAG"
                 )
@@ -105,6 +106,30 @@ private val tutorialPages = listOf(
                     "把模型配置模式切换为“自定义 API”。",
                     "在“硅基流动 API”中粘贴 API Key并保存。",
                     "点击“测试连接”；对话和向量接口均成功后即可使用。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "进阶单元：其他 API 与新模型",
+        summary = "ChatBar 可接入非硅基流动的 OpenAI 兼容 API，也可单独新增对话、向量和检索规划模型。",
+        sections = listOf(
+            TutorialSection(
+                title = "使用非硅基流动 API",
+                steps = listOf(
+                    "在服务商控制台复制 OpenAI 兼容 Base URL、API Key 和模型标识。",
+                    "进入“管理 > 模型”，点击右下角“新建”。",
+                    "在“接口模板类型”中选择服务商对应模板；通用 OpenAI 兼容接口通常选择 OPENAI。",
+                    "填写“显示名称”“Base URL”“API Key”“模型标识”，点击右上角保存。"
+                )
+            ),
+            TutorialSection(
+                title = "配置新模型",
+                steps = listOf(
+                    "如多个模型共用同一 Key，可进入“管理 > 设置 > 模型与 API”填写“全局默认 API Key”，单个模型的 API Key 留空。",
+                    "保存模型后，进入“管理 > 设置”，在“默认对话模型”中选择新模型。",
+                    "如服务商提供向量接口，可在“管理 > 模型 > 向量模型”点击“添加”，填写 Base URL、API Key、模型名称和向量维度，让 RAG 可以建立索引。",
+                    "如需更便宜的检索规划，可在“管理 > 模型 > 检索规划模型”点击“添加”；未配置时会回退到当前对话模型。"
                 )
             )
         )
