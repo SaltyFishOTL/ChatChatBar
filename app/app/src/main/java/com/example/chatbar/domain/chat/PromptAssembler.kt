@@ -451,4 +451,4 @@ class PromptAssembler {
 
 }
 
-private val OUTLET_TOKEN_REGEX = Regex("\\{\\{outlet::(\\w+)}}")
+private val OUTLET_TOKEN_REGEX = Regex("\\{\\{outlet::(\\w+)\\}\\}")
