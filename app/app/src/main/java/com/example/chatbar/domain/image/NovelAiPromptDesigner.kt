@@ -93,22 +93,17 @@ class NovelAiPromptDesigner(
         } else {
             emptyList()
         }
-        val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
+        val requestMessages = conversationDesignMessages(
+            messages = context,
+            playerName = playerName,
+            imageContentHint = imageContentHint,
+            finalPromptRequirement = finalPromptRequirement,
             cardDefaultImagePrompt = card.defaultImagePrompt,
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val userPrompt = PromptTemplates.novelAiImagePromptConversation(
-            messages = context,
-            playerName = playerName,
-            imageContentHint = imageContentHint,
-            finalPromptRequirement = finalPromptRequirement
-        )
         val raw = streamCompletion(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", userPrompt)
-            ),
+            messages = requestMessages,
             model = model,
             onDelta = onDelta
         )
@@ -117,7 +112,7 @@ class NovelAiPromptDesigner(
                 sessionId = sid,
                 modelName = model.modelName,
                 apiUrl = "${model.baseUrl.trimEnd('/')}/chat/completions",
-                requestBodyJson = buildDesignRequestJson(systemPrompt, userPrompt),
+                requestBodyJson = buildDesignRequestJson(requestMessages),
                 rawAiOutput = raw
             )
         }
@@ -457,17 +452,54 @@ class NovelAiPromptDesigner(
         internal fun baseCharacterName(fullName: String): String =
             fullName.split(Regex("""[/;；]""")).first().trim()
 
-        private fun buildDesignRequestJson(systemPrompt: String, userPrompt: String): String =
+        internal fun conversationDesignMessages(
+            messages: List<ChatMessage>,
+            playerName: String?,
+            imageContentHint: String,
+            finalPromptRequirement: String,
+            cardDefaultImagePrompt: String,
+            characterImagePrompts: List<Pair<String, String>>,
+            structured: Boolean
+        ): List<ChatApiMessage> {
+            val scene = messages.singleOrNull()
+                ?: error("聊天生图必须传入一条锚定消息")
+            return listOf(
+                ChatApiMessage.text(
+                    "assistant",
+                    PromptTemplates.novelAiImagePromptAssistantScene(scene, playerName)
+                ),
+                ChatApiMessage.text(
+                    "user",
+                    PromptTemplates.novelAiImagePromptImageContentHintUser(imageContentHint)
+                ),
+                ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptCoreSystem()),
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.novelAiImagePromptDefaultStyleSystem(cardDefaultImagePrompt)
+                ),
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.novelAiImagePromptCharacterPresetSystem(
+                        characterImagePrompts,
+                        structured
+                    )
+                ),
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.novelAiImagePromptPreferenceSystem(finalPromptRequirement)
+                )
+            )
+        }
+
+        private fun buildDesignRequestJson(messages: List<ChatApiMessage>): String =
             buildJsonObject {
                 put("messages", kotlinx.serialization.json.buildJsonArray {
-                    add(buildJsonObject {
-                        put("role", "system")
-                        put("content", systemPrompt)
-                    })
-                    add(buildJsonObject {
-                        put("role", "user")
-                        put("content", userPrompt)
-                    })
+                    messages.forEach { message ->
+                        add(buildJsonObject {
+                            put("role", message.role)
+                            put("content", message.content)
+                        })
+                    }
                 })
             }.toString()
 
@@ -525,6 +557,7 @@ internal suspend fun collectPromptText(
                 }
             }
             is StreamEvent.Error -> error(event.message)
+            is StreamEvent.Usage,
             StreamEvent.Done -> Unit
         }
     }

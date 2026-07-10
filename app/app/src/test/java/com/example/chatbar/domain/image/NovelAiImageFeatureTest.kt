@@ -39,6 +39,30 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
+    fun `conversation image design messages put scene and content hint before system rules`() {
+        val request = NovelAiPromptDesigner.conversationDesignMessages(
+            messages = listOf(message("1", MessageRole.ASSISTANT, "林远站在雨夜窗边。")),
+            playerName = "林远",
+            imageContentHint = "低角度，强调窗光。",
+            finalPromptRequirement = "保持 tags 简洁。",
+            cardDefaultImagePrompt = "anime screencap",
+            characterImagePrompts = listOf("林雾" to "1girl, silver hair"),
+            structured = true
+        )
+
+        assertEquals(
+            listOf("assistant", "user", "system", "system", "system", "system"),
+            request.map { it.role }
+        )
+        assertEquals("\$username站在雨夜窗边。", request[0].content.jsonPrimitive.content)
+        assertTrue(request[1].content.jsonPrimitive.content.contains("低角度，强调窗光。"))
+        assertEquals(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.trim(), request[2].content.jsonPrimitive.content)
+        assertTrue(request[3].content.jsonPrimitive.content.contains("anime screencap"))
+        assertTrue(request[4].content.jsonPrimitive.content.contains("林雾: 1girl, silver hair"))
+        assertTrue(request[5].content.jsonPrimitive.content.contains("保持 tags 简洁。"))
+    }
+
+    @Test
     fun `convert accepts all characters directly and caps at six`() {
         val characters = (1..7).map { index ->
             CharacterInfo(id = "$index", name = "Character $index", imagePrompt = "fixed-$index")

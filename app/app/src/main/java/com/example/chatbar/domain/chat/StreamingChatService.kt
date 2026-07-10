@@ -18,6 +18,7 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -55,12 +56,22 @@ sealed class StreamEvent {
     /** 增量思维链片段 */
     data class ReasoningDelta(val text: String) : StreamEvent()
 
+    /** 供应商在流结束前返回的真实输入与提示词缓存计量。 */
+    data class Usage(val usage: PromptCacheUsage) : StreamEvent()
+
     /** 错误 */
     data class Error(val message: String) : StreamEvent()
 
     /** 流结束 */
     data object Done : StreamEvent()
 }
+
+data class PromptCacheUsage(
+    val promptTokens: Int? = null,
+    val cachedTokens: Int? = null,
+    val cacheWriteTokens: Int? = null,
+    val cacheMissTokens: Int? = null
+)
 
 /**
  * 发送给 API 的消息格式
@@ -163,7 +174,8 @@ class StreamingChatService {
         messages: List<ChatApiMessage>,
         modelConfig: ModelConfig,
         systemPrompt: String = "",
-        ragChunks: List<String> = emptyList()
+        ragChunks: List<String> = emptyList(),
+        promptCacheKey: String? = null
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
         var retryCount = 0
@@ -171,7 +183,14 @@ class StreamingChatService {
 
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
-        val requestBody = buildRequestBody(messages, modelConfig, stream = true)
+        val supportsOpenAiCacheInstrumentation = modelConfig.supportsOpenAiPromptCacheInstrumentation()
+        val requestBody = buildRequestBody(
+            messages = messages,
+            modelConfig = modelConfig,
+            stream = true,
+            promptCacheKey = promptCacheKey.takeIf { supportsOpenAiCacheInstrumentation },
+            includeStreamUsage = supportsOpenAiCacheInstrumentation
+        )
 
         // 写入 Debug 日志开始记录（仅一次）
         com.example.chatbar.utils.DebugLogManager.startRequest(
@@ -228,6 +247,10 @@ class StreamingChatService {
                             }
                             if (delta.content != null) {
                                 trySend(StreamEvent.Delta(delta.content))
+                            }
+                            parsePromptCacheUsage(data)?.let { usage ->
+                                com.example.chatbar.utils.DebugLogManager.recordPromptCacheUsage(sessionId, usage)
+                                trySend(StreamEvent.Usage(usage))
                             }
                         } catch (e: Exception) {
                             com.example.chatbar.utils.DebugLogManager.appendResponseChunk(sessionId, data)
@@ -635,7 +658,9 @@ class StreamingChatService {
         enableThinkingOverride: Boolean? = null,
         maxThinkingTokens: Int? = null,
         thinkingBudget: Int? = null,
-        reasoningEffortOverride: String? = null
+        reasoningEffortOverride: String? = null,
+        promptCacheKey: String? = null,
+        includeStreamUsage: Boolean = false
     ): String {
         val messagesArray = buildJsonArray {
             for (msg in messages) {
@@ -650,6 +675,10 @@ class StreamingChatService {
             put("model", modelConfig.modelName)
             put("messages", messagesArray)
             put("stream", stream)
+            promptCacheKey?.takeIf(String::isNotBlank)?.let { put("prompt_cache_key", it) }
+            if (stream && includeStreamUsage) {
+                put("stream_options", buildJsonObject { put("include_usage", true) })
+            }
 
             // 追加自定义参数
             for ((key, value) in modelConfig.customParams) {
@@ -740,6 +769,32 @@ class StreamingChatService {
 
         throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
     }
+
+    private fun parsePromptCacheUsage(data: String): PromptCacheUsage? {
+        val usage = runCatching {
+            json.decodeFromString<JsonObject>(data)["usage"]?.jsonObject
+        }.getOrNull() ?: return null
+        val promptTokens = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull
+        val details = usage["prompt_tokens_details"]?.jsonObject
+        val cachedTokens = details?.get("cached_tokens")?.jsonPrimitive?.intOrNull
+            ?: usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
+        val cacheWriteTokens = details?.get("cache_write_tokens")?.jsonPrimitive?.intOrNull
+        val cacheMissTokens = usage["prompt_cache_miss_tokens"]?.jsonPrimitive?.intOrNull
+        return PromptCacheUsage(
+            promptTokens = promptTokens,
+            cachedTokens = cachedTokens,
+            cacheWriteTokens = cacheWriteTokens,
+            cacheMissTokens = cacheMissTokens
+        ).takeIf {
+            it.promptTokens != null || it.cachedTokens != null ||
+                it.cacheWriteTokens != null || it.cacheMissTokens != null
+        }
+    }
+}
+
+private fun ModelConfig.supportsOpenAiPromptCacheInstrumentation(): Boolean {
+    val host = runCatching { java.net.URI(baseUrl).host }.getOrNull()
+    return host.equals("api.openai.com", ignoreCase = true)
 }
 
 internal fun ModelConfig.forImageDescriptionRequest(): ModelConfig {

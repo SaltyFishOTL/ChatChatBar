@@ -426,6 +426,7 @@ class MomentGenerationService(
                 }
                 is StreamEvent.Error -> errorMessage = event.message
                 StreamEvent.Done,
+                is StreamEvent.Usage,
                 is StreamEvent.ReasoningDelta -> Unit
             }
         }

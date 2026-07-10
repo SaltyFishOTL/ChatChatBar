@@ -8,6 +8,16 @@ import kotlin.uuid.Uuid
  * 聊天会话
  */
 @Serializable
+data class PromptCacheCheckpoint(
+    /** 缓存前缀依赖的稳定系统提示词指纹。变化时此快照自动失效。 */
+    val stablePromptFingerprint: String = "",
+    /** 已冻结的长期记忆快照，覆盖 [coveredThroughMessageId] 及之前的对话。 */
+    val memorySnapshot: String = "",
+    val coveredThroughMessageId: String? = null,
+    val createdAt: Long = 0L
+)
+
+@Serializable
 data class ChatSession(
     val id: String,
     val characterCardId: String,
@@ -26,6 +36,7 @@ data class ChatSession(
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
+    val promptCacheCheckpoint: PromptCacheCheckpoint? = null,
     val contextWindowSize: Int = 20,
     val extraWorldBookIds: List<String> = emptyList(),
     val isPinned: Boolean = false,

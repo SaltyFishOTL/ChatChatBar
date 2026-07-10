@@ -16,6 +16,8 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.chat.PromptCacheCheckpointPolicy
+import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.image.NovelAiImageEvent
@@ -1003,7 +1005,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     chatRepository.updateSession(updatedSession)
                     _session.value = updatedSession
                 }
-                val systemPrompt = promptAssembler.assembleSystemPrompt(
+                val initialPromptLayers = promptAssembler.assembleCachePromptLayers(
+                    characterCard = charCard,
+                    playerSetting = activePlayerSetting,
+                    playerName = activePlayerName.takeIf { it.isNotBlank() },
+                    supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
+                    formatCard = activeFormatCard,
+                    ragResults = ragResults,
+                    ragInjectionMode = appSettings.ragInjectionMode,
+                    replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
+                    replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
+                    longTermMemory = null,
+                    worldBookPrompt = wbPrompt,
+                    worldBookOutlets = wbOutlets
+                )
+                val stablePromptFingerprint = PromptCacheKeyFactory.fingerprint(initialPromptLayers.stableSystemPrompt)
+                val checkpointPlan = PromptCacheCheckpointPolicy.plan(
+                    allMessages = allMsgs,
+                    current = currentSession.promptCacheCheckpoint,
+                    stablePromptFingerprint = stablePromptFingerprint,
+                    longTermMemoryEnabled = currentSession.longTermMemoryEnabled &&
+                        initialPromptLayers.stablePrefixCacheable,
+                    currentMemory = currentSession.longTermMemory,
+                    memoryUpdatedThroughMessageId = currentSession.longTermMemoryUpdatedThroughMessageId
+                )
+                val promptCheckpoint = checkpointPlan.checkpoint
+                if (checkpointPlan.checkpointChanged) {
+                    val checkpointSession = currentSession.copy(promptCacheCheckpoint = promptCheckpoint)
+                    chatRepository.updateSession(checkpointSession)
+                    _session.value = checkpointSession
+                }
+                val promptLayers = promptAssembler.assembleCachePromptLayers(
                     characterCard = charCard,
                     playerSetting = activePlayerSetting,
                     playerName = activePlayerName.takeIf { it.isNotBlank() },
@@ -1014,11 +1046,28 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
                     replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
                     longTermMemory = currentSession.longTermMemory.takeIf {
-                        currentSession.longTermMemoryEnabled && it.isNotBlank()
+                        promptCheckpoint == null && currentSession.longTermMemoryEnabled && it.isNotBlank()
                     },
                     worldBookPrompt = wbPrompt,
                     worldBookOutlets = wbOutlets
                 )
+                val checkpointMemoryPrompt = promptCheckpoint?.let { checkpoint ->
+                    promptAssembler.assembleLongTermMemoryCheckpoint(
+                        memorySnapshot = checkpoint.memorySnapshot,
+                        playerName = activePlayerNameOrNull,
+                        botName = charCard.name
+                    )
+                }.orEmpty()
+                val promptSystemDebug = listOf(
+                    promptLayers.stableSystemPrompt,
+                    checkpointMemoryPrompt,
+                    promptLayers.dynamicSystemPrompt,
+                    promptLayers.tailSystemPrompt
+                ).filter(String::isNotBlank).joinToString("\n\n")
+                val promptContextMessages = if (promptCheckpoint != null) checkpointPlan.hotMessages else contextMsgs
+                val promptCacheKey = promptLayers.stableSystemPrompt
+                    .takeIf { promptLayers.stablePrefixCacheable && it.isNotBlank() }
+                    ?.let { PromptCacheKeyFactory.cacheKey(it, promptCheckpoint) }
 
                 val apiMessages = mutableListOf<ChatApiMessage>()
 
@@ -1032,7 +1081,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     else -> null
                 }
                 val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
-                    contextMessages = contextMsgs,
+                    contextMessages = promptContextMessages,
                     latestMessageId = latestMessageId
                 )
 
@@ -1062,13 +1111,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 过往消息（放在最上方，排除上一条消息和当前/重新生成触发的用户消息）
+                // 1. 稳定缓存前缀：角色设定 + 冻结长期记忆快照。
+                promptLayers.stableSystemPrompt.takeIf(String::isNotBlank)?.let { stablePrompt ->
+                    apiMessages.add(ChatApiMessage.text("system", stablePrompt))
+                }
+                checkpointMemoryPrompt.takeIf(String::isNotBlank)?.let { memoryPrompt ->
+                    apiMessages.add(ChatApiMessage.text("system", memoryPrompt))
+                }
+
+                // 2. 热区历史，排除上一条消息和当前/重新生成触发的用户消息。
                 for (msg in promptMessageGroups.historyMessages) {
                     addContextMessage(msg)
                 }
 
-                // 2. System prompt（中间位置），随后补上一条消息提升过渡权重
-                apiMessages.add(ChatApiMessage.text("system", systemPrompt))
+                // 3. 本轮动态资料与既有后置强制指令保留在尾部，避免稀释最近对话权重。
+                promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
+                    apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
+                }
+                promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
+                    apiMessages.add(ChatApiMessage.text("system", tailPrompt))
+                }
                 val previousContextMessage = promptMessageGroups.previousMessage
                 if (previousContextMessage != null) {
                     addContextMessage(previousContextMessage)
@@ -1149,13 +1211,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     sessionId = sessionId,
                     messages = apiMessages,
                     modelConfig = modelConfig,
-                    systemPrompt = systemPrompt,
-                    ragChunks = ragDebugLogs
+                    systemPrompt = promptSystemDebug,
+                    ragChunks = ragDebugLogs,
+                    promptCacheKey = promptCacheKey
                 ).collect { event ->
                     if (ChatBarApp.instance.streamingStopRequested.value) {
                         throw CancellationException("用户停止生成")
                     }
                     when (event) {
+                        is StreamEvent.Usage -> Unit
                         is StreamEvent.ReasoningDelta -> {
                             accumulatedReasoning += event.text
                             _streamingMessage.value = ChatMessage(

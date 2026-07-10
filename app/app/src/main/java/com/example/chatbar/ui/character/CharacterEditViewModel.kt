@@ -90,6 +90,9 @@ data class CharacterAvatarImageUiState(
     val preview: ByteArray? = null,
     val progress: Float = 0f,
     val path: String? = null,
+    val promptInputText: String = "",
+    val promptDesignReasoningText: String = "",
+    val promptDesignOutputText: String = "",
     val promptText: String = "",
     val error: String? = null,
     val statusText: String = ""
@@ -826,7 +829,7 @@ class CharacterEditViewModel(
         _avatarImageState.value = CharacterAvatarImageUiState(
             characterId = characterId,
             isGenerating = true,
-            promptText = promptInput.previewText,
+            promptInputText = promptInput.previewText,
             statusText = "正在设计头像 Prompt"
         )
         avatarImageJob = viewModelScope.launch {
@@ -863,7 +866,7 @@ class CharacterEditViewModel(
                         onContentDelta = { promptDraft ->
                             if (generationToken == avatarImageGenerationToken) {
                                 _avatarImageState.value = _avatarImageState.value.copy(
-                                    promptText = promptDraft,
+                                    promptDesignOutputText = promptDraft,
                                     statusText = "正在设计头像 Prompt"
                                 )
                             }
@@ -871,7 +874,7 @@ class CharacterEditViewModel(
                         onReasoningDelta = { reasoning ->
                             if (generationToken == avatarImageGenerationToken) {
                                 _avatarImageState.value = _avatarImageState.value.copy(
-                                    promptText = "[思考] $reasoning",
+                                    promptDesignReasoningText = reasoning,
                                     statusText = "正在设计头像 Prompt"
                                 )
                             }

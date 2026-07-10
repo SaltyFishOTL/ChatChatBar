@@ -1181,7 +1181,7 @@ private fun GenerateImageActionButton(
     enabled: Boolean,
     tint: Color
 ) {
-    val markerColor = if (enabled) {
+    val indicatorColor = if (enabled) {
         ChatBarTheme.colors.primary
     } else {
         ChatBarTheme.colors.mutedForeground.copy(alpha = 0.45f)
@@ -1201,19 +1201,11 @@ private fun GenerateImageActionButton(
         CbIcon(AppIcons.Image, "点击设置，长按直生", Modifier.size(20.dp), tint)
         Box(
             Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 7.dp, end = 7.dp)
-                .size(6.dp)
-                .clip(CircleShape)
-                .background(markerColor)
-        )
-        Box(
-            Modifier
                 .align(Alignment.BottomCenter)
                 .padding(bottom = 6.dp)
                 .size(width = 16.dp, height = 2.dp)
                 .clip(RoundedCornerShape(1.dp))
-                .background(markerColor.copy(alpha = 0.72f))
+                .background(indicatorColor.copy(alpha = 0.72f))
         )
     }
 }

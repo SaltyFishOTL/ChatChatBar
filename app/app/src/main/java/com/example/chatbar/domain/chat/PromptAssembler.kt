@@ -6,6 +6,13 @@ import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.prompt.PromptTemplates
 
+data class PromptCachePromptLayers(
+    val stableSystemPrompt: String,
+    val dynamicSystemPrompt: String,
+    val tailSystemPrompt: String,
+    val stablePrefixCacheable: Boolean
+)
+
 /**
  * 提示词组装器 — 将各部分设定组装成完整的 system prompt
  */
@@ -42,7 +49,8 @@ class PromptAssembler {
         replyLanguage: String? = null,
         longTermMemory: String? = null,
         worldBookPrompt: String? = null,
-        worldBookOutlets: Map<String, String> = emptyMap()
+        worldBookOutlets: Map<String, String> = emptyMap(),
+        includePostHistory: Boolean = true
     ): String {
         val rawPrompt = buildString {
             // 1. 其他设定（角色描述、RAG上下文、格式要求等）
@@ -145,10 +153,12 @@ class PromptAssembler {
             appendLine("==================================================")
             appendSection(systemPrompt)
 
-            appendLine("\n==================================================")
-            appendLine("8. 后置强制指令 (Post-History Instructions)")
-            appendLine("==================================================")
-            appendSection(postHistory)
+            if (includePostHistory) {
+                appendLine("\n==================================================")
+                appendLine("8. 后置强制指令 (Post-History Instructions)")
+                appendLine("==================================================")
+                appendSection(postHistory)
+            }
         }.trim()
 
         val promptWithOutlets = if (worldBookOutlets.isNotEmpty()) {
@@ -160,6 +170,220 @@ class PromptAssembler {
             rawPrompt
         }
         return PlaceholderRenderer.render(promptWithOutlets, playerName, characterCard.name)
+    }
+
+    /**
+     * 面向提示词缓存的分层组装：稳定设定在前，动态资料与既有后置指令保留在热区尾部。
+     * 若稳定区含动态 World Book outlet，则退回完整动态 system，避免发送未解析的占位符。
+     */
+    fun assembleCachePromptLayers(
+        characterCard: CharacterCard,
+        playerSetting: String? = null,
+        playerName: String? = null,
+        supplementarySetting: String? = null,
+        formatCard: FormatCard? = null,
+        ragResults: List<RetrievedKnowledgeCard> = emptyList(),
+        ragInjectionMode: String = "STANDARD",
+        replyLength: String? = null,
+        replyLanguage: String? = null,
+        longTermMemory: String? = null,
+        worldBookPrompt: String? = null,
+        worldBookOutlets: Map<String, String> = emptyMap()
+    ): PromptCachePromptLayers {
+        val stableRaw = buildStableCachePromptRaw(
+            characterCard = characterCard,
+            playerSetting = playerSetting,
+            playerName = playerName,
+            supplementarySetting = supplementarySetting,
+            formatCard = formatCard,
+            replyLength = replyLength,
+            replyLanguage = replyLanguage
+        )
+        val tailRaw = buildPostHistoryPromptRaw(characterCard)
+        if (OUTLET_TOKEN_REGEX.containsMatchIn(stableRaw)) {
+            return PromptCachePromptLayers(
+                stableSystemPrompt = "",
+                dynamicSystemPrompt = assembleSystemPrompt(
+                    characterCard = characterCard,
+                    playerSetting = playerSetting,
+                    playerName = playerName,
+                    supplementarySetting = supplementarySetting,
+                    formatCard = formatCard,
+                    ragResults = ragResults,
+                    ragInjectionMode = ragInjectionMode,
+                    replyLength = replyLength,
+                    replyLanguage = replyLanguage,
+                    longTermMemory = longTermMemory,
+                    worldBookPrompt = worldBookPrompt,
+                    worldBookOutlets = worldBookOutlets,
+                    includePostHistory = false
+                ),
+                tailSystemPrompt = renderLayer(tailRaw, playerName, characterCard.name, worldBookOutlets),
+                stablePrefixCacheable = false
+            )
+        }
+
+        val dynamicRaw = buildDynamicCachePromptRaw(
+            ragResults = ragResults,
+            ragInjectionMode = ragInjectionMode,
+            longTermMemory = longTermMemory,
+            worldBookPrompt = worldBookPrompt
+        )
+        return PromptCachePromptLayers(
+            stableSystemPrompt = renderLayer(stableRaw, playerName, characterCard.name, worldBookOutlets),
+            dynamicSystemPrompt = renderLayer(dynamicRaw, playerName, characterCard.name, worldBookOutlets),
+            tailSystemPrompt = renderLayer(tailRaw, playerName, characterCard.name, worldBookOutlets),
+            stablePrefixCacheable = true
+        )
+    }
+
+    /** 将已冻结的长期记忆快照以原有段落形式送入缓存前缀。 */
+    fun assembleLongTermMemoryCheckpoint(
+        memorySnapshot: String,
+        playerName: String? = null,
+        botName: String = ""
+    ): String = renderLayer(
+        raw = buildLongTermMemoryPromptRaw(memorySnapshot),
+        playerName = playerName,
+        botName = botName,
+        worldBookOutlets = emptyMap()
+    )
+
+    private fun buildStableCachePromptRaw(
+        characterCard: CharacterCard,
+        playerSetting: String?,
+        playerName: String?,
+        supplementarySetting: String?,
+        formatCard: FormatCard?,
+        replyLength: String?,
+        replyLanguage: String?
+    ): String = buildString {
+        val characterSection = buildCharacterSection(characterCard)
+        if (characterSection.isNotBlank()) {
+            appendLine("==================================================")
+            appendLine("1. 角色卡基本描述与设定")
+            appendLine("==================================================")
+            appendSection(characterSection)
+        }
+
+        if (formatCard != null && formatCard.content.isNotBlank()) {
+            appendLine("\n==================================================")
+            appendLine("3. 输出格式与规范要求 (Format Constraint)")
+            appendLine("==================================================")
+            appendSection("严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}")
+        }
+
+        appendReplyConstraints(replyLength, replyLanguage)
+
+        if (!supplementarySetting.isNullOrBlank()) {
+            appendLine("\n==================================================")
+            appendLine("5. 本次对话临时/补充设定 (Supplementary Settings)")
+            appendLine("==================================================")
+            appendSection("【补充设定】\n$supplementarySetting")
+        }
+
+        val personalStr = buildString {
+            if (!playerName.isNullOrBlank()) appendLine("玩家名称: $playerName")
+            if (!playerSetting.isNullOrBlank()) appendLine(playerSetting)
+        }.trim()
+        if (personalStr.isNotBlank()) {
+            appendLine("\n==================================================")
+            appendLine("6. 玩家人设与身份设定 (Player Profile)")
+            appendLine("==================================================")
+            appendSection("【个人设定】\n$personalStr")
+        }
+
+        appendLine("\n==================================================")
+        appendLine("7. 系统核心行为指令 (System Instruction)")
+        appendLine("==================================================")
+        appendSection(resolveSystemPrompt(characterCard))
+    }.trim()
+
+    private fun buildDynamicCachePromptRaw(
+        ragResults: List<RetrievedKnowledgeCard>,
+        ragInjectionMode: String,
+        longTermMemory: String?,
+        worldBookPrompt: String?
+    ): String = buildString {
+        if (!worldBookPrompt.isNullOrBlank()) {
+            appendLine("==================================================")
+            appendLine("1.5 世界设定 (World Book)")
+            appendLine("==================================================")
+            appendSection(worldBookPrompt)
+        }
+
+        val ragSection = buildRagCardsSection(ragResults, ragInjectionMode)
+        if (ragSection.isNotBlank()) {
+            appendLine("\n==================================================")
+            appendLine("2. 检索参考背景与知识库信息 (RAG Context)")
+            appendLine("==================================================")
+            appendSection(ragSection)
+        }
+
+        appendLongTermMemorySection(longTermMemory)
+    }.trim()
+
+    private fun StringBuilder.appendReplyConstraints(replyLength: String?, replyLanguage: String?) {
+        val constraints = buildString {
+            if (!replyLength.isNullOrBlank()) appendLine(PromptTemplates.replyLengthConstraint(replyLength))
+            if (!replyLanguage.isNullOrBlank()) appendLine(PromptTemplates.replyLanguageConstraint(replyLanguage))
+        }.trim()
+        appendLine("\n==================================================")
+        appendLine("4. 回复偏好与语言约束")
+        appendLine("==================================================")
+        if (constraints.isNotBlank()) {
+            appendSection("【回复约束】【字数长度要求仅影响输出正文部分，确保正文字数符合字数要求，状态栏等格式文本不计入字数】\n$constraints")
+        } else {
+            appendSection("【回复约束】【字数长度要求仅影响输出正文部分，确保正文字数符合字数要求，状态栏等格式文本不计入字数】\n请按照【300字短篇】的长度要求构建正文进行回复")
+        }
+    }
+
+    private fun StringBuilder.appendLongTermMemorySection(longTermMemory: String?) {
+        val memoryRaw = buildLongTermMemoryPromptRaw(longTermMemory.orEmpty())
+        if (memoryRaw.isNotBlank()) {
+            appendLine("\n")
+            append(memoryRaw)
+        }
+    }
+
+    private fun buildLongTermMemoryPromptRaw(memory: String): String {
+        if (memory.isBlank()) return ""
+        return buildString {
+            appendLine("==================================================")
+            appendLine("4.5 Long-Term Memory")
+            appendLine("==================================================")
+            append("The following is persistent long-term memory for this conversation. " +
+                "Use it as stable context, but do not quote it unless relevant.\n$memory")
+        }.trim()
+    }
+
+    private fun buildPostHistoryPromptRaw(characterCard: CharacterCard): String = buildString {
+        appendLine("==================================================")
+        appendLine("8. 后置强制指令 (Post-History Instructions)")
+        appendLine("==================================================")
+        appendSection(resolvePostHistory(characterCard))
+    }.trim()
+
+    private fun resolveSystemPrompt(characterCard: CharacterCard): String =
+        characterCard.systemPrompt.takeIf { it.isNotBlank() }
+            ?.replace("{{original}}", PromptTemplates.systemPromptTemplate().trimIndent().trim())
+            ?: PromptTemplates.systemPromptTemplate().trimIndent().trim()
+
+    private fun resolvePostHistory(characterCard: CharacterCard): String =
+        characterCard.postHistoryInstructions.takeIf { it.isNotBlank() }
+            ?.replace("{{original}}", PromptTemplates.postHistoryInstructionsTemplate().trimIndent().trim())
+            ?: PromptTemplates.postHistoryInstructionsTemplate().trimIndent().trim()
+
+    private fun renderLayer(
+        raw: String,
+        playerName: String?,
+        botName: String,
+        worldBookOutlets: Map<String, String>
+    ): String {
+        val withOutlets = if (worldBookOutlets.isEmpty()) raw else {
+            OUTLET_TOKEN_REGEX.replace(raw) { match -> worldBookOutlets[match.groupValues[1]] ?: match.value }
+        }
+        return PlaceholderRenderer.render(withOutlets, playerName, botName)
     }
 
     // ========================= 内部方法 =========================
@@ -226,3 +450,5 @@ class PromptAssembler {
     }
 
 }
+
+private val OUTLET_TOKEN_REGEX = Regex("\\{\\{outlet::(\\w+)}}")

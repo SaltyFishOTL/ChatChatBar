@@ -129,6 +129,13 @@ fun DebugLogCard(logEntry: DebugLogEntry) {
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
                     )
+                    logEntry.cacheUsageSummary?.let { cacheSummary ->
+                        CbText(
+                            cacheSummary,
+                            color = ChatBarTheme.colors.primary,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
                 }
                 if (logEntry.error != null) CbIcon(AppIcons.Error, "错误", tint = ChatBarTheme.colors.destructive)
                 else if (!logEntry.isCompleted) CbSpinner(Modifier.size(20.dp))

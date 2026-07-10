@@ -84,7 +84,6 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
-import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.draft.CharacterOpenModalKind
 import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
@@ -1501,7 +1500,7 @@ private fun CharacterAutoFillDialog(
                     CbText(state.statusText.ifBlank { "正在生成角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
             }
-            state.visibleOutputs.forEach { output ->
+            state.visibleOutputs.asReversed().forEach { output ->
                 DebugTextBlock(output.title, output.text)
             }
             state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
@@ -1649,7 +1648,7 @@ private fun CharacterRewriteDialog(
                     CbText(state.statusText.ifBlank { "正在改写角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
             }
-            state.visibleOutputs.forEach { output ->
+            state.visibleOutputs.asReversed().forEach { output ->
                 DebugTextBlock(output.title, output.text)
             }
             state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
@@ -1676,11 +1675,9 @@ private fun CharacterRewriteDialog(
                 title = "封面候选",
                 onCancel = onCancelCover
             )
-            state.draft?.let { draft ->
+            state.draft?.let {
                 CbDivider()
                 RewriteDiffPreview(state.diff)
-                CbDivider()
-                RewriteCandidatePreview(draft)
             }
         }
     }
@@ -1690,18 +1687,6 @@ private fun CharacterRewriteDialog(
 private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
         CbText("检索调试", style = ChatBarTheme.typography.heading)
-        debug.plan?.let { plan ->
-            DebugTextBlock(
-                title = "搜索规划",
-                text = buildString {
-                    appendLine("needSearch=${plan.needSearch}")
-                    if (plan.reason.isNotBlank()) appendLine("reason=${plan.reason}")
-                    plan.queries.forEachIndexed { index, query ->
-                        appendLine("${index + 1}. [P${query.priority}] ${query.query}")
-                    }
-                }.trim()
-            )
-        }
         debug.brief?.takeIf(ResearchBriefVisible::hasBriefText)?.let { brief ->
             DebugTextBlock(
                 title = "整理后的资料",
@@ -1735,7 +1720,7 @@ private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
         }
         if (debug.sources.isNotEmpty()) {
             CbText("搜索到并清洗后的内容", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-            debug.sources.forEach { source ->
+            debug.sources.asReversed().forEach { source ->
                 DebugTextBlock(
                     title = "[${source.sourceId}] ${source.title}",
                     text = buildString {
@@ -1746,6 +1731,18 @@ private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
                     }.trim()
                 )
             }
+        }
+        debug.plan?.let { plan ->
+            DebugTextBlock(
+                title = "搜索规划",
+                text = buildString {
+                    appendLine("needSearch=${plan.needSearch}")
+                    if (plan.reason.isNotBlank()) appendLine("reason=${plan.reason}")
+                    plan.queries.forEachIndexed { index, query ->
+                        appendLine("${index + 1}. [P${query.priority}] ${query.query}")
+                    }
+                }.trim()
+            )
         }
     }
 }
@@ -1901,53 +1898,6 @@ private fun CoverImagePreview(
             }
             if (imageModel == null && state.promptText.isNotBlank()) {
                 CbText(state.promptText, color = ChatBarTheme.colors.mutedForeground)
-            }
-        }
-    }
-}
-
-@Composable
-private fun RewriteCandidatePreview(draft: CharacterRewriteDraft) {
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        CbText("改写候选", style = ChatBarTheme.typography.heading)
-        PreviewField("角色卡名称", draft.name.orEmpty())
-        PreviewField("开场白", draft.greeting.orEmpty())
-        PreviewField("基本设定", draft.basicSetting.orEmpty())
-        PreviewField("NovelAI 默认风格", draft.defaultImagePrompt.orEmpty())
-        PreviewField("自由人物设定", draft.freeformCharacterText.orEmpty())
-        if (draft.deleteCharacterIds.isNotEmpty()) {
-            CbSurface(
-                Modifier.fillMaxWidth(),
-                color = ChatBarTheme.colors.muted,
-                border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    CbText("删除人物", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-                    CbText(draft.deleteCharacterIds.joinToString("、"))
-                }
-            }
-        }
-        draft.characters.forEachIndexed { index, character ->
-            CbSurface(
-                Modifier.fillMaxWidth(),
-                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
-            ) {
-                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    CbText(
-                        character.id?.takeIf(String::isNotBlank)?.let { "人物 ${index + 1}: ${character.name.orEmpty().ifBlank { it }}" } ?: "新增人物 ${index + 1}",
-                        style = ChatBarTheme.typography.heading
-                    )
-                    CharacterPreviewField("姓名", character.name.orEmpty())
-                    CharacterPreviewField("简介", character.profile.orEmpty())
-                    CharacterPreviewField("外貌", character.appearance.orEmpty())
-                    CharacterPreviewField("服装", character.clothing.orEmpty())
-                    CharacterPreviewField("能力", character.abilities.orEmpty())
-                    CharacterPreviewField("习惯/爱好", character.habits.orEmpty())
-                    CharacterPreviewField("背景", character.background.orEmpty())
-                    CharacterPreviewField("关系", character.relationships.orEmpty())
-                    CharacterPreviewField("语气", character.speakingStyle.orEmpty())
-                    CharacterPreviewField("NAI 人物提示词", character.imagePrompt.orEmpty())
-                }
             }
         }
     }
@@ -2184,11 +2134,49 @@ private fun CharacterAvatarEditor(
                             CbButton("应用", onApply, Modifier.weight(1f))
                         }
                     }
+                    CharacterAvatarPromptDebug(state)
                     state.error?.takeIf(String::isNotBlank)?.let { error ->
                         CbText(error, color = ChatBarTheme.colors.destructive)
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun CharacterAvatarPromptDebug(state: CharacterAvatarImageUiState) {
+    val blocks = listOf(
+        "输入给提示词设计 AI 的内容" to state.promptInputText,
+        "提示词设计 AI 思考" to state.promptDesignReasoningText,
+        "提示词设计 AI 原始输出" to state.promptDesignOutputText,
+        "最终送入 NovelAI 的正向 Prompt" to state.promptText
+    ).filter { (_, text) -> text.isNotBlank() }
+    if (blocks.isEmpty()) return
+    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        blocks.forEach { (title, text) ->
+            PromptDebugBlock(title, text)
+        }
+    }
+}
+
+@Composable
+private fun PromptDebugBlock(title: String, text: String) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.background,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            CbText(title, style = ChatBarTheme.typography.caption, color = ChatBarTheme.colors.mutedForeground)
+            BasicText(
+                text,
+                modifier = Modifier.fillMaxWidth().heightIn(max = 180.dp).verticalScroll(rememberScrollState()),
+                style = ChatBarTheme.typography.caption.copy(
+                    color = ChatBarTheme.colors.foreground,
+                    fontFamily = FontFamily.Monospace
+                )
+            )
         }
     }
 }

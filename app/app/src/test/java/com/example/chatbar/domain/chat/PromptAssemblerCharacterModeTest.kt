@@ -104,6 +104,30 @@ class PromptAssemblerCharacterModeTest {
         assertFalse(prompt.contains("${'$'}botname"))
     }
 
+    @Test fun cacheLayersKeepMemoryDynamicAndPostHistoryAtTail() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card(basicSetting = "稳定角色设定").copy(postHistoryInstructions = "尾部规则"),
+            longTermMemory = "冻结前记忆"
+        )
+
+        assertTrue(layers.stablePrefixCacheable)
+        assertTrue(layers.stableSystemPrompt.contains("稳定角色设定"))
+        assertFalse(layers.stableSystemPrompt.contains("Long-Term Memory"))
+        assertTrue(layers.dynamicSystemPrompt.contains("冻结前记忆"))
+        assertTrue(layers.tailSystemPrompt.contains("尾部规则"))
+    }
+
+    @Test fun cacheLayersFallBackWhenStaticPromptDependsOnDynamicOutlet() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card(basicSetting = "{{outlet::scene}}"),
+            worldBookOutlets = mapOf("scene" to "动态场景")
+        )
+
+        assertFalse(layers.stablePrefixCacheable)
+        assertTrue(layers.stableSystemPrompt.isBlank())
+        assertTrue(layers.dynamicSystemPrompt.contains("动态场景"))
+    }
+
     private fun card(
         name: String = "Card",
         editMode: CharacterEditMode = CharacterEditMode.STRUCTURED,

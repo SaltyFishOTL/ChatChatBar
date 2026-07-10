@@ -144,6 +144,7 @@ class CharacterAutoFillService(
                 }
                 is StreamEvent.Error -> streamError = event.message
                 StreamEvent.Done,
+                is StreamEvent.Usage,
                 is StreamEvent.ReasoningDelta -> Unit
             }
         }

@@ -1,5 +1,6 @@
 package com.example.chatbar.utils
 
+import com.example.chatbar.domain.chat.PromptCacheUsage
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -19,6 +20,10 @@ data class DebugLogEntry(
     val rawReasoningOutput: StringBuilder = StringBuilder(),   // 原生思维链输出文本
     var estimatedPromptTokens: Int = 0,
     var estimatedCompletionTokens: Int = 0,
+    val apiPromptTokens: Int? = null,
+    val cachedPromptTokens: Int? = null,
+    val cacheWriteTokens: Int? = null,
+    val cacheMissTokens: Int? = null,
     var error: String? = null,
     var isCompleted: Boolean = false
 ) {
@@ -33,6 +38,12 @@ data class DebugLogEntry(
 
     val totalTokens: Int
         get() = estimatedPromptTokens + estimatedCompletionTokens
+
+    val cacheUsageSummary: String?
+        get() = cachedPromptTokens?.let { cached ->
+            val input = apiPromptTokens ?: (cached + (cacheMissTokens ?: 0))
+            "缓存命中 $cached / $input" + cacheWriteTokens?.let { "，写入 $it" }.orEmpty()
+        }
 }
 
 object DebugLogManager {
@@ -108,6 +119,24 @@ object DebugLogManager {
             }
         }
         activeLogs.remove(sessionId)
+    }
+
+    fun recordPromptCacheUsage(sessionId: String, usage: PromptCacheUsage) {
+        val logId = activeLogs[sessionId] ?: return
+        synchronized(this) {
+            _logs.value = _logs.value.map { entry ->
+                if (entry.id == logId) {
+                    entry.copy(
+                        apiPromptTokens = usage.promptTokens ?: entry.apiPromptTokens,
+                        cachedPromptTokens = usage.cachedTokens ?: entry.cachedPromptTokens,
+                        cacheWriteTokens = usage.cacheWriteTokens ?: entry.cacheWriteTokens,
+                        cacheMissTokens = usage.cacheMissTokens ?: entry.cacheMissTokens
+                    )
+                } else {
+                    entry
+                }
+            }
+        }
     }
 
     fun logError(sessionId: String, errorMsg: String) {

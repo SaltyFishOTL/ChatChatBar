@@ -613,7 +613,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
 除了给定 tags 外，不要使用质量 tags（`masterpiece`, `best quality`）。
 不要 negative tags。
 末尾保留逗号。
-总 token <=512，单个目标 <=200。
+总 token <=500，单栏 <=200，角色部分尽量简洁。
 
 权重：`y::tag::`
 Boost `y>1`：视觉焦点，强化对比。
@@ -678,7 +678,7 @@ Size preset：
 `PORTRAIT` = 垂直单角色肖像、近景、上半身、竖构图。
 `SQUARE` = 居中/平衡肖像、物体焦点、紧凑群像、中性构图。
 `HORIZONTAL` = 宽场景、两人以上、环境焦点、动作铺开。
-输出 JSON only（Max 512 tokens）：
+输出 JSON only（总 token <=500，单栏 <=200，角色部分尽量简洁。）：
 ```json
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"name":"exact name","caption":"...","center":{"x":0.3,"y":0.5}}]}
 ```
@@ -711,21 +711,50 @@ JSON only, no Markdown, no explanation:
         structured: Boolean
     ): String =
         buildString {
-            appendLine(NOVELAI_IMAGE_PROMPT_SYSTEM.trim())
+            appendLine(novelAiImagePromptCoreSystem())
             appendLine()
-            appendLine("Preset style prompt (include verbatim in baseCaption):")
-            appendLine(cardDefaultImagePrompt.ifBlank { "(none)" })
-            if (structured && characterImagePrompts.isNotEmpty()) {
-                appendLine()
+            appendLine(novelAiImagePromptDefaultStyleSystem(cardDefaultImagePrompt))
+            appendLine()
+            append(novelAiImagePromptCharacterPresetSystem(characterImagePrompts, structured))
+        }
+
+    fun novelAiImagePromptCoreSystem(): String = NOVELAI_IMAGE_PROMPT_SYSTEM.trim()
+
+    fun novelAiImagePromptDefaultStyleSystem(cardDefaultImagePrompt: String): String =
+        """
+        Preset style prompt (include verbatim in baseCaption):
+        ${cardDefaultImagePrompt.ifBlank { "(none)" }}
+        """.trimIndent()
+
+    fun novelAiImagePromptCharacterPresetSystem(
+        characterImagePrompts: List<Pair<String, String>>,
+        structured: Boolean
+    ): String =
+        if (structured && characterImagePrompts.isNotEmpty()) {
+            buildString {
                 appendLine("Character preset prompts (include verbatim at start of each character's caption):")
                 characterImagePrompts.forEach { (name, prompt) ->
                     appendLine("- $name: ${prompt.ifBlank { "(none)" }}")
                 }
-            } else {
-                appendLine()
-                append("This card uses no separate character captions; Design character prompts based on current scenario.")
-            }
+            }.trimEnd()
+        } else {
+            "This card uses no separate character captions; Design character prompts based on current scenario."
         }
+
+    fun novelAiImagePromptImageContentHintUser(imageContentHint: String): String =
+        buildString {
+            appendLine("图片内容提示：")
+            append(imageContentHint.trim().ifBlank { "(none)" })
+        }
+
+    fun novelAiImagePromptPreferenceSystem(finalPromptRequirement: String): String =
+        buildString {
+            appendLine("用户针对最终 NovelAI Prompt 的要求（优先级高，用于约束 tag 选择、构图取舍和输出形态；不要原样解释这段文字）：")
+            append(finalPromptRequirement.trim().ifBlank { "(none)" })
+        }
+
+    fun novelAiImagePromptAssistantScene(message: ChatMessage, playerName: String? = null): String =
+        restoreUsernamePlaceholder(message.displayContent, playerName)
 
     fun novelAiImagePromptConversation(
         messages: List<ChatMessage>,
