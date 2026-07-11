@@ -125,6 +125,7 @@ fun ChatScreen(
     val imageGeneration by viewModel.imageGeneration.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
+    val draftLoaded by viewModel.draftLoaded.collectAsState()
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
@@ -134,6 +135,7 @@ fun ChatScreen(
     val rootView = LocalView.current
 
     var input by remember(sessionId) { mutableStateOf(TextFieldValue("")) }
+    var inputTouched by remember(sessionId) { mutableStateOf(false) }
     val selectedImages = remember { mutableStateListOf<String>() }
     var settingsOpen by remember { mutableStateOf(false) }
     var debugOpen by remember { mutableStateOf(false) }
@@ -165,8 +167,8 @@ fun ChatScreen(
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
 
-    LaunchedEffect(draftInput) {
-        if (input.text != draftInput) {
+    LaunchedEffect(draftLoaded, draftInput) {
+        if (draftLoaded && !inputTouched && input.text != draftInput) {
             input = TextFieldValue(draftInput, selection = TextRange(draftInput.length))
         }
     }
@@ -749,6 +751,7 @@ fun ChatScreen(
                 input = input,
                 onInput = {
                     input = it
+                    inputTouched = true
                     viewModel.updateDraftInput(it.text)
                 },
                 responding = isResponding,

@@ -132,6 +132,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _draftInput = MutableStateFlow("")
     val draftInput: StateFlow<String> = _draftInput.asStateFlow()
+    private val _draftLoaded = MutableStateFlow(false)
+    val draftLoaded: StateFlow<Boolean> = _draftLoaded.asStateFlow()
 
     private val _isResponding = MutableStateFlow(false)
     val isResponding: StateFlow<Boolean> = _isResponding.asStateFlow()
@@ -240,6 +242,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (s != null && !draftTouched) {
                 _draftInput.value = chatRepository.getSessionDraft(sessionId)
             }
+            _draftLoaded.value = true
             val settings = settingsRepository.getAppSettings()
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale

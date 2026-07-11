@@ -225,8 +225,8 @@ private fun CursorAwareExpandedStringInput(
     var preferredCursorY by remember { mutableStateOf<Float?>(null) }
     val imeBottom = WindowInsets.ime.getBottom(density)
 
-    LaunchedEffect(value) {
-        if (value != fieldValue.text) {
+    LaunchedEffect(value, focused) {
+        if (!focused && value != fieldValue.text) {
             val start = fieldValue.selection.start.coerceIn(0, value.length)
             val end = fieldValue.selection.end.coerceIn(0, value.length)
             fieldValue = fieldValue.copy(text = value, selection = TextRange(start, end), composition = null)
@@ -389,14 +389,14 @@ fun FullscreenTextEditor(
     if (!visible) return
     val confirm = onConfirm ?: onDismiss
     var editorValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
-    LaunchedEffect(text) {
-        if (text != editorValue.text) {
-            val start = editorValue.selection.start.coerceIn(0, text.length)
-            val end = editorValue.selection.end.coerceIn(0, text.length)
-            editorValue = editorValue.copy(text = text, selection = TextRange(start, end), composition = null)
-        }
-    }
     FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+        LaunchedEffect(text, focused) {
+            if (!focused && text != editorValue.text) {
+                val start = editorValue.selection.start.coerceIn(0, text.length)
+                val end = editorValue.selection.end.coerceIn(0, text.length)
+                editorValue = editorValue.copy(text = text, selection = TextRange(start, end), composition = null)
+            }
+        }
         CursorAwareFullscreenTextField(
             value = editorValue,
             onValueChange = { newValue ->
