@@ -7,15 +7,16 @@ import org.junit.Test
 
 class RoleplaySpeakerPromptTest {
     @Test
-    fun speakerPrompt_listsOnlyNormalizedDistinctNamesAboveUserContent() {
+    fun speakerPrompt_preservesProtocolAndListsNormalizedDistinctNamesAboveUserContent() {
         val prompt = PromptTemplates.roleplaySpeakerFormatUserPrompt(
             characterNames = listOf(" 爱音 ", "灯", "爱音", "  "),
             userContent = "继续剧情"
         )
 
         assertTrue(prompt.contains("角色姓名：爱音、灯"))
-        assertTrue(prompt.contains("对白格式：<n=\"完整角色名（不可见）\"/>[对白内容]()"))
-        assertTrue(prompt.contains("内心格式：<n=\"完整角色名（不可见）\"/>『**内心内容**』"))
+        assertTrue(prompt.contains("<n=\"完整角色名\"/>"))
+        assertTrue(prompt.contains("[对白内容]()"))
+        assertTrue(prompt.contains("『**内心内容**』"))
         assertTrue(prompt.endsWith("【用户本轮输入】\n继续剧情"))
         assertFalse(prompt.contains("角色姓名：爱音、灯、爱音"))
     }
