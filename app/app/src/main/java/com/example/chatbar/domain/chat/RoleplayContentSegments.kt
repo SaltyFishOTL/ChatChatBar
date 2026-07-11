@@ -453,7 +453,7 @@ private fun splitRoleplayMarkers(
     var cursor = start
     while (cursor < end) {
         val nextDialogue = findNextDialogueOpen(visible.text, cursor, end)
-        val nextThought = visible.text.indexOf("『**", cursor).takeIf { it >= 0 && it < end } ?: -1
+        val nextThought = findNextThoughtOpen(visible.text, cursor, end)
         val next = listOf(nextDialogue, nextThought).filter { it >= 0 }.minOrNull() ?: -1
         if (next < 0) {
             addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, end)
@@ -466,8 +466,7 @@ private fun splitRoleplayMarkers(
             addTextSegment(segments, visible, RoleplaySegmentKind.DIALOGUE, next, segmentEnd)
             cursor = segmentEnd
         } else {
-            val close = visible.text.indexOf("**』", next + 3).takeIf { it >= 0 && it < end } ?: -1
-            val segmentEnd = if (close >= 0) close + 3 else end
+            val segmentEnd = findThoughtClose(visible.text, next, end)
             addTextSegment(segments, visible, RoleplaySegmentKind.THOUGHT, next, segmentEnd)
             cursor = segmentEnd
         }
@@ -534,7 +533,7 @@ private fun findNextDialogueOpen(text: String, start: Int, end: Int): Int {
         if (index == 0 || text[index - 1] != '!') {
             val bracketClose = text.indexOf(']', index + 1)
             if (bracketClose < 0 || bracketClose >= end) return index
-            if (bracketClose + 1 < end && text[bracketClose + 1] == '(') return index
+            return index
         }
         index = text.indexOf('[', index + 1)
     }
@@ -544,10 +543,20 @@ private fun findNextDialogueOpen(text: String, start: Int, end: Int): Int {
 private fun findDialogueClose(text: String, open: Int, end: Int): Int {
     val bracketClose = text.indexOf(']', open + 1)
     if (bracketClose < 0 || bracketClose >= end) return -1
-    if (bracketClose + 1 >= end || text[bracketClose + 1] != '(') return -1
+    if (bracketClose + 1 >= end || text[bracketClose + 1] != '(') return bracketClose + 1
     val parenClose = text.indexOf(')', bracketClose + 2)
-    if (parenClose < 0 || parenClose >= end) return -1
+    if (parenClose < 0 || parenClose >= end) return bracketClose + 1
     return parenClose + 1
+}
+
+private fun findNextThoughtOpen(text: String, start: Int, end: Int): Int {
+    val open = text.indexOf('『', start)
+    return open.takeIf { it >= 0 && it < end } ?: -1
+}
+
+private fun findThoughtClose(text: String, open: Int, end: Int): Int {
+    val close = text.indexOf('』', open + 1)
+    return if (close >= 0 && close < end) close + 1 else end
 }
 
 private fun attachRoleplaySpeakerPrefixes(
@@ -555,44 +564,96 @@ private fun attachRoleplaySpeakerPrefixes(
     segments: List<RoleplayTextSegment>
 ): List<RoleplayTextSegment> {
     val result = mutableListOf<RoleplayTextSegment>()
+    val visibleRawIndexes = visibleRoleplayText(content).rawIndexes.toHashSet()
     var lastSpeakerName: String? = null
+    var pendingSpeakerPrefix: RoleplaySpeakerPrefix? = null
     segments.forEach { segment ->
         if (segment.kind != RoleplaySegmentKind.DIALOGUE && segment.kind != RoleplaySegmentKind.THOUGHT) {
             result += segment
+            if (segment.kind == RoleplaySegmentKind.NARRATION && !isLongDashWrappedText(segment.rawText)) {
+                findLastRoleplaySpeakerPrefix(
+                    content = content,
+                    start = segment.start,
+                    endExclusive = segment.endExclusive,
+                    visibleRawIndexes = visibleRawIndexes
+                )?.let { prefix ->
+                    pendingSpeakerPrefix?.let { pending ->
+                        hideRoleplaySpeakerMarkerInNarration(result, pending)
+                    }
+                    pendingSpeakerPrefix = prefix
+                }
+            }
             return@forEach
         }
 
-        val prefix = findRoleplaySpeakerPrefix(content, segment.start)
+        val directPrefix = findRoleplaySpeakerPrefix(content, segment.start)
+        val prefix = directPrefix ?: pendingSpeakerPrefix
         if (prefix == null) {
             result += segment.copy(speakerName = lastSpeakerName)
             return@forEach
         }
 
-        val previous = result.lastOrNull()
-        if (previous?.kind == RoleplaySegmentKind.NARRATION && previous.endExclusive == segment.start) {
-            val removedLength = segment.start - prefix.start
-            val trimmedRaw = previous.rawText.dropLast(removedLength.coerceAtMost(previous.rawText.length))
-            val trimmedDisplay = previous.displayText.dropLast(removedLength.coerceAtMost(previous.displayText.length))
-            result.removeAt(result.lastIndex)
-            if (trimmedRaw.isNotBlank() || trimmedDisplay.isNotBlank()) {
-                result += previous.copy(
-                    rawText = trimmedRaw,
-                    displayText = trimmedDisplay,
-                    endExclusive = prefix.start
-                )
+        if (directPrefix != null) {
+            val previous = result.lastOrNull()
+            if (previous?.kind == RoleplaySegmentKind.NARRATION && previous.endExclusive == segment.start) {
+                val removedLength = segment.start - prefix.start
+                val trimmedRaw = previous.rawText.dropLast(removedLength.coerceAtMost(previous.rawText.length))
+                val trimmedDisplay = previous.displayText.dropLast(removedLength.coerceAtMost(previous.displayText.length))
+                result.removeAt(result.lastIndex)
+                if (trimmedRaw.isNotBlank() || trimmedDisplay.isNotBlank()) {
+                    result += previous.copy(
+                        rawText = trimmedRaw,
+                        displayText = trimmedDisplay,
+                        endExclusive = prefix.start
+                    )
+                }
             }
+        } else {
+            hideRoleplaySpeakerMarkerInNarration(result, prefix)
         }
 
         result += segment.copy(
-            rawText = content.substring(prefix.start, segment.endExclusive),
-            start = prefix.start,
+            rawText = if (directPrefix != null) content.substring(prefix.start, segment.endExclusive) else segment.rawText,
+            start = if (directPrefix != null) prefix.start else segment.start,
             speakerName = prefix.speakerName
         )
         prefix.speakerName
             ?.takeIf(String::isNotEmpty)
             ?.let { lastSpeakerName = it }
+        pendingSpeakerPrefix = null
     }
     return result
+}
+
+private fun hideRoleplaySpeakerMarkerInNarration(
+    segments: MutableList<RoleplayTextSegment>,
+    prefix: RoleplaySpeakerPrefix
+) {
+    val index = segments.indexOfLast { segment ->
+        segment.kind == RoleplaySegmentKind.NARRATION &&
+            prefix.start in segment.start until segment.endExclusive
+    }
+    if (index < 0) return
+    val segment = segments[index]
+    segments[index] = segment.copy(displayText = stripRoleplaySpeakerMarkers(segment.displayText))
+}
+
+private fun findLastRoleplaySpeakerPrefix(
+    content: String,
+    start: Int,
+    endExclusive: Int,
+    visibleRawIndexes: Set<Int>
+): RoleplaySpeakerPrefix? {
+    val safeStart = start.coerceIn(0, content.length)
+    val safeEnd = endExclusive.coerceIn(safeStart, content.length)
+    val match = roleplaySpeakerMarkerPattern
+        .findAll(content.substring(safeStart, safeEnd))
+        .lastOrNull { match -> safeStart + match.range.first in visibleRawIndexes }
+        ?: return null
+    return RoleplaySpeakerPrefix(
+        start = safeStart + match.range.first,
+        speakerName = match.groupValues[1].trim()
+    )
 }
 
 private fun findRoleplaySpeakerPrefix(content: String, segmentStart: Int): RoleplaySpeakerPrefix? {

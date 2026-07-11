@@ -245,20 +245,20 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
-    fun roleplaySegments_plainBracketHeaderDoesNotCaptureFollowingDialogue() {
+    fun roleplaySegments_plainBracketDialogueDoesNotNeedParentheses() {
         val content = "[正文]\n[\"对白\"]()后续"
 
         val result = parseRoleplayTextSegments(content)
 
         assertEquals(
             listOf(
-                RoleplaySegmentKind.NARRATION,
+                RoleplaySegmentKind.DIALOGUE,
                 RoleplaySegmentKind.DIALOGUE,
                 RoleplaySegmentKind.NARRATION
             ),
             result.map { it.kind }
         )
-        assertEquals("[正文]\n", result[0].rawText)
+        assertEquals("[正文]", result[0].rawText)
         assertEquals("[\"对白\"]()", result[1].rawText)
     }
 
@@ -284,11 +284,11 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
-    fun roleplaySegments_onlyStrictThoughtMarkersBecomeThought() {
+    fun roleplaySegments_allThoughtQuoteMarkersBecomeThought() {
         val loose = parseRoleplayTextSegments("『*不是心理*』")
         val strict = parseRoleplayTextSegments("『**心理**』")
 
-        assertEquals(listOf(RoleplaySegmentKind.NARRATION), loose.map { it.kind })
+        assertEquals(listOf(RoleplaySegmentKind.THOUGHT), loose.map { it.kind })
         assertEquals(listOf(RoleplaySegmentKind.THOUGHT), strict.map { it.kind })
     }
 
@@ -355,14 +355,14 @@ class ChatBubbleMarkdownTest {
 
         assertEquals(
             listOf(
-                RoleplaySegmentKind.NARRATION,
+                RoleplaySegmentKind.DIALOGUE,
                 RoleplaySegmentKind.DIALOGUE,
                 RoleplaySegmentKind.NARRATION,
                 RoleplaySegmentKind.NARRATION
             ),
             result.map { it.kind }
         )
-        assertEquals("[正文]\n", result[0].rawText)
+        assertEquals("[正文]", result[0].rawText)
         assertEquals("[\"对白\"]()", result[1].rawText)
         assertEquals("$dash\n**【行动选项】**\n\n1.**[选项一]()**\n\n2.**[选项二]()**\n$dash", result[3].rawText)
     }
