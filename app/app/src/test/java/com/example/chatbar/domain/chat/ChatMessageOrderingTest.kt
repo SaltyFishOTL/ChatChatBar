@@ -1,6 +1,8 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.GeneratedImageCharacterPrompt
+import com.example.chatbar.data.local.entity.GeneratedImageMetadata
 import com.example.chatbar.data.local.entity.MESSAGE_ORDER_STEP
 import com.example.chatbar.data.local.entity.MessageRole
 import kotlinx.serialization.json.Json
@@ -74,6 +76,31 @@ class ChatMessageOrderingTest {
 
         assertNull(decoded.generatedFromMessageId)
         assertEquals(42 * MESSAGE_ORDER_STEP, decoded.orderKey)
+        assertEquals(emptyList<GeneratedImageMetadata>(), decoded.generatedImageMetadata)
+    }
+
+    @Test
+    fun `generated image metadata survives json round trip`() {
+        val metadata = GeneratedImageMetadata(
+            imagePath = "/tmp/image.png",
+            baseCaption = "1girl, outdoors",
+            characterPrompts = listOf(GeneratedImageCharacterPrompt("alice", 0.25f, 0.5f)),
+            negativePrompt = "lowres",
+            sizePreset = "PORTRAIT",
+            width = 832,
+            height = 1216
+        )
+        val original = message(
+            "image-1",
+            MessageRole.ASSISTANT,
+            "",
+            images = listOf(metadata.imagePath)
+        ).copy(generatedImageMetadata = listOf(metadata))
+
+        val encoded = Json.encodeToString(ChatMessage.serializer(), original)
+        val decoded = Json.decodeFromString(ChatMessage.serializer(), encoded)
+
+        assertEquals(listOf(metadata), decoded.generatedImageMetadata)
     }
 
     private fun message(

@@ -314,13 +314,61 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         imageContentHint: String = "",
         imagePromptPreference: String? = null,
         persistPreference: Boolean = false
+    ) = startNovelAiImageGeneration(
+        anchorMessageId = anchorMessageId,
+        imageContentHint = imageContentHint,
+        imagePromptPreference = imagePromptPreference,
+        persistPreference = persistPreference
+    )
+
+    fun regenerateNovelAiImage(messageId: String, imagePath: String) {
+        val message = _messages.value.firstOrNull { it.id == messageId } ?: return
+        viewModelScope.launch {
+            val metadata = message.generatedImageMetadata.firstOrNull { it.imagePath == imagePath }
+                ?: withContext(Dispatchers.IO) {
+                    com.example.chatbar.domain.image.NovelAiPngMetadataReader.read(imagePath)
+                }
+            if (metadata == null) {
+                _imageGeneration.value = ImageGenerationState(
+                    anchorMessageId = messageId,
+                    phase = ImageGenerationPhase.FAILED,
+                    error = "该图片不含可复用的 NovelAI 元数据"
+                )
+                return@launch
+            }
+            val prompt = NovelAiPromptPlan(
+                baseCaption = metadata.baseCaption,
+                characterCaptions = metadata.characterPrompts.map {
+                    com.example.chatbar.domain.image.NovelAiCharacterCaption(
+                        prompt = it.prompt,
+                        center = com.example.chatbar.domain.image.DesignedCharacterCenter(it.centerX, it.centerY)
+                    )
+                },
+                sizePreset = com.example.chatbar.domain.image.NovelAiImageSizePreset.from(metadata.sizePreset),
+                negativePrompt = metadata.negativePrompt
+            )
+            startNovelAiImageGeneration(
+                anchorMessageId = messageId,
+                promptOverride = prompt,
+                imageSizeOverride = NovelAiImageSize(metadata.width, metadata.height, "复用原图尺寸")
+            )
+        }
+    }
+
+    private fun startNovelAiImageGeneration(
+        anchorMessageId: String,
+        imageContentHint: String = "",
+        imagePromptPreference: String? = null,
+        persistPreference: Boolean = false,
+        promptOverride: NovelAiPromptPlan? = null,
+        imageSizeOverride: NovelAiImageSize? = null
     ) {
         val active = _imageGeneration.value
         if (active != null && !active.isTerminal) return
         val initialPreference = imagePromptPreference ?: _session.value?.imagePromptPreference.orEmpty()
         _imageGeneration.value = ImageGenerationState(
             anchorMessageId = anchorMessageId,
-            phase = ImageGenerationPhase.DESIGNING,
+            phase = if (promptOverride == null) ImageGenerationPhase.DESIGNING else ImageGenerationPhase.GENERATING,
             imageContentHint = imageContentHint,
             finalPromptRequirement = initialPreference
         )
@@ -338,7 +386,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             _imageGeneration.value = ImageGenerationState(
                 anchorMessageId = anchorMessageId,
-                phase = ImageGenerationPhase.DESIGNING,
+                phase = if (promptOverride == null) ImageGenerationPhase.DESIGNING else ImageGenerationPhase.GENERATING,
                 imageContentHint = imageContentHint,
                 finalPromptRequirement = finalPromptRequirement
             )
@@ -350,11 +398,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .playerName
                 .takeIf { it.isNotBlank() }
             val playerName = currentSession?.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
-            if (token == null || card == null || model == null || model.apiKey.isBlank()) {
+            if (token == null || (promptOverride == null && (card == null || model == null || model.apiKey.isBlank()))) {
                 val missing = mutableListOf<String>()
                 if (token == null) missing.add("NovelAI Token")
-                if (card == null) missing.add("角色卡")
-                if (model == null || model.apiKey.isBlank()) missing.add("默认生图模型/API Key")
+                if (promptOverride == null && card == null) missing.add("角色卡")
+                if (promptOverride == null && (model == null || model.apiKey.isBlank())) missing.add("默认生图模型/API Key")
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
@@ -364,7 +412,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 )
                 return@launch
             }
-            if (imageRatioError != null) {
+            if (promptOverride == null && imageRatioError != null) {
                 _imageGeneration.value = ImageGenerationState(
                     anchorMessageId,
                     ImageGenerationPhase.FAILED,
@@ -376,11 +424,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             try {
                 AiBackgroundWorkManager.run(sessionId) {
-                val prompt = novelAiPromptDesigner.design(
+                val prompt = promptOverride ?: novelAiPromptDesigner.design(
                     chatRepository.getMessages(sessionId),
                     anchorMessageId,
-                    card,
-                    model,
+                    card!!,
+                    model!!,
                     playerName = playerName,
                     sessionId = sessionId,
                     imageContentHint = imageContentHint,
@@ -393,7 +441,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         _imageGeneration.value = current.copy(promptDraft = draft)
                     }
                 }
-                val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
+                val imageSize = imageSizeOverride
+                    ?: NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
                 val seed = novelAiImageService.newSeed()
                 val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
@@ -449,6 +498,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                             role = MessageRole.ASSISTANT,
                                             content = "",
                                             images = listOf(path),
+                                            generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
                                             generatedFromMessageId = anchorMessageId
                                         ),
                                         anchorMessageId
@@ -513,7 +563,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     previewImage = _imageGeneration.value?.previewImage,
                     promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
                     progress = _imageGeneration.value?.progress ?: 0f,
-                    error = "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}",
+                    error = if (promptOverride == null) {
+                        "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}"
+                    } else {
+                        "生图失败 (复用图片元数据): ${error.message ?: "未知错误"}"
+                    },
                     imageContentHint = imageContentHint,
                     finalPromptRequirement = finalPromptRequirement
                 )
@@ -1425,7 +1479,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (remaining.isEmpty() && message.content.isBlank()) {
                 chatRepository.deleteMessage(messageId, sessionId)
             } else {
-                chatRepository.updateMessage(message.copy(images = remaining))
+                chatRepository.updateMessage(
+                    message.copy(
+                        images = remaining,
+                        generatedImageMetadata = message.generatedImageMetadata
+                            .filter { it.imagePath in remaining }
+                    )
+                )
             }
             refreshMessages()
         }
@@ -1446,6 +1506,25 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             )
         }
     }
+
+    private fun NovelAiPromptPlan.toGeneratedImageMetadata(
+        imagePath: String,
+        imageSize: NovelAiImageSize
+    ): GeneratedImageMetadata = GeneratedImageMetadata(
+        imagePath = imagePath,
+        baseCaption = baseCaption,
+        characterPrompts = characterCaptions.map {
+            GeneratedImageCharacterPrompt(
+                prompt = it.prompt,
+                centerX = it.center.x,
+                centerY = it.center.y
+            )
+        },
+        negativePrompt = effectiveNegativePrompt,
+        sizePreset = sizePreset.name,
+        width = imageSize.width,
+        height = imageSize.height
+    )
 
     fun editMessageSegment(
         messageId: String,
@@ -1487,6 +1566,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val updatedMessage = oldMessage.copy(
             content = content,
             images = imagePaths,
+            generatedImageMetadata = oldMessage.generatedImageMetadata
+                .filter { it.imagePath in imagePaths },
             alternatives = emptyList(),
             currentAlternativeIndex = 0,
             updatedAt = System.currentTimeMillis()

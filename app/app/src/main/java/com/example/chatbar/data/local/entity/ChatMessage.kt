@@ -19,6 +19,24 @@ const val MESSAGE_ORDER_STEP: Long = 1_000_000L
 
 fun Long.toMessageOrderKey(): Long = this * MESSAGE_ORDER_STEP
 
+@Serializable
+data class GeneratedImageCharacterPrompt(
+    val prompt: String,
+    val centerX: Float,
+    val centerY: Float
+)
+
+@Serializable
+data class GeneratedImageMetadata(
+    val imagePath: String,
+    val baseCaption: String,
+    val characterPrompts: List<GeneratedImageCharacterPrompt> = emptyList(),
+    val negativePrompt: String,
+    val sizePreset: String,
+    val width: Int,
+    val height: Int
+)
+
 /**
  * 聊天消息
  */
@@ -30,6 +48,7 @@ data class ChatMessage(
     val role: MessageRole,
     val content: String,
     val images: List<String> = emptyList(),           // 图片文件路径
+    val generatedImageMetadata: List<GeneratedImageMetadata> = emptyList(),
     val alternatives: List<String> = emptyList(),      // 重新生成的替代回复
     val currentAlternativeIndex: Int = 0,
     val reasoningContent: String? = null,              // 思维链内容
@@ -58,6 +77,7 @@ data class ChatMessage(
             role: MessageRole,
             content: String,
             images: List<String> = emptyList(),
+            generatedImageMetadata: List<GeneratedImageMetadata> = emptyList(),
             reasoningContent: String? = null,
             generatedFromMessageId: String? = null,
             orderKey: Long? = null
@@ -69,6 +89,7 @@ data class ChatMessage(
                 role = role,
                 content = content,
                 images = images,
+                generatedImageMetadata = generatedImageMetadata,
                 reasoningContent = reasoningContent,
                 generatedFromMessageId = generatedFromMessageId,
                 createdAt = now,

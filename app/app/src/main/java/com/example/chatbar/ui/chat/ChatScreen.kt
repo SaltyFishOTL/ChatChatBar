@@ -141,6 +141,7 @@ fun ChatScreen(
     var actionMessageId by remember { mutableStateOf<String?>(null) }
     var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var expandedImagePath by remember { mutableStateOf<String?>(null) }
+    var imageActionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
@@ -571,7 +572,15 @@ fun ChatScreen(
                         onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
                         onImageClick = if (screenshotSelectionMode) null else ({ path -> expandedImagePath = path }),
                         onImageLongPress = { path ->
-                            if (!isResponding && !screenshotSelectionMode) deleteImageTarget = message.id to path
+                            if (!isResponding && !screenshotSelectionMode) {
+                                val reusable = message.generatedFromMessageId != null ||
+                                    message.generatedImageMetadata.any { it.imagePath == path }
+                                if (reusable) {
+                                    imageActionTarget = message.id to path
+                                } else {
+                                    deleteImageTarget = message.id to path
+                                }
+                            }
                         },
                         onPreviousAlternative = if (!screenshotSelectionMode && message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, -1) }) else null,
                         onNextAlternative = if (!screenshotSelectionMode && message.id in alternativeIds) ({ viewModel.switchAssistantAlternative(message.id, 1) }) else null,
@@ -867,6 +876,41 @@ fun ChatScreen(
             onSave = { saveImageToGallery(context, path, screenshotPreviewName) },
             onShare = { shareImage(context, path, "分享长截图") }
         )
+    }
+    imageActionTarget?.let { (messageId, path) ->
+        CbDialog(
+            onDismissRequest = { imageActionTarget = null },
+            title = "图片操作",
+            dismiss = {
+                CbButton("取消", { imageActionTarget = null }, variant = ButtonVariant.Ghost)
+            },
+            confirm = {
+                CbButton(
+                    "重新生成",
+                    {
+                        imageActionTarget = null
+                        viewModel.regenerateNovelAiImage(messageId, path)
+                    },
+                    enabled = !imageGenerationRunning
+                )
+            }
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                CbText(
+                    "使用相同提示词与图片参数重新生成；每次使用新 seed。",
+                    color = ChatBarTheme.colors.mutedForeground
+                )
+                CbButton(
+                    "删除图片",
+                    {
+                        imageActionTarget = null
+                        deleteImageTarget = messageId to path
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Destructive
+                )
+            }
+        }
     }
     deleteImageTarget?.let { (messageId, path) ->
         CbDialog(
