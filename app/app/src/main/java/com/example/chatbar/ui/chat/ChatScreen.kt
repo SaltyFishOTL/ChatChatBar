@@ -591,11 +591,7 @@ fun ChatScreen(
                             isModelUsable &&
                             message.role == MessageRole.ASSISTANT &&
                             message.displayContent.isNotBlank()
-                        ) ({
-                            imagePromptTargetId = message.id
-                            imageContentHintDraft = ""
-                            imagePromptPreferenceDraft = session?.imagePromptPreference.orEmpty()
-                        }) else null,
+                        ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
                         onGenerateImageLongPress = if (
                             !screenshotSelectionMode &&
                             novelAiConfigured &&
@@ -603,7 +599,11 @@ fun ChatScreen(
                             isModelUsable &&
                             message.role == MessageRole.ASSISTANT &&
                             message.displayContent.isNotBlank()
-                        ) ({ viewModel.generateNovelAiImage(message.id) }) else null,
+                        ) ({
+                            imagePromptTargetId = message.id
+                            imageContentHintDraft = ""
+                            imagePromptPreferenceDraft = session?.imagePromptPreference.orEmpty()
+                        }) else null,
                         imageGenerationEnabled = !imageGenerationRunning,
                         selectionMode = screenshotSelectionMode && selectableForScreenshot,
                         selected = selectedForScreenshot,
@@ -786,7 +786,7 @@ fun ChatScreen(
         ) {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 CbText(
-                    "长按消息旁的生图按钮可直接生图，并会使用当前会话保存的生图偏好；图片内容提示只影响本次点击生成。",
+                    "点击消息旁的生图按钮可直接生图，并会使用当前会话保存的生图偏好；长按可输入本次生图要求。",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )

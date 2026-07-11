@@ -14,8 +14,8 @@ class RoleplaySpeakerPromptTest {
         )
 
         assertTrue(prompt.contains("角色姓名：爱音、灯"))
-        assertTrue(prompt.contains("对白格式：<n=\"完整角色名\"/>[对白内容]()"))
-        assertTrue(prompt.contains("内心格式：<n=\"完整角色名\"/>『**内心内容**』"))
+        assertTrue(prompt.contains("对白格式：<n=\"完整角色名（不可见）\"/>[对白内容]()"))
+        assertTrue(prompt.contains("内心格式：<n=\"完整角色名（不可见）\"/>『**内心内容**』"))
         assertTrue(prompt.endsWith("【用户本轮输入】\n继续剧情"))
         assertFalse(prompt.contains("角色姓名：爱音、灯、爱音"))
     }

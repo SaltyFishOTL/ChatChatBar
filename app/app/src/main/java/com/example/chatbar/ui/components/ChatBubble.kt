@@ -1198,7 +1198,7 @@ private fun GenerateImageActionButton(
             ),
         contentAlignment = Alignment.Center
     ) {
-        CbIcon(AppIcons.Image, "点击设置，长按直生", Modifier.size(20.dp), tint)
+        CbIcon(AppIcons.Image, "点击直生，长按设置", Modifier.size(20.dp), tint)
         Box(
             Modifier
                 .align(Alignment.BottomCenter)
