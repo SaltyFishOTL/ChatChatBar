@@ -460,8 +460,8 @@ private fun SegmentBubble(
     }
     val shape = when (segment.kind) {
         RoleplaySegmentKind.NARRATION -> RoundedCornerShape(12.dp)
-        RoleplaySegmentKind.DIALOGUE -> RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)
-        RoleplaySegmentKind.THOUGHT -> RoundedCornerShape(10.dp, 10.dp, 10.dp, 4.dp)
+        RoleplaySegmentKind.DIALOGUE -> RoundedCornerShape(3.dp, 10.dp, 10.dp, 10.dp)
+        RoleplaySegmentKind.THOUGHT -> RoundedCornerShape(4.dp, 10.dp, 10.dp, 10.dp)
         RoleplaySegmentKind.STATUS -> RoundedCornerShape(12.dp)
     }
     val maxWidth = when (segment.kind) {
@@ -749,9 +749,9 @@ private fun LegacyChatBubble(
         parseRoleplayContent(renderedContent)
     }
     val shape = RoundedCornerShape(
-        topStart = 10.dp,
+        topStart = if (isUser) 10.dp else 3.dp,
         topEnd = 10.dp,
-        bottomStart = if (isUser) 10.dp else 3.dp,
+        bottomStart = 10.dp,
         bottomEnd = if (isUser) 3.dp else 10.dp
     )
     val legacyTextBlockId = roleplayLegacyTextBlockId(message.id)
