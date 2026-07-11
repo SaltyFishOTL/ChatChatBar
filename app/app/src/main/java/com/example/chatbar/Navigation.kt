@@ -218,6 +218,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(
+                            advanced = key.advanced,
                             onExit = {
                                 if (key.firstLaunch) {
                                     showRoot(HomeRoute)

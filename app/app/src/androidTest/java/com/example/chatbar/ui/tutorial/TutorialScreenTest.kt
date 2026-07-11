@@ -35,4 +35,19 @@ class TutorialScreenTest {
 
         composeTestRule.runOnIdle { assertTrue(exited) }
     }
+
+    @Test
+    fun advancedTutorial_showsHiddenActionsAndCanAdvance() {
+        composeTestRule.setContent {
+            ChatBarTheme {
+                TutorialScreen(onExit = {}, advanced = true)
+            }
+        }
+
+        composeTestRule.onNodeWithText("进阶教程").assertIsDisplayed()
+        composeTestRule.onNodeWithText("欢迎来到进阶教程").assertIsDisplayed()
+        composeTestRule.onNodeWithText("下一步").performClick()
+        composeTestRule.onNodeWithText("会话列表的长按操作").assertIsDisplayed()
+        composeTestRule.onNodeWithText("置顶与删除").assertIsDisplayed()
+    }
 }

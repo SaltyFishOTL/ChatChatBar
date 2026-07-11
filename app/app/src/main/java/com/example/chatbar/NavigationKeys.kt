@@ -13,4 +13,7 @@ import kotlinx.serialization.Serializable
 @Serializable data class FormatCardEditRoute(val formatCardId: String? = null, val draftId: String = "") : NavKey
 @Serializable data class WorldBookEditRoute(val worldBookId: String? = null, val draftId: String = "") : NavKey
 @Serializable data class ModelEditRoute(val modelId: String? = null) : NavKey
-@Serializable data class TutorialRoute(val firstLaunch: Boolean = false) : NavKey
+@Serializable data class TutorialRoute(
+    val firstLaunch: Boolean = false,
+    val advanced: Boolean = false
+) : NavKey

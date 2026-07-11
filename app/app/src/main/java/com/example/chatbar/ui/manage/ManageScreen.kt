@@ -207,6 +207,7 @@ fun ManageScreen(
     var showRetrieval by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
+    var showTutorialMenu by remember { mutableStateOf(false) }
     var exportCharacterId by remember { mutableStateOf<String?>(null) }
     var pendingCharacterExport by remember { mutableStateOf<CharacterCard?>(null) }
     var characterExportOptions by remember { mutableStateOf(CharacterCardPngExportOptions()) }
@@ -347,7 +348,7 @@ fun ManageScreen(
             CbTopBar(
                 title = "管理",
                 actions = {
-                    CbIconButton(AppIcons.HelpOutline, "基础教程", { onNavigate(TutorialRoute()) })
+                    CbIconButton(AppIcons.HelpOutline, "教程", { showTutorialMenu = true })
                     if (tab == 4) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
                     if (tab == 0) CbIconButton(AppIcons.Import, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
                     if (tab == 1) CbIconButton(AppIcons.Import, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
@@ -575,6 +576,27 @@ fun ManageScreen(
             }
         )
     }
+    if (showTutorialMenu) {
+        CbDialog(
+            onDismissRequest = { showTutorialMenu = false },
+            title = "选择教程",
+            dismiss = { CbButton("取消", { showTutorialMenu = false }, variant = ButtonVariant.Ghost) }
+        ) {
+            CbButton(
+                "基础教程",
+                { showTutorialMenu = false; onNavigate(TutorialRoute()) },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Secondary
+            )
+            Spacer(Modifier.height(8.dp))
+            CbButton(
+                "进阶教程",
+                { showTutorialMenu = false; onNavigate(TutorialRoute(advanced = true)) },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Outline
+            )
+        }
+    }
     message?.let {
         CbDialog(onDismissRequest = { message = null }, title = "导入 / 导出", confirm = { CbButton("知道了", { message = null }) }) {
             CbText(it, color = ChatBarTheme.colors.mutedForeground)
@@ -646,6 +668,7 @@ private fun CharacterPngExportDialog(
             )
         }
     }
+
     if (showBackgroundCrop && backgroundFile != null) {
         CharacterPngBackgroundCropDialog(
             imageFile = backgroundFile,

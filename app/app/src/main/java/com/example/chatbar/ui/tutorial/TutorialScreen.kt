@@ -182,10 +182,153 @@ private val tutorialPages = listOf(
     )
 )
 
+private val advancedTutorialPages = listOf(
+    TutorialPage(
+        title = "欢迎来到进阶教程",
+        summary = "这里集中说明不容易被发现的长按操作、二级菜单和快捷手势。",
+        sections = listOf(
+            TutorialSection(
+                title = "操作提示",
+                steps = listOf(
+                    "看到列表项、消息气泡、图片或小图标时，可尝试长按打开更多操作。",
+                    "需要编辑、导出、删除或覆盖内容的操作，通常位于长按菜单或预览页的二级操作中。",
+                    "首页、朋友圈、社区和管理四个根页面支持左右滑动切换；未开启的模块不会出现。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "会话列表的长按操作",
+        summary = "首页的会话卡片不只有点击进入聊天。",
+        sections = listOf(
+            TutorialSection(
+                title = "置顶与删除",
+                steps = listOf(
+                    "进入首页，长按任意会话卡片。",
+                    "选择“置顶”，可把常用会话移到顶部；再次长按可取消置顶。",
+                    "选择“删除聊天”，会同时删除聊天记录和对应记忆索引。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "消息与片段操作",
+        summary = "长按聊天内容，可编辑、删除、重新生成或制作长截图。",
+        sections = listOf(
+            TutorialSection(
+                title = "整条消息",
+                steps = listOf(
+                    "长按一条消息的空白区域，打开“消息操作”。",
+                    "可编辑或删除该消息；最后一条可重新生成的回复还会显示“重新生成”。",
+                    "选择“多选”进入长截图模式，继续点选消息或片段，再预览、保存或分享。"
+                )
+            ),
+            TutorialSection(
+                title = "分段回复",
+                steps = listOf(
+                    "开启“助手回复分段气泡”后，长按某个片段打开“片段操作”。",
+                    "可只复制、编辑或删除当前片段，也可从当前片段开始选择长截图。",
+                    "最后一条回复的片段菜单还可重新生成整条回复。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "图片与 NovelAI 隐藏操作",
+        summary = "聊天图片和生图按钮都提供长按入口。",
+        sections = listOf(
+            TutorialSection(
+                title = "聊天图片",
+                steps = listOf(
+                    "点击图片进入预览，可把图片设为当前角色卡头像或背景。",
+                    "长按生成图片，可用相同提示词和参数重新生成，或删除图片。",
+                    "普通聊天图片长按会直接进入删除确认。"
+                )
+            ),
+            TutorialSection(
+                title = "自定义本次生图",
+                steps = listOf(
+                    "点击助手消息旁的生图按钮，会直接使用当前会话保存的生图偏好。",
+                    "长按生图按钮，可额外填写本次图片内容提示和生图偏好。",
+                    "提交后，本次偏好也会保存到当前会话，供后续直接生图使用。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "管理页的长按菜单",
+        summary = "角色卡、格式卡、世界书和模型都可长按管理。",
+        sections = listOf(
+            TutorialSection(
+                title = "复制、导出与删除",
+                steps = listOf(
+                    "进入“管理”，切换到角色、格式、世界书或模型标签。",
+                    "长按列表项，打开包含编辑、复制、导出和删除的操作菜单。",
+                    "世界书菜单还可导出为 SillyTavern JSON；社区下载的角色卡可先复制，再编辑本地副本。"
+                )
+            ),
+            TutorialSection(
+                title = "恢复内置内容",
+                steps = listOf(
+                    "各管理标签顶部可展开“恢复预制角色”“恢复预制格式”“恢复预制世界书”或“恢复内置模型”。",
+                    "展开后可重新导入缺失的内置内容，也可获取有更新的预制版本。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "朋友圈与社区",
+        summary = "删除和作品管理使用低干扰的长按入口。",
+        sections = listOf(
+            TutorialSection(
+                title = "朋友圈",
+                steps = listOf(
+                    "每条动态右下角有淡色删除图标；长按图标才会删除，避免误触。",
+                    "点击动态图片进入预览，可将图片设为对应角色卡头像或背景。"
+                )
+            ),
+            TutorialSection(
+                title = "社区作品",
+                steps = listOf(
+                    "点击社区作品卡片查看详情。",
+                    "长按自己发布的作品卡片，打开作品管理操作。",
+                    "下载的角色卡在管理页保持只读；需要修改时长按并选择“复制”。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "聊天页二级功能",
+        summary = "会话设置和顶部快捷按钮包含更多控制。",
+        sections = listOf(
+            TutorialSection(
+                title = "会话设置",
+                steps = listOf(
+                    "点击聊天页右上角的调节图标，打开“会话设置”。",
+                    "可调整会话模型、格式卡、玩家设定、背景、字体与生图偏好等当前会话配置。",
+                    "清空记录位于会话设置内，会同时清除聊天记录和 RAG 记忆。"
+                )
+            ),
+            TutorialSection(
+                title = "跳转与全屏编辑",
+                steps = listOf(
+                    "聊天区右上角的两个小箭头可跳到上一条消息或第一条消息。",
+                    "输入栏旁的展开图标可进入全屏编辑，适合编写长消息。",
+                    "输入框上方出现向下按钮时，可快速回到最新消息；绿色勾表示最新回复已完成。"
+                )
+            )
+        )
+    )
+)
+
 @Composable
-fun TutorialScreen(onExit: () -> Unit) {
+fun TutorialScreen(
+    onExit: () -> Unit,
+    advanced: Boolean = false
+) {
     var pageIndex by remember { mutableIntStateOf(0) }
-    val page = tutorialPages[pageIndex]
+    val pages = if (advanced) advancedTutorialPages else tutorialPages
+    val page = pages[pageIndex]
 
     BackHandler {
         if (pageIndex > 0) pageIndex-- else onExit()
@@ -193,7 +336,7 @@ fun TutorialScreen(onExit: () -> Unit) {
 
     Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         CbTopBar(
-            title = "基础教程",
+            title = if (advanced) "进阶教程" else "基础教程",
             navigation = {
                 CbIconButton(AppIcons.ArrowBack, "返回", {
                     if (pageIndex > 0) pageIndex-- else onExit()
@@ -239,7 +382,7 @@ fun TutorialScreen(onExit: () -> Unit) {
                 .padding(horizontal = 16.dp, vertical = 12.dp)
         ) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                tutorialPages.indices.forEach { index ->
+                pages.indices.forEach { index ->
                     Box(
                         Modifier
                             .padding(horizontal = 3.dp)
@@ -257,9 +400,13 @@ fun TutorialScreen(onExit: () -> Unit) {
                     CbButton("上一步", { pageIndex-- }, Modifier.weight(1f), variant = ButtonVariant.Outline)
                 }
                 CbButton(
-                    if (pageIndex == tutorialPages.lastIndex) "开始使用" else "下一步",
+                    if (pageIndex == pages.lastIndex) {
+                        if (advanced) "完成" else "开始使用"
+                    } else {
+                        "下一步"
+                    },
                     {
-                        if (pageIndex == tutorialPages.lastIndex) onExit() else pageIndex++
+                        if (pageIndex == pages.lastIndex) onExit() else pageIndex++
                     },
                     Modifier.weight(1f)
                 )
