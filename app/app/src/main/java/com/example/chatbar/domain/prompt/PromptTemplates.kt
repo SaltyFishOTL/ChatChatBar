@@ -692,7 +692,7 @@ Size preset：
 `HORIZONTAL` = 宽场景、两人以上、环境焦点、动作铺开。
 输出 JSON only（总 token <=500，单栏 <=200，角色部分尽量简洁。）：
 ```json
-{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"name":"exact name","caption":"...","center":{"x":0.3,"y":0.5}}]}
+{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"...","center":{"x":0.3,"y":0.5}}]}
 ```
 `baseCaption` = 整体画面内容：preset style + scene description。Preset style 强制。不要角色 tag，只写场景。
 `char caption` = 角色外观：preset appearance first + scene adjustments。Preset prompts 强制，除非冲突。不要重复 `baseCaption` tags。IP 角色尽可能保持简洁，名字已经包含所有外观信息。
@@ -712,7 +712,7 @@ Tags 关注所有参与者的位置，而不是只关注一个人。
 
     const val NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM = """
 JSON only, no Markdown, no explanation:
-{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"name":"...","caption":"...","center":{"x":0.3,"y":0.5}}]}
+{"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"...","center":{"x":0.3,"y":0.5}}]}
 """
 
     const val NOVELAI_IMAGE_PROMPT_MAX_TOKENS = 1024

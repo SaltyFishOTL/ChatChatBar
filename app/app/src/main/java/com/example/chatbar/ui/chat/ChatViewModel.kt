@@ -528,9 +528,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun debugPrompt(prompt: NovelAiPromptPlan, imageSize: NovelAiImageSize): String = buildString {
         appendLine("Size: ${imageSize.label} (${imageSize.width}x${imageSize.height})")
         appendLine("Base: ${prompt.baseCaption}")
-        prompt.designed?.characters?.forEach { selected ->
-            appendLine("Selected ${selected.name}: ${selected.effectiveCaption}")
-        }
         prompt.characterCaptions.forEachIndexed { index, caption ->
             appendLine(
                 "Character ${index + 1} @ (${caption.center.x}, ${caption.center.y}): ${caption.prompt}"

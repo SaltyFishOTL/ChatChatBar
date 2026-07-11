@@ -30,7 +30,6 @@ data class DesignedImagePrompt(
 
 @Serializable
 data class DesignedCharacterPrompt(
-    val name: String,
     val caption: String = "",
     val adjustment: String = "",
     val center: DesignedCharacterCenter? = null

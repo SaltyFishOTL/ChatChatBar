@@ -362,16 +362,7 @@ class ImagePromptToolViewModel : ViewModel() {
         buildList {
             add(ImagePromptToolPromptPart("Base", baseCaption))
             characterCaptions.forEachIndexed { index, caption ->
-                val name = designed?.characters
-                    ?.getOrNull(index)
-                    ?.name
-                    ?.takeIf(String::isNotBlank)
-                val title = if (name == null) {
-                    "Char ${index + 1}"
-                } else {
-                    "Char ${index + 1} - $name"
-                }
-                add(ImagePromptToolPromptPart(title, caption.prompt))
+                add(ImagePromptToolPromptPart("Char ${index + 1}", caption.prompt))
             }
         }
 

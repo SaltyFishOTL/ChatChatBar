@@ -74,8 +74,8 @@ class NovelAiImageFeatureTest {
         val designed = DesignedImagePrompt(
             baseCaption = "default-style, 2girls, night street",
             sizePreset = "HORIZONTAL",
-            characters = (1..7).map { DesignedCharacterPrompt("Character $it", "fixed-$it, adjust-$it") } +
-                DesignedCharacterPrompt("Unknown", "ignored")
+            characters = (1..7).map { DesignedCharacterPrompt("fixed-$it, adjust-$it") } +
+                DesignedCharacterPrompt("ignored")
         )
 
         val result = NovelAiPromptDesigner.convert(card, designed)
@@ -87,6 +87,20 @@ class NovelAiImageFeatureTest {
         assertFalse(result.characterCaptions.any { "ignored" in it.prompt })
         assertEquals(1f / 7f, result.characterCaptions.first().center.x, 0.001f)
         assertEquals(6f / 7f, result.characterCaptions.last().center.x, 0.001f)
+    }
+
+    @Test
+    fun `designed prompt JSON does not require character names`() {
+        val designed = Json { ignoreUnknownKeys = true }.decodeFromString(
+            DesignedImagePrompt.serializer(),
+            """{"sizePreset":"SQUARE","baseCaption":"1girl, room","characters":[{"caption":"black hair","center":{"x":0.3,"y":0.5}}]}"""
+        )
+
+        assertEquals("SQUARE", designed.sizePreset)
+        assertEquals("black hair", designed.characters.single().caption)
+        assertEquals(0.3f, designed.characters.single().center!!.x, 0.001f)
+        assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.contains("\"name\":\"exact name\""))
+        assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM.contains("\"name\""))
     }
 
     @Test
@@ -409,7 +423,6 @@ class NovelAiImageFeatureTest {
                 baseCaption = "1girl",
                 characters = listOf(
                     DesignedCharacterPrompt(
-                        name = "Alice",
                         caption = "alice",
                         center = DesignedCharacterCenter(-2f, 4f)
                     )
