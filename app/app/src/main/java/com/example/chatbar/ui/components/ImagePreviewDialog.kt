@@ -12,11 +12,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -75,7 +76,10 @@ fun ImagePreviewDialog(
     val pagerState = rememberPagerState(initialPage = safeInitialIndex) { items.size }
     val currentItem = items[pagerState.currentPage.coerceIn(items.indices)]
     var showImageActions by remember { mutableStateOf(false) }
+    var mosaicSourcePath by remember { mutableStateOf<String?>(null) }
+    val editedPaths = remember { mutableStateMapOf<String, String>() }
     val context = LocalContext.current
+    val actionPath = editedPaths[currentItem.path] ?: currentItem.path
 
     LaunchedEffect(items.size) {
         if (pagerState.currentPage !in items.indices) pagerState.scrollToPage(items.lastIndex)
@@ -88,10 +92,20 @@ fun ImagePreviewDialog(
             dismiss = { CbButton("取消", { showImageActions = false }, variant = ButtonVariant.Ghost) }
         ) {
             CbButton(
+                if (editedPaths.containsKey(currentItem.path)) "继续打码" else "打码",
+                {
+                    showImageActions = false
+                    mosaicSourcePath = actionPath
+                },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Secondary
+            )
+            Spacer(Modifier.size(8.dp))
+            CbButton(
                 "保存图片",
                 {
                     showImageActions = false
-                    saveImageToGallery(context, currentItem.path)
+                    saveImageToGallery(context, actionPath)
                 },
                 modifier = Modifier.fillMaxWidth()
             )
@@ -100,7 +114,7 @@ fun ImagePreviewDialog(
                 "分享图片",
                 {
                     showImageActions = false
-                    shareImage(context, currentItem.path)
+                    shareImage(context, actionPath)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 variant = ButtonVariant.Secondary
@@ -111,7 +125,7 @@ fun ImagePreviewDialog(
                     "替换为头像",
                     {
                         showImageActions = false
-                        onSetCardAvatar(currentItem.path)
+                        onSetCardAvatar(actionPath)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     variant = ButtonVariant.Secondary
@@ -123,7 +137,7 @@ fun ImagePreviewDialog(
                     "替换为背景",
                     {
                         showImageActions = false
-                        onSetCardBackground(currentItem.path)
+                        onSetCardBackground(actionPath)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     variant = ButtonVariant.Secondary
@@ -144,6 +158,21 @@ fun ImagePreviewDialog(
         }
     }
 
+    mosaicSourcePath?.let { sourcePath ->
+        ImageMosaicEditor(
+            sourcePath = sourcePath,
+            onDismiss = {
+                mosaicSourcePath = null
+                showImageActions = true
+            },
+            onComplete = { outputPath ->
+                editedPaths[currentItem.path] = outputPath
+                mosaicSourcePath = null
+                showImageActions = true
+            }
+        )
+    }
+
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -155,6 +184,7 @@ fun ImagePreviewDialog(
             Modifier
                 .fillMaxSize()
                 .background(Color.Black)
+                .systemBarsPadding()
         ) {
             HorizontalPager(
                 state = pagerState,
@@ -163,7 +193,7 @@ fun ImagePreviewDialog(
             ) { page ->
                 val item = items[page]
                 ZoomablePreviewImage(
-                    path = item.path,
+                    path = editedPaths[item.path] ?: item.path,
                     onLongPress = { showImageActions = true }
                 )
             }
@@ -178,7 +208,6 @@ fun ImagePreviewDialog(
                 text = "${pagerState.currentPage + 1}/${items.size}",
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
-                    .navigationBarsPadding()
                     .padding(bottom = 16.dp)
                     .background(Color.Black.copy(alpha = 0.45f), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
                     .padding(horizontal = 10.dp, vertical = 4.dp),

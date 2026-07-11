@@ -683,4 +683,7 @@ private const val LONG_WRAPPER_MIN_ASCII_DASHES = 6
 private const val LONG_WRAPPER_MIN_WIDE_DASHES = 4
 private const val HIDDEN_COMMENT_OPEN = "<!--"
 private const val HIDDEN_COMMENT_CLOSE = "-->"
-private val roleplaySpeakerMarkerPattern = Regex("<n=\"([^\\r\\n]*?)\"\\s*/>")
+private val roleplaySpeakerMarkerPattern = Regex(
+    pattern = "[<＜]\\s*[nｎ]\\s*[=＝]\\s*[\"“”＂]([^\\r\\n\"“”＂]*?)[\"“”＂]\\s*[/／]?\\s*[>＞]",
+    option = RegexOption.IGNORE_CASE
+)

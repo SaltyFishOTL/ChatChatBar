@@ -6,6 +6,22 @@ import org.junit.Test
 
 class RoleplayContentSegmentsTest {
     @Test
+    fun `speaker markers are stripped from unsplit assistant content`() {
+        val content = "<n=\"林雾\"/>旁白\n<n=“另一人”>[对白]()\n＜ｎ＝＂第三人＂／＞结尾"
+
+        assertEquals("旁白\n[对白]()\n结尾", stripRoleplaySpeakerMarkers(content))
+    }
+
+    @Test
+    fun `full width speaker marker applies to dialogue`() {
+        val dialogue = parseRoleplayTextSegments("＜ｎ＝“林雾”＞[第一句]()")
+            .single { it.kind == RoleplaySegmentKind.DIALOGUE }
+
+        assertEquals("林雾", dialogue.speakerName)
+        assertEquals("[第一句]()", dialogue.displayText)
+    }
+
+    @Test
     fun `unmarked dialogue inherits previous speaker marker`() {
         val segments = parseRoleplayTextSegments(
             """

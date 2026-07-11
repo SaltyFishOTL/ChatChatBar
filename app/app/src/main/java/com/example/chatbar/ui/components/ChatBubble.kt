@@ -744,7 +744,12 @@ private fun LegacyChatBubble(
     showMessageMeta: Boolean
 ) {
     val isUser = message.role == MessageRole.USER
-    val renderedContent = PlaceholderRenderer.render(message.displayContent, renderPlayerName, renderBotName)
+    val visibleContent = if (isUser) {
+        message.displayContent
+    } else {
+        stripRoleplaySpeakerMarkers(message.displayContent)
+    }
+    val renderedContent = PlaceholderRenderer.render(visibleContent, renderPlayerName, renderBotName)
     val contentSegments = remember(message.id, message.currentAlternativeIndex, renderedContent) {
         parseRoleplayContent(renderedContent)
     }
