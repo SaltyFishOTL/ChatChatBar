@@ -11,6 +11,7 @@ import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.card.NamePolicy
 import java.util.UUID
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,8 @@ class FormatCardEditViewModel(
         private set
     var hasLocalChanges by mutableStateOf(false)
         private set
+    var hasUnsavedDraftChanges by mutableStateOf(false)
+        private set
     var restoreDraft by mutableStateOf<EditorDraft?>(null)
         private set
     var restoreConflict by mutableStateOf(false)
@@ -68,7 +71,7 @@ class FormatCardEditViewModel(
                     if (card == null) {
                         loadedDraft = draft.copy(targetId = null)
                         draft.formatPayload?.let(::applyCard)
-                        hasLocalChanges = true
+                        refreshChangeState()
                     } else {
                         restoreDraft = draft
                         restoreConflict = draftRepository.isChanged(card, draft)
@@ -79,7 +82,7 @@ class FormatCardEditViewModel(
                 if (newDraft?.formatPayload != null) {
                     loadedDraft = newDraft
                     applyCard(newDraft.formatPayload)
-                    hasLocalChanges = true
+                    refreshChangeState()
                 }
             }
             draftReady = true
@@ -90,7 +93,8 @@ class FormatCardEditViewModel(
         restoreDraft?.let { draft ->
             loadedDraft = draft
             draft.formatPayload?.let(::applyCard)
-            hasLocalChanges = true
+            refreshChangeState()
+            hasUnsavedDraftChanges = false
         }
         restoreDraft = null
         restoreConflict = false
@@ -103,10 +107,12 @@ class FormatCardEditViewModel(
 
     fun discardDraft(onDone: (() -> Unit)? = null) {
         viewModelScope.launch {
-            draftJob?.cancel()
+            draftJob?.cancelAndJoin()
+            draftJob = null
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(com.example.chatbar.data.local.entity.EditorDraftType.FORMAT_CARD, formatCardId)
             hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             loadedDraft = null
             restoreDraft = null
             restoreConflict = false
@@ -121,6 +127,8 @@ class FormatCardEditViewModel(
         if (name.isBlank() || content.isBlank()) return
 
         viewModelScope.launch {
+            draftJob?.cancelAndJoin()
+            draftJob = null
             name = NamePolicy.normalize(name)
             val targetId = if (saveAsNew || sourceDeleted) null else formatCardId
             if (!forceOverwrite && targetId != null && loadedDraft != null && draftRepository.isChanged(repository.getById(targetId), loadedDraft!!)) {
@@ -152,13 +160,23 @@ class FormatCardEditViewModel(
             repository.save(card)
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(com.example.chatbar.data.local.entity.EditorDraftType.FORMAT_CARD, formatCardId)
+            baseCard = card
+            _formatCard.value = card
+            hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             onSuccess()
         }
     }
 
     fun scheduleDraftSave() {
         if (!draftReady || restoreDraft != null) return
-        hasLocalChanges = true
+        refreshChangeState()
+        if (!hasLocalChanges) {
+            hasUnsavedDraftChanges = false
+            draftJob?.cancel()
+            return
+        }
+        hasUnsavedDraftChanges = true
         draftJob?.cancel()
         draftJob = viewModelScope.launch {
             delay(600)
@@ -168,8 +186,9 @@ class FormatCardEditViewModel(
 
     fun saveDraftAndExit(onDone: () -> Unit) {
         viewModelScope.launch {
-            draftJob?.cancel()
-            saveDraftNow()
+            draftJob?.cancelAndJoin()
+            draftJob = null
+            if (hasUnsavedDraftChanges) saveDraftNow()
             onDone()
         }
     }
@@ -185,6 +204,7 @@ class FormatCardEditViewModel(
         )
         loadedDraft = draftRepository.save(draft)
         draftSavedAt = loadedDraft?.updatedAt
+        hasUnsavedDraftChanges = false
     }
 
     private fun currentPayload(): FormatCard =
@@ -205,5 +225,14 @@ class FormatCardEditViewModel(
         name = card.name
         content = card.content
         isDefault = card.isDefault
+    }
+
+    private fun refreshChangeState() {
+        val base = baseCard
+        hasLocalChanges = if (base == null) {
+            sourceDeleted || name.isNotBlank() || content.isNotBlank() || isDefault
+        } else {
+            currentPayload() != base
+        }
     }
 }

@@ -149,8 +149,28 @@ class EditorDraftRepository(
     fun isChanged(base: WorldBook?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && hash(base, WorldBook.serializer()) != draft.baseHash
 
-    private fun characterHash(card: CharacterCard): String =
-        hash(card.copy(pendingSpeakerRenameTasks = emptyList()), CharacterCard.serializer())
+    private fun characterHash(card: CharacterCard): String = hash(
+        card.copy(
+            ragIndexStatus = "",
+            ragIndexDone = 0,
+            ragIndexTotal = 0,
+            ragIndexMessage = null,
+            ragIndexedAt = null,
+            customDocuments = card.customDocuments.map {
+                it.copy(
+                    contentHash = null,
+                    indexedHash = null,
+                    ragStatus = "",
+                    ragChunkCount = 0,
+                    ragIndexedAt = null,
+                    ragError = null
+                )
+            },
+            pendingSpeakerRenameTasks = emptyList(),
+            updatedAt = 0L
+        ),
+        CharacterCard.serializer()
+    )
 
     private fun <T> hash(value: T, serializer: KSerializer<T>): String {
         val bytes = json.encodeToString(serializer, value).toByteArray(Charsets.UTF_8)

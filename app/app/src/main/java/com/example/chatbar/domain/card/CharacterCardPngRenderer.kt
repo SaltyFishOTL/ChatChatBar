@@ -26,14 +26,20 @@ data class CharacterCardPngExportOptions(
     val gradientHeight: Float = 0.42f,
     val gradientStrength: Float = 0.72f,
     val logoScale: Float = 0.095f,
-    val titleScale: Float = 0.052f
+    val titleScale: Float = 0.052f,
+    val cropCenterX: Float = 0.5f,
+    val cropCenterY: Float = 0.5f,
+    val cropZoom: Float = 1f
 ) {
     fun normalized(): CharacterCardPngExportOptions = copy(
         sizePx = sizePx.coerceIn(1024, 2048),
         gradientHeight = gradientHeight.coerceIn(0.25f, 0.68f),
         gradientStrength = gradientStrength.coerceIn(0.45f, 0.9f),
         logoScale = logoScale.coerceIn(0.07f, 0.14f),
-        titleScale = titleScale.coerceIn(0.04f, 0.08f)
+        titleScale = titleScale.coerceIn(0.04f, 0.08f),
+        cropCenterX = cropCenterX.coerceIn(0f, 1f),
+        cropCenterY = cropCenterY.coerceIn(0f, 1f),
+        cropZoom = cropZoom.coerceIn(1f, 6f)
     )
 }
 
@@ -50,7 +56,7 @@ object CharacterCardPngRenderer {
             ?.let { BitmapFactory.decodeFile(it.absolutePath) }
 
         if (background != null) {
-            drawCover(canvas, background, size)
+            drawCover(canvas, background, size, normalized)
             background.recycle()
         } else {
             drawFallbackBackground(canvas, size)
@@ -65,12 +71,21 @@ object CharacterCardPngRenderer {
         }
     }
 
-    private fun drawCover(canvas: Canvas, source: Bitmap, size: Int) {
-        val scale = max(size.toFloat() / source.width, size.toFloat() / source.height)
-        val cropWidth = (size / scale).roundToInt().coerceAtMost(source.width)
-        val cropHeight = (size / scale).roundToInt().coerceAtMost(source.height)
-        val left = ((source.width - cropWidth) / 2).coerceAtLeast(0)
-        val top = ((source.height - cropHeight) / 2).coerceAtLeast(0)
+    private fun drawCover(
+        canvas: Canvas,
+        source: Bitmap,
+        size: Int,
+        options: CharacterCardPngExportOptions
+    ) {
+        val scale = max(size.toFloat() / source.width, size.toFloat() / source.height) * options.cropZoom
+        val cropWidth = (size / scale).roundToInt().coerceIn(1, source.width)
+        val cropHeight = (size / scale).roundToInt().coerceIn(1, source.height)
+        val left = (source.width * options.cropCenterX - cropWidth / 2f)
+            .roundToInt()
+            .coerceIn(0, source.width - cropWidth)
+        val top = (source.height * options.cropCenterY - cropHeight / 2f)
+            .roundToInt()
+            .coerceIn(0, source.height - cropHeight)
         val paint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
         canvas.drawBitmap(
             source,

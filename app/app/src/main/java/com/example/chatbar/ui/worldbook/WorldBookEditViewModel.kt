@@ -16,6 +16,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.draft.WorldBookEntryModalState
 import java.util.UUID
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -56,6 +57,8 @@ class WorldBookEditViewModel(
         private set
     var hasLocalChanges by mutableStateOf(false)
         private set
+    var hasUnsavedDraftChanges by mutableStateOf(false)
+        private set
     var restoreDraft by mutableStateOf<EditorDraft?>(null)
         private set
     var restoreConflict by mutableStateOf(false)
@@ -86,7 +89,7 @@ class WorldBookEditViewModel(
                         loadedDraft = draft.copy(targetId = null)
                         draft.worldBookPayload?.let(::applyBook)
                         restoreOpenModal(draft.openModalState)
-                        hasLocalChanges = true
+                        refreshChangeState()
                     } else {
                         restoreDraft = draft
                         restoreConflict = draftRepository.isChanged(book, draft)
@@ -98,7 +101,7 @@ class WorldBookEditViewModel(
                     loadedDraft = newDraft
                     applyBook(newDraft.worldBookPayload)
                     restoreOpenModal(newDraft.openModalState)
-                    hasLocalChanges = true
+                    refreshChangeState()
                 }
             }
             draftReady = true
@@ -110,7 +113,8 @@ class WorldBookEditViewModel(
             loadedDraft = draft
             draft.worldBookPayload?.let(::applyBook)
             restoreOpenModal(draft.openModalState)
-            hasLocalChanges = true
+            refreshChangeState()
+            hasUnsavedDraftChanges = false
         }
         restoreDraft = null
         restoreConflict = false
@@ -123,11 +127,13 @@ class WorldBookEditViewModel(
 
     fun discardDraft(onDone: (() -> Unit)? = null) {
         viewModelScope.launch {
-            draftJob?.cancel()
+            draftJob?.cancelAndJoin()
+            draftJob = null
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.WORLD_BOOK, worldBookId)
             loadedDraft = null
             hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             entryModalState = null
             restoreDraft = null
             restoreConflict = false
@@ -139,6 +145,8 @@ class WorldBookEditViewModel(
         if (name.isBlank()) return
         _isSaving.value = true
         viewModelScope.launch {
+            draftJob?.cancelAndJoin()
+            draftJob = null
             val targetId = if (saveAsNew || sourceDeleted) null else worldBookId
             if (!forceOverwrite && targetId != null && loadedDraft != null && draftRepository.isChanged(repository.getById(targetId), loadedDraft!!)) {
                 saveConflict = true
@@ -184,6 +192,9 @@ class WorldBookEditViewModel(
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.WORLD_BOOK, worldBookId)
             _worldBook.value = book
+            baseBook = book
+            hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             _isSaving.value = false
             onSuccess()
         }
@@ -267,7 +278,13 @@ class WorldBookEditViewModel(
 
     fun scheduleDraftSave() {
         if (!draftReady || restoreDraft != null) return
-        hasLocalChanges = true
+        refreshChangeState()
+        if (!hasLocalChanges) {
+            hasUnsavedDraftChanges = false
+            draftJob?.cancel()
+            return
+        }
+        hasUnsavedDraftChanges = true
         draftJob?.cancel()
         draftJob = viewModelScope.launch {
             delay(600)
@@ -277,8 +294,9 @@ class WorldBookEditViewModel(
 
     fun saveDraftAndExit(onDone: () -> Unit) {
         viewModelScope.launch {
-            draftJob?.cancel()
-            saveDraftNow()
+            draftJob?.cancelAndJoin()
+            draftJob = null
+            if (hasUnsavedDraftChanges) saveDraftNow()
             onDone()
         }
     }
@@ -294,6 +312,7 @@ class WorldBookEditViewModel(
         )
         loadedDraft = draftRepository.save(draft)
         draftSavedAt = loadedDraft?.updatedAt
+        hasUnsavedDraftChanges = false
     }
 
     private fun currentPayload(): WorldBook {
@@ -334,6 +353,20 @@ class WorldBookEditViewModel(
         matchWholeWords = book.matchWholeWords
         entries.clear()
         entries.addAll(book.entries)
+    }
+
+    private fun refreshChangeState() {
+        val base = baseBook
+        hasLocalChanges = if (base == null) {
+            sourceDeleted || name.isNotBlank() || description.isNotBlank() || entries.isNotEmpty() ||
+                scanDepth != 10 || tokenBudget.isNotBlank() || recursiveScanning || caseSensitive || matchWholeWords
+        } else {
+            currentPayload().copy(
+                id = base.id,
+                createdAt = base.createdAt,
+                updatedAt = base.updatedAt
+            ) != base
+        }
     }
 
     private fun restoreOpenModal(raw: String?) {

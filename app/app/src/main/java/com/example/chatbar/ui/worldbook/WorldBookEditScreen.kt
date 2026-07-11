@@ -64,7 +64,7 @@ fun WorldBookEditScreen(
     var showExitDialog by remember { mutableStateOf(false) }
 
     fun requestExit() {
-        if (viewModel.hasLocalChanges || viewModel.draftSavedAt != null) showExitDialog = true else onBack()
+        if (viewModel.hasUnsavedDraftChanges) showExitDialog = true else onBack()
     }
 
     BackHandler {
@@ -84,7 +84,8 @@ fun WorldBookEditScreen(
                         "保存",
                         { viewModel.save(onBack) },
                         enabled = viewModel.name.isNotBlank(),
-                        tint = ChatBarTheme.colors.primary
+                        tint = ChatBarTheme.colors.primary,
+                        dirty = viewModel.hasLocalChanges
                     )
                 }
             )

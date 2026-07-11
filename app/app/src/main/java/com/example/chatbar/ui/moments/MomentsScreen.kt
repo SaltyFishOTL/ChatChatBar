@@ -31,7 +31,6 @@ import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.semantics.Role
@@ -75,7 +74,7 @@ fun MomentsScreen(
         modifier = modifier,
         topBar = { CbTopBar("朋友圈") }
     ) { bottomInset ->
-        Box(Modifier.fillMaxSize().background(Color.White)) {
+        Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
             if (posts.isEmpty()) {
                 EmptyState(
                     icon = AppIcons.Heart,
@@ -96,7 +95,7 @@ fun MomentsScreen(
                             onRetry = { viewModel.retryPlaceholder(post.id) },
                             onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path }
                         )
-                        CbDivider(color = Color(0xFFE9E9E9))
+                        CbDivider(color = ChatBarTheme.colors.border)
                     }
                 }
             }
@@ -130,10 +129,11 @@ private fun MomentPostRow(
     onRetry: () -> Unit,
     onOpenImage: (MomentPost, String) -> Unit
 ) {
-    val textColor = Color(0xFF111111)
-    val muted = Color(0xFF757575)
+    val colors = ChatBarTheme.colors
+    val textColor = colors.foreground
+    val muted = colors.mutedForeground
     Row(
-        modifier = Modifier.fillMaxWidth().background(Color.White).padding(horizontal = 14.dp, vertical = 12.dp),
+        modifier = Modifier.fillMaxWidth().background(colors.surface).padding(horizontal = 14.dp, vertical = 12.dp),
         verticalAlignment = Alignment.Top
     ) {
         CbAvatar(
@@ -147,7 +147,7 @@ private fun MomentPostRow(
         Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(7.dp)) {
             CbText(
                 post.senderName,
-                color = Color(0xFF576B95),
+                color = colors.primary,
                 style = ChatBarTheme.typography.label,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -190,7 +190,7 @@ private fun MomentPostRow(
                             .fillMaxWidth(0.74f)
                             .aspectRatio(1f)
                             .clip(RoundedCornerShape(4.dp))
-                            .background(Color(0xFFF1F1F1))
+                            .background(colors.surfaceSubtle)
                             .clickable { onOpenImage(post, path) },
                         contentScale = ContentScale.Crop
                     )
@@ -208,7 +208,7 @@ private fun MomentPostRow(
                         Spacer(Modifier.width(8.dp))
                         Row(
                             verticalAlignment = Alignment.CenterVertically,
-                            modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(Color(0xFFF5F5F5)).padding(horizontal = 5.dp, vertical = 2.dp)
+                            modifier = Modifier.clip(RoundedCornerShape(4.dp)).background(colors.muted).padding(horizontal = 5.dp, vertical = 2.dp)
                         ) {
                             CbIcon(AppIcons.Lock, null, Modifier.size(12.dp), muted)
                             Spacer(Modifier.width(3.dp))
@@ -223,7 +223,7 @@ private fun MomentPostRow(
                         contentDescription = if (post.userLiked) "取消点赞" else "点赞",
                         onClick = onToggleLike,
                         modifier = Modifier.size(34.dp),
-                        tint = if (post.userLiked) Color(0xFFE5484D) else Color(0xFF576B95)
+                        tint = if (post.userLiked) colors.destructive else colors.primary
                     )
                     CbText(
                         post.displayLikeCount.toString(),
@@ -247,7 +247,7 @@ private fun MomentPlaceholderBlock(
         modifier = Modifier
             .fillMaxWidth(0.88f)
             .clip(RoundedCornerShape(6.dp))
-            .background(Color(0xFFF6F6F6))
+            .background(ChatBarTheme.colors.muted)
             .padding(10.dp),
         verticalArrangement = Arrangement.spacedBy(7.dp)
     ) {
@@ -282,12 +282,12 @@ private fun MomentPlaceholderBlock(
                     .fillMaxWidth()
                     .heightIn(min = 44.dp, max = 112.dp)
                     .clip(RoundedCornerShape(4.dp))
-                    .background(Color.White)
+                    .background(ChatBarTheme.colors.surface)
                     .padding(8.dp)
             ) {
                 CbText(
                     compactRetryStream(streamed),
-                    color = Color(0xFF333333),
+                    color = ChatBarTheme.colors.foreground,
                     style = ChatBarTheme.typography.caption
                 )
             }
@@ -298,7 +298,7 @@ private fun MomentPlaceholderBlock(
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MomentDeleteButton(onDelete: () -> Unit) {
-    val muted = Color(0xFF757575)
+    val muted = ChatBarTheme.colors.mutedForeground
     Box(
         modifier = Modifier
             .size(40.dp)

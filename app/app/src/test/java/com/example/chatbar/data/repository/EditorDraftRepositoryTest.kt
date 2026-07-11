@@ -124,6 +124,35 @@ class EditorDraftRepositoryTest {
     }
 
     @Test
+    fun characterBaseHashIgnoresDerivedIndexStateAndTimestamp() = runTest {
+        val repo = newRepository()
+        val base = CharacterCard(id = "card", name = "角色", createdAt = 1, updatedAt = 2)
+        val draft = repo.characterDraft(
+            targetId = base.id,
+            draftSessionId = "character-session",
+            payload = base,
+            base = base,
+            draftAssetPaths = emptyList(),
+            pendingDeletedAssets = emptyList(),
+            pendingDeletedDocumentIds = emptyList()
+        )
+
+        assertFalse(
+            repo.isChanged(
+                base.copy(
+                    ragIndexStatus = "COMPLETE",
+                    ragIndexDone = 4,
+                    ragIndexTotal = 4,
+                    ragIndexMessage = "完成",
+                    ragIndexedAt = 9,
+                    updatedAt = 10
+                ),
+                draft
+            )
+        )
+    }
+
+    @Test
     fun deleteForTargetRemovesEditDraft() = runTest {
         val repo = newRepository()
         val base = formatCard("编辑目标", "旧内容")

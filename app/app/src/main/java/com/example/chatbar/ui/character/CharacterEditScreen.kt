@@ -198,7 +198,7 @@ fun CharacterEditScreen(
     var showExitDialog by remember { mutableStateOf(false) }
 
     fun requestExit() {
-        if (viewModel.hasLocalChanges || viewModel.draftSavedAt != null) showExitDialog = true else onBack()
+        if (viewModel.hasUnsavedDraftChanges) showExitDialog = true else onBack()
     }
 
     BackHandler {
@@ -312,7 +312,8 @@ fun CharacterEditScreen(
                             if (errors.isEmpty()) viewModel.saveCharacterCard(onBack) else validationErrors = errors
                         },
                         enabled = !isSaving,
-                        tint = ChatBarTheme.colors.primary
+                        tint = ChatBarTheme.colors.primary,
+                        dirty = viewModel.hasLocalChanges
                     )
                 }
             )

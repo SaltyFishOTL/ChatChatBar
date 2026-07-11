@@ -50,6 +50,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
@@ -70,6 +71,7 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.ChatBubble
@@ -122,6 +124,7 @@ fun ChatScreen(
     val imageGeneration by viewModel.imageGeneration.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
+    val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
@@ -540,8 +543,12 @@ fun ChatScreen(
         )
         Box(Modifier.weight(1f).fillMaxWidth()) {
             if (!backgroundPath.isNullOrBlank()) {
-                AsyncImage(File(backgroundPath), "聊天背景", Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.background.copy(alpha = 0.84f)))
+                AsyncImage(
+                    model = File(backgroundPath),
+                    contentDescription = "聊天背景",
+                    modifier = Modifier.fillMaxSize().alpha(appSettings.chatBackgroundImageOpacity),
+                    contentScale = ContentScale.Crop
+                )
             }
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
                 items(messages, key = { it.id }) { message ->

@@ -87,7 +87,9 @@ class EditorDraftAssetService(private val context: Context) {
     private fun materializeFile(path: String?, dirName: String): String? {
         if (!isDraftAsset(path)) return path
         val source = File(path!!)
-        if (!source.exists()) return path
+        check(source.isFile && source.length() > 0L) {
+            "草稿资源文件不存在或为空：${source.name}"
+        }
         val targetDir = File(context.filesDir, dirName).also { if (!it.exists()) it.mkdirs() }
         val target = uniqueFile(targetDir, source.name)
         source.copyTo(target, overwrite = true)

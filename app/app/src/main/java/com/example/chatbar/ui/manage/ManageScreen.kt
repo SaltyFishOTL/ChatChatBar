@@ -2,6 +2,7 @@ package com.example.chatbar.ui.manage
 
 import com.example.chatbar.ui.kit.AppIcons
 
+import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -11,9 +12,12 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.PaddingValues
@@ -24,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
@@ -45,11 +50,15 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.Font
@@ -57,7 +66,10 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.BuildConfig
@@ -87,7 +99,12 @@ import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
+import com.example.chatbar.domain.image.ImageCropOffset
+import com.example.chatbar.domain.image.ImageCropSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.image.clampCropOffset
+import com.example.chatbar.domain.image.coverDisplaySize
+import com.example.chatbar.domain.image.imageCropFractionRect
 import com.example.chatbar.domain.moment.MomentDebugExchange
 import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityLevel
@@ -125,7 +142,9 @@ import java.util.Date
 import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 private sealed interface DeleteTarget {
     data class Character(val id: String, val name: String) : DeleteTarget
@@ -572,7 +591,8 @@ private fun CharacterPngExportDialog(
     onExport: () -> Unit
 ) {
     val normalized = options.normalized()
-    val hasBackground = card.chatBackground?.let(::File)?.isFile == true
+    val backgroundFile = card.chatBackground?.let(::File)?.takeIf(File::isFile)
+    var showBackgroundCrop by remember(card.id) { mutableStateOf(false) }
     CbDialog(
         onDismissRequest = onDismiss,
         title = "导出角色卡 PNG",
@@ -587,8 +607,10 @@ private fun CharacterPngExportDialog(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             CharacterPngPreview(card, normalized)
-            if (!hasBackground) {
+            if (backgroundFile == null) {
                 CbText("未设置默认聊天背景，当前预览使用品牌底色。", color = ChatBarTheme.colors.warning, style = ChatBarTheme.typography.caption)
+            } else {
+                CbButton("调整背景裁剪", { showBackgroundCrop = true }, variant = ButtonVariant.Outline)
             }
             CbField("导出尺寸") {
                 val sizes = listOf(1024, 1536, 2048)
@@ -624,6 +646,23 @@ private fun CharacterPngExportDialog(
             )
         }
     }
+    if (showBackgroundCrop && backgroundFile != null) {
+        CharacterPngBackgroundCropDialog(
+            imageFile = backgroundFile,
+            options = normalized,
+            onDismiss = { showBackgroundCrop = false },
+            onConfirm = { cropCenterX, cropCenterY, cropZoom ->
+                onOptionsChange(
+                    normalized.copy(
+                        cropCenterX = cropCenterX,
+                        cropCenterY = cropCenterY,
+                        cropZoom = cropZoom
+                    )
+                )
+                showBackgroundCrop = false
+            }
+        )
+    }
 }
 
 @Composable
@@ -631,38 +670,69 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
     val backgroundFile = remember(card.chatBackground) {
         card.chatBackground?.let(::File)?.takeIf(File::isFile)
     }
+    val density = LocalDensity.current
+    var sourceSize by remember(backgroundFile) { mutableStateOf<ImageCropSize?>(null) }
+    var frameSize by remember(backgroundFile) { mutableStateOf(IntSize.Zero) }
+    LaunchedEffect(backgroundFile) {
+        sourceSize = backgroundFile?.let { loadExportImageSize(it) }
+    }
     val gradientStart = (1f - options.gradientHeight).coerceIn(0f, 1f)
-    val logoSize = ((options.logoScale / 0.095f) * 54f).coerceIn(40f, 78f).dp
-    val titleSize = ((options.titleScale / 0.052f) * 20f).coerceIn(16f, 28f).sp
     val titleFontFamily = remember { FontFamily(Font(R.font.xiaolang_tianqiong)) }
-    Box(
+    BoxWithConstraints(
         Modifier
             .fillMaxWidth()
             .aspectRatio(1f)
             .clip(RoundedCornerShape(14.dp))
             .background(ChatBarTheme.colors.surfaceSubtle)
     ) {
-        if (backgroundFile != null) {
-            AsyncImage(
-                model = backgroundFile,
-                contentDescription = "默认聊天背景",
-                modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
-            )
-        } else {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .background(
-                        Brush.linearGradient(
-                            listOf(
-                                Color(0xFF12181D),
-                                Color(0xFF2D6058),
-                                Color(0xFF0A0E12)
+        val previewSize = maxWidth
+        val logoSize = previewSize * options.logoScale
+        val titleSize = with(density) { (previewSize.toPx() * options.titleScale).toSp() }
+        val margin = previewSize * 0.055f
+        val gap = previewSize * 0.024f
+        Box(Modifier.fillMaxSize().onSizeChanged { frameSize = it }) {
+            val size = sourceSize
+            if (backgroundFile != null && size != null && frameSize.width > 0 && frameSize.height > 0) {
+                val display = coverDisplaySize(
+                    sourceWidth = size.width,
+                    sourceHeight = size.height,
+                    frameWidth = frameSize.width.toFloat(),
+                    frameHeight = frameSize.height.toFloat()
+                )
+                val drawnWidth = display.width * options.cropZoom
+                val drawnHeight = display.height * options.cropZoom
+                AsyncImage(
+                    model = backgroundFile,
+                    contentDescription = "默认聊天背景",
+                    modifier = Modifier
+                        .requiredSize(
+                            width = with(density) { drawnWidth.toDp() },
+                            height = with(density) { drawnHeight.toDp() }
+                        )
+                        .graphicsLayer {
+                            translationX = drawnWidth * (0.5f - options.cropCenterX)
+                            translationY = drawnHeight * (0.5f - options.cropCenterY)
+                        },
+                    contentScale = ContentScale.FillBounds
+                )
+            } else if (backgroundFile != null) {
+                AsyncImage(
+                    model = backgroundFile,
+                    contentDescription = "默认聊天背景",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.linearGradient(
+                                listOf(Color(0xFF12181D), Color(0xFF2D6058), Color(0xFF0A0E12))
                             )
                         )
-                    )
-            )
+                )
+            }
         }
         Box(
             Modifier
@@ -680,7 +750,7 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
         Row(
             Modifier
                 .align(Alignment.BottomStart)
-                .padding(20.dp),
+                .padding(margin),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Box(
@@ -696,14 +766,14 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
                     modifier = Modifier.fillMaxSize(0.86f)
                 )
             }
-            Spacer(Modifier.width(12.dp))
+            Spacer(Modifier.width(gap))
             CbText(
                 card.name.ifBlank { "未命名角色" },
                 modifier = Modifier.weight(1f),
                 color = Color.White,
                 style = ChatBarTheme.typography.title.copy(
                     fontSize = titleSize,
-                    lineHeight = (titleSize.value + 6f).sp,
+                    lineHeight = (titleSize.value * 1.3f).sp,
                     fontFamily = titleFontFamily
                 ),
                 maxLines = 2,
@@ -711,6 +781,141 @@ private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngEx
             )
         }
     }
+}
+
+@Composable
+private fun CharacterPngBackgroundCropDialog(
+    imageFile: File,
+    options: CharacterCardPngExportOptions,
+    onDismiss: () -> Unit,
+    onConfirm: (cropCenterX: Float, cropCenterY: Float, cropZoom: Float) -> Unit
+) {
+    val density = LocalDensity.current
+    var sourceSize by remember(imageFile) { mutableStateOf<ImageCropSize?>(null) }
+    var frameSize by remember(imageFile) { mutableStateOf(IntSize.Zero) }
+    var scale by remember(imageFile) { mutableFloatStateOf(options.cropZoom) }
+    var offset by remember(imageFile) { mutableStateOf(Offset.Zero) }
+
+    LaunchedEffect(imageFile) {
+        sourceSize = loadExportImageSize(imageFile)
+    }
+    LaunchedEffect(sourceSize, frameSize.width, frameSize.height, options.cropCenterX, options.cropCenterY, options.cropZoom) {
+        val size = sourceSize ?: return@LaunchedEffect
+        if (frameSize.width <= 0 || frameSize.height <= 0) return@LaunchedEffect
+        val display = coverDisplaySize(
+            sourceWidth = size.width,
+            sourceHeight = size.height,
+            frameWidth = frameSize.width.toFloat(),
+            frameHeight = frameSize.height.toFloat()
+        )
+        scale = options.cropZoom
+        offset = Offset(
+            x = display.width * scale * (0.5f - options.cropCenterX),
+            y = display.height * scale * (0.5f - options.cropCenterY)
+        )
+    }
+
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val size = sourceSize ?: return@rememberTransformableState
+        if (frameSize.width <= 0 || frameSize.height <= 0) return@rememberTransformableState
+        val nextScale = (scale * zoomChange).coerceIn(1f, 6f)
+        val clamped = clampCropOffset(
+            offset = ImageCropOffset(offset.x + panChange.x, offset.y + panChange.y),
+            sourceWidth = size.width,
+            sourceHeight = size.height,
+            frameWidth = frameSize.width.toFloat(),
+            frameHeight = frameSize.height.toFloat(),
+            userScale = nextScale
+        )
+        scale = nextScale
+        offset = Offset(clamped.x, clamped.y)
+    }
+
+    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
+        Column(
+            Modifier
+                .fillMaxSize()
+                .background(ChatBarTheme.colors.background)
+                .padding(16.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp)
+        ) {
+            Row(
+                Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CbIconButton(AppIcons.Close, "取消裁剪", onDismiss, tint = ChatBarTheme.colors.foreground)
+                CbText("调整导出背景", style = ChatBarTheme.typography.heading)
+                CbIconButton(
+                    AppIcons.Check,
+                    "确认裁剪",
+                    {
+                        val size = sourceSize ?: return@CbIconButton
+                        if (frameSize.width <= 0 || frameSize.height <= 0) return@CbIconButton
+                        val crop = imageCropFractionRect(
+                            sourceWidth = size.width,
+                            sourceHeight = size.height,
+                            frameWidth = frameSize.width.toFloat(),
+                            frameHeight = frameSize.height.toFloat(),
+                            userScale = scale,
+                            offset = ImageCropOffset(offset.x, offset.y)
+                        )
+                        onConfirm((crop.left + crop.right) / 2f, (crop.top + crop.bottom) / 2f, scale)
+                    },
+                    enabled = sourceSize != null && frameSize.width > 0 && frameSize.height > 0,
+                    tint = ChatBarTheme.colors.primary
+                )
+            }
+            CbText("拖动调整位置，双指缩放。", color = ChatBarTheme.colors.mutedForeground)
+            BoxWithConstraints(Modifier.fillMaxWidth().weight(1f), contentAlignment = Alignment.Center) {
+                val frameSide = minOf(maxWidth, maxHeight)
+                Box(
+                    Modifier
+                        .size(frameSide)
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(Color.Black)
+                        .transformable(transformState)
+                        .onSizeChanged { frameSize = it },
+                    contentAlignment = Alignment.Center
+                ) {
+                    val size = sourceSize
+                    if (size != null && frameSize.width > 0 && frameSize.height > 0) {
+                        val display = coverDisplaySize(
+                            sourceWidth = size.width,
+                            sourceHeight = size.height,
+                            frameWidth = frameSize.width.toFloat(),
+                            frameHeight = frameSize.height.toFloat()
+                        )
+                        AsyncImage(
+                            model = imageFile,
+                            contentDescription = "导出背景裁剪预览",
+                            modifier = Modifier
+                                .requiredSize(
+                                    width = with(density) { (display.width * scale).toDp() },
+                                    height = with(density) { (display.height * scale).toDp() }
+                                )
+                                .graphicsLayer {
+                                    translationX = offset.x
+                                    translationY = offset.y
+                                },
+                            contentScale = ContentScale.FillBounds
+                        )
+                    } else {
+                        CbSpinner()
+                    }
+                }
+            }
+        }
+    }
+}
+
+private suspend fun loadExportImageSize(file: File): ImageCropSize? = withContext(Dispatchers.IO) {
+    runCatching {
+        val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, options)
+        require(options.outWidth > 0 && options.outHeight > 0) { "图片无法读取" }
+        ImageCropSize(options.outWidth.toFloat(), options.outHeight.toFloat())
+    }.getOrNull()
 }
 
 @Composable
@@ -1137,6 +1342,7 @@ private fun SettingsTab(
         mutableStateOf(settings.excludeAssistantStatusFromHistory)
     }
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
+    var chatBackgroundImageOpacity by remember { mutableFloatStateOf(settings.chatBackgroundImageOpacity) }
     var assistantSegmentedBubblesEnabled by remember { mutableStateOf(settings.assistantSegmentedBubblesEnabled) }
     var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.toFloat()) }
     var memoryThreshold by remember { mutableFloatStateOf(settings.memoryRagSimilarityThreshold) }
@@ -1180,6 +1386,7 @@ private fun SettingsTab(
         settings.momentsAutoStartConfirmed,
         settings.novelAiImageAspectRatio,
         settings.chatBubbleFontScale,
+        settings.chatBackgroundImageOpacity,
         settings.assistantSegmentedBubblesEnabled
     ) {
         playerName = player.playerName; persona = player.globalPersona
@@ -1202,6 +1409,7 @@ private fun SettingsTab(
         excludeAssistantStatusFromHistory = settings.excludeAssistantStatusFromHistory
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
+        chatBackgroundImageOpacity = settings.chatBackgroundImageOpacity
         assistantSegmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
     }
     val effectiveDefaultModelId = modelId ?: effectiveModels.firstOrNull()?.id ?: customModels.firstOrNull { it.selectableForChat }?.id
@@ -1239,6 +1447,7 @@ private fun SettingsTab(
         momentsMaxDelayHours = draftMomentDelayRange.maxHours,
         momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
         momentsAutoStartConfirmed = momentsAutoStartConfirmed,
+        chatBackgroundImageOpacity = chatBackgroundImageOpacity,
         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
@@ -1331,6 +1540,12 @@ private fun SettingsTab(
                 bubbleFontScale = it
                 onBubbleFontScale(it)
             }
+            SliderField(
+                "聊天背景图透明度：${(chatBackgroundImageOpacity * 100).roundToInt()}%",
+                chatBackgroundImageOpacity,
+                0f..1f,
+                19
+            ) { chatBackgroundImageOpacity = it }
             ThemeMode.entries.forEach { appearanceMode ->
                 CbButton(
                     text = when (appearanceMode) {

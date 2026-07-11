@@ -7,7 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -285,9 +284,14 @@ fun CbSlider(
                 }
             }
             .focusable()
-            .pointerInput(valueRange, steps) { detectTapGestures { onValueChange(valueFromX(it.x)) } }
-            .pointerInput(valueRange, steps) {
-                detectHorizontalDragGestures { change, _ -> onValueChange(valueFromX(change.position.x)) }
+            .pointerInput(widthPx, valueRange, steps) {
+                detectHorizontalDragGestures(
+                    onDragStart = { onValueChange(valueFromX(it.x)) },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        onValueChange(valueFromX(change.position.x))
+                    }
+                )
             },
         contentAlignment = Alignment.CenterStart
     ) {

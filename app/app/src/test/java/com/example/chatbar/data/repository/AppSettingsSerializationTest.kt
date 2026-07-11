@@ -1,8 +1,11 @@
 package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.entity.AppSettings
+import com.example.chatbar.data.local.entity.DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY
+import com.example.chatbar.data.local.entity.withNormalizedAppearance
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -13,6 +16,7 @@ class AppSettingsSerializationTest {
 
         assertTrue(decoded.assistantSegmentedBubblesEnabled)
         assertTrue(decoded.excludeAssistantStatusFromHistory)
+        assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
     }
 
     @Test
@@ -37,5 +41,11 @@ class AppSettingsSerializationTest {
         val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
 
         assertFalse(decoded.excludeAssistantStatusFromHistory)
+    }
+
+    @Test
+    fun backgroundImageOpacity_isNormalizedToSupportedRange() {
+        assertEquals(1f, AppSettings(chatBackgroundImageOpacity = 2f).withNormalizedAppearance().chatBackgroundImageOpacity)
+        assertEquals(0f, AppSettings(chatBackgroundImageOpacity = -1f).withNormalizedAppearance().chatBackgroundImageOpacity)
     }
 }

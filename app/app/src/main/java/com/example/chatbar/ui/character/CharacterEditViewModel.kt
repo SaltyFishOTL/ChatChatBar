@@ -53,6 +53,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -265,6 +266,8 @@ class CharacterEditViewModel(
         private set
     var hasLocalChanges by mutableStateOf(false)
         private set
+    var hasUnsavedDraftChanges by mutableStateOf(false)
+        private set
     var restoreDraft by mutableStateOf<EditorDraft?>(null)
         private set
     var restoreConflict by mutableStateOf(false)
@@ -314,7 +317,7 @@ class CharacterEditViewModel(
                         restoreOpenModal(draft.openModalState)
                         pendingDeletedAssets.addAll(draft.pendingDeletedAssets)
                         pendingDeletedDocumentIds.addAll(draft.pendingDeletedDocumentIds)
-                        hasLocalChanges = true
+                        refreshChangeState()
                     } else {
                         restoreDraft = draft
                         restoreConflict = draftRepository.isChanged(card, draft)
@@ -328,7 +331,7 @@ class CharacterEditViewModel(
                     restoreOpenModal(newDraft.openModalState)
                     pendingDeletedAssets.addAll(newDraft.pendingDeletedAssets)
                     pendingDeletedDocumentIds.addAll(newDraft.pendingDeletedDocumentIds)
-                    hasLocalChanges = true
+                    refreshChangeState()
                 } else {
                     charactersList.add(CharacterInfo.create(""))
                 }
@@ -346,7 +349,8 @@ class CharacterEditViewModel(
             pendingDeletedAssets.addAll(draft.pendingDeletedAssets)
             pendingDeletedDocumentIds.clear()
             pendingDeletedDocumentIds.addAll(draft.pendingDeletedDocumentIds)
-            hasLocalChanges = true
+            refreshChangeState()
+            hasUnsavedDraftChanges = false
         }
         restoreDraft = null
         restoreConflict = false
@@ -359,7 +363,8 @@ class CharacterEditViewModel(
 
     fun discardDraft(onDone: (() -> Unit)? = null) {
         viewModelScope.launch {
-            draftJob?.cancel()
+            draftJob?.cancelAndJoin()
+            draftJob = null
             loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
@@ -369,6 +374,7 @@ class CharacterEditViewModel(
             openModalState = null
             restoredOpenModalState = null
             hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             restoreDraft = null
             restoreConflict = false
             onDone?.invoke()
@@ -384,6 +390,11 @@ class CharacterEditViewModel(
         _isSaving.value = true
 
         viewModelScope.launch {
+            // A delayed draft write can otherwise recreate an older draft after this
+            // formal save has deleted it. That stale draft is then restorable and can
+            // overwrite newly materialized image paths on the next save.
+            draftJob?.cancelAndJoin()
+            draftJob = null
             name = NamePolicy.normalize(name)
             val targetId = if (saveAsNew || sourceDeleted) null else characterId
             if (!forceOverwrite && targetId != null && loadedDraft != null && draftRepository.isChanged(characterRepository.getById(targetId), loadedDraft!!)) {
@@ -444,6 +455,8 @@ class CharacterEditViewModel(
             val effectiveCard = characterRepository.getById(card.id) ?: card
             _characterCard.value = effectiveCard
             cleanupAfterCharacterSave(oldCard, effectiveCard)
+            draftJob?.cancelAndJoin()
+            draftJob = null
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
             loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
@@ -452,7 +465,9 @@ class CharacterEditViewModel(
             loadedDraft = null
             openModalState = null
             restoredOpenModalState = null
+            baseCard = effectiveCard
             hasLocalChanges = false
+            hasUnsavedDraftChanges = false
             _isSaving.value = false
             startBackgroundIndex(effectiveCard)
             if (effectiveCard.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
@@ -477,7 +492,13 @@ class CharacterEditViewModel(
 
     fun scheduleDraftSave() {
         if (!draftReady || restoreDraft != null) return
-        hasLocalChanges = true
+        refreshChangeState()
+        if (!hasLocalChanges) {
+            hasUnsavedDraftChanges = false
+            draftJob?.cancel()
+            return
+        }
+        hasUnsavedDraftChanges = true
         draftJob?.cancel()
         draftJob = viewModelScope.launch {
             delay(700)
@@ -487,8 +508,9 @@ class CharacterEditViewModel(
 
     fun saveDraftAndExit(onDone: () -> Unit) {
         viewModelScope.launch {
-            draftJob?.cancel()
-            saveDraftNow()
+            draftJob?.cancelAndJoin()
+            draftJob = null
+            if (hasUnsavedDraftChanges) saveDraftNow()
             onDone()
         }
     }
@@ -521,6 +543,7 @@ class CharacterEditViewModel(
         )
         loadedDraft = draftRepository.save(draft)
         draftSavedAt = loadedDraft?.updatedAt
+        hasUnsavedDraftChanges = false
     }
 
     private fun restoreOpenModal(raw: String?) {
@@ -1849,6 +1872,47 @@ class CharacterEditViewModel(
             )
         }
     }
+
+    private fun refreshChangeState() {
+        val base = baseCard
+        hasLocalChanges = if (base == null) {
+            sourceDeleted || hasNewCharacterInput()
+        } else {
+            base.copy(
+                name = name,
+                greeting = greeting,
+                alternateGreetings = alternateGreetings,
+                avatar = avatar,
+                chatBackground = chatBackground,
+                editMode = editMode,
+                basicSetting = basicSetting,
+                freeformCharacterText = freeformCharacterText,
+                defaultImagePrompt = defaultImagePrompt,
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(defaultImageNegativePrompt),
+                systemPrompt = systemPrompt,
+                postHistoryInstructions = postHistoryInstructions,
+                mesExample = mesExample,
+                creatorNotes = creatorNotes,
+                momentsEnabled = momentsEnabled,
+                worldBookIds = selectedWorldBookIds.distinct(),
+                characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
+                customDocuments = documentsList.toList()
+            ) != base
+        }
+    }
+
+    private fun hasNewCharacterInput(): Boolean =
+        name.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||
+            avatar != null || chatBackground != null || editMode != CharacterEditMode.STRUCTURED ||
+            basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
+            systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
+            creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
+            documentsList.isNotEmpty() || charactersList.any { it.hasEditorContent() }
+
+    private fun CharacterInfo.hasEditorContent(): Boolean =
+        name.isNotBlank() || profile.isNotBlank() || appearance.isNotBlank() || appearanceImage != null ||
+            clothing.isNotBlank() || abilities.isNotBlank() || habits.isNotBlank() || background.isNotBlank() ||
+            relationships.isNotBlank() || speakingStyle.isNotBlank() || imagePrompt.isNotBlank()
 
     private fun buildCurrentCard(markDirty: Boolean): CharacterCard {
         val now = System.currentTimeMillis()

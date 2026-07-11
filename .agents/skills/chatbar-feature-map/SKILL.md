@@ -30,7 +30,7 @@ Use this as a first-hop map. Read specific files or skills, then search only if 
 - Community: use `chatbar-community-platform` before reading `ui/community/CommunityScreen.kt` or Supabase/Edge Function code.
 - UI kit and Compose styling: use `chatbar-shadcn-compose`; then read `ui/kit/*` and target screen.
 - Emulator/device verification: use `chatbar-emulator-test`.
-- Import/export/card packages: `domain/card/CardTransferModels.kt`, `CharacterCardTransferService.kt`, `SillyTavernCardParser.kt`, `SillyTavernCardMapper.kt`.
+- Import/export/card packages: `domain/card/CardTransferModels.kt`, `CharacterCardTransferService.kt`, `CharacterCardPngRenderer.kt`, `SillyTavernCardParser.kt`, `SillyTavernCardMapper.kt`; character PNG export dialog/preview/crop lives in `ui/manage/ManageScreen.kt`.
 - Persistence/entities: `data/local/entity/*`, `data/local/JsonFileStorage.kt`, related repository under `data/repository/*`.
 - World books: `data/local/entity/WorldBook*.kt`, `ui/character/CharacterEditScreen.kt`, `ui/character/CharacterEditViewModel.kt`.
 - Tutorial/help: `ui/tutorial/TutorialScreen.kt`.

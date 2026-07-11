@@ -23,6 +23,7 @@ data class AppSettings(
     val excludeAssistantStatusFromHistory: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
+    val chatBackgroundImageOpacity: Float = DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY,
     val assistantSegmentedBubblesEnabled: Boolean = true,
     val tutorialVersion: Int = 0,
     val webSearchSettingsVersion: Int = 0,
@@ -38,6 +39,18 @@ data class AppSettings(
     val lastSeenMomentsAt: Long = 0L,
     val lastSeenChatAt: Long = 0L
 )
+
+const val DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY = 0.16f
+
+fun AppSettings.withNormalizedAppearance(): AppSettings {
+    val normalizedOpacity = chatBackgroundImageOpacity
+        .takeIf { it.isFinite() }
+        ?.coerceIn(0f, 1f)
+        ?: DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY
+    return if (normalizedOpacity == chatBackgroundImageOpacity) this else copy(
+        chatBackgroundImageOpacity = normalizedOpacity
+    )
+}
 
 @Serializable
 enum class ThemeMode {
