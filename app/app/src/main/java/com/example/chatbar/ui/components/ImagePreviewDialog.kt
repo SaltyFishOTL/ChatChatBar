@@ -2,14 +2,19 @@ package com.example.chatbar.ui.components
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -32,7 +37,13 @@ import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbIconButton
+import com.example.chatbar.ui.kit.CbText
 import java.io.File
+
+data class ImagePreviewItem(
+    val messageId: String,
+    val path: String
+)
 
 @Composable
 fun ImagePreviewDialog(
@@ -41,10 +52,34 @@ fun ImagePreviewDialog(
     onSetCardAvatar: (() -> Unit)? = null,
     onSetCardBackground: (() -> Unit)? = null
 ) {
-    var scale by remember(path) { mutableFloatStateOf(1f) }
-    var offset by remember(path) { mutableStateOf(Offset.Zero) }
+    ImagePreviewDialog(
+        items = listOf(ImagePreviewItem(messageId = "", path = path)),
+        initialIndex = 0,
+        onDismiss = onDismiss,
+        onSetCardAvatar = onSetCardAvatar?.let { action -> { action() } },
+        onSetCardBackground = onSetCardBackground?.let { action -> { action() } }
+    )
+}
+
+@Composable
+fun ImagePreviewDialog(
+    items: List<ImagePreviewItem>,
+    initialIndex: Int,
+    onDismiss: () -> Unit,
+    onLocateMessage: ((String) -> Unit)? = null,
+    onSetCardAvatar: ((String) -> Unit)? = null,
+    onSetCardBackground: ((String) -> Unit)? = null
+) {
+    if (items.isEmpty()) return
+    val safeInitialIndex = initialIndex.coerceIn(items.indices)
+    val pagerState = rememberPagerState(initialPage = safeInitialIndex) { items.size }
+    val currentItem = items[pagerState.currentPage.coerceIn(items.indices)]
     var showImageActions by remember { mutableStateOf(false) }
     val context = LocalContext.current
+
+    LaunchedEffect(items.size) {
+        if (pagerState.currentPage !in items.indices) pagerState.scrollToPage(items.lastIndex)
+    }
 
     if (showImageActions) {
         CbDialog(
@@ -56,7 +91,7 @@ fun ImagePreviewDialog(
                 "保存图片",
                 {
                     showImageActions = false
-                    saveImageToGallery(context, path)
+                    saveImageToGallery(context, currentItem.path)
                 },
                 modifier = Modifier.fillMaxWidth()
             )
@@ -65,7 +100,7 @@ fun ImagePreviewDialog(
                 "分享图片",
                 {
                     showImageActions = false
-                    shareImage(context, path)
+                    shareImage(context, currentItem.path)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 variant = ButtonVariant.Secondary
@@ -76,7 +111,7 @@ fun ImagePreviewDialog(
                     "替换为头像",
                     {
                         showImageActions = false
-                        onSetCardAvatar()
+                        onSetCardAvatar(currentItem.path)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     variant = ButtonVariant.Secondary
@@ -88,7 +123,19 @@ fun ImagePreviewDialog(
                     "替换为背景",
                     {
                         showImageActions = false
-                        onSetCardBackground()
+                        onSetCardBackground(currentItem.path)
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Secondary
+                )
+            }
+            if (onLocateMessage != null) {
+                Spacer(Modifier.size(8.dp))
+                CbButton(
+                    "定位消息",
+                    {
+                        showImageActions = false
+                        onLocateMessage(currentItem.messageId)
                     },
                     modifier = Modifier.fillMaxWidth(),
                     variant = ButtonVariant.Secondary
@@ -109,34 +156,17 @@ fun ImagePreviewDialog(
                 .fillMaxSize()
                 .background(Color.Black)
         ) {
-            AsyncImage(
-                model = File(path),
-                contentDescription = "查看大图",
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(16.dp)
-                    .pointerInput(path) {
-                        detectTapGestures(onLongPress = { showImageActions = true })
-                    }
-                    .pointerInput(path) {
-                        detectTransformGestures { _, pan, zoom, _ ->
-                            val newScale = (scale * zoom).coerceIn(1f, 5f)
-                            scale = newScale
-                            offset = if (newScale == 1f) {
-                                Offset.Zero
-                            } else {
-                                offset + pan
-                            }
-                        }
-                    }
-                    .graphicsLayer {
-                        scaleX = scale
-                        scaleY = scale
-                        translationX = offset.x
-                        translationY = offset.y
-                    },
-                contentScale = ContentScale.Fit
-            )
+            HorizontalPager(
+                state = pagerState,
+                modifier = Modifier.fillMaxSize(),
+                key = { items[it].messageId + "\u0000" + items[it].path }
+            ) { page ->
+                val item = items[page]
+                ZoomablePreviewImage(
+                    path = item.path,
+                    onLongPress = { showImageActions = true }
+                )
+            }
             CbIconButton(
                 AppIcons.Close,
                 "关闭大图",
@@ -144,6 +174,46 @@ fun ImagePreviewDialog(
                 modifier = Modifier.align(Alignment.TopEnd).padding(12.dp),
                 tint = Color.White
             )
+            CbText(
+                text = "${pagerState.currentPage + 1}/${items.size}",
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .padding(bottom = 16.dp)
+                    .background(Color.Black.copy(alpha = 0.45f), shape = androidx.compose.foundation.shape.RoundedCornerShape(12.dp))
+                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                color = Color.White.copy(alpha = 0.82f)
+            )
         }
     }
+}
+
+@Composable
+private fun ZoomablePreviewImage(path: String, onLongPress: () -> Unit) {
+    var scale by remember(path) { mutableFloatStateOf(1f) }
+    var offset by remember(path) { mutableStateOf(Offset.Zero) }
+    val transformState = rememberTransformableState { zoomChange, panChange, _ ->
+        val nextScale = (scale * zoomChange).coerceIn(1f, 5f)
+        scale = nextScale
+        offset = if (nextScale == 1f) Offset.Zero else offset + panChange
+    }
+    AsyncImage(
+        model = File(path),
+        contentDescription = "查看大图",
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .pointerInput(path) { detectTapGestures(onLongPress = { onLongPress() }) }
+            .transformable(
+                state = transformState,
+                canPan = { scale > 1f }
+            )
+            .graphicsLayer {
+                scaleX = scale
+                scaleY = scale
+                translationX = offset.x
+                translationY = offset.y
+            },
+        contentScale = ContentScale.Fit
+    )
 }

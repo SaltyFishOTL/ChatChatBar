@@ -78,6 +78,7 @@ import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
 import com.example.chatbar.ui.components.ImagePreviewDialog
+import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.components.TypingIndicator
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.components.shareImage
@@ -140,7 +141,7 @@ fun ChatScreen(
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
     var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
-    var expandedImagePath by remember { mutableStateOf<String?>(null) }
+    var expandedImageIndex by remember(sessionId) { mutableStateOf<Int?>(null) }
     var imageActionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
@@ -255,6 +256,11 @@ fun ChatScreen(
     val imageGenerationAnchorExists = remember(messages, imageGeneration?.anchorMessageId) {
         val anchorId = imageGeneration?.anchorMessageId
         anchorId != null && messages.any { it.id == anchorId }
+    }
+    val previewImages = remember(messages) {
+        messages.flatMap { message ->
+            message.images.map { path -> ImagePreviewItem(message.id, path) }
+        }
     }
     val selectableScreenshotIds = remember(messages, assistantSegmentedBubblesEnabled) {
         messages.flatMap { message ->
@@ -570,7 +576,11 @@ fun ChatScreen(
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
                         onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
-                        onImageClick = if (screenshotSelectionMode) null else ({ path -> expandedImagePath = path }),
+                        onImageClick = if (screenshotSelectionMode) null else ({ path ->
+                            expandedImageIndex = previewImages.indexOfFirst {
+                                it.messageId == message.id && it.path == path
+                            }.takeIf { it >= 0 }
+                        }),
                         onImageLongPress = { path ->
                             if (!isResponding && !screenshotSelectionMode) {
                                 val reusable = message.generatedFromMessageId != null ||
@@ -850,16 +860,23 @@ fun ChatScreen(
             }
         }
     }
-    expandedImagePath?.let { path ->
+    expandedImageIndex?.let { initialIndex ->
         ImagePreviewDialog(
-            path = path,
-            onDismiss = { expandedImagePath = null },
-            onSetCardAvatar = if (!isArchived && characterCard != null) ({
+            items = previewImages,
+            initialIndex = initialIndex,
+            onDismiss = { expandedImageIndex = null },
+            onLocateMessage = { messageId ->
+                expandedImageIndex = null
+                messages.indexOfFirst { it.id == messageId }.takeIf { it >= 0 }?.let { index ->
+                    scope.launch { listState.animateScrollToItem(index) }
+                }
+            },
+            onSetCardAvatar = if (!isArchived && characterCard != null) ({ path ->
                 viewModel.replaceCharacterCardAvatarFromImage(path) { _, message ->
                     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                 }
             }) else null,
-            onSetCardBackground = if (!isArchived && characterCard != null) ({
+            onSetCardBackground = if (!isArchived && characterCard != null) ({ path ->
                 viewModel.replaceCharacterCardBackgroundFromImage(path) { _, message ->
                     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
                 }

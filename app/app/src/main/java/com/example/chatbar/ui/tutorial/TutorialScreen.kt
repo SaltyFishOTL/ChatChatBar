@@ -235,14 +235,22 @@ private val advancedTutorialPages = listOf(
     ),
     TutorialPage(
         title = "图片与 NovelAI 隐藏操作",
-        summary = "聊天图片和生图按钮都提供长按入口。",
+        summary = "聊天图片、全屏预览和生图按钮都提供长按入口。",
         sections = listOf(
             TutorialSection(
                 title = "聊天图片",
                 steps = listOf(
-                    "点击图片进入预览，可把图片设为当前角色卡头像或背景。",
+                    "点击图片进入全屏预览；左右滑动可查看上一张或下一张，底部会显示当前张数和总张数。",
                     "长按生成图片，可用相同提示词和参数重新生成，或删除图片。",
                     "普通聊天图片长按会直接进入删除确认。"
+                )
+            ),
+            TutorialSection(
+                title = "全屏图片",
+                steps = listOf(
+                    "在全屏预览中长按当前图片，打开“图片操作”。",
+                    "可保存、分享图片，也可把当前图片替换为角色卡头像或背景。",
+                    "选择“定位消息”，会关闭全屏图片并跳到聊天记录中这张图片所在的消息。"
                 )
             ),
             TutorialSection(

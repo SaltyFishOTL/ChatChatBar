@@ -63,6 +63,10 @@ Before changing an area covered by a project skill under `.agents/skills`, read 
 
 Skills must not repeat global rules already present in this AGENTS.md, including prompt ownership, fallback policy, shell safety, coding style, verification defaults, or device install safety. Put only feature-specific file maps, workflows, exceptions, and project facts in skills. If a skill needs to reference a globally governed area, name the feature-specific entry point without restating the global rule.
 
+## Advanced Tutorial Maintenance
+
+Every user-visible long-press action must be documented in the advanced tutorial in `ui/tutorial/TutorialScreen.kt`. When adding, removing, renaming, or changing a long-press gesture or its menu actions, update the advanced tutorial in the same change.
+
 ## Commit & Pull Request Guidelines
 
 Git history uses short, scope-focused summaries, often Chinese imperatives such as `优化RAG` or `美化界面`. Keep commits concise and focused on one change. PRs should include problem, solution, verification commands, and screenshots or recordings for visible UI changes. Link related issues when available and call out data migration or seed-data changes.
