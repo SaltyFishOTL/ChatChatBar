@@ -69,6 +69,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Do not add `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE` or feature-specific NovelAI system prompts.
 - If moments need visual guidance, add only small modifiers: photo style, private/life-slice feeling, composition, candid/low-angle/door-gap/mirror/distant/phone snapshot when suitable.
 - Text/image generation failure should create a visible placeholder moment with failure reason and retry action; do not hide primary failure with a success-looking fallback.
+- Failed placeholders persist completed generation checkpoints. Retry resumes after completed judge, draft, and NovelAI Prompt-design phases instead of repeating them.
 
 ## UI Rules
 
@@ -79,7 +80,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Like toggles local state. Public moment display count changes with local like; private moment base remains 0 and may show only local-liked state if product explicitly asks.
 - Placeholder failed moments show retry action and stream retry progress; they should not look like successful posts.
 - Bottom 朋友圈 and chat tabs show red dot when unread items exist.
-- Deletion stays unobtrusive; current product uses long-press delete for single post.
+- Deletion stays unobtrusive; tapping the delete icon opens a destructive confirmation dialog.
 - Moment image interactions should reuse shared chat image preview module where possible: open large image, zoom, save/share, set as card avatar/background.
 
 ## Persistence

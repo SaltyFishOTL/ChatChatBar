@@ -31,6 +31,9 @@ Keep AI role-card work narrow. Read these files before broad search.
 - Cover candidate applies to both `avatar` and `chatBackground` only when candidate is applied.
 - Per-character avatar candidate uses `NovelAiPromptDesigner`, then NovelAI. Structured mode sends card style as `Preset style prompt` and `CharacterInfo.imagePrompt` as `Character preset prompts`; the avatar user task asks the AI to keep them in `baseCaption` and `characters[].caption` unless they explicitly conflict. Freeform mode sends temporary manual positive Prompt through the same shared flow. Designer receives global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`; final plan appends the same fixed tags, uses card negative Prompt, and generates square images.
 - Avatar prompt debugging is in `CharacterAvatarImageUiState`: source input, Designer reasoning, Designer raw output, and final NovelAI positive Prompt are displayed by `CharacterAvatarEditor`.
+- Failed cover/avatar retries reuse completed Prompt design; if NovelAI already returned a final image and only saving failed, retry saves those bytes without generating again. Changed avatar source input invalidates its checkpoint.
+- Auto-fill/rewrite failure retry inherits completed image understanding, research plan, cleaned sources, organized research brief, and final raw output, then resumes from the next unfinished phase without clearing prior results.
+- Candidate dialogs expose a separate final-result retry. It clears only final raw output while retaining prepared research/image context; normal generate starts a fresh pipeline. Changed input, model, source image, or current card invalidates reuse.
 - `CharacterInfo.appearanceImage` means character-owned chat/Moments avatar. It must not enter chat-model image understanding or character appearance text.
 
 ## Workflow

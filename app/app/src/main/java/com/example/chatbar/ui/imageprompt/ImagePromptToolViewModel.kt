@@ -85,6 +85,7 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private var designJob: Job? = null
     private var imageJob: Job? = null
+    private var completedImageCheckpoint: ByteArray? = null
 
     init {
         observeCharacterCards()
@@ -133,6 +134,7 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update { it.copy(error = "默认生图模型/API Key 未配置") }
             return
         }
+        completedImageCheckpoint = null
         designJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
@@ -212,6 +214,7 @@ class ImagePromptToolViewModel : ViewModel() {
             }
             val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, plan.sizePreset)
             val seed = imageService.newSeed()
+            val resumeImage = completedImageCheckpoint.takeIf { _uiState.value.phase == ImagePromptToolPhase.FAILED }
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.GENERATING,
@@ -222,6 +225,26 @@ class ImagePromptToolViewModel : ViewModel() {
                 )
             }
             try {
+                if (resumeImage != null) {
+                    _uiState.update {
+                        it.copy(
+                            phase = ImagePromptToolPhase.SAVING,
+                            imagePreview = resumeImage,
+                            imageProgress = 1f
+                        )
+                    }
+                    val path = withContext(Dispatchers.IO) {
+                        imageStorage.save(PROMPT_TOOL_IMAGE_SESSION_ID, resumeImage)
+                    }
+                    _uiState.update {
+                        it.copy(
+                            phase = ImagePromptToolPhase.FINISHED,
+                            imagePath = path,
+                            error = null
+                        )
+                    }
+                    return@launch
+                }
                 imageService.generate(token, plan, seed, imageSize).collect { event ->
                     when (event) {
                         is NovelAiImageEvent.Intermediate -> {
@@ -234,6 +257,7 @@ class ImagePromptToolViewModel : ViewModel() {
                             }
                         }
                         is NovelAiImageEvent.Final -> {
+                            completedImageCheckpoint = event.image
                             _uiState.update {
                                 it.copy(
                                     phase = ImagePromptToolPhase.SAVING,

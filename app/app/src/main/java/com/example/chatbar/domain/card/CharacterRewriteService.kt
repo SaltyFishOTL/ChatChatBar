@@ -51,6 +51,11 @@ data class CharacterRewriteCharacterDraft(
     val imagePrompt: String? = null
 )
 
+data class CharacterRewriteGenerationCheckpoint(
+    val research: ResearchDebugSnapshot? = null,
+    val rawFinalText: String = ""
+)
+
 class CharacterRewriteService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
@@ -66,6 +71,8 @@ class CharacterRewriteService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
+        resumeFrom: CharacterRewriteGenerationCheckpoint? = null,
+        onCheckpoint: (CharacterRewriteGenerationCheckpoint) -> Unit = {},
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
@@ -73,15 +80,27 @@ class CharacterRewriteService(
     ): CharacterRewriteDraft = withContext(Dispatchers.IO) {
         require(userInput.isNotBlank()) { "请输入改写要求" }
         val model = resolveModel(modelOverride)
-        val researchBrief = buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug, onVisibleOutput)
+        var checkpoint = resumeFrom ?: CharacterRewriteGenerationCheckpoint()
+        val researchBrief = buildResearchBrief(
+            userInput,
+            currentCard,
+            model,
+            onStatus,
+            onResearchDebug,
+            onVisibleOutput,
+            resumeFrom?.research
+        ) { snapshot ->
+            checkpoint = checkpoint.copy(research = snapshot)
+            onCheckpoint(checkpoint)
+        }
         onStatus("改写角色卡")
         val messages = listOf(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_REWRITE_SYSTEM_PROMPT),
             ChatApiMessage.text("user", buildUserPrompt(userInput, currentCard, researchBrief))
         )
-        val raw = StringBuilder()
+        val raw = StringBuilder(checkpoint.rawFinalText)
         var streamError: String? = null
-        chatService.streamText(
+        if (checkpoint.rawFinalText.isBlank()) chatService.streamText(
             messages = messages,
             modelConfig = model,
             maxTokens = 7000,
@@ -101,6 +120,10 @@ class CharacterRewriteService(
 
         val rawText = raw.toString()
         if (rawText.isBlank()) error(streamError ?: "AI 自动改写返回空内容")
+        if (checkpoint.rawFinalText.isBlank()) {
+            checkpoint = checkpoint.copy(rawFinalText = rawText)
+            onCheckpoint(checkpoint)
+        }
         val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model, currentCard)
         materializeDraft(currentCard, draft)
     }
@@ -142,7 +165,9 @@ class CharacterRewriteService(
         generationModel: ModelConfig,
         onStatus: (String) -> Unit,
         onResearchDebug: (ResearchDebugSnapshot) -> Unit,
-        onVisibleOutput: (String, String, String) -> Unit
+        onVisibleOutput: (String, String, String) -> Unit,
+        resumeFrom: ResearchDebugSnapshot? = null,
+        onCheckpoint: (ResearchDebugSnapshot) -> Unit = {}
     ): ResearchBrief? {
         val service = researchService ?: return null
         val researchModel = runCatching { modelResolver.retrievalModel() }
@@ -155,6 +180,8 @@ class CharacterRewriteService(
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 onDebug = onResearchDebug,
+                resumeFrom = resumeFrom,
+                onCheckpoint = onCheckpoint,
                 onStatus = onStatus,
                 onVisibleOutput = onVisibleOutput
             )

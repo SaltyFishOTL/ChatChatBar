@@ -52,6 +52,13 @@ data class MomentDebugExchange(
     val output: String
 )
 
+@Serializable
+data class MomentGenerationCheckpoint(
+    val decision: MomentPostDecision? = null,
+    val draft: MomentDraft? = null,
+    val imagePrompt: NovelAiPromptPlan? = null
+)
+
 data class MomentDebugGenerationResult(
     val post: MomentPost? = null,
     val errorMessage: String? = null,
@@ -90,7 +97,9 @@ class MomentGenerationService(
         model: ModelConfig,
         imageModel: ModelConfig?,
         scheduledAt: Long,
-        finalPromptRequirement: String = ""
+        finalPromptRequirement: String = "",
+        resumeFrom: MomentGenerationCheckpoint? = null,
+        onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {}
     ): MomentGenerationResult = generateInternal(
         card = card,
         session = session,
@@ -100,6 +109,8 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        resumeFrom = resumeFrom,
+        onCheckpoint = onCheckpoint,
         streamText = true,
         onProgress = {}
     )
@@ -113,6 +124,8 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
+        resumeFrom: MomentGenerationCheckpoint? = null,
+        onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {},
         onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult = generateInternal(
         card = card,
@@ -123,6 +136,8 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        resumeFrom = resumeFrom,
+        onCheckpoint = onCheckpoint,
         streamText = true,
         onProgress = onProgress
     )
@@ -136,6 +151,8 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String,
+        resumeFrom: MomentGenerationCheckpoint?,
+        onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit,
         streamText: Boolean,
         onProgress: (MomentGenerationProgress) -> Unit
     ): MomentGenerationResult {
@@ -144,13 +161,24 @@ class MomentGenerationService(
             .takeLast(3)
         if (contextMessages.isEmpty()) return MomentGenerationResult.Skipped("没有可用于朋友圈生成的交流内容")
 
-        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.JUDGING, "正在判断是否适合发布"))
-        val decision = judgeMoment(session, latestPost, contextMessages.lastOrNull(), model, streamText, onProgress)
+        var checkpoint = resumeFrom ?: MomentGenerationCheckpoint()
+        val decision = checkpoint.decision ?: run {
+            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.JUDGING, "正在判断是否适合发布"))
+            judgeMoment(session, latestPost, contextMessages.lastOrNull(), model, streamText, onProgress).also {
+                checkpoint = checkpoint.copy(decision = it)
+                onCheckpoint(checkpoint)
+            }
+        }
         if (!decision.shouldPost) {
             return MomentGenerationResult.Skipped(decision.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
-        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.WRITING, "正在生成朋友圈文案"))
-        val draft = designMoment(card, session, contextMessages, latestPost, model, streamText, onProgress)
+        val draft = checkpoint.draft ?: run {
+            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.WRITING, "正在生成朋友圈文案"))
+            designMoment(card, session, contextMessages, latestPost, model, streamText, onProgress).also {
+                checkpoint = checkpoint.copy(draft = it)
+                onCheckpoint(checkpoint)
+            }
+        }
         if (!draft.shouldPost) {
             return MomentGenerationResult.Skipped(draft.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
@@ -164,13 +192,18 @@ class MomentGenerationService(
             return MomentGenerationResult.Posted(post)
         }
         require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
-        onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
-        val prompt = promptDesigner.designForMoment(
-            card = card,
-            momentImageBrief = normalizedDraft.imageBrief,
-            model = imageModel,
-            finalPromptRequirement = finalPromptRequirement
-        )
+        val prompt = checkpoint.imagePrompt ?: run {
+            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
+            promptDesigner.designForMoment(
+                card = card,
+                momentImageBrief = normalizedDraft.imageBrief,
+                model = imageModel,
+                finalPromptRequirement = finalPromptRequirement
+            ).also {
+                checkpoint = checkpoint.copy(imagePrompt = it)
+                onCheckpoint(checkpoint)
+            }
+        }
         val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
         val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
@@ -535,6 +568,14 @@ class MomentGenerationService(
         const val IMAGE_GENERATION_ATTEMPTS = 2
         const val IMAGE_RETRY_DELAY_MS = 1500L
     }
+
+    fun encodeCheckpoint(checkpoint: MomentGenerationCheckpoint): String =
+        json.encodeToString(MomentGenerationCheckpoint.serializer(), checkpoint)
+
+    fun decodeCheckpoint(value: String): MomentGenerationCheckpoint? =
+        value.takeIf(String::isNotBlank)?.let {
+            runCatching { json.decodeFromString(MomentGenerationCheckpoint.serializer(), it) }.getOrNull()
+        }
 }
 
 private fun String.compactMomentText(): String =

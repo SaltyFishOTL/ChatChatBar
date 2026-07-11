@@ -137,6 +137,7 @@ class MomentScheduler(
     }
 
     private suspend fun processTask(task: MomentTask, now: Long) {
+        var generationCheckpoint = MomentGenerationCheckpoint()
         val settings = settingsRepository.getAppSettings()
         if (!settings.momentsEnabled) return
         val card = characterRepository.getById(task.characterCardId)
@@ -170,7 +171,8 @@ class MomentScheduler(
                     model = model,
                     imageModel = imageModel,
                     scheduledAt = task.scheduledAt,
-                    finalPromptRequirement = settings.imagePromptToolPreference
+                    finalPromptRequirement = settings.imagePromptToolPreference,
+                    onCheckpoint = { generationCheckpoint = it }
                 )
             }
         }.fold(
@@ -192,7 +194,13 @@ class MomentScheduler(
             },
             onFailure = { error ->
                 if (error is CancellationException) throw error
-                saveFailurePlaceholder(running, card, session, error.message ?: error.javaClass.simpleName)
+                saveFailurePlaceholder(
+                    running,
+                    card,
+                    session,
+                    error.message ?: error.javaClass.simpleName,
+                    generationService.encodeCheckpoint(generationCheckpoint)
+                )
             }
         )
     }
@@ -201,7 +209,8 @@ class MomentScheduler(
         task: MomentTask,
         card: CharacterCard,
         session: ChatSession,
-        reason: String
+        reason: String,
+        generationCheckpoint: String = ""
     ) {
         val sender = card.characters.firstOrNull()
         val placeholder = MomentPost.createPlaceholder(
@@ -212,6 +221,7 @@ class MomentScheduler(
             senderAvatar = sender?.appearanceImage?.takeIf(String::isNotBlank)
                 ?: card.avatar?.takeIf(String::isNotBlank),
             failureReason = reason,
+            generationCheckpoint = generationCheckpoint,
             scheduledAt = task.scheduledAt
         )
         momentRepository.savePost(placeholder)

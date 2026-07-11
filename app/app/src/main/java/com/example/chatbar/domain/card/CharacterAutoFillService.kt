@@ -59,6 +59,13 @@ data class CharacterAutoFillImageContext(
     fun hasContent(): Boolean = hasSourceImages || descriptions.any(String::isNotBlank)
 }
 
+data class CharacterAutoFillGenerationCheckpoint(
+    val imageContext: CharacterAutoFillImageContext? = null,
+    val directImageBase64s: List<String> = emptyList(),
+    val research: ResearchDebugSnapshot? = null,
+    val rawFinalText: String = ""
+)
+
 class CharacterAutoFillService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
@@ -108,6 +115,8 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
+        resumeFrom: CharacterAutoFillGenerationCheckpoint? = null,
+        onCheckpoint: (CharacterAutoFillGenerationCheckpoint) -> Unit = {},
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
@@ -116,9 +125,29 @@ class CharacterAutoFillService(
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
         val model = resolveModel(modelOverride)
-        val imageContext = prepareImageContext(imageBase64s, model, onStatus, onVisibleOutput)
+        var checkpoint = resumeFrom ?: CharacterAutoFillGenerationCheckpoint()
+        val imageContext = checkpoint.imageContext?.let {
+            PreparedAutoFillImageContext(it, checkpoint.directImageBase64s)
+        } ?: prepareImageContext(imageBase64s, model, onStatus, onVisibleOutput).also { prepared ->
+            checkpoint = checkpoint.copy(
+                imageContext = prepared.promptContext,
+                directImageBase64s = prepared.directImageBase64s
+            )
+            onCheckpoint(checkpoint)
+        }
         val researchBrief = if (userInput.isNotBlank()) {
-            buildResearchBrief(userInput, currentCard, model, onStatus, onResearchDebug, onVisibleOutput)
+            buildResearchBrief(
+                userInput,
+                currentCard,
+                model,
+                onStatus,
+                onResearchDebug,
+                onVisibleOutput,
+                checkpoint.research
+            ) { snapshot ->
+                checkpoint = checkpoint.copy(research = snapshot)
+                onCheckpoint(checkpoint)
+            }
         } else {
             null
         }
@@ -129,9 +158,9 @@ class CharacterAutoFillService(
             ChatApiMessage.text("system", PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT),
             userPrompt.toChatApiMessage(imageContext.directImageBase64s)
         )
-        val raw = StringBuilder()
+        val raw = StringBuilder(checkpoint.rawFinalText)
         var streamError: String? = null
-        chatService.streamText(
+        if (checkpoint.rawFinalText.isBlank()) chatService.streamText(
             messages = messages,
             modelConfig = model,
             maxTokens = 6000,
@@ -152,6 +181,10 @@ class CharacterAutoFillService(
         val rawText = raw.toString()
         if (rawText.isBlank()) {
             error(streamError ?: "AI 自动填充返回空内容")
+        }
+        if (checkpoint.rawFinalText.isBlank()) {
+            checkpoint = checkpoint.copy(rawFinalText = rawText)
+            onCheckpoint(checkpoint)
         }
         val draft = parseGeneratedDraft(rawText) ?: repairDraft(rawText, model)
         draft.constrainedToTargets(currentCard)
@@ -187,7 +220,9 @@ class CharacterAutoFillService(
         generationModel: ModelConfig,
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
-        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> }
+        onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
+        resumeFrom: ResearchDebugSnapshot? = null,
+        onCheckpoint: (ResearchDebugSnapshot) -> Unit = {}
     ): ResearchBrief? {
         val service = researchService ?: return null
         val researchModel = runCatching { modelResolver.retrievalModel() }
@@ -200,6 +235,8 @@ class CharacterAutoFillService(
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 onDebug = onResearchDebug,
+                resumeFrom = resumeFrom,
+                onCheckpoint = onCheckpoint,
                 onStatus = onStatus,
                 onVisibleOutput = onVisibleOutput
             )

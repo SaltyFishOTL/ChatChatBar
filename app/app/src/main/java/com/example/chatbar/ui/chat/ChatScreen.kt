@@ -636,11 +636,7 @@ fun ChatScreen(
                     imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
                         NovelAiGenerationCard(generation,
                             onRetry = {
-                                viewModel.generateNovelAiImage(
-                                    anchorMessageId = generation.anchorMessageId,
-                                    imageContentHint = generation.imageContentHint,
-                                    imagePromptPreference = generation.finalPromptRequirement
-                                )
+                                viewModel.retryNovelAiImageGeneration()
                             },
                             onDismiss = { viewModel.dismissNovelAiImageGeneration() },
                             onCancel = { viewModel.cancelNovelAiImageGeneration() }
@@ -671,11 +667,7 @@ fun ChatScreen(
                     item(key = "novelai-generation") {
                         NovelAiGenerationCard(generation,
                             onRetry = {
-                                viewModel.generateNovelAiImage(
-                                    anchorMessageId = generation.anchorMessageId,
-                                    imageContentHint = generation.imageContentHint,
-                                    imagePromptPreference = generation.finalPromptRequirement
-                                )
+                                viewModel.retryNovelAiImageGeneration()
                             },
                             onDismiss = { viewModel.dismissNovelAiImageGeneration() },
                             onCancel = { viewModel.cancelNovelAiImageGeneration() }

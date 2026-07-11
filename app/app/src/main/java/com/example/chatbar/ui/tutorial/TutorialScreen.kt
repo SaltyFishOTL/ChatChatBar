@@ -286,12 +286,12 @@ private val advancedTutorialPages = listOf(
     ),
     TutorialPage(
         title = "朋友圈与社区",
-        summary = "删除和作品管理使用低干扰的长按入口。",
+        summary = "朋友圈删除带二次确认，社区作品管理使用长按入口。",
         sections = listOf(
             TutorialSection(
                 title = "朋友圈",
                 steps = listOf(
-                    "每条动态右下角有淡色删除图标；长按图标才会删除，避免误触。",
+                    "点击每条动态右下角的淡色删除图标，再在确认窗口中选择“删除”。",
                     "点击动态图片进入预览，可将图片设为对应角色卡头像或背景。"
                 )
             ),

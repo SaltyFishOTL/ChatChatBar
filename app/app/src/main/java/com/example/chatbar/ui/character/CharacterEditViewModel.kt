@@ -34,11 +34,14 @@ import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
+import com.example.chatbar.domain.card.CharacterAutoFillGenerationCheckpoint
 import com.example.chatbar.domain.card.CharacterRewriteDraft
+import com.example.chatbar.domain.card.CharacterRewriteGenerationCheckpoint
 import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
@@ -76,6 +79,9 @@ data class CharacterCoverImageUiState(
     val progress: Float = 0f,
     val path: String? = null,
     val promptText: String = "",
+    val promptPlan: NovelAiPromptPlan? = null,
+    val imageSize: NovelAiImageSize? = null,
+    val completedImage: ByteArray? = null,
     val error: String? = null,
     val statusText: String = ""
 )
@@ -96,6 +102,9 @@ data class CharacterAvatarImageUiState(
     val promptDesignReasoningText: String = "",
     val promptDesignOutputText: String = "",
     val promptText: String = "",
+    val sourceSignature: String = "",
+    val promptPlan: NovelAiPromptPlan? = null,
+    val completedImage: ByteArray? = null,
     val error: String? = null,
     val statusText: String = ""
 )
@@ -146,6 +155,8 @@ data class CharacterAutoFillUiState(
     val researchDebug: ResearchDebugSnapshot? = null,
     val visibleOutputs: List<CharacterAiOutputUiState> = emptyList(),
     val modelId: String? = null,
+    val sourceSignature: String = "",
+    val checkpoint: CharacterAutoFillGenerationCheckpoint? = null,
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
 
@@ -159,6 +170,8 @@ data class CharacterRewriteUiState(
     val progressLines: List<String> = emptyList(),
     val researchDebug: ResearchDebugSnapshot? = null,
     val visibleOutputs: List<CharacterAiOutputUiState> = emptyList(),
+    val sourceSignature: String = "",
+    val checkpoint: CharacterRewriteGenerationCheckpoint? = null,
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
 
@@ -560,7 +573,12 @@ class CharacterEditViewModel(
         scheduleDraftSave()
     }
 
-    fun generateAutoFillDraft(userInput: String, modelId: String? = null, imagePath: String? = null) {
+    fun generateAutoFillDraft(
+        userInput: String,
+        modelId: String? = null,
+        imagePath: String? = null,
+        reusePrepared: Boolean = false
+    ) {
         if (editMode != CharacterEditMode.STRUCTURED) {
             _autoFillState.value = CharacterAutoFillUiState(error = "AI 自动填充仅支持分段模式")
             return
@@ -577,6 +595,12 @@ class CharacterEditViewModel(
             return
         }
         val selectedModelId = selectedModel?.id
+        val currentCard = buildCurrentCard(markDirty = false)
+        val sourceSignature = "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n${currentCard.hashCode()}"
+        val previousState = _autoFillState.value
+        val resumeCheckpoint = previousState.checkpoint.takeIf {
+            previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
+        }?.let { if (reusePrepared) it.copy(rawFinalText = "") else it }
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
         deleteAutoFillCandidateImage(_autoFillState.value.coverImage.path)
@@ -588,14 +612,19 @@ class CharacterEditViewModel(
             isGenerating = true,
             statusText = statusText,
             progressLines = listOf(statusText),
-            modelId = selectedModelId
+            modelId = selectedModelId,
+            sourceSignature = sourceSignature,
+            checkpoint = resumeCheckpoint,
+            researchDebug = previousState.researchDebug.takeIf { resumeCheckpoint != null },
+            visibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
         )
         autoFillJob = viewModelScope.launch {
             var latestRawText = ""
             var currentStatusText = statusText
             var progressLines = listOf(statusText)
-            var latestResearchDebug: ResearchDebugSnapshot? = null
-            var latestVisibleOutputs = emptyList<CharacterAiOutputUiState>()
+            var latestResearchDebug: ResearchDebugSnapshot? = previousState.researchDebug.takeIf { resumeCheckpoint != null }
+            var latestVisibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
+            var latestCheckpoint = resumeCheckpoint
             fun rememberVisibleOutput(key: String, title: String, text: String) {
                 latestVisibleOutputs = latestVisibleOutputs.upsertAiOutput(key, title, text)
                 updateAutoFillStateIfCurrent(generationToken) {
@@ -614,16 +643,25 @@ class CharacterEditViewModel(
                             progressLines = progressLines,
                             researchDebug = latestResearchDebug,
                             visibleOutputs = latestVisibleOutputs,
-                            modelId = selectedModelId
+                            modelId = selectedModelId,
+                            sourceSignature = sourceSignature,
+                            checkpoint = latestCheckpoint
                         )
                     }
                     listOf(ImageFileEncoder.encodeToJpegBase64(path))
                 }.orEmpty()
                 val draft = characterAutoFillService.generateStreaming(
                     userInput = userInput,
-                    currentCard = buildCurrentCard(markDirty = false),
+                    currentCard = currentCard,
                     modelOverride = selectedModel,
                     imageBase64s = imageBase64s,
+                    resumeFrom = resumeCheckpoint,
+                    onCheckpoint = { checkpoint ->
+                        latestCheckpoint = checkpoint
+                        if (generationToken == autoFillGenerationToken) {
+                            _autoFillState.value = _autoFillState.value.copy(checkpoint = checkpoint)
+                        }
+                    },
                     onStatus = { nextStatus ->
                         currentStatusText = nextStatus
                         progressLines = progressLines.appendProgressLine(nextStatus)
@@ -635,7 +673,9 @@ class CharacterEditViewModel(
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
                                 visibleOutputs = latestVisibleOutputs,
-                                modelId = selectedModelId
+                                modelId = selectedModelId,
+                                sourceSignature = sourceSignature,
+                                checkpoint = latestCheckpoint
                             )
                         }
                     },
@@ -658,7 +698,9 @@ class CharacterEditViewModel(
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
                                 visibleOutputs = latestVisibleOutputs,
-                                modelId = selectedModelId
+                                modelId = selectedModelId,
+                                sourceSignature = sourceSignature,
+                                checkpoint = latestCheckpoint
                             )
                         }
                     }
@@ -670,7 +712,9 @@ class CharacterEditViewModel(
                         progressLines = progressLines.appendProgressLine("角色卡候选已生成"),
                         researchDebug = latestResearchDebug,
                         visibleOutputs = latestVisibleOutputs,
-                        modelId = selectedModelId
+                        modelId = selectedModelId,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } catch (_: CancellationException) {
@@ -682,7 +726,9 @@ class CharacterEditViewModel(
                         progressLines = progressLines.appendProgressLine("已取消生成"),
                         researchDebug = latestResearchDebug,
                         visibleOutputs = latestVisibleOutputs,
-                        modelId = selectedModelId
+                        modelId = selectedModelId,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } catch (error: Throwable) {
@@ -693,7 +739,9 @@ class CharacterEditViewModel(
                         progressLines = progressLines.appendProgressLine("生成失败"),
                         researchDebug = latestResearchDebug,
                         visibleOutputs = latestVisibleOutputs,
-                        modelId = selectedModelId
+                        modelId = selectedModelId,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } finally {
@@ -844,12 +892,23 @@ class CharacterEditViewModel(
     }
 
     private fun startCharacterAvatarGeneration(characterId: String, promptInput: CharacterAvatarPromptInput) {
+        val signature = "$characterId\n${promptInput.imageDescription}\n${promptInput.stylePrompt}\n${promptInput.characterPrompt}"
+        val resumeState = _avatarImageState.value.takeIf {
+            it.error != null && it.characterId == characterId && it.sourceSignature == signature
+        }
         avatarImageGenerationToken += 1
         val generationToken = avatarImageGenerationToken
         avatarImageJob?.cancel()
         _avatarImageState.value = CharacterAvatarImageUiState(
             characterId = characterId,
             isGenerating = true,
+            sourceSignature = signature,
+            promptInputText = resumeState?.promptInputText.orEmpty(),
+            promptDesignReasoningText = resumeState?.promptDesignReasoningText.orEmpty(),
+            promptDesignOutputText = resumeState?.promptDesignOutputText.orEmpty(),
+            promptText = resumeState?.promptText.orEmpty(),
+            promptPlan = resumeState?.promptPlan,
+            completedImage = resumeState?.completedImage,
             statusText = "正在设计头像 Prompt"
         )
         avatarImageJob = viewModelScope.launch {
@@ -887,7 +946,7 @@ class CharacterEditViewModel(
                         promptInputText = designerInputPrompt,
                         statusText = "正在设计头像 Prompt"
                     )
-                    val designedPlan = novelAiPromptDesigner.designForCharacterAvatar(
+                    val designedPlan = resumeState?.promptPlan ?: novelAiPromptDesigner.designForCharacterAvatar(
                         characterName = promptInput.imageDescription,
                         stylePrompt = promptInput.stylePrompt,
                         characterPrompt = promptInput.characterPrompt,
@@ -911,14 +970,19 @@ class CharacterEditViewModel(
                         }
                     )
                     if (generationToken != avatarImageGenerationToken) return@run
-                    val plan = designedPlan.asCharacterAvatarPlan(defaultImageNegativePrompt)
+                    val plan = if (resumeState?.promptPlan != null) {
+                        designedPlan
+                    } else {
+                        designedPlan.asCharacterAvatarPlan(defaultImageNegativePrompt)
+                    }
                     _avatarImageState.value = _avatarImageState.value.copy(
                         promptText = plan.debugPromptText(),
-                        statusText = "正在调用 NovelAI 生成头像"
+                        promptPlan = plan,
+                        statusText = if (resumeState?.promptPlan != null) "沿用已完成的头像 Prompt" else "正在调用 NovelAI 生成头像"
                     )
                     val seed = novelAiImageService.newSeed()
-                    var finalImage: ByteArray? = null
-                    novelAiImageService.generate(
+                    var finalImage: ByteArray? = resumeState?.completedImage
+                    if (finalImage == null) novelAiImageService.generate(
                         token = token,
                         prompt = plan,
                         seed = seed,
@@ -930,6 +994,7 @@ class CharacterEditViewModel(
                                 finalImage = event.image
                                 _avatarImageState.value = _avatarImageState.value.copy(
                                     preview = event.image,
+                                    completedImage = event.image,
                                     progress = event.progress,
                                     statusText = "正在流式生成头像"
                                 )
@@ -938,6 +1003,7 @@ class CharacterEditViewModel(
                                 finalImage = event.image
                                 _avatarImageState.value = _avatarImageState.value.copy(
                                     preview = event.image,
+                                    completedImage = event.image,
                                     progress = 1f,
                                     statusText = "正在保存头像候选"
                                 )
@@ -1068,6 +1134,7 @@ class CharacterEditViewModel(
             )
             return
         }
+        val resumeState = currentCoverImageState(target).takeIf { it.error != null }
         coverImageGenerationToken += 1
         val generationToken = coverImageGenerationToken
         coverImageJob?.cancel()
@@ -1077,6 +1144,10 @@ class CharacterEditViewModel(
             target,
             CharacterCoverImageUiState(
                 isGenerating = true,
+                promptText = resumeState?.promptText.orEmpty(),
+                promptPlan = resumeState?.promptPlan,
+                imageSize = resumeState?.imageSize,
+                completedImage = resumeState?.completedImage,
                 statusText = "正在设计封面 Prompt"
             )
         )
@@ -1116,7 +1187,7 @@ class CharacterEditViewModel(
                             statusText = "正在设计封面 Prompt"
                         )
                     }
-                    val prompt = novelAiPromptDesigner.designForCharacterCard(
+                    val prompt = resumeState?.promptPlan ?: novelAiPromptDesigner.designForCharacterCard(
                         card = card,
                         model = model,
                         finalPromptRequirement = settings.imagePromptToolPreference
@@ -1128,19 +1199,25 @@ class CharacterEditViewModel(
                             )
                         }
                     }
-                    val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
+                    val imageSize = resumeState?.imageSize
+                        ?: NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
                     updateCoverImageStateIfCurrent(generationToken, target) {
-                        it.copy(statusText = "正在调用 NovelAI 生成封面")
+                        it.copy(
+                            promptPlan = prompt,
+                            imageSize = imageSize,
+                            statusText = if (resumeState?.promptPlan != null) "沿用已完成的封面 Prompt" else "正在调用 NovelAI 生成封面"
+                        )
                     }
                     val seed = novelAiImageService.newSeed()
-                    var finalImage: ByteArray? = null
-                    novelAiImageService.generate(token, prompt, seed, imageSize).collect { event ->
+                    var finalImage: ByteArray? = resumeState?.completedImage
+                    if (finalImage == null) novelAiImageService.generate(token, prompt, seed, imageSize).collect { event ->
                         when (event) {
                             is NovelAiImageEvent.Intermediate -> {
                                 finalImage = event.image
                                 updateCoverImageStateIfCurrent(generationToken, target) {
                                     it.copy(
                                         preview = event.image,
+                                        completedImage = event.image,
                                         progress = event.progress,
                                         statusText = "正在流式生成封面"
                                     )
@@ -1151,6 +1228,7 @@ class CharacterEditViewModel(
                                 updateCoverImageStateIfCurrent(generationToken, target) {
                                     it.copy(
                                         preview = event.image,
+                                        completedImage = event.image,
                                         progress = 1f,
                                         statusText = "正在保存封面"
                                     )
@@ -1275,7 +1353,7 @@ class CharacterEditViewModel(
         }
     }
 
-    fun generateRewriteDraft(userInput: String, modelId: String? = null) {
+    fun generateRewriteDraft(userInput: String, modelId: String? = null, reusePrepared: Boolean = false) {
         if (userInput.isBlank()) {
             _rewriteState.value = CharacterRewriteUiState(error = "请输入改写要求")
             return
@@ -1286,6 +1364,13 @@ class CharacterEditViewModel(
             refreshAutoFillModels()
             return
         }
+        val currentCard = buildCurrentCard(markDirty = false)
+        val selectedModelId = selectedModel?.id
+        val sourceSignature = "$userInput\n$selectedModelId\n${currentCard.hashCode()}"
+        val previousState = _rewriteState.value
+        val resumeCheckpoint = previousState.checkpoint.takeIf {
+            previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
+        }?.let { if (reusePrepared) it.copy(rawFinalText = "") else it }
         rewriteJob?.cancel()
         rewriteGenerationToken += 1
         val generationToken = rewriteGenerationToken
@@ -1295,15 +1380,19 @@ class CharacterEditViewModel(
         _rewriteState.value = CharacterRewriteUiState(
             isGenerating = true,
             statusText = statusText,
-            progressLines = listOf(statusText)
+            progressLines = listOf(statusText),
+            sourceSignature = sourceSignature,
+            checkpoint = resumeCheckpoint,
+            researchDebug = previousState.researchDebug.takeIf { resumeCheckpoint != null },
+            visibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
         )
         rewriteJob = viewModelScope.launch {
             var latestRawText = ""
             var currentStatusText = statusText
             var progressLines = listOf(statusText)
-            var latestResearchDebug: ResearchDebugSnapshot? = null
-            var latestVisibleOutputs = emptyList<CharacterAiOutputUiState>()
-            val currentCard = buildCurrentCard(markDirty = false)
+            var latestResearchDebug: ResearchDebugSnapshot? = previousState.researchDebug.takeIf { resumeCheckpoint != null }
+            var latestVisibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
+            var latestCheckpoint = resumeCheckpoint
             fun rememberVisibleOutput(key: String, title: String, text: String) {
                 latestVisibleOutputs = latestVisibleOutputs.upsertAiOutput(key, title, text)
                 if (generationToken == rewriteGenerationToken) {
@@ -1315,6 +1404,13 @@ class CharacterEditViewModel(
                     userInput = userInput,
                     currentCard = currentCard,
                     modelOverride = selectedModel,
+                    resumeFrom = resumeCheckpoint,
+                    onCheckpoint = { checkpoint ->
+                        latestCheckpoint = checkpoint
+                        if (generationToken == rewriteGenerationToken) {
+                            _rewriteState.value = _rewriteState.value.copy(checkpoint = checkpoint)
+                        }
+                    },
                     onStatus = { nextStatus ->
                         currentStatusText = nextStatus
                         progressLines = progressLines.appendProgressLine(nextStatus)
@@ -1325,7 +1421,9 @@ class CharacterEditViewModel(
                                 statusText = nextStatus,
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
-                                visibleOutputs = latestVisibleOutputs
+                                visibleOutputs = latestVisibleOutputs,
+                                sourceSignature = sourceSignature,
+                                checkpoint = latestCheckpoint
                             )
                         }
                     },
@@ -1347,7 +1445,9 @@ class CharacterEditViewModel(
                                 statusText = currentStatusText,
                                 progressLines = progressLines,
                                 researchDebug = latestResearchDebug,
-                                visibleOutputs = latestVisibleOutputs
+                                visibleOutputs = latestVisibleOutputs,
+                                sourceSignature = sourceSignature,
+                                checkpoint = latestCheckpoint
                             )
                         }
                     }
@@ -1359,7 +1459,9 @@ class CharacterEditViewModel(
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("改写候选已生成"),
                         researchDebug = latestResearchDebug,
-                        visibleOutputs = latestVisibleOutputs
+                        visibleOutputs = latestVisibleOutputs,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } catch (_: CancellationException) {
@@ -1370,7 +1472,9 @@ class CharacterEditViewModel(
                         statusText = "已取消生成",
                         progressLines = progressLines.appendProgressLine("已取消生成"),
                         researchDebug = latestResearchDebug,
-                        visibleOutputs = latestVisibleOutputs
+                        visibleOutputs = latestVisibleOutputs,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } catch (error: Throwable) {
@@ -1380,7 +1484,9 @@ class CharacterEditViewModel(
                         streamingText = latestRawText,
                         progressLines = progressLines.appendProgressLine("改写失败"),
                         researchDebug = latestResearchDebug,
-                        visibleOutputs = latestVisibleOutputs
+                        visibleOutputs = latestVisibleOutputs,
+                        sourceSignature = sourceSignature,
+                        checkpoint = latestCheckpoint
                     )
                 }
             } finally {

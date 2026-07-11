@@ -21,6 +21,7 @@ data class MomentPost(
     val userLiked: Boolean = false,
     val isPlaceholder: Boolean = false,
     val failureReason: String? = null,
+    val generationCheckpoint: String = "",
     val generationReason: String = "",
     val scheduledAt: Long,
     val generatedAt: Long,
@@ -73,6 +74,7 @@ data class MomentPost(
             senderName: String,
             senderAvatar: String?,
             failureReason: String,
+            generationCheckpoint: String = "",
             scheduledAt: Long,
             generatedAt: Long = System.currentTimeMillis()
         ): MomentPost = MomentPost(
@@ -90,6 +92,7 @@ data class MomentPost(
             baseLikeCount = 0,
             isPlaceholder = true,
             failureReason = failureReason,
+            generationCheckpoint = generationCheckpoint,
             generationReason = failureReason,
             scheduledAt = scheduledAt,
             generatedAt = generatedAt

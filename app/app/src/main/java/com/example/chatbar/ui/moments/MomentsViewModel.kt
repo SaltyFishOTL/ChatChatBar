@@ -96,7 +96,17 @@ class MomentsViewModel : ViewModel() {
                         model = model,
                         imageModel = imageModel,
                         scheduledAt = placeholder.scheduledAt,
-                        finalPromptRequirement = settings.imagePromptToolPreference
+                        finalPromptRequirement = settings.imagePromptToolPreference,
+                        resumeFrom = generationService.decodeCheckpoint(placeholder.generationCheckpoint),
+                        onCheckpoint = { checkpoint ->
+                            repository.getPost(id)?.takeIf { it.isPlaceholder }?.let { current ->
+                                repository.updatePost(
+                                    current.copy(
+                                        generationCheckpoint = generationService.encodeCheckpoint(checkpoint)
+                                    )
+                                )
+                            }
+                        }
                     ) { progress ->
                         setRetryState(
                             id,
@@ -120,7 +130,8 @@ class MomentsViewModel : ViewModel() {
                             id = placeholder.id,
                             createdAt = placeholder.createdAt,
                             isPlaceholder = false,
-                            failureReason = null
+                            failureReason = null,
+                            generationCheckpoint = ""
                         )
                         repository.updatePost(replacement)
                         repository.taskForPost(id)?.let { task ->

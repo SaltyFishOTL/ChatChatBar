@@ -3,8 +3,8 @@ package com.example.chatbar.ui.moments
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.combinedClickable
-import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -28,12 +28,12 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -47,6 +47,7 @@ import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDivider
+import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbProgress
@@ -69,6 +70,7 @@ fun MomentsScreen(
     val retryStates by viewModel.retryStates.collectAsState()
     val context = LocalContext.current
     val expandedImage = remember { mutableStateOf<Pair<MomentPost, String>?>(null) }
+    var pendingDeletePostId by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { viewModel.refresh() }
     CbScaffold(
         modifier = modifier,
@@ -91,7 +93,7 @@ fun MomentsScreen(
                             post = post,
                             retryState = retryStates[post.id],
                             onToggleLike = { viewModel.toggleLike(post.id) },
-                            onDelete = { viewModel.deletePost(post.id) },
+                            onDelete = { pendingDeletePostId = post.id },
                             onRetry = { viewModel.retryPlaceholder(post.id) },
                             onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path }
                         )
@@ -117,9 +119,36 @@ fun MomentsScreen(
             }
         )
     }
+    pendingDeletePostId?.let { postId ->
+        CbDialog(
+            onDismissRequest = { pendingDeletePostId = null },
+            title = "删除朋友圈",
+            confirm = {
+                CbButton(
+                    text = "删除",
+                    onClick = {
+                        viewModel.deletePost(postId)
+                        pendingDeletePostId = null
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            },
+            dismiss = {
+                CbButton(
+                    text = "取消",
+                    onClick = { pendingDeletePostId = null },
+                    variant = ButtonVariant.Outline
+                )
+            }
+        ) {
+            CbText(
+                "删除后无法恢复，确定删除这条朋友圈吗？",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MomentPostRow(
     post: MomentPost,
@@ -264,13 +293,18 @@ private fun MomentPlaceholderBlock(
             )
         }
         if (!running) {
-            CbText(
-                retryState?.errorMessage ?: post.failureReason ?: "未知错误",
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption,
-                maxLines = 3,
-                overflow = TextOverflow.Ellipsis
-            )
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 112.dp)
+                    .verticalScroll(rememberScrollState())
+            ) {
+                CbText(
+                    retryState?.errorMessage ?: post.failureReason ?: "未知错误",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
         }
         if (running && retryState.progress > 0f) {
             CbProgress(retryState.progress)
@@ -295,7 +329,6 @@ private fun MomentPlaceholderBlock(
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun MomentDeleteButton(onDelete: () -> Unit) {
     val muted = ChatBarTheme.colors.mutedForeground
@@ -303,16 +336,12 @@ private fun MomentDeleteButton(onDelete: () -> Unit) {
         modifier = Modifier
             .size(40.dp)
             .clip(RoundedCornerShape(4.dp))
-            .combinedClickable(
-                role = Role.Button,
-                onClick = {},
-                onLongClick = onDelete
-            ),
+            .clickable(onClick = onDelete),
         contentAlignment = Alignment.Center
     ) {
         CbIcon(
             imageVector = AppIcons.Delete,
-            contentDescription = "长按删除",
+            contentDescription = "删除朋友圈",
             modifier = Modifier.size(15.dp),
             tint = muted.copy(alpha = 0.42f)
         )

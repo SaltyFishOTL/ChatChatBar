@@ -785,7 +785,12 @@ fun CharacterEditScreen(
             },
             onPickImage = { callback -> pickImage(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
-            onGenerate = viewModel::generateAutoFillDraft,
+            onGenerate = { input, modelId, imagePath ->
+                viewModel.generateAutoFillDraft(input, modelId, imagePath)
+            },
+            onRegenerateFinal = { input, modelId, imagePath, regenerateFinal ->
+                viewModel.generateAutoFillDraft(input, modelId, imagePath, reusePrepared = regenerateFinal)
+            },
             onGenerateCover = {
                 pendingCoverImageGeneration = PendingCoverImageGeneration.AutoFill
             },
@@ -806,7 +811,10 @@ fun CharacterEditScreen(
                 showRewriteDialog = false
                 viewModel.clearRewriteDraft()
             },
-            onGenerate = viewModel::generateRewriteDraft,
+            onGenerate = { input, modelId -> viewModel.generateRewriteDraft(input, modelId) },
+            onRegenerateFinal = { input, modelId, regenerateFinal ->
+                viewModel.generateRewriteDraft(input, modelId, reusePrepared = regenerateFinal)
+            },
             onGenerateCover = {
                 pendingCoverImageGeneration = PendingCoverImageGeneration.Rewrite
             },
@@ -1356,6 +1364,7 @@ private fun CharacterAutoFillDialog(
     onPickImage: (((String) -> Unit) -> Unit),
     onDeleteImage: (String?) -> Unit,
     onGenerate: (String, String?, String?) -> Unit,
+    onRegenerateFinal: (String, String?, String?, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1487,6 +1496,15 @@ private fun CharacterAutoFillDialog(
                         variant = ButtonVariant.Outline
                     )
                 }
+                if (state.checkpoint != null) {
+                    CbButton(
+                        if (state.draft != null) "仅重做最终结果" else "从断点继续",
+                        { onRegenerateFinal(input, selectedModel.id, sourceImagePath, state.draft != null) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Outline
+                    )
+                }
             }
             if (state.progressLines.isNotEmpty()) {
                 GenerationProgressPanel(
@@ -1543,6 +1561,7 @@ private fun CharacterRewriteDialog(
     defaultModelId: String?,
     onDismiss: () -> Unit,
     onGenerate: (String, String?) -> Unit,
+    onRegenerateFinal: (String, String?, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1632,6 +1651,15 @@ private fun CharacterRewriteDialog(
                         { onGenerateCover(null) },
                         modifier = Modifier.weight(1f),
                         enabled = state.draft != null && !state.coverImage.isGenerating,
+                        variant = ButtonVariant.Outline
+                    )
+                }
+                if (state.checkpoint != null) {
+                    CbButton(
+                        if (state.draft != null) "仅重做最终结果" else "从断点继续",
+                        { onRegenerateFinal(input, selectedModel.id, state.draft != null) },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
                     )
                 }

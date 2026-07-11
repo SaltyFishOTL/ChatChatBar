@@ -186,6 +186,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var draftSaveSequence = 0
     private var responseJob: Job? = null
     private var imageGenerationJob: Job? = null
+    private var imageGenerationPromptCheckpoint: Pair<NovelAiPromptPlan, NovelAiImageSize>? = null
+    private var imageGenerationCompletedImageCheckpoint: ByteArray? = null
 
     private data class PlaceholderRenderContext(
         val playerName: String?,
@@ -324,6 +326,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         persistPreference = persistPreference
     )
 
+    fun retryNovelAiImageGeneration() {
+        val failed = _imageGeneration.value?.takeIf { it.isTerminal } ?: return
+        val checkpoint = imageGenerationPromptCheckpoint
+        startNovelAiImageGeneration(
+            anchorMessageId = failed.anchorMessageId,
+            imageContentHint = failed.imageContentHint,
+            imagePromptPreference = failed.finalPromptRequirement,
+            promptOverride = checkpoint?.first,
+            imageSizeOverride = checkpoint?.second
+        )
+    }
+
     fun regenerateNovelAiImage(messageId: String, imagePath: String) {
         val message = _messages.value.firstOrNull { it.id == messageId } ?: return
         viewModelScope.launch {
@@ -368,6 +382,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         val active = _imageGeneration.value
         if (active != null && !active.isTerminal) return
+        if (promptOverride == null) {
+            imageGenerationPromptCheckpoint = null
+            imageGenerationCompletedImageCheckpoint = null
+        }
         val initialPreference = imagePromptPreference ?: _session.value?.imagePromptPreference.orEmpty()
         _imageGeneration.value = ImageGenerationState(
             anchorMessageId = anchorMessageId,
@@ -446,6 +464,33 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 val imageSize = imageSizeOverride
                     ?: NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
+                imageGenerationPromptCheckpoint = prompt to imageSize
+                imageGenerationCompletedImageCheckpoint?.let { completedImage ->
+                    _imageGeneration.value = _imageGeneration.value?.copy(
+                        phase = ImageGenerationPhase.SAVING,
+                        previewImage = completedImage,
+                        progress = 1f,
+                        error = null
+                    )
+                    val path = withContext(Dispatchers.IO) {
+                        novelAiImageStorage.save(sessionId, completedImage)
+                    }
+                    chatRepository.addMessageAfter(
+                        ChatMessage.create(
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = "",
+                            images = listOf(path),
+                            generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
+                            generatedFromMessageId = anchorMessageId
+                        ),
+                        anchorMessageId
+                    )
+                    refreshMessages()
+                    imageGenerationCompletedImageCheckpoint = null
+                    _imageGeneration.value = null
+                    return@run
+                }
                 val seed = novelAiImageService.newSeed()
                 val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
@@ -483,6 +528,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     )
                                 }
                                 is NovelAiImageEvent.Final -> {
+                                    imageGenerationCompletedImageCheckpoint = event.image
                                     _imageGeneration.value = ImageGenerationState(
                                         anchorMessageId,
                                         ImageGenerationPhase.SAVING,
@@ -507,6 +553,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         anchorMessageId
                                     )
                                     refreshMessages()
+                                    imageGenerationCompletedImageCheckpoint = null
                                     _imageGeneration.value = null
                                 }
                                 is NovelAiImageEvent.Error -> {

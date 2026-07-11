@@ -210,6 +210,37 @@ class CharacterResearchServiceTest {
         assertTrue(brief.sources.last().excerpt.contains("stable fact 10"))
     }
 
+    @Test
+    fun `research resumes from prepared brief without repeating earlier stages`() = runTest {
+        val planner = FakePlanner()
+        val backend = FakeSearchBackend()
+        val summarizer = FakeSummarizer()
+        val service = service(
+            settings = AppSettings(webSearchEnabled = true),
+            planner = planner,
+            backend = backend,
+            summarizer = summarizer
+        )
+        val prepared = ResearchDebugSnapshot(
+            plan = CharacterResearchPlan(
+                needSearch = true,
+                queries = listOf(CharacterResearchQuery("cached query"))
+            ),
+            sources = listOf(
+                ResearchSource("cached", "Cached", "https://cached", "wiki", "cached query", "cached source")
+            ),
+            brief = ResearchBrief(facts = listOf("cached fact"))
+        )
+
+        val result = service.research("request", card(), model(), resumeFrom = prepared)
+
+        assertEquals(listOf("cached fact"), result?.facts)
+        assertEquals(0, planner.calls)
+        assertEquals(0, backend.searchCalls.size)
+        assertEquals(0, backend.extractCalls.size)
+        assertEquals(0, summarizer.calls)
+    }
+
     private fun service(
         settings: AppSettings,
         planner: CharacterResearchPlanProvider = FakePlanner(),
@@ -243,6 +274,7 @@ class CharacterResearchServiceTest {
     )
 
     private class FakePlanner : CharacterResearchPlanProvider {
+        var calls: Int = 0
         override suspend fun plan(
             userInput: String,
             currentCard: CharacterCard,
@@ -251,6 +283,7 @@ class CharacterResearchServiceTest {
             onStatus: (String) -> Unit,
             onRawText: (String) -> Unit
         ): CharacterResearchPlanResult {
+            calls += 1
             onRawText("{\"needSearch\":true}")
             return CharacterResearchPlanResult(
                 plan = CharacterResearchPlan(
@@ -366,6 +399,7 @@ class CharacterResearchServiceTest {
             sources = emptyList()
         )
     ) : ResearchBriefSummarizer {
+        var calls: Int = 0
         override suspend fun summarize(
             request: String,
             currentCard: CharacterCard,
@@ -375,6 +409,7 @@ class CharacterResearchServiceTest {
             onStatus: (String) -> Unit,
             onRawText: (String) -> Unit
         ): ResearchBriefResult {
+            calls += 1
             onRawText("{\"facts\":[\"compressed fact\"]}")
             return if (returnNull) {
                 ResearchBriefResult(failureReason = failureReason)

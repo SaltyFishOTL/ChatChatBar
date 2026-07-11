@@ -43,11 +43,13 @@ data class DesignedCharacterCenter(
     val y: Float
 )
 
+@Serializable
 data class NovelAiCharacterCaption(
     val prompt: String,
     val center: DesignedCharacterCenter
 )
 
+@Serializable
 data class NovelAiPromptPlan(
     val baseCaption: String,
     val characterCaptions: List<NovelAiCharacterCaption>,
