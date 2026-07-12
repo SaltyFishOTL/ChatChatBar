@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -102,6 +103,8 @@ import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+
+private val ChatContentMaxWidth = 840.dp
 
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -599,7 +602,14 @@ fun ChatScreen(
                     contentScale = ContentScale.Crop
                 )
             }
-            LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .widthIn(max = ChatContentMaxWidth)
+                    .fillMaxSize()
+                    .padding(horizontal = 12.dp)
+            ) {
                 itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
                     if (streamingInsertIndex == index) {
                         StreamingChatBubble(
@@ -729,83 +739,94 @@ fun ChatScreen(
                     }
                 }
             }
-            if (messages.isNotEmpty()) {
-                ChatJumpControls(
-                    canJump = canJumpToEarlier,
-                    onPreviousMessage = { scope.launch { scrollToPreviousMessage() } },
-                    onFirstMessage = { scope.launch { scrollToFirstMessage() } },
-                    modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp)
-                )
-            }
-            if (!isAtBottom) {
-                Box(
-                    Modifier.align(Alignment.BottomEnd).padding(16.dp).size(48.dp).clip(CircleShape).background(ChatBarTheme.colors.primary).clickable {
-                        scope.launch { scrollToBottom(animated = true) }
-                    },
-                    contentAlignment = Alignment.Center
-                ) {
-                    CbIcon(AppIcons.KeyboardArrowDown, "跳到底部", tint = ChatBarTheme.colors.primaryForeground)
-                    if (latestComplete) {
-                        Box(Modifier.align(Alignment.TopEnd).size(16.dp).clip(CircleShape).background(ChatBarTheme.colors.success), contentAlignment = Alignment.Center) {
-                            CbIcon(AppIcons.Check, "最新消息已完成", Modifier.size(11.dp), Color.White)
+            Box(
+                Modifier
+                    .align(Alignment.Center)
+                    .widthIn(max = ChatContentMaxWidth)
+                    .fillMaxSize()
+            ) {
+                if (messages.isNotEmpty()) {
+                    ChatJumpControls(
+                        canJump = canJumpToEarlier,
+                        onPreviousMessage = { scope.launch { scrollToPreviousMessage() } },
+                        onFirstMessage = { scope.launch { scrollToFirstMessage() } },
+                        modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 8.dp)
+                    )
+                }
+                if (!isAtBottom) {
+                    Box(
+                        Modifier.align(Alignment.BottomEnd).padding(16.dp).size(48.dp).clip(CircleShape).background(ChatBarTheme.colors.primary).clickable {
+                            scope.launch { scrollToBottom(animated = true) }
+                        },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CbIcon(AppIcons.KeyboardArrowDown, "跳到底部", tint = ChatBarTheme.colors.primaryForeground)
+                        if (latestComplete) {
+                            Box(Modifier.align(Alignment.TopEnd).size(16.dp).clip(CircleShape).background(ChatBarTheme.colors.success), contentAlignment = Alignment.Center) {
+                                CbIcon(AppIcons.Check, "最新消息已完成", Modifier.size(11.dp), Color.White)
+                            }
                         }
                     }
                 }
             }
         }
-        if (isArchived) {
-            CbSurface(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                color = ChatBarTheme.colors.muted,
-                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
-            ) {
-                CbText("角色卡不存在，本对话已被封存", Modifier.padding(12.dp), color = ChatBarTheme.colors.mutedForeground)
-            }
-        }
-        if (!isArchived && !isModelUsable) {
-            CbSurface(
-                Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
-                color = ChatBarTheme.colors.muted,
-                border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
-            ) {
-                CbText(
-                    modelConfigurationErrors.firstOrNull() ?: "模型配置不可用，请联系管理员",
-                    Modifier.padding(12.dp),
-                    color = ChatBarTheme.colors.destructive
-                )
-            }
-        }
-        if (screenshotSelectionMode) {
-            ChatScreenshotSelectionBar(
-                selectedHeightPx = screenshotHeightPx,
-                heightLimitPx = CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX,
-                generating = screenshotGenerating,
-                onPreview = { previewLongScreenshot() },
-                onCancel = { exitScreenshotSelection() },
-                previewEnabled = selectedScreenshotBlockIds.isNotEmpty() &&
-                    screenshotHeightPx in 1..CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX &&
-                    !screenshotHeightMeasuring
-            )
-        } else {
-            if (selectedImages.isNotEmpty()) ImageStrip(selectedImages, { selectedImages.remove(it) })
-            ChatComposer(
-                input = input,
-                onInput = {
-                    input = it
-                    inputTouched = true
-                    viewModel.updateDraftInput(it.text)
-                },
-                responding = isResponding,
-                enabled = !isArchived && isModelUsable,
-                onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
-                onFull = { fullComposer = true },
-                onCancel = viewModel::cancelResponseGeneration,
-                onSend = {
-                    if (viewModel.sendMessage(input.text, selectedImages.toList())) {
-                        input = TextFieldValue(""); selectedImages.clear()
+        Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.TopCenter) {
+            Column(Modifier.widthIn(max = ChatContentMaxWidth).fillMaxWidth()) {
+                if (isArchived) {
+                    CbSurface(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = ChatBarTheme.colors.muted,
+                        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+                    ) {
+                        CbText("角色卡不存在，本对话已被封存", Modifier.padding(12.dp), color = ChatBarTheme.colors.mutedForeground)
                     }
                 }
-            )
+                if (!isArchived && !isModelUsable) {
+                    CbSurface(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
+                        color = ChatBarTheme.colors.muted,
+                        border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
+                    ) {
+                        CbText(
+                            modelConfigurationErrors.firstOrNull() ?: "模型配置不可用，请联系管理员",
+                            Modifier.padding(12.dp),
+                            color = ChatBarTheme.colors.destructive
+                        )
+                    }
+                }
+                if (screenshotSelectionMode) {
+                    ChatScreenshotSelectionBar(
+                        selectedHeightPx = screenshotHeightPx,
+                        heightLimitPx = CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX,
+                        generating = screenshotGenerating,
+                        onPreview = { previewLongScreenshot() },
+                        onCancel = { exitScreenshotSelection() },
+                        previewEnabled = selectedScreenshotBlockIds.isNotEmpty() &&
+                            screenshotHeightPx in 1..CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX &&
+                            !screenshotHeightMeasuring
+                    )
+                } else {
+                    if (selectedImages.isNotEmpty()) ImageStrip(selectedImages, { selectedImages.remove(it) })
+                    ChatComposer(
+                        input = input,
+                        onInput = {
+                            input = it
+                            inputTouched = true
+                            viewModel.updateDraftInput(it.text)
+                        },
+                        responding = isResponding,
+                        enabled = !isArchived && isModelUsable,
+                        onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
+                        onFull = { fullComposer = true },
+                        onCancel = viewModel::cancelResponseGeneration,
+                        onSend = {
+                            if (viewModel.sendMessage(input.text, selectedImages.toList())) {
+                                input = TextFieldValue(""); selectedImages.clear()
+                            }
+                        }
+                    )
+                }
+            }
         }
     }
 

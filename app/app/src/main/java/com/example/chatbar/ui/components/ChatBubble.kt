@@ -799,7 +799,11 @@ private fun LegacyChatBubble(
                 }
             }
     ) {
-        BoxWithConstraints(Modifier.padding(start = if (selectionMode) 24.dp else 0.dp)) {
+        BoxWithConstraints(
+            Modifier
+                .fillMaxWidth()
+                .padding(start = if (selectionMode) 24.dp else 0.dp)
+        ) {
             val bubbleMaxWidth = maxWidth * 0.86f
             Column(
                 modifier = Modifier.fillMaxWidth(),
