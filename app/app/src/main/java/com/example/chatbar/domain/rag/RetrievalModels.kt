@@ -26,7 +26,7 @@ data class RetrievedKnowledgeCard(
     val typeLabel: String
         get() = when (type) {
             ChunkSourceType.DOCUMENT -> "知识库文档"
-            ChunkSourceType.CHAT_MEMORY -> "历史对话记忆"
+            ChunkSourceType.CHAT_MEMORY -> "历史对话碎片"
             ChunkSourceType.CHARACTER_SETTING -> "角色固定设定"
         }
 
