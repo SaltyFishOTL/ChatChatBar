@@ -194,6 +194,7 @@ fun ChatBubble(
     imageGenerationEnabled: Boolean = true,
     selectionMode: Boolean = false,
     selected: Boolean = false,
+    partiallySelected: Boolean = false,
     selectionEnabled: Boolean = true,
     onToggleSelected: (() -> Unit)? = null,
     showActions: Boolean = true,
@@ -229,7 +230,10 @@ fun ChatBubble(
             onGenerateImageLongPress = onGenerateImageLongPress,
             imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
+            selected = selected,
+            partiallySelected = partiallySelected,
             selectionEnabled = selectionEnabled,
+            onToggleSelected = onToggleSelected,
             showActions = showActions,
             exportMode = exportMode,
             onSegmentLongPress = onSegmentLongPress,
@@ -257,6 +261,7 @@ fun ChatBubble(
             imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
             selected = selected,
+            partiallySelected = partiallySelected,
             selectionEnabled = selectionEnabled,
             onToggleSelected = onToggleSelected,
             showActions = showActions,
@@ -288,7 +293,10 @@ private fun SegmentedAssistantBubble(
     onGenerateImageLongPress: (() -> Unit)?,
     imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
+    selected: Boolean,
+    partiallySelected: Boolean,
     selectionEnabled: Boolean,
+    onToggleSelected: (() -> Unit)?,
     showActions: Boolean,
     exportMode: Boolean,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)?,
@@ -321,7 +329,9 @@ private fun SegmentedAssistantBubble(
         val thoughtMaxWidth = maxWidth * 0.72f
         val narrationMaxWidth = maxWidth * 0.96f
         Column(
-            modifier = Modifier.fillMaxWidth(),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(start = if (selectionMode) 24.dp else 0.dp),
             horizontalAlignment = Alignment.Start,
             verticalArrangement = Arrangement.spacedBy(5.dp)
         ) {
@@ -420,6 +430,15 @@ private fun SegmentedAssistantBubble(
                     imageGenerationEnabled = imageGenerationEnabled
                 )
             }
+        }
+        if (selectionMode && onToggleSelected != null) {
+            MessageSelectionMark(
+                selected = selected,
+                partiallySelected = partiallySelected,
+                enabled = selectionEnabled || selected || partiallySelected,
+                onClick = onToggleSelected,
+                modifier = Modifier.align(Alignment.TopStart)
+            )
         }
     }
 }
@@ -584,15 +603,6 @@ private fun SegmentBubble(
                 exportMode = exportMode
             )
         }
-        if (selectionMode) {
-            SelectionMark(
-                selected = selected,
-                enabled = selectionEnabled,
-                modifier = Modifier
-                    .align(if (segment.kind == RoleplaySegmentKind.NARRATION || segment.kind == RoleplaySegmentKind.STATUS) Alignment.TopCenter else Alignment.TopStart)
-                    .padding(top = 2.dp, start = 2.dp)
-            )
-        }
     }
 }
 
@@ -647,7 +657,12 @@ private fun SegmentBubbleSurface(
                 expanded = expanded,
                 onExpandedChange = onExpandedChange,
                 onLongPress = onLongPress,
-                interactive = !selectionMode && !exportMode
+                interactive = !selectionMode && !exportMode,
+                onSelectionClick = if (canToggleSelection) {
+                    { onToggleSelected?.invoke(blockId) }
+                } else {
+                    null
+                }
             )
         } else {
             RoleplayMarkdownText(
@@ -734,6 +749,7 @@ private fun LegacyChatBubble(
     imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
     selected: Boolean,
+    partiallySelected: Boolean,
     selectionEnabled: Boolean,
     onToggleSelected: (() -> Unit)?,
     showActions: Boolean,
@@ -783,7 +799,7 @@ private fun LegacyChatBubble(
                 }
             }
     ) {
-        BoxWithConstraints {
+        BoxWithConstraints(Modifier.padding(start = if (selectionMode) 24.dp else 0.dp)) {
             val bubbleMaxWidth = maxWidth * 0.86f
             Column(
                 modifier = Modifier.fillMaxWidth(),
@@ -852,7 +868,12 @@ private fun LegacyChatBubble(
                                             expanded = expanded,
                                             onExpandedChange = { expanded = it },
                                             onLongPress = onLongPress,
-                                            interactive = !selectionMode && !exportMode
+                                            interactive = !selectionMode && !exportMode,
+                                            onSelectionClick = if (selectionMode && onToggleBlockSelected != null && showText) {
+                                                { onToggleBlockSelected(legacyTextBlockId) }
+                                            } else {
+                                                null
+                                            }
                                         )
                                     }
                                 }
@@ -876,13 +897,13 @@ private fun LegacyChatBubble(
                 }
             }
         }
-        if (selectionMode && onToggleBlockSelected == null) {
-            SelectionMark(
+        if (selectionMode && onToggleSelected != null) {
+            MessageSelectionMark(
                 selected = selected,
-                enabled = selectionEnabled || selected,
-                modifier = Modifier
-                    .align(if (isUser) Alignment.TopEnd else Alignment.TopStart)
-                    .padding(top = 2.dp, start = if (isUser) 0.dp else 2.dp, end = if (isUser) 2.dp else 0.dp)
+                partiallySelected = partiallySelected,
+                enabled = selectionEnabled || selected || partiallySelected,
+                onClick = onToggleSelected,
+                modifier = Modifier.align(Alignment.TopStart)
             )
         }
     }
@@ -1031,34 +1052,64 @@ private fun MessageImage(
                 contentScale = ContentScale.Fit
             )
         }
-        if (selectionMode) {
-            SelectionMark(
-                selected = selected,
-                enabled = selectionEnabled,
-                modifier = Modifier.align(Alignment.TopStart).padding(2.dp)
-            )
-        }
     }
 }
 
 @Composable
-private fun SelectionMark(selected: Boolean, enabled: Boolean, modifier: Modifier = Modifier) {
-    val borderColor = if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border
+private fun MessageSelectionMark(
+    selected: Boolean,
+    partiallySelected: Boolean,
+    enabled: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    Box(
+        modifier = modifier
+            .size(48.dp)
+            .clickable(enabled = enabled, role = Role.Checkbox, onClick = onClick),
+        contentAlignment = Alignment.TopStart
+    ) {
+        SelectionMark(
+            selected = selected,
+            partiallySelected = partiallySelected,
+            enabled = enabled,
+            modifier = Modifier.padding(top = 2.dp)
+        )
+    }
+}
+
+@Composable
+private fun SelectionMark(
+    selected: Boolean,
+    partiallySelected: Boolean = false,
+    enabled: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val active = selected || partiallySelected
+    val borderColor = if (active) ChatBarTheme.colors.primary else ChatBarTheme.colors.border
     val fillColor = when {
         selected -> ChatBarTheme.colors.primary
+        partiallySelected -> ChatBarTheme.colors.accent
         enabled -> ChatBarTheme.colors.card
         else -> ChatBarTheme.colors.muted
     }
     Box(
         modifier = modifier
-            .size(24.dp)
-            .clip(RoundedCornerShape(12.dp))
+            .size(18.dp)
+            .clip(RoundedCornerShape(9.dp))
             .background(fillColor)
-            .border(1.dp, borderColor, RoundedCornerShape(12.dp)),
+            .border(1.dp, borderColor, RoundedCornerShape(9.dp)),
         contentAlignment = Alignment.Center
     ) {
         if (selected) {
-            CbIcon(AppIcons.Check, "已选中", Modifier.size(15.dp), ChatBarTheme.colors.primaryForeground)
+            CbIcon(AppIcons.Check, "整条消息已选中", Modifier.size(12.dp), ChatBarTheme.colors.primaryForeground)
+        } else if (partiallySelected) {
+            Box(
+                Modifier
+                    .size(width = 8.dp, height = 2.dp)
+                    .clip(RoundedCornerShape(1.dp))
+                    .background(ChatBarTheme.colors.primary)
+            )
         }
     }
 }
@@ -1070,16 +1121,23 @@ private fun RoleplayStatusPanel(
     expanded: Boolean,
     onExpandedChange: (Boolean) -> Unit,
     onLongPress: (() -> Unit)?,
-    interactive: Boolean = true
+    interactive: Boolean = true,
+    onSelectionClick: (() -> Unit)? = null
 ) {
     Column(
         Modifier
             .fillMaxWidth()
             .background(ChatBarTheme.colors.accent.copy(alpha = 0.78f), RoundedCornerShape(8.dp))
             .combinedClickable(
-                enabled = interactive,
-                onClick = { onExpandedChange(!expanded) },
-                onLongClick = { onLongPress?.invoke() }
+                enabled = interactive || onSelectionClick != null,
+                onClick = {
+                    if (onSelectionClick != null) {
+                        onSelectionClick()
+                    } else {
+                        onExpandedChange(!expanded)
+                    }
+                },
+                onLongClick = { if (onSelectionClick == null) onLongPress?.invoke() }
             )
             .padding(horizontal = 8.dp, vertical = 6.dp)
     ) {

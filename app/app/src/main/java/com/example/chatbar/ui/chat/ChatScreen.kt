@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
@@ -147,6 +148,7 @@ fun ChatScreen(
     var imageActionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var deleteMessageTargetId by remember { mutableStateOf<String?>(null) }
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var editingText by remember { mutableStateOf(TextFieldValue("")) }
     val editingImages = remember { mutableStateListOf<String>() }
@@ -254,6 +256,13 @@ fun ChatScreen(
         messages.takeLast(contextWindowSize.coerceAtLeast(1)).filter { it.role == MessageRole.ASSISTANT && it.alternatives.size > 1 }.map { it.id }.toSet()
     }
     val regenerableId = latestRegenerableAssistantMessageId(messages)
+    val streamingInsertIndex = remember(messages, streamingMessage) {
+        streamingMessage?.let { streaming ->
+            messages.indexOfFirst { message ->
+                ChatMessage.TimelineComparator.compare(message, streaming) > 0
+            }.takeIf { it >= 0 } ?: messages.size
+        }
+    }
     val imageGenerationRunning = imageGeneration?.isTerminal == false
     val imageGenerationAnchorExists = remember(messages, imageGeneration?.anchorMessageId) {
         val anchorId = imageGeneration?.anchorMessageId
@@ -348,12 +357,39 @@ fun ChatScreen(
         }
     }
 
+    fun toggleMessageScreenshotSelection(messageBlockIds: Collection<String>) {
+        val selectableMessageIds = messageBlockIds.filterTo(linkedSetOf()) { it in selectableScreenshotIds }
+        val wasFullySelected = selectableMessageIds.isNotEmpty() &&
+            selectableMessageIds.all(selectedScreenshotBlockIds::contains)
+        val nextIds = toggleChatScreenshotMessageSelection(
+            currentIds = selectedScreenshotBlockIds,
+            messageBlockIds = selectableMessageIds,
+            selectableIds = selectableScreenshotIds
+        )
+        if (wasFullySelected) {
+            selectedScreenshotBlockIds = nextIds
+            if (nextIds.isEmpty()) screenshotHeightPx = 0
+        } else {
+            applyScreenshotSelectionAfterHeightCheck(nextIds)
+        }
+    }
+
     fun enterScreenshotSelection(blockId: String) {
         if (blockId !in selectableScreenshotIds) {
             Toast.makeText(context, "这一段不能加入长截图", Toast.LENGTH_SHORT).show()
             return
         }
         applyScreenshotSelectionAfterHeightCheck(setOf(blockId))
+    }
+
+    fun enterMessageScreenshotSelection(message: ChatMessage) {
+        val messageBlockIds = roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+            .filterTo(linkedSetOf()) { it in selectableScreenshotIds }
+        if (messageBlockIds.isEmpty()) {
+            Toast.makeText(context, "这条消息不能加入长截图", Toast.LENGTH_SHORT).show()
+            return
+        }
+        applyScreenshotSelectionAfterHeightCheck(messageBlockIds)
     }
 
     fun exitScreenshotSelection() {
@@ -560,13 +596,26 @@ fun ChatScreen(
                 )
             }
             LazyColumn(state = listState, modifier = Modifier.fillMaxSize().padding(horizontal = 12.dp)) {
-                items(messages, key = { it.id }) { message ->
+                itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
+                    if (streamingInsertIndex == index) {
+                        StreamingChatBubble(
+                            message = streamingMessage,
+                            fontScale = bubbleFontScale,
+                            renderPlayerName = renderPlayerName,
+                            renderBotName = renderBotName,
+                            botAvatarPath = botAvatarPath,
+                            characterAvatars = characterAvatars,
+                            assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
+                        )
+                    }
                     val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
                     val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled) {
                         roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
                     }
-                    val selectedForScreenshot = messageBlockIds.any { it in selectedScreenshotBlockIds }
-                    val screenshotSelectionEnabled = selectedForScreenshot ||
+                    val selectedScreenshotBlockCount = messageBlockIds.count { it in selectedScreenshotBlockIds }
+                    val selectedForScreenshot = selectedScreenshotBlockCount == messageBlockIds.size && messageBlockIds.isNotEmpty()
+                    val partiallySelectedForScreenshot = selectedScreenshotBlockCount in 1 until messageBlockIds.size
+                    val screenshotSelectionEnabled = selectedScreenshotBlockCount > 0 ||
                         (!screenshotHeightMeasuring && !screenshotHeightLimitReached)
                     ChatBubble(
                         message = message,
@@ -619,8 +668,11 @@ fun ChatScreen(
                         imageGenerationEnabled = !imageGenerationRunning,
                         selectionMode = screenshotSelectionMode && selectableForScreenshot,
                         selected = selectedForScreenshot,
+                        partiallySelected = partiallySelectedForScreenshot,
                         selectionEnabled = screenshotSelectionEnabled,
-                        onToggleSelected = null,
+                        onToggleSelected = if (selectableForScreenshot) ({
+                            toggleMessageScreenshotSelection(messageBlockIds)
+                        }) else null,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         onToggleBlockSelected = if (selectableForScreenshot) ({ blockId -> toggleScreenshotSelection(blockId) }) else null,
                         expandedStatusBlockIds = expandedStatusBlockIds,
@@ -643,24 +695,17 @@ fun ChatScreen(
                         )
                     }
                 }
-                streamingMessage?.let { message ->
+                streamingMessage?.takeIf { streamingInsertIndex == messages.size }?.let { message ->
                     item(key = "streaming-${message.id}") {
-                        if (message.content == "..." && message.reasoningContent.isNullOrBlank()) {
-                            Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                                CbSurface(color = ChatBarTheme.colors.card, shape = RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)) { TypingIndicator() }
-                            }
-                        } else {
-                            ChatBubble(
-                                message = message,
-                                fontScale = bubbleFontScale,
-                                renderPlayerName = renderPlayerName,
-                                renderBotName = renderBotName,
-                                botAvatarPath = botAvatarPath,
-                                characterAvatars = characterAvatars,
-                                assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
-                                showActions = false
-                            )
-                        }
+                        StreamingChatBubble(
+                            message = message,
+                            fontScale = bubbleFontScale,
+                            renderPlayerName = renderPlayerName,
+                            renderBotName = renderBotName,
+                            botAvatarPath = botAvatarPath,
+                            characterAvatars = characterAvatars,
+                            assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
+                        )
                     }
                 }
                 imageGeneration?.takeUnless { imageGenerationAnchorExists }?.let { generation ->
@@ -971,6 +1016,27 @@ fun ChatScreen(
             CbText("只删除这个片段，不会删除同条消息的其他片段或图片。", color = ChatBarTheme.colors.mutedForeground)
         }
     }
+    deleteMessageTargetId?.let { messageId ->
+        CbDialog(
+            onDismissRequest = { deleteMessageTargetId = null },
+            title = "删除整条消息",
+            dismiss = {
+                CbButton("取消", { deleteMessageTargetId = null }, variant = ButtonVariant.Ghost)
+            },
+            confirm = {
+                CbButton(
+                    "删除",
+                    {
+                        viewModel.deleteMessage(messageId)
+                        deleteMessageTargetId = null
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            }
+        ) {
+            CbText("确定删除整条消息？其中所有片段和图片都会删除，此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground)
+        }
+    }
     actionSegment?.let { segment ->
         val target = messages.find { it.id == segment.messageId }
         val canRegenerate = target?.id == regenerableId && !isResponding
@@ -979,32 +1045,81 @@ fun ChatScreen(
             title = "片段操作",
             dismiss = { CbButton("关闭", { actionSegment = null }, variant = ButtonVariant.Ghost) }
         ) {
-            CbButton("复制此段", {
-                clipboardManager.setText(AnnotatedString(segment.copyText))
-                Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
-                actionSegment = null
-            }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
+            SegmentMessageActionRow(
+                segmentLabel = "复制本段",
+                messageLabel = "复制整条",
+                segmentVariant = ButtonVariant.Secondary,
+                messageVariant = ButtonVariant.Secondary,
+                onSegmentClick = {
+                    clipboardManager.setText(AnnotatedString(segment.copyText))
+                    Toast.makeText(context, "已复制本段", Toast.LENGTH_SHORT).show()
+                    actionSegment = null
+                },
+                onMessageClick = {
+                    target?.let {
+                        val content = PlaceholderRenderer.render(it.displayContent, renderPlayerName, renderBotName)
+                        clipboardManager.setText(AnnotatedString(content))
+                        Toast.makeText(context, "已复制整条消息", Toast.LENGTH_SHORT).show()
+                    }
+                    actionSegment = null
+                },
+                messageEnabled = target != null
+            )
             Spacer(Modifier.size(8.dp))
-            CbButton("编辑此段", {
-                editingSegment = segment
-                editingSegmentText = TextFieldValue(segment.rawText, selection = TextRange(segment.rawText.length))
-                actionSegment = null
-            }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+            SegmentMessageActionRow(
+                segmentLabel = "编辑本段",
+                messageLabel = "编辑整条",
+                onSegmentClick = {
+                    editingSegment = segment
+                    editingSegmentText = TextFieldValue(segment.rawText, selection = TextRange(segment.rawText.length))
+                    actionSegment = null
+                },
+                onMessageClick = {
+                    target?.let {
+                        editingMessage = it
+                        editingText = TextFieldValue(it.displayContent)
+                        editingImages.clear()
+                        editingImages.addAll(it.images)
+                    }
+                    actionSegment = null
+                },
+                messageEnabled = target != null
+            )
             Spacer(Modifier.size(8.dp))
-            CbButton("加入长截图", {
-                enterScreenshotSelection(segment.blockId)
-                actionSegment = null
-            }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+            SegmentMessageActionRow(
+                segmentLabel = "本段入长截图",
+                messageLabel = "整条入长截图",
+                onSegmentClick = {
+                    enterScreenshotSelection(segment.blockId)
+                    actionSegment = null
+                },
+                onMessageClick = {
+                    target?.let(::enterMessageScreenshotSelection)
+                    actionSegment = null
+                },
+                messageEnabled = target?.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled) == true
+            )
             Spacer(Modifier.size(8.dp))
-            CbButton("删除此段", {
-                deleteSegmentTarget = segment
-                actionSegment = null
-            }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+            SegmentMessageActionRow(
+                segmentLabel = "删除本段",
+                messageLabel = "删除整条",
+                segmentVariant = ButtonVariant.Destructive,
+                messageVariant = ButtonVariant.Destructive,
+                onSegmentClick = {
+                    deleteSegmentTarget = segment
+                    actionSegment = null
+                },
+                onMessageClick = {
+                    deleteMessageTargetId = target?.id
+                    actionSegment = null
+                },
+                messageEnabled = target != null
+            )
             if (canRegenerate) {
                 Spacer(Modifier.size(8.dp))
                 CbButton("重新生成整条回复", {
                     actionSegment = null
-                    viewModel.regenerateLastResponse()
+                    target?.id?.let(viewModel::regenerateResponse)
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
         }
@@ -1036,9 +1151,78 @@ fun ChatScreen(
             }
             if (canRegenerate) {
                 Spacer(Modifier.size(8.dp))
-                CbButton("重新生成", { actionMessageId = null; viewModel.regenerateLastResponse() }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+                CbButton("重新生成", {
+                    actionMessageId = null
+                    target?.id?.let(viewModel::regenerateResponse)
+                }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
         }
+    }
+}
+
+@Composable
+private fun StreamingChatBubble(
+    message: ChatMessage?,
+    fontScale: Float,
+    renderPlayerName: String?,
+    renderBotName: String,
+    botAvatarPath: String?,
+    characterAvatars: List<ChatBubbleCharacterAvatar>,
+    assistantSegmentedBubblesEnabled: Boolean
+) {
+    message ?: return
+    if (message.content == "..." && message.reasoningContent.isNullOrBlank()) {
+        Row(Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+            CbSurface(
+                color = ChatBarTheme.colors.card,
+                shape = RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)
+            ) {
+                TypingIndicator()
+            }
+        }
+    } else {
+        ChatBubble(
+            message = message,
+            fontScale = fontScale,
+            renderPlayerName = renderPlayerName,
+            renderBotName = renderBotName,
+            botAvatarPath = botAvatarPath,
+            characterAvatars = characterAvatars,
+            assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
+            showActions = false
+        )
+    }
+}
+
+@Composable
+private fun SegmentMessageActionRow(
+    segmentLabel: String,
+    messageLabel: String,
+    onSegmentClick: () -> Unit,
+    onMessageClick: () -> Unit,
+    segmentVariant: ButtonVariant = ButtonVariant.Outline,
+    messageVariant: ButtonVariant = ButtonVariant.Outline,
+    segmentEnabled: Boolean = true,
+    messageEnabled: Boolean = true
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        CbButton(
+            segmentLabel,
+            onSegmentClick,
+            modifier = Modifier.weight(1f),
+            variant = segmentVariant,
+            enabled = segmentEnabled
+        )
+        CbButton(
+            messageLabel,
+            onMessageClick,
+            modifier = Modifier.weight(1f),
+            variant = messageVariant,
+            enabled = messageEnabled
+        )
     }
 }
 

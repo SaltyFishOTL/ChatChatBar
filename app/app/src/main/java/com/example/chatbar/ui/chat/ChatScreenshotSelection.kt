@@ -29,6 +29,22 @@ fun toggleChatScreenshotSelection(
     return next
 }
 
+fun toggleChatScreenshotMessageSelection(
+    currentIds: Set<String>,
+    messageBlockIds: Collection<String>,
+    selectableIds: Set<String>
+): Set<String> {
+    val selectableMessageIds = messageBlockIds.filterTo(LinkedHashSet()) { it in selectableIds }
+    if (selectableMessageIds.isEmpty()) return currentIds
+    val next = LinkedHashSet(currentIds)
+    if (selectableMessageIds.all(next::contains)) {
+        next.removeAll(selectableMessageIds)
+    } else {
+        next.addAll(selectableMessageIds)
+    }
+    return next
+}
+
 fun cleanChatScreenshotSelection(
     currentIds: Set<String>,
     messages: List<ChatMessage>,

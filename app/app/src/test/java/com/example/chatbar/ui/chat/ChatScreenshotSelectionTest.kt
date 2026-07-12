@@ -26,6 +26,27 @@ class ChatScreenshotSelectionTest {
     }
 
     @Test
+    fun toggleMessageSelection_selectsAndClearsAllSelectableBlocks() {
+        val text = roleplayTextBlockId("assistant", 0)
+        val secondText = roleplayTextBlockId("assistant", 1)
+        val selectable = setOf(text, secondText)
+
+        val selected = toggleChatScreenshotMessageSelection(
+            currentIds = setOf(text),
+            messageBlockIds = listOf(text, secondText, "missing"),
+            selectableIds = selectable
+        )
+        assertEquals(listOf(text, secondText), selected.toList())
+
+        val cleared = toggleChatScreenshotMessageSelection(
+            currentIds = selected,
+            messageBlockIds = listOf(text, secondText),
+            selectableIds = selectable
+        )
+        assertTrue(cleared.isEmpty())
+    }
+
+    @Test
     fun cleanSelection_removesDeletedAndSystemMessages() {
         val messages = listOf(
             message("user", MessageRole.USER),
