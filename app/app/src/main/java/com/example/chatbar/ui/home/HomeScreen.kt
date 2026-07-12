@@ -48,6 +48,7 @@ import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.EmptyState
+import com.example.chatbar.ui.components.RagConfigurationNoticeDialog
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
@@ -76,8 +77,10 @@ fun HomeScreen(
     val characters by viewModel.characters.collectAsState()
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
+    val modelWarnings by viewModel.modelConfigurationWarnings.collectAsState()
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     var showStartDialog by remember { mutableStateOf(false) }
+    var showRagNotice by remember { mutableStateOf(false) }
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
     val characterNamesById = remember(characters) { characters.associate { it.id to it.name } }
@@ -116,7 +119,13 @@ fun HomeScreen(
             )
         },
         floatingActionButton = {
-            CbFab(AppIcons.Add, "新建对话", { showStartDialog = true })
+            CbFab(AppIcons.Add, "新建对话", {
+                if (modelUsable && modelWarnings.isNotEmpty()) {
+                    showRagNotice = true
+                } else {
+                    showStartDialog = true
+                }
+            })
         }
     ) {
         Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
@@ -132,6 +141,16 @@ fun HomeScreen(
                 )
             }
         }
+    }
+
+    if (showRagNotice) {
+        RagConfigurationNoticeDialog(
+            onDismissRequest = { showRagNotice = false },
+            onContinue = {
+                showRagNotice = false
+                showStartDialog = true
+            }
+        )
     }
 
     if (showStartDialog) {

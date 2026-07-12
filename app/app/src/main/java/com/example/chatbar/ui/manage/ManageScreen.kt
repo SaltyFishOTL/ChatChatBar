@@ -113,6 +113,7 @@ import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CbAvatar
+import com.example.chatbar.ui.components.RagConfigurationNoticeDialog
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -178,6 +179,7 @@ fun ManageScreen(
     val modelPresets by viewModel.modelPresets.collectAsState()
     val effectiveModels by viewModel.effectiveChatModels.collectAsState()
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
+    val modelWarnings by viewModel.modelConfigurationWarnings.collectAsState()
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     val apiTestStatus by viewModel.apiTestStatus.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
@@ -218,6 +220,7 @@ fun ManageScreen(
     var pendingCharacterImport by remember { mutableStateOf<Pair<CharacterCardImportRequest, CharacterCard?>?>(null) }
     var pendingFormatImport by remember { mutableStateOf<Pair<FormatCardPackage, FormatCard?>?>(null) }
     var pendingWorldBookImport by remember { mutableStateOf<Pair<WorldBookPackage, WorldBook?>?>(null) }
+    var pendingCharacterChatId by remember { mutableStateOf<String?>(null) }
 
     LaunchedEffect(sharedUri) {
         sharedUri?.let { uri ->
@@ -394,7 +397,11 @@ fun ManageScreen(
                     }, { id -> viewModel.duplicateCharacterCard(id) { onNavigate(CharacterEditRoute(it)) } }, { id ->
                         viewModel.updateCommunityCharacter(id) { result -> message = result }
                     }, { id ->
-                        viewModel.createSessionForCharacter(id) { onNavigate(ChatRoute(it)) }
+                        if (modelWarnings.isNotEmpty()) {
+                            pendingCharacterChatId = id
+                        } else {
+                            viewModel.createSessionForCharacter(id) { onNavigate(ChatRoute(it)) }
+                        }
                     }, { entry -> scope.launch {
                         val data = viewModel.recoverCharacterPreset(entry)
                         val conflict = viewModel.findCharacterImportConflict(data)
@@ -471,6 +478,16 @@ fun ManageScreen(
                 }
             }
         }
+    }
+
+    pendingCharacterChatId?.let { characterId ->
+        RagConfigurationNoticeDialog(
+            onDismissRequest = { pendingCharacterChatId = null },
+            onContinue = {
+                pendingCharacterChatId = null
+                viewModel.createSessionForCharacter(characterId) { onNavigate(ChatRoute(it)) }
+            }
+        )
     }
 
     if (showEmbedding) EmbeddingDialog(editEmbedding, { showEmbedding = false }) {

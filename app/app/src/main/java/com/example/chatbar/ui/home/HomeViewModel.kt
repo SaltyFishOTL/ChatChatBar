@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.ChatSession
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 
@@ -36,6 +37,8 @@ class HomeViewModel : ViewModel() {
 
     private val _modelConfigurationErrors = MutableStateFlow<List<String>>(emptyList())
     val modelConfigurationErrors: StateFlow<List<String>> = _modelConfigurationErrors
+    private val _modelConfigurationWarnings = MutableStateFlow<List<String>>(emptyList())
+    val modelConfigurationWarnings: StateFlow<List<String>> = _modelConfigurationWarnings
     private val _isModelConfigurationUsable = MutableStateFlow(false)
     val isModelConfigurationUsable: StateFlow<Boolean> = _isModelConfigurationUsable
 
@@ -44,9 +47,16 @@ class HomeViewModel : ViewModel() {
             chatRepository.initialize()
             characterRepository.initialize()
             ChatBarApp.instance.settingsRepository.initialize()
-            ChatBarApp.instance.settingsRepository.appSettings.collect { settings ->
+            ChatBarApp.instance.modelRepository.initialize()
+            combine(
+                ChatBarApp.instance.settingsRepository.appSettings,
+                ChatBarApp.instance.modelRepository.models,
+                ChatBarApp.instance.modelRepository.embeddingModel,
+                ChatBarApp.instance.modelRepository.retrievalModel
+            ) { settings, _, _, _ -> settings }.collect { settings ->
                 val status = ChatBarApp.instance.effectiveModelResolver.status(settings)
                 _modelConfigurationErrors.value = status.errors
+                _modelConfigurationWarnings.value = status.warnings
                 _isModelConfigurationUsable.value = status.isUsable
             }
         }

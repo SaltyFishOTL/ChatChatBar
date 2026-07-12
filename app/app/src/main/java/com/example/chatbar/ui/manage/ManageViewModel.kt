@@ -142,6 +142,8 @@ class ManageViewModel : ViewModel() {
     val effectiveChatModels: StateFlow<List<ModelConfig>> = _effectiveChatModels
     private val _modelConfigurationErrors = MutableStateFlow<List<String>>(emptyList())
     val modelConfigurationErrors: StateFlow<List<String>> = _modelConfigurationErrors
+    private val _modelConfigurationWarnings = MutableStateFlow<List<String>>(emptyList())
+    val modelConfigurationWarnings: StateFlow<List<String>> = _modelConfigurationWarnings
     private val _isModelConfigurationUsable = MutableStateFlow(false)
     val isModelConfigurationUsable: StateFlow<Boolean> = _isModelConfigurationUsable
     private val _apiTestStatus = MutableStateFlow<String?>(null)
@@ -223,6 +225,7 @@ class ManageViewModel : ViewModel() {
         _effectiveChatModels.value = modelResolver.availableChatModels(settings)
         val status = modelResolver.status(settings)
         _modelConfigurationErrors.value = status.errors
+        _modelConfigurationWarnings.value = status.warnings
         _isModelConfigurationUsable.value = status.isUsable
     }
 
@@ -636,24 +639,28 @@ class ManageViewModel : ViewModel() {
     fun deleteEmbeddingConfig(id: String) {
         viewModelScope.launch {
             modelRepository.deleteEmbeddingModel()
+            refreshEffectiveModels()
         }
     }
 
     fun saveEmbeddingConfig(config: EmbeddingConfig) {
         viewModelScope.launch {
             modelRepository.saveEmbeddingModel(config)
+            refreshEffectiveModels()
         }
     }
 
     fun saveRetrievalModelConfig(model: ModelConfig) {
         viewModelScope.launch {
             modelRepository.saveRetrievalModel(model)
+            refreshEffectiveModels()
         }
     }
 
     fun deleteRetrievalModelConfig() {
         viewModelScope.launch {
             modelRepository.deleteRetrievalModel()
+            refreshEffectiveModels()
         }
     }
 
