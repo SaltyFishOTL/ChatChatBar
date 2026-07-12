@@ -10,6 +10,19 @@ import com.example.chatbar.data.local.entity.MessageRole
 
 object PromptTemplates {
 
+    const val SECTION_CHARACTER = "角色设定"
+    const val SECTION_WORLD_BOOK = "世界书"
+    const val SECTION_REFERENCE = "参考资料"
+    const val SECTION_FORMAT = "格式要求"
+    const val SECTION_REPLY = "回复要求"
+    const val SECTION_LONG_TERM_MEMORY = "长期记忆"
+    const val SECTION_SUPPLEMENTARY = "补充设定"
+    const val SECTION_PLAYER = "玩家设定"
+    const val SECTION_CORE = "核心指令"
+    const val SECTION_POST_HISTORY = "后置指令"
+    const val SECTION_CHAT_HISTORY = "聊天记录"
+    const val SECTION_PREVIOUS_TURN = "上一轮"
+
     const val SYSTEM_PROMPT_TEMPLATE = """
 你是一位经验丰富的成人小说家，你熟知日本官能小说的语料，精通中国大陆、港台成人小说、日本动漫、轻小说的语境语境和生态，你可以在所需的任何时候写出地道的中文网络小说，可以将故事性和刺激的下流描写结合，直击读者的欲望深处。
 你擅长拆解和理解成人小说作品的构造与宣泄欲望的本质结构。

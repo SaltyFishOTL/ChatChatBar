@@ -3,65 +3,93 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 
-/** 会话上下文统一按用户轮次分组；典型一组为一条 USER 加其后续 ASSISTANT 回复。 */
+data class ChatContextGroup(
+    val messages: List<ChatMessage>,
+    val userMessage: ChatMessage? = null,
+    val assistantMessage: ChatMessage? = null
+) {
+    val isCompleteTurn: Boolean
+        get() = userMessage != null && assistantMessage != null && messages.size == 2
+}
+
+/** 会话上下文统一按用户轮次分组；完整一组严格为相邻 USER 加 ASSISTANT。 */
 object ChatContextGroupPolicy {
     private data class Partition(
-        val countedGroups: List<List<ChatMessage>>,
-        val trailingMessages: List<ChatMessage>,
-        val promptTailMessages: List<ChatMessage>
+        val countedGroups: List<ChatContextGroup>,
+        val previousGroup: ChatContextGroup?,
+        val currentGroup: ChatContextGroup?
     )
 
-    private fun partition(messages: List<ChatMessage>): Partition {
-        if (messages.isEmpty()) return Partition(emptyList(), emptyList(), emptyList())
-        var candidateEnd = messages.size
-        val promptTail = mutableListOf<ChatMessage>()
-        if (messages.getOrNull(candidateEnd - 1)?.role == MessageRole.USER) {
-            promptTail.add(0, messages[candidateEnd - 1])
-            candidateEnd--
-        }
-        if (messages.getOrNull(candidateEnd - 1)?.role == MessageRole.ASSISTANT) {
-            promptTail.add(0, messages[candidateEnd - 1])
-            candidateEnd--
+    fun groups(messages: List<ChatMessage>): List<ChatContextGroup> {
+        val groups = mutableListOf<ChatContextGroup>()
+        var pendingUser: ChatMessage? = null
+
+        fun flushPendingUser() {
+            pendingUser?.let { user ->
+                groups += ChatContextGroup(messages = listOf(user), userMessage = user)
+            }
+            pendingUser = null
         }
 
-        val groups = mutableListOf<List<ChatMessage>>()
-        var current = mutableListOf<ChatMessage>()
-        messages.take(candidateEnd).forEach { message ->
-            if (message.role == MessageRole.USER && current.isNotEmpty()) {
-                groups += current
-                current = mutableListOf()
+        messages.forEach { message ->
+            when (message.role) {
+                MessageRole.USER -> {
+                    flushPendingUser()
+                    pendingUser = message
+                }
+                MessageRole.ASSISTANT -> {
+                    val user = pendingUser
+                    if (user == null) {
+                        groups += ChatContextGroup(
+                            messages = listOf(message),
+                            assistantMessage = message
+                        )
+                    } else {
+                        groups += ChatContextGroup(
+                            messages = listOf(user, message),
+                            userMessage = user,
+                            assistantMessage = message
+                        )
+                        pendingUser = null
+                    }
+                }
+                MessageRole.SYSTEM -> {
+                    flushPendingUser()
+                    groups += ChatContextGroup(messages = listOf(message))
+                }
             }
-            current += message
         }
-        if (current.isNotEmpty()) groups += current
-        val last = groups.lastOrNull().orEmpty()
-        val lastIsIncompleteUserTurn = last.any { it.role == MessageRole.USER } &&
-            last.none { it.role == MessageRole.ASSISTANT }
+        flushPendingUser()
+        return groups
+    }
+
+    private fun partition(messages: List<ChatMessage>): Partition {
+        val groups = groups(messages)
+        if (groups.isEmpty()) return Partition(emptyList(), null, null)
+        val currentGroup = groups.lastOrNull()
+            ?.takeIf { it.userMessage != null && it.assistantMessage == null }
+        val withoutCurrent = if (currentGroup == null) groups else groups.dropLast(1)
+        val previousGroup = withoutCurrent.lastOrNull()
         return Partition(
-            countedGroups = if (lastIsIncompleteUserTurn) groups.dropLast(1) else groups,
-            trailingMessages = if (lastIsIncompleteUserTurn) last else emptyList(),
-            promptTailMessages = promptTail
+            countedGroups = if (previousGroup == null) withoutCurrent else withoutCurrent.dropLast(1),
+            previousGroup = previousGroup,
+            currentGroup = currentGroup
         )
     }
 
-    fun groups(messages: List<ChatMessage>): List<List<ChatMessage>> =
-        partition(messages).let { result ->
-            buildList {
-                addAll(result.countedGroups)
-                if (result.trailingMessages.isNotEmpty()) add(result.trailingMessages)
-                if (result.promptTailMessages.isNotEmpty()) add(result.promptTailMessages)
-            }
-        }
-
     fun recentMessages(messages: List<ChatMessage>, groupLimit: Int): List<ChatMessage> {
         val partition = partition(messages)
-        return partition.countedGroups.takeLast(groupLimit.coerceAtLeast(1)).flatten() +
-            partition.trailingMessages +
-            partition.promptTailMessages
+        return buildList {
+            partition.countedGroups.takeLast(groupLimit.coerceAtLeast(1)).forEach { addAll(it.messages) }
+            partition.previousGroup?.let { addAll(it.messages) }
+            partition.currentGroup?.let { addAll(it.messages) }
+        }
     }
 
     fun archivedMessages(messages: List<ChatMessage>, groupLimit: Int): List<ChatMessage> =
-        partition(messages).countedGroups.dropLast(groupLimit.coerceAtLeast(1)).flatten()
+        partition(messages).countedGroups
+            .dropLast(groupLimit.coerceAtLeast(1))
+            .flatMap(ChatContextGroup::messages)
 
     fun count(messages: List<ChatMessage>): Int = partition(messages).countedGroups.size
 }
@@ -77,7 +105,7 @@ object ChatContextGroupPolicy {
 class ContextWindowManager {
     data class PromptMessageGroups(
         val historyMessages: List<ChatMessage>,
-        val previousMessage: ChatMessage?
+        val previousTurnMessages: List<ChatMessage>
     )
 
     /**
@@ -101,21 +129,22 @@ class ContextWindowManager {
         val latestIndex = latestMessageId
             ?.let { id -> contextMessages.indexOfLast { it.id == id } }
             ?.takeIf { it >= 0 }
-        val previousIndex = if (latestIndex != null) {
-            latestIndex - 1
+        val messagesBeforeLatest = if (latestIndex == null) {
+            contextMessages
         } else {
-            contextMessages.lastIndex
+            contextMessages.take(latestIndex)
         }
-        val previousMessage = previousIndex
-            .takeIf { it >= 0 }
-            ?.let { contextMessages[it] }
+        val previousTurnMessages = ChatContextGroupPolicy.groups(messagesBeforeLatest)
+            .lastOrNull()
+            ?.messages
+            .orEmpty()
         val excludedIds = mutableSetOf<String>()
         latestMessageId?.let { excludedIds.add(it) }
-        previousMessage?.id?.let { excludedIds.add(it) }
+        previousTurnMessages.forEach { excludedIds.add(it.id) }
 
         return PromptMessageGroups(
             historyMessages = contextMessages.filterNot { it.id in excludedIds },
-            previousMessage = previousMessage
+            previousTurnMessages = previousTurnMessages
         )
     }
 

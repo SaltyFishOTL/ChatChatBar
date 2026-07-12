@@ -3,6 +3,7 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.FormatCard
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -49,19 +50,51 @@ class PromptAssemblerCharacterModeTest {
 
     @Test fun emptyCharacterSectionsAreOmitted() {
         val prompt = assembler.assembleSystemPrompt(card())
-        assertFalse(prompt.contains("角色卡基本描述与设定"))
+        assertFalse(prompt.contains("【角色设定】"))
         assertFalse(prompt.contains("【人物设定】"))
     }
 
     @Test fun blankLongTermMemoryIsOmitted() {
         val prompt = assembler.assembleSystemPrompt(card(), longTermMemory = "   ")
-        assertFalse(prompt.contains("Long-Term Memory"))
+        assertFalse(prompt.contains("【长期记忆】"))
     }
 
     @Test fun longTermMemoryIsInjectedWhenPresent() {
         val prompt = assembler.assembleSystemPrompt(card(), longTermMemory = "User prefers concise replies.")
-        assertTrue(prompt.contains("Long-Term Memory"))
+        assertTrue(prompt.contains("【长期记忆】"))
         assertTrue(prompt.contains("User prefers concise replies."))
+    }
+
+    @Test fun generatedSectionsUseShortTitlesWithoutNumberedSeparators() {
+        val prompt = assembler.assembleSystemPrompt(
+            characterCard = card(basicSetting = "共同世界观"),
+            playerName = "玩家",
+            playerSetting = "玩家资料",
+            supplementarySetting = "临时规则",
+            formatCard = FormatCard(
+                id = "format",
+                name = "格式",
+                content = "格式正文",
+                createdAt = 1
+            ),
+            longTermMemory = "长期内容",
+            worldBookPrompt = "世界内容"
+        )
+
+        listOf(
+            "【角色设定】",
+            "【世界书】",
+            "【格式要求】",
+            "【回复要求】",
+            "【长期记忆】",
+            "【补充设定】",
+            "【玩家设定】",
+            "【核心指令】",
+            "【后置指令】"
+        ).forEach { assertTrue(prompt.contains(it)) }
+        assertFalse(prompt.contains("=================================================="))
+        assertFalse(Regex("(?m)^\\d+(?:\\.\\d+)?\\. ").containsMatchIn(prompt))
+        assertFalse(prompt.contains("(World Book)"))
     }
 
     @Test fun replacesPlayerAndCharacterNamePlaceholdersGlobally() {
@@ -107,14 +140,25 @@ class PromptAssemblerCharacterModeTest {
     @Test fun cacheLayersKeepMemoryDynamicAndPostHistoryAtTail() {
         val layers = assembler.assembleCachePromptLayers(
             characterCard = card(basicSetting = "稳定角色设定").copy(postHistoryInstructions = "尾部规则"),
-            longTermMemory = "冻结前记忆"
+            longTermMemory = "冻结前记忆",
+            hasHistoryMessages = true,
+            hasPreviousTurn = true
         )
 
         assertTrue(layers.stablePrefixCacheable)
         assertTrue(layers.stableSystemPrompt.contains("稳定角色设定"))
-        assertFalse(layers.stableSystemPrompt.contains("Long-Term Memory"))
+        assertFalse(layers.stableSystemPrompt.contains("【长期记忆】"))
+        assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
         assertTrue(layers.dynamicSystemPrompt.contains("冻结前记忆"))
         assertTrue(layers.tailSystemPrompt.contains("尾部规则"))
+        assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
+    }
+
+    @Test fun cacheLayersOmitHistoryHeadingsWhenGroupsAreEmpty() {
+        val layers = assembler.assembleCachePromptLayers(characterCard = card())
+
+        assertFalse(layers.stableSystemPrompt.contains("【聊天记录】"))
+        assertFalse(layers.tailSystemPrompt.contains("【上一轮】"))
     }
 
     @Test fun cacheLayersFallBackWhenStaticPromptDependsOnDynamicOutlet() {

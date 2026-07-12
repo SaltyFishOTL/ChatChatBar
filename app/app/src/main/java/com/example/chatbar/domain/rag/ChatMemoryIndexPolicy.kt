@@ -1,7 +1,7 @@
 package com.example.chatbar.domain.rag
 
 import com.example.chatbar.data.local.entity.ChatMessage
-import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 
 data class ChatMemoryMessagePair(
@@ -18,24 +18,16 @@ object ChatMemoryIndexPolicy {
         "ok", "okay", "yes", "no"
     )
 
-    fun buildPairs(messages: List<ChatMessage>): List<ChatMemoryMessagePair> {
-        val pairs = mutableListOf<ChatMemoryMessagePair>()
-        var pendingUser: ChatMessage? = null
-        messages.forEach { message ->
-            when (message.role) {
-                MessageRole.USER -> pendingUser = message
-                MessageRole.ASSISTANT -> {
-                    val user = pendingUser
-                    if (user != null && message.displayContent.isNotBlank()) {
-                        pairs += ChatMemoryMessagePair(user, message)
-                        pendingUser = null
-                    }
-                }
-                MessageRole.SYSTEM -> Unit
+    fun buildPairs(messages: List<ChatMessage>): List<ChatMemoryMessagePair> =
+        ChatContextGroupPolicy.groups(messages).mapNotNull { group ->
+            val user = group.userMessage
+            val assistant = group.assistantMessage
+            if (group.isCompleteTurn && user != null && assistant != null && assistant.displayContent.isNotBlank()) {
+                ChatMemoryMessagePair(user, assistant)
+            } else {
+                null
             }
         }
-        return pairs
-    }
 
     fun contentForIndex(pair: ChatMemoryMessagePair): String = buildString {
         appendLine("user:")

@@ -9,12 +9,13 @@ import org.junit.Test
 
 class ChatMemoryIndexPolicyTest {
     @Test
-    fun buildPairs_groupsUserWithNextTextAssistant_andIgnoresImagesAndSystem() {
+    fun buildPairs_onlyUsesStrictAdjacentUserAssistantTurns() {
         val messages = listOf(
             message("greeting", MessageRole.ASSISTANT, "欢迎"),
-            message("user-1", MessageRole.USER, "钥匙放在哪里？"),
+            message("interrupted-user", MessageRole.USER, "这条被系统消息中断"),
             message("system", MessageRole.SYSTEM, "状态"),
             message("image", MessageRole.ASSISTANT, "", images = listOf("image.png")),
+            message("user-1", MessageRole.USER, "钥匙放在哪里？"),
             message("assistant-1", MessageRole.ASSISTANT, "她把钥匙放进左侧抽屉。")
         )
 

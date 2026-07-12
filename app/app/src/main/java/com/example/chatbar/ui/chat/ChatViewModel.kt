@@ -1281,6 +1281,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     chatRepository.updateSession(updatedSession)
                     _session.value = updatedSession
                 }
+
+                // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
+                val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
+                    contextMsgs.lastOrNull { it.role == MessageRole.USER }
+                } else null
+                val latestMessageId = when {
+                    persistUserMessage -> userMsg.id
+                    regenTargetUserMsg != null -> regenTargetUserMsg.id
+                    else -> null
+                }
+                val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
+                    contextMessages = contextMsgs,
+                    latestMessageId = latestMessageId
+                )
                 val promptLayers = promptAssembler.assembleCachePromptLayers(
                     characterCard = charCard,
                     playerSetting = activePlayerSetting,
@@ -1295,7 +1309,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         currentSession.longTermMemoryEnabled && it.isNotBlank()
                     },
                     worldBookPrompt = wbPrompt,
-                    worldBookOutlets = wbOutlets
+                    worldBookOutlets = wbOutlets,
+                    hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty(),
+                    hasPreviousTurn = promptMessageGroups.previousTurnMessages.isNotEmpty()
                 )
                 val promptSystemDebug = listOf(
                     promptLayers.stableSystemPrompt,
@@ -1307,20 +1323,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ?.let(PromptCacheKeyFactory::cacheKey)
 
                 val apiMessages = mutableListOf<ChatApiMessage>()
-
-                // 重新生成时，找到被重新生成回复所对应的那条用户消息，需将其移至最底部
-                val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
-                    contextMsgs.lastOrNull { it.role == MessageRole.USER }
-                } else null
-                val latestMessageId = when {
-                    persistUserMessage -> userMsg.id
-                    regenTargetUserMsg != null -> regenTargetUserMsg.id
-                    else -> null
-                }
-                val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
-                    contextMessages = contextMsgs,
-                    latestMessageId = latestMessageId
-                )
 
                 suspend fun addContextMessage(
                     msg: ChatMessage,
@@ -1356,7 +1358,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 固定设定在最前，再放拆开上一助手后的历史。
+                // 动态 outlet 使稳定前缀失效时，完整 system 必须先于其聊天记录标题。
+                if (!promptLayers.stablePrefixCacheable) {
+                    promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
+                        apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
+                    }
+                }
+
+                // 1. 固定设定在最前，再放较早聊天记录。
                 promptLayers.stableSystemPrompt.takeIf(String::isNotBlank)?.let { stablePrompt ->
                     apiMessages.add(ChatApiMessage.text("system", stablePrompt))
                 }
@@ -1367,15 +1376,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 2. 长期记忆、RAG、世界书等动态资料置于历史与上一助手之间。
-                promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
-                    apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
+                // 2. 长期记忆、RAG、世界书等动态资料置于较早历史与完整上一轮之间。
+                if (promptLayers.stablePrefixCacheable) {
+                    promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
+                        apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
+                    }
                 }
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))
                 }
-                promptMessageGroups.previousMessage?.let { previousMessage ->
-                    addContextMessage(previousMessage)
+                for (msg in promptMessageGroups.previousTurnMessages) {
+                    addContextMessage(
+                        msg = msg,
+                        stripAssistantStatus = appSettings.excludeAssistantStatusFromHistory
+                    )
                 }
 
                 // 3. 本次用户输入（始终放在最底部，按需前置分段气泡人物标注协议）

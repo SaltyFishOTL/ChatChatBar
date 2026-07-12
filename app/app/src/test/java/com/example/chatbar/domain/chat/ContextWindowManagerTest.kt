@@ -4,7 +4,6 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
-import junit.framework.TestCase.assertNull
 import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
@@ -67,7 +66,7 @@ class ContextWindowManagerTest {
         val groups = manager.getPromptMessageGroups(messages, latestMessageId = "message-4")
 
         assertEquals(listOf("0", "1", "2"), groups.historyMessages.map { it.content })
-        assertEquals("3", groups.previousMessage?.content)
+        assertEquals(listOf("3"), groups.previousTurnMessages.map { it.content })
     }
 
     @Test
@@ -77,7 +76,7 @@ class ContextWindowManagerTest {
         val groups = manager.getPromptMessageGroups(messages, latestMessageId = null)
 
         assertEquals(listOf("0", "1", "2", "3"), groups.historyMessages.map { it.content })
-        assertEquals("4", groups.previousMessage?.content)
+        assertEquals(listOf("4"), groups.previousTurnMessages.map { it.content })
     }
 
     @Test
@@ -87,7 +86,37 @@ class ContextWindowManagerTest {
         val groups = manager.getPromptMessageGroups(messages, latestMessageId = "message-0")
 
         assertEquals(emptyList<ChatMessage>(), groups.historyMessages)
-        assertNull(groups.previousMessage)
+        assertTrue(groups.previousTurnMessages.isEmpty())
+    }
+
+    @Test
+    fun getPromptMessageGroups_movesCompletePreviousTurnAfterSystemPrompt() {
+        val messages = conversationGroups(3) + message("current-user", MessageRole.USER, "u3")
+
+        val groups = manager.getPromptMessageGroups(messages, latestMessageId = "current-user")
+
+        assertEquals(listOf("u0", "a0", "u1", "a1"), groups.historyMessages.map { it.content })
+        assertEquals(listOf("u2", "a2"), groups.previousTurnMessages.map { it.content })
+    }
+
+    @Test
+    fun groupPolicy_preservesOpeningAssistantAndConsecutiveUsers() {
+        val messages = listOf(
+            message("greeting", MessageRole.ASSISTANT, "greeting"),
+            message("user-0", MessageRole.USER, "u0"),
+            message("user-1", MessageRole.USER, "u1"),
+            message("assistant-1", MessageRole.ASSISTANT, "a1")
+        )
+
+        val groups = ChatContextGroupPolicy.groups(messages)
+
+        assertEquals(
+            listOf(listOf("greeting"), listOf("u0"), listOf("u1", "a1")),
+            groups.map { group -> group.messages.map { it.content } }
+        )
+        assertFalse(groups[0].isCompleteTurn)
+        assertFalse(groups[1].isCompleteTurn)
+        assertTrue(groups[2].isCompleteTurn)
     }
 
     private fun messages(count: Int): List<ChatMessage> =
