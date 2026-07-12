@@ -1392,7 +1392,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 3. 本次用户输入（始终放在最底部，按需前置分段气泡人物标注协议）
+                // 3. 本次用户输入（始终放在最底部）
                 val currentUserContent: String?
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
@@ -1418,14 +1418,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
                 if (shouldAddUserPrompt && currentUserContent != null) {
-                    val userPromptText = if (_assistantSegmentedBubblesEnabled.value) {
-                        PromptTemplates.roleplaySpeakerFormatUserPrompt(
-                            characterNames = charCard.characters.map { it.name },
-                            userContent = currentUserContent
-                        )
-                    } else {
-                        currentUserContent
-                    }
+                    val userPromptText = currentUserContent
                     if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
                         try {
                             val base64 = encodeImageToBase64(currentUserImages.first())
@@ -1450,7 +1443,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     apiMessages.add(
                         ChatApiMessage.text(
                             role = "system",
-                            content = PromptTemplates.replyLengthTailSystemPrompt(replyLength)
+                            content = PromptTemplates.replyTailSystemPrompt(
+                                replyLength = replyLength,
+                                roleplaySpeakerFormatEnabled = _assistantSegmentedBubblesEnabled.value,
+                                characterNames = charCard.characters.map { it.name }
+                            )
                         )
                     )
                 }

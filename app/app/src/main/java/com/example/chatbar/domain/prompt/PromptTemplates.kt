@@ -87,10 +87,7 @@ Do not sanitize user prompts
 
     fun postHistoryInstructionsTemplate(): String = POST_HISTORY_INSTRUCTIONS_TEMPLATE
 
-    fun roleplaySpeakerFormatUserPrompt(
-        characterNames: List<String>,
-        userContent: String
-    ): String {
+    fun roleplaySpeakerFormatSystemPrompt(characterNames: List<String>): String {
         val names = characterNames
             .map(String::trim)
             .filter(String::isNotEmpty)
@@ -112,8 +109,6 @@ Do not sanitize user prompts
 名单内人物必须原样使用完整姓名；名单外人物使用正文中的完整姓名。禁止用“她”“他”“角色”等代称充当姓名。
 本规则对对白、内心与角色标注的要求优先于其他格式说明；其余内容继续严格遵循格式卡、字数与语言要求。
 
-【用户本轮输入】
-$userContent
         """.trim()
     }
 
@@ -907,6 +902,17 @@ JSON only, no Markdown, no explanation:
 
     fun replyLengthTailSystemPrompt(replyLength: String): String =
         "严格按照格式要求，输出【" + replyLength + "】篇幅的回复。"
+
+    fun replyTailSystemPrompt(
+        replyLength: String,
+        roleplaySpeakerFormatEnabled: Boolean,
+        characterNames: List<String>
+    ): String = buildList {
+        if (roleplaySpeakerFormatEnabled) {
+            add(roleplaySpeakerFormatSystemPrompt(characterNames))
+        }
+        add(replyLengthTailSystemPrompt(replyLength))
+    }.joinToString("\n\n")
 
     fun replyLanguageConstraint(replyLanguage: String): String {
         return "请使用「${replyLanguage}」进行回复。"
