@@ -12,6 +12,7 @@ data class AppSettings(
     val modelConfigurationMode: ModelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
     val presetDefaultModelKey: String? = null,
     val siliconFlowApiKey: String = "",
+    val allowCleartextModelApi: Boolean = false,
     val defaultEmbeddingId: String? = null,
     val defaultFormatCardId: String? = null,
     val memoryRagTopK: Int = 3,

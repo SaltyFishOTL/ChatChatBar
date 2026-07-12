@@ -30,7 +30,9 @@ import java.util.concurrent.TimeUnit
  * 响应格式:
  * {"data": [{"embedding": [0.1, 0.2, ...], "index": 0}, ...]}
  */
-class EmbeddingService {
+class EmbeddingService(
+    allowCleartextHttp: () -> Boolean = { false }
+) {
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
@@ -42,7 +44,7 @@ class EmbeddingService {
         isLenient = true
     }
 
-    private val client = ProxyAwareClient.builder()
+    private val client = ProxyAwareClient.modelApiBuilder(allowCleartextHttp)
         .connectTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .readTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)
         .writeTimeout(TIMEOUT_SECONDS, TimeUnit.SECONDS)

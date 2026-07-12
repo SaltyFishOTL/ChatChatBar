@@ -22,6 +22,8 @@ class SettingsRepository(private val storage: JsonFileStorage) {
 
     private val _appSettings = MutableStateFlow(AppSettings())
     val appSettings: Flow<AppSettings> = _appSettings.asStateFlow()
+    val currentAppSettings: AppSettings
+        get() = _appSettings.value
 
     private val _playerSetting = MutableStateFlow(PlayerSetting())
     val playerSetting: Flow<PlayerSetting> = _playerSetting.asStateFlow()

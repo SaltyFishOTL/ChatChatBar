@@ -150,10 +150,14 @@ class ChatBarApp : Application() {
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()
-        embeddingService = EmbeddingService()
+        embeddingService = EmbeddingService {
+            settingsRepository.currentAppSettings.allowCleartextModelApi
+        }
         vectorSearchEngine = VectorSearchEngine()
         
-        streamingChatService = StreamingChatService()
+        streamingChatService = StreamingChatService {
+            settingsRepository.currentAppSettings.allowCleartextModelApi
+        }
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)

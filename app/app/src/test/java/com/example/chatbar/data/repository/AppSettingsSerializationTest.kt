@@ -16,7 +16,20 @@ class AppSettingsSerializationTest {
 
         assertTrue(decoded.assistantSegmentedBubblesEnabled)
         assertTrue(decoded.excludeAssistantStatusFromHistory)
+        assertFalse(decoded.allowCleartextModelApi)
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
+    }
+
+    @Test
+    fun enabledCleartextModelApi_roundTrips() {
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(allowCleartextModelApi = true)
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertTrue(decoded.allowCleartextModelApi)
     }
 
     @Test

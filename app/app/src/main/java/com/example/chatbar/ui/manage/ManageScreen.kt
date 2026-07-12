@@ -1328,7 +1328,7 @@ private fun SettingsTab(
     onThemeMode: (ThemeMode) -> Unit,
     onBubbleFontScale: (Float) -> Unit,
     onDirtyChange: (Boolean) -> Unit,
-    onTestApiKey: (String) -> Unit,
+    onTestApiKey: (String, Boolean) -> Unit,
     onSaveNovelAiToken: (String) -> Unit,
     onClearNovelAiToken: () -> Unit,
     onRefreshMomentsReliability: () -> Unit,
@@ -1345,6 +1345,7 @@ private fun SettingsTab(
     var modelId by remember { mutableStateOf(settings.defaultModelId) }
     var imageModelId by remember { mutableStateOf(settings.defaultImageModelId) }
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
+    var allowCleartextModelApi by remember { mutableStateOf(settings.allowCleartextModelApi) }
     var novelAiToken by remember { mutableStateOf("") }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
@@ -1392,6 +1393,7 @@ private fun SettingsTab(
         settings.defaultImageModelId,
         settings.presetDefaultModelKey,
         settings.siliconFlowApiKey,
+        settings.allowCleartextModelApi,
         settings.defaultFormatCardId,
         settings.themeMode,
         settings.defaultContextWindowSize,
@@ -1416,6 +1418,7 @@ private fun SettingsTab(
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
         imageModelId = settings.defaultImageModelId
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
+        allowCleartextModelApi = settings.allowCleartextModelApi
         themeMode = settings.themeMode
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         webSearchEnabled = settings.webSearchEnabled
@@ -1453,6 +1456,7 @@ private fun SettingsTab(
         defaultImageModelId = effectiveDefaultImageModelId,
         presetDefaultModelKey = null,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
+        allowCleartextModelApi = allowCleartextModelApi,
         defaultEmbeddingId = null,
         defaultFormatCardId = formatId,
         memoryRagTopK = memoryTopK.toInt(),
@@ -1508,8 +1512,26 @@ private fun SettingsTab(
             CbField("全局默认 API Key") {
                 CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", visualTransformation = PasswordVisualTransformation())
             }
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("允许明文 HTTP 模型 API", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "仅用于可信本地部署。开启后 API Key、提示词和聊天内容可能被同一网络中的第三方窃取或篡改。",
+                        color = ChatBarTheme.colors.destructive,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(
+                    checked = allowCleartextModelApi,
+                    onCheckedChange = { allowCleartextModelApi = it }
+                )
+            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbButton("测试连接", { onTestApiKey(siliconFlowApiKey) }, variant = ButtonVariant.Outline)
+                CbButton(
+                    "测试连接",
+                    { onTestApiKey(siliconFlowApiKey, allowCleartextModelApi) },
+                    variant = ButtonVariant.Outline
+                )
             }
             apiTestStatus?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption) }
             CbDivider()

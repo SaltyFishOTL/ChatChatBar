@@ -138,7 +138,9 @@ data class ChatApiMessage(
  * data: {"choices": [{"delta": {"content": "..."}}]}
  * data: [DONE]
  */
-class StreamingChatService {
+class StreamingChatService(
+    allowCleartextHttp: () -> Boolean = { false }
+) {
 
     companion object {
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
@@ -153,7 +155,7 @@ class StreamingChatService {
         encodeDefaults = true
     }
 
-    private val client = ProxyAwareClient.builder()
+    private val client = ProxyAwareClient.modelApiBuilder(allowCleartextHttp)
         .connectTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
         .readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
         .writeTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)

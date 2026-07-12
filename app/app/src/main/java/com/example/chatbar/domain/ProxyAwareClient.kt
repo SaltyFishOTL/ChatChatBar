@@ -2,6 +2,7 @@ package com.example.chatbar.domain
 
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetSocketAddress
 import java.net.Proxy
@@ -17,10 +18,27 @@ object ProxyAwareClient {
     var manualProxyPort: Int? = null
 
     fun builder(): OkHttpClient.Builder {
+        return builderWithCleartextPolicy { false }
+    }
+
+    fun modelApiBuilder(allowCleartextHttp: () -> Boolean): OkHttpClient.Builder {
+        return builderWithCleartextPolicy(allowCleartextHttp)
+    }
+
+    private fun builderWithCleartextPolicy(
+        allowCleartextHttp: () -> Boolean
+    ): OkHttpClient.Builder {
         val selector = ProxySelectorDelegate()
         return OkHttpClient.Builder()
             .proxySelector(selector)
             .dns(Ipv4OnlyDns)
+            .addInterceptor { chain ->
+                val request = chain.request()
+                if (!CleartextHttpPolicy.isAllowed(request.url.isHttps, allowCleartextHttp())) {
+                    throw IOException("明文 HTTP 模型 API 已禁用，请在管理 > 设置中开启后重试")
+                }
+                chain.proceed(request)
+            }
     }
 
     private object Ipv4OnlyDns : Dns {
@@ -63,4 +81,9 @@ object ProxyAwareClient {
         override fun connectFailed(uri: URI?, sa: java.net.SocketAddress?, ioe: java.io.IOException?) {
         }
     }
+}
+
+internal object CleartextHttpPolicy {
+    fun isAllowed(isHttps: Boolean, allowCleartextHttp: Boolean): Boolean =
+        isHttps || allowCleartextHttp
 }

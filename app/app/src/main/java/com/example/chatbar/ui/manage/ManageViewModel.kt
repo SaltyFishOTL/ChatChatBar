@@ -28,6 +28,8 @@ import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
+import com.example.chatbar.domain.chat.StreamingChatService
+import com.example.chatbar.domain.rag.EmbeddingService
 import java.io.File
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -874,18 +876,21 @@ class ManageViewModel : ViewModel() {
         novelAiCredentials.clear()
     }
 
-    fun testSiliconFlowApi(apiKey: String) {
+    fun testSiliconFlowApi(apiKey: String, allowCleartextModelApi: Boolean) {
         ChatBarApp.instance.applicationScope.launch {
             _apiTestStatus.value = "正在测试对话与向量接口…"
             val current = settingsRepository.getAppSettings().copy(
                 modelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
-                siliconFlowApiKey = apiKey.trim()
+                siliconFlowApiKey = apiKey.trim(),
+                allowCleartextModelApi = allowCleartextModelApi
             )
             val chat = modelResolver.defaultChatModel(current)
             val embedding = modelResolver.embeddingModel(current)
+            val chatService = StreamingChatService { allowCleartextModelApi }
+            val embeddingService = EmbeddingService { allowCleartextModelApi }
             val chatResult = if (chat == null) "对话：预制型号未配置" else runCatching {
                 AiBackgroundWorkManager.run("api-test") {
-                    ChatBarApp.instance.streamingChatService.completeText(
+                    chatService.completeText(
                     listOf(com.example.chatbar.domain.chat.ChatApiMessage.text("user", "Reply with OK")),
                     chat,
                     maxTokens = 8
@@ -895,7 +900,7 @@ class ManageViewModel : ViewModel() {
             }.getOrElse { "对话：失败 ${it.message}" }
             val embeddingResult = if (embedding == null) "向量：预制型号未配置" else runCatching {
                 AiBackgroundWorkManager.run("api-test") {
-                    ChatBarApp.instance.embeddingService.getEmbedding("test", embedding)
+                    embeddingService.getEmbedding("test", embedding)
                 }
                 "向量：成功"
             }.getOrElse { "向量：失败 ${it.message}" }
