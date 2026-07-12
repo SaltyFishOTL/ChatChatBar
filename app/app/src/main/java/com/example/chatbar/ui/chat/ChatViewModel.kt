@@ -29,6 +29,8 @@ import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.BackgroundGenerationProtectionCancellationException
@@ -42,6 +44,8 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
 import kotlinx.serialization.json.Json
@@ -111,6 +115,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         prettyPrint = true
         encodeDefaults = true
     }
+    private val ragMemoryMutationMutex = Mutex()
 
     // UI 状态
     private val _session = MutableStateFlow<ChatSession?>(null)
@@ -181,6 +186,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _availableSaveSlots = MutableStateFlow<List<SaveSlot>>(emptyList())
     val availableSaveSlots: StateFlow<List<SaveSlot>> = _availableSaveSlots.asStateFlow()
+
+    private val _ragMemoryChunks = MutableStateFlow<List<VectorChunk>>(emptyList())
+    val ragMemoryChunks: StateFlow<List<VectorChunk>> = _ragMemoryChunks.asStateFlow()
+
+    private val _ragMemoryStatus = MutableStateFlow<String?>(null)
+    val ragMemoryStatus: StateFlow<String?> = _ragMemoryStatus.asStateFlow()
+
+    private val _ragMemoryBusy = MutableStateFlow(false)
+    val ragMemoryBusy: StateFlow<Boolean> = _ragMemoryBusy.asStateFlow()
 
     private var draftTouched = false
     private var draftSaveSequence = 0
@@ -336,6 +350,156 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             promptOverride = checkpoint?.first,
             imageSizeOverride = checkpoint?.second
         )
+    }
+
+    fun refreshRagMemoryChunks() {
+        viewModelScope.launch {
+            runCatching { loadRagMemoryChunks() }
+                .onFailure { _ragMemoryStatus.value = "读取 RAG 检索库失败：${it.message}" }
+        }
+    }
+
+    suspend fun saveRagMemoryChunk(chunkId: String?, content: String): Boolean {
+        val normalizedContent = content.trim()
+        if (normalizedContent.isBlank()) {
+            _ragMemoryStatus.value = "RAG 块内容不能为空。"
+            return false
+        }
+        if (_ragMemoryBusy.value) return false
+
+        _ragMemoryBusy.value = true
+        _ragMemoryStatus.value = if (chunkId == null) "正在创建 RAG 块…" else "正在更新 RAG 块…"
+        return try {
+            ragMemoryMutationMutex.withLock {
+                val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+                    ?: error("当前配置层级没有可用向量模型")
+                val embedding = ChatBarApp.instance.embeddingService.getEmbedding(
+                    normalizedContent,
+                    embeddingConfig
+                )
+                val existing = chunkId?.let { ChatBarApp.instance.ragRepository.getChunkById(it) }
+                if (chunkId != null && existing?.isChatMemoryForSession(sessionId) != true) {
+                    error("目标 RAG 块不存在或不属于当前会话")
+                }
+                val now = System.currentTimeMillis()
+                val updatedIndexMode = if (existing?.needsAutomaticMemoryRebuild() == true) {
+                    "manual"
+                } else {
+                    existing?.metadata?.get("indexMode") ?: "manual"
+                }
+                val chunk = existing?.copy(
+                    content = normalizedContent,
+                    embedding = embedding,
+                    metadata = existing.metadata + mapOf(
+                        "embeddingKey" to ragManager.embeddingKey(embeddingConfig),
+                        "editedAt" to now.toString(),
+                        "indexMode" to updatedIndexMode,
+                        "contentVersion" to "2"
+                    )
+                ) ?: VectorChunk.create(
+                    sourceType = ChunkSourceType.CHAT_MEMORY,
+                    sourceId = sessionId,
+                    content = normalizedContent,
+                    embedding = embedding,
+                    metadata = mapOf(
+                        "sessionId" to sessionId,
+                        "indexMode" to "manual",
+                        "role" to "MANUAL",
+                        "embeddingKey" to ragManager.embeddingKey(embeddingConfig)
+                    )
+                )
+                ChatBarApp.instance.ragRepository.saveChunks(listOf(chunk))
+                loadRagMemoryChunks()
+            }
+            _ragMemoryStatus.value = if (chunkId == null) "RAG 块已创建。" else "RAG 块已更新。"
+            true
+        } catch (e: Exception) {
+            _ragMemoryStatus.value = "保存失败：${e.message}"
+            false
+        } finally {
+            _ragMemoryBusy.value = false
+        }
+    }
+
+    suspend fun deleteRagMemoryChunk(chunkId: String): Boolean {
+        if (_ragMemoryBusy.value) return false
+        _ragMemoryBusy.value = true
+        _ragMemoryStatus.value = "正在删除 RAG 块…"
+        return try {
+            ragMemoryMutationMutex.withLock {
+                val existing = ChatBarApp.instance.ragRepository.getChunkById(chunkId)
+                if (existing?.isChatMemoryForSession(sessionId) != true) {
+                    error("目标 RAG 块不存在或不属于当前会话")
+                }
+                ChatBarApp.instance.ragRepository.deleteChunkById(chunkId)
+                loadRagMemoryChunks()
+            }
+            _ragMemoryStatus.value = "RAG 块已删除。"
+            true
+        } catch (e: Exception) {
+            _ragMemoryStatus.value = "删除失败：${e.message}"
+            false
+        } finally {
+            _ragMemoryBusy.value = false
+        }
+    }
+
+    suspend fun rebuildLegacyRagMemoryChunks(): Boolean {
+        if (_ragMemoryBusy.value) return false
+        _ragMemoryBusy.value = true
+        _ragMemoryStatus.value = "正在检查旧版上下文记忆…"
+        return try {
+            ragMemoryMutationMutex.withLock {
+                val repository = ChatBarApp.instance.ragRepository
+                val staleChunks = repository.getAllChunksForSession(sessionId)
+                    .filter { it.needsAutomaticMemoryRebuild() }
+                if (staleChunks.isEmpty()) {
+                    loadRagMemoryChunks()
+                    _ragMemoryStatus.value = "没有需要重建的旧版块。"
+                    return@withLock
+                }
+
+                val legacyMessageIds = staleChunks.flatMap { it.messageIds() }.distinct()
+                val renderContext = placeholderRenderContext()
+                val renderedMessages = chatRepository.getMessages(sessionId).renderWith(renderContext)
+                val pairsToRebuild = ChatMemoryIndexPolicy.buildPairs(renderedMessages)
+                    .filter { pair -> pair.messageIds.any { it in legacyMessageIds } }
+                    .filter(ChatMemoryIndexPolicy::shouldIndex)
+
+                if (pairsToRebuild.isNotEmpty()) {
+                    val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+                        ?: error("当前配置层级没有可用向量模型")
+                    AiBackgroundWorkManager.run(sessionId) {
+                        pairsToRebuild.forEachIndexed { index, pair ->
+                            _ragMemoryStatus.value = "正在重建旧版块 ${index + 1}/${pairsToRebuild.size}…"
+                            ragManager.indexMessagePairMemory(pair, sessionId, embeddingConfig)
+                        }
+                    }
+                }
+                repository.getAllChunksForSession(sessionId)
+                    .filter { it.needsAutomaticMemoryRebuild() }
+                    .forEach { repository.deleteChunkById(it.id) }
+                loadRagMemoryChunks()
+                _ragMemoryStatus.value = "旧版记忆已重建为用户—助手消息组。"
+            }
+            true
+        } catch (e: Exception) {
+            _ragMemoryStatus.value = "重建失败：${e.message}"
+            runCatching { loadRagMemoryChunks() }
+            false
+        } finally {
+            _ragMemoryBusy.value = false
+        }
+    }
+
+    fun clearRagMemoryStatus() {
+        _ragMemoryStatus.value = null
+    }
+
+    private suspend fun loadRagMemoryChunks() {
+        _ragMemoryChunks.value = ChatBarApp.instance.ragRepository
+            .getAllChunksForSession(sessionId)
+            .sortedByDescending { it.createdAt }
     }
 
     fun regenerateNovelAiImage(messageId: String, imagePath: String) {
@@ -886,6 +1050,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
             val allMsgs = chatRepository.getMessages(sessionId)
                 .filterNot { it.id == alternativeTargetMessageId }
+            ragMemoryMutationMutex.withLock {
+                ChatBarApp.instance.ragRepository.pruneChatMemory(
+                    sessionId = sessionId,
+                    liveMessageIds = allMsgs.mapTo(mutableSetOf()) { it.id }
+                )
+            }
             val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
             val contextMsgs = contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
             val renderedContextMsgs = contextMsgs.map {
@@ -911,7 +1081,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val ragSourcePlan = RagSourcePlan.create(
                 documentCount = charCard.customDocuments.size,
                 indexedDocumentCount = indexedDocumentCount,
-                messageCount = allMsgs.size,
+                messageGroupCount = contextWindowManager.messageGroupCount(allMsgs),
                 contextWindowSize = effectiveContextWindowSize
             )
 
@@ -943,16 +1113,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                         val docChunks = allDocChunks.filter { it.metadata["embeddingKey"] == currentEmbeddingKey }
                         val allMemChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.CHAT_MEMORY }
+                        val staleAutomaticChunks = allMemChunks.filter { it.needsAutomaticMemoryRebuild() }
                         val memChunks = allMemChunks.filter { chunk ->
-                            chunk.messageIds().none { it in activeContextMessageIds }
+                            !chunk.needsAutomaticMemoryRebuild() &&
+                                chunk.messageIds().none { it in activeContextMessageIds }
                         }
-                        val filteredMemCount = allMemChunks.size - memChunks.size
+                        val filteredMemCount = allMemChunks.size - staleAutomaticChunks.size - memChunks.size
                         ragDebugLogs.add("RAG split retrieval: document candidates=${docChunks.size}; ignored legacy document chunks=${legacyDocChunks.size}; ignored embedding-mismatch document chunks=${mismatchedDocChunks.size}; chat_memory candidates=${allMemChunks.size}; active context messages=${activeContextMessageIds.size}; eligible chat_memory after context filter=${memChunks.size}.")
                         if (legacyDocChunks.isNotEmpty() || mismatchedDocChunks.isNotEmpty()) {
                             ragDebugLogs.add("Document RAG index uses a different or unknown embedding model. Rebuild the character card RAG index before judging recall quality.")
                         }
                         if (filteredMemCount > 0) {
                             ragDebugLogs.add("Filtered $filteredMemCount chat_memory chunks because they overlap messages already sent in the normal context window.")
+                        }
+                        if (staleAutomaticChunks.isNotEmpty()) {
+                            ragDebugLogs.add("Ignored ${staleAutomaticChunks.size} stale automatic memory chunks. Rebuild them from the RAG library page.")
                         }
                         
                         ragDebugLogs.add("数据库向量块查询完成。知识库文档块数: ${docChunks.size}, 对话记忆块数: ${memChunks.size} (已排除角色设定块)")
@@ -1271,6 +1446,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 var accumulatedReasoning = ""
                 val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
                 val streamStartedAt = System.currentTimeMillis()
+                val regenerationTarget = alternativeTargetMessageId
+                    ?.let { chatRepository.getMessage(it, sessionId) }
+                val streamCreatedAt = regenerationTarget?.createdAt ?: streamStartedAt
+                val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                 val ctx = ChatBarApp.instance
                 _streamingMessage.value = ChatMessage(
@@ -1278,8 +1457,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     sessionId = sessionId,
                     role = MessageRole.ASSISTANT,
                     content = "...",
-                    createdAt = streamStartedAt,
-                    updatedAt = streamStartedAt
+                    createdAt = streamCreatedAt,
+                    updatedAt = streamStartedAt,
+                    orderKey = streamOrderKey
                 )
                 StreamingNotificationManager.update(ctx, "正在连接流式响应...", sessionId)
 
@@ -1305,8 +1485,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 content = renderSessionText(accumulatedText),
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
                                     ?.let(renderSessionText),
-                                createdAt = streamStartedAt,
-                                updatedAt = System.currentTimeMillis()
+                                createdAt = streamCreatedAt,
+                                updatedAt = System.currentTimeMillis(),
+                                orderKey = streamOrderKey
                             )
                         }
                         is StreamEvent.Delta -> {
@@ -1319,8 +1500,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 content = renderedAccumulatedText,
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
                                     ?.let(renderSessionText),
-                                createdAt = streamStartedAt,
-                                updatedAt = System.currentTimeMillis()
+                                createdAt = streamCreatedAt,
+                                updatedAt = System.currentTimeMillis(),
+                                orderKey = streamOrderKey
                             )
                             StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
                         }
@@ -1339,8 +1521,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 role = MessageRole.ASSISTANT,
                                 content = accumulatedText,
                                 reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = streamStartedAt,
-                                updatedAt = System.currentTimeMillis()
+                                createdAt = streamCreatedAt,
+                                updatedAt = System.currentTimeMillis(),
+                                orderKey = streamOrderKey
                             )
                             if (alternativeTargetMessageId != null) {
                                 val old = chatRepository.getMessage(alternativeTargetMessageId, sessionId)
@@ -1379,10 +1562,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             // 对话存入 RAG 记忆库（后台异步）
                             if (embeddingConfig != null) {
                                 try {
-                                    indexMessagesLeavingContextWindow(
-                                        contextWindowSize = effectiveContextWindowSize,
-                                        embeddingConfig = embeddingConfig
-                                    )
+                                    ragMemoryMutationMutex.withLock {
+                                        indexMessagesLeavingContextWindow(
+                                            contextWindowSize = effectiveContextWindowSize,
+                                            embeddingConfig = embeddingConfig
+                                        )
+                                    }
                                 } catch (_: Exception) {}
                             }
                         }
@@ -1494,11 +1679,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
-            val contextWindowSize = effectiveContextWindowSize()
             val currentMessages = chatRepository.getMessages(sessionId)
-            val isInActiveContext = currentMessages
-                .takeLast(contextWindowSize)
-                .any { it.id == messageId }
 
             currentMessages.firstOrNull { it.id == messageId }
                 ?.images
@@ -1506,14 +1687,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _messages.value = _messages.value.filter { it.id != messageId }
             chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
-            if (isInActiveContext) {
-                return@launch
-            }
 
             _isDeletingMemory.value = true
             yield()
             try {
-                ragManager.deleteMemoryForMessage(messageId)
+                ragMemoryMutationMutex.withLock {
+                    ragManager.deleteMemoryForMessage(messageId)
+                }
             } finally {
                 _isDeletingMemory.value = false
             }
@@ -1528,6 +1708,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             deleteDisposableChatImage(imagePath)
             if (remaining.isEmpty() && message.content.isBlank()) {
                 chatRepository.deleteMessage(messageId, sessionId)
+                ragMemoryMutationMutex.withLock {
+                    ragManager.deleteMemoryForMessage(messageId)
+                }
             } else {
                 chatRepository.updateMessage(
                     message.copy(
@@ -1640,31 +1823,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
         val messageId = updatedMessage.id
-        val isInActiveContext = chatRepository.getMessages(sessionId)
-            .takeLast(effectiveContextWindowSize())
-            .any { it.id == messageId }
-        if (isInActiveContext) {
-            return
-        }
-
         val memoryChunks = ChatBarApp.instance.ragRepository.getChunksByMessageId(messageId)
         if (memoryChunks.isNotEmpty()) {
+            val allMessages = chatRepository.getMessages(sessionId)
+            val renderContext = placeholderRenderContext()
+            val renderedMessages = allMessages.renderWith(renderContext)
+            val pair = ChatMemoryIndexPolicy.buildPairs(renderedMessages)
+                .firstOrNull { messageId in it.messageIds }
+            val activeIds = contextWindowManager
+                .getRecentMessages(allMessages, effectiveContextWindowSize())
+                .mapTo(mutableSetOf()) { it.id }
+            if (pair == null || pair.messageIds.any { it in activeIds }) {
+                ragManager.deleteMemoryForMessage(messageId)
+                return
+            }
             val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
             if (embeddingConfig != null) {
                 try {
-                    val allMessages = chatRepository.getMessages(sessionId)
-                    val messageIndex = allMessages.indexOfFirst { it.id == updatedMessage.id }
-                    val contextStart = (messageIndex - 4).coerceAtLeast(0)
-                    val contextMessages = if (messageIndex >= 0) {
-                        allMessages.subList(contextStart, messageIndex)
-                    } else {
-                        emptyList()
-                    }
-                    val renderContext = placeholderRenderContext()
                     AiBackgroundWorkManager.run(sessionId) {
-                        ragManager.indexSingleMessageMemory(
-                            updatedMessage.renderWith(renderContext),
-                            contextMessages.renderWith(renderContext),
+                        ragManager.indexMessagePairMemory(
+                            pair,
                             sessionId,
                             embeddingConfig
                         )
@@ -1684,7 +1862,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 ?: chatRepository.getMessage(messageId, sessionId)
                 ?: return@launch
             if (message.role != MessageRole.ASSISTANT || message.alternatives.size <= 1) return@launch
-            val isRecent = _messages.value.takeLast(effectiveContextWindowSize()).any { it.id == messageId }
+            val isRecent = contextWindowManager
+                .getRecentMessages(_messages.value, effectiveContextWindowSize())
+                .any { it.id == messageId }
             if (!isRecent) return@launch
             val nextIndex = (message.currentAlternativeIndex + direction)
                 .coerceIn(0, message.alternatives.lastIndex)
@@ -1702,7 +1882,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun isMessageInActiveContextWindow(messageId: String): Boolean {
         val contextWindowSize = effectiveContextWindowSize()
         val messages = chatRepository.getMessages(sessionId)
-        return messages.takeLast(contextWindowSize).any { it.id == messageId }
+        return contextWindowManager.getRecentMessages(messages, contextWindowSize).any { it.id == messageId }
     }
 
     private suspend fun indexMessagesLeavingContextWindow(
@@ -1710,26 +1890,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         embeddingConfig: EmbeddingConfig
     ) {
         val allMessages = chatRepository.getMessages(sessionId)
-        if (allMessages.size <= contextWindowSize) return
-        val activeIds = allMessages.takeLast(contextWindowSize).map { it.id }.toSet()
+        ChatBarApp.instance.ragRepository.pruneChatMemory(
+            sessionId = sessionId,
+            liveMessageIds = allMessages.mapTo(mutableSetOf()) { it.id }
+        )
+        val activeMessages = contextWindowManager.getRecentMessages(allMessages, contextWindowSize)
+        if (activeMessages.size == allMessages.size) return
+        val activeIds = activeMessages.map { it.id }.toSet()
         val existingMemoryIds = ChatBarApp.instance.ragRepository
             .getAllChunksForSession(sessionId)
+            .filterNot { it.needsAutomaticMemoryRebuild() }
             .flatMap { it.messageIds() }
             .toSet()
-        val toIndex = allMessages
-            .filter { it.role != MessageRole.SYSTEM }
-            .filter { it.id !in activeIds }
-            .filter { it.id !in existingMemoryIds }
-            .takeLast(4)
-
         val renderContext = placeholderRenderContext()
-        for (message in toIndex) {
-            val messageIndex = allMessages.indexOfFirst { it.id == message.id }
-            val contextStart = (messageIndex - 4).coerceAtLeast(0)
-            val contextMessages = allMessages.subList(contextStart, messageIndex)
-            ragManager.indexSingleMessageMemory(
-                message = message.renderWith(renderContext),
-                contextMessages = contextMessages.renderWith(renderContext),
+        val pairsToIndex = ChatMemoryIndexPolicy.buildPairs(allMessages.renderWith(renderContext))
+            .filter { pair -> pair.messageIds.none { it in activeIds } }
+            .filter { pair -> pair.messageIds.none { it in existingMemoryIds } }
+            .takeLast(2)
+        for (pair in pairsToIndex) {
+            ragManager.indexMessagePairMemory(
+                pair = pair,
                 sessionId = sessionId,
                 embeddingConfig = embeddingConfig
             )
@@ -1774,22 +1954,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    /**
-     * 重新生成上一条 AI 的回复
-     */
-    fun regenerateLastResponse() {
+    /** 重新生成指定 AI 文本回复，保留其消息 ID 与时间轴位置。 */
+    fun regenerateResponse(messageId: String) {
         if (_isResponding.value || _isArchived.value) return
 
         viewModelScope.launch {
             val currentMessages = chatRepository.getMessages(sessionId)
-            val lastMsg = currentMessages.lastOrNull() ?: return@launch
-            if (lastMsg.role != MessageRole.ASSISTANT) return@launch
+            val targetMessage = currentMessages.firstOrNull { it.id == messageId } ?: return@launch
+            if (targetMessage.role != MessageRole.ASSISTANT || targetMessage.displayContent.isBlank()) return@launch
 
             _isResponding.value = true
-            _messages.value = currentMessages.filterNot { it.id == lastMsg.id }
+            _messages.value = currentMessages.filterNot { it.id == targetMessage.id }
             _streamingMessage.value = null
 
-            if (!isMessageInActiveContextWindow(lastMsg.id)) {
+            if (!isMessageInActiveContextWindow(targetMessage.id)) {
                 _streamingMessage.value = null
                 _isResponding.value = false
                 _messages.value = currentMessages
@@ -1801,34 +1979,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 content = "",
                 imagePaths = emptyList(),
                 persistUserMessage = false,
-                alternativeTargetMessageId = lastMsg.id,
+                alternativeTargetMessageId = targetMessage.id,
                 respondingAlreadyStarted = true
             )
-            return@launch
-
-            // 先删除可见消息并立即进入重新生成；RAG 记忆清理放后台，避免阻塞 UI。
-            chatRepository.deleteMessage(lastMsg.id, sessionId)
-
-            // 查找上一条用户消息作为触发词重新发消息
-            val lastUserMsg = chatRepository.getMessages(sessionId).lastOrNull { it.role == MessageRole.USER }
-            if (lastUserMsg != null) {
-                refreshMessages()
-
-                ChatBarApp.instance.applicationScope.launch {
-                    ragManager.deleteMemoryForMessage(lastMsg.id)
-                }
-
-                sendMessageInternal(
-                    content = lastUserMsg.content,
-                    imagePaths = lastUserMsg.images,
-                    persistUserMessage = false
-                )
-            } else {
-                refreshMessages()
-                ChatBarApp.instance.applicationScope.launch {
-                    ragManager.deleteMemoryForMessage(lastMsg.id)
-                }
-            }
         }
     }
 
@@ -2313,6 +2466,12 @@ private fun VectorChunk.messageIds(): Set<String> {
         ?.filter { it.isNotEmpty() }
         .orEmpty()
     return (metadataIds + listOfNotNull(messageId)).toSet()
+}
+
+private fun VectorChunk.needsAutomaticMemoryRebuild(): Boolean = when (metadata["indexMode"]) {
+    "single_message_contextual", "single_message" -> true
+    "message_pair" -> metadata["contentVersion"] != "4"
+    else -> false
 }
 
 private const val DOCUMENT_LEXICAL_ACCEPT_THRESHOLD = 0.24f

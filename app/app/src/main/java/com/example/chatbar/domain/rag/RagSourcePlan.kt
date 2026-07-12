@@ -11,11 +11,11 @@ data class RagSourcePlan(
         fun create(
             documentCount: Int,
             indexedDocumentCount: Int,
-            messageCount: Int,
+            messageGroupCount: Int,
             contextWindowSize: Int
         ): RagSourcePlan = RagSourcePlan(
             includeDocuments = documentCount > 0 && indexedDocumentCount > 0,
-            includeMemory = messageCount > contextWindowSize.coerceAtLeast(1)
+            includeMemory = messageGroupCount > contextWindowSize.coerceAtLeast(1)
         )
     }
 }

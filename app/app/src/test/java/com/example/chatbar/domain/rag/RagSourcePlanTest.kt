@@ -13,7 +13,7 @@ class RagSourcePlanTest {
     }
 
     @Test
-    fun messagesOutsideContext_enablesOnlyMemoryRag() {
+    fun messageGroupsOutsideContext_enablesOnlyMemoryRag() {
         val plan = RagSourcePlan.create(0, 0, 21, 20)
 
         assertFalse(plan.includeDocuments)

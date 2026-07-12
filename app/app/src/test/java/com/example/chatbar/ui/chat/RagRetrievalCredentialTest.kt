@@ -28,6 +28,18 @@ class RagRetrievalCredentialTest {
     }
 
     @Test
+    fun retrievalCredentials_keepLastAssistantOptions() {
+        val dash = "\u2014".repeat(12)
+        val content = "有效正文\n$dash\n[选项一]()\n$dash"
+
+        val credentials = buildRagRetrievalCredentialMessages(
+            contextMsgs = listOf(message("a1", MessageRole.ASSISTANT, content))
+        )
+
+        assertEquals(content, credentials.single().displayContent)
+    }
+
+    @Test
     fun fallbackRagQuery_usesOnlyCurrentUserAndLastAssistant() {
         val credentials = listOf(
             message("a2", MessageRole.ASSISTANT, "latest assistant reply")

@@ -74,6 +74,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
+import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
@@ -253,7 +254,10 @@ fun ChatScreen(
         renderBotName
     )
     val alternativeIds = remember(messages, contextWindowSize) {
-        messages.takeLast(contextWindowSize.coerceAtLeast(1)).filter { it.role == MessageRole.ASSISTANT && it.alternatives.size > 1 }.map { it.id }.toSet()
+        ChatContextGroupPolicy.recentMessages(messages, contextWindowSize)
+            .filter { it.role == MessageRole.ASSISTANT && it.alternatives.size > 1 }
+            .map { it.id }
+            .toSet()
     }
     val regenerableId = latestRegenerableAssistantMessageId(messages)
     val streamingInsertIndex = remember(messages, streamingMessage) {

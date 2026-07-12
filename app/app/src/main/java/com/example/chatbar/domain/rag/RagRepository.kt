@@ -26,6 +26,13 @@ class RagRepository(private val storage: JsonFileStorage) {
         storage.saveAll(ENTITY_TYPE, entityMap, VectorChunk.serializer())
     }
 
+    suspend fun getChunkById(chunkId: String): VectorChunk? =
+        storage.loadEntity(ENTITY_TYPE, chunkId, VectorChunk.serializer())
+
+    suspend fun deleteChunkById(chunkId: String) {
+        storage.deleteEntity<VectorChunk>(ENTITY_TYPE, chunkId)
+    }
+
     /**
      * 按来源类型和来源ID查询向量块
      */
@@ -87,6 +94,21 @@ class RagRepository(private val storage: JsonFileStorage) {
         }
     }
 
+    /** 清理已删除消息的孤儿记忆，以及旧版本产生的同消息重复记忆。 */
+    suspend fun pruneChatMemory(
+        sessionId: String,
+        liveMessageIds: Set<String>
+    ): Int {
+        val idsToDelete = chatMemoryChunkIdsToPrune(
+            chunks = getAllChunksForSession(sessionId),
+            liveMessageIds = liveMessageIds
+        )
+        idsToDelete.forEach { id ->
+            storage.deleteEntity<VectorChunk>(ENTITY_TYPE, id)
+        }
+        return idsToDelete.size
+    }
+
     /** 获取某角色卡的参考文档向量块。 */
     suspend fun getAllChunksForCharacter(characterId: String): List<VectorChunk> {
         return storage.query(ENTITY_TYPE, VectorChunk.serializer()) { chunk ->
@@ -117,6 +139,38 @@ class RagRepository(private val storage: JsonFileStorage) {
         return storage.loadAll(ENTITY_TYPE, VectorChunk.serializer())
     }
 }
+
+internal fun chatMemoryChunkIdsToPrune(
+    chunks: List<VectorChunk>,
+    liveMessageIds: Set<String>
+): Set<String> {
+    val idsToDelete = mutableSetOf<String>()
+    val liveChunks = chunks.filter { chunk ->
+        val messageIds = chunk.metadataMessageIds() + listOfNotNull(chunk.messageId)
+        val isOrphan = messageIds.isNotEmpty() && messageIds.any { it !in liveMessageIds }
+        if (isOrphan) idsToDelete.add(chunk.id)
+        !isOrphan
+    }
+
+    liveChunks
+        .filter { it.metadata["indexMode"] == "single_message_contextual" }
+        .groupBy { chunk ->
+            (chunk.metadataMessageIds() + listOfNotNull(chunk.messageId))
+                .sorted()
+                .joinToString(",")
+        }
+        .filterKeys { it.isNotBlank() }
+        .values
+        .forEach { duplicates ->
+            val keep = duplicates.maxWithOrNull(compareBy<VectorChunk> { it.createdAt }.thenBy { it.id })
+            duplicates.filterNot { it.id == keep?.id }.forEach { idsToDelete.add(it.id) }
+        }
+
+    return idsToDelete
+}
+
+internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
+    sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId
 
 private fun VectorChunk.metadataMessageIds(): Set<String> {
     return metadata["messageIds"]

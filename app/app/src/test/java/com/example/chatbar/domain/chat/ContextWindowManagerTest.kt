@@ -12,27 +12,52 @@ class ContextWindowManagerTest {
     private val manager = ContextWindowManager()
 
     @Test
-    fun getRecentMessages_whenOverWindow_returnsLatestMessages() {
-        val messages = messages(5)
+    fun getRecentMessages_whenOverWindow_returnsLatestGroupsWithoutSplittingPair() {
+        val messages = conversationGroups(3)
 
-        val recent = manager.getRecentMessages(messages, windowSize = 2)
+        val recent = manager.getRecentMessages(messages, windowSize = 1)
 
-        assertEquals(listOf("3", "4"), recent.map { it.content })
+        assertEquals(listOf("u1", "a1", "u2", "a2"), recent.map { it.content })
     }
 
     @Test
-    fun getMessagesToArchive_whenOverWindow_returnsOlderMessages() {
-        val messages = messages(5)
+    fun getMessagesToArchive_whenOverWindow_returnsOlderCompleteGroups() {
+        val messages = conversationGroups(4)
 
         val archived = manager.getMessagesToArchive(messages, windowSize = 2)
 
-        assertEquals(listOf("0", "1", "2"), archived.map { it.content })
+        assertEquals(listOf("u0", "a0"), archived.map { it.content })
     }
 
     @Test
-    fun shouldRefreshSystemPrompt_onlyWhenMessageCountExceedsWindow() {
-        assertFalse(manager.shouldRefreshSystemPrompt(messageCount = 2, windowSize = 2))
-        assertTrue(manager.shouldRefreshSystemPrompt(messageCount = 3, windowSize = 2))
+    fun shouldRefreshSystemPrompt_onlyWhenMessageGroupCountExceedsWindow() {
+        assertFalse(manager.shouldRefreshSystemPrompt(conversationGroups(2), windowSize = 2))
+        assertTrue(manager.shouldRefreshSystemPrompt(conversationGroups(4), windowSize = 2))
+    }
+
+    @Test
+    fun getRecentMessages_incompleteCurrentUserCountsAsOneGroup() {
+        val messages = conversationGroups(2) + message("current-user", MessageRole.USER, "u2")
+
+        val recent = manager.getRecentMessages(messages, windowSize = 2)
+
+        assertEquals(listOf("u0", "a0", "u1", "a1", "u2"), recent.map { it.content })
+        assertEquals(1, manager.messageGroupCount(messages))
+    }
+
+    @Test
+    fun openingAssistantCountsAsStandaloneHistoryGroup() {
+        val messages = listOf(
+            message("greeting", MessageRole.ASSISTANT, "greeting"),
+            message("user-1", MessageRole.USER, "u1"),
+            message("assistant-1", MessageRole.ASSISTANT, "a1"),
+            message("current-user", MessageRole.USER, "u2")
+        )
+
+        val recent = manager.getRecentMessages(messages, windowSize = 1)
+
+        assertEquals(listOf("greeting", "u1", "a1", "u2"), recent.map { it.content })
+        assertEquals(1, manager.messageGroupCount(messages))
     }
 
     @Test
@@ -76,4 +101,22 @@ class ContextWindowManagerTest {
                 updatedAt = index.toLong()
             )
         }
+
+    private fun conversationGroups(count: Int): List<ChatMessage> =
+        (0 until count).flatMap { index ->
+            listOf(
+                message("user-$index", MessageRole.USER, "u$index"),
+                message("assistant-$index", MessageRole.ASSISTANT, "a$index")
+            )
+        }
+
+    private fun message(id: String, role: MessageRole, content: String): ChatMessage =
+        ChatMessage(
+            id = id,
+            sessionId = "session",
+            role = role,
+            content = content,
+            createdAt = id.hashCode().toLong(),
+            updatedAt = id.hashCode().toLong()
+        )
 }

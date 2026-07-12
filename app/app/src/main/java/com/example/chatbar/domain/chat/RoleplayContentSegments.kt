@@ -73,16 +73,16 @@ fun stripRoleplaySpeakerMarkers(content: String): String =
     roleplaySpeakerMarkerPattern.replace(content, "")
 
 /** 移除状态栏与横线包裹的选项块，保留叙事、对白、心理和人物标记。 */
-fun stripRoleplayStatusSegments(content: String): String =
-    parseRoleplayTextSegments(content)
-        .asSequence()
-        .filter { it.kind == RoleplaySegmentKind.STATUS }
-        .map { it.start to it.endExclusive }
-        .distinct()
-        .sortedByDescending { (start, _) -> start }
-        .fold(content) { text, (start, endExclusive) ->
-            replaceRoleplaySegmentContent(text, start, endExclusive, "")
+fun stripRoleplayStatusSegments(content: String): String {
+    val excludedRanges = excludedRoleplayRawRanges(content)
+    if (excludedRanges.isEmpty()) return content
+    return excludedRanges
+        .sortedByDescending { range -> range.start }
+        .fold(content) { text, range ->
+            text.removeRange(range.start, range.endExclusive)
         }
+        .let(::cleanupAfterRoleplaySegmentDeletion)
+}
 
 fun renameRoleplaySpeakerMarkers(
     content: String,
@@ -319,7 +319,10 @@ private fun splitLongDashNarrationSegments(
 ): List<RoleplayTextSegment> {
     val start = segmentVisibleStart(segment, visible)
     val end = segmentVisibleEnd(segment, visible)
-    val ranges = findLongDashWrappedRanges(visible.text, start, end)
+    // 先按完整消息识别包裹区，再投影到当前片段。否则删除包裹区前一个片段后，
+    // 上游分段边界变化可能让相同横线块失去保护，内部 Markdown 链接被拆成对白。
+    val ranges = findLongDashWrappedRanges(visible.text, 0, visible.text.length)
+        .filter { range -> range.start >= start && range.endExclusive <= end }
     if (ranges.isEmpty()) return listOf(segment)
 
     val segments = mutableListOf<RoleplayTextSegment>()
@@ -331,6 +334,39 @@ private fun splitLongDashNarrationSegments(
     }
     addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, cursor, end)
     return segments.ifEmpty { listOf(segment) }
+}
+
+private fun excludedRoleplayRawRanges(content: String): List<VisibleRange> {
+    if (content.isBlank()) return emptyList()
+    val visible = visibleRoleplayText(content)
+    val ranges = parseRoleplayTextSegments(content)
+        .asSequence()
+        .filter { segment -> segment.kind == RoleplaySegmentKind.STATUS }
+        .map { segment -> VisibleRange(segment.start, segment.endExclusive) }
+        .toMutableList()
+    findLongDashWrappedRanges(visible.text, 0, visible.text.length).forEach { range ->
+        val rawStart = visible.rawIndexes.getOrNull(range.start) ?: return@forEach
+        val rawEnd = (visible.rawIndexes.getOrNull(range.endExclusive - 1) ?: return@forEach) + 1
+        ranges += VisibleRange(rawStart, rawEnd)
+    }
+    return mergeVisibleRanges(ranges)
+}
+
+private fun mergeVisibleRanges(ranges: List<VisibleRange>): List<VisibleRange> {
+    if (ranges.isEmpty()) return emptyList()
+    val merged = mutableListOf<VisibleRange>()
+    ranges.sortedBy { range -> range.start }.forEach { range ->
+        val previous = merged.lastOrNull()
+        if (previous == null || range.start > previous.endExclusive) {
+            merged += range
+        } else {
+            merged[merged.lastIndex] = VisibleRange(
+                start = previous.start,
+                endExclusive = maxOf(previous.endExclusive, range.endExclusive)
+            )
+        }
+    }
+    return merged
 }
 
 private fun findLongDashWrappedRanges(text: String, start: Int, end: Int): List<VisibleRange> {
@@ -345,15 +381,17 @@ private fun findLongDashWrappedRanges(text: String, start: Int, end: Int): List<
             continue
         }
 
-        val openLine = lineOnlyLongDashRun(text, lineStart, lineEnd)
+        val lineOnlyOpen = lineOnlyLongDashRun(text, lineStart, lineEnd)
+        val openLine = lineOnlyOpen ?: trailingLongDashRun(text, lineStart, lineEnd)
         if (openLine != null) {
+            val blockStart = if (lineOnlyOpen != null) lineStart else openLine.start
             var searchLineStart = nextLineStart(lineEnd, end)
             var foundClose = false
             while (searchLineStart < end) {
                 val searchLineEnd = text.indexOf('\n', searchLineStart).takeIf { it >= 0 && it < end } ?: end
                 val closeLine = lineOnlyLongDashRun(text, searchLineStart, searchLineEnd)
                 if (closeLine != null && hasLongDashWrappedBody(text, lineEnd, searchLineStart)) {
-                    ranges += VisibleRange(lineStart, searchLineEnd)
+                    ranges += VisibleRange(blockStart, searchLineEnd)
                     lineStart = nextLineStart(searchLineEnd, end)
                     foundClose = true
                     break
@@ -362,7 +400,7 @@ private fun findLongDashWrappedRanges(text: String, start: Int, end: Int): List<
             }
             if (foundClose) continue
             if (hasLongDashWrappedBody(text, lineEnd, end)) {
-                ranges += VisibleRange(lineStart, end)
+                ranges += VisibleRange(blockStart, end)
                 lineStart = end
                 continue
             }
@@ -409,6 +447,19 @@ private fun lineOnlyLongDashRun(text: String, lineStart: Int, lineEnd: Int): Vis
     }
     val run = nextLongDashRun(text, start, end) ?: return null
     return if (run.start == start && run.endExclusive == end) run else null
+}
+
+private fun trailingLongDashRun(text: String, lineStart: Int, lineEnd: Int): VisibleRange? {
+    var end = lineEnd
+    while (end > lineStart && isHorizontalWhitespace(text[end - 1])) end--
+    if (end <= lineStart || !isLongWrapperDash(text[end - 1])) return null
+    var start = end - 1
+    while (start > lineStart && isLongWrapperDash(text[start - 1])) start--
+    return if (end - start >= minLongWrapperDashCount(text[start])) {
+        VisibleRange(start, end)
+    } else {
+        null
+    }
 }
 
 private fun nextLineStart(lineEnd: Int, end: Int): Int =

@@ -52,6 +52,7 @@ import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -95,6 +96,9 @@ fun ChatSettingsDialog(
     val defaultImageModelId by viewModel.effectiveDefaultImageModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
+    val ragChunks by viewModel.ragMemoryChunks.collectAsState()
+    val ragStatus by viewModel.ragMemoryStatus.collectAsState()
+    val ragBusy by viewModel.ragMemoryBusy.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
@@ -115,6 +119,8 @@ fun ChatSettingsDialog(
     var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
     var archiveStatus by remember { mutableStateOf<String?>(null) }
     var exportSlotId by remember { mutableStateOf<String?>(null) }
+    var ragEditor by remember { mutableStateOf<RagChunkEditor?>(null) }
+    var deleteRagChunk by remember { mutableStateOf<VectorChunk?>(null) }
 
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
@@ -154,7 +160,10 @@ fun ChatSettingsDialog(
             }
         }
     }
-    LaunchedEffect(Unit) { viewModel.refreshConfigurations() }
+    LaunchedEffect(Unit) {
+        viewModel.refreshConfigurations()
+        viewModel.refreshRagMemoryChunks()
+    }
     LaunchedEffect(session) {
         session?.let {
             modelId = it.modelId; imageModelId = it.imageModelId; formatId = it.formatCardId; replyLength = it.replyLength ?: ""
@@ -230,7 +239,12 @@ fun ChatSettingsDialog(
                         }, variant = ButtonVariant.Ghost)
                     }
                 )
-                val tabs = if (longTermMemoryEnabled) listOf("参数与设定", "长期记忆", "存档") else listOf("参数与设定", "存档")
+                val tabs = buildList {
+                    add("参数与设定")
+                    if (longTermMemoryEnabled) add("长期记忆")
+                    add("RAG 检索库")
+                    add("存档")
+                }
                 if (tab >= tabs.size) tab = tabs.lastIndex
                 CbTabs(tabs, tab, { tab = it })
                 Box(
@@ -242,8 +256,8 @@ fun ChatSettingsDialog(
                             onSelected = { tab = it }
                         )
                 ) {
-                    if (tab == 0) {
-                        SettingsContent(
+                    when (tabs[tab]) {
+                        "参数与设定" -> SettingsContent(
                             modelId, { modelId = it }, defaultModelId, models,
                             imageModelId, { imageModelId = it }, defaultImageModelId,
                             formatId, { formatId = it }, defaultFormatId, formats,
@@ -255,10 +269,26 @@ fun ChatSettingsDialog(
                             longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
                             ::openFullscreen
                         )
-                    } else if (longTermMemoryEnabled && tab == 1) {
-                        LongTermMemoryContent(longTermMemory, { longTermMemory = it })
-                    } else {
-                        SavesContent(
+                        "长期记忆" -> LongTermMemoryContent(longTermMemory, { longTermMemory = it })
+                        "RAG 检索库" -> RagMemoryContent(
+                            chunks = ragChunks,
+                            status = ragStatus,
+                            busy = ragBusy,
+                            onRefresh = viewModel::refreshRagMemoryChunks,
+                            onRebuildLegacy = {
+                                scope.launch { viewModel.rebuildLegacyRagMemoryChunks() }
+                            },
+                            onCreate = {
+                                viewModel.clearRagMemoryStatus()
+                                ragEditor = RagChunkEditor(chunkId = null, content = "")
+                            },
+                            onEdit = { chunk ->
+                                viewModel.clearRagMemoryStatus()
+                                ragEditor = RagChunkEditor(chunkId = chunk.id, content = chunk.content)
+                            },
+                            onDelete = { deleteRagChunk = it }
+                        )
+                        else -> SavesContent(
                             slots = slots,
                             name = slotName,
                             onName = { slotName = it },
@@ -295,6 +325,25 @@ fun ChatSettingsDialog(
                     onDismiss = ::closeFullscreen
                 )
             }
+            ragEditor?.let { editor ->
+                FullscreenTextEditor(
+                    title = if (editor.chunkId == null) "新建 RAG 块" else "编辑 RAG 块",
+                    text = editor.content,
+                    onTextChange = { ragEditor = editor.copy(content = it) },
+                    visible = true,
+                    onDismiss = { if (!ragBusy) ragEditor = null },
+                    onConfirm = {
+                        scope.launch {
+                            if (viewModel.saveRagMemoryChunk(editor.chunkId, editor.content)) {
+                                ragEditor = null
+                            }
+                        }
+                    },
+                    placeholder = "输入需要参与检索的记忆文本…",
+                    confirmIcon = AppIcons.Save,
+                    confirmEnabled = editor.content.isNotBlank() && !ragBusy
+                )
+            }
         }
     }
 
@@ -307,6 +356,32 @@ fun ChatSettingsDialog(
                 CbButton("删除", { viewModel.deleteSaveSlot(slot.id); deleteSlot = null }, variant = ButtonVariant.Destructive)
             }
         ) { CbText("确定删除\u201c${renderSessionText(slot.name)}\u201d？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
+    }
+
+    deleteRagChunk?.let { chunk ->
+        CbDialog(
+            onDismissRequest = { if (!ragBusy) deleteRagChunk = null },
+            title = "删除 RAG 块",
+            dismiss = {
+                CbButton("取消", { deleteRagChunk = null }, variant = ButtonVariant.Ghost, enabled = !ragBusy)
+            },
+            confirm = {
+                CbButton(
+                    "删除",
+                    {
+                        scope.launch {
+                            if (viewModel.deleteRagMemoryChunk(chunk.id)) {
+                                deleteRagChunk = null
+                            }
+                        }
+                    },
+                    variant = ButtonVariant.Destructive,
+                    enabled = !ragBusy
+                )
+            }
+        ) {
+            CbText("确定删除此 RAG 块？删除后不会自动恢复。", color = ChatBarTheme.colors.mutedForeground)
+        }
     }
 
 }
@@ -508,6 +583,134 @@ private fun SavesContent(
 }
 
 @Composable
+private fun RagMemoryContent(
+    chunks: List<VectorChunk>,
+    status: String?,
+    busy: Boolean,
+    onRefresh: () -> Unit,
+    onRebuildLegacy: () -> Unit,
+    onCreate: () -> Unit,
+    onEdit: (VectorChunk) -> Unit,
+    onDelete: (VectorChunk) -> Unit
+) {
+    val legacyCount = chunks.count { chunk ->
+        when (chunk.metadata["indexMode"]) {
+            "single_message_contextual", "single_message" -> true
+            "message_pair" -> chunk.metadata["contentVersion"] != "4"
+            else -> false
+        }
+    }
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .windowInsetsPadding(WindowInsets.navigationBars),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                CbText("当前会话 · ${chunks.size} 块", style = ChatBarTheme.typography.heading)
+                CbText(
+                    "展示当前会话 CHAT_MEMORY；待更新自动记忆重建前不会参与检索。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbIconButton(AppIcons.Refresh, "刷新", onRefresh, enabled = !busy)
+            CbIconButton(AppIcons.Add, "新建 RAG 块", onCreate, tint = ChatBarTheme.colors.primary, enabled = !busy)
+        }
+        status?.let {
+            CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        if (legacyCount > 0) {
+            CbSurface(
+                Modifier.fillMaxWidth(),
+                color = ChatBarTheme.colors.muted,
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    CbText(
+                        "发现 $legacyCount 个待更新自动记忆。重建后会清除状态栏与横线选项。",
+                        modifier = Modifier.weight(1f),
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton("重建记忆", onRebuildLegacy, variant = ButtonVariant.Outline, enabled = !busy)
+                }
+            }
+        }
+        if (chunks.isEmpty()) {
+            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CbText("暂无 RAG 检索块", color = ChatBarTheme.colors.mutedForeground)
+            }
+        } else {
+            LazyColumn(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                items(chunks, key = { it.id }) { chunk ->
+                    RagMemoryChunkCard(
+                        chunk = chunk,
+                        enabled = !busy,
+                        onEdit = { onEdit(chunk) },
+                        onDelete = { onDelete(chunk) }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RagMemoryChunkCard(
+    chunk: VectorChunk,
+    enabled: Boolean,
+    onEdit: () -> Unit,
+    onDelete: () -> Unit
+) {
+    val mode = when (chunk.metadata["indexMode"]) {
+        "manual" -> "手动"
+        "message_pair" -> "用户—助手消息组"
+        "single_message" -> "旧版单消息记忆"
+        "single_message_contextual" -> "旧版上下文记忆"
+        else -> chunk.metadata["indexMode"] ?: "旧版"
+    }
+    val metadataText = chunk.metadata.toSortedMap().entries
+        .joinToString("\n") { (key, value) -> "$key = $value" }
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.card,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    CbText(mode, style = ChatBarTheme.typography.label)
+                    CbText(
+                        "${chunk.content.length} 字符 · ${chunk.embedding.size} 维 · ${formatRagTime(chunk.createdAt)}",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbIconButton(AppIcons.Edit, "编辑 RAG 块", onEdit, enabled = enabled)
+                CbIconButton(AppIcons.Delete, "删除 RAG 块", onDelete, tint = ChatBarTheme.colors.destructive, enabled = enabled)
+            }
+            CbDivider()
+            CbText(chunk.content)
+            CbDivider()
+            CbText("ID: ${chunk.id}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            chunk.messageId?.let {
+                CbText("消息 ID: $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+            if (metadataText.isNotBlank()) {
+                CbText(metadataText, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+        }
+    }
+}
+
+@Composable
 fun SaveSlotItem(
     slot: SaveSlot,
     onLoad: () -> Unit,
@@ -555,5 +758,10 @@ private fun DefaultAwareSelect(
 }
 
 private data class IdOption(val id: String?, val label: String)
+private data class RagChunkEditor(val chunkId: String?, val content: String)
+
+private fun formatRagTime(timestamp: Long): String =
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))
+
 private fun safeArchiveFileName(value: String): String =
     value.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().ifBlank { "chat-save-slot" }

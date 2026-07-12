@@ -13,6 +13,7 @@ import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatBubbleMarkdownTest {
@@ -365,6 +366,55 @@ class ChatBubbleMarkdownTest {
         assertEquals("[正文]", result[0].rawText)
         assertEquals("[\"对白\"]()", result[1].rawText)
         assertEquals("$dash\n**【行动选项】**\n\n1.**[选项一]()**\n\n2.**[选项二]()**\n$dash", result[3].rawText)
+    }
+
+    @Test
+    fun roleplaySegments_deletingTextBeforeOptionBlockKeepsInnerLinksAsNarration() {
+        val dash = "\u2014".repeat(22)
+        val content = "[要删除的正文]\n\n$dash\n**【行动选项】**\n\n1.**[选项一]()**\n\n2.**[选项二]()**\n$dash"
+        val preceding = parseRoleplayTextSegments(content).first()
+
+        val updated = replaceRoleplaySegmentContent(content, preceding.start, preceding.endExclusive, "")
+        val reparsed = parseRoleplayTextSegments(updated)
+
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION), reparsed.map { it.kind })
+        assertEquals("$dash\n**【行动选项】**\n\n1.**[选项一]()**\n\n2.**[选项二]()**\n$dash", reparsed.single().rawText)
+    }
+
+    @Test
+    fun roleplaySegments_optionFenceAppendedToPreviousThoughtProtectsInnerLinks() {
+        val dash = "\u2014".repeat(22)
+        val content = "<n=\"高松灯\"/>『**和碰自己时完全不一样…』$dash\n" +
+            "**【行动选项】**\n\n" +
+            "1. **[选项一]()**\n\n" +
+            "2. **[选项二]()**\n\n" +
+            "$dash\n```\n状态栏\n```"
+
+        val result = parseRoleplayTextSegments(content)
+        val optionSegment = result.first { segment -> segment.rawText.startsWith(dash) }
+
+        assertEquals(RoleplaySegmentKind.NARRATION, optionSegment.kind)
+        assertTrue(optionSegment.rawText.contains("[选项一]()"))
+        assertTrue(optionSegment.rawText.contains("[选项二]()"))
+        assertEquals(0, result.count { segment ->
+            segment.kind == RoleplaySegmentKind.DIALOGUE && segment.rawText.contains("选项")
+        })
+    }
+
+    @Test
+    fun roleplayStatusSegments_stripOptionFenceAppendedToPreviousThought() {
+        val dash = "\u2014".repeat(22)
+        val content = "保留『**心理文本…』$dash\n**【行动选项】**\n1. **[选项一]()**\n$dash\n```\n状态栏\n```"
+
+        assertEquals("保留『**心理文本…』", stripRoleplayStatusSegments(content))
+    }
+
+    @Test
+    fun roleplayStatusSegments_stripLongDashWrappedOptions() {
+        val dash = "\u2014".repeat(22)
+        val content = "保留正文\n\n$dash\n**【行动选项】**\n1.**[选项一]()**\n$dash"
+
+        assertEquals("保留正文", stripRoleplayStatusSegments(content))
     }
 
     @Test

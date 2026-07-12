@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
+import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import java.security.MessageDigest
 import java.util.Locale
 import org.junit.Assert.assertEquals
@@ -75,6 +76,11 @@ class RagRecallParityFixtureTest {
         )
         val messages = listOf(
             message("old-user", "之前说 LOCK 很可靠。"),
+            message("old-assistant", "", MessageRole.ASSISTANT),
+            message("middle-user", "换个话题。"),
+            message("middle-assistant", "", MessageRole.ASSISTANT),
+            message("recent-user", "继续。"),
+            message("recent-assistant", "", MessageRole.ASSISTANT),
             message("current-user", "她在 RAS 里负责什么？")
         )
         val plan = RetrievalPlan(
@@ -158,7 +164,10 @@ private fun runFixture(
     queryEmbedding: List<Float>,
     plan: RetrievalPlan
 ): FixtureResult {
-    val activeContextIds = messages.takeLast(contextWindowSize).map { it.id }.toSet()
+    val activeContextIds = ChatContextGroupPolicy
+        .recentMessages(messages, contextWindowSize)
+        .map { it.id }
+        .toSet()
     val ragQuery = plan.toParityRagQuery(query, messages)
     val debugLogs = mutableListOf<String>()
 
@@ -250,11 +259,15 @@ private fun chunk(
     )
 }
 
-private fun message(id: String, content: String): ChatMessage {
+private fun message(
+    id: String,
+    content: String,
+    role: MessageRole = MessageRole.USER
+): ChatMessage {
     return ChatMessage(
         id = id,
         sessionId = "session-1",
-        role = MessageRole.USER,
+        role = role,
         content = content,
         createdAt = 1L,
         updatedAt = 1L

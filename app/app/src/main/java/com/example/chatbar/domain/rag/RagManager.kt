@@ -114,50 +114,37 @@ class RagManager(
      * @param threshold       最低相似度阈值
      * @return 相关的向量块列表
      */
-    suspend fun indexSingleMessageMemory(
-        message: ChatMessage,
-        contextMessages: List<ChatMessage>,
+    suspend fun indexMessagePairMemory(
+        pair: ChatMemoryMessagePair,
         sessionId: String,
         embeddingConfig: EmbeddingConfig
     ) {
-        ragRepository.deleteChunksByMessageId(message.id)
-        if (message.displayContent.isBlank() && message.images.isEmpty()) return
-
-        val contextText = contextMessages
-            .filter { it.id != message.id }
-            .takeLast(4)
-            .joinToString("\n") { msg ->
-                "${msg.role.name.lowercase()}: ${msg.displayContent.replace(Regex("\\s+"), " ").take(240)}"
-            }
-            .take(1200)
-
-        val memoryText = buildString {
-            if (contextText.isNotBlank()) {
-                appendLine("Recent context:")
-                appendLine(contextText)
-                appendLine()
-            }
-            appendLine("Current memory message:")
-            appendLine("${message.role.name.lowercase()}: ${message.displayContent}")
-            if (message.images.isNotEmpty()) {
-                appendLine("Images: ${message.images.size}")
-            }
-        }.trim()
+        if (!ChatMemoryIndexPolicy.shouldIndex(pair)) {
+            pair.messageIds.forEach { ragRepository.deleteChunksByMessageId(it) }
+            return
+        }
+        val memoryText = ChatMemoryIndexPolicy.contentForIndex(pair)
 
         val embedding = embeddingService.getEmbedding(memoryText, embeddingConfig)
-        val chunk = VectorChunk.create(
+        pair.messageIds.forEach { ragRepository.deleteChunksByMessageId(it) }
+        val chunk = VectorChunk(
+            id = chatMemoryChunkId(sessionId, pair.assistantMessage.id),
             sourceType = ChunkSourceType.CHAT_MEMORY,
             sourceId = sessionId,
             content = memoryText,
             embedding = embedding,
-            messageId = message.id,
+            messageId = pair.assistantMessage.id,
             metadata = mapOf(
                 "sessionId" to sessionId,
-                "messageIds" to message.id,
-                "role" to message.role.name,
-                "messageTime" to message.createdAt.toString(),
-                "indexMode" to "single_message_contextual"
-            )
+                "messageIds" to listOf(pair.userMessage.id, pair.assistantMessage.id).joinToString(","),
+                "userMessageId" to pair.userMessage.id,
+                "assistantMessageId" to pair.assistantMessage.id,
+                "messageTime" to pair.assistantMessage.createdAt.toString(),
+                "indexMode" to "message_pair",
+                "contentVersion" to "4",
+                "embeddingKey" to embeddingKey(embeddingConfig)
+            ),
+            createdAt = System.currentTimeMillis()
         )
         ragRepository.saveChunks(listOf(chunk))
     }
@@ -192,41 +179,6 @@ class RagManager(
         ragRepository.deleteChunksByMessageId(messageId)
     }
 
-    /**
-     * 消息编辑后重新索引
-     *
-     * 先删除旧的消息关联块，再将单条消息重新向量化存储
-     */
-    suspend fun reindexMessage(
-        message: ChatMessage,
-        sessionId: String,
-        embeddingConfig: EmbeddingConfig
-    ) {
-        // 删除旧向量
-        ragRepository.deleteChunksByMessageId(message.id)
-
-        // 对单条消息创建块
-        val content = message.displayContent
-        if (content.isBlank()) return
-
-        val embedding = embeddingService.getEmbedding(content, embeddingConfig)
-
-        val chunk = VectorChunk.create(
-            sourceType = ChunkSourceType.CHAT_MEMORY,
-            sourceId = sessionId,
-            content = content,
-            embedding = embedding,
-            messageId = message.id,
-            metadata = mapOf(
-                "sessionId" to sessionId,
-                "role" to message.role.name,
-                "messageTime" to message.createdAt.toString()
-            )
-        )
-
-        ragRepository.saveChunks(listOf(chunk))
-    }
-
     fun hashContent(content: String): String = sha256(content)
 
     fun embeddingKey(config: EmbeddingConfig): String = config.key()
@@ -240,4 +192,10 @@ class RagManager(
     private fun EmbeddingConfig.key(): String {
         return sha256("${baseUrl.trimEnd('/')}|$modelName")
     }
+}
+
+internal fun chatMemoryChunkId(sessionId: String, messageId: String): String {
+    val digest = MessageDigest.getInstance("SHA-256")
+        .digest("$sessionId|$messageId".toByteArray(Charsets.UTF_8))
+    return "chat-memory-" + digest.joinToString("") { "%02x".format(it) }
 }

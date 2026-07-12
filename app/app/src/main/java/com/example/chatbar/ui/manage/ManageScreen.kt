@@ -1539,7 +1539,7 @@ private fun SettingsTab(
             RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
             RequiredSelect("默认生图模型", effectiveDefaultImageModelId, modelOptions, { imageModelId = it })
             OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
-            SliderField("保留上下文消息：${contextSize.toInt()} 条", contextSize, 5f..50f, 45) { contextSize = it }
+            SliderField("保留上下文消息：${contextSize.toInt()} 组", contextSize, 5f..50f, 45) { contextSize = it }
             if (contextSize.toInt() >= 50) {
                 CbField("自定义上下文上限") {
                     CbInput(customContextSize, { newValue ->
