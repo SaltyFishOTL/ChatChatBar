@@ -226,6 +226,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun deleteMessagesForSession(sessionId: String): Int =
         storage.deleteByIdPrefix<ChatMessage>(MESSAGE_TYPE, "${sessionId}_")
 
+    /** 批量替换会话消息，避免逐条更新会话预览与反复全量加载。 */
+    suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) {
+        val entities = messages.associate { message ->
+            val normalized = if (message.sessionId == sessionId) message else message.copy(sessionId = sessionId)
+            messageStorageId(sessionId, normalized.id) to normalized
+        }
+        deleteMessagesForSession(sessionId)
+        storage.saveAll(MESSAGE_TYPE, entities, ChatMessage.serializer())
+    }
+
     /** 获取最近N条消息（用于上下文窗口） */
     suspend fun getRecentMessages(sessionId: String, count: Int): List<ChatMessage> {
         return getMessages(sessionId).takeLast(count)

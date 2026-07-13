@@ -2,6 +2,8 @@ package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.SaveSlotSummary
+import com.example.chatbar.data.local.entity.toSummary
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -16,8 +18,8 @@ class SaveSlotRepository(private val storage: JsonFileStorage) {
         private const val ENTITY_TYPE = "save_slots"
     }
 
-    private val _saveSlots = MutableStateFlow<List<SaveSlot>>(emptyList())
-    val saveSlots: Flow<List<SaveSlot>> = _saveSlots.asStateFlow()
+    private val _saveSlots = MutableStateFlow<List<SaveSlotSummary>>(emptyList())
+    val saveSlots: Flow<List<SaveSlotSummary>> = _saveSlots.asStateFlow()
 
     private var initialized = false
 
@@ -28,21 +30,21 @@ class SaveSlotRepository(private val storage: JsonFileStorage) {
     }
 
     private suspend fun refreshCache() {
-        _saveSlots.value = storage.loadAll(ENTITY_TYPE, SaveSlot.serializer())
+        _saveSlots.value = storage.loadAllMapped(ENTITY_TYPE, SaveSlot.serializer(), SaveSlot::toSummary)
             .sortedByDescending { it.createdAt }
     }
 
-    suspend fun getAll(): List<SaveSlot> {
+    suspend fun getAll(): List<SaveSlotSummary> {
         initialize()
         return _saveSlots.value
     }
 
     /** 获取某会话的所有存档 */
-    suspend fun getBySessionId(sessionId: String): List<SaveSlot> {
+    suspend fun getBySessionId(sessionId: String): List<SaveSlotSummary> {
         return getAll().filter { it.sessionId == sessionId }
     }
 
-    fun observeBySessionId(sessionId: String): Flow<List<SaveSlot>> {
+    fun observeBySessionId(sessionId: String): Flow<List<SaveSlotSummary>> {
         return _saveSlots.map { list ->
             list.filter { it.sessionId == sessionId }
                 .sortedByDescending { it.createdAt }
@@ -54,13 +56,14 @@ class SaveSlotRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun save(slot: SaveSlot) {
-        storage.saveEntity(ENTITY_TYPE, slot.id, slot, SaveSlot.serializer())
-        refreshCache()
+        storage.saveEntityUncached(ENTITY_TYPE, slot.id, slot, SaveSlot.serializer())
+        _saveSlots.value = (_saveSlots.value.filterNot { it.id == slot.id } + slot.toSummary())
+            .sortedByDescending { it.createdAt }
     }
 
     suspend fun delete(id: String) {
-        storage.deleteEntity<SaveSlot>(ENTITY_TYPE, id)
-        refreshCache()
+        storage.deleteEntityUncached(ENTITY_TYPE, id)
+        _saveSlots.value = _saveSlots.value.filterNot { it.id == id }
     }
 
     /** 删除某会话的所有存档 */

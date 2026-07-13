@@ -55,6 +55,24 @@ data class SaveSlot(
     }
 }
 
+data class SaveSlotSummary(
+    val id: String,
+    val sessionId: String,
+    val name: String,
+    val description: String?,
+    val messageCount: Int,
+    val createdAt: Long
+)
+
+fun SaveSlot.toSummary(): SaveSlotSummary = SaveSlotSummary(
+    id = id,
+    sessionId = sessionId,
+    name = name,
+    description = description,
+    messageCount = messages.size,
+    createdAt = createdAt
+)
+
 @Serializable
 data class SaveSlotImageResource(
     val fileName: String,

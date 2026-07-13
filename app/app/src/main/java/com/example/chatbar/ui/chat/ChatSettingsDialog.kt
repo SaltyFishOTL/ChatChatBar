@@ -51,7 +51,7 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PlayerSetting
-import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.SaveSlotSummary
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
@@ -116,7 +116,7 @@ fun ChatSettingsDialog(
     var extraWorldBookIds by remember { mutableStateOf(session?.extraWorldBookIds ?: emptyList()) }
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
-    var deleteSlot by remember { mutableStateOf<SaveSlot?>(null) }
+    var deleteSlot by remember { mutableStateOf<SaveSlotSummary?>(null) }
     var archiveStatus by remember { mutableStateOf<String?>(null) }
     var exportSlotId by remember { mutableStateOf<String?>(null) }
     var ragEditor by remember { mutableStateOf<RagChunkEditor?>(null) }
@@ -133,9 +133,8 @@ fun ChatSettingsDialog(
         if (uri != null && slotId != null) {
             scope.launch {
                 runCatching {
-                    val raw = viewModel.exportSaveSlotJson(slotId)
                     context.contentResolver.openOutputStream(uri)?.use { output ->
-                        output.write(raw.toByteArray(Charsets.UTF_8))
+                        viewModel.exportSaveSlotJson(slotId, output)
                     } ?: error("无法写入文件")
                 }.fold(
                     onSuccess = { archiveStatus = "存档已导出。" },
@@ -148,11 +147,9 @@ fun ChatSettingsDialog(
         if (uri != null) {
             scope.launch {
                 runCatching {
-                    val raw = context.contentResolver.openInputStream(uri)
-                        ?.bufferedReader(Charsets.UTF_8)
-                        ?.use { it.readText() }
-                        ?: error("文件为空")
-                    viewModel.importSaveSlotJson(raw)
+                    context.contentResolver.openInputStream(uri)?.use { input ->
+                        viewModel.importSaveSlotJson(input)
+                    } ?: error("文件为空")
                 }.fold(
                     onSuccess = { archiveStatus = "已导入存档：${it.name}" },
                     onFailure = { archiveStatus = "导入失败：${it.message}" }
@@ -533,7 +530,7 @@ private fun LongTermMemoryContent(
 
 @Composable
 private fun SavesContent(
-    slots: List<SaveSlot>,
+    slots: List<SaveSlotSummary>,
     name: String,
     onName: (String) -> Unit,
     description: String,
@@ -541,9 +538,9 @@ private fun SavesContent(
     status: String?,
     onCreate: () -> Unit,
     onImport: () -> Unit,
-    onLoad: (SaveSlot) -> Unit,
-    onDelete: (SaveSlot) -> Unit,
-    onExport: (SaveSlot) -> Unit,
+    onLoad: (SaveSlotSummary) -> Unit,
+    onDelete: (SaveSlotSummary) -> Unit,
+    onExport: (SaveSlotSummary) -> Unit,
     renderText: (String) -> String
 ) {
     Column(Modifier.fillMaxSize().padding(16.dp)) {
@@ -712,7 +709,7 @@ private fun RagMemoryChunkCard(
 
 @Composable
 fun SaveSlotItem(
-    slot: SaveSlot,
+    slot: SaveSlotSummary,
     onLoad: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
@@ -726,7 +723,7 @@ fun SaveSlotItem(
                     CbText(renderText(it), color = ChatBarTheme.colors.mutedForeground)
                 }
                 CbText(
-                    "${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(slot.createdAt))} . ${slot.messages.size} 条消息",
+                    "${SimpleDateFormat("yyyy-MM-dd HH:mm", Locale.getDefault()).format(Date(slot.createdAt))} . ${slot.messageCount} 条消息",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )

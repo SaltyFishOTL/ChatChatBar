@@ -17,6 +17,7 @@ import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
+import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
@@ -48,8 +49,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
-import kotlinx.serialization.json.Json
 import java.io.File
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
 import kotlin.coroutines.coroutineContext
@@ -110,11 +112,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
-    private val saveSlotJson = Json {
-        ignoreUnknownKeys = true
-        prettyPrint = true
-        encodeDefaults = true
-    }
     private val ragMemoryMutationMutex = Mutex()
 
     // UI 状态
@@ -184,8 +181,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _effectiveDefaultFormatCardId = MutableStateFlow<String?>(null)
     val effectiveDefaultFormatCardId: StateFlow<String?> = _effectiveDefaultFormatCardId.asStateFlow()
 
-    private val _availableSaveSlots = MutableStateFlow<List<SaveSlot>>(emptyList())
-    val availableSaveSlots: StateFlow<List<SaveSlot>> = _availableSaveSlots.asStateFlow()
+    private val _availableSaveSlots = MutableStateFlow<List<SaveSlotSummary>>(emptyList())
+    val availableSaveSlots: StateFlow<List<SaveSlotSummary>> = _availableSaveSlots.asStateFlow()
 
     private val _ragMemoryChunks = MutableStateFlow<List<VectorChunk>>(emptyList())
     val ragMemoryChunks: StateFlow<List<VectorChunk>> = _ragMemoryChunks.asStateFlow()
@@ -2041,7 +2038,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun createSaveSlot(name: String, description: String?) {
         viewModelScope.launch {
             val curSession = _session.value ?: return@launch
-            val messagesList = chatRepository.getMessages(sessionId)
+            val messagesList = _messages.value
             val packaged = packageSaveSlotImages(curSession, messagesList)
             
             // 获取当前的向量记忆库快照
@@ -2087,21 +2084,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 读取存档并覆盖当前对话状态
      */
-    fun loadSaveSlot(slot: SaveSlot) {
+    fun loadSaveSlot(summary: SaveSlotSummary) {
         viewModelScope.launch {
             val curSession = _session.value ?: return@launch
+            val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
             val materializedSlot = materializeSaveSlotImages(slot)
             val preservedImages = materializedSlot.messages
                 .flatMap { it.images }
                 .toSet() + listOfNotNull(materializedSlot.chatBackground)
             
             // 1. 清空当前对话所有的消息和向量块
-            val currentMsgs = chatRepository.getMessages(sessionId)
+            val currentMsgs = _messages.value
             currentMsgs.forEach { message ->
                 message.images
                     .filterNot { it in preservedImages }
                     .forEach { deleteDisposableChatImage(it) }
-                chatRepository.deleteMessage(message.id, sessionId)
             }
             curSession.chatBackground
                 ?.takeIf { it !in preservedImages }
@@ -2109,9 +2106,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, sessionId)
 
             // 2. 写入存档里的消息
-            materializedSlot.messages.forEach { msg ->
-                chatRepository.addMessage(msg.copy(sessionId = sessionId))
-            }
+            chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
 
             // 3. 写入存档里的记忆向量块
             val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
@@ -2157,7 +2152,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    suspend fun exportSaveSlotJson(slotId: String): String = withContext(Dispatchers.IO) {
+    suspend fun exportSaveSlotJson(slotId: String, output: OutputStream) = withContext(Dispatchers.IO) {
         val slot = saveSlotRepository.getById(slotId) ?: error("存档不存在")
         val packaged = packageSaveSlotImageRefs(
             chatBackground = slot.chatBackground,
@@ -2169,12 +2164,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             messages = packaged.messages,
             imageResources = packaged.resources
         )
-        saveSlotJson.encodeToString(SaveSlot.serializer(), portable)
+        SaveSlotJsonTransfer.write(portable, output)
     }
 
-    suspend fun importSaveSlotJson(rawJson: String): SaveSlot {
+    suspend fun importSaveSlotJson(input: InputStream): SaveSlot {
         val decoded = withContext(Dispatchers.IO) {
-            saveSlotJson.decodeFromString(SaveSlot.serializer(), rawJson)
+            SaveSlotJsonTransfer.read(input)
         }
         validateSaveSlotImport(decoded)
         val currentNames = saveSlotRepository.getBySessionId(sessionId).map { it.name }

@@ -8,10 +8,17 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.decodeFromStream
+import kotlinx.serialization.json.encodeToStream
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
+import java.util.UUID
 
 /**
  * 通用JSON文件存储 - 将可序列化实体保存为JSON文件
@@ -57,6 +64,28 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
+    @OptIn(ExperimentalSerializationApi::class)
+    private fun <T : Any> writeJsonFile(file: File, entity: T, serializer: KSerializer<T>) {
+        val tempFile = File(file.parentFile, ".${file.name}.${UUID.randomUUID()}.tmp")
+        try {
+            tempFile.outputStream().buffered().use { output ->
+                json.encodeToStream(serializer, entity, output)
+            }
+            try {
+                Files.move(
+                    tempFile.toPath(),
+                    file.toPath(),
+                    StandardCopyOption.ATOMIC_MOVE,
+                    StandardCopyOption.REPLACE_EXISTING
+                )
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tempFile.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
+        } finally {
+            tempFile.delete()
+        }
+    }
+
     @Suppress("UNCHECKED_CAST")
     private fun <T : Any> getCacheFlow(entityType: String): MutableStateFlow<Map<String, T>> {
         return cacheFlows.computeIfAbsent(entityType) {
@@ -67,6 +96,7 @@ class JsonFileStorage(private val context: Context) {
     /**
      * 保存实体到JSON文件
      */
+    @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> saveEntity(
         entityType: String,
         id: String,
@@ -75,8 +105,7 @@ class JsonFileStorage(private val context: Context) {
     ) = mutexFor(entityType).withLock {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
-            val jsonStr = json.encodeToString(serializer, entity)
-            file.writeText(jsonStr)
+            writeJsonFile(file, entity, serializer)
 
             // 更新缓存
             val flow = getCacheFlow<T>(entityType)
@@ -87,6 +116,7 @@ class JsonFileStorage(private val context: Context) {
     /**
      * 加载单个实体
      */
+    @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> loadEntity(
         entityType: String,
         id: String,
@@ -96,7 +126,9 @@ class JsonFileStorage(private val context: Context) {
             val file = entityFile(entityType, id)
             if (!file.exists()) return@withContext null
             try {
-                json.decodeFromString(serializer, file.readText())
+                file.inputStream().buffered().use { input ->
+                    json.decodeFromStream(serializer, input)
+                }
             } catch (e: Exception) {
                 null
             }
@@ -106,6 +138,7 @@ class JsonFileStorage(private val context: Context) {
     /**
      * 加载所有同类实体
      */
+    @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> loadAll(
         entityType: String,
         serializer: KSerializer<T>
@@ -115,7 +148,9 @@ class JsonFileStorage(private val context: Context) {
             val entities = mutableMapOf<String, T>()
             dir.listFiles { f -> f.extension == "json" }?.forEach { file ->
                 try {
-                    val entity = json.decodeFromString(serializer, file.readText())
+                    val entity = file.inputStream().buffered().use { input ->
+                        json.decodeFromStream(serializer, input)
+                    }
                     entities[file.nameWithoutExtension] = entity
                 } catch (_: Exception) { /* skip corrupt files */ }
             }
@@ -127,6 +162,48 @@ class JsonFileStorage(private val context: Context) {
             entities.values.toList()
         }
     }
+
+    /** 逐文件映射，不把完整实体放入通用缓存。适合大型实体列表摘要。 */
+    @OptIn(ExperimentalSerializationApi::class)
+    suspend fun <T : Any, R> loadAllMapped(
+        entityType: String,
+        serializer: KSerializer<T>,
+        transform: (T) -> R
+    ): List<R> = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            entityDir(entityType)
+                .listFiles { file -> file.extension == "json" }
+                .orEmpty()
+                .mapNotNull { file ->
+                    runCatching {
+                        file.inputStream().buffered().use { input ->
+                            transform(json.decodeFromStream(serializer, input))
+                        }
+                    }.getOrNull()
+                }
+        }
+    }
+
+    /** 保存大型实体，但不长期保留其完整对象。 */
+    @OptIn(ExperimentalSerializationApi::class)
+    suspend fun <T : Any> saveEntityUncached(
+        entityType: String,
+        id: String,
+        entity: T,
+        serializer: KSerializer<T>
+    ) = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            writeJsonFile(entityFile(entityType, id), entity, serializer)
+        }
+    }
+
+    /** 删除未进入通用缓存的大型实体。 */
+    suspend fun deleteEntityUncached(entityType: String, id: String) =
+        mutexFor(entityType).withLock {
+            withContext(Dispatchers.IO) {
+                entityFile(entityType, id).delete()
+            }
+        }
 
     /**
      * 删除实体
@@ -175,7 +252,10 @@ class JsonFileStorage(private val context: Context) {
                 .orEmpty()
                 .mapNotNull { file ->
                     val matches = runCatching {
-                        predicate(json.decodeFromString(serializer, file.readText()))
+                        file.inputStream().buffered().use { input ->
+                            @OptIn(ExperimentalSerializationApi::class)
+                            predicate(json.decodeFromStream(serializer, input))
+                        }
                     }.getOrDefault(false)
                     file.nameWithoutExtension.takeIf { matches && file.delete() }
                 }
@@ -254,9 +334,15 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         entities: Map<String, T>,
         serializer: KSerializer<T>
-    ) {
-        entities.forEach { (id, entity) ->
-            saveEntity(entityType, id, entity, serializer)
+    ) = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            entities.forEach { (id, entity) ->
+                writeJsonFile(entityFile(entityType, id), entity, serializer)
+            }
+            if (entities.isNotEmpty()) {
+                val flow = getCacheFlow<T>(entityType)
+                flow.value = flow.value + entities
+            }
         }
     }
 
