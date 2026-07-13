@@ -124,6 +124,40 @@ class ChatScreenshotSelectionTest {
     }
 
     @Test
+    fun trailingGenerationError_retriesPreviousAssistant() {
+        val messages = listOf(
+            message("user", MessageRole.USER, content = "继续"),
+            message("assistant", MessageRole.ASSISTANT, content = "旧回复"),
+            message("error", MessageRole.SYSTEM, content = "错误: timeout")
+        )
+
+        assertEquals("assistant", latestRegenerableAssistantMessageId(messages))
+        assertEquals("assistant", regenerationTargetAssistantMessageId(messages, "error"))
+    }
+
+    @Test
+    fun nonErrorSystemMessage_doesNotExposeRegeneration() {
+        val messages = listOf(
+            message("assistant", MessageRole.ASSISTANT, content = "旧回复"),
+            message("status", MessageRole.SYSTEM, content = "后台生成已中止")
+        )
+
+        assertEquals(null, latestRegenerableAssistantMessageId(messages))
+        assertEquals(null, regenerationTargetAssistantMessageId(messages, "status"))
+    }
+
+    @Test
+    fun oldGenerationError_doesNotExposeRegenerationAfterNewUserMessage() {
+        val messages = listOf(
+            message("assistant", MessageRole.ASSISTANT, content = "旧回复"),
+            message("error", MessageRole.SYSTEM, content = "错误: timeout"),
+            message("user", MessageRole.USER, content = "新消息")
+        )
+
+        assertEquals(null, regenerationTargetAssistantMessageId(messages, "error"))
+    }
+
+    @Test
     fun fileName_sanitizesUnsafeCharacters() {
         val fileName = buildChatScreenshotFileName("A/B:*? C", 1_718_123_456_000L)
 

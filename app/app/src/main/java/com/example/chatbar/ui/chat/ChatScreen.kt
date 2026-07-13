@@ -73,10 +73,12 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
@@ -124,6 +126,7 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val isResponding by viewModel.isResponding.collectAsState()
     val streamingMessage by viewModel.streamingMessage.collectAsState()
+    val messageFormatRepairState by viewModel.messageFormatRepairState.collectAsState()
     val deletingMemory by viewModel.isDeletingMemory.collectAsState()
     val contextWindowSize by viewModel.contextWindowSize.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
@@ -138,6 +141,12 @@ fun ChatScreen(
     val context = LocalContext.current
     val clipboardManager = LocalClipboardManager.current
     val rootView = LocalView.current
+
+    LaunchedEffect(viewModel, context) {
+        viewModel.messageFormatRepairEvents.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
 
     var input by remember(sessionId) { mutableStateOf(TextFieldValue("")) }
     var inputTouched by remember(sessionId) { mutableStateOf(false) }
@@ -622,6 +631,14 @@ fun ChatScreen(
                             assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
                         )
                     }
+                    val repairState = messageFormatRepairState?.takeIf { it.messageId == message.id }
+                    val displayedMessage = repairState?.let {
+                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                            message = message,
+                            replacement = it.previewContent,
+                            updatedAt = message.updatedAt
+                        )
+                    } ?: message
                     val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
                     val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled) {
                         roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
@@ -632,7 +649,7 @@ fun ChatScreen(
                     val screenshotSelectionEnabled = selectedScreenshotBlockCount > 0 ||
                         (!screenshotHeightMeasuring && !screenshotHeightLimitReached)
                     ChatBubble(
-                        message = message,
+                        message = displayedMessage,
                         fontScale = bubbleFontScale,
                         renderPlayerName = renderPlayerName,
                         renderBotName = renderBotName,
@@ -698,6 +715,11 @@ fun ChatScreen(
                             }
                         },
                         showActions = !screenshotSelectionMode
+                    )
+                    MessageFormatRepairNoticeRow(
+                        message = message,
+                        checking = repairState != null,
+                        onRestore = { viewModel.restoreMessageFormatOriginal(message.id) }
                     )
                     imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
                         NovelAiGenerationCard(generation,
@@ -1147,11 +1169,18 @@ fun ChatScreen(
                     target?.id?.let(viewModel::regenerateResponse)
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
+            if (target?.role == MessageRole.ASSISTANT) {
+                Spacer(Modifier.size(8.dp))
+                CbButton("AI 修复格式", {
+                    actionSegment = null
+                    viewModel.repairMessageFormat(target.id)
+                }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+            }
         }
     }
     actionMessageId?.let { id ->
         val target = messages.find { it.id == id }
-        val canRegenerate = target?.id == regenerableId && !isResponding
+        val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding
         CbDialog(
             onDismissRequest = { actionMessageId = null },
             title = "消息操作",
@@ -1170,6 +1199,13 @@ fun ChatScreen(
                     actionMessageId = null
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
+            if (target?.role == MessageRole.ASSISTANT) {
+                Spacer(Modifier.size(8.dp))
+                CbButton("AI 修复格式", {
+                    actionMessageId = null
+                    viewModel.repairMessageFormat(target.id)
+                }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+            }
             Spacer(Modifier.size(8.dp))
             target?.let {
                 CbButton("删除", { viewModel.deleteMessage(it.id); actionMessageId = null }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
@@ -1181,6 +1217,42 @@ fun ChatScreen(
                     target?.id?.let(viewModel::regenerateResponse)
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
+        }
+    }
+}
+
+@Composable
+private fun MessageFormatRepairNoticeRow(
+    message: ChatMessage,
+    checking: Boolean,
+    onRestore: () -> Unit
+) {
+    val notice = MessageFormatRepairPolicy.applicableNotice(message)
+    if (!checking && notice == null) return
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        if (checking) CbSpinner(Modifier.size(14.dp))
+        CbText(
+            text = when {
+                checking -> "正在检查格式…"
+                notice?.kind == MessageFormatRepairNoticeKind.ERROR ->
+                    "格式修复失败：${notice.errorMessage ?: "未知错误"}"
+                notice?.kind == MessageFormatRepairNoticeKind.STOPPED -> "格式修复已停止"
+                else -> "修复后长度异常"
+            },
+            modifier = Modifier.weight(1f),
+            color = if (notice?.kind == MessageFormatRepairNoticeKind.ERROR) {
+                ChatBarTheme.colors.destructive
+            } else {
+                ChatBarTheme.colors.mutedForeground
+            },
+            style = ChatBarTheme.typography.caption
+        )
+        if (!checking && notice?.originalContent != null) {
+            CbButton("恢复原文", onRestore, variant = ButtonVariant.Ghost)
         }
     }
 }

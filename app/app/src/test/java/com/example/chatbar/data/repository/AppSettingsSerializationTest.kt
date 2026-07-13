@@ -17,7 +17,25 @@ class AppSettingsSerializationTest {
         assertTrue(decoded.assistantSegmentedBubblesEnabled)
         assertTrue(decoded.excludeAssistantStatusFromHistory)
         assertFalse(decoded.allowCleartextModelApi)
+        assertFalse(decoded.automaticFormatCheckEnabled)
+        assertEquals(null, decoded.formatRepairModelId)
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
+    }
+
+    @Test
+    fun formatRepairSettings_roundTrip() {
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(
+                automaticFormatCheckEnabled = true,
+                formatRepairModelId = "repair-model"
+            )
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertTrue(decoded.automaticFormatCheckEnabled)
+        assertEquals("repair-model", decoded.formatRepairModelId)
     }
 
     @Test

@@ -333,7 +333,8 @@ class StreamingChatService(
         maxTokens: Int? = null,
         enableThinking: Boolean? = null,
         maxThinkingTokens: Int? = null,
-        thinkingBudget: Int? = null
+        thinkingBudget: Int? = null,
+        disableThinking: Boolean = false
     ): Flow<StreamEvent> = callbackFlow {
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
@@ -343,7 +344,8 @@ class StreamingChatService(
             maxTokens = maxTokens,
             enableThinkingOverride = enableThinking,
             maxThinkingTokens = maxThinkingTokens,
-            thinkingBudget = thinkingBudget
+            thinkingBudget = thinkingBudget,
+            disableThinking = disableThinking
         )
         val request = Request.Builder()
             .url(url)
@@ -477,7 +479,8 @@ class StreamingChatService(
         messages: List<ChatApiMessage>,
         modelConfig: ModelConfig,
         maxTokens: Int? = null,
-        thinkingBudget: Int? = null
+        thinkingBudget: Int? = null,
+        disableThinking: Boolean = false
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -486,7 +489,8 @@ class StreamingChatService(
             modelConfig = modelConfig,
             stream = false,
             maxTokens = maxTokens,
-            thinkingBudget = thinkingBudget
+            thinkingBudget = thinkingBudget,
+            disableThinking = disableThinking
         )
 
         val request = Request.Builder()
@@ -555,7 +559,8 @@ class StreamingChatService(
         thinkingBudget: Int? = null,
         reasoningEffort: String? = null,
         onDelta: (String) -> Unit = {},
-        onReasoningDelta: (String) -> Unit = {}
+        onReasoningDelta: (String) -> Unit = {},
+        disableThinking: Boolean = false
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -567,7 +572,8 @@ class StreamingChatService(
             enableThinkingOverride = enableThinking,
             maxThinkingTokens = maxThinkingTokens,
             thinkingBudget = thinkingBudget,
-            reasoningEffortOverride = reasoningEffort
+            reasoningEffortOverride = reasoningEffort,
+            disableThinking = disableThinking
         )
 
         val request = Request.Builder()
@@ -652,7 +658,7 @@ class StreamingChatService(
     // ========================= 内部方法 =========================
 
     /** 构建请求 JSON body */
-    private fun buildRequestBody(
+    internal fun buildRequestBody(
         messages: List<ChatApiMessage>,
         modelConfig: ModelConfig,
         stream: Boolean,
@@ -662,7 +668,8 @@ class StreamingChatService(
         thinkingBudget: Int? = null,
         reasoningEffortOverride: String? = null,
         promptCacheKey: String? = null,
-        includeStreamUsage: Boolean = false
+        includeStreamUsage: Boolean = false,
+        disableThinking: Boolean = false
     ): String {
         val messagesArray = buildJsonArray {
             for (msg in messages) {
@@ -684,6 +691,7 @@ class StreamingChatService(
 
             // 追加自定义参数
             for ((key, value) in modelConfig.customParams) {
+                if (disableThinking && key in THINKING_PARAMETER_KEYS) continue
                 when (value) {
                     is ParamValue.NumberValue -> {
                         val d = value.value
@@ -702,12 +710,16 @@ class StreamingChatService(
                 put("max_tokens", outputTokenLimit)
                 put("max_completion_tokens", outputTokenLimit)
             }
-            (reasoningEffortOverride ?: modelConfig.reasoningEffort)
-                ?.takeIf { it.isNotBlank() }
-                ?.let { put("reasoning_effort", it) }
-            (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put("enable_thinking", it) }
-            maxThinkingTokens?.let { put("max_thinking_tokens", it) }
-            thinkingBudget?.let { put("thinking_budget", it) }
+            if (disableThinking) {
+                put(PARAM_ENABLE_THINKING, false)
+            } else {
+                (reasoningEffortOverride ?: modelConfig.reasoningEffort)
+                    ?.takeIf { it.isNotBlank() }
+                    ?.let { put(PARAM_REASONING_EFFORT, it) }
+                (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put(PARAM_ENABLE_THINKING, it) }
+                maxThinkingTokens?.let { put(PARAM_MAX_THINKING_TOKENS, it) }
+                thinkingBudget?.let { put(PARAM_THINKING_BUDGET, it) }
+            }
         }
 
         return bodyObj.toString()
@@ -793,6 +805,13 @@ class StreamingChatService(
         }
     }
 }
+
+private val THINKING_PARAMETER_KEYS = setOf(
+    PARAM_ENABLE_THINKING,
+    PARAM_THINKING_BUDGET,
+    PARAM_MAX_THINKING_TOKENS,
+    PARAM_REASONING_EFFORT
+)
 
 private fun ModelConfig.supportsOpenAiPromptCacheInstrumentation(): Boolean {
     val host = runCatching { java.net.URI(baseUrl).host }.getOrNull()

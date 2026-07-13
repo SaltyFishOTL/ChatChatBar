@@ -15,6 +15,8 @@ data class AppSettings(
     val allowCleartextModelApi: Boolean = false,
     val defaultEmbeddingId: String? = null,
     val defaultFormatCardId: String? = null,
+    val automaticFormatCheckEnabled: Boolean = false,
+    val formatRepairModelId: String? = null,
     val memoryRagTopK: Int = 3,
     val memoryRagSimilarityThreshold: Float = 0.35f,
     val docRagTopK: Int = 3,

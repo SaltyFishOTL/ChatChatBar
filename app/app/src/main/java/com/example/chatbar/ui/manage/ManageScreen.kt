@@ -457,7 +457,7 @@ fun ManageScreen(
                         onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
                     )
                     4 -> SettingsTab(
-                        settingsSaveRequest, settings, player, characters, models, effectiveModels, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug, momentSchedulePreview,
+                        settingsSaveRequest, settings, player, characters, models, effectiveModels, retrievalModel, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug, momentSchedulePreview,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
                         viewModel::updateThemeMode,
@@ -1333,6 +1333,7 @@ private fun SettingsTab(
     characters: List<CharacterCard>,
     customModels: List<ModelConfig>,
     effectiveModels: List<ModelConfig>,
+    retrievalModel: ModelConfig?,
     formats: List<FormatCard>,
     modelErrors: List<String>,
     apiTestStatus: String?,
@@ -1361,6 +1362,8 @@ private fun SettingsTab(
     var persona by remember { mutableStateOf(player.globalPersona) }
     var modelId by remember { mutableStateOf(settings.defaultModelId) }
     var imageModelId by remember { mutableStateOf(settings.defaultImageModelId) }
+    var formatRepairModelId by remember { mutableStateOf(settings.formatRepairModelId) }
+    var automaticFormatCheckEnabled by remember { mutableStateOf(settings.automaticFormatCheckEnabled) }
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var allowCleartextModelApi by remember { mutableStateOf(settings.allowCleartextModelApi) }
     var novelAiToken by remember { mutableStateOf("") }
@@ -1408,6 +1411,8 @@ private fun SettingsTab(
         player.globalPersona,
         settings.defaultModelId,
         settings.defaultImageModelId,
+        settings.formatRepairModelId,
+        settings.automaticFormatCheckEnabled,
         settings.presetDefaultModelKey,
         settings.siliconFlowApiKey,
         settings.allowCleartextModelApi,
@@ -1434,6 +1439,8 @@ private fun SettingsTab(
         playerName = player.playerName; persona = player.globalPersona
         modelId = settings.defaultModelId ?: settings.presetDefaultModelKey?.let { "preset:$it" }
         imageModelId = settings.defaultImageModelId
+        formatRepairModelId = settings.formatRepairModelId
+        automaticFormatCheckEnabled = settings.automaticFormatCheckEnabled
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         allowCleartextModelApi = settings.allowCleartextModelApi
         themeMode = settings.themeMode
@@ -1471,6 +1478,8 @@ private fun SettingsTab(
     val draftSettings = settings.copy(
         defaultModelId = effectiveDefaultModelId,
         defaultImageModelId = effectiveDefaultImageModelId,
+        formatRepairModelId = formatRepairModelId,
+        automaticFormatCheckEnabled = automaticFormatCheckEnabled,
         presetDefaultModelKey = null,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
         allowCleartextModelApi = allowCleartextModelApi,
@@ -1553,9 +1562,28 @@ private fun SettingsTab(
             apiTestStatus?.let { CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption) }
             CbDivider()
             val modelOptions = effectiveModels.map { IdOption(it.id, it.displayName) }
+            val formatRepairModelOptions = (customModels + listOfNotNull(retrievalModel))
+                .filter { it.baseUrl.isNotBlank() && it.modelName.isNotBlank() }
+                .distinctBy(ModelConfig::id)
+                .map { IdOption(it.id, it.displayName) }
             RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
             RequiredSelect("默认生图模型", effectiveDefaultImageModelId, modelOptions, { imageModelId = it })
+            OptionalSelect("格式修复模型", formatRepairModelId, formatRepairModelOptions, { formatRepairModelId = it })
             OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("自动检查格式", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "此功能会提升大约1/10的token消耗，并放慢回复速度，谨慎开启",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(
+                    checked = automaticFormatCheckEnabled,
+                    onCheckedChange = { automaticFormatCheckEnabled = it }
+                )
+            }
             SliderField("保留上下文消息：${contextSize.toInt()} 组", contextSize, 5f..50f, 45) { contextSize = it }
             if (contextSize.toInt() >= 50) {
                 CbField("自定义上下文上限") {

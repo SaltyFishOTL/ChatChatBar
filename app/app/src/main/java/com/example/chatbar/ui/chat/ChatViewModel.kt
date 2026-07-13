@@ -15,6 +15,7 @@ import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.LongTermMemoryUpdatePolicy
+import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
@@ -39,8 +40,12 @@ import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.collect
@@ -76,6 +81,11 @@ data class ImageGenerationState(
     val finalPromptRequirement: String = ""
 )
 
+data class MessageFormatRepairState(
+    val messageId: String,
+    val previewContent: String
+)
+
 val ImageGenerationState.isTerminal: Boolean
     get() = phase == ImageGenerationPhase.FAILED || phase == ImageGenerationPhase.CANCELLED
 
@@ -106,6 +116,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val promptAssembler = ChatBarApp.instance.promptAssembler
     private val contextWindowManager = ChatBarApp.instance.contextWindowManager
     private val streamingChatService = ChatBarApp.instance.streamingChatService
+    private val messageFormatRepairService = ChatBarApp.instance.messageFormatRepairService
     private val imageUnderstandingService = ChatBarApp.instance.imageUnderstandingService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
@@ -142,6 +153,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _streamingMessage = MutableStateFlow<ChatMessage?>(null)
     val streamingMessage: StateFlow<ChatMessage?> = _streamingMessage.asStateFlow()
+
+    private val _messageFormatRepairState = MutableStateFlow<MessageFormatRepairState?>(null)
+    val messageFormatRepairState: StateFlow<MessageFormatRepairState?> =
+        _messageFormatRepairState.asStateFlow()
+
+    private val _messageFormatRepairEvents = MutableSharedFlow<String>(extraBufferCapacity = 4)
+    val messageFormatRepairEvents: SharedFlow<String> = _messageFormatRepairEvents.asSharedFlow()
 
     private val _isDeletingMemory = MutableStateFlow(false)
     val isDeletingMemory: StateFlow<Boolean> = _isDeletingMemory.asStateFlow()
@@ -196,6 +214,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var draftTouched = false
     private var draftSaveSequence = 0
     private var responseJob: Job? = null
+    private var manualFormatRepairJob: Job? = null
+    private var activeFormatRepairJob: Job? = null
+    private var formatRepairStopRequested = false
     private var imageGenerationJob: Job? = null
     private var imageGenerationPromptCheckpoint: Pair<NovelAiPromptPlan, NovelAiImageSize>? = null
     private var imageGenerationCompletedImageCheckpoint: ByteArray? = null
@@ -928,8 +949,214 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun cancelResponseGeneration() {
         if (!_isResponding.value) return
+        activeFormatRepairJob?.let { repairJob ->
+            formatRepairStopRequested = true
+            repairJob.cancel(CancellationException("用户停止格式修复"))
+            return
+        }
         ChatBarApp.instance.streamingStopRequested.value = true
         responseJob?.cancel(CancellationException("用户停止生成"))
+    }
+
+    fun repairMessageFormat(messageId: String) {
+        if (_isResponding.value) return
+        _isResponding.value = true
+        val job = viewModelScope.launch {
+            try {
+                val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+                if (message.role != MessageRole.ASSISTANT) return@launch
+                val repaired = performMessageFormatRepair(message, automatic = false)
+                if (repaired.displayContent != message.displayContent) {
+                    refreshMemoryAfterMessageEdit(repaired)
+                }
+            } finally {
+                _messageFormatRepairState.value = null
+                _isResponding.value = false
+            }
+        }
+        manualFormatRepairJob = job
+        job.invokeOnCompletion {
+            if (manualFormatRepairJob == job) manualFormatRepairJob = null
+        }
+    }
+
+    fun restoreMessageFormatOriginal(messageId: String) {
+        if (_isResponding.value) return
+        viewModelScope.launch {
+            val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            val restored = MessageFormatRepairPolicy.restoreOriginal(message) ?: return@launch
+            chatRepository.updateMessage(restored)
+            _messages.value = chatRepository.getMessages(sessionId)
+            refreshMemoryAfterMessageEdit(restored)
+        }
+    }
+
+    private suspend fun performMessageFormatRepair(
+        message: ChatMessage,
+        automatic: Boolean
+    ): ChatMessage {
+        val appSettings = settingsRepository.getAppSettings()
+        val currentSession = chatRepository.getSession(sessionId) ?: return message
+        val renderContext = placeholderRenderContext(currentSession)
+        val formatCardId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
+        val formatCard = formatCardId
+            ?.let { formatCardRepository.getById(it) }
+            ?.content
+            ?.let { content ->
+                renderContext?.let { context ->
+                    PlaceholderRenderer.render(content, context.playerName, context.botName)
+                } ?: content
+            }
+            ?.takeIf(String::isNotBlank)
+        val segmentedFormat = if (appSettings.assistantSegmentedBubblesEnabled) {
+            val card = _characterCard.value?.takeIf { it.id == currentSession.characterCardId }
+                ?: characterRepository.getById(currentSession.characterCardId)
+            PromptTemplates.roleplaySpeakerFormatSystemPrompt(
+                card?.characters?.map { it.name }.orEmpty()
+            )
+        } else {
+            null
+        }
+        if (formatCard == null && segmentedFormat == null) {
+            if (!automatic) _messageFormatRepairEvents.tryEmit("当前无可检查规则")
+            return message
+        }
+
+        val model = modelResolver.resolveAuxiliaryTextModelExact(
+            appSettings.formatRepairModelId,
+            appSettings
+        )
+        if (model == null || model.apiKey.isBlank()) {
+            return persistFormatRepairFailure(message, "格式修复模型未配置或已失效")
+        }
+
+        val originalContent = message.displayContent
+        var result = message
+        var repairedPrefix = ""
+        var sawDone = false
+        formatRepairStopRequested = false
+        _messageFormatRepairState.value = MessageFormatRepairState(
+            messageId = message.id,
+            previewContent = originalContent
+        )
+
+        coroutineScope {
+            val repairJob = launch {
+                try {
+                    messageFormatRepairService.streamRepair(
+                        originalContent = originalContent,
+                        formatCard = formatCard,
+                        segmentedBubbleFormat = segmentedFormat,
+                        modelConfig = model
+                    ).collect { event ->
+                        when (event) {
+                            is StreamEvent.Delta -> {
+                                repairedPrefix += event.text
+                                _messageFormatRepairState.value = MessageFormatRepairState(
+                                    messageId = message.id,
+                                    previewContent = MessageFormatRepairPolicy.progressiveOverlay(
+                                        original = originalContent,
+                                        repairedPrefix = repairedPrefix
+                                    )
+                                )
+                            }
+                            is StreamEvent.Error -> throw IllegalStateException(event.message)
+                            StreamEvent.Done -> sawDone = true
+                            is StreamEvent.ReasoningDelta,
+                            is StreamEvent.Usage -> Unit
+                        }
+                    }
+                    if (!sawDone || repairedPrefix.isBlank()) {
+                        throw IllegalStateException("格式修复模型返回空结果")
+                    }
+                    result = when {
+                        repairedPrefix == originalContent -> {
+                            val unchanged = message.copy(
+                                formatRepairNotice = null,
+                                updatedAt = System.currentTimeMillis()
+                            )
+                            if (unchanged != message) persistFormatRepairMessage(unchanged)
+                            _messageFormatRepairEvents.tryEmit("格式无需修复")
+                            unchanged
+                        }
+                        else -> {
+                            val notice = if (
+                                MessageFormatRepairPolicy.isLengthAnomalous(
+                                    original = originalContent,
+                                    repaired = repairedPrefix
+                                )
+                            ) {
+                                MessageFormatRepairNotice(
+                                    kind = MessageFormatRepairNoticeKind.LENGTH_ANOMALY,
+                                    targetContent = repairedPrefix,
+                                    originalContent = originalContent
+                                )
+                            } else {
+                                null
+                            }
+                            persistFormatRepairMessage(
+                                MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                    message = message,
+                                    replacement = repairedPrefix,
+                                    notice = notice
+                                )
+                            )
+                        }
+                    }
+                } catch (cancelled: CancellationException) {
+                    if (!formatRepairStopRequested) throw cancelled
+                    val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
+                        original = originalContent,
+                        repairedPrefix = repairedPrefix
+                    )
+                    result = persistFormatRepairMessage(
+                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                            message = message,
+                            replacement = mixedContent,
+                            notice = MessageFormatRepairNotice(
+                                kind = MessageFormatRepairNoticeKind.STOPPED,
+                                targetContent = mixedContent,
+                                originalContent = originalContent
+                            )
+                        )
+                    )
+                } catch (error: Exception) {
+                    result = persistFormatRepairFailure(
+                        message = message,
+                        error = error.message ?: "格式修复失败"
+                    )
+                }
+            }
+            activeFormatRepairJob = repairJob
+            try {
+                repairJob.join()
+            } finally {
+                if (activeFormatRepairJob == repairJob) activeFormatRepairJob = null
+                formatRepairStopRequested = false
+            }
+        }
+        _messageFormatRepairState.value = null
+        return result
+    }
+
+    private suspend fun persistFormatRepairFailure(
+        message: ChatMessage,
+        error: String
+    ): ChatMessage = persistFormatRepairMessage(
+        message.copy(
+            formatRepairNotice = MessageFormatRepairNotice(
+                kind = MessageFormatRepairNoticeKind.ERROR,
+                targetContent = message.displayContent,
+                errorMessage = error
+            ),
+            updatedAt = System.currentTimeMillis()
+        )
+    )
+
+    private suspend fun persistFormatRepairMessage(message: ChatMessage): ChatMessage {
+        chatRepository.updateMessage(message)
+        _messages.value = chatRepository.getMessages(sessionId)
+        return message
     }
 
     fun updateDraftInput(text: String) {
@@ -1519,9 +1746,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                         is StreamEvent.Done -> {
                             ChatBarApp.instance.streamingStopRequested.value = false
-                            if (accumulatedText.isNotBlank()) {
-                                StreamingNotificationManager.showComplete(ctx, renderSessionText(accumulatedText))
-                            }
                             // 流生成完毕，保存到数据库
                             val assistantMsg = ChatMessage(
                                 id = assistantMsgId,
@@ -1533,6 +1757,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 updatedAt = System.currentTimeMillis(),
                                 orderKey = streamOrderKey
                             )
+                            var persistedAssistantMessage = assistantMsg
                             if (alternativeTargetMessageId != null) {
                                 val old = chatRepository.getMessage(alternativeTargetMessageId, sessionId)
                                 if (old != null) {
@@ -1540,19 +1765,35 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         ?: listOf(old.content)
                                     val updatedAlternatives = (existingAlternatives + accumulatedText)
                                         .takeLast(5)
-                                    chatRepository.updateMessage(
-                                        old.copy(
+                                    persistedAssistantMessage = old.copy(
                                             content = updatedAlternatives.last(),
                                             alternatives = updatedAlternatives,
                                             currentAlternativeIndex = updatedAlternatives.lastIndex,
-                                            reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
-                                        )
+                                            reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                            formatRepairNotice = null,
+                                            updatedAt = System.currentTimeMillis()
                                     )
+                                    chatRepository.updateMessage(persistedAssistantMessage)
                                 } else {
                                     chatRepository.addMessage(assistantMsg)
                                 }
                             } else {
                                 chatRepository.addMessage(assistantMsg)
+                            }
+
+                            _messages.value = chatRepository.getMessages(sessionId)
+                            _streamingMessage.value = null
+                            if (appSettings.automaticFormatCheckEnabled) {
+                                persistedAssistantMessage = performMessageFormatRepair(
+                                    message = persistedAssistantMessage,
+                                    automatic = true
+                                )
+                            }
+                            if (persistedAssistantMessage.displayContent.isNotBlank()) {
+                                StreamingNotificationManager.showComplete(
+                                    ctx,
+                                    renderSessionText(persistedAssistantMessage.displayContent)
+                                )
                             }
 
                             updateLongTermMemoryAfterReply(
@@ -1564,7 +1805,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             try {
                                 _messages.value = chatRepository.getMessages(sessionId)
                             } catch (_: Exception) {}
-                            _streamingMessage.value = null
                             _isResponding.value = false
 
                             // 对话存入 RAG 记忆库（后台异步）
@@ -1811,6 +2051,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .filter { it.imagePath in imagePaths },
             alternatives = emptyList(),
             currentAlternativeIndex = 0,
+            formatRepairNotice = null,
             updatedAt = System.currentTimeMillis()
         )
 
@@ -1968,11 +2209,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         viewModelScope.launch {
             val currentMessages = chatRepository.getMessages(sessionId)
-            val targetMessage = currentMessages.firstOrNull { it.id == messageId } ?: return@launch
-            if (targetMessage.role != MessageRole.ASSISTANT || targetMessage.displayContent.isBlank()) return@launch
+            val selectedMessage = currentMessages.firstOrNull { it.id == messageId } ?: return@launch
+            val targetMessage = when {
+                selectedMessage.role == MessageRole.ASSISTANT && selectedMessage.displayContent.isNotBlank() -> {
+                    selectedMessage
+                }
+                selectedMessage.isRetryableGenerationError() -> {
+                    val targetId = regenerationTargetAssistantMessageId(currentMessages, selectedMessage.id)
+                        ?: return@launch
+                    currentMessages.firstOrNull { it.id == targetId } ?: return@launch
+                }
+                else -> return@launch
+            }
 
             _isResponding.value = true
-            _messages.value = currentMessages.filterNot { it.id == targetMessage.id }
+            val retryErrorMessageId = selectedMessage.id.takeIf { selectedMessage.id != targetMessage.id }
+            val generationMessages = currentMessages.filterNot { it.id == retryErrorMessageId }
+            _messages.value = generationMessages.filterNot { it.id == targetMessage.id }
             _streamingMessage.value = null
 
             if (!isMessageInActiveContextWindow(targetMessage.id)) {
@@ -1981,6 +2234,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _messages.value = currentMessages
                 addSystemMessage("This reply is already in long-term memory. Multi-reply regeneration is disabled.")
                 return@launch
+            }
+
+            retryErrorMessageId?.let { errorMessageId ->
+                chatRepository.deleteMessage(errorMessageId, sessionId)
             }
 
             sendMessageInternal(

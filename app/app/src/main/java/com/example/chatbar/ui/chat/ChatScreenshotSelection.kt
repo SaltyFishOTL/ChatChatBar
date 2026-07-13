@@ -66,12 +66,35 @@ fun orderedChatScreenshotMessages(
             selectedBlockIds.any { roleplayBlockMessageId(it) == message.id }
     }
 
+fun ChatMessage.isRetryableGenerationError(): Boolean =
+    role == MessageRole.SYSTEM && displayContent.trimStart().startsWith("错误:")
+
+private fun ChatMessage.participatesInRegenerationOrdering(): Boolean =
+    displayContent.isNotBlank() || images.isEmpty()
+
 fun latestRegenerableAssistantMessageId(messages: List<ChatMessage>): String? =
     messages
         .asReversed()
-        .firstOrNull { message -> message.displayContent.isNotBlank() || message.images.isEmpty() }
+        .firstOrNull { message ->
+            message.participatesInRegenerationOrdering() && !message.isRetryableGenerationError()
+        }
         ?.takeIf { message -> message.role == MessageRole.ASSISTANT && message.displayContent.isNotBlank() }
         ?.id
+
+fun regenerationTargetAssistantMessageId(
+    messages: List<ChatMessage>,
+    selectedMessageId: String?
+): String? {
+    val selected = messages.firstOrNull { it.id == selectedMessageId } ?: return null
+    val assistantId = latestRegenerableAssistantMessageId(messages) ?: return null
+    if (selected.id == assistantId) return assistantId
+    if (!selected.isRetryableGenerationError()) return null
+
+    val latestOrderingMessage = messages
+        .asReversed()
+        .firstOrNull(ChatMessage::participatesInRegenerationOrdering)
+    return assistantId.takeIf { latestOrderingMessage?.id == selected.id }
+}
 
 fun buildChatScreenshotFileName(
     title: String,

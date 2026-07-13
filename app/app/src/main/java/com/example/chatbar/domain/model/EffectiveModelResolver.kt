@@ -68,6 +68,32 @@ class EffectiveModelResolver(
     suspend fun auxiliaryChatModel(id: String?): ModelConfig? =
         auxiliaryChatModel(id, settings.getAppSettings())
 
+    /** 所有已配置文本模型，包括不在普通对话选择器显示的模型。 */
+    suspend fun availableAuxiliaryTextModels(appSettings: AppSettings): List<ModelConfig> {
+        val repositoryModels = models.getAllModels()
+        val retrieval = models.getRetrievalModel()
+        return (repositoryModels + listOfNotNull(retrieval))
+            .asSequence()
+            .filter { it.baseUrl.isNotBlank() && PresetModelPolicy.isConfigured(it.modelName) }
+            .distinctBy(ModelConfig::id)
+            .map { it.withEffectiveApiKey(appSettings) }
+            .toList()
+    }
+
+    suspend fun availableAuxiliaryTextModels(): List<ModelConfig> =
+        availableAuxiliaryTextModels(settings.getAppSettings())
+
+    /** 精确解析专用文本模型；缺失时不回退。 */
+    suspend fun resolveAuxiliaryTextModelExact(
+        id: String?,
+        appSettings: AppSettings
+    ): ModelConfig? = id?.let { requestedId ->
+        availableAuxiliaryTextModels(appSettings).firstOrNull { it.id == requestedId }
+    }
+
+    suspend fun resolveAuxiliaryTextModelExact(id: String?): ModelConfig? =
+        resolveAuxiliaryTextModelExact(id, settings.getAppSettings())
+
     suspend fun retrievalModel(): ModelConfig? = retrievalModel(settings.getAppSettings())
 
     suspend fun retrievalModel(appSettings: AppSettings): ModelConfig? =

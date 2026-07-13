@@ -15,6 +15,21 @@ enum class MessageRole {
     SYSTEM
 }
 
+@Serializable
+enum class MessageFormatRepairNoticeKind {
+    ERROR,
+    STOPPED,
+    LENGTH_ANOMALY
+}
+
+@Serializable
+data class MessageFormatRepairNotice(
+    val kind: MessageFormatRepairNoticeKind,
+    val targetContent: String,
+    val originalContent: String? = null,
+    val errorMessage: String? = null
+)
+
 const val MESSAGE_ORDER_STEP: Long = 1_000_000L
 
 fun Long.toMessageOrderKey(): Long = this * MESSAGE_ORDER_STEP
@@ -53,6 +68,7 @@ data class ChatMessage(
     val currentAlternativeIndex: Int = 0,
     val reasoningContent: String? = null,              // 思维链内容
     val generatedFromMessageId: String? = null,
+    val formatRepairNotice: MessageFormatRepairNotice? = null,
     val createdAt: Long,
     val updatedAt: Long,
     val orderKey: Long = createdAt.toMessageOrderKey()

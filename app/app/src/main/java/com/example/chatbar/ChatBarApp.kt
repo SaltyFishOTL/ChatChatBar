@@ -78,6 +78,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var streamingChatService: StreamingChatService
         private set
+    lateinit var messageFormatRepairService: MessageFormatRepairService
+        private set
     lateinit var imageUnderstandingService: ImageUnderstandingService
         private set
     lateinit var characterCardTransferService: CharacterCardTransferService
@@ -192,6 +194,7 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        messageFormatRepairService = MessageFormatRepairService(streamingChatService)
         momentScheduler = MomentScheduler(
             context = this,
             scope = applicationScope,
