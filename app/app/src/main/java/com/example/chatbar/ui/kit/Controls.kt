@@ -33,6 +33,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -161,7 +162,8 @@ fun CbTabs(
     items: List<String>,
     selectedIndex: Int,
     onSelected: (Int) -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onSwipePastStart: (() -> Unit)? = null
 ) {
     val safeSelectedIndex = if (items.isEmpty()) 0 else selectedIndex.coerceIn(0, items.lastIndex)
     Row(
@@ -170,7 +172,8 @@ fun CbTabs(
             .swipeToAdjacentTab(
                 selectedIndex = safeSelectedIndex,
                 itemCount = items.size,
-                onSelected = onSelected
+                onSelected = onSelected,
+                onSwipePastStart = onSwipePastStart
             )
             .padding(horizontal = ChatBarSpacing.sm)
     ) {
@@ -213,10 +216,13 @@ fun Modifier.swipeToAdjacentTab(
     itemCount: Int,
     onSelected: (Int) -> Unit,
     enabled: Boolean = true,
-    threshold: Dp = 72.dp
+    threshold: Dp = 72.dp,
+    onSwipePastStart: (() -> Unit)? = null
 ): Modifier = composed {
     val thresholdPx = with(LocalDensity.current) { threshold.toPx() }
-    if (!enabled || itemCount < 2) {
+    val currentOnSelected by rememberUpdatedState(onSelected)
+    val currentOnSwipePastStart by rememberUpdatedState(onSwipePastStart)
+    if (!enabled || itemCount <= 0 || (itemCount < 2 && onSwipePastStart == null)) {
         Modifier
     } else {
         Modifier.pointerInput(selectedIndex, itemCount, enabled, thresholdPx) {
@@ -234,8 +240,9 @@ fun Modifier.swipeToAdjacentTab(
                         totalDrag >= thresholdPx -> selectedIndex - 1
                         else -> selectedIndex
                     }
-                    if (targetIndex != selectedIndex && targetIndex in 0 until itemCount) {
-                        onSelected(targetIndex)
+                    when {
+                        targetIndex == -1 && selectedIndex == 0 -> currentOnSwipePastStart?.invoke()
+                        targetIndex != selectedIndex && targetIndex in 0 until itemCount -> currentOnSelected(targetIndex)
                     }
                     totalDrag = 0f
                 }

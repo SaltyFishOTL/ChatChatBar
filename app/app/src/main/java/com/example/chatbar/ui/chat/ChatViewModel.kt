@@ -24,6 +24,7 @@ import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.ImageFileEncoder
+import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
@@ -39,6 +40,7 @@ import com.example.chatbar.domain.service.BackgroundGenerationProtectionCancella
 import com.example.chatbar.domain.service.StreamingNotificationManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -59,9 +61,12 @@ import java.io.InputStream
 import java.io.OutputStream
 import java.util.Locale
 import java.util.UUID
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
 
 enum class ImageGenerationPhase {
+    QUEUED,
     DESIGNING,
     GENERATING,
     STREAMING,
@@ -71,6 +76,7 @@ enum class ImageGenerationPhase {
 }
 
 data class ImageGenerationState(
+    val taskId: String,
     val anchorMessageId: String,
     val phase: ImageGenerationPhase,
     val previewImage: ByteArray? = null,
@@ -80,6 +86,37 @@ data class ImageGenerationState(
     val imageContentHint: String = "",
     val finalPromptRequirement: String = ""
 )
+
+internal data class NovelAiImageRegenerationDraft(
+    val baseCaption: String,
+    val characterPrompts: List<GeneratedImageCharacterPrompt>,
+    val negativePrompt: String,
+    val sizePreset: String,
+    val width: Int,
+    val height: Int
+) {
+    fun toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
+        baseCaption = baseCaption,
+        characterCaptions = characterPrompts.map {
+            com.example.chatbar.domain.image.NovelAiCharacterCaption(
+                prompt = it.prompt,
+                center = com.example.chatbar.domain.image.DesignedCharacterCenter(it.centerX, it.centerY)
+            )
+        },
+        sizePreset = com.example.chatbar.domain.image.NovelAiImageSizePreset.from(sizePreset),
+        negativePrompt = negativePrompt
+    )
+}
+
+internal fun GeneratedImageMetadata.toRegenerationDraft(): NovelAiImageRegenerationDraft =
+    NovelAiImageRegenerationDraft(
+        baseCaption = baseCaption,
+        characterPrompts = characterPrompts,
+        negativePrompt = negativePrompt,
+        sizePreset = sizePreset,
+        width = width,
+        height = height
+    )
 
 data class MessageFormatRepairState(
     val messageId: String,
@@ -91,6 +128,7 @@ val ImageGenerationState.isTerminal: Boolean
 
 val ImageGenerationState.isCancellable: Boolean
     get() = when (phase) {
+        ImageGenerationPhase.QUEUED,
         ImageGenerationPhase.DESIGNING,
         ImageGenerationPhase.GENERATING,
         ImageGenerationPhase.STREAMING -> true
@@ -174,8 +212,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     val contextWindowSize: StateFlow<Int> = _contextWindowSize.asStateFlow()
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
 
-    private val _imageGeneration = MutableStateFlow<ImageGenerationState?>(null)
-    val imageGeneration: StateFlow<ImageGenerationState?> = _imageGeneration.asStateFlow()
+    private val imageGenerationTaskStore = ImageGenerationTaskStateStore()
+    val imageGenerations: StateFlow<List<ImageGenerationState>> = imageGenerationTaskStore.states
 
     private val _showBatteryOptimizationHint = MutableStateFlow(false)
     val showBatteryOptimizationHint: StateFlow<Boolean> = _showBatteryOptimizationHint.asStateFlow()
@@ -217,9 +255,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var manualFormatRepairJob: Job? = null
     private var activeFormatRepairJob: Job? = null
     private var formatRepairStopRequested = false
-    private var imageGenerationJob: Job? = null
-    private var imageGenerationPromptCheckpoint: Pair<NovelAiPromptPlan, NovelAiImageSize>? = null
-    private var imageGenerationCompletedImageCheckpoint: ByteArray? = null
+    private val imageGenerationJobs = ConcurrentHashMap<String, Job>()
+    private val imageGenerationPromptCheckpoints =
+        ConcurrentHashMap<String, Pair<NovelAiPromptPlan, NovelAiImageSize>>()
+    private val imageGenerationCompletedImageCheckpoints = ConcurrentHashMap<String, ByteArray>()
+    private val imageGenerationRegenerationSources = ConcurrentHashMap<String, Pair<String, String>>()
+    private val imagePromptPreferenceMutationMutex = Mutex()
+    private val imagePromptPreferenceSaveSequence = AtomicLong()
+    private val messageRefreshSequence = AtomicLong()
 
     private data class PlaceholderRenderContext(
         val playerName: String?,
@@ -311,8 +354,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun refreshMessages() {
         viewModelScope.launch {
             try {
-                _messages.value = chatRepository.getMessages(sessionId)
+                replaceMessagesFromRepository()
             } catch (_: Exception) {}
+        }
+    }
+
+    private suspend fun replaceMessagesFromRepository() {
+        val sequence = messageRefreshSequence.incrementAndGet()
+        val refreshed = chatRepository.getMessages(sessionId)
+        if (sequence == messageRefreshSequence.get()) {
+            _messages.value = refreshed
         }
     }
 
@@ -346,22 +397,73 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun List<ChatMessage>.renderWith(context: PlaceholderRenderContext?): List<ChatMessage> =
         if (context == null) this else map { it.renderWith(context) }
 
+    private fun imageGenerationState(taskId: String): ImageGenerationState? =
+        imageGenerationTaskStore.get(taskId)
+
+    private fun putImageGeneration(state: ImageGenerationState) {
+        imageGenerationTaskStore.put(state)
+    }
+
+    private fun updateImageGeneration(
+        taskId: String,
+        transform: (ImageGenerationState) -> ImageGenerationState
+    ) {
+        imageGenerationTaskStore.update(taskId, transform)
+    }
+
+    private fun removeImageGeneration(taskId: String) {
+        imageGenerationTaskStore.remove(taskId)
+        imageGenerationPromptCheckpoints.remove(taskId)
+        imageGenerationCompletedImageCheckpoints.remove(taskId)
+        imageGenerationRegenerationSources.remove(taskId)
+    }
+
+    private fun persistImagePromptPreference(preference: String) {
+        val current = _session.value ?: return
+        if (current.imagePromptPreference == preference) return
+        val sequence = imagePromptPreferenceSaveSequence.incrementAndGet()
+        _session.value = current.copy(imagePromptPreference = preference)
+        ChatBarApp.instance.applicationScope.launch {
+            imagePromptPreferenceMutationMutex.withLock {
+                if (sequence != imagePromptPreferenceSaveSequence.get()) return@withLock
+                val stored = chatRepository.getSession(sessionId) ?: return@withLock
+                if (stored.imagePromptPreference != preference) {
+                    chatRepository.updateSession(stored.copy(imagePromptPreference = preference))
+                }
+            }
+        }
+    }
+
     fun generateNovelAiImage(
         anchorMessageId: String,
         imageContentHint: String = "",
         imagePromptPreference: String? = null,
         persistPreference: Boolean = false
-    ) = startNovelAiImageGeneration(
-        anchorMessageId = anchorMessageId,
-        imageContentHint = imageContentHint,
-        imagePromptPreference = imagePromptPreference,
-        persistPreference = persistPreference
-    )
-
-    fun retryNovelAiImageGeneration() {
-        val failed = _imageGeneration.value?.takeIf { it.isTerminal } ?: return
-        val checkpoint = imageGenerationPromptCheckpoint
+    ) {
         startNovelAiImageGeneration(
+            taskId = UUID.randomUUID().toString(),
+            anchorMessageId = anchorMessageId,
+            imageContentHint = imageContentHint,
+            imagePromptPreference = imagePromptPreference,
+            persistPreference = persistPreference
+        )
+    }
+
+    fun retryNovelAiImageGeneration(taskId: String) {
+        val failed = imageGenerationState(taskId)?.takeIf { it.isTerminal } ?: return
+        imageGenerationJobs.remove(taskId)?.cancel(CancellationException("用户重试生图"))
+        val checkpoint = imageGenerationPromptCheckpoints[taskId]
+        val regenerationSource = imageGenerationRegenerationSources[taskId]
+        if (checkpoint == null && regenerationSource != null) {
+            loadNovelAiRegeneration(
+                taskId = taskId,
+                messageId = regenerationSource.first,
+                imagePath = regenerationSource.second
+            )
+            return
+        }
+        startNovelAiImageGeneration(
+            taskId = taskId,
             anchorMessageId = failed.anchorMessageId,
             imageContentHint = failed.imageContentHint,
             imagePromptPreference = failed.finalPromptRequirement,
@@ -520,41 +622,108 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             .sortedByDescending { it.createdAt }
     }
 
+    internal suspend fun loadNovelAiImageRegenerationDraft(
+        messageId: String,
+        imagePath: String
+    ): NovelAiImageRegenerationDraft {
+        val message = _messages.value.firstOrNull { it.id == messageId }
+            ?: error("原图片消息不存在")
+        val metadata = message.generatedImageMetadata.firstOrNull { it.imagePath == imagePath }
+            ?: withContext(Dispatchers.IO) {
+                com.example.chatbar.domain.image.NovelAiPngMetadataReader.read(imagePath)
+            }
+            ?: error("该图片不含可复用的 NovelAI 元数据")
+        return metadata.toRegenerationDraft()
+    }
+
+    internal fun regenerateNovelAiImage(
+        messageId: String,
+        imagePath: String,
+        draft: NovelAiImageRegenerationDraft
+    ) {
+        if (_messages.value.none { it.id == messageId } || draft.baseCaption.isBlank()) return
+        val taskId = UUID.randomUUID().toString()
+        imageGenerationRegenerationSources[taskId] = messageId to imagePath
+        startNovelAiImageGeneration(
+            taskId = taskId,
+            anchorMessageId = messageId,
+            promptOverride = draft.toPromptPlan(),
+            imageSizeOverride = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸")
+        )
+    }
+
     fun regenerateNovelAiImage(messageId: String, imagePath: String) {
-        val message = _messages.value.firstOrNull { it.id == messageId } ?: return
-        viewModelScope.launch {
-            val metadata = message.generatedImageMetadata.firstOrNull { it.imagePath == imagePath }
-                ?: withContext(Dispatchers.IO) {
-                    com.example.chatbar.domain.image.NovelAiPngMetadataReader.read(imagePath)
+        if (_messages.value.none { it.id == messageId }) return
+        val taskId = UUID.randomUUID().toString()
+        imageGenerationRegenerationSources[taskId] = messageId to imagePath
+        loadNovelAiRegeneration(taskId, messageId, imagePath)
+    }
+
+    private fun loadNovelAiRegeneration(taskId: String, messageId: String, imagePath: String) {
+        putImageGeneration(
+            ImageGenerationState(
+                taskId = taskId,
+                anchorMessageId = messageId,
+                phase = ImageGenerationPhase.QUEUED
+            )
+        )
+        val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
+            val message = _messages.value.firstOrNull { it.id == messageId }
+            if (message == null) {
+                updateImageGeneration(taskId) {
+                    it.copy(phase = ImageGenerationPhase.FAILED, error = "原图片消息不存在")
                 }
-            if (metadata == null) {
-                _imageGeneration.value = ImageGenerationState(
-                    anchorMessageId = messageId,
-                    phase = ImageGenerationPhase.FAILED,
-                    error = "该图片不含可复用的 NovelAI 元数据"
-                )
                 return@launch
             }
-            val prompt = NovelAiPromptPlan(
-                baseCaption = metadata.baseCaption,
-                characterCaptions = metadata.characterPrompts.map {
-                    com.example.chatbar.domain.image.NovelAiCharacterCaption(
-                        prompt = it.prompt,
-                        center = com.example.chatbar.domain.image.DesignedCharacterCenter(it.centerX, it.centerY)
+            val metadata = try {
+                message.generatedImageMetadata.firstOrNull { it.imagePath == imagePath }
+                    ?: withContext(Dispatchers.IO) {
+                        com.example.chatbar.domain.image.NovelAiPngMetadataReader.read(imagePath)
+                    }
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                updateImageGeneration(taskId) {
+                    it.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = "读取图片元数据失败：${error.message ?: "未知错误"}"
                     )
-                },
-                sizePreset = com.example.chatbar.domain.image.NovelAiImageSizePreset.from(metadata.sizePreset),
-                negativePrompt = metadata.negativePrompt
-            )
+                }
+                return@launch
+            }
+            if (metadata == null) {
+                updateImageGeneration(taskId) {
+                    it.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = "该图片不含可复用的 NovelAI 元数据"
+                    )
+                }
+                return@launch
+            }
+            val prompt = metadata.toRegenerationDraft().toPromptPlan()
             startNovelAiImageGeneration(
+                taskId = taskId,
                 anchorMessageId = messageId,
                 promptOverride = prompt,
                 imageSizeOverride = NovelAiImageSize(metadata.width, metadata.height, "复用原图尺寸")
             )
         }
+        imageGenerationJobs[taskId] = job
+        job.invokeOnCompletion { error ->
+            imageGenerationJobs.remove(taskId, job)
+            if (error != null && error !is CancellationException) {
+                updateImageGeneration(taskId) { state ->
+                    if (state.isTerminal) state else state.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = "生图任务异常结束：${error.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
+        job.start()
     }
 
     private fun startNovelAiImageGeneration(
+        taskId: String,
         anchorMessageId: String,
         imageContentHint: String = "",
         imagePromptPreference: String? = null,
@@ -562,37 +731,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         promptOverride: NovelAiPromptPlan? = null,
         imageSizeOverride: NovelAiImageSize? = null
     ) {
-        val active = _imageGeneration.value
-        if (active != null && !active.isTerminal) return
         if (promptOverride == null) {
-            imageGenerationPromptCheckpoint = null
-            imageGenerationCompletedImageCheckpoint = null
+            imageGenerationPromptCheckpoints.remove(taskId)
+            imageGenerationCompletedImageCheckpoints.remove(taskId)
+        } else if (imageSizeOverride != null) {
+            imageGenerationPromptCheckpoints[taskId] = promptOverride to imageSizeOverride
+            imageGenerationCompletedImageCheckpoints.remove(taskId)
         }
         val initialPreference = imagePromptPreference ?: _session.value?.imagePromptPreference.orEmpty()
-        _imageGeneration.value = ImageGenerationState(
+        if (persistPreference) persistImagePromptPreference(initialPreference)
+        putImageGeneration(ImageGenerationState(
+            taskId = taskId,
             anchorMessageId = anchorMessageId,
-            phase = if (promptOverride == null) ImageGenerationPhase.DESIGNING else ImageGenerationPhase.GENERATING,
+            phase = ImageGenerationPhase.QUEUED,
             imageContentHint = imageContentHint,
             finalPromptRequirement = initialPreference
-        )
-        val job = ChatBarApp.instance.applicationScope.launch {
-            val token = novelAiCredentials.load()
-            var currentSession = chatRepository.getSession(sessionId)
-            val finalPromptRequirement = imagePromptPreference ?: currentSession?.imagePromptPreference.orEmpty()
-            if (persistPreference && currentSession != null &&
-                currentSession.imagePromptPreference != finalPromptRequirement
-            ) {
-                val updatedSession = currentSession.copy(imagePromptPreference = finalPromptRequirement)
-                chatRepository.updateSession(updatedSession)
-                currentSession = updatedSession
-                _session.value = updatedSession
+        ))
+        val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
+            GlobalImageGenerationConcurrencyGate.instance.run generationPermit@ {
+            updateImageGeneration(taskId) {
+                it.copy(
+                    phase = if (promptOverride == null) {
+                        ImageGenerationPhase.DESIGNING
+                    } else {
+                        ImageGenerationPhase.GENERATING
+                    },
+                    error = null
+                )
             }
-            _imageGeneration.value = ImageGenerationState(
-                anchorMessageId = anchorMessageId,
-                phase = if (promptOverride == null) ImageGenerationPhase.DESIGNING else ImageGenerationPhase.GENERATING,
-                imageContentHint = imageContentHint,
-                finalPromptRequirement = finalPromptRequirement
-            )
+            val token = novelAiCredentials.load()
+            val currentSession = chatRepository.getSession(sessionId)
+            val finalPromptRequirement = initialPreference
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
             val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
@@ -606,24 +775,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 if (token == null) missing.add("NovelAI Token")
                 if (promptOverride == null && card == null) missing.add("角色卡")
                 if (promptOverride == null && (model == null || model.apiKey.isBlank())) missing.add("默认生图模型/API Key")
-                _imageGeneration.value = ImageGenerationState(
-                    anchorMessageId,
-                    ImageGenerationPhase.FAILED,
-                    error = "缺少配置：${missing.joinToString("、")} 不可用，无法生图",
-                    imageContentHint = imageContentHint,
-                    finalPromptRequirement = finalPromptRequirement
-                )
-                return@launch
+                updateImageGeneration(taskId) {
+                    it.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = "缺少配置：${missing.joinToString("、")} 不可用，无法生图"
+                    )
+                }
+                return@generationPermit
             }
             if (promptOverride == null && imageRatioError != null) {
-                _imageGeneration.value = ImageGenerationState(
-                    anchorMessageId,
-                    ImageGenerationPhase.FAILED,
-                    error = imageRatioError,
-                    imageContentHint = imageContentHint,
-                    finalPromptRequirement = finalPromptRequirement
-                )
-                return@launch
+                updateImageGeneration(taskId) {
+                    it.copy(phase = ImageGenerationPhase.FAILED, error = imageRatioError)
+                }
+                return@generationPermit
             }
             try {
                 AiBackgroundWorkManager.run(sessionId) {
@@ -637,40 +801,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     imageContentHint = imageContentHint,
                     finalPromptRequirement = finalPromptRequirement
                 ) { draft ->
-                    val current = _imageGeneration.value
-                    if (current?.anchorMessageId == anchorMessageId &&
-                        current.phase == ImageGenerationPhase.DESIGNING
-                    ) {
-                        _imageGeneration.value = current.copy(promptDraft = draft)
+                    val current = imageGenerationState(taskId)
+                    if (current?.phase == ImageGenerationPhase.DESIGNING) {
+                        updateImageGeneration(taskId) { it.copy(promptDraft = draft) }
                     }
                 }
                 val imageSize = imageSizeOverride
                     ?: NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
-                imageGenerationPromptCheckpoint = prompt to imageSize
-                imageGenerationCompletedImageCheckpoint?.let { completedImage ->
-                    _imageGeneration.value = _imageGeneration.value?.copy(
-                        phase = ImageGenerationPhase.SAVING,
-                        previewImage = completedImage,
-                        progress = 1f,
-                        error = null
-                    )
-                    val path = withContext(Dispatchers.IO) {
-                        novelAiImageStorage.save(sessionId, completedImage)
-                    }
-                    chatRepository.addMessageAfter(
-                        ChatMessage.create(
-                            sessionId = sessionId,
-                            role = MessageRole.ASSISTANT,
-                            content = "",
-                            images = listOf(path),
-                            generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
-                            generatedFromMessageId = anchorMessageId
-                        ),
-                        anchorMessageId
-                    )
-                    refreshMessages()
-                    imageGenerationCompletedImageCheckpoint = null
-                    _imageGeneration.value = null
+                imageGenerationPromptCheckpoints[taskId] = prompt to imageSize
+                imageGenerationCompletedImageCheckpoints[taskId]?.let { completedImage ->
+                    saveNovelAiImageResult(taskId, anchorMessageId, prompt, imageSize, completedImage)
                     return@run
                 }
                 val seed = novelAiImageService.newSeed()
@@ -682,13 +822,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     requestBodyJson = requestBody,
                     rawAiOutput = debugPrompt(prompt, imageSize)
                 )
-                _imageGeneration.value = ImageGenerationState(
-                    anchorMessageId,
-                    ImageGenerationPhase.GENERATING,
-                    promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                    imageContentHint = imageContentHint,
-                    finalPromptRequirement = finalPromptRequirement
-                )
+                updateImageGeneration(taskId) {
+                    it.copy(phase = ImageGenerationPhase.GENERATING, error = null)
+                }
                 var attempt = 0
                 var retry = true
                 while (retry && attempt < 3) {
@@ -699,64 +835,29 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         novelAiImageService.generate(token, prompt, currentSeed, imageSize).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Intermediate -> {
-                                    _imageGeneration.value = ImageGenerationState(
-                                        anchorMessageId,
-                                        ImageGenerationPhase.STREAMING,
-                                        previewImage = event.image,
-                                        promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                        progress = event.progress,
-                                        imageContentHint = imageContentHint,
-                                        finalPromptRequirement = finalPromptRequirement
-                                    )
+                                    updateImageGeneration(taskId) {
+                                        it.copy(
+                                            phase = ImageGenerationPhase.STREAMING,
+                                            previewImage = event.image,
+                                            progress = event.progress,
+                                            error = null
+                                        )
+                                    }
                                 }
                                 is NovelAiImageEvent.Final -> {
-                                    imageGenerationCompletedImageCheckpoint = event.image
-                                    _imageGeneration.value = ImageGenerationState(
-                                        anchorMessageId,
-                                        ImageGenerationPhase.SAVING,
-                                        previewImage = event.image,
-                                        promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                        progress = 1f,
-                                        imageContentHint = imageContentHint,
-                                        finalPromptRequirement = finalPromptRequirement
-                                    )
-                                    val path = withContext(Dispatchers.IO) {
-                                        novelAiImageStorage.save(sessionId, event.image)
-                                    }
-                                    chatRepository.addMessageAfter(
-                                        ChatMessage.create(
-                                            sessionId = sessionId,
-                                            role = MessageRole.ASSISTANT,
-                                            content = "",
-                                            images = listOf(path),
-                                            generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
-                                            generatedFromMessageId = anchorMessageId
-                                        ),
-                                        anchorMessageId
-                                    )
-                                    refreshMessages()
-                                    imageGenerationCompletedImageCheckpoint = null
-                                    _imageGeneration.value = null
+                                    imageGenerationCompletedImageCheckpoints[taskId] = event.image
+                                    saveNovelAiImageResult(taskId, anchorMessageId, prompt, imageSize, event.image)
                                 }
                                 is NovelAiImageEvent.Error -> {
                                     if (isRetryableError(event.message) && attempt < 3) {
                                         retry = true
-                                        _imageGeneration.value = ImageGenerationState(
-                                            anchorMessageId,
-                                            ImageGenerationPhase.GENERATING,
-                                            promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                            imageContentHint = imageContentHint,
-                                            finalPromptRequirement = finalPromptRequirement
-                                        )
+                                        updateImageGeneration(taskId) {
+                                            it.copy(phase = ImageGenerationPhase.GENERATING, error = null)
+                                        }
                                     } else {
-                                        _imageGeneration.value = ImageGenerationState(
-                                            anchorMessageId,
-                                            ImageGenerationPhase.FAILED,
-                                            promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                            error = event.message,
-                                            imageContentHint = imageContentHint,
-                                            finalPromptRequirement = finalPromptRequirement
-                                        )
+                                        updateImageGeneration(taskId) {
+                                            it.copy(phase = ImageGenerationPhase.FAILED, error = event.message)
+                                        }
                                     }
                                 }
                             }
@@ -765,59 +866,88 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         if (error is CancellationException) throw error
                         if (isRetryableError(error.message) && attempt < 3) {
                             retry = true
-                            _imageGeneration.value = ImageGenerationState(
-                                anchorMessageId,
-                                ImageGenerationPhase.GENERATING,
-                                promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                                imageContentHint = imageContentHint,
-                                finalPromptRequirement = finalPromptRequirement
-                            )
+                            updateImageGeneration(taskId) {
+                                it.copy(phase = ImageGenerationPhase.GENERATING, error = null)
+                            }
                         } else {
-                        _imageGeneration.value = ImageGenerationState(
-                            anchorMessageId,
-                            ImageGenerationPhase.FAILED,
-                            previewImage = _imageGeneration.value?.previewImage,
-                            promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                            progress = _imageGeneration.value?.progress ?: 0f,
-                            error = "生图失败 (网络/连接错误, 第${attempt}次尝试): ${error.message ?: "未知错误"}",
-                            imageContentHint = imageContentHint,
-                            finalPromptRequirement = finalPromptRequirement
-                        )
+                            updateImageGeneration(taskId) {
+                                it.copy(
+                                    phase = ImageGenerationPhase.FAILED,
+                                    error = "生图失败 (网络/连接错误, 第${attempt}次尝试): ${error.message ?: "未知错误"}"
+                                )
+                            }
                         }
                     }
                 }
                 }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
-                _imageGeneration.value = ImageGenerationState(
-                    anchorMessageId,
-                    ImageGenerationPhase.FAILED,
-                    previewImage = _imageGeneration.value?.previewImage,
-                    promptDraft = _imageGeneration.value?.promptDraft.orEmpty(),
-                    progress = _imageGeneration.value?.progress ?: 0f,
-                    error = if (promptOverride == null) {
-                        "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}"
-                    } else {
-                        "生图失败 (复用图片元数据): ${error.message ?: "未知错误"}"
-                    },
-                    imageContentHint = imageContentHint,
-                    finalPromptRequirement = finalPromptRequirement
-                )
+                updateImageGeneration(taskId) {
+                    it.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = if (promptOverride == null) {
+                            "生图失败 (提示设计阶段): ${error.message ?: "未知错误"}"
+                        } else {
+                            "生图失败 (复用图片元数据): ${error.message ?: "未知错误"}"
+                        }
+                    )
+                }
+            }
             }
         }
-        imageGenerationJob = job
-        job.invokeOnCompletion {
-            if (imageGenerationJob == job) imageGenerationJob = null
+        imageGenerationJobs[taskId] = job
+        job.invokeOnCompletion { error ->
+            imageGenerationJobs.remove(taskId, job)
+            if (error != null && error !is CancellationException) {
+                updateImageGeneration(taskId) { state ->
+                    if (state.isTerminal) state else state.copy(
+                        phase = ImageGenerationPhase.FAILED,
+                        error = "生图任务异常结束：${error.message ?: "未知错误"}"
+                    )
+                }
+            }
         }
+        job.start()
+    }
+
+    private suspend fun saveNovelAiImageResult(
+        taskId: String,
+        anchorMessageId: String,
+        prompt: NovelAiPromptPlan,
+        imageSize: NovelAiImageSize,
+        image: ByteArray
+    ) {
+        updateImageGeneration(taskId) {
+            it.copy(
+                phase = ImageGenerationPhase.SAVING,
+                previewImage = image,
+                progress = 1f,
+                error = null
+            )
+        }
+        val path = withContext(Dispatchers.IO) {
+            novelAiImageStorage.save(sessionId, image)
+        }
+        chatRepository.addMessageAfter(
+            ChatMessage.create(
+                sessionId = sessionId,
+                role = MessageRole.ASSISTANT,
+                content = "",
+                images = listOf(path),
+                generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
+                generatedFromMessageId = anchorMessageId
+            ),
+            anchorMessageId
+        )
+        refreshMessages()
+        removeImageGeneration(taskId)
     }
 
     private fun debugPrompt(prompt: NovelAiPromptPlan, imageSize: NovelAiImageSize): String = buildString {
         appendLine("Size: ${imageSize.label} (${imageSize.width}x${imageSize.height})")
         appendLine("Base: ${prompt.baseCaption}")
         prompt.characterCaptions.forEachIndexed { index, caption ->
-            appendLine(
-                "Character ${index + 1} @ (${caption.center.x}, ${caption.center.y}): ${caption.prompt}"
-            )
+            appendLine("Character ${index + 1}: ${caption.prompt}")
         }
     }
 
@@ -827,18 +957,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             .any { msg.contains(it) }
     }
 
-    fun dismissNovelAiImageGeneration() {
-        _imageGeneration.value = null
+    fun dismissNovelAiImageGeneration(taskId: String) {
+        val current = imageGenerationState(taskId)?.takeIf { it.isTerminal } ?: return
+        imageGenerationJobs.remove(taskId)?.cancel(CancellationException("用户关闭生图任务"))
+        removeImageGeneration(current.taskId)
     }
 
-    fun cancelNovelAiImageGeneration() {
-        val current = _imageGeneration.value?.takeIf { it.isCancellable } ?: return
-        _imageGeneration.value = current.copy(
-            phase = ImageGenerationPhase.CANCELLED,
-            error = null
-        )
-        imageGenerationJob?.cancel(CancellationException("用户停止生图"))
-        imageGenerationJob = null
+    fun cancelNovelAiImageGeneration(taskId: String) {
+        val current = imageGenerationState(taskId)?.takeIf { it.isCancellable } ?: return
+        putImageGeneration(current.copy(phase = ImageGenerationPhase.CANCELLED, error = null))
+        imageGenerationJobs[taskId]?.cancel(CancellationException("用户停止生图"))
     }
 
     fun dismissBatteryOptimizationHint() {
@@ -986,7 +1114,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             val restored = MessageFormatRepairPolicy.restoreOriginal(message) ?: return@launch
             chatRepository.updateMessage(restored)
-            _messages.value = chatRepository.getMessages(sessionId)
+            replaceMessagesFromRepository()
             refreshMemoryAfterMessageEdit(restored)
         }
     }
@@ -1155,7 +1283,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun persistFormatRepairMessage(message: ChatMessage): ChatMessage {
         chatRepository.updateMessage(message)
-        _messages.value = chatRepository.getMessages(sessionId)
+        replaceMessagesFromRepository()
         return message
     }
 
@@ -1781,7 +1909,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 chatRepository.addMessage(assistantMsg)
                             }
 
-                            _messages.value = chatRepository.getMessages(sessionId)
+                            replaceMessagesFromRepository()
                             _streamingMessage.value = null
                             if (appSettings.automaticFormatCheckEnabled) {
                                 persistedAssistantMessage = performMessageFormatRepair(
@@ -1803,7 +1931,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             ChatBarApp.instance.momentScheduler.kick("chat-reply")
                             
                             try {
-                                _messages.value = chatRepository.getMessages(sessionId)
+                                replaceMessagesFromRepository()
                             } catch (_: Exception) {}
                             _isResponding.value = false
 
@@ -1837,7 +1965,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             )
                             chatRepository.addMessage(errorAssistantMsg)
                             try {
-                                _messages.value = chatRepository.getMessages(sessionId)
+                                replaceMessagesFromRepository()
                             } catch (_: Exception) {}
                         } else {
                             addSystemMessage("错误: ${e.message}")
@@ -1861,7 +1989,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             )
                             chatRepository.addMessage(errorAssistantMsg)
                             try {
-                                _messages.value = chatRepository.getMessages(sessionId)
+                                replaceMessagesFromRepository()
                             } catch (_: Exception) {}
                         } else {
                             addSystemMessage("閿欒: ${e.message}")

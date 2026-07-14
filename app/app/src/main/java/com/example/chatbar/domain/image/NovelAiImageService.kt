@@ -146,7 +146,7 @@ class NovelAiImageService(
                 put("base_caption", prompt.baseCaption)
                 put("char_captions", characterCaptions)
             })
-            put("use_coords", prompt.characterCaptions.isNotEmpty())
+            put("use_coords", false)
             put("use_order", true)
         }
         val v4NegativePrompt = buildJsonObject {
@@ -162,7 +162,7 @@ class NovelAiImageService(
                 })
             })
             put("legacy_uc", false)
-            put("use_coords", prompt.characterCaptions.isNotEmpty())
+            put("use_coords", false)
             put("use_order", true)
         }
         return buildJsonObject {

@@ -161,7 +161,8 @@ fun ManageScreen(
     onNavigate: (Any) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ManageViewModel = viewModel(),
-    sharedUri: android.net.Uri? = null
+    sharedUri: android.net.Uri? = null,
+    onSwipePastFirstTab: () -> Unit = {}
 ) {
     val characters by viewModel.characterCards.collectAsState()
     val formats by viewModel.formatCards.collectAsState()
@@ -372,14 +373,20 @@ fun ManageScreen(
         }
     ) {
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-            CbTabs(visibleTabs.map { it.second }, selectedTabIndex, ::selectTabIndex)
+            CbTabs(
+                visibleTabs.map { it.second },
+                selectedTabIndex,
+                ::selectTabIndex,
+                onSwipePastStart = onSwipePastFirstTab
+            )
             Box(
                 Modifier
                     .weight(1f)
                     .swipeToAdjacentTab(
                         selectedIndex = selectedTabIndex,
                         itemCount = visibleTabs.size,
-                        onSelected = ::selectTabIndex
+                        onSelected = ::selectTabIndex,
+                        onSwipePastStart = onSwipePastFirstTab
                     )
             ) {
                 when (tab) {

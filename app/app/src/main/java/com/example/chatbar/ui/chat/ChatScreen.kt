@@ -44,6 +44,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -108,6 +109,11 @@ import kotlinx.coroutines.launch
 
 private val ChatContentMaxWidth = 840.dp
 
+internal fun canUseChatImageLongPress(
+    isResponding: Boolean,
+    screenshotSelectionMode: Boolean
+): Boolean = !screenshotSelectionMode
+
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
@@ -130,7 +136,7 @@ fun ChatScreen(
     val deletingMemory by viewModel.isDeletingMemory.collectAsState()
     val contextWindowSize by viewModel.contextWindowSize.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
-    val imageGeneration by viewModel.imageGeneration.collectAsState()
+    val imageGenerations by viewModel.imageGenerations.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
@@ -159,6 +165,10 @@ fun ChatScreen(
     var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var expandedImageIndex by remember(sessionId) { mutableStateOf<Int?>(null) }
     var imageActionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var imageRegenerationDraft by remember(sessionId) { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
+    var imageRegenerationLoading by remember(sessionId) { mutableStateOf(false) }
+    var imageRegenerationError by remember(sessionId) { mutableStateOf<String?>(null) }
+    var imageRegenerationFullscreenTarget by remember(sessionId) { mutableStateOf<Int?>(null) }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var deleteMessageTargetId by remember { mutableStateOf<String?>(null) }
@@ -181,6 +191,30 @@ fun ChatScreen(
     var imagePromptTargetId by remember(sessionId) { mutableStateOf<String?>(null) }
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
+
+    LaunchedEffect(imageActionTarget) {
+        val target = imageActionTarget
+        imageRegenerationDraft = null
+        imageRegenerationError = null
+        imageRegenerationFullscreenTarget = null
+        if (target == null) {
+            imageRegenerationLoading = false
+        } else {
+            imageRegenerationLoading = true
+            try {
+                imageRegenerationDraft = viewModel.loadNovelAiImageRegenerationDraft(
+                    messageId = target.first,
+                    imagePath = target.second
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                imageRegenerationError = error.message ?: "读取图片提示词失败"
+            } finally {
+                imageRegenerationLoading = false
+            }
+        }
+    }
 
     LaunchedEffect(draftLoaded, draftInput) {
         if (draftLoaded && !inputTouched && input.text != draftInput) {
@@ -279,10 +313,12 @@ fun ChatScreen(
             }.takeIf { it >= 0 } ?: messages.size
         }
     }
-    val imageGenerationRunning = imageGeneration?.isTerminal == false
-    val imageGenerationAnchorExists = remember(messages, imageGeneration?.anchorMessageId) {
-        val anchorId = imageGeneration?.anchorMessageId
-        anchorId != null && messages.any { it.id == anchorId }
+    val imageGenerationsByAnchor = remember(imageGenerations) {
+        imageGenerations.groupBy { it.anchorMessageId }
+    }
+    val orphanedImageGenerations = remember(messages, imageGenerations) {
+        val messageIds = messages.mapTo(mutableSetOf()) { it.id }
+        imageGenerations.filterNot { it.anchorMessageId in messageIds }
     }
     val previewImages = remember(messages) {
         messages.flatMap { message ->
@@ -664,7 +700,7 @@ fun ChatScreen(
                             }.takeIf { it >= 0 }
                         }),
                         onImageLongPress = { path ->
-                            if (!isResponding && !screenshotSelectionMode) {
+                            if (canUseChatImageLongPress(isResponding, screenshotSelectionMode)) {
                                 val reusable = message.generatedFromMessageId != null ||
                                     message.generatedImageMetadata.any { it.imagePath == path }
                                 if (reusable) {
@@ -696,7 +732,6 @@ fun ChatScreen(
                             imageContentHintDraft = ""
                             imagePromptPreferenceDraft = session?.imagePromptPreference.orEmpty()
                         }) else null,
-                        imageGenerationEnabled = !imageGenerationRunning,
                         selectionMode = screenshotSelectionMode && selectableForScreenshot,
                         selected = selectedForScreenshot,
                         partiallySelected = partiallySelectedForScreenshot,
@@ -721,14 +756,16 @@ fun ChatScreen(
                         checking = repairState != null,
                         onRestore = { viewModel.restoreMessageFormatOriginal(message.id) }
                     )
-                    imageGeneration?.takeIf { it.anchorMessageId == message.id }?.let { generation ->
-                        NovelAiGenerationCard(generation,
-                            onRetry = {
-                                viewModel.retryNovelAiImageGeneration()
-                            },
-                            onDismiss = { viewModel.dismissNovelAiImageGeneration() },
-                            onCancel = { viewModel.cancelNovelAiImageGeneration() }
-                        )
+                    imageGenerationsByAnchor[message.id].orEmpty().forEach { generation ->
+                        key(generation.taskId) {
+                            NovelAiGenerationCard(generation,
+                                onRetry = {
+                                    viewModel.retryNovelAiImageGeneration(generation.taskId)
+                                },
+                                onDismiss = { viewModel.dismissNovelAiImageGeneration(generation.taskId) },
+                                onCancel = { viewModel.cancelNovelAiImageGeneration(generation.taskId) }
+                            )
+                        }
                     }
                 }
                 streamingMessage?.takeIf { streamingInsertIndex == messages.size }?.let { message ->
@@ -744,14 +781,14 @@ fun ChatScreen(
                         )
                     }
                 }
-                imageGeneration?.takeUnless { imageGenerationAnchorExists }?.let { generation ->
-                    item(key = "novelai-generation") {
+                orphanedImageGenerations.forEach { generation ->
+                    item(key = "novelai-generation-${generation.taskId}") {
                         NovelAiGenerationCard(generation,
                             onRetry = {
-                                viewModel.retryNovelAiImageGeneration()
+                                viewModel.retryNovelAiImageGeneration(generation.taskId)
                             },
-                            onDismiss = { viewModel.dismissNovelAiImageGeneration() },
-                            onCancel = { viewModel.cancelNovelAiImageGeneration() }
+                            onDismiss = { viewModel.dismissNovelAiImageGeneration(generation.taskId) },
+                            onCancel = { viewModel.cancelNovelAiImageGeneration(generation.taskId) }
                         )
                     }
                 }
@@ -876,8 +913,7 @@ fun ChatScreen(
                             imagePromptPreference = preference,
                             persistPreference = true
                         )
-                    },
-                    enabled = !imageGenerationRunning
+                    }
                 )
             }
         ) {
@@ -892,7 +928,6 @@ fun ChatScreen(
                         value = imageContentHintDraft,
                         onValueChange = { imageContentHintDraft = it },
                         placeholder = "本次画面要额外强调的场景、镜头、构图或取舍",
-                        enabled = !imageGenerationRunning,
                         singleLine = false,
                         minLines = 3
                     )
@@ -902,7 +937,6 @@ fun ChatScreen(
                         value = imagePromptPreferenceDraft,
                         onValueChange = { imagePromptPreferenceDraft = it },
                         placeholder = "对最终 NovelAI Prompt 的格式、标签、权重或风格要求",
-                        enabled = !imageGenerationRunning,
                         singleLine = false,
                         minLines = 3
                     )
@@ -982,32 +1016,122 @@ fun ChatScreen(
         )
     }
     imageActionTarget?.let { (messageId, path) ->
+        val regenerationDraft = imageRegenerationDraft
         CbDialog(
-            onDismissRequest = { imageActionTarget = null },
+            onDismissRequest = {
+                imageActionTarget = null
+                imageRegenerationFullscreenTarget = null
+            },
             title = "图片操作",
             dismiss = {
-                CbButton("取消", { imageActionTarget = null }, variant = ButtonVariant.Ghost)
+                CbButton(
+                    "取消",
+                    {
+                        imageActionTarget = null
+                        imageRegenerationFullscreenTarget = null
+                    },
+                    variant = ButtonVariant.Ghost
+                )
             },
             confirm = {
                 CbButton(
                     "重新生成",
                     {
+                        val draft = imageRegenerationDraft ?: return@CbButton
                         imageActionTarget = null
-                        viewModel.regenerateNovelAiImage(messageId, path)
+                        imageRegenerationFullscreenTarget = null
+                        viewModel.regenerateNovelAiImage(messageId, path, draft)
                     },
-                    enabled = !imageGenerationRunning
+                    enabled = regenerationDraft?.baseCaption?.isNotBlank() == true &&
+                        !imageRegenerationLoading
                 )
             }
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                CbText(
-                    "使用相同提示词与图片参数重新生成；每次使用新 seed。",
-                    color = ChatBarTheme.colors.mutedForeground
-                )
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 520.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(12.dp)
+            ) {
+                when {
+                    imageRegenerationLoading -> {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.Center
+                        ) {
+                            CbSpinner()
+                        }
+                    }
+                    imageRegenerationError != null -> {
+                        CbText(
+                            imageRegenerationError.orEmpty(),
+                            color = ChatBarTheme.colors.destructive
+                        )
+                    }
+                    regenerationDraft != null -> {
+                        CbText(
+                            "编辑本次使用的 NovelAI 提示词。尺寸保持 ${regenerationDraft.width}×${regenerationDraft.height}；每次使用新 seed。",
+                            color = ChatBarTheme.colors.mutedForeground
+                        )
+                        CbField(
+                            label = "主提示词",
+                            description = "场景、构图、画质和全局风格标签",
+                            error = if (regenerationDraft.baseCaption.isBlank()) "主提示词不能为空" else null,
+                            onFullscreenEdit = { imageRegenerationFullscreenTarget = -1 }
+                        ) {
+                            CbInput(
+                                value = regenerationDraft.baseCaption,
+                                onValueChange = { value ->
+                                    imageRegenerationDraft = imageRegenerationDraft?.copy(baseCaption = value)
+                                },
+                                singleLine = false,
+                                minLines = 3,
+                                isError = regenerationDraft.baseCaption.isBlank()
+                            )
+                        }
+                        regenerationDraft.characterPrompts.forEachIndexed { index, characterPrompt ->
+                            CbField(
+                                label = "角色提示词 ${index + 1}",
+                                description = "该角色的外观、服装和动作标签",
+                                onFullscreenEdit = { imageRegenerationFullscreenTarget = index }
+                            ) {
+                                CbInput(
+                                    value = characterPrompt.prompt,
+                                    onValueChange = { value ->
+                                        imageRegenerationDraft = imageRegenerationDraft?.let { current ->
+                                            current.copy(
+                                                characterPrompts = current.characterPrompts.mapIndexed { itemIndex, item ->
+                                                    if (itemIndex == index) item.copy(prompt = value) else item
+                                                }
+                                            )
+                                        }
+                                    },
+                                    singleLine = false,
+                                    minLines = 3
+                                )
+                            }
+                        }
+                        CbField(
+                            label = "负面提示词",
+                            description = "不希望图片出现的内容或质量问题",
+                            onFullscreenEdit = { imageRegenerationFullscreenTarget = -2 }
+                        ) {
+                            CbInput(
+                                value = regenerationDraft.negativePrompt,
+                                onValueChange = { value ->
+                                    imageRegenerationDraft = imageRegenerationDraft?.copy(negativePrompt = value)
+                                },
+                                singleLine = false,
+                                minLines = 3
+                            )
+                        }
+                    }
+                }
                 CbButton(
                     "删除图片",
                     {
                         imageActionTarget = null
+                        imageRegenerationFullscreenTarget = null
                         deleteImageTarget = messageId to path
                     },
                     modifier = Modifier.fillMaxWidth(),
@@ -1015,6 +1139,38 @@ fun ChatScreen(
                 )
             }
         }
+    }
+    imageRegenerationFullscreenTarget?.let { target ->
+        val draft = imageRegenerationDraft ?: return@let
+        val text = when {
+            target == -1 -> draft.baseCaption
+            target == -2 -> draft.negativePrompt
+            else -> draft.characterPrompts.getOrNull(target)?.prompt ?: return@let
+        }
+        val title = when {
+            target == -1 -> "编辑主提示词"
+            target == -2 -> "编辑负面提示词"
+            else -> "编辑角色提示词 ${target + 1}"
+        }
+        FullscreenTextEditor(
+            title = title,
+            text = text,
+            onTextChange = { value ->
+                imageRegenerationDraft = imageRegenerationDraft?.let { current ->
+                    when {
+                        target == -1 -> current.copy(baseCaption = value)
+                        target == -2 -> current.copy(negativePrompt = value)
+                        else -> current.copy(
+                            characterPrompts = current.characterPrompts.mapIndexed { index, item ->
+                                if (index == target) item.copy(prompt = value) else item
+                            }
+                        )
+                    }
+                }
+            },
+            visible = true,
+            onDismiss = { imageRegenerationFullscreenTarget = null }
+        )
     }
     deleteImageTarget?.let { (messageId, path) ->
         CbDialog(
@@ -1467,6 +1623,7 @@ private fun NovelAiGenerationCard(
     onCancel: () -> Unit
 ) {
     val label = when (state.phase) {
+        ImageGenerationPhase.QUEUED -> "等待生图额度"
         ImageGenerationPhase.DESIGNING -> "正在设计 NovelAI Prompt"
         ImageGenerationPhase.GENERATING -> "NovelAI 正在生成"
         ImageGenerationPhase.STREAMING -> "流式预览 ${(state.progress * 100).toInt()}%"

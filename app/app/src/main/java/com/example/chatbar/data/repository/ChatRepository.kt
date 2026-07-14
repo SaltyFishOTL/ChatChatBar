@@ -11,6 +11,8 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * 聊天仓库 - 管理会话和消息
@@ -27,6 +29,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     val sessions: Flow<List<ChatSession>> = _sessions.asStateFlow()
 
     private var initialized = false
+    private val messageAppendMutex = Mutex()
 
     suspend fun initialize() {
         if (initialized) return
@@ -134,7 +137,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         )
     }
 
-    suspend fun addMessage(message: ChatMessage): ChatMessage {
+    suspend fun addMessage(message: ChatMessage): ChatMessage = messageAppendMutex.withLock {
         saveMessageRecord(message)
 
         // 更新会话预览
@@ -151,10 +154,13 @@ class ChatRepository(private val storage: JsonFileStorage) {
             }
         }
 
-        return message
+        message
     }
 
-    suspend fun addMessageAfter(message: ChatMessage, anchorMessageId: String): ChatMessage {
+    suspend fun addMessageAfter(
+        message: ChatMessage,
+        anchorMessageId: String
+    ): ChatMessage = messageAppendMutex.withLock {
         val reordered = ChatMessageOrdering.insertGeneratedImageAfter(
             messages = getMessages(message.sessionId),
             imageMessage = message,
@@ -174,7 +180,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             )
         }
 
-        return inserted
+        inserted
     }
 
     private suspend fun saveMessageRecord(message: ChatMessage) {

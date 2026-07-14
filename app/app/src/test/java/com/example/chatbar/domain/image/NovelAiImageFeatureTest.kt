@@ -90,17 +90,19 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
-    fun `designed prompt JSON does not require character names`() {
+    fun `designed prompt JSON does not require character names or centers`() {
         val designed = Json { ignoreUnknownKeys = true }.decodeFromString(
             DesignedImagePrompt.serializer(),
-            """{"sizePreset":"SQUARE","baseCaption":"1girl, room","characters":[{"caption":"black hair","center":{"x":0.3,"y":0.5}}]}"""
+            """{"sizePreset":"SQUARE","baseCaption":"1girl, room","characters":[{"caption":"black hair"}]}"""
         )
 
         assertEquals("SQUARE", designed.sizePreset)
         assertEquals("black hair", designed.characters.single().caption)
-        assertEquals(0.3f, designed.characters.single().center!!.x, 0.001f)
+        assertEquals(null, designed.characters.single().center)
         assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.contains("\"name\":\"exact name\""))
         assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM.contains("\"name\""))
+        assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.contains("\"center\""))
+        assertFalse(PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM.contains("\"center\""))
     }
 
     @Test
@@ -320,17 +322,24 @@ class NovelAiImageFeatureTest {
         assertEquals("false", parameters.getValue("sm").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("sm_dyn").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("dynamic_thresholding").jsonPrimitive.content)
-        assertEquals(
-            PromptTemplates.defaultCharacterNaiNegativePrompt(),
-            parameters.getValue("negative_prompt").jsonPrimitive.content
-        )
+        val negativePrompt = parameters.getValue("negative_prompt").jsonPrimitive.content
+        val v4NegativePrompt = parameters.getValue("v4_negative_prompt").jsonObject
+            .getValue("caption").jsonObject
+            .getValue("base_caption").jsonPrimitive.content
+        assertTrue(negativePrompt.isNotBlank())
+        assertEquals(negativePrompt, v4NegativePrompt)
         val character = caption.getValue("char_captions").jsonArray.first().jsonObject
         val center = character.getValue("centers").jsonArray.first().jsonObject
         assertEquals("0.25", center.getValue("x").jsonPrimitive.content)
         assertEquals("0.6", center.getValue("y").jsonPrimitive.content)
         assertEquals(
-            "true",
+            "false",
             parameters.getValue("v4_prompt").jsonObject
+                .getValue("use_coords").jsonPrimitive.content
+        )
+        assertEquals(
+            "false",
+            parameters.getValue("v4_negative_prompt").jsonObject
                 .getValue("use_coords").jsonPrimitive.content
         )
     }
@@ -352,6 +361,36 @@ class NovelAiImageFeatureTest {
 
         assertEquals("bad hands, watermark", parameters.getValue("negative_prompt").jsonPrimitive.content)
         assertEquals("bad hands, watermark", v4NegativeCaption.getValue("base_caption").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `request lets NAI choose character positions`() {
+        val body = NovelAiImageService().buildRequestBody(
+            NovelAiPromptPlan(
+                baseCaption = "2girls, outdoors",
+                characterCaptions = listOf(
+                    NovelAiCharacterCaption(
+                        prompt = "girl, black hair",
+                        center = DesignedCharacterCenter(0.25f, 0.6f)
+                    )
+                ),
+                negativePrompt = "bad hands"
+            ),
+            seed = 42
+        )
+        val parameters = Json.parseToJsonElement(body).jsonObject
+            .getValue("parameters").jsonObject
+
+        assertEquals(
+            "false",
+            parameters.getValue("v4_prompt").jsonObject
+                .getValue("use_coords").jsonPrimitive.content
+        )
+        assertEquals(
+            "false",
+            parameters.getValue("v4_negative_prompt").jsonObject
+                .getValue("use_coords").jsonPrimitive.content
+        )
     }
 
     @Test

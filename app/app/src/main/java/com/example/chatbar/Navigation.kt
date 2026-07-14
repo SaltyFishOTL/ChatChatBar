@@ -211,7 +211,11 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                         MomentsScreen()
                     }
                     entry<ManageRoute> {
-                        ManageScreen(onNavigate = { route -> pushRoute(route as NavKey) }, sharedUri = sharedUri)
+                        ManageScreen(
+                            onNavigate = { route -> pushRoute(route as NavKey) },
+                            sharedUri = sharedUri,
+                            onSwipePastFirstTab = { showRootAt(currentRootIndex - 1) }
+                        )
                     }
                     entry<ImagePromptToolRoute> {
                         ImagePromptToolScreen(onBack = ::popBackStack)

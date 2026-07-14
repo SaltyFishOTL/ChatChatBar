@@ -191,7 +191,6 @@ fun ChatBubble(
     onImageLongPress: ((String) -> Unit)? = null,
     onGenerateImage: (() -> Unit)? = null,
     onGenerateImageLongPress: (() -> Unit)? = null,
-    imageGenerationEnabled: Boolean = true,
     selectionMode: Boolean = false,
     selected: Boolean = false,
     partiallySelected: Boolean = false,
@@ -228,7 +227,6 @@ fun ChatBubble(
             onImageLongPress = onImageLongPress,
             onGenerateImage = onGenerateImage,
             onGenerateImageLongPress = onGenerateImageLongPress,
-            imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
             selected = selected,
             partiallySelected = partiallySelected,
@@ -258,7 +256,6 @@ fun ChatBubble(
             onImageLongPress = onImageLongPress,
             onGenerateImage = onGenerateImage,
             onGenerateImageLongPress = onGenerateImageLongPress,
-            imageGenerationEnabled = imageGenerationEnabled,
             selectionMode = selectionMode,
             selected = selected,
             partiallySelected = partiallySelected,
@@ -291,7 +288,6 @@ private fun SegmentedAssistantBubble(
     onImageLongPress: ((String) -> Unit)?,
     onGenerateImage: (() -> Unit)?,
     onGenerateImageLongPress: (() -> Unit)?,
-    imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
     selected: Boolean,
     partiallySelected: Boolean,
@@ -426,8 +422,7 @@ private fun SegmentedAssistantBubble(
                     onPreviousAlternative = onPreviousAlternative,
                     onNextAlternative = onNextAlternative,
                     onGenerateImage = onGenerateImage,
-                    onGenerateImageLongPress = onGenerateImageLongPress,
-                    imageGenerationEnabled = imageGenerationEnabled
+                    onGenerateImageLongPress = onGenerateImageLongPress
                 )
             }
         }
@@ -746,7 +741,6 @@ private fun LegacyChatBubble(
     onImageLongPress: ((String) -> Unit)?,
     onGenerateImage: (() -> Unit)?,
     onGenerateImageLongPress: (() -> Unit)?,
-    imageGenerationEnabled: Boolean,
     selectionMode: Boolean,
     selected: Boolean,
     partiallySelected: Boolean,
@@ -895,8 +889,7 @@ private fun LegacyChatBubble(
                         onPreviousAlternative = onPreviousAlternative,
                         onNextAlternative = onNextAlternative,
                         onGenerateImage = onGenerateImage,
-                        onGenerateImageLongPress = onGenerateImageLongPress,
-                        imageGenerationEnabled = imageGenerationEnabled
+                        onGenerateImageLongPress = onGenerateImageLongPress
                     )
                 }
             }
@@ -1184,8 +1177,7 @@ private fun MessageMetaRow(
     onPreviousAlternative: (() -> Unit)?,
     onNextAlternative: (() -> Unit)?,
     onGenerateImage: (() -> Unit)?,
-    onGenerateImageLongPress: (() -> Unit)?,
-    imageGenerationEnabled: Boolean
+    onGenerateImageLongPress: (() -> Unit)?
 ) {
     Row(
         modifier = Modifier.fillMaxWidth().widthIn(max = maxWidth).padding(top = 3.dp, start = 8.dp, end = 8.dp),
@@ -1233,9 +1225,7 @@ private fun MessageMetaRow(
         if (showActions && !isUser && onGenerateImage != null) {
             GenerateImageActionButton(
                 onClick = onGenerateImage,
-                onLongClick = onGenerateImageLongPress ?: onGenerateImage,
-                enabled = imageGenerationEnabled,
-                tint = if (imageGenerationEnabled) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground
+                onLongClick = onGenerateImageLongPress ?: onGenerateImage
             )
         }
     }
@@ -1244,28 +1234,21 @@ private fun MessageMetaRow(
 @Composable
 private fun GenerateImageActionButton(
     onClick: () -> Unit,
-    onLongClick: () -> Unit,
-    enabled: Boolean,
-    tint: Color
+    onLongClick: () -> Unit
 ) {
-    val indicatorColor = if (enabled) {
-        ChatBarTheme.colors.primary
-    } else {
-        ChatBarTheme.colors.mutedForeground.copy(alpha = 0.45f)
-    }
+    val indicatorColor = ChatBarTheme.colors.primary
     Box(
         modifier = Modifier
             .size(40.dp)
             .clip(RoundedCornerShape(8.dp))
             .combinedClickable(
-                enabled = enabled,
                 role = Role.Button,
                 onClick = onClick,
                 onLongClick = onLongClick
             ),
         contentAlignment = Alignment.Center
     ) {
-        CbIcon(AppIcons.Image, "点击直生，长按设置", Modifier.size(20.dp), tint)
+        CbIcon(AppIcons.Image, "点击直生，长按设置", Modifier.size(20.dp), ChatBarTheme.colors.primary)
         Box(
             Modifier
                 .align(Alignment.BottomCenter)

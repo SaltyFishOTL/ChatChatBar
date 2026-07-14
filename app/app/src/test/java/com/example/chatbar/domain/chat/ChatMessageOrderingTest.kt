@@ -56,6 +56,50 @@ class ChatMessageOrderingTest {
     }
 
     @Test
+    fun `two image results and later text all remain in timeline`() {
+        val anchor = message(
+            "assistant-1",
+            MessageRole.ASSISTANT,
+            "anchor",
+            orderKey = 1 * MESSAGE_ORDER_STEP
+        )
+        val firstImage = message(
+            "image-1",
+            MessageRole.ASSISTANT,
+            "",
+            images = listOf("/tmp/1.png")
+        )
+        val secondImage = message(
+            "image-2",
+            MessageRole.ASSISTANT,
+            "",
+            images = listOf("/tmp/2.png")
+        )
+        val laterText = message(
+            "assistant-2",
+            MessageRole.ASSISTANT,
+            "later",
+            orderKey = 2 * MESSAGE_ORDER_STEP
+        )
+
+        val afterFirst = ChatMessageOrdering.insertGeneratedImageAfter(
+            listOf(anchor, laterText),
+            firstImage,
+            anchor.id
+        )
+        val result = ChatMessageOrdering.insertGeneratedImageAfter(
+            afterFirst,
+            secondImage,
+            anchor.id
+        )
+
+        assertEquals(
+            listOf("assistant-1", "image-1", "image-2", "assistant-2"),
+            result.sortedWith(ChatMessage.TimelineComparator).map { it.id }
+        )
+    }
+
+    @Test
     fun `old message json decodes with timeline defaults`() {
         val json = """
             {
