@@ -554,7 +554,6 @@ class ManageViewModel : ViewModel() {
                     settingsRepository.saveAppSettings(
                         current.copy(
                             defaultModelId = presetModelId,
-                            defaultImageModelId = current.defaultImageModelId ?: presetModelId,
                             presetDefaultModelKey = null
                         )
                     )

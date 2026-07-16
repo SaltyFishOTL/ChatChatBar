@@ -1458,12 +1458,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return message
         }
 
-        val model = modelResolver.resolveAuxiliaryTextModelExact(
+        val model = modelResolver.resolveFormatRepairModel(
             appSettings.formatRepairModelId,
             appSettings
         )
         if (model == null || model.apiKey.isBlank()) {
-            return persistFormatRepairFailure(message, "格式修复模型未配置或已失效")
+            return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效")
         }
 
         val originalContent = message.displayContent

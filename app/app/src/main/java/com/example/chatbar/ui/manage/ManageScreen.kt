@@ -1475,7 +1475,6 @@ private fun SettingsTab(
         assistantSegmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
     }
     val effectiveDefaultModelId = modelId ?: effectiveModels.firstOrNull()?.id ?: customModels.firstOrNull { it.selectableForChat }?.id
-    val effectiveDefaultImageModelId = imageModelId ?: effectiveDefaultModelId
     val draftContextWindowSize = if (contextSize.toInt() >= 50 && customContextSize.isNotBlank()) {
         customContextSize.toIntOrNull() ?: 50
     } else {
@@ -1489,7 +1488,7 @@ private fun SettingsTab(
     )
     val draftSettings = settings.copy(
         defaultModelId = effectiveDefaultModelId,
-        defaultImageModelId = effectiveDefaultImageModelId,
+        defaultImageModelId = imageModelId,
         formatRepairModelId = formatRepairModelId,
         automaticFormatCheckEnabled = automaticFormatCheckEnabled,
         presetDefaultModelKey = null,
@@ -1580,8 +1579,20 @@ private fun SettingsTab(
                 .distinctBy(ModelConfig::id)
                 .map { IdOption(it.id, it.displayName) }
             RequiredSelect("默认对话模型", effectiveDefaultModelId, modelOptions, { modelId = it })
-            RequiredSelect("默认生图模型", effectiveDefaultImageModelId, modelOptions, { imageModelId = it })
-            OptionalSelect("格式修复模型", formatRepairModelId, formatRepairModelOptions, { formatRepairModelId = it })
+            OptionalSelect(
+                "默认生图模型",
+                imageModelId,
+                modelOptions,
+                { imageModelId = it },
+                noneLabel = "跟随默认对话模型"
+            )
+            OptionalSelect(
+                "格式修复模型",
+                formatRepairModelId,
+                formatRepairModelOptions,
+                { formatRepairModelId = it },
+                noneLabel = "跟随默认对话模型"
+            )
             OptionalSelect("默认格式卡", formatId, formats.map { IdOption(it.id, it.name) }, { formatId = it })
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
@@ -2155,8 +2166,14 @@ private fun RequiredSelect(label: String, selectedId: String?, options: List<IdO
 
 
 @Composable
-private fun OptionalSelect(label: String, selectedId: String?, options: List<IdOption>, onSelected: (String?) -> Unit) {
-    val all = listOf(IdOption(null, "不设置")) + options
+private fun OptionalSelect(
+    label: String,
+    selectedId: String?,
+    options: List<IdOption>,
+    onSelected: (String?) -> Unit,
+    noneLabel: String = "不设置"
+) {
+    val all = listOf(IdOption(null, noneLabel)) + options
     CbField(label) {
         CbSelect(all.firstOrNull { it.id == selectedId }, all, { it.label }, { onSelected(it.id) })
     }

@@ -57,6 +57,18 @@ class EffectiveModelResolver(
     suspend fun defaultImageModel(appSettings: AppSettings): ModelConfig? =
         defaultImageModel(appSettings, availableChatModels(appSettings))
 
+    suspend fun resolveFormatRepairModel(
+        requestedId: String?,
+        appSettings: AppSettings
+    ): ModelConfig? {
+        val available = availableAuxiliaryTextModels(appSettings)
+        val default = if (requestedId.isNullOrBlank()) defaultChatModel(appSettings) else null
+        return selectFormatRepairModel(requestedId, available, default)
+    }
+
+    suspend fun resolveFormatRepairModel(requestedId: String?): ModelConfig? =
+        resolveFormatRepairModel(requestedId, settings.getAppSettings())
+
     suspend fun auxiliaryChatModel(id: String?, appSettings: AppSettings): ModelConfig? {
         if (id == null) return null
         return models.getModel(id)?.withEffectiveApiKey(appSettings)
@@ -143,15 +155,11 @@ class EffectiveModelResolver(
     }
 
     private fun defaultChatModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
-        val id = appSettings.defaultModelId ?: appSettings.presetDefaultModelKey?.let(::presetRef)
-        return available.firstOrNull { it.id == id } ?: available.firstOrNull()
+        return selectDefaultChatModel(appSettings, available)
     }
 
     private fun defaultImageModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
-        val id = appSettings.defaultImageModelId
-            ?: appSettings.defaultModelId
-            ?: appSettings.presetDefaultModelKey?.let(::presetRef)
-        return available.firstOrNull { it.id == id } ?: defaultChatModel(appSettings, available)
+        return selectDefaultImageModel(appSettings, available)
     }
 
     private fun PresetChatModel.toModelConfig(
@@ -184,6 +192,33 @@ class EffectiveModelResolver(
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
         copy(apiKey = apiKey.trim().ifBlank { effectivePresetApiKey(appSettings) })
+}
+
+internal fun selectFormatRepairModel(
+    requestedId: String?,
+    available: List<ModelConfig>,
+    defaultChatModel: ModelConfig?
+): ModelConfig? = if (requestedId.isNullOrBlank()) {
+    defaultChatModel
+} else {
+    available.firstOrNull { it.id == requestedId }
+}
+
+internal fun selectDefaultChatModel(
+    appSettings: AppSettings,
+    available: List<ModelConfig>
+): ModelConfig? {
+    val id = appSettings.defaultModelId
+        ?: appSettings.presetDefaultModelKey?.let { PresetModelCatalogService.PRESET_REF_PREFIX + it }
+    return available.firstOrNull { it.id == id } ?: available.firstOrNull()
+}
+
+internal fun selectDefaultImageModel(
+    appSettings: AppSettings,
+    available: List<ModelConfig>
+): ModelConfig? {
+    val id = appSettings.defaultImageModelId
+    return available.firstOrNull { it.id == id } ?: selectDefaultChatModel(appSettings, available)
 }
 
 internal fun modelConfigurationStatus(

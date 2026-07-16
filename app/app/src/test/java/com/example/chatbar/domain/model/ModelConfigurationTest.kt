@@ -7,7 +7,6 @@ import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.data.local.entity.resolveDarkTheme
-import com.example.chatbar.data.local.entity.withCurrentModelDefaults
 import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
@@ -57,20 +56,36 @@ class ModelConfigurationTest {
         assertEquals(3, settings.webSearchSettingsVersion)
     }
 
-    @Test fun legacyDefaultModelBackfillsDefaultImageModel() {
-        val settings = AppSettings(defaultModelId = "chat-model")
-            .withCurrentModelDefaults()
+    @Test fun unselectedDefaultImageModelFallsBackToDefaultChatModel() {
+        val chat = model(apiKey = "key", id = "chat-model")
+        val settings = AppSettings(defaultModelId = chat.id)
 
-        assertEquals("chat-model", settings.defaultImageModelId)
+        assertEquals(chat, selectDefaultImageModel(settings, listOf(chat)))
+        assertEquals(null, settings.defaultImageModelId)
     }
 
-    @Test fun explicitDefaultImageModelIsPreserved() {
+    @Test fun explicitDefaultImageModelOverridesDefaultChatModel() {
+        val chat = model(apiKey = "key", id = "chat-model")
+        val image = model(apiKey = "key", id = "image-model")
         val settings = AppSettings(
             defaultModelId = "chat-model",
             defaultImageModelId = "image-model"
-        ).withCurrentModelDefaults()
+        )
 
-        assertEquals("image-model", settings.defaultImageModelId)
+        assertEquals(image, selectDefaultImageModel(settings, listOf(chat, image)))
+    }
+
+    @Test fun unselectedFormatRepairModelFallsBackToDefaultChatModel() {
+        val chat = model(apiKey = "key", id = "chat-model")
+
+        assertEquals(chat, selectFormatRepairModel(null, emptyList(), chat))
+        assertEquals(chat, selectFormatRepairModel("", emptyList(), chat))
+    }
+
+    @Test fun invalidExplicitFormatRepairModelDoesNotHideConfigurationFailure() {
+        val chat = model(apiKey = "key", id = "chat-model")
+
+        assertEquals(null, selectFormatRepairModel("missing", emptyList(), chat))
     }
 
     @Test fun v2SearchSettingsMigrateResultCountToOneWithoutReenabling() {
@@ -162,8 +177,8 @@ class ModelConfigurationTest {
         assertEquals(listOf("默认对话模型/API Key 未配置"), status.errors)
     }
 
-    private fun model(apiKey: String): ModelConfig = ModelConfig(
-        id = "m1",
+    private fun model(apiKey: String, id: String = "m1"): ModelConfig = ModelConfig(
+        id = id,
         displayName = "M",
         baseUrl = "https://example.test/v1",
         apiKey = apiKey,

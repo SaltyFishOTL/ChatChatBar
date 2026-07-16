@@ -104,13 +104,6 @@ fun AppSettings.withCurrentWebSearchDefaults(): AppSettings =
         )
     }
 
-fun AppSettings.withCurrentModelDefaults(): AppSettings =
-    if (defaultImageModelId != null || defaultModelId == null) {
-        this
-    } else {
-        copy(defaultImageModelId = defaultModelId)
-    }
-
 fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {
     ModelConfigurationMode.DEFAULT,
     ModelConfigurationMode.CUSTOM_API,
