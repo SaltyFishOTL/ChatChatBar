@@ -87,7 +87,8 @@ class MomentGenerationService(
     private val imageService: NovelAiImageService,
     private val imageStorage: NovelAiImageStorage,
     private val novelAiCredentials: NovelAiCredentialStore,
-    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true },
+    private val compiledMemoryProvider: suspend (ChatSession) -> String = { it.longTermMemory }
 ) {
     suspend fun generate(
         card: CharacterCard,
@@ -160,11 +161,12 @@ class MomentGenerationService(
             .filter { it.role != MessageRole.SYSTEM && it.displayContent.isNotBlank() }
             .takeLast(3)
         if (contextMessages.isEmpty()) return MomentGenerationResult.Skipped("没有可用于朋友圈生成的交流内容")
+        val promptSession = session.copy(longTermMemory = compiledMemoryProvider(session))
 
         var checkpoint = resumeFrom ?: MomentGenerationCheckpoint()
         val decision = checkpoint.decision ?: run {
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.JUDGING, "正在判断是否适合发布"))
-            judgeMoment(session, latestPost, contextMessages.lastOrNull(), model, streamText, onProgress).also {
+            judgeMoment(promptSession, latestPost, contextMessages.lastOrNull(), model, streamText, onProgress).also {
                 checkpoint = checkpoint.copy(decision = it)
                 onCheckpoint(checkpoint)
             }
@@ -174,7 +176,7 @@ class MomentGenerationService(
         }
         val draft = checkpoint.draft ?: run {
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.WRITING, "正在生成朋友圈文案"))
-            designMoment(card, session, contextMessages, latestPost, model, streamText, onProgress).also {
+            designMoment(card, promptSession, contextMessages, latestPost, model, streamText, onProgress).also {
                 checkpoint = checkpoint.copy(draft = it)
                 onCheckpoint(checkpoint)
             }
@@ -271,8 +273,9 @@ class MomentGenerationService(
                 .filter { it.role != MessageRole.SYSTEM && it.displayContent.isNotBlank() }
                 .takeLast(3)
             require(contextMessages.isNotEmpty()) { "没有可用于朋友圈生成的交流内容" }
+            val promptSession = session.copy(longTermMemory = compiledMemoryProvider(session))
 
-            val decision = judgeMomentDebug(session, latestPost, contextMessages.lastOrNull(), model, exchanges)
+            val decision = judgeMomentDebug(promptSession, latestPost, contextMessages.lastOrNull(), model, exchanges)
             if (!decision.shouldPost) {
                 exchanges += MomentDebugExchange(
                     title = "调试判定处理",
@@ -281,7 +284,7 @@ class MomentGenerationService(
                 )
             }
 
-            val draft = designMomentDebug(card, session, contextMessages, latestPost, model, exchanges)
+            val draft = designMomentDebug(card, promptSession, contextMessages, latestPost, model, exchanges)
             val text = draft.text.compactMomentText()
             require(text.isNotBlank()) { "AI 未生成朋友圈文案" }
             val normalizedDraft = draft.copy(text = text)

@@ -1389,6 +1389,9 @@ private fun SettingsTab(
     var momentsAutoStartConfirmed by remember { mutableStateOf(settings.momentsAutoStartConfirmed) }
     var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
+    var episodeMaxSourceTurns by remember {
+        mutableFloatStateOf(settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat())
+    }
     var excludeAssistantStatusFromHistory by remember {
         mutableStateOf(settings.excludeAssistantStatusFromHistory)
     }
@@ -1426,6 +1429,7 @@ private fun SettingsTab(
         settings.defaultFormatCardId,
         settings.themeMode,
         settings.defaultContextWindowSize,
+        settings.episodeMaxSourceTurns,
         settings.excludeAssistantStatusFromHistory,
         settings.memoryRagTopK,
         settings.memoryRagSimilarityThreshold,
@@ -1463,6 +1467,7 @@ private fun SettingsTab(
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
         contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
+        episodeMaxSourceTurns = settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat()
         excludeAssistantStatusFromHistory = settings.excludeAssistantStatusFromHistory
         memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
@@ -1498,6 +1503,7 @@ private fun SettingsTab(
         docRagSimilarityThreshold = docThreshold,
         ragInjectionMode = ragMode.roundToInt().modeValue(),
         defaultContextWindowSize = draftContextWindowSize,
+        episodeMaxSourceTurns = episodeMaxSourceTurns.roundToInt().coerceIn(1, 6),
         excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
         webSearchEnabled = webSearchEnabled,
         webSearchMaxResultsPerQuery = 1,
@@ -1599,6 +1605,17 @@ private fun SettingsTab(
                     }, placeholder = "50")
                 }
             }
+            SliderField(
+                "每条近期记忆包含：${episodeMaxSourceTurns.roundToInt()} 轮对话",
+                episodeMaxSourceTurns,
+                1f..6f,
+                4
+            ) { episodeMaxSourceTurns = it }
+            CbText(
+                "数值越小，记录越细、调用模型越频繁；数值越大，记录越概括、调用次数越少。默认 2 轮。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
                     CbText("上下文剔除状态栏", style = ChatBarTheme.typography.label)

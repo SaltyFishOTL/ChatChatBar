@@ -119,6 +119,74 @@ class ContextWindowManagerTest {
         assertTrue(groups[2].isCompleteTurn)
     }
 
+    @Test
+    fun sourceTurnGrouping_countsAllRepliesInOneTAsOneContextGroup() {
+        val messages = (0L..2L).flatMap { turn ->
+            listOf(
+                turnMessage("user-$turn", MessageRole.USER, "u$turn", turn),
+                turnMessage("assistant-$turn", MessageRole.ASSISTANT, "a$turn", turn),
+                turnMessage("append-$turn", MessageRole.ASSISTANT, "append$turn", turn)
+            )
+        }
+
+        val grouped = ChatContextGroupPolicy.groups(messages)
+        val recent = manager.getRecentMessages(messages, windowSize = 2)
+
+        assertEquals(3, grouped.size)
+        assertEquals(listOf(3, 3, 3), grouped.map { it.messages.size })
+        assertTrue(grouped.all { it.isCompleteTurn })
+        assertEquals(messages.map { it.id }, recent.map { it.id })
+    }
+
+    @Test
+    fun sourceTurnGrouping_withTwentyFourTurnsAndWindowFifteenArchivesOnlyT0ThroughT7() {
+        val messages = (0L..23L).flatMap { turn ->
+            buildList {
+                if (turn > 0) add(turnMessage("user-$turn", MessageRole.USER, "u$turn", turn))
+                add(turnMessage("assistant-$turn", MessageRole.ASSISTANT, "a$turn", turn))
+                if (turn % 2L == 0L) {
+                    add(turnMessage("append-$turn", MessageRole.ASSISTANT, "append$turn", turn))
+                }
+            }
+        }
+
+        val archived = manager.getMessagesToArchive(messages, windowSize = 15)
+
+        assertEquals((0L..7L).map { "source-$it" }.toSet(), archived.mapNotNull { it.sourceTurnId }.toSet())
+        assertTrue(archived.all { it.sourceTurnOrder in 0L..7L })
+    }
+
+    @Test
+    fun adjacentExchangeGrouping_remainsIndependentFromSourceTurns() {
+        val messages = listOf(
+            turnMessage("user", MessageRole.USER, "u", 0),
+            turnMessage("assistant", MessageRole.ASSISTANT, "a", 0),
+            turnMessage("append", MessageRole.ASSISTANT, "append", 0)
+        )
+
+        val grouped = ChatAdjacentExchangeGroupPolicy.groups(messages)
+
+        assertEquals(listOf(listOf("u", "a"), listOf("append")), grouped.map { group ->
+            group.messages.map { it.content }
+        })
+    }
+
+    @Test
+    fun sourceTurnGrouping_systemMessageInsideTurnDoesNotSplitT() {
+        val messages = listOf(
+            message("prefix-system", MessageRole.SYSTEM, "prefix"),
+            turnMessage("user", MessageRole.USER, "u", 1),
+            message("system", MessageRole.SYSTEM, "system"),
+            turnMessage("assistant", MessageRole.ASSISTANT, "a", 1)
+        )
+
+        val grouped = ChatContextGroupPolicy.groups(messages)
+
+        assertEquals(1, grouped.size)
+        assertEquals(listOf("prefix", "u", "system", "a"), grouped.single().messages.map { it.content })
+        assertTrue(grouped.single().isCompleteTurn)
+    }
+
     private fun messages(count: Int): List<ChatMessage> =
         (0 until count).map { index ->
             ChatMessage(
@@ -148,4 +216,25 @@ class ContextWindowManagerTest {
             createdAt = id.hashCode().toLong(),
             updatedAt = id.hashCode().toLong()
         )
+
+    private fun turnMessage(
+        id: String,
+        role: MessageRole,
+        content: String,
+        turn: Long
+    ): ChatMessage = ChatMessage(
+        id = id,
+        sessionId = "session",
+        role = role,
+        content = content,
+        createdAt = turn,
+        updatedAt = turn,
+        orderKey = turn * 10 + when (role) {
+            MessageRole.USER -> 0
+            MessageRole.ASSISTANT -> if (id.startsWith("append")) 2 else 1
+            MessageRole.SYSTEM -> 3
+        },
+        sourceTurnId = "source-$turn",
+        sourceTurnOrder = turn
+    )
 }

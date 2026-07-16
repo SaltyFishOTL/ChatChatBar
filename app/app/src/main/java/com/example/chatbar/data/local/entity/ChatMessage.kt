@@ -71,7 +71,13 @@ data class ChatMessage(
     val formatRepairNotice: MessageFormatRepairNotice? = null,
     val createdAt: Long,
     val updatedAt: Long,
-    val orderKey: Long = createdAt.toMessageOrderKey()
+    val orderKey: Long = createdAt.toMessageOrderKey(),
+    /** v4稳定剧情轮身份；旧数据首次读取时懒迁移。 */
+    val sourceTurnId: String? = null,
+    /** source turn绝对顺序；不等同于可重排的显示T。 */
+    val sourceTurnOrder: Long? = null,
+    /** v2草稿兼容字段；v4仅作为旧sourceTurnOrder迁移来源。 */
+    val timelineTurn: Long? = null
 ) {
     /** 获取当前显示的内容（考虑替代回复） */
     val displayContent: String
@@ -96,7 +102,10 @@ data class ChatMessage(
             generatedImageMetadata: List<GeneratedImageMetadata> = emptyList(),
             reasoningContent: String? = null,
             generatedFromMessageId: String? = null,
-            orderKey: Long? = null
+            orderKey: Long? = null,
+            sourceTurnId: String? = null,
+            sourceTurnOrder: Long? = null,
+            timelineTurn: Long? = null
         ): ChatMessage {
             val now = System.currentTimeMillis()
             return ChatMessage(
@@ -110,7 +119,10 @@ data class ChatMessage(
                 generatedFromMessageId = generatedFromMessageId,
                 createdAt = now,
                 updatedAt = now,
-                orderKey = orderKey ?: now.toMessageOrderKey()
+                orderKey = orderKey ?: now.toMessageOrderKey(),
+                sourceTurnId = sourceTurnId,
+                sourceTurnOrder = sourceTurnOrder,
+                timelineTurn = timelineTurn
             )
         }
     }

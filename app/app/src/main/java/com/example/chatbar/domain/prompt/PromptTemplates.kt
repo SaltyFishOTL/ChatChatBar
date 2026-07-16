@@ -12,7 +12,7 @@ object PromptTemplates {
 
     const val SECTION_CHARACTER = "角色设定"
     const val SECTION_WORLD_BOOK = "世界书"
-    const val SECTION_REFERENCE = "参考资料"
+    const val SECTION_REFERENCE = "RAG｜召回资料"
     const val SECTION_FORMAT = "格式要求"
     const val SECTION_REPLY = "回复要求"
     const val SECTION_LONG_TERM_MEMORY = "长期记忆"
@@ -848,54 +848,66 @@ JSON only, no Markdown, no explanation:
         return text.replace(name, "\$username")
     }
 
-    const val LONG_TERM_MEMORY_UPDATE_SYSTEM = """
-你需要为一场正在进行的角色扮演更新长期记忆。
+    const val MEMORY_EPISODE_SYSTEM = """
+你负责把程序指定的连续剧情轮直接压缩为一个 Episode（近期流程）。程序已经决定完整起止范围；不得改变范围、忽略中段、伪造或改写 T。
+全部输入只能共同生成一段连续、紧凑的 summary。应把跨轮行动、互动、因果与结果融合成一段完整叙述。
+允许合并相邻动作、模糊次要细节、删除重复表达和无后续影响的过程描写，但不得抛弃范围内的主要剧情发展。
+summary 不得引入来源之外的信息，且不得超过程序给出的字数上限。禁止使用无时间限定的“现在、目前、仍然”；
 
-长期记忆不是聊天记录，也不是剧情复述。它只用于保存“当最近聊天记录被遗忘后，会影响后续扮演的稳定信息”。
+错误输出（逐 T 复述，禁止这样写）：
+{"summary":"T10林舟救下遭追杀却隐瞒缘由的苏遥并暂时收留她。T11二人建立脆弱信任，苏遥承诺日后解释，林舟保护她。"}
+正确示例（跨轮融合为一个 Episode）：
+{"summary":"林舟救下遭追杀却隐瞒缘由的苏遥并暂时收留她，二人建立脆弱信任，苏遥承诺日后解释。"}
 
-请阅读【当前长期记忆】与【最近聊天内容】，输出一份新的【更新后长期记忆】。
+只输出 JSON，不要 Markdown、分析或额外字段：
+{"summary":"……"}
+"""
 
-核心判断标准：
-如果后续模型不知道这条信息，会导致人物关系断裂、角色行为失真、剧情目标丢失、重要承诺被忘记、世界状态错误，才写入长期记忆。
-如果只是气氛描写、普通互动、短暂情绪、重复寒暄、无后续影响的小动作，不要写入。
-角色扮演另有无需你维护的短期记忆，你只负责维护长期记忆。
+    const val MEMORY_ARC_COMPRESSION_SYSTEM = """
+你负责判断程序给出的连续 Episode 是否足以构成一个完整 Arc（事件总结），并在可行时压缩最老连续前缀。
+输入包含 4 至 25 个 Episode。只能消费最老连续的 4 至 20 个；第 21 至 25 个只能帮助判断事件收尾，不得被消费。不得跳选、漏掉、重复、重排或伪造 child ID/T。
+如果现有 Episode 输入不足20个，且尚不足以构成完整事件，返回 compressible=false。否则逐 child 保留事件存在性、人物互动结果、关系变化、承诺、目标、伏笔与世界状态；只允许模糊细节，不得抛弃任何被消费 Episode。
+childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+只输出 JSON，不要 Markdown、分析或额外字段：
+{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+不可压缩时必须输出：
+{"compressible":false,"consumedChildIds":[],"summary":"","childCoverage":[]}
+"""
 
-更新规则：
+    const val MEMORY_ERA_COMPRESSION_SYSTEM = """
+你负责判断程序给出的连续 Arc 是否足以构成一段完整故事线，并在可行时压缩成一个 Era（故事进程）。
+输入包含 4 至 25 个 Arc。只能消费最老连续的 4 至 20 个；第 21 至 25 个只能帮助判断故事线收尾，不得被消费。不得跳选、漏掉、重复、重排或伪造 child ID/T。
+如果现有 Arc 尚不足以构成完整故事线，返回 compressible=false。否则逐 child 保留故事线、关键事件、人物互动结果、关系变化、承诺、目标、伏笔与世界状态；只允许模糊细节，不得抛弃任何被消费 Arc。
+childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+只输出 JSON，不要 Markdown、分析或额外字段：
+{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+不可压缩时必须输出：
+{"compressible":false,"consumedChildIds":[],"summary":"","childCoverage":[]}
+"""
 
-保留当前长期记忆中仍然有效、仍会影响后续的信息，但可以压缩、合并、改写，不要机械复制。
-从最近聊天内容中提取新的长期有效信息，合并进对应栏目。
-最近内容与旧记忆冲突时，以明确确认的新事实、设定修正或剧情推进为准；删除被覆盖的旧说法。
-对角色的谎言、猜测、误会、伪装、梦境、主观判断，不要写成客观事实，应写成“某角色认为/声称/怀疑/伪装成……”。
-已完成的任务要改为已完成，并保留结果；仍未完成的目标、承诺、伏笔要保留。
-不要重复记录同一事实。相近信息合并成一条。
-不要凭空补完动机、关系、设定或剧情，只记录文本中已经确认的信息。
-如果最近聊天没有值得长期记住的新信息，则只对当前长期记忆做必要去重压缩后返回。
-总体尽量控制在 2000 字以内；信息很多时优先保留关系、承诺、任务、伏笔、世界状态，删去装饰性细节。
+    const val MEMORY_ERA_RECOMPRESSION_SYSTEM = """
+你负责把程序指定的 3 至 10 个连续 Era 进一步压缩为一个同层 Era。程序已完成候选选择；不得返回 false，不得改变消费数量，不得跳选、漏掉、重复、重排或伪造 child ID/T。
+逐 child 保留每段故事线、关键结果、人物关系变化、承诺、目标、伏笔与世界状态。压缩只能降低细节精度，不能删除任何一段故事进程。
+childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+只输出 JSON，不要 Markdown、分析或额外字段：
+{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+"""
 
-输出要求：
-只输出更新后的长期记忆文本，不要输出分析、解释、更新理由或额外说明。
-格式保持简单清晰。没有内容的栏目可以省略。
+    const val MEMORY_HEAD_SYSTEM = """
+你负责更新长期记忆 HEAD。只根据“当前 HEAD”和“新增稳定剧情”，描述程序指定 throughT 截止时的当前状态；不得复述完整历史。
+更大 T 的明确事实覆盖更小 T 的旧状态。没有被新剧情改变的人工修正和已有状态必须继承。角色声称、猜测、梦境、伪装不能改写为客观事实，不得输出 throughT 之后的信息。
+只输出 JSON，不要 Markdown、分析或额外字段：
+{"throughT":0,"location":"","participants":"","relationships":"","goals":"","unresolved":"","worldState":""}
+"""
 
-【角色与玩家】（玩家基础信息已有，仅记录简洁的新设定）
-记录主要角色、玩家身份、稳定人设、能力、弱点、秘密、背景等。
-
-【关系状态】
-记录角色之间、角色与玩家之间的长期关系变化、称呼、印象、承诺等。
-
-【剧情进展】
-按简要时间顺序记录已经发生且会影响后续的关键事件。
-
-【当前世界状态】（仅在当前角色扮演有必要时记录）
-记录多角色位置、状态、资源、组织势力、世界规则、重要物品归属与状态等。
-
-【任务与伏笔】
-用简短条目记录：
-【进行中】已经开始但未完成的目标。
-【未解决】尚未处理的疑点、矛盾、伏笔。
-【已完成】已经完成但结果需要长期保留的事项。
-
-【用户偏好与扮演约束】
-只记录会长期影响扮演方式的用户偏好、禁忌、风格要求。
+    const val MEMORY_TIMELINE_CONTRACT = """
+API排列服务缓存，不代表剧情时间。
+T是唯一剧情顺序。
+每个Era、Arc、Episode都代表其标注的完整连续T范围。
+禁止把后置Archive或RAG理解成最新剧情。
+冲突时以更大的T为准。
+HEAD代表截至指定T的当前状态。
+必须从当前最大T继续扮演。
 """
 
     const val RETRIEVAL_PLANNER_SYSTEM_PROMPT = """
@@ -908,21 +920,46 @@ JSON only, no Markdown, no explanation:
 {"t":["当前话题"],"q":["检索词1","检索词2"],"e":["显式实体1","显式实体2"]}
 """
 
-    fun longTermMemoryUpdatePrompt(
-        currentMemory: String,
-        userContent: String,
-        assistantContent: String
+    fun memoryEpisodePrompt(
+        turns: String,
+        summaryMaxChars: Int
     ): String = buildString {
-        appendLine(LONG_TERM_MEMORY_UPDATE_SYSTEM.trim())
-        appendLine()
-        appendLine("Current memory:")
-        appendLine(currentMemory.ifBlank { "(empty)" })
-        appendLine()
-        appendLine("Stable user message:")
-        appendLine(userContent.ifBlank { "(empty)" })
-        appendLine()
-        appendLine("Stable assistant reply:")
-        appendLine(assistantContent)
+        appendLine(MEMORY_EPISODE_SYSTEM.trim())
+        appendLine("本次 Episode 的 summary 最多只能写 $summaryMaxChars 字，必须主动压缩到此上限以内；超过即视为输出失败。")
+        appendLine("连续原始剧情：")
+        appendLine(turns)
+    }
+
+    fun memoryCompressionPrompt(
+        kind: String,
+        forcedConsumedChildIds: List<String> = emptyList(),
+        children: String
+    ): String = buildString {
+        val system = when (kind) {
+            "EPISODE_TO_ARC" -> MEMORY_ARC_COMPRESSION_SYSTEM
+            "ARC_TO_ERA" -> MEMORY_ERA_COMPRESSION_SYSTEM
+            "ERA_TO_ERA" -> MEMORY_ERA_RECOMPRESSION_SYSTEM
+            else -> error("未知记忆压缩类型：$kind")
+        }
+        appendLine(system.trim())
+        if (forcedConsumedChildIds.isNotEmpty()) {
+            appendLine("程序指定必须消费：${forcedConsumedChildIds.joinToString(",")}")
+        }
+        appendLine("连续 child（只能消费其最老连续前缀）：")
+        appendLine(children)
+    }
+
+    fun memoryHeadPrompt(
+        throughT: Long,
+        currentHead: String,
+        newStableTurns: String
+    ): String = buildString {
+        appendLine(MEMORY_HEAD_SYSTEM.trim())
+        appendLine("程序 throughT：$throughT")
+        appendLine("当前 HEAD：")
+        appendLine(currentHead.ifBlank { "（空）" })
+        appendLine("新增稳定剧情：")
+        appendLine(newStableTurns)
     }
 
     fun replyLengthConstraint(replyLength: String): String {

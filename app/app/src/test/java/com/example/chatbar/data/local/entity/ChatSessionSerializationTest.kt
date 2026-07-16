@@ -2,6 +2,8 @@ package com.example.chatbar.data.local.entity
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatSessionSerializationTest {
@@ -23,5 +25,10 @@ class ChatSessionSerializationTest {
 
         assertEquals("session", session.id)
         assertEquals("会话", session.title)
+        assertEquals(1L, session.nextTimelineTurn)
+        assertTrue(session.timelineTombstones.isEmpty())
+        assertEquals(2000, session.memoryLimitChars)
+        assertNull(session.memoryHeadCommitId)
+        assertEquals(MemoryUpdateStatus.IDLE, session.memoryUpdateStatus)
     }
 }

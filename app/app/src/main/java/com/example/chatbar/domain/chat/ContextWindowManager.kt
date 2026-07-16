@@ -9,17 +9,11 @@ data class ChatContextGroup(
     val assistantMessage: ChatMessage? = null
 ) {
     val isCompleteTurn: Boolean
-        get() = userMessage != null && assistantMessage != null && messages.size == 2
+        get() = userMessage != null && assistantMessage != null
 }
 
-/** 会话上下文统一按用户轮次分组；完整一组严格为相邻 USER 加 ASSISTANT。 */
-object ChatContextGroupPolicy {
-    private data class Partition(
-        val countedGroups: List<ChatContextGroup>,
-        val previousGroup: ChatContextGroup?,
-        val currentGroup: ChatContextGroup?
-    )
-
+/** RAG等独立功能使用的旧相邻问答配对；不参与上下文窗口的T计数。 */
+object ChatAdjacentExchangeGroupPolicy {
     fun groups(messages: List<ChatMessage>): List<ChatContextGroup> {
         val groups = mutableListOf<ChatContextGroup>()
         var pendingUser: ChatMessage? = null
@@ -60,6 +54,63 @@ object ChatContextGroupPolicy {
             }
         }
         flushPendingUser()
+        return groups
+    }
+}
+
+/**
+ * 直接上下文按稳定source turn分组：同一T内的回复、追加回复和衍生消息只占一组。
+ * 尚未迁移sourceTurnId的旧消息继续使用相邻USER/ASSISTANT兼容算法。
+ */
+object ChatContextGroupPolicy {
+    private data class Partition(
+        val countedGroups: List<ChatContextGroup>,
+        val previousGroup: ChatContextGroup?,
+        val currentGroup: ChatContextGroup?
+    )
+
+    fun groups(messages: List<ChatMessage>): List<ChatContextGroup> {
+        val groups = mutableListOf<ChatContextGroup>()
+        var index = 0
+        while (index < messages.size) {
+            val message = messages[index]
+            val sourceTurnId = if (message.role == MessageRole.SYSTEM) {
+                messages.asSequence()
+                    .drop(index + 1)
+                    .firstOrNull { it.role != MessageRole.SYSTEM }
+                    ?.sourceTurnId
+            } else {
+                message.sourceTurnId
+            }
+            if (sourceTurnId != null) {
+                val start = index
+                index++
+                while (index < messages.size) {
+                    val next = messages[index]
+                    if (next.role == MessageRole.SYSTEM || next.sourceTurnId == sourceTurnId) {
+                        index++
+                    } else {
+                        break
+                    }
+                }
+                val turnMessages = messages.subList(start, index)
+                groups += ChatContextGroup(
+                    messages = turnMessages,
+                    userMessage = turnMessages.firstOrNull { it.role == MessageRole.USER },
+                    assistantMessage = turnMessages.lastOrNull { it.role == MessageRole.ASSISTANT }
+                )
+            } else {
+                val start = index
+                index++
+                while (
+                    index < messages.size &&
+                    (messages[index].role == MessageRole.SYSTEM || messages[index].sourceTurnId == null)
+                ) {
+                    index++
+                }
+                groups += ChatAdjacentExchangeGroupPolicy.groups(messages.subList(start, index))
+            }
+        }
         return groups
     }
 

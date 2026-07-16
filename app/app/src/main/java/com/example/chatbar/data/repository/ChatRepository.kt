@@ -4,9 +4,12 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.domain.chat.ChatMessageOrdering
+import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -138,32 +141,39 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun addMessage(message: ChatMessage): ChatMessage = messageAppendMutex.withLock {
-        saveMessageRecord(message)
+        val assigned = assignSourceTurnForAppend(message)
+        saveMessageRecord(assigned)
 
         // 更新会话预览
-        val latest = getMessages(message.sessionId).lastOrNull()
-        if (latest?.id == message.id) {
-            getSession(message.sessionId)?.let { session ->
+        val latest = getMessages(assigned.sessionId).lastOrNull()
+        if (latest?.id == assigned.id) {
+            getSession(assigned.sessionId)?.let { session ->
                 updateSession(
                     session.copy(
-                        lastMessagePreview = message.previewText(),
-                        lastMessageTime = message.createdAt,
-                        lastMessageRole = message.role
+                        lastMessagePreview = assigned.previewText(),
+                        lastMessageTime = assigned.createdAt,
+                        lastMessageRole = assigned.role
                     )
                 )
             }
         }
 
-        message
+        assigned
     }
 
     suspend fun addMessageAfter(
         message: ChatMessage,
         anchorMessageId: String
     ): ChatMessage = messageAppendMutex.withLock {
+        val anchor = getMessage(anchorMessageId, message.sessionId)
+        val assigned = message.copy(
+            sourceTurnId = message.sourceTurnId ?: anchor?.sourceTurnId,
+            sourceTurnOrder = message.sourceTurnOrder ?: anchor?.sourceTurnOrder,
+            timelineTurn = message.timelineTurn ?: anchor?.timelineTurn
+        )
         val reordered = ChatMessageOrdering.insertGeneratedImageAfter(
             messages = getMessages(message.sessionId),
-            imageMessage = message,
+            imageMessage = assigned,
             anchorMessageId = anchorMessageId
         )
         val inserted = reordered.first { it.id == message.id }
@@ -215,15 +225,40 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    suspend fun deleteMessage(messageId: String, sessionId: String) {
+    suspend fun deleteMessage(messageId: String, sessionId: String) = messageAppendMutex.withLock {
+        val removed = getMessage(messageId, sessionId)
         storage.deleteEntity<ChatMessage>(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
-        val latest = getMessages(sessionId).lastOrNull()
+        val remaining = getMessages(sessionId)
+        val latest = remaining.lastOrNull()
         getSession(sessionId)?.let { session ->
+            val removedSourceId = removed?.sourceTurnId
+            val removedSourceOrder = removed?.sourceTurnOrder
+            val sourceTombstones = if (
+                removedSourceId != null && removedSourceOrder != null &&
+                remaining.none { it.sourceTurnId == removedSourceId }
+            ) {
+                (session.sourceTurnTombstones + com.example.chatbar.data.local.entity.SourceTurnTombstone(
+                    sourceTurnId = removedSourceId,
+                    sourceOrder = removedSourceOrder
+                )).distinctBy { it.sourceTurnId }
+            } else {
+                session.sourceTurnTombstones
+            }
+            val removedLegacyTurn = removed?.timelineTurn
+            val legacyTombstones = if (
+                removedLegacyTurn != null && remaining.none { it.timelineTurn == removedLegacyTurn }
+            ) {
+                session.timelineTombstones + removedLegacyTurn
+            } else {
+                session.timelineTombstones
+            }
             updateSession(
                 session.copy(
                     lastMessagePreview = latest?.previewText(),
                     lastMessageTime = latest?.createdAt,
-                    lastMessageRole = latest?.role
+                    lastMessageRole = latest?.role,
+                    sourceTurnTombstones = sourceTombstones,
+                    timelineTombstones = legacyTombstones
                 )
             )
         }
@@ -240,6 +275,83 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
         deleteMessagesForSession(sessionId)
         storage.saveAll(MESSAGE_TYPE, entities, ChatMessage.serializer())
+        getSession(sessionId)?.let { session ->
+            val nextSource = messages.mapNotNull { it.sourceTurnOrder }.maxOrNull()?.plus(1) ?: 1
+            val nextLegacy = messages.mapNotNull { it.timelineTurn }.maxOrNull()?.plus(1) ?: nextSource
+            updateSession(
+                session.copy(
+                    nextSourceTurnOrder = maxOf(session.nextSourceTurnOrder, nextSource),
+                    nextTimelineTurn = maxOf(session.nextTimelineTurn, nextLegacy)
+                )
+            )
+        }
+    }
+
+    /** 旧消息首次使用时补稳定source turn；不改消息ID、时间、orderKey。 */
+    suspend fun ensureSourceTurns(sessionId: String): List<ChatMessage> = messageAppendMutex.withLock {
+        val messages = getMessages(sessionId)
+        val session = getSession(sessionId) ?: return@withLock messages
+        if (messages.none {
+                it.role != MessageRole.SYSTEM &&
+                    (it.sourceTurnId == null || it.sourceTurnOrder == null)
+            }
+        ) {
+            val next = messages.mapNotNull { it.sourceTurnOrder }.maxOrNull()?.plus(1) ?: 1
+            if (session.nextSourceTurnOrder < next) {
+                updateSession(session.copy(nextSourceTurnOrder = next))
+            }
+            return@withLock messages
+        }
+
+        val result = TimelineTurnPolicy.migrate(
+            messages = messages,
+            initialNextTurn = session.nextTimelineTurn,
+            initialNextSourceTurnOrder = session.nextSourceTurnOrder
+        )
+        val migrated = result.messages
+        migrated.forEach { saveMessageRecord(it) }
+        updateSession(
+            session.copy(
+                nextTimelineTurn = result.nextTimelineTurn,
+                nextSourceTurnOrder = result.nextSourceTurnOrder
+            )
+        )
+        migrated
+    }
+
+    /** v2草稿调用兼容。 */
+    suspend fun ensureTimelineTurns(sessionId: String): List<ChatMessage> = ensureSourceTurns(sessionId)
+
+    private suspend fun assignSourceTurnForAppend(message: ChatMessage): ChatMessage {
+        if (message.role == MessageRole.SYSTEM) return message
+        val session = getSession(message.sessionId) ?: return message
+        val messages = getMessages(message.sessionId)
+        val assignment = TimelineTurnPolicy.nextForAppend(
+            message = message,
+            existingMessages = messages,
+            nextSourceTurnOrder = session.nextSourceTurnOrder,
+            tombstones = session.sourceTurnTombstones,
+            newSourceTurnId = UUID.randomUUID().toString()
+        )
+        if (assignment != null && assignment.sourceTurnOrder >= session.nextSourceTurnOrder) {
+            updateSession(
+                session.copy(
+                    nextSourceTurnOrder = maxOf(
+                        session.nextSourceTurnOrder,
+                        assignment.sourceTurnOrder + 1
+                    ),
+                    nextTimelineTurn = maxOf(
+                        session.nextTimelineTurn,
+                        assignment.sourceTurnOrder + 1
+                    )
+                )
+            )
+        }
+        return message.copy(
+            sourceTurnId = assignment?.sourceTurnId,
+            sourceTurnOrder = assignment?.sourceTurnOrder,
+            timelineTurn = message.timelineTurn ?: assignment?.sourceTurnOrder
+        )
     }
 
     /** 获取最近N条消息（用于上下文窗口） */

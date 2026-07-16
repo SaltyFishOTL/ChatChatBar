@@ -7,10 +7,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.border
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.gestures.Orientation
-import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.gestures.draggable
-import androidx.compose.foundation.gestures.rememberDraggableState
 import androidx.compose.foundation.focusable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -261,7 +257,6 @@ fun CbSlider(
     contentDescription: String? = null
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
-    var dragValue by remember { mutableFloatStateOf(value) }
     fun valueFromX(x: Float): Float {
         val fraction = (x / widthPx).coerceIn(0f, 1f)
         val raw = valueRange.start + fraction * (valueRange.endInclusive - valueRange.start)
@@ -297,18 +292,14 @@ fun CbSlider(
             }
             .focusable()
             .pointerInput(widthPx, valueRange, steps) {
-                detectTapGestures { onValueChange(valueFromX(it.x)) }
-            }
-            .draggable(
-                orientation = Orientation.Horizontal,
-                state = rememberDraggableState { delta ->
-                    val range = valueRange.endInclusive - valueRange.start
-                    dragValue = snappedValue(dragValue + delta / widthPx * range)
-                    onValueChange(dragValue)
-                },
-                onDragStarted = { dragValue = value },
-                startDragImmediately = true
-            ),
+                detectHorizontalDragGestures(
+                    onDragStart = { offset -> onValueChange(valueFromX(offset.x)) },
+                    onHorizontalDrag = { change, _ ->
+                        change.consume()
+                        onValueChange(valueFromX(change.position.x))
+                    }
+                )
+            },
         contentAlignment = Alignment.CenterStart
     ) {
         Box(Modifier.fillMaxWidth().size(height = 4.dp, width = 1.dp).background(ChatBarTheme.colors.muted, RoundedCornerShape(2.dp)))

@@ -23,6 +23,7 @@ data class AppSettings(
     val docRagSimilarityThreshold: Float = 0.55f,
     val ragInjectionMode: String = "STANDARD",
     val defaultContextWindowSize: Int = 20,
+    val episodeMaxSourceTurns: Int = DEFAULT_EPISODE_MAX_SOURCE_TURNS,
     val excludeAssistantStatusFromHistory: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
     val chatBubbleFontScale: Float = 1.0f,
@@ -44,15 +45,30 @@ data class AppSettings(
 )
 
 const val DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY = 0.16f
+const val DEFAULT_EPISODE_MAX_SOURCE_TURNS = 2
+const val MIN_EPISODE_MAX_SOURCE_TURNS = 1
+const val MAX_EPISODE_MAX_SOURCE_TURNS = 6
 
 fun AppSettings.withNormalizedAppearance(): AppSettings {
     val normalizedOpacity = chatBackgroundImageOpacity
         .takeIf { it.isFinite() }
         ?.coerceIn(0f, 1f)
         ?: DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY
-    return if (normalizedOpacity == chatBackgroundImageOpacity) this else copy(
-        chatBackgroundImageOpacity = normalizedOpacity
+    val normalizedEpisodeTurns = episodeMaxSourceTurns.coerceIn(
+        MIN_EPISODE_MAX_SOURCE_TURNS,
+        MAX_EPISODE_MAX_SOURCE_TURNS
     )
+    return if (
+        normalizedOpacity == chatBackgroundImageOpacity &&
+        normalizedEpisodeTurns == episodeMaxSourceTurns
+    ) {
+        this
+    } else {
+        copy(
+            chatBackgroundImageOpacity = normalizedOpacity,
+            episodeMaxSourceTurns = normalizedEpisodeTurns
+        )
+    }
 }
 
 @Serializable

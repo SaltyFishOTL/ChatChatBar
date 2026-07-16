@@ -9,15 +9,59 @@ import org.junit.Test
 
 class ChatMemoryIdentityTest {
     @Test
-    fun stableChunkId_usesSessionAndMessageIdentity() {
+    fun stableChunkId_usesSessionAndSourceTurnIdentity() {
         assertEquals(
-            chatMemoryChunkId("session-1", "message-1"),
-            chatMemoryChunkId("session-1", "message-1")
+            chatMemoryChunkId("session-1", "turn-1"),
+            chatMemoryChunkId("session-1", "turn-1")
         )
         assertFalse(
-            chatMemoryChunkId("session-1", "message-1") ==
-                chatMemoryChunkId("session-1", "message-2")
+            chatMemoryChunkId("session-1", "turn-1") ==
+                chatMemoryChunkId("session-1", "turn-2")
         )
+    }
+
+    @Test
+    fun automaticReplacement_removesOldPairButPreservesNewTurnAndManualChunks() {
+        val oldPair = VectorChunk(
+            id = "old-pair",
+            sourceType = ChunkSourceType.CHAT_MEMORY,
+            sourceId = "session-1",
+            messageId = "assistant",
+            content = "old",
+            embedding = listOf(1f),
+            metadata = mapOf(
+                "messageIds" to "user,assistant",
+                "indexMode" to "message_pair"
+            ),
+            createdAt = 1
+        )
+        val newTurn = VectorChunk(
+            id = "new-turn",
+            sourceType = ChunkSourceType.CHAT_MEMORY,
+            sourceId = "session-1",
+            messageId = "append",
+            content = "new",
+            embedding = listOf(1f),
+            metadata = mapOf(
+                "messageIds" to "user,assistant,append",
+                "sourceTurnId" to "turn-1",
+                "indexMode" to "timeline_turn"
+            ),
+            createdAt = 2
+        )
+        val manual = newTurn.copy(
+            id = "manual",
+            metadata = newTurn.metadata + ("indexMode" to "manual")
+        )
+
+        val removed = automaticChatMemoryChunkIdsToReplace(
+            chunks = listOf(oldPair, newTurn, manual),
+            sourceTurnId = "turn-1",
+            messageIds = setOf("user", "assistant", "append"),
+            keepChunkId = "new-turn"
+        )
+
+        assertEquals(setOf("old-pair"), removed)
     }
 
     @Test

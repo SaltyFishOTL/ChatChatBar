@@ -21,7 +21,7 @@ private enum class PromptLayer {
 
 private data class PromptSection(
     val layer: PromptLayer,
-    val title: String,
+    val title: String?,
     val content: String
 )
 
@@ -39,6 +39,8 @@ class PromptAssembler {
         replyLength: String? = null,
         replyLanguage: String? = null,
         longTermMemory: String? = null,
+        memoryArchive: String? = null,
+        memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap(),
         includePostHistory: Boolean = true
@@ -54,6 +56,8 @@ class PromptAssembler {
             replyLength = replyLength,
             replyLanguage = replyLanguage,
             longTermMemory = longTermMemory,
+            memoryArchive = memoryArchive,
+            memoryHeadAndTimeline = memoryHeadAndTimeline,
             worldBookPrompt = worldBookPrompt
         ).filter { includePostHistory || it.layer != PromptLayer.TAIL }
         return renderLayer(
@@ -79,6 +83,8 @@ class PromptAssembler {
         replyLength: String? = null,
         replyLanguage: String? = null,
         longTermMemory: String? = null,
+        memoryArchive: String? = null,
+        memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap(),
         hasHistoryMessages: Boolean = false,
@@ -95,6 +101,8 @@ class PromptAssembler {
             replyLength = replyLength,
             replyLanguage = replyLanguage,
             longTermMemory = longTermMemory,
+            memoryArchive = memoryArchive,
+            memoryHeadAndTimeline = memoryHeadAndTimeline,
             worldBookPrompt = worldBookPrompt
         )
         val stableRaw = renderSections(sections.filter { it.layer == PromptLayer.STABLE })
@@ -104,12 +112,15 @@ class PromptAssembler {
             .appendHeadingIf(hasPreviousTurn, PromptTemplates.SECTION_PREVIOUS_TURN)
 
         if (OUTLET_TOKEN_REGEX.containsMatchIn(stableRaw)) {
-            val fallbackRaw = renderSections(sections.filter { it.layer != PromptLayer.TAIL })
-                .appendHeadingIf(hasHistoryMessages, PromptTemplates.SECTION_CHAT_HISTORY)
             return PromptCachePromptLayers(
-                stableSystemPrompt = "",
+                stableSystemPrompt = renderLayer(
+                    stableRaw,
+                    playerName,
+                    characterCard.name,
+                    worldBookOutlets
+                ),
                 dynamicSystemPrompt = renderLayer(
-                    fallbackRaw,
+                    dynamicRaw,
                     playerName,
                     characterCard.name,
                     worldBookOutlets
@@ -158,6 +169,8 @@ class PromptAssembler {
         replyLength: String?,
         replyLanguage: String?,
         longTermMemory: String?,
+        memoryArchive: String?,
+        memoryHeadAndTimeline: String?,
         worldBookPrompt: String?
     ): List<PromptSection> = buildList {
         addSection(
@@ -165,6 +178,7 @@ class PromptAssembler {
             PromptTemplates.SECTION_CHARACTER,
             buildCharacterSection(characterCard)
         )
+        addRawSection(PromptLayer.DYNAMIC, memoryArchive.orEmpty())
         addSection(
             PromptLayer.DYNAMIC,
             PromptTemplates.SECTION_WORLD_BOOK,
@@ -175,6 +189,7 @@ class PromptAssembler {
             PromptTemplates.SECTION_REFERENCE,
             buildRagCardsSection(ragResults, ragInjectionMode)
         )
+        addRawSection(PromptLayer.DYNAMIC, memoryHeadAndTimeline.orEmpty())
         if (formatCard != null && formatCard.content.isNotBlank()) {
             addSection(
                 PromptLayer.STABLE,
@@ -187,7 +202,7 @@ class PromptAssembler {
             PromptTemplates.SECTION_REPLY,
             buildReplyConstraints(replyLength, replyLanguage)
         )
-        if (!longTermMemory.isNullOrBlank()) {
+        if (memoryArchive.isNullOrBlank() && memoryHeadAndTimeline.isNullOrBlank() && !longTermMemory.isNullOrBlank()) {
             addSection(
                 PromptLayer.DYNAMIC,
                 PromptTemplates.SECTION_LONG_TERM_MEMORY,
@@ -227,8 +242,14 @@ class PromptAssembler {
         }
     }
 
+    private fun MutableList<PromptSection>.addRawSection(layer: PromptLayer, content: String) {
+        content.trim().takeIf(String::isNotEmpty)?.let { normalized ->
+            add(PromptSection(layer = layer, title = null, content = normalized))
+        }
+    }
+
     private fun renderSections(sections: List<PromptSection>): String = sections.joinToString("\n\n") {
-        "【${it.title}】\n${it.content}"
+        if (it.title == null) it.content else "【${it.title}】\n${it.content}"
     }
 
     private fun String.appendHeadingIf(condition: Boolean, title: String): String {

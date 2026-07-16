@@ -31,7 +31,12 @@ class SaveSlotSerializationTest {
 
         val slot = json.decodeFromString(SaveSlot.serializer(), raw)
 
-        assertEquals(2, slot.schemaVersion)
+        assertEquals(4, slot.schemaVersion)
+        assertEquals(1, slot.nextTimelineTurn)
+        assertEquals(1, slot.nextSourceTurnOrder)
+        assertTrue(slot.sourceTurnTombstones.isEmpty())
+        assertEquals(2000, slot.memoryLimitChars)
+        assertTrue(slot.timelineTombstones.isEmpty())
         assertEquals(emptyList<String>(), slot.extraWorldBookIds)
         assertEquals(emptyMap<String, SaveSlotImageResource>(), slot.imageResources)
         assertTrue(slot.timedWorldInfo.isEmpty())

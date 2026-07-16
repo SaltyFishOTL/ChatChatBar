@@ -94,6 +94,37 @@ class RagRepository(private val storage: JsonFileStorage) {
         }
     }
 
+    /** 新T块保存成功后清理同来源旧自动块；手动块和长期记忆旧块不受影响。 */
+    suspend fun deleteSupersededAutomaticChatMemory(
+        sessionId: String,
+        sourceTurnId: String?,
+        messageIds: Set<String>,
+        keepChunkId: String?
+    ): Int {
+        val idsToDelete = automaticChatMemoryChunkIdsToReplace(
+            chunks = getAllChunksForSession(sessionId),
+            sourceTurnId = sourceTurnId,
+            messageIds = messageIds,
+            keepChunkId = keepChunkId
+        )
+        idsToDelete.forEach { id -> storage.deleteEntity<VectorChunk>(ENTITY_TYPE, id) }
+        return idsToDelete.size
+    }
+
+    /** 完整重建成功后只保留本次生成的自动块；所有手动块永久保留。 */
+    suspend fun deleteObsoleteAutomaticChatMemory(
+        sessionId: String,
+        keepChunkIds: Set<String>
+    ): Int {
+        val idsToDelete = getAllChunksForSession(sessionId)
+            .filter(ChatMemoryIndexPolicy::isAutomaticChunk)
+            .map { it.id }
+            .filterNot { it in keepChunkIds }
+            .toSet()
+        idsToDelete.forEach { id -> storage.deleteEntity<VectorChunk>(ENTITY_TYPE, id) }
+        return idsToDelete.size
+    }
+
     /** 清理已删除消息的孤儿记忆，以及旧版本产生的同消息重复记忆。 */
     suspend fun pruneChatMemory(
         sessionId: String,
@@ -168,6 +199,23 @@ internal fun chatMemoryChunkIdsToPrune(
 
     return idsToDelete
 }
+
+internal fun automaticChatMemoryChunkIdsToReplace(
+    chunks: List<VectorChunk>,
+    sourceTurnId: String?,
+    messageIds: Set<String>,
+    keepChunkId: String?
+): Set<String> = chunks.asSequence()
+    .filter(ChatMemoryIndexPolicy::isAutomaticChunk)
+    .filter { chunk ->
+        val sameTurn = sourceTurnId != null && chunk.metadata["sourceTurnId"] == sourceTurnId
+        val overlapsMessages = chunk.metadataMessageIds().any { it in messageIds } ||
+            chunk.messageId?.let { it in messageIds } == true
+        sameTurn || overlapsMessages
+    }
+    .map { it.id }
+    .filterNot { it == keepChunkId }
+    .toSet()
 
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
     sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId

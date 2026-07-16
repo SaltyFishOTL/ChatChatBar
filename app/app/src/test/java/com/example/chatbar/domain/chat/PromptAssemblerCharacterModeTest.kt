@@ -4,6 +4,8 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.FormatCard
+import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -168,8 +170,44 @@ class PromptAssemblerCharacterModeTest {
         )
 
         assertFalse(layers.stablePrefixCacheable)
-        assertTrue(layers.stableSystemPrompt.isBlank())
-        assertTrue(layers.dynamicSystemPrompt.contains("动态场景"))
+        assertTrue(layers.stableSystemPrompt.contains("动态场景"))
+        assertTrue(layers.dynamicSystemPrompt.isBlank())
+    }
+
+    @Test fun dynamicLayersKeepArchiveWorldBookRagHeadTimelineOrder() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card(basicSetting = "stable"),
+            memoryArchive = "【ARCHIVE｜历史档案】\n[Era T0-T20] archive",
+            worldBookPrompt = "world-book",
+            ragResults = listOf(
+                RetrievedKnowledgeCard(
+                    id = "rag",
+                    type = ChunkSourceType.CHAT_MEMORY,
+                    sourceId = "session",
+                    sourceLabel = "memory",
+                    content = "recalled",
+                    metadata = mapOf("timelineStart" to "8", "timelineEnd" to "8")
+                )
+            ),
+            memoryHeadAndTimeline = "【HEAD｜当前状态｜截至 T30】\nhead\n【时间线约束】\nconstraint",
+            hasHistoryMessages = true,
+            hasPreviousTurn = true
+        )
+        val dynamic = layers.dynamicSystemPrompt
+
+        val archive = dynamic.indexOf("【ARCHIVE｜历史档案】")
+        val worldBook = dynamic.indexOf("【世界书】")
+        val rag = dynamic.indexOf("【RAG｜召回资料】")
+        val head = dynamic.indexOf("【HEAD｜当前状态｜截至 T30】")
+
+        assertTrue(archive >= 0)
+        assertTrue(archive < worldBook)
+        assertTrue(worldBook < rag)
+        assertTrue(rag < head)
+        assertTrue(dynamic.contains("[卡片 1]"))
+        assertFalse(dynamic.contains("[召回自 T8]"))
+        assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
+        assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
     }
 
     private fun card(

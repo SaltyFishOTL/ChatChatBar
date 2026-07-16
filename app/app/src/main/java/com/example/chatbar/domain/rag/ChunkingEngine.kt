@@ -1,8 +1,5 @@
 package com.example.chatbar.domain.rag
 
-import com.example.chatbar.data.local.entity.ChatMessage
-import com.example.chatbar.data.local.entity.MessageRole
-
 /**
  * 语义分块引擎 — 将长文本自动切分为适合向量化的文本块
  *
@@ -143,60 +140,6 @@ class ChunkingEngine {
         if (line.isBlank() || line.length > 40) return false
         if (line.endsWith(":") || line.endsWith("：")) return true
         return Regex("^([一二三四五六七八九十]+[、.．]|\\d+[、.．])\\s*.+$").matches(line)
-    }
-
-    // ========================= 聊天记忆分块 =========================
-
-    /**
-     * 将聊天消息按轮次分组，每组作为一个块
-     *
-     * @param messages      消息列表（按时间排序）
-     * @param turnsPerChunk 每块包含的对话轮次数
-     * @return (块文本, 元数据) 列表
-     */
-    fun chunkChatMessages(
-        messages: List<ChatMessage>,
-        turnsPerChunk: Int = 3
-    ): List<Pair<String, Map<String, String>>> {
-        if (messages.isEmpty()) return emptyList()
-
-        // 过滤掉系统消息
-        val chatMessages = messages.filter { it.role != MessageRole.SYSTEM }
-        if (chatMessages.isEmpty()) return emptyList()
-
-        val result = mutableListOf<Pair<String, Map<String, String>>>()
-
-        // 按 turnsPerChunk 条消息为一组（一个 turn = 一条用户消息 + 一条助手回复）
-        // 这里简化为每 turnsPerChunk*2 条消息为一组
-        val groupSize = turnsPerChunk * 2
-        val groups = chatMessages.chunked(groupSize)
-
-        for ((groupIndex, group) in groups.withIndex()) {
-            val text = group.joinToString("\n") { msg ->
-                val roleName = when (msg.role) {
-                    MessageRole.USER -> "用户"
-                    MessageRole.ASSISTANT -> "助手"
-                    MessageRole.SYSTEM -> "系统"
-                }
-                "$roleName: ${msg.displayContent}"
-            }
-
-            val messageIds = group.joinToString(",") { it.id }
-            val firstTime = group.first().createdAt
-            val lastTime = group.last().createdAt
-
-            result.add(
-                text to mapOf(
-                    "groupIndex" to groupIndex.toString(),
-                    "messageIds" to messageIds,
-                    "firstMessageTime" to firstTime.toString(),
-                    "lastMessageTime" to lastTime.toString(),
-                    "messageCount" to group.size.toString()
-                )
-            )
-        }
-
-        return result
     }
 
     // ========================= 内部方法 =========================

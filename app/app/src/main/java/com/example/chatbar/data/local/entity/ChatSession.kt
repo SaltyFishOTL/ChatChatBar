@@ -4,6 +4,21 @@ import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
+@Serializable
+enum class MemoryUpdateStatus {
+    IDLE,
+    UPDATING,
+    ERROR,
+    LIMIT_DECISION_REQUIRED,
+    PAUSED
+}
+
+@Serializable
+data class SourceTurnTombstone(
+    val sourceTurnId: String,
+    val sourceOrder: Long
+)
+
 /**
  * 聊天会话
  */
@@ -26,6 +41,22 @@ data class ChatSession(
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
+    val nextSourceTurnOrder: Long = 1,
+    val sourceTurnTombstones: List<SourceTurnTombstone> = emptyList(),
+    /** v2草稿兼容字段。 */
+    val nextTimelineTurn: Long = 1,
+    val timelineTombstones: Set<Long> = emptySet(),
+    val memoryLimitChars: Int = DEFAULT_MEMORY_LIMIT_CHARS,
+    val memoryStateRevision: Long = 0,
+    /** v2草稿兼容指针；v4迁移成功后清空。 */
+    val memoryHeadCommitId: String? = null,
+    val memoryUpdateStatus: MemoryUpdateStatus = MemoryUpdateStatus.IDLE,
+    val memoryUpdateError: String? = null,
+    val memoryArchiveStatus: MemoryUpdateStatus = MemoryUpdateStatus.IDLE,
+    val memoryArchiveError: String? = null,
+    val memoryHeadStatus: MemoryUpdateStatus = MemoryUpdateStatus.IDLE,
+    val memoryHeadError: String? = null,
+    val longTermMemorySchemaVersion: Int = 1,
     val contextWindowSize: Int = 20,
     val extraWorldBookIds: List<String> = emptyList(),
     val isPinned: Boolean = false,

@@ -50,11 +50,23 @@ import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryBackfillStatus
+import com.example.chatbar.data.local.entity.MemoryAuthor
+import com.example.chatbar.data.local.entity.MemoryDecisionTier
+import com.example.chatbar.data.local.entity.MemoryNode
+import com.example.chatbar.data.local.entity.MemoryRevisionOperation
+import com.example.chatbar.data.local.entity.MemoryTier
+import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlotSummary
+import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.memory.MemoryTimelinePolicy
+import com.example.chatbar.domain.memory.MemoryBackfillPhase
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
@@ -84,6 +96,7 @@ fun ChatSettingsDialog(
     viewModel: ChatViewModel,
     onDismiss: () -> Unit,
     onClearHistory: () -> Unit,
+    onJumpToSource: (String) -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     val session by viewModel.session.collectAsState()
@@ -99,6 +112,7 @@ fun ChatSettingsDialog(
     val ragChunks by viewModel.ragMemoryChunks.collectAsState()
     val ragStatus by viewModel.ragMemoryStatus.collectAsState()
     val ragBusy by viewModel.ragMemoryBusy.collectAsState()
+    val memoryUi by viewModel.longTermMemoryUiState.collectAsState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var tab by remember { mutableIntStateOf(0) }
@@ -160,6 +174,7 @@ fun ChatSettingsDialog(
     LaunchedEffect(Unit) {
         viewModel.refreshConfigurations()
         viewModel.refreshRagMemoryChunks()
+        viewModel.refreshLongTermMemory()
     }
     LaunchedEffect(session) {
         session?.let {
@@ -184,7 +199,6 @@ fun ChatSettingsDialog(
             playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
             background.takeIf(String::isNotBlank) != it.chatBackground ||
             longTermMemoryEnabled != it.longTermMemoryEnabled ||
-            longTermMemory != it.longTermMemory ||
             extraWorldBookIds != it.extraWorldBookIds
     } ?: false
     val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
@@ -229,7 +243,7 @@ fun ChatSettingsDialog(
                                 playerSetting = playerSetting.takeIf(String::isNotBlank),
                                 chatBackground = background.takeIf(String::isNotBlank),
                                 longTermMemoryEnabled = longTermMemoryEnabled,
-                                longTermMemory = longTermMemory,
+                                longTermMemory = session?.longTermMemory.orEmpty(),
                                 extraWorldBookIds = extraWorldBookIds
                             )
                             onDismiss()
@@ -238,7 +252,7 @@ fun ChatSettingsDialog(
                 )
                 val tabs = buildList {
                     add("参数与设定")
-                    if (longTermMemoryEnabled) add("长期记忆")
+                    add("长期记忆")
                     add("RAG 检索库")
                     add("存档")
                 }
@@ -266,7 +280,23 @@ fun ChatSettingsDialog(
                             longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
                             ::openFullscreen
                         )
-                        "长期记忆" -> LongTermMemoryContent(longTermMemory, { longTermMemory = it })
+                        "长期记忆" -> LongTermMemoryContent(
+                            session = session,
+                            state = memoryUi,
+                            onRefresh = viewModel::refreshLongTermMemory,
+                            onEditNode = viewModel::editMemoryNode,
+                            onEditHead = viewModel::editMemoryHead,
+                            onMarkSourcesCorrected = viewModel::markMemorySourcesCorrected,
+                            onJumpToSource = onJumpToSource,
+                            onRebuildFromOriginal = viewModel::rebuildMemoryFromOriginal,
+                            onPauseBackfill = viewModel::pauseMemoryUpdates,
+                            onIncreaseLimit = viewModel::increaseMemoryLimit,
+                            onRetryMaintenance = viewModel::retryMemoryMaintenance,
+                            onRetryHead = viewModel::retryMemoryHead,
+                            onRestoreVersion = viewModel::restoreMemoryVersion,
+                            onLoadMoreHistory = viewModel::loadMoreMemoryHistory,
+                            onResolveDecision = viewModel::resolveMemoryCompressionDecision
+                        )
                         "RAG 检索库" -> RagMemoryContent(
                             chunks = ragChunks,
                             status = ragStatus,
@@ -507,25 +537,527 @@ private fun WorldBookSettings(
 
 @Composable
 private fun LongTermMemoryContent(
-    memory: String,
-    onMemory: (String) -> Unit
+    session: ChatSession?,
+    state: LongTermMemoryUiState,
+    onRefresh: () -> Unit,
+    onEditNode: (String, String) -> Unit,
+    onEditHead: (MemoryHead) -> Unit,
+    onMarkSourcesCorrected: (List<String>) -> Unit,
+    onJumpToSource: (String) -> Unit,
+    onRebuildFromOriginal: () -> Unit,
+    onPauseBackfill: () -> Unit,
+    onIncreaseLimit: () -> Unit,
+    onRetryMaintenance: () -> Unit,
+    onRetryHead: () -> Unit,
+    onRestoreVersion: (String) -> Unit,
+    onLoadMoreHistory: (MemoryTier) -> Unit,
+    onResolveDecision: (Boolean) -> Unit
 ) {
+    var page by remember { mutableIntStateOf(0) }
+    var tierSection by remember { mutableIntStateOf(0) }
+    var showBackfillConfirm by remember { mutableStateOf(false) }
+    if (showBackfillConfirm) {
+        val estimate = state.backfillEstimate
+        CbDialog(
+            onDismissRequest = { showBackfillConfirm = false },
+            title = "补录长期记忆",
+            dismiss = {
+                CbButton("取消", { showBackfillConfirm = false }, variant = ButtonVariant.Outline)
+            },
+            confirm = {
+                CbButton("开始补录", {
+                    showBackfillConfirm = false
+                    onRebuildFromOriginal()
+                })
+            }
+        ) {
+            CbText(
+                buildString {
+                    append("将从聊天记录中补齐 ${estimate?.missingSourceTurns ?: 0} 轮尚未生成长期记忆的对话。")
+                    append("预计调用模型 ${estimate?.episodeCallsMin ?: 0}–${estimate?.episodeCallsMax ?: 0} 次；")
+                    append("如果空间不足，还可能触发 ${estimate?.compressionCallsMin ?: 0}–${estimate?.compressionCallsMax ?: 0} 次压缩。")
+                    append("待处理原文约 ${estimate?.sourceCharacters ?: 0} 字。")
+                    append("补录期间暂时无法继续聊天，可以随时暂停。不同模型耗时和额度消耗不同。")
+                },
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
     Column(
         Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.navigationBars)
             .windowInsetsPadding(WindowInsets.ime)
+            .padding(16.dp),
+        verticalArrangement = Arrangement.spacedBy(12.dp)
     ) {
-        CbInput(
-            value = memory,
-            onValueChange = onMemory,
-            placeholder = "记录稳定事实、偏好、关系、目标、已确认设定...",
-            modifier = Modifier.fillMaxSize(),
-            singleLine = false,
-            minLines = 24,
-            expand = true
+        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                CbText(
+                    "长期记忆 ${state.usedArchiveChars}/${session?.memoryLimitChars ?: 2000} 字（最高 20000）",
+                    style = ChatBarTheme.typography.label
+                )
+                CbText(
+                    "历史记忆：${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
+                        "当前状态：${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbIconButton(
+                AppIcons.Refresh,
+                "刷新长期记忆页面",
+                onRefresh,
+                tint = ChatBarTheme.colors.mutedForeground
+            )
+        }
+        (session?.memoryArchiveError ?: session?.memoryHeadError ?: state.error)?.let {
+            CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+        }
+        if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
+            (session?.memoryLimitChars ?: 2000) < 20000
+        ) {
+            CbButton(
+                "增加 2000 字",
+                onIncreaseLimit,
+                variant = ButtonVariant.Outline,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (session?.memoryArchiveStatus == MemoryUpdateStatus.ERROR) {
+            CbButton(
+                "重试 Archive 维护",
+                onRetryMaintenance,
+                variant = ButtonVariant.Outline,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        if (session?.memoryHeadStatus == MemoryUpdateStatus.ERROR) {
+            CbButton(
+                "重试 HEAD 更新",
+                onRetryHead,
+                variant = ButtonVariant.Outline,
+                modifier = Modifier.fillMaxWidth()
+            )
+        }
+        state.warnings.forEach {
+            CbText("⚠ $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        MemoryBackfillAction(
+            state = state,
+            onStart = { showBackfillConfirm = true },
+            onPause = onPauseBackfill
+        )
+        state.memoryState?.pendingDecision?.let { pending ->
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(
+                        "长期记忆上限选择待处理：${pending.tier.memoryDisplayName()}",
+                        style = ChatBarTheme.typography.label
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CbButton("增加 2000 字", { onResolveDecision(true) })
+                        CbButton(
+                            "保持上限并压缩",
+                            { onResolveDecision(false) },
+                            variant = ButtonVariant.Outline
+                        )
+                    }
+                }
+            }
+        }
+        CbTabs(listOf("当前状态", "近期流程", "事件总结", "故事进程", "注入预览"), page, { page = it })
+        Box(Modifier.weight(1f).fillMaxWidth()) {
+            when (page) {
+                0 -> MemoryHeadPage(
+                    state,
+                    onEditHead,
+                    onMarkSourcesCorrected = { onMarkSourcesCorrected(emptyList()) }
+                )
+                1, 2, 3 -> {
+                    val tier = when (page) {
+                        1 -> MemoryTier.EPISODE
+                        2 -> MemoryTier.ARC
+                        else -> MemoryTier.ERA
+                    }
+                    Column(Modifier.fillMaxSize(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CbTabs(listOf("当前", "编辑", "历史"), tierSection, { tierSection = it })
+                        Box(Modifier.weight(1f).fillMaxWidth()) {
+                            when (tierSection) {
+                                0 -> MemoryTierCurrent(
+                                    state,
+                                    tier,
+                                    onMarkSourcesCorrected = { onMarkSourcesCorrected(listOf(it)) },
+                                    onJumpToSource = onJumpToSource
+                                )
+                                1 -> MemoryTierEditor(state, tier, onEditNode)
+                                else -> MemoryVersionHistory(
+                                    state,
+                                    tier,
+                                    onRestoreVersion,
+                                    onLoadMore = { onLoadMoreHistory(tier) }
+                                )
+                            }
+                        }
+                    }
+                }
+                else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+                    MemoryReadOnlyCard("Archive + HEAD", state.preview.ifBlank { "（空）" })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MemoryBackfillAction(
+    state: LongTermMemoryUiState,
+    onStart: () -> Unit,
+    onPause: () -> Unit
+) {
+    val backfill = state.memoryState?.backfill
+    val missingCount = state.backfillEstimate?.missingSourceTurns ?: 0
+    if (backfill?.status == MemoryBackfillStatus.RUNNING) {
+        val runtime = state.backfillProgress
+        val completedTurns = runtime?.completedSourceTurns ?: backfill.completedSourceTurnIds.size
+        val totalTurns = runtime?.totalSourceTurns
+            ?: (backfill.completedSourceTurnIds.size + backfill.pendingSourceTurnIds.size)
+        val fraction = runtime?.fraction
+            ?: if (totalTurns == 0) 0f else (completedTurns.toFloat() / totalTurns).coerceIn(0f, 1f)
+        val phaseText = when (runtime?.phase) {
+            MemoryBackfillPhase.PREPARING -> "正在准备下一条近期流程"
+            MemoryBackfillPhase.GENERATING_EPISODE -> "正在生成${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
+            MemoryBackfillPhase.CHECKING_SPACE -> "正在检查长期记忆空间"
+            MemoryBackfillPhase.SAVING_EPISODE -> "正在保存近期流程"
+            MemoryBackfillPhase.UPDATING_HEAD -> "近期流程补录完成，正在更新当前状态"
+            null -> "正在准备补录"
+        }
+        CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+            Column(
+                Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbText(phaseText, style = ChatBarTheme.typography.label)
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .height(6.dp)
+                        .clip(RoundedCornerShape(99.dp))
+                        .background(ChatBarTheme.colors.border)
+                ) {
+                    Box(
+                        Modifier
+                            .fillMaxWidth(fraction)
+                            .height(6.dp)
+                            .background(ChatBarTheme.colors.primary)
+                    )
+                }
+                CbText(
+                    "已处理 $completedTurns/$totalTurns 轮 · 已生成 ${runtime?.completedEpisodes ?: backfill.completedEpisodeCount} 条近期流程",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                if (runtime?.phase == MemoryBackfillPhase.GENERATING_EPISODE) {
+                    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+                        CbText(
+                            runtime.streamingSummary.ifBlank { "模型正在生成摘要…" },
+                            modifier = Modifier.padding(8.dp),
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                }
+                CbText("补录期间聊天暂时不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                CbButton(
+                    "完成当前步骤后暂停",
+                    onPause,
+                    variant = ButtonVariant.Outline,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    } else if (backfill?.status == MemoryBackfillStatus.ERROR) {
+        CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+            Column(
+                Modifier.padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbText(
+                    "补录失败：${backfill.error ?: "未知错误"}",
+                    color = ChatBarTheme.colors.destructive
+                )
+                if (missingCount > 0) {
+                    CbButton(
+                        "重试补录",
+                        onStart,
+                        modifier = Modifier.fillMaxWidth(),
+                        variant = ButtonVariant.Outline
+                    )
+                }
+            }
+        }
+    } else if (missingCount > 0) {
+        CbButton(
+            "一键补录长期记忆",
+            onStart,
+            modifier = Modifier.fillMaxWidth()
         )
     }
+}
+
+@Composable
+internal fun MemoryTierCurrent(
+    state: LongTermMemoryUiState,
+    tier: MemoryTier,
+    onMarkSourcesCorrected: (String) -> Unit = {},
+    onJumpToSource: (String) -> Unit = {}
+) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        if (tier == MemoryTier.EPISODE) {
+            state.nodes.filter { it.tier == MemoryTier.LEGACY_REFERENCE }.forEach { legacy ->
+                MemoryReadOnlyCard(
+                    "旧版记忆参考｜时间未知",
+                    "不代表当前进展。补录完成前继续注入。\n\n${legacy.body}"
+                )
+            }
+        }
+        state.nodes.filter { it.tier == tier }.forEach { node ->
+            MemoryReadOnlyCard(
+                node.memoryRangeLabel(state),
+                node.body
+            )
+            state.memoryState?.staleSourcesByNodeId?.get(node.id)?.let { sourceIds ->
+                val labels = sourceIds.mapNotNull { sourceId ->
+                    state.memoryState.timeline.firstOrNull { it.sourceTurnId == sourceId }
+                        ?.let { "T${it.displayT}" }
+                }
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        CbText(
+                            "来源已变化${labels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "：") ?: ""}。旧正文继续注入。",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            sourceIds.firstOrNull()?.let { sourceId ->
+                                CbButton(
+                                    "跳转来源",
+                                    { onJumpToSource(sourceId) },
+                                    variant = ButtonVariant.Ghost,
+                                    modifier = Modifier.weight(1f)
+                                )
+                            }
+                            CbButton(
+                                "已按新来源校正",
+                                { onMarkSourcesCorrected(node.id) },
+                                variant = ButtonVariant.Outline,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MemoryHeadPage(
+    state: LongTermMemoryUiState,
+    onEditHead: (MemoryHead) -> Unit,
+    onMarkSourcesCorrected: () -> Unit = {}
+) {
+    val head = state.head ?: return
+    var headDraft by remember(head) { mutableStateOf(head) }
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+            Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbText("HEAD｜截至 ${head.memoryThroughLabel(state)}", style = ChatBarTheme.typography.heading)
+                CbField("位置") { CbInput(headDraft.location, { headDraft = headDraft.copy(location = it) }) }
+                CbField("人物状态") { CbInput(headDraft.participants, { headDraft = headDraft.copy(participants = it) }, singleLine = false, minLines = 2) }
+                CbField("关系") { CbInput(headDraft.relationships, { headDraft = headDraft.copy(relationships = it) }, singleLine = false, minLines = 2) }
+                CbField("目标") { CbInput(headDraft.goals, { headDraft = headDraft.copy(goals = it) }, singleLine = false, minLines = 2) }
+                CbField("未解决") { CbInput(headDraft.unresolved, { headDraft = headDraft.copy(unresolved = it) }, singleLine = false, minLines = 2) }
+                CbField("世界状态") { CbInput(headDraft.worldState, { headDraft = headDraft.copy(worldState = it) }, singleLine = false, minLines = 2) }
+            }
+        }
+        if (head.stale) {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    CbText(
+                        "HEAD来源已变化。旧状态继续注入，直到保存修正或确认已校正。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton(
+                        "已按新来源校正",
+                        onMarkSourcesCorrected,
+                        variant = ButtonVariant.Outline,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+        CbButton("保存当前状态", { onEditHead(headDraft) }, modifier = Modifier.fillMaxWidth())
+    }
+}
+
+@Composable
+internal fun MemoryTierEditor(
+    state: LongTermMemoryUiState,
+    tier: MemoryTier,
+    onEditNode: (String, String) -> Unit
+) {
+    Column(
+        Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        state.nodes.filter { it.tier == tier }.forEach { node ->
+            var draft by remember(node.id, node.body) { mutableStateOf(node.body) }
+            CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(node.memoryRangeLabel(state), style = ChatBarTheme.typography.heading)
+                    CbText(
+                        "只修改这条记忆的正文；覆盖范围和来源关系不会改变。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbField("正文") {
+                        CbInput(draft, { draft = it }, singleLine = false, minLines = 4)
+                    }
+                    CbButton(
+                        "保存此节点Checkpoint",
+                        { onEditNode(node.id, draft) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MemoryVersionHistory(
+    state: LongTermMemoryUiState,
+    tier: MemoryTier,
+    onRestoreVersion: (String) -> Unit,
+    onLoadMore: () -> Unit = {}
+) {
+    LazyColumn(
+        Modifier.fillMaxSize(),
+        verticalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        items(state.versionsByTier[tier].orEmpty(), key = { it.revision.id }) { version ->
+            CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+                Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(
+                        "${version.revision.operation.memoryDisplayName()} · ${version.revision.author.memoryDisplayName()}",
+                        style = ChatBarTheme.typography.heading
+                    )
+                    CbText(
+                        "${formatRagTime(version.revision.createdAt)} · 模型 ${version.revision.modelId ?: "—"} · ${version.affectedRangeLabel}",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    version.diffs.forEach { diff ->
+                        CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                            Column(Modifier.padding(8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                CbText(diff.label, style = ChatBarTheme.typography.label)
+                                diff.before?.let { CbText("− $it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
+                                diff.after?.let { CbText("+ $it", color = ChatBarTheme.colors.foreground, style = ChatBarTheme.typography.caption) }
+                            }
+                        }
+                    }
+                    CbButton(
+                        if (version.isCurrent) "当前Checkpoint" else "恢复此分页",
+                        { onRestoreVersion(version.revision.id) },
+                        variant = ButtonVariant.Outline,
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !version.isCurrent
+                    )
+                    version.restoreBeforeRevisionId?.let { beforeRevisionId ->
+                        CbButton(
+                            "恢复到本次变化前",
+                            { onRestoreVersion(beforeRevisionId) },
+                            variant = ButtonVariant.Ghost,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+        if (state.historyHasMoreByTier[tier] == true) {
+            item(key = "load-more-${tier.name}") {
+                CbButton(
+                    "加载更早Checkpoint",
+                    onLoadMore,
+                    variant = ButtonVariant.Outline,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        }
+    }
+}
+
+private fun MemoryRevisionOperation.memoryDisplayName(): String = when (this) {
+    MemoryRevisionOperation.MIGRATE -> "迁移"
+    MemoryRevisionOperation.PURE_APPEND_SYNC -> "纯新增同步"
+    MemoryRevisionOperation.COMPRESSION_SOURCE -> "压缩来源"
+    MemoryRevisionOperation.COMPRESSION_TARGET -> "压缩结果"
+    MemoryRevisionOperation.USER_EDIT -> "用户修改"
+    MemoryRevisionOperation.PRE_RESTORE_CHECKPOINT -> "恢复前备份"
+    MemoryRevisionOperation.RESTORE -> "恢复历史"
+    MemoryRevisionOperation.LOAD_SAVE -> "载入存档"
+    MemoryRevisionOperation.DEBUG_REBUILD -> "Debug重新补录"
+}
+
+private fun MemoryAuthor.memoryDisplayName(): String = when (this) {
+    MemoryAuthor.AI -> "AI"
+    MemoryAuthor.USER -> "用户"
+    MemoryAuthor.RESTORE -> "恢复操作"
+    MemoryAuthor.MIGRATION -> "迁移"
+}
+
+private fun MemoryUpdateStatus.memoryDisplayName(): String = when (this) {
+    MemoryUpdateStatus.IDLE -> "空闲"
+    MemoryUpdateStatus.UPDATING -> "更新中"
+    MemoryUpdateStatus.ERROR -> "失败"
+    MemoryUpdateStatus.LIMIT_DECISION_REQUIRED -> "等待选择"
+    MemoryUpdateStatus.PAUSED -> "已暂停"
+}
+
+private fun MemoryDecisionTier.memoryDisplayName(): String = when (this) {
+    MemoryDecisionTier.EPISODE -> "近期流程 → 事件总结"
+    MemoryDecisionTier.ARC -> "事件总结 → 故事进程"
+    MemoryDecisionTier.ERA -> "故事进程再次压缩"
+}
+
+@Composable
+private fun MemoryReadOnlyCard(title: String, content: String) {
+    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            CbText(title, style = ChatBarTheme.typography.heading)
+            CbText(content.ifBlank { "（空）" }, color = ChatBarTheme.colors.mutedForeground)
+        }
+    }
+}
+
+private fun MemoryNode.memoryRangeLabel(state: LongTermMemoryUiState): String {
+    val range = state.memoryState?.timeline?.let { MemoryTimelinePolicy.range(this, it) }
+    return if (range == null) "${tier.name}｜时间未知" else "${tier.name} T${range.startT}-T${range.endT}"
+}
+
+private fun MemoryHead.memoryThroughLabel(state: LongTermMemoryUiState): String {
+    val id = throughSourceTurnId ?: return "T?"
+    return state.memoryState?.timeline?.firstOrNull { it.sourceTurnId == id }
+        ?.let { "T${it.displayT}" }
+        ?: "T?"
 }
 
 @Composable
@@ -590,13 +1122,7 @@ private fun RagMemoryContent(
     onEdit: (VectorChunk) -> Unit,
     onDelete: (VectorChunk) -> Unit
 ) {
-    val legacyCount = chunks.count { chunk ->
-        when (chunk.metadata["indexMode"]) {
-            "single_message_contextual", "single_message" -> true
-            "message_pair" -> chunk.metadata["contentVersion"] != "4"
-            else -> false
-        }
-    }
+    val legacyCount = chunks.count(ChatMemoryIndexPolicy::needsAutomaticRebuild)
     Column(
         Modifier
             .fillMaxSize()
@@ -631,12 +1157,12 @@ private fun RagMemoryContent(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     CbText(
-                        "发现 $legacyCount 个待更新自动记忆。重建后会清除状态栏与横线选项。",
+                        "发现 $legacyCount 个旧版自动块。重建会按完整T轮次重新索引已滑出上下文的原始对话，并补上旧版遗漏的T；手动块不受影响。",
                         modifier = Modifier.weight(1f),
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
                     )
-                    CbButton("重建记忆", onRebuildLegacy, variant = ButtonVariant.Outline, enabled = !busy)
+                    CbButton("重建RAG索引", onRebuildLegacy, variant = ButtonVariant.Outline, enabled = !busy)
                 }
             }
         }
@@ -668,7 +1194,9 @@ private fun RagMemoryChunkCard(
 ) {
     val mode = when (chunk.metadata["indexMode"]) {
         "manual" -> "手动"
-        "message_pair" -> "用户—助手消息组"
+        "message_pair" -> "旧版用户—助手消息组"
+        "memory_node" -> "旧版长期记忆耦合块"
+        "timeline_turn" -> "原始 T 轮次"
         "single_message" -> "旧版单消息记忆"
         "single_message_contextual" -> "旧版上下文记忆"
         else -> chunk.metadata["indexMode"] ?: "旧版"

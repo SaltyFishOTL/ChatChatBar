@@ -75,6 +75,8 @@ import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
+import com.example.chatbar.data.local.entity.MemoryUpdateStatus
+import com.example.chatbar.data.local.entity.MemoryDecisionTier
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
@@ -140,6 +142,7 @@ fun ChatScreen(
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
+    val longTermMemoryUiState by viewModel.longTermMemoryUiState.collectAsState()
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
@@ -150,6 +153,12 @@ fun ChatScreen(
 
     LaunchedEffect(viewModel, context) {
         viewModel.messageFormatRepairEvents.collect { message ->
+            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+        }
+    }
+    LaunchedEffect(viewModel, context) {
+        viewModel.drainMemoryCompressionEvents()
+        viewModel.memoryCompressionEvents.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
@@ -191,6 +200,11 @@ fun ChatScreen(
     var imagePromptTargetId by remember(sessionId) { mutableStateOf<String?>(null) }
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
+    var memoryLimitDialogDismissed by remember(
+        sessionId,
+        session?.memoryHeadCommitId,
+        session?.memoryUpdateStatus
+    ) { mutableStateOf(false) }
 
     LaunchedEffect(imageActionTarget) {
         val target = imageActionTarget
@@ -945,15 +959,47 @@ fun ChatScreen(
         }
     }
 
-    if (settingsOpen) ChatSettingsDialog(viewModel, { settingsOpen = false }, { clearConfirm = true })
+    if (settingsOpen) ChatSettingsDialog(
+        viewModel = viewModel,
+        onDismiss = { settingsOpen = false },
+        onClearHistory = { clearConfirm = true },
+        onJumpToSource = { sourceTurnId ->
+            settingsOpen = false
+            messages.indexOfFirst { it.sourceTurnId == sourceTurnId }.takeIf { it >= 0 }?.let { index ->
+                scope.launch { listState.animateScrollToItem(index) }
+            }
+        }
+    )
     if (debugOpen) DebugLogDialog(sessionId, viewModel, { debugOpen = false })
+    if (session?.memoryUpdateStatus == MemoryUpdateStatus.LIMIT_DECISION_REQUIRED &&
+        !memoryLimitDialogDismissed
+    ) {
+        MemoryLimitDecisionDialog(
+            currentLimitChars = session?.memoryLimitChars ?: 2000,
+            decisionTier = longTermMemoryUiState.memoryState?.pendingDecision?.tier,
+            onDismiss = { memoryLimitDialogDismissed = true },
+            onIncrease = {
+                viewModel.resolveMemoryCompressionDecision(true)
+                memoryLimitDialogDismissed = true
+            },
+            onCompress = {
+                viewModel.resolveMemoryCompressionDecision(false)
+                memoryLimitDialogDismissed = true
+            }
+        )
+    }
     if (clearConfirm) {
         CbDialog(
             onDismissRequest = { clearConfirm = false },
             title = "清空记录",
             dismiss = { CbButton("取消", { clearConfirm = false }, variant = ButtonVariant.Ghost) },
             confirm = { CbButton("删除", { viewModel.clearHistoryAndMemory(); clearConfirm = false; settingsOpen = false }, variant = ButtonVariant.Destructive) }
-        ) { CbText("确定删除全部聊天记录和 RAG 记忆？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground) }
+        ) {
+            CbText(
+                "确定删除全部聊天记录、RAG记忆和本会话长期记忆历史？此操作不可撤销；旧SaveSlot仍可能恢复其中保存的数据。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
     }
     if (showBatteryOptimizationHint) {
         val context = LocalContext.current
@@ -1374,6 +1420,49 @@ fun ChatScreen(
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
         }
+    }
+}
+
+@Composable
+internal fun MemoryLimitDecisionDialog(
+    currentLimitChars: Int,
+    decisionTier: MemoryDecisionTier? = null,
+    onDismiss: () -> Unit,
+    onIncrease: () -> Unit,
+    onCompress: () -> Unit
+) {
+    val title = when (decisionTier) {
+        MemoryDecisionTier.EPISODE -> "近期流程准备压缩为事件总结"
+        MemoryDecisionTier.ARC -> "事件总结准备压缩为故事进程"
+        MemoryDecisionTier.ERA -> "故事进程准备再次有损压缩"
+        null -> "长期记忆已达本会话上限"
+    }
+    val guidance = when (decisionTier) {
+        MemoryDecisionTier.EPISODE -> "保持上限将开始压缩近期流程。"
+        MemoryDecisionTier.ARC -> "事件总结继续压缩会损失更多细节，建议优先扩容。"
+        MemoryDecisionTier.ERA -> "故事进程将被重复有损压缩，强烈建议优先扩容。"
+        null -> "保持上限才会开始压缩。"
+    }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = title,
+        dismiss = {
+            CbButton("稍后决定", onDismiss, variant = ButtonVariant.Ghost)
+        }
+    ) {
+        CbText(
+            "当前上限 $currentLimitChars 字。扩容会放弃本次压缩；$guidance 已经完成的旧压缩不会恢复。",
+            color = ChatBarTheme.colors.mutedForeground
+        )
+        Spacer(Modifier.size(12.dp))
+        CbButton("增加 2000 字", onIncrease, modifier = Modifier.fillMaxWidth())
+        Spacer(Modifier.size(8.dp))
+        CbButton(
+            "保持上限并压缩",
+            onCompress,
+            variant = ButtonVariant.Outline,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 

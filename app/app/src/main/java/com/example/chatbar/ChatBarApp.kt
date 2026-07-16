@@ -14,6 +14,7 @@ import com.example.chatbar.domain.draft.EditorDraftAssetService
 import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.moment.*
+import com.example.chatbar.domain.memory.LongTermMemoryService
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
@@ -50,6 +51,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var ragRepository: RagRepository
         private set
+    lateinit var memoryRepository: MemoryRepository
+        private set
     lateinit var worldBookRepository: WorldBookRepository
         private set
     lateinit var editorDraftRepository: EditorDraftRepository
@@ -71,6 +74,8 @@ class ChatBarApp : Application() {
     lateinit var promptAssembler: PromptAssembler
         private set
     lateinit var contextWindowManager: ContextWindowManager
+        private set
+    lateinit var longTermMemoryService: LongTermMemoryService
         private set
     lateinit var speakerTagHistoryService: SpeakerTagHistoryService
         private set
@@ -146,6 +151,7 @@ class ChatBarApp : Application() {
         momentRepository = MomentRepository(jsonFileStorage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
+        memoryRepository = MemoryRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
         editorDraftRepository = EditorDraftRepository(jsonFileStorage)
         editorDraftAssetService = EditorDraftAssetService(this)
@@ -163,13 +169,6 @@ class ChatBarApp : Application() {
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
-        momentGenerationService = MomentGenerationService(
-            chatService = streamingChatService,
-            promptDesigner = novelAiPromptDesigner,
-            imageService = novelAiImageService,
-            imageStorage = novelAiImageStorage,
-            novelAiCredentials = novelAiCredentialStore
-        )
         searchBackend = MediaWikiSearchBackend()
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
@@ -185,6 +184,27 @@ class ChatBarApp : Application() {
         
         promptAssembler = PromptAssembler()
         contextWindowManager = ContextWindowManager()
+        longTermMemoryService = LongTermMemoryService(
+            chatRepository = chatRepository,
+            memoryRepository = memoryRepository,
+            settingsRepository = settingsRepository,
+            streamingChatService = streamingChatService,
+            contextWindowManager = contextWindowManager
+        )
+        momentGenerationService = MomentGenerationService(
+            chatService = streamingChatService,
+            promptDesigner = novelAiPromptDesigner,
+            imageService = novelAiImageService,
+            imageStorage = novelAiImageStorage,
+            novelAiCredentials = novelAiCredentialStore,
+            compiledMemoryProvider = { session ->
+                if (session.longTermMemoryEnabled) {
+                    longTermMemoryService.promptView(session.id).fullText
+                } else {
+                    ""
+                }
+            }
+        )
         speakerTagHistoryService = SpeakerTagHistoryService(
             characterRepository,
             chatRepository
@@ -267,6 +287,7 @@ class ChatBarApp : Application() {
             chatRepository,
             saveSlotRepository,
             ragRepository,
+            memoryRepository,
             momentRepository,
             novelAiImageStorage
         )

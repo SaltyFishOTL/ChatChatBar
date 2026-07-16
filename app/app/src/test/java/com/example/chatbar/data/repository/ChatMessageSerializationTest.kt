@@ -18,6 +18,7 @@ class ChatMessageSerializationTest {
         )
 
         assertNull(decoded.formatRepairNotice)
+        assertNull(decoded.timelineTurn)
     }
 
     @Test
@@ -45,5 +46,27 @@ class ChatMessageSerializationTest {
 
             assertEquals(message, decoded)
         }
+    }
+
+    @Test
+    fun timelineTurn_roundTripsWithoutChangingOrderKey() {
+        val message = ChatMessage(
+            id = "timeline",
+            sessionId = "s",
+            role = MessageRole.USER,
+            content = "turn",
+            timelineTurn = 42,
+            orderKey = 12,
+            createdAt = 1,
+            updatedAt = 1
+        )
+
+        val decoded = Json.decodeFromString(
+            ChatMessage.serializer(),
+            Json.encodeToString(ChatMessage.serializer(), message)
+        )
+
+        assertEquals(42L, decoded.timelineTurn)
+        assertEquals(12L, decoded.orderKey)
     }
 }

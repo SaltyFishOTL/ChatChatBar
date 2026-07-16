@@ -9,7 +9,7 @@ import kotlin.uuid.Uuid
  */
 @Serializable
 data class SaveSlot(
-    val schemaVersion: Int = 2,
+    val schemaVersion: Int = 4,
     val id: String,
     val sessionId: String,
     val name: String,
@@ -27,6 +27,13 @@ data class SaveSlot(
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
+    val nextSourceTurnOrder: Long = 1,
+    val sourceTurnTombstones: List<SourceTurnTombstone> = emptyList(),
+    /** v3草稿兼容字段。 */
+    val nextTimelineTurn: Long = 1,
+    val timelineTombstones: Set<Long> = emptySet(),
+    val memoryLimitChars: Int = 2000,
+    val memorySnapshot: MemorySnapshot? = null,
     val contextWindowSize: Int? = null,
     val extraWorldBookIds: List<String> = emptyList(),
     val timedWorldInfo: Map<String, TimedEffectState> = emptyMap(),
