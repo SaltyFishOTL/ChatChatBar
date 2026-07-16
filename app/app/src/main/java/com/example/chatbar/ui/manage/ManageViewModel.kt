@@ -899,7 +899,8 @@ class ManageViewModel : ViewModel() {
                     chatService.completeText(
                     listOf(com.example.chatbar.domain.chat.ChatApiMessage.text("user", "Reply with OK")),
                     chat,
-                    maxTokens = 8
+                    maxTokens = 8,
+                    disableThinking = true
                 )
                 }
                 "对话：成功"

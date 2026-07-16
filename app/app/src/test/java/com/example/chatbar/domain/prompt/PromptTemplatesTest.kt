@@ -22,11 +22,12 @@ class PromptTemplatesTest {
             children = "children"
         )
 
-        assertTrue(episode.contains("直接压缩为一个 Episode"))
+        assertTrue(episode.contains("turns"))
         assertTrue(episode.contains("逐 T 复述，禁止这样写"))
         assertTrue(episode.contains("错误输出"))
         assertTrue(episode.contains("正确示例"))
         assertTrue(episode.contains("summary 最多只能写 70 字"))
+        assertTrue(episode.contains("\"summary\""))
         assertFalse(episode.contains("sourceCoverage"))
         assertTrue(compression.contains("只能消费其最老连续前缀"))
         assertTrue(compression.contains("4 至 20"))

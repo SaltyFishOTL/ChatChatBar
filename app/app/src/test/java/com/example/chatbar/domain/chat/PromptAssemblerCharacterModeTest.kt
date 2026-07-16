@@ -67,7 +67,7 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(prompt.contains("User prefers concise replies."))
     }
 
-    @Test fun generatedSectionsUseShortTitlesWithoutNumberedSeparators() {
+    @Test fun generatedSectionsIncludeConfiguredContentWithoutNumberedSeparators() {
         val prompt = assembler.assembleSystemPrompt(
             characterCard = card(basicSetting = "共同世界观"),
             playerName = "玩家",
@@ -84,15 +84,12 @@ class PromptAssemblerCharacterModeTest {
         )
 
         listOf(
-            "【角色设定】",
-            "【世界书】",
-            "【格式要求】",
-            "【回复要求】",
-            "【长期记忆】",
-            "【补充设定】",
-            "【玩家设定】",
-            "【核心指令】",
-            "【后置指令】"
+            "共同世界观",
+            "玩家资料",
+            "临时规则",
+            "格式正文",
+            "长期内容",
+            "世界内容"
         ).forEach { assertTrue(prompt.contains(it)) }
         assertFalse(prompt.contains("=================================================="))
         assertFalse(Regex("(?m)^\\d+(?:\\.\\d+)?\\. ").containsMatchIn(prompt))
