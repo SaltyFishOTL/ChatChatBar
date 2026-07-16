@@ -12,6 +12,29 @@
 8. Save immutable Episode, append active Episode page, then remove committed pending IDs.
 9. On failure, preserve pending IDs and raw chat; expose error.
 
+## HEAD
+
+```text
+BEFORE_PROMPT
+  → run beside RAG retrieval
+  → INITIALIZE blank new-chat HEAD from opening + first complete round when third user round starts
+  → or UPDATE existing HEAD with exactly next eligible baseline group
+  → await attempt before assembling roleplay request
+
+AFTER_REPLY
+  → background UPDATE only when HEAD already exists and exactly one baseline group is next
+
+BACKFILL
+  → keep backfill RUNNING
+  → rebuild from compiled Archive + penultimate stable baseline group
+  → never inherit old HEAD
+```
+
+- Keep latest complete group raw at prompt tail; target the immediately preceding group.
+- Treat historical blank HEAD, a watermark more than one group behind, or a Gap-crossing path as requiring explicit backfill. Omit invalid or blank HEAD from injection.
+- On HEAD failure, preserve previous or blank HEAD, expose the error, and let the waiting roleplay request continue after the failed attempt finishes.
+- When long-term memory is disabled, omit Archive, HEAD, and timeline constraint entirely.
+
 ## Backfill
 
 Explicit memory-page refresh first reloads current context-window settings, source turns, timeline, active coverage, normal pending, gaps, and source hashes. Newly archived uncovered turns become durable gaps; refresh itself never calls AI. Repeated refresh is idempotent.

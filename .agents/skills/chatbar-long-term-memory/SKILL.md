@@ -18,7 +18,7 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 
 - Persisted models: `data/local/entity/LongTermMemory.kt`, `ChatMessage.kt`, `ChatSession.kt`, `AppSettings.kt`, `SaveSlot.kt`.
 - Storage: `data/repository/MemoryRepository.kt`, `ChatRepository.kt`.
-- Core behavior: `domain/memory/LongTermMemoryService.kt` and focused policies under `domain/memory/`.
+- Core behavior: `domain/memory/LongTermMemoryService.kt`, `MemoryHeadUpdatePolicy.kt`, `MemoryAiGateway.kt`, and focused policies under `domain/memory/`.
 - Timeline/context boundaries: `domain/chat/TimelineTurnPolicy.kt`, `TimelineArchiveBoundaryPolicy.kt`, `ContextWindowManager.kt`.
 - Injection: `domain/chat/PromptAssembler.kt`; AI task templates: `domain/prompt/PromptTemplates.kt`.
 - RAG boundary consumers: `domain/rag/ChatMemoryIndexPolicy.kt`, `RagManager.kt`, `RagRepository.kt`.
@@ -45,6 +45,7 @@ All source paths above are relative to `app/app/src/main/java/com/example/chatba
 - Keep RAG storage independent from long-term memory while using consistent source-turn boundaries.
 - Reject preview or injection changes that leak raw source turns through the long-term-memory block.
 - Generate multi-turn Episode as one direct aggregate body. Keep coverage program-owned through ordered source IDs and hashes; never ask AI for per-turn proof text.
+- Keep HEAD modes distinct: initialize from opening plus first round, update by exactly one baseline group, and backfill from compiled Archive plus latest eligible baseline group.
 - Reject compression that skips, overlaps, reorders, duplicates, or invents coverage.
 
 ## Stop Conditions

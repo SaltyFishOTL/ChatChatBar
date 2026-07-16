@@ -37,7 +37,7 @@
 - Blank HEAD injects no HEAD block. Expected new-chat blank state shows no backfill action; historical blank/lagging state requires backfill.
 - Normal HEAD update cannot cross `MemoryGap`. Re-enable/backfill fills missing Archive first, then rebuilds HEAD.
 - Before roleplay request, wait for HEAD preparation and RAG retrieval in parallel. Post-reply HEAD update remains background work.
-- Keep HEAD outside Archive character budget and visible revision history.
+- Keep HEAD outside Archive character budget. Its internal version and source hashes exist only for concurrency and stale-result rejection.
 - Count only active Episode/Arc/Era body text toward per-session automatic budget.
 - Use initial 2000 characters, +2000 per accepted expansion, maximum 20000. Do not derive budget from model context percentage.
 
