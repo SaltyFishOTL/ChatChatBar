@@ -28,7 +28,10 @@ import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.toGeneratedImageMetadata
+import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.memory.MemoryPromptView
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
@@ -128,37 +131,6 @@ data class LongTermMemoryUiState(
 )
 
 private const val MEMORY_HISTORY_PAGE_SIZE = 20
-
-internal data class NovelAiImageRegenerationDraft(
-    val baseCaption: String,
-    val characterPrompts: List<GeneratedImageCharacterPrompt>,
-    val negativePrompt: String,
-    val sizePreset: String,
-    val width: Int,
-    val height: Int
-) {
-    fun toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
-        baseCaption = baseCaption,
-        characterCaptions = characterPrompts.map {
-            com.example.chatbar.domain.image.NovelAiCharacterCaption(
-                prompt = it.prompt,
-                center = com.example.chatbar.domain.image.DesignedCharacterCenter(it.centerX, it.centerY)
-            )
-        },
-        sizePreset = com.example.chatbar.domain.image.NovelAiImageSizePreset.from(sizePreset),
-        negativePrompt = negativePrompt
-    )
-}
-
-internal fun GeneratedImageMetadata.toRegenerationDraft(): NovelAiImageRegenerationDraft =
-    NovelAiImageRegenerationDraft(
-        baseCaption = baseCaption,
-        characterPrompts = characterPrompts,
-        negativePrompt = negativePrompt,
-        sizePreset = sizePreset,
-        width = width,
-        height = height
-    )
 
 data class MessageFormatRepairState(
     val messageId: String,
@@ -2456,25 +2428,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             )
         }
     }
-
-    private fun NovelAiPromptPlan.toGeneratedImageMetadata(
-        imagePath: String,
-        imageSize: NovelAiImageSize
-    ): GeneratedImageMetadata = GeneratedImageMetadata(
-        imagePath = imagePath,
-        baseCaption = baseCaption,
-        characterPrompts = characterCaptions.map {
-            GeneratedImageCharacterPrompt(
-                prompt = it.prompt,
-                centerX = it.center.x,
-                centerY = it.center.y
-            )
-        },
-        negativePrompt = effectiveNegativePrompt,
-        sizePreset = sizePreset.name,
-        width = imageSize.width,
-        height = imageSize.height
-    )
 
     fun editMessageSegment(
         messageId: String,

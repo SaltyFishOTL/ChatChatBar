@@ -17,6 +17,7 @@ import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
+import com.example.chatbar.domain.image.toGeneratedImageMetadata
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.coroutines.delay
@@ -189,7 +190,15 @@ class MomentGenerationService(
         val normalizedDraft = draft.copy(text = text)
         val token = novelAiCredentials.load()
         if (token == null) {
-            val post = createPost(card, session, normalizedDraft, prompt = null, imagePath = null, scheduledAt = scheduledAt)
+            val post = createPost(
+                card,
+                session,
+                normalizedDraft,
+                prompt = null,
+                imagePath = null,
+                imageSize = null,
+                scheduledAt = scheduledAt
+            )
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成无图朋友圈", progress = 1f))
             return MomentGenerationResult.Posted(post)
         }
@@ -210,7 +219,7 @@ class MomentGenerationService(
         val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
         val imagePath = imageStorage.save("moments_${card.id}", bytes)
-        val post = createPost(card, session, normalizedDraft, prompt, imagePath, scheduledAt)
+        val post = createPost(card, session, normalizedDraft, prompt, imagePath, imageSize, scheduledAt)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "朋友圈生成完成", progress = 1f))
         return MomentGenerationResult.Posted(post)
     }
@@ -295,7 +304,15 @@ class MomentGenerationService(
                     input = "NovelAI Token 未配置",
                     output = "跳过图片生成，保存无图朋友圈。"
                 )
-                val post = createPost(card, session, normalizedDraft, prompt = null, imagePath = null, scheduledAt = scheduledAt)
+                val post = createPost(
+                    card,
+                    session,
+                    normalizedDraft,
+                    prompt = null,
+                    imagePath = null,
+                    imageSize = null,
+                    scheduledAt = scheduledAt
+                )
                 return@runCatching MomentDebugGenerationResult(post = post, exchanges = exchanges)
             }
             require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
@@ -348,7 +365,7 @@ class MomentGenerationService(
             )
             errorMessage?.let { error(it) }
             val savedImagePath = imagePath ?: error("NovelAI 未返回最终图片")
-            val post = createPost(card, session, normalizedDraft, prompt, savedImagePath, scheduledAt)
+            val post = createPost(card, session, normalizedDraft, prompt, savedImagePath, imageSize, scheduledAt)
             MomentDebugGenerationResult(post = post, exchanges = exchanges)
         }.getOrElse { error ->
             MomentDebugGenerationResult(
@@ -531,6 +548,7 @@ class MomentGenerationService(
         draft: MomentDraft,
         prompt: NovelAiPromptPlan?,
         imagePath: String?,
+        imageSize: NovelAiImageSize?,
         scheduledAt: Long
     ): MomentPost {
         val sender = selectSender(card, draft.senderName)
@@ -550,6 +568,11 @@ class MomentGenerationService(
             text = draft.text,
             imagePath = imagePath,
             imagePrompt = prompt?.baseCaption.orEmpty(),
+            generatedImageMetadata = if (prompt != null && imagePath != null && imageSize != null) {
+                prompt.toGeneratedImageMetadata(imagePath, imageSize)
+            } else {
+                null
+            },
             imageBrief = draft.imageBrief,
             isPrivate = draft.isPrivate,
             baseLikeCount = baseLikes,

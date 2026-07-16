@@ -83,11 +83,13 @@ import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
+import com.example.chatbar.ui.components.NovelAiImageRegenerationDialog
 import com.example.chatbar.ui.components.TypingIndicator
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.components.shareImage
@@ -182,7 +184,6 @@ fun ChatScreen(
     var imageRegenerationDraft by remember(sessionId) { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
     var imageRegenerationLoading by remember(sessionId) { mutableStateOf(false) }
     var imageRegenerationError by remember(sessionId) { mutableStateOf<String?>(null) }
-    var imageRegenerationFullscreenTarget by remember(sessionId) { mutableStateOf<Int?>(null) }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var deleteMessageTargetId by remember { mutableStateOf<String?>(null) }
@@ -219,7 +220,6 @@ fun ChatScreen(
         val target = imageActionTarget
         imageRegenerationDraft = null
         imageRegenerationError = null
-        imageRegenerationFullscreenTarget = null
         if (target == null) {
             imageRegenerationLoading = false
         } else {
@@ -1076,160 +1076,20 @@ fun ChatScreen(
         )
     }
     imageActionTarget?.let { (messageId, path) ->
-        val regenerationDraft = imageRegenerationDraft
-        CbDialog(
-            onDismissRequest = {
+        NovelAiImageRegenerationDialog(
+            draft = imageRegenerationDraft,
+            loading = imageRegenerationLoading,
+            errorMessage = imageRegenerationError,
+            onDraftChange = { imageRegenerationDraft = it },
+            onDismiss = { imageActionTarget = null },
+            onRegenerate = { draft ->
                 imageActionTarget = null
-                imageRegenerationFullscreenTarget = null
+                viewModel.regenerateNovelAiImage(messageId, path, draft)
             },
-            title = "图片操作",
-            dismiss = {
-                CbButton(
-                    "取消",
-                    {
-                        imageActionTarget = null
-                        imageRegenerationFullscreenTarget = null
-                    },
-                    variant = ButtonVariant.Ghost
-                )
-            },
-            confirm = {
-                CbButton(
-                    "重新生成",
-                    {
-                        val draft = imageRegenerationDraft ?: return@CbButton
-                        imageActionTarget = null
-                        imageRegenerationFullscreenTarget = null
-                        viewModel.regenerateNovelAiImage(messageId, path, draft)
-                    },
-                    enabled = regenerationDraft?.baseCaption?.isNotBlank() == true &&
-                        !imageRegenerationLoading
-                )
+            onDeleteImage = {
+                imageActionTarget = null
+                deleteImageTarget = messageId to path
             }
-        ) {
-            Column(
-                modifier = Modifier
-                    .heightIn(max = 520.dp)
-                    .verticalScroll(rememberScrollState()),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                when {
-                    imageRegenerationLoading -> {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.Center
-                        ) {
-                            CbSpinner()
-                        }
-                    }
-                    imageRegenerationError != null -> {
-                        CbText(
-                            imageRegenerationError.orEmpty(),
-                            color = ChatBarTheme.colors.destructive
-                        )
-                    }
-                    regenerationDraft != null -> {
-                        CbText(
-                            "编辑本次使用的 NovelAI 提示词。尺寸保持 ${regenerationDraft.width}×${regenerationDraft.height}；每次使用新 seed。",
-                            color = ChatBarTheme.colors.mutedForeground
-                        )
-                        CbField(
-                            label = "主提示词",
-                            description = "场景、构图、画质和全局风格标签",
-                            error = if (regenerationDraft.baseCaption.isBlank()) "主提示词不能为空" else null,
-                            onFullscreenEdit = { imageRegenerationFullscreenTarget = -1 }
-                        ) {
-                            CbInput(
-                                value = regenerationDraft.baseCaption,
-                                onValueChange = { value ->
-                                    imageRegenerationDraft = imageRegenerationDraft?.copy(baseCaption = value)
-                                },
-                                singleLine = false,
-                                minLines = 3,
-                                isError = regenerationDraft.baseCaption.isBlank()
-                            )
-                        }
-                        regenerationDraft.characterPrompts.forEachIndexed { index, characterPrompt ->
-                            CbField(
-                                label = "角色提示词 ${index + 1}",
-                                description = "该角色的外观、服装和动作标签",
-                                onFullscreenEdit = { imageRegenerationFullscreenTarget = index }
-                            ) {
-                                CbInput(
-                                    value = characterPrompt.prompt,
-                                    onValueChange = { value ->
-                                        imageRegenerationDraft = imageRegenerationDraft?.let { current ->
-                                            current.copy(
-                                                characterPrompts = current.characterPrompts.mapIndexed { itemIndex, item ->
-                                                    if (itemIndex == index) item.copy(prompt = value) else item
-                                                }
-                                            )
-                                        }
-                                    },
-                                    singleLine = false,
-                                    minLines = 3
-                                )
-                            }
-                        }
-                        CbField(
-                            label = "负面提示词",
-                            description = "不希望图片出现的内容或质量问题",
-                            onFullscreenEdit = { imageRegenerationFullscreenTarget = -2 }
-                        ) {
-                            CbInput(
-                                value = regenerationDraft.negativePrompt,
-                                onValueChange = { value ->
-                                    imageRegenerationDraft = imageRegenerationDraft?.copy(negativePrompt = value)
-                                },
-                                singleLine = false,
-                                minLines = 3
-                            )
-                        }
-                    }
-                }
-                CbButton(
-                    "删除图片",
-                    {
-                        imageActionTarget = null
-                        imageRegenerationFullscreenTarget = null
-                        deleteImageTarget = messageId to path
-                    },
-                    modifier = Modifier.fillMaxWidth(),
-                    variant = ButtonVariant.Destructive
-                )
-            }
-        }
-    }
-    imageRegenerationFullscreenTarget?.let { target ->
-        val draft = imageRegenerationDraft ?: return@let
-        val text = when {
-            target == -1 -> draft.baseCaption
-            target == -2 -> draft.negativePrompt
-            else -> draft.characterPrompts.getOrNull(target)?.prompt ?: return@let
-        }
-        val title = when {
-            target == -1 -> "编辑主提示词"
-            target == -2 -> "编辑负面提示词"
-            else -> "编辑角色提示词 ${target + 1}"
-        }
-        FullscreenTextEditor(
-            title = title,
-            text = text,
-            onTextChange = { value ->
-                imageRegenerationDraft = imageRegenerationDraft?.let { current ->
-                    when {
-                        target == -1 -> current.copy(baseCaption = value)
-                        target == -2 -> current.copy(negativePrompt = value)
-                        else -> current.copy(
-                            characterPrompts = current.characterPrompts.mapIndexed { index, item ->
-                                if (index == target) item.copy(prompt = value) else item
-                            }
-                        )
-                    }
-                }
-            },
-            visible = true,
-            onDismiss = { imageRegenerationFullscreenTarget = null }
         )
     }
     deleteImageTarget?.let { (messageId, path) ->

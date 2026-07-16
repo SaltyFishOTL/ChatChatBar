@@ -2,6 +2,7 @@ package com.example.chatbar.ui.chat
 
 import com.example.chatbar.data.local.entity.GeneratedImageCharacterPrompt
 import com.example.chatbar.data.local.entity.GeneratedImageMetadata
+import com.example.chatbar.domain.image.toRegenerationDraft
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue

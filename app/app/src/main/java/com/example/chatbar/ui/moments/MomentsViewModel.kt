@@ -1,5 +1,6 @@
 package com.example.chatbar.ui.moments
 
+import android.graphics.BitmapFactory
 import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
@@ -8,16 +9,28 @@ import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.card.CharacterCardImageTarget
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
+import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
+import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiImageSize
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
+import com.example.chatbar.domain.image.NovelAiPngMetadataReader
+import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.toGeneratedImageMetadata
+import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.moment.MomentGenerationProgressPhase
 import com.example.chatbar.domain.moment.MomentGenerationResult
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 data class MomentRetryUiState(
     val isRunning: Boolean = false,
@@ -35,7 +48,9 @@ class MomentsViewModel : ViewModel() {
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val generationService = ChatBarApp.instance.momentGenerationService
     private val scheduler = ChatBarApp.instance.momentScheduler
+    private val imageService = ChatBarApp.instance.novelAiImageService
     private val imageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val _retryStates = MutableStateFlow<Map<String, MomentRetryUiState>>(emptyMap())
 
     val posts: StateFlow<List<MomentPost>> = repository.posts
@@ -66,6 +81,131 @@ class MomentsViewModel : ViewModel() {
             runCatching { imageStorage.deleteIfOwned(imagePath) }
                 .onFailure { error -> Log.w(TAG, "Failed to delete moment image: $imagePath", error) }
         }
+    }
+
+    suspend fun loadNovelAiImageRegenerationDraft(
+        postId: String,
+        imagePath: String
+    ): NovelAiImageRegenerationDraft {
+        repository.initialize()
+        val post = repository.getPost(postId) ?: error("原朋友圈不存在")
+        require(!post.isPlaceholder && post.imagePath == imagePath) { "原朋友圈图片已发生变化" }
+        val metadata = post.generatedImageMetadata
+            ?.takeIf { it.imagePath == imagePath }
+            ?: withContext(Dispatchers.IO) {
+                runCatching { NovelAiPngMetadataReader.read(imagePath) }
+                    .onFailure { error -> Log.w(TAG, "Failed to read moment PNG metadata: $imagePath", error) }
+                    .getOrNull()
+            }
+        return metadata?.toRegenerationDraft()
+            ?: legacyRegenerationDraft(post, imagePath)
+    }
+
+    fun regenerateMomentImage(
+        postId: String,
+        imagePath: String,
+        draft: NovelAiImageRegenerationDraft,
+        onResult: (String?) -> Unit
+    ) {
+        if (draft.baseCaption.isBlank()) {
+            onResult("主提示词不能为空")
+            return
+        }
+        viewModelScope.launch {
+            val outcome = runCatching {
+                repository.initialize()
+                val source = repository.getPost(postId) ?: error("原朋友圈不存在")
+                require(!source.isPlaceholder && source.imagePath == imagePath) { "原朋友圈图片已发生变化" }
+                val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
+                val prompt = draft.toPromptPlan()
+                val imageSize = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸")
+                val imageBytes = AiBackgroundWorkManager.run("moments_image_regenerate_$postId") {
+                    GlobalImageGenerationConcurrencyGate.instance.run {
+                        var finalImage: ByteArray? = null
+                        var errorMessage: String? = null
+                        imageService.generate(
+                            token = token,
+                            prompt = prompt,
+                            seed = imageService.newSeed(),
+                            imageSize = imageSize
+                        ).collect { event ->
+                            when (event) {
+                                is NovelAiImageEvent.Final -> finalImage = event.image
+                                is NovelAiImageEvent.Error -> errorMessage = event.message
+                                is NovelAiImageEvent.Intermediate -> Unit
+                            }
+                        }
+                        errorMessage?.let { error(it) }
+                        finalImage ?: error("NovelAI 未返回最终图片")
+                    }
+                }
+                val newImagePath = withContext(Dispatchers.IO) {
+                    imageStorage.save("moments_${source.characterCardId}", imageBytes)
+                }
+                try {
+                    val current = repository.getPost(postId) ?: error("原朋友圈不存在")
+                    require(!current.isPlaceholder && current.imagePath == imagePath) {
+                        "原朋友圈图片已发生变化"
+                    }
+                    repository.updatePost(
+                        current.copy(
+                            imagePath = newImagePath,
+                            imagePrompt = draft.baseCaption,
+                            generatedImageMetadata = prompt.toGeneratedImageMetadata(newImagePath, imageSize)
+                        )
+                    )
+                } catch (error: Throwable) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { imageStorage.deleteIfOwned(newImagePath) }
+                            .onFailure { cleanupError ->
+                                Log.w(TAG, "Failed to delete unused regenerated image: $newImagePath", cleanupError)
+                            }
+                    }
+                    throw error
+                }
+                withContext(Dispatchers.IO) {
+                    runCatching { imageStorage.deleteIfOwned(imagePath) }
+                        .onFailure { error ->
+                            Log.w(TAG, "Failed to delete replaced moment image: $imagePath", error)
+                        }
+                }
+            }
+            val error = outcome.exceptionOrNull()
+            if (error is CancellationException) throw error
+            onResult(error?.message ?: error?.javaClass?.simpleName)
+        }
+    }
+
+    private suspend fun legacyRegenerationDraft(
+        post: MomentPost,
+        imagePath: String
+    ): NovelAiImageRegenerationDraft {
+        val baseCaption = post.imagePrompt.trim()
+        require(baseCaption.isNotBlank()) { "该图片不含可复用的 NovelAI 元数据" }
+        val (width, height) = withContext(Dispatchers.IO) {
+            val options = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(imagePath, options)
+            require(options.outWidth > 0 && options.outHeight > 0) { "无法读取原图尺寸" }
+            options.outWidth to options.outHeight
+        }
+        val sizePreset = when {
+            width == height -> NovelAiImageSizePreset.SQUARE
+            width > height -> NovelAiImageSizePreset.HORIZONTAL
+            else -> NovelAiImageSizePreset.PORTRAIT
+        }
+        val prompt = NovelAiPromptPlan(
+            baseCaption = baseCaption,
+            characterCaptions = emptyList(),
+            sizePreset = sizePreset
+        )
+        return NovelAiImageRegenerationDraft(
+            baseCaption = baseCaption,
+            characterPrompts = emptyList(),
+            negativePrompt = prompt.effectiveNegativePrompt,
+            sizePreset = sizePreset.name,
+            width = width,
+            height = height
+        )
     }
 
     fun retryPlaceholder(id: String) {

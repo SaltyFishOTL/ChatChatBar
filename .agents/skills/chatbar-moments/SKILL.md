@@ -70,6 +70,8 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - If moments need visual guidance, add only small modifiers: photo style, private/life-slice feeling, composition, candid/low-angle/door-gap/mirror/distant/phone snapshot when suitable.
 - Text/image generation failure should create a visible placeholder moment with failure reason and retry action; do not hide primary failure with a success-looking fallback.
 - Failed placeholders persist completed generation checkpoints. Retry resumes after completed judge, draft, and NovelAI Prompt-design phases instead of repeating them.
+- Generated images persist full `GeneratedImageMetadata`. Regeneration reuses `NovelAiImageRegenerationDialog`, exposes editable main/character/negative prompts, preserves original dimensions, and always requests a new seed.
+- Legacy moment images load regeneration data from persisted metadata, then PNG metadata, then `imagePrompt` plus decoded image dimensions.
 
 ## UI Rules
 
@@ -88,6 +90,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - JSON-file persistence goes through repository/storage patterns already in project.
 - Keep entity migrations backward compatible for existing moment JSON.
 - Deleting a moment should remove repository record and clean owned image files when safe.
+- Moment image regeneration keeps post identity/content/likes/time. Persist the replacement path and metadata before deleting the previous owned image; failures keep the previous image.
 - Do not delete user-owned unrelated images.
 
 ## Verification

@@ -39,9 +39,11 @@ import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.MomentPost
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.components.EmptyState
 import com.example.chatbar.ui.components.ImagePreviewDialog
+import com.example.chatbar.ui.components.NovelAiImageRegenerationDialog
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -60,6 +62,7 @@ import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.CancellationException
 
 @Composable
 fun MomentsScreen(
@@ -71,7 +74,34 @@ fun MomentsScreen(
     val context = LocalContext.current
     val expandedImage = remember { mutableStateOf<Pair<MomentPost, String>?>(null) }
     var pendingDeletePostId by remember { mutableStateOf<String?>(null) }
+    var imageRegenerationTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var imageRegenerationDraft by remember { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
+    var imageRegenerationLoading by remember { mutableStateOf(false) }
+    var imageRegenerationSubmitting by remember { mutableStateOf(false) }
+    var imageRegenerationError by remember { mutableStateOf<String?>(null) }
     LaunchedEffect(Unit) { viewModel.refresh() }
+    LaunchedEffect(imageRegenerationTarget) {
+        val target = imageRegenerationTarget
+        imageRegenerationDraft = null
+        imageRegenerationError = null
+        imageRegenerationSubmitting = false
+        if (target == null) {
+            imageRegenerationLoading = false
+        } else {
+            imageRegenerationLoading = true
+            try {
+                imageRegenerationDraft = viewModel.loadNovelAiImageRegenerationDraft(
+                    postId = target.first,
+                    imagePath = target.second
+                )
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                imageRegenerationError = error.message ?: "读取图片元数据失败"
+            } finally {
+                imageRegenerationLoading = false
+            }
+        }
+    }
     CbScaffold(
         modifier = modifier,
         topBar = { CbTopBar("朋友圈") }
@@ -95,7 +125,10 @@ fun MomentsScreen(
                             onToggleLike = { viewModel.toggleLike(post.id) },
                             onDelete = { pendingDeletePostId = post.id },
                             onRetry = { viewModel.retryPlaceholder(post.id) },
-                            onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path }
+                            onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path },
+                            onRegenerateImage = { imagePost, path ->
+                                imageRegenerationTarget = imagePost.id to path
+                            }
                         )
                         CbDivider(color = ChatBarTheme.colors.border)
                     }
@@ -115,6 +148,29 @@ fun MomentsScreen(
             onSetCardBackground = {
                 viewModel.replaceCharacterCardBackgroundFromImage(post.characterCardId, path) { _, message ->
                     Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
+                }
+            }
+        )
+    }
+    imageRegenerationTarget?.let { (postId, path) ->
+        NovelAiImageRegenerationDialog(
+            draft = imageRegenerationDraft,
+            loading = imageRegenerationLoading,
+            submitting = imageRegenerationSubmitting,
+            errorMessage = imageRegenerationError,
+            onDraftChange = { imageRegenerationDraft = it },
+            onDismiss = { imageRegenerationTarget = null },
+            onRegenerate = { draft ->
+                imageRegenerationSubmitting = true
+                imageRegenerationError = null
+                viewModel.regenerateMomentImage(postId, path, draft) { errorMessage ->
+                    if (errorMessage == null) {
+                        Toast.makeText(context, "图片已重新生成", Toast.LENGTH_SHORT).show()
+                        imageRegenerationTarget = null
+                    } else {
+                        imageRegenerationSubmitting = false
+                        imageRegenerationError = errorMessage
+                    }
                 }
             }
         )
@@ -156,7 +212,8 @@ private fun MomentPostRow(
     onToggleLike: () -> Unit,
     onDelete: () -> Unit,
     onRetry: () -> Unit,
-    onOpenImage: (MomentPost, String) -> Unit
+    onOpenImage: (MomentPost, String) -> Unit,
+    onRegenerateImage: (MomentPost, String) -> Unit
 ) {
     val colors = ChatBarTheme.colors
     val textColor = colors.foreground
@@ -245,6 +302,15 @@ private fun MomentPostRow(
                         }
                     }
                     Spacer(Modifier.weight(1f))
+                    post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                        CbIconButton(
+                            imageVector = AppIcons.Refresh,
+                            contentDescription = "重新生成图片",
+                            onClick = { onRegenerateImage(post, path) },
+                            modifier = Modifier.size(34.dp),
+                            tint = colors.primary
+                        )
+                    }
                     MomentDeleteButton(onDelete)
                     Spacer(Modifier.width(2.dp))
                     CbIconButton(
