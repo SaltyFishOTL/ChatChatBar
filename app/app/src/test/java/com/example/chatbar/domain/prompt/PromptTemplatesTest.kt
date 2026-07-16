@@ -43,4 +43,21 @@ class PromptTemplatesTest {
         assertTrue(contract.contains("冲突时以更大的T为准"))
         assertTrue(contract.contains("必须从当前最大T继续扮演"))
     }
+
+    @Test
+    fun headPromptDeclaresModeAndKeepsInputsSeparated() {
+        val prompt = PromptTemplates.memoryHeadPrompt(
+            mode = "BACKFILL",
+            throughT = 20,
+            currentHead = "",
+            archive = "[Episode T0-T18] 旧剧情",
+            sourceTurns = "[T19] 基线剧情"
+        )
+
+        assertTrue(prompt.contains("程序模式：BACKFILL"))
+        assertTrue(prompt.contains("只根据程序提供的 Archive"))
+        assertTrue(prompt.contains("Archive：\n[Episode T0-T18] 旧剧情"))
+        assertTrue(prompt.contains("程序指定剧情组：\n[T19] 基线剧情"))
+        assertTrue(prompt.contains("不继承旧 HEAD"))
+    }
 }

@@ -47,6 +47,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -118,6 +119,9 @@ data class LongTermMemoryUiState(
     val usedArchiveChars: Int = 0,
     val backfillEstimate: MemoryBackfillEstimate? = null,
     val backfillProgress: MemoryBackfillProgress? = null,
+    val headPresent: Boolean = false,
+    val headInitializationPending: Boolean = false,
+    val headBackfillRequired: Boolean = false,
     val warnings: List<String> = emptyList(),
     val loading: Boolean = false,
     val error: String? = null
@@ -292,7 +296,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _ragMemoryBusy = MutableStateFlow(false)
     val ragMemoryBusy: StateFlow<Boolean> = _ragMemoryBusy.asStateFlow()
 
-    private val _longTermMemoryUiState = MutableStateFlow(LongTermMemoryUiState())
+    private val _longTermMemoryUiState = MutableStateFlow(LongTermMemoryUiState(loading = true))
     val longTermMemoryUiState: StateFlow<LongTermMemoryUiState> = _longTermMemoryUiState.asStateFlow()
     @Volatile
     private var memoryBackfillProgress: MemoryBackfillProgress? = null
@@ -378,6 +382,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _isArchived.value = card == null
                 refreshMessages()
                 refreshSaveSlots()
+                _longTermMemoryUiState.value = runCatching { loadLongTermMemoryUiState() }
+                    .getOrElse { error ->
+                        LongTermMemoryUiState(
+                            loading = false,
+                            error = error.message ?: "长期记忆读取失败"
+                        )
+                    }
             }
         }
     }
@@ -781,7 +792,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val error = runCatching {
                 val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
                 val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.updateHeadAfterReply(sessionId, model)
+                longTermMemoryService.prepareHeadBeforePrompt(sessionId, model)
             }.exceptionOrNull()
             refreshMemoryAfterAction(error)
         }
@@ -924,6 +935,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             usedArchiveChars = view.usedArchiveChars,
             backfillEstimate = backfillEstimate,
             backfillProgress = memoryBackfillProgress,
+            headPresent = view.headPresent,
+            headInitializationPending = view.headInitializationPending,
+            headBackfillRequired = view.headBackfillRequired,
             warnings = view.warnings.map { it.message },
             loading = false
         )
@@ -1613,6 +1627,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val cachedSession = _session.value ?: return@launch
             val currentSession = chatRepository.getSession(sessionId) ?: cachedSession
             _session.value = currentSession
+            if (currentSession.longTermMemoryEnabled &&
+                longTermMemoryService.currentState(sessionId)?.backfill?.status == MemoryBackfillStatus.RUNNING
+            ) {
+                _memoryCompressionEvents.emit("长期记忆正在补录；请先暂停补录再继续聊天")
+                _isResponding.value = false
+                return@launch
+            }
             val charCard = characterRepository.getById(currentSession.characterCardId)
             if (charCard == null) {
                 _characterCard.value = null
@@ -1743,6 +1764,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 messageGroupCount = contextWindowManager.messageGroupCount(allMsgs),
                 contextWindowSize = effectiveContextWindowSize
             )
+            val headPreparation = if (currentSession.longTermMemoryEnabled && persistUserMessage) {
+                async {
+                    longTermMemoryService.prepareHeadBeforePrompt(sessionId, modelConfig)
+                }
+            } else {
+                null
+            }
 
             try {
                 // 4. RAG 检索
@@ -1976,6 +2004,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty(),
                         hasPreviousTurn = promptMessageGroups.previousTurnMessages.isNotEmpty()
                     )
+                headPreparation?.await()
                 val memoryView = if (currentSession.longTermMemoryEnabled) {
                     runCatching {
                         longTermMemoryService.promptView(sessionId)
@@ -2744,6 +2773,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private fun blockChatDuringMemoryBackfill(): Boolean {
+        if (_session.value?.longTermMemoryEnabled == true && _longTermMemoryUiState.value.loading) {
+            viewModelScope.launch {
+                _memoryCompressionEvents.emit("正在读取长期记忆，请稍后再试")
+            }
+            return true
+        }
         if (_longTermMemoryUiState.value.memoryState?.backfill?.status != MemoryBackfillStatus.RUNNING) {
             return false
         }

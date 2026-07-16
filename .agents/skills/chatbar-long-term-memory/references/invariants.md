@@ -32,6 +32,11 @@
 
 - Update HEAD independently from Archive. Failure in one does not roll back the other.
 - Make HEAD describe current state through its stable source turn, not historical plot summary.
+- HEAD has three explicit modes: `INITIALIZE` uses opening + first complete round when third user round starts; `BACKFILL` uses compiled Archive + penultimate stable baseline group; `UPDATE` uses previous HEAD + exactly next baseline group.
+- Keep latest complete group raw at prompt tail. HEAD target is always immediately before that hot group; never summarize hot group into HEAD early.
+- Blank HEAD injects no HEAD block. Expected new-chat blank state shows no backfill action; historical blank/lagging state requires backfill.
+- Normal HEAD update cannot cross `MemoryGap`. Re-enable/backfill fills missing Archive first, then rebuilds HEAD.
+- Before roleplay request, wait for HEAD preparation and RAG retrieval in parallel. Post-reply HEAD update remains background work.
 - Keep HEAD outside Archive character budget and visible revision history.
 - Count only active Episode/Arc/Era body text toward per-session automatic budget.
 - Use initial 2000 characters, +2000 per accepted expansion, maximum 20000. Do not derive budget from model context percentage.

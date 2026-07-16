@@ -47,6 +47,8 @@ Use Kotlin with standard 4-space indentation. Keep package names under `com.exam
 
 Add JVM tests in `app/app/src/test` for domain and repository behavior. Add instrumented tests in `app/app/src/androidTest` for Compose UI or device-only behavior. Match existing test names such as `ContextWindowManagerTest` or `TutorialScreenTest`. Run `.\gradlew.bat test` for normal changes; run `.\ci.ps1 -SkipAssemble` when touching UI, navigation, Android APIs, or shared build config.
 
+Prompt tests should assert behavior, parameter inclusion, ordering, omission, and required machine-protocol tokens. Do not assert editable natural-language wording or section titles exactly unless that literal text is itself a required external protocol.
+
 ## Prompt Ownership
 
 Do not change user-facing prompt text, system prompt text, or prompt template text without explicit user approval. `PromptTemplates.kt` contains both prompt text and normal Kotlin code; helper functions, parameter plumbing, length handling, serialization, and other non-prompt code in that file may be changed as normal code. If a prompt text change seems necessary, first explain the exact problem, the proposed prompt diff, and the expected behavior change; wait for user confirmation before editing. After the user confirms the prompt text change, implement it directly as part of the current task. Non-prompt code fixes must not opportunistically rewrite prompts. Prompt text should describe the AI's task, input, output, and quality criteria; do not include irrelevant implementation details such as backend limits, API behavior, UI plumbing, storage, or execution flow unless the user explicitly wants those exposed to the AI.

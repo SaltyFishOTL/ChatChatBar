@@ -77,6 +77,7 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.MemoryDecisionTier
+import com.example.chatbar.data.local.entity.MemoryBackfillStatus
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
@@ -143,6 +144,10 @@ fun ChatScreen(
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
     val longTermMemoryUiState by viewModel.longTermMemoryUiState.collectAsState()
+    val memoryBackfillRunning = longTermMemoryUiState.memoryState?.backfill?.status ==
+        MemoryBackfillStatus.RUNNING
+    val memoryStateLoading = session?.longTermMemoryEnabled == true && longTermMemoryUiState.loading
+    val memoryChatBlocked = memoryBackfillRunning || memoryStateLoading
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
@@ -205,6 +210,10 @@ fun ChatScreen(
         session?.memoryHeadCommitId,
         session?.memoryUpdateStatus
     ) { mutableStateOf(false) }
+
+    LaunchedEffect(memoryChatBlocked) {
+        if (memoryChatBlocked) fullComposer = false
+    }
 
     LaunchedEffect(imageActionTarget) {
         val target = imageActionTarget
@@ -620,7 +629,7 @@ fun ChatScreen(
         )
         return
     }
-    if (fullComposer && !isArchived) {
+    if (fullComposer && !isArchived && !memoryChatBlocked) {
         FullscreenTextEditor(
             title = "撰写消息",
             value = input,
@@ -888,7 +897,12 @@ fun ChatScreen(
                             viewModel.updateDraftInput(it.text)
                         },
                         responding = isResponding,
-                        enabled = !isArchived && isModelUsable,
+                        enabled = !isArchived && isModelUsable && !memoryChatBlocked,
+                        disabledPlaceholder = when {
+                            memoryBackfillRunning -> "长期记忆补录中…"
+                            memoryStateLoading -> "正在读取长期记忆…"
+                            else -> "本对话已封存"
+                        },
                         onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onFull = { fullComposer = true },
                         onCancel = viewModel::cancelResponseGeneration,
@@ -1782,6 +1796,7 @@ private fun ChatComposer(
     onInput: (TextFieldValue) -> Unit,
     responding: Boolean,
     enabled: Boolean,
+    disabledPlaceholder: String,
     onImage: () -> Unit,
     onFull: () -> Unit,
     onCancel: () -> Unit,
@@ -1797,7 +1812,7 @@ private fun ChatComposer(
     ) {
         CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
-        CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else "本对话已封存", enabled = enabled, minLines = 1)
+        CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else disabledPlaceholder, enabled = enabled, minLines = 1)
         Spacer(Modifier.width(8.dp))
         CbIconButton(
             if (responding) AppIcons.Close else AppIcons.Send,

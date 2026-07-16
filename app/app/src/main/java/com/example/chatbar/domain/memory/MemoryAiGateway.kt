@@ -40,6 +40,15 @@ data class HeadResponse(
     val worldState: String = ""
 )
 
+fun HeadResponse.hasContent(): Boolean = listOf(
+    location,
+    participants,
+    relationships,
+    goals,
+    unresolved,
+    worldState
+).any { it.isNotBlank() }
+
 class MemoryAiGateway(private val chatService: StreamingChatService) {
     private val json = Json { ignoreUnknownKeys = false }
 
@@ -77,17 +86,21 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
 
     suspend fun head(
         model: ModelConfig,
+        mode: MemoryHeadUpdateMode,
         throughT: Long,
         currentHead: String,
-        newStableTurns: String,
+        archive: String,
+        sourceTurns: String,
         validate: (HeadResponse) -> Unit
     ): HeadResponse = requestJson(
         serializer = HeadResponse.serializer(),
         model = model,
         basePrompt = PromptTemplates.memoryHeadPrompt(
+            mode = mode.name,
             throughT = throughT,
             currentHead = currentHead,
-            newStableTurns = newStableTurns
+            archive = archive,
+            sourceTurns = sourceTurns
         ),
         validate = validate
     )

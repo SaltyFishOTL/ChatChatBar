@@ -53,6 +53,9 @@ data class MemoryPromptView(
     val displayTBySourceTurnId: Map<String, Long> = emptyMap(),
     /** 仅供普通上下文模块临时保留未提交Episode的原文；不进入长期记忆块。 */
     val pendingSourceTurnIds: Set<String> = emptySet(),
+    val headPresent: Boolean = false,
+    val headInitializationPending: Boolean = false,
+    val headBackfillRequired: Boolean = false,
     val warnings: List<MemoryIntegrityWarning> = emptyList()
 )
 
@@ -84,6 +87,12 @@ private sealed interface MaintenanceResult {
 private enum class CompressionAttempt {
     SUCCESS,
     NOT_COMPRESSIBLE
+}
+
+private enum class HeadUpdateRequest {
+    AFTER_REPLY,
+    BEFORE_PROMPT,
+    BACKFILL
 }
 
 class LongTermMemoryService(
@@ -279,11 +288,25 @@ class LongTermMemoryService(
         }
     }
 
-    suspend fun updateHeadAfterReply(sessionId: String, modelConfig: ModelConfig) = headLock(sessionId) {
+    suspend fun updateHeadAfterReply(sessionId: String, modelConfig: ModelConfig) =
+        updateHead(sessionId, modelConfig, HeadUpdateRequest.AFTER_REPLY)
+
+    suspend fun prepareHeadBeforePrompt(sessionId: String, modelConfig: ModelConfig) =
+        updateHead(sessionId, modelConfig, HeadUpdateRequest.BEFORE_PROMPT)
+
+    private suspend fun backfillHead(sessionId: String, modelConfig: ModelConfig) =
+        updateHead(sessionId, modelConfig, HeadUpdateRequest.BACKFILL)
+
+    private suspend fun updateHead(
+        sessionId: String,
+        modelConfig: ModelConfig,
+        request: HeadUpdateRequest
+    ) = headLock(sessionId) {
         val base = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)
             if (!loaded.session.longTermMemoryEnabled ||
-                loaded.state.backfill.status == MemoryBackfillStatus.RUNNING
+                (loaded.state.backfill.status == MemoryBackfillStatus.RUNNING &&
+                    request != HeadUpdateRequest.BACKFILL)
             ) {
                 return@stateLock null
             }
@@ -296,62 +319,100 @@ class LongTermMemoryService(
                 val watermark = base.state.recordingStartsAfterSourceOrder
                 watermark == null || sourceOrder(sourceId, base.messages, base.session) > watermark
             }
-            val targetId = stableIds.lastOrNull() ?: run {
+            val headHasContent = base.state.head.render().isNotBlank()
+            val hasHistoricalMemory = base.state.activeNodeIds.isNotEmpty() ||
+                base.state.legacyReferenceNodeIds.isNotEmpty() ||
+                base.state.gaps.isNotEmpty()
+            val candidatePlan = when (request) {
+                HeadUpdateRequest.AFTER_REPLY -> {
+                    if (!headHasContent) null else MemoryHeadUpdatePolicy.update(
+                        base.state.head.throughSourceTurnId,
+                        stableIds
+                    )
+                }
+                HeadUpdateRequest.BEFORE_PROMPT -> {
+                    if (headHasContent) {
+                        MemoryHeadUpdatePolicy.update(base.state.head.throughSourceTurnId, stableIds)
+                    } else if (!MemoryHeadUpdatePolicy.requiresBackfill(
+                            hasHeadContent = false,
+                            throughSourceTurnId = null,
+                            stableSourceTurnIds = stableIds,
+                            hasHistoricalMemory = hasHistoricalMemory
+                        )
+                    ) {
+                        MemoryHeadUpdatePolicy.initialize(stableIds)
+                    } else {
+                        null
+                    }
+                }
+                HeadUpdateRequest.BACKFILL -> MemoryHeadUpdatePolicy.backfill(stableIds)
+            }
+            val plan = candidatePlan?.takeUnless { selected ->
+                selected.mode == MemoryHeadUpdateMode.UPDATE &&
+                    headPathCrossesGap(base, selected.targetSourceTurnId)
+            }
+            if (plan == null) {
                 stateLock(sessionId) {
                     val session = chatRepository.getSession(sessionId) ?: return@stateLock
                     setHeadStatusLocked(session, MemoryUpdateStatus.IDLE, null)
                 }
                 return@headLock
             }
-            if (targetId == base.state.head.throughSourceTurnId && !base.state.head.stale) {
+            val targetId = plan.targetSourceTurnId
+            if (MemoryHeadUpdatePolicy.isUpToDate(base.state.head.throughSourceTurnId, stableIds) &&
+                plan.mode == MemoryHeadUpdateMode.UPDATE && !base.state.head.stale
+            ) {
                 stateLock(sessionId) {
                     val session = chatRepository.getSession(sessionId) ?: return@stateLock
                     setHeadStatusLocked(session, MemoryUpdateStatus.IDLE, null)
                 }
                 return@headLock
             }
-            val previousSourceId = base.state.head.throughSourceTurnId
-            val previousIndex = previousSourceId?.let(stableIds::indexOf) ?: -1
-            val previousOrder = previousSourceId?.let { sourceId ->
-                base.state.timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder
-            }
-            val newIds = if (previousIndex >= 0) {
-                stableIds.drop(previousIndex + 1)
-            } else if (previousOrder != null) {
-                stableIds.filter { sourceId ->
-                    sourceOrder(sourceId, base.messages, base.session) > previousOrder
-                }
-            } else {
-                stableIds
-            }
-            if (newIds.isEmpty()) {
-                stateLock(sessionId) {
-                    val session = chatRepository.getSession(sessionId) ?: return@stateLock
-                    setHeadStatusLocked(session, MemoryUpdateStatus.IDLE, null)
-                }
-                return@headLock
-            }
+            val newIds = plan.inputSourceTurnIds
             val throughT = MemoryTimelinePolicy.displayT(targetId, base.state.timeline)
                 ?: error("HEAD目标source turn没有显示T")
             val baseHeadVersion = base.state.head.version
+            val baseStateRevision = base.state.revision
             val sourceHash = MemoryHashes.sourceRefs(sourceRefs(newIds, base.messages, base.session))
             val response = ai.head(
                 model = modelConfig,
+                mode = plan.mode,
                 throughT = throughT,
-                currentHead = base.state.head.render(),
-                newStableTurns = renderSourceTurns(newIds, base.messages, base.state.timeline, base.session)
+                currentHead = if (plan.mode == MemoryHeadUpdateMode.UPDATE) base.state.head.render() else "",
+                archive = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) renderArchive(base) else "",
+                sourceTurns = renderSourceTurns(newIds, base.messages, base.state.timeline, base.session)
             ) { output ->
                 check(output.throughT == throughT) { "HEAD伪造throughT" }
+                check(output.hasContent()) { "HEAD所有字段均为空" }
             }
 
             stateLock(sessionId) {
                 val current = loadLocked(sessionId)
-                if (!current.session.longTermMemoryEnabled) return@stateLock
-                if (current.state.head.version != baseHeadVersion) return@stateLock
+                if (!current.session.longTermMemoryEnabled ||
+                    current.state.head.version != baseHeadVersion ||
+                    (plan.mode == MemoryHeadUpdateMode.BACKFILL && current.state.revision != baseStateRevision)
+                ) {
+                    setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
+                    return@stateLock
+                }
                 val currentHash = MemoryHashes.sourceRefs(
                     sourceRefs(newIds, current.messages, current.session)
                 )
-                if (currentHash != sourceHash) return@stateLock
+                if (currentHash != sourceHash) {
+                    setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
+                    return@stateLock
+                }
+                val inputHashes = sourceRefs(newIds, current.messages, current.session).associate {
+                    it.sourceTurnId to it.sourceHash
+                }
+                val archiveHashes = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
+                    (current.state.activeNodeIds + current.state.legacyReferenceNodeIds)
+                        .mapNotNull(current.nodes::get)
+                        .flatMap { it.sourceHashes.entries }
+                        .associate { it.key to it.value }
+                } else {
+                    emptyMap()
+                }
                 val head = MemoryHead(
                     throughSourceTurnId = targetId,
                     location = response.location.trim(),
@@ -360,12 +421,13 @@ class LongTermMemoryService(
                     goals = response.goals.trim(),
                     unresolved = response.unresolved.trim(),
                     worldState = response.worldState.trim(),
-                    sourceHashes = current.state.head.sourceHashes +
-                        sourceRefs(newIds, current.messages, current.session).associate {
-                            it.sourceTurnId to it.sourceHash
-                        },
+                    sourceHashes = when (plan.mode) {
+                        MemoryHeadUpdateMode.UPDATE -> current.state.head.sourceHashes + inputHashes
+                        MemoryHeadUpdateMode.INITIALIZE -> inputHashes
+                        MemoryHeadUpdateMode.BACKFILL -> archiveHashes + inputHashes
+                    },
                     version = baseHeadVersion + 1,
-                    stale = current.state.head.stale
+                    stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale
                 )
                 val next = current.state.copy(
                     head = head,
@@ -410,9 +472,11 @@ class LongTermMemoryService(
             val baseVersion = base.state.head.version
             val response = ai.head(
                 model = modelConfig,
+                mode = MemoryHeadUpdateMode.BACKFILL,
                 throughT = throughT,
                 currentHead = "",
-                newStableTurns = renderSourceTurns(
+                archive = renderArchive(base),
+                sourceTurns = renderSourceTurns(
                     listOf(sourceTurnId),
                     base.messages,
                     base.state.timeline,
@@ -793,7 +857,16 @@ class LongTermMemoryService(
                 loaded,
                 appSettings.defaultContextWindowSize.coerceAtLeast(1)
             )
-            if (missing.isEmpty()) return@stateLock null
+            val stableIds = stableSourceTurnIds(loaded.messages)
+            val headBackfillRequired = MemoryHeadUpdatePolicy.requiresBackfill(
+                hasHeadContent = loaded.state.head.render().isNotBlank(),
+                throughSourceTurnId = loaded.state.head.throughSourceTurnId,
+                stableSourceTurnIds = stableIds,
+                hasHistoricalMemory = loaded.state.activeNodeIds.isNotEmpty() ||
+                    loaded.state.legacyReferenceNodeIds.isNotEmpty() ||
+                    loaded.state.gaps.isNotEmpty()
+            )
+            if (missing.isEmpty() && !headBackfillRequired) return@stateLock null
             val n = appSettings.episodeMaxSourceTurns.coerceIn(1, 6)
             val finalTimeline = sourceTimeline(loaded.messages, loaded.session)
             val next = loaded.state.copy(
@@ -954,10 +1027,7 @@ class LongTermMemoryService(
                 if (current.state.backfill.pendingSourceTurnIds.isEmpty()) {
                     val next = current.state.copy(
                         legacyReferenceNodeIds = emptyList(),
-                        backfill = current.state.backfill.copy(
-                            status = MemoryBackfillStatus.IDLE,
-                            updatedAt = System.currentTimeMillis()
-                        ),
+                        backfill = current.state.backfill.copy(updatedAt = System.currentTimeMillis()),
                         revision = current.state.revision + 1,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -977,7 +1047,25 @@ class LongTermMemoryService(
                         completedEpisodes = loaded.state.backfill.completedEpisodeCount
                     )
                 )
-                updateHeadAfterReply(sessionId, modelConfig)
+                backfillHead(sessionId, modelConfig)
+                stateLock(sessionId) {
+                    val current = loadLocked(sessionId)
+                    if (current.state.backfill.status != MemoryBackfillStatus.RUNNING) {
+                        compileAndCacheLocked(current)
+                        return@stateLock
+                    }
+                    val next = current.state.copy(
+                        backfill = current.state.backfill.copy(
+                            status = MemoryBackfillStatus.IDLE,
+                            error = null,
+                            updatedAt = System.currentTimeMillis()
+                        ),
+                        revision = current.state.revision + 1,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    memoryRepository.saveState(next)
+                    compileAndCacheLocked(current.copy(state = next))
+                }
             }
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
@@ -2057,6 +2145,42 @@ class LongTermMemoryService(
         )
     }
 
+    private fun renderArchive(loaded: LoadedMemory): String {
+        val state = loaded.state
+        val active = MemoryTimelinePolicy.sortNodes(
+            state.activeNodeIds.mapNotNull(loaded.nodes::get),
+            state.timeline
+        )
+        val lines = active.mapNotNull { node ->
+            val range = MemoryTimelinePolicy.range(node, state.timeline) ?: return@mapNotNull null
+            "[${node.tier.displayName()} T${range.startT}-T${range.endT}] ${node.body.replace('\n', ' ')}"
+        }.toMutableList()
+        state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get).forEach { node ->
+            val range = MemoryTimelinePolicy.range(node, state.timeline)
+            val label = range?.let { "旧记忆参考 T${it.startT}-T${it.endT}" }
+                ?: "时间未知｜不代表当前进展"
+            lines += "[Legacy｜$label] ${node.body.replace('\n', ' ')}"
+        }
+        if (lines.isEmpty()) return ""
+        return buildString {
+            appendLine("【ARCHIVE｜历史档案】")
+            append(lines.joinToString("\n"))
+        }
+    }
+
+    private fun headPathCrossesGap(loaded: LoadedMemory, targetSourceTurnId: String): Boolean {
+        val targetOrder = sourceOrder(targetSourceTurnId, loaded.messages, loaded.session)
+        val previousOrder = loaded.state.head.throughSourceTurnId?.let { sourceId ->
+            sourceOrder(sourceId, loaded.messages, loaded.session)
+        } ?: Long.MIN_VALUE
+        return loaded.state.gaps.any { gap ->
+            gap.sourceTurnIds.any { sourceId ->
+                val order = sourceOrder(sourceId, loaded.messages, loaded.session)
+                order > previousOrder && order <= targetOrder
+            }
+        }
+    }
+
     private suspend fun compileAndCacheLocked(
         loaded: LoadedMemory,
         archiveStatus: MemoryUpdateStatus? = null,
@@ -2094,10 +2218,23 @@ class LongTermMemoryService(
             ?.let { MemoryTimelinePolicy.displayT(it, state.timeline) }
             ?: state.timeline.maxOfOrNull { it.displayT }
             ?: 0L
+        val headPresent = state.head.render().isNotBlank()
+        val hasHistoricalMemory = state.activeNodeIds.isNotEmpty() ||
+            state.legacyReferenceNodeIds.isNotEmpty() ||
+            state.gaps.isNotEmpty()
+        val headBackfillRequired = MemoryHeadUpdatePolicy.requiresBackfill(
+            hasHeadContent = headPresent,
+            throughSourceTurnId = state.head.throughSourceTurnId,
+            stableSourceTurnIds = stableIds,
+            hasHistoricalMemory = hasHistoricalMemory
+        ) || MemoryHeadUpdatePolicy.baselineSourceTurnId(stableIds)?.let { targetId ->
+            headPathCrossesGap(loaded, targetId)
+        } == true
+        val headInitializationPending = !headPresent && !headBackfillRequired
         val headThroughT = MemoryTimelinePolicy.displayT(
             state.head.throughSourceTurnId,
             state.timeline
-        ) ?: latestStableT
+        )
         val activeRanges = active.mapNotNull { MemoryTimelinePolicy.range(it, state.timeline) }
             .sortedBy { it.startT }
         val archiveIsContinuousFromZero = activeRanges.firstOrNull()?.startT == 0L &&
@@ -2121,8 +2258,10 @@ class LongTermMemoryService(
             else -> "$archiveLabel；直接上下文无更大 T"
         }
         val headAndTimeline = buildString {
-            appendLine("【HEAD｜当前状态｜截至 T$headThroughT】")
-            appendLine(state.head.render().ifBlank { "（空）" })
+            if (headPresent && !headBackfillRequired && headThroughT != null) {
+                appendLine("【HEAD｜当前状态｜截至 T$headThroughT】")
+                appendLine(state.head.render())
+            }
             appendLine("【时间线约束】")
             appendLine(directLabel)
             append(PromptTemplates.MEMORY_TIMELINE_CONTRACT.trim())
@@ -2152,6 +2291,9 @@ class LongTermMemoryService(
             if (MemoryBudgetPolicy.isOverLimit(state, loaded.nodes, loaded.session.memoryLimitChars)) add(
                 MemoryIntegrityWarning("人工版本超过当前自动预算，将在下一稳定剧情轮尝试维护。", emptyList())
             )
+            if (headBackfillRequired) add(
+                MemoryIntegrityWarning("当前状态未生成或已落后，推荐一键补录长期记忆。", emptyList())
+            )
         }.distinctBy { it.message }
         val view = MemoryPromptView(
             archive = archive,
@@ -2165,6 +2307,9 @@ class LongTermMemoryService(
                 it.sourceTurnId to it.displayT
             },
             pendingSourceTurnIds = state.pendingSourceTurnIds.toSet(),
+            headPresent = headPresent,
+            headInitializationPending = headInitializationPending,
+            headBackfillRequired = headBackfillRequired,
             warnings = warnings
         )
         val currentSession = chatRepository.getSession(loaded.session.id) ?: loaded.session
@@ -2482,12 +2627,21 @@ class LongTermMemoryService(
             loaded.messages,
             contextWindowSize
         ).toSet()
-        return MemoryBackfillPolicy.eligibleSourceTurnIds(
+        val archivedEligible = MemoryBackfillPolicy.eligibleSourceTurnIds(
             activeNodes = loaded.state.activeNodeIds.mapNotNull(loaded.nodes::get),
             gaps = loaded.state.gaps,
             timeline = loaded.state.timeline,
             availableSourceTurnIds = availableSourceIds,
             archivedSourceTurnIds = archivedSourceIds
+        )
+        val disabledEligible = loaded.state.gaps
+            .filter { it.reason == MemoryGapReason.DISABLED }
+            .flatMap { it.sourceTurnIds }
+            .filter { it in availableSourceIds }
+        return sortSourceIds(
+            archivedEligible + disabledEligible,
+            loaded.messages,
+            loaded.session
         )
     }
 

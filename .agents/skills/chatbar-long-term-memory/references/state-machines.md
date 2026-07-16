@@ -26,10 +26,12 @@ IDLE / PAUSED / ERROR
   → run budget maintenance
   → atomically save Episode and remove only committed Gap/pending IDs
   → repeat
-  → IDLE + one HEAD catch-up when pending becomes empty
+  → keep RUNNING while BACKFILL HEAD uses compiled Archive + penultimate stable baseline group
+  → IDLE only after HEAD attempt completes
 ```
 
 - Save every successful batch immediately; interruption resumes from remaining IDs.
+- A disabled-period Gap is explicitly backfillable even while still inside direct context; normal HEAD UPDATE never crosses it.
 - User pause takes effect after current atomic model call.
 - Process restart loses runner registration; convert orphaned persisted `RUNNING` to `PAUSED`.
 - Internal service reads during live run must retain `RUNNING`.

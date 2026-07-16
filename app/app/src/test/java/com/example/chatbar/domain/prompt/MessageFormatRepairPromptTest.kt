@@ -13,9 +13,8 @@ class MessageFormatRepairPromptTest {
             message = "正文"
         )
 
-        assertFalse(prompt.contains("【格式卡】"))
-        assertFalse(prompt.contains("【分段气泡格式】"))
-        assertTrue(prompt.contains("【待修复消息】\n正文"))
+        assertFalse(prompt.contains("\n\n"))
+        assertTrue(prompt.trimEnd().endsWith("正文"))
     }
 
     @Test
@@ -26,8 +25,13 @@ class MessageFormatRepairPromptTest {
             message = "待修复正文"
         )
 
-        assertTrue(prompt.contains("【格式卡】\n格式卡内容"))
-        assertTrue(prompt.contains("【分段气泡格式】\n角色名规则"))
-        assertTrue(prompt.endsWith("【待修复消息】\n待修复正文"))
+        val formatIndex = prompt.indexOf("格式卡内容")
+        val segmentedIndex = prompt.indexOf("角色名规则")
+        val messageIndex = prompt.indexOf("待修复正文")
+
+        assertTrue(formatIndex >= 0)
+        assertTrue(segmentedIndex > formatIndex)
+        assertTrue(messageIndex > segmentedIndex)
+        assertTrue(prompt.trimEnd().endsWith("待修复正文"))
     }
 }

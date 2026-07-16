@@ -573,10 +573,13 @@ private fun LongTermMemoryContent(
         ) {
             CbText(
                 buildString {
-                    append("将从聊天记录中补齐 ${estimate?.missingSourceTurns ?: 0} 轮尚未生成长期记忆的对话。")
-                    append("预计调用模型 ${estimate?.episodeCallsMin ?: 0}–${estimate?.episodeCallsMax ?: 0} 次；")
-                    append("如果空间不足，还可能触发 ${estimate?.compressionCallsMin ?: 0}–${estimate?.compressionCallsMax ?: 0} 次压缩。")
-                    append("待处理原文约 ${estimate?.sourceCharacters ?: 0} 字。")
+                    if ((estimate?.missingSourceTurns ?: 0) > 0) {
+                        append("将从聊天记录中补齐 ${estimate?.missingSourceTurns ?: 0} 轮尚未生成长期记忆的对话。")
+                        append("预计调用模型 ${estimate?.episodeCallsMin ?: 0}–${estimate?.episodeCallsMax ?: 0} 次；")
+                        append("如果空间不足，还可能触发 ${estimate?.compressionCallsMin ?: 0}–${estimate?.compressionCallsMax ?: 0} 次压缩。")
+                        append("待处理原文约 ${estimate?.sourceCharacters ?: 0} 字。")
+                    }
+                    if (state.headBackfillRequired) append("还会根据长期记忆与最新基线剧情更新当前状态。")
                     append("补录期间暂时无法继续聊天，可以随时暂停。不同模型耗时和额度消耗不同。")
                 },
                 color = ChatBarTheme.colors.mutedForeground
@@ -717,19 +720,23 @@ internal fun MemoryBackfillAction(
 ) {
     val backfill = state.memoryState?.backfill
     val missingCount = state.backfillEstimate?.missingSourceTurns ?: 0
+    val needsBackfill = missingCount > 0 || state.headBackfillRequired
     if (backfill?.status == MemoryBackfillStatus.RUNNING) {
         val runtime = state.backfillProgress
         val completedTurns = runtime?.completedSourceTurns ?: backfill.completedSourceTurnIds.size
         val totalTurns = runtime?.totalSourceTurns
             ?: (backfill.completedSourceTurnIds.size + backfill.pendingSourceTurnIds.size)
-        val fraction = runtime?.fraction
-            ?: if (totalTurns == 0) 0f else (completedTurns.toFloat() / totalTurns).coerceIn(0f, 1f)
+        val fraction = if (totalTurns == 0) {
+            if (runtime?.phase == MemoryBackfillPhase.UPDATING_HEAD) 1f else 0f
+        } else {
+            runtime?.fraction ?: (completedTurns.toFloat() / totalTurns).coerceIn(0f, 1f)
+        }
         val phaseText = when (runtime?.phase) {
             MemoryBackfillPhase.PREPARING -> "正在准备下一条近期流程"
             MemoryBackfillPhase.GENERATING_EPISODE -> "正在生成${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
             MemoryBackfillPhase.CHECKING_SPACE -> "正在检查长期记忆空间"
             MemoryBackfillPhase.SAVING_EPISODE -> "正在保存近期流程"
-            MemoryBackfillPhase.UPDATING_HEAD -> "近期流程补录完成，正在更新当前状态"
+            MemoryBackfillPhase.UPDATING_HEAD -> "正在生成当前状态"
             null -> "正在准备补录"
         }
         CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
@@ -753,7 +760,11 @@ internal fun MemoryBackfillAction(
                     )
                 }
                 CbText(
-                    "已处理 $completedTurns/$totalTurns 轮 · 已生成 ${runtime?.completedEpisodes ?: backfill.completedEpisodeCount} 条近期流程",
+                    if (totalTurns == 0) {
+                        "近期流程无需补录"
+                    } else {
+                        "已处理 $completedTurns/$totalTurns 轮 · 已生成 ${runtime?.completedEpisodes ?: backfill.completedEpisodeCount} 条近期流程"
+                    },
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
@@ -786,7 +797,7 @@ internal fun MemoryBackfillAction(
                     "补录失败：${backfill.error ?: "未知错误"}",
                     color = ChatBarTheme.colors.destructive
                 )
-                if (missingCount > 0) {
+                if (needsBackfill) {
                     CbButton(
                         "重试补录",
                         onStart,
@@ -796,7 +807,7 @@ internal fun MemoryBackfillAction(
                 }
             }
         }
-    } else if (missingCount > 0) {
+    } else if (needsBackfill) {
         CbButton(
             "一键补录长期记忆",
             onStart,
@@ -871,6 +882,20 @@ internal fun MemoryHeadPage(
     onMarkSourcesCorrected: () -> Unit = {}
 ) {
     val head = state.head ?: return
+    if (!state.headPresent) {
+        CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+            CbText(
+                if (state.headInitializationPending) {
+                    "当前状态将在第三轮对话开始时生成。"
+                } else {
+                    "当前状态尚未生成，请使用页面顶部的一键补录。"
+                },
+                modifier = Modifier.padding(12.dp),
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+        return
+    }
     var headDraft by remember(head) { mutableStateOf(head) }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
