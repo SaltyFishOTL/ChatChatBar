@@ -49,6 +49,28 @@ fun HeadResponse.hasContent(): Boolean = listOf(
     worldState
 ).any { it.isNotBlank() }
 
+internal const val MEMORY_AI_MAX_ATTEMPTS = 5
+
+internal suspend fun <T> retryMemoryAiOutput(
+    maxAttempts: Int,
+    request: suspend (attempt: Int, lastError: Throwable?) -> T
+): T {
+    require(maxAttempts > 0) { "长期记忆AI最大尝试次数必须大于0" }
+    var lastError: Throwable? = null
+    repeat(maxAttempts) { attempt ->
+        try {
+            return request(attempt, lastError)
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            lastError = error
+        }
+    }
+    throw IllegalStateException(
+        "长期记忆AI输出连续${maxAttempts}次非法：${lastError?.message}",
+        lastError
+    )
+}
+
 class MemoryAiGateway(private val chatService: StreamingChatService) {
     private val json = Json { ignoreUnknownKeys = false }
 
@@ -72,6 +94,7 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
         kind: MemoryCompressionKind,
         forcedConsumedChildIds: List<String>,
         renderedChildren: String,
+        onStreamingSummary: ((String) -> Unit)? = null,
         validate: (CompressionResponse) -> Unit
     ): CompressionResponse = requestJson(
         serializer = CompressionResponse.serializer(),
@@ -81,6 +104,7 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
             forcedConsumedChildIds = forcedConsumedChildIds,
             children = renderedChildren
         ),
+        onStreamingText = onStreamingSummary,
         validate = validate
     )
 
@@ -112,51 +136,39 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
         maxTokens: Int = 1800,
         onStreamingText: ((String) -> Unit)? = null,
         validate: (T) -> Unit
-    ): T {
-        var lastError: Throwable? = null
-        repeat(2) { attempt ->
-            val correction = if (attempt == 0) {
-                ""
-            } else {
-                "\n\n上次输出校验失败：${lastError?.message.orEmpty()}\n请修正并重新输出完整JSON。"
-            }
-            try {
-                onStreamingText?.invoke("")
-                val messages = listOf(ChatApiMessage.text("user", basePrompt + correction))
-                val raw = if (onStreamingText == null) {
-                    chatService.completeText(
-                        messages = messages,
-                        modelConfig = model,
-                        maxTokens = maxTokens,
-                        thinkingBudget = 512
-                    )
-                } else {
-                    val streamed = StringBuilder()
-                    chatService.completeTextStreaming(
-                        messages = messages,
-                        modelConfig = model,
-                        maxTokens = maxTokens,
-                        thinkingBudget = 512,
-                        onDelta = { chunk ->
-                            streamed.append(chunk)
-                            extractStreamingJsonString(streamed.toString(), "summary")
-                                ?.let(onStreamingText)
-                        }
-                    )
-                }
-                val candidate = extractFirstJsonObject(raw) ?: error("AI未返回JSON对象")
-                val decoded = json.decodeFromString(serializer, candidate)
-                validate(decoded)
-                return decoded
-            } catch (error: Throwable) {
-                if (error is CancellationException) throw error
-                lastError = error
-            }
+    ): T = retryMemoryAiOutput(MEMORY_AI_MAX_ATTEMPTS) { attempt, lastError ->
+        val correction = if (attempt == 0) {
+            ""
+        } else {
+            "\n\n上次输出校验失败：${lastError?.message.orEmpty()}\n请修正并重新输出完整JSON。"
         }
-        throw IllegalStateException(
-            "长期记忆AI输出连续两次非法：${lastError?.message}",
-            lastError
-        )
+        onStreamingText?.invoke("")
+        val messages = listOf(ChatApiMessage.text("user", basePrompt + correction))
+        val raw = if (onStreamingText == null) {
+            chatService.completeText(
+                messages = messages,
+                modelConfig = model,
+                maxTokens = maxTokens,
+                thinkingBudget = 512
+            )
+        } else {
+            val streamed = StringBuilder()
+            chatService.completeTextStreaming(
+                messages = messages,
+                modelConfig = model,
+                maxTokens = maxTokens,
+                thinkingBudget = 512,
+                onDelta = { chunk ->
+                    streamed.append(chunk)
+                    extractStreamingJsonString(streamed.toString(), "summary")
+                        ?.let(onStreamingText)
+                }
+            )
+        }
+        val candidate = extractFirstJsonObject(raw) ?: error("AI未返回JSON对象")
+        val decoded = json.decodeFromString(serializer, candidate)
+        validate(decoded)
+        decoded
     }
 }
 

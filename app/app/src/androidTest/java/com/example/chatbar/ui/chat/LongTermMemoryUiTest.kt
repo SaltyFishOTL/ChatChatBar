@@ -26,6 +26,7 @@ import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
 import com.example.chatbar.ui.kit.ChatBarTheme
+import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -187,12 +188,61 @@ class LongTermMemoryUiTest {
         var savedBody = ""
         composeTestRule.setContent {
             ChatBarTheme {
-                MemoryTierEditor(uiState(episode()), MemoryTier.EPISODE) { _, body -> savedBody = body }
+                MemoryTierEditor(
+                    state = uiState(episode()),
+                    tier = MemoryTier.EPISODE,
+                    onEditNode = { _, body -> savedBody = body },
+                    onRegenerateNode = { _, _ -> Result.success("regenerated from source") },
+                    onOpenNodeEditor = { _, _, _ -> }
+                )
             }
         }
+        composeTestRule.onNodeWithText("当前内容已保存到Checkpoint。").assertIsDisplayed()
         composeTestRule.onNodeWithText("episode event").performTextReplacement("edited event")
-        composeTestRule.onNodeWithText("保存此节点Checkpoint").performClick()
+        composeTestRule.onNodeWithText("有未保存修改，离开此页面会丢失。").assertIsDisplayed()
+        composeTestRule.onNodeWithText("保存修改到Checkpoint（未保存）").performClick()
         composeTestRule.runOnIdle { assertEquals("edited event", savedBody) }
+    }
+
+    @Test
+    fun aiRegenerationWritesCandidateWithoutSavingAutomatically() {
+        var requestedNodeId = ""
+        var savedBody = ""
+        val finishRegeneration = CompletableDeferred<Unit>()
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryTierEditor(
+                    state = uiState(episode()),
+                    tier = MemoryTier.EPISODE,
+                    onEditNode = { _, body -> savedBody = body },
+                    onRegenerateNode = { nodeId, onStreamingSummary ->
+                        requestedNodeId = nodeId
+                        onStreamingSummary("streaming candidate")
+                        finishRegeneration.await()
+                        Result.success("regenerated from original evidence")
+                    },
+                    onOpenNodeEditor = { _, _, _ -> }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("AI重新生成此节点").performClick()
+        composeTestRule.onNodeWithText("streaming candidate").assertIsDisplayed()
+        composeTestRule.runOnIdle {
+            assertEquals("episode", requestedNodeId)
+            assertEquals("", savedBody)
+            finishRegeneration.complete(Unit)
+        }
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithText("regenerated from original evidence").assertIsDisplayed()
+        composeTestRule.onNodeWithText("有未保存修改，离开此页面会丢失。").assertIsDisplayed()
+        composeTestRule.runOnIdle {
+            assertEquals("episode", requestedNodeId)
+            assertEquals("", savedBody)
+        }
+
+        composeTestRule.onNodeWithText("保存修改到Checkpoint（未保存）").performClick()
+        composeTestRule.runOnIdle { assertEquals("regenerated from original evidence", savedBody) }
     }
 
     @Test

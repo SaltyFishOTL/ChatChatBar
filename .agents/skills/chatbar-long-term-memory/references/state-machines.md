@@ -54,6 +54,7 @@ IDLE / PAUSED / ERROR
 ```
 
 - Save every successful batch immediately; interruption resumes from remaining IDs.
+- Allow up to five total AI output-validation attempts for every backfill stage, including Episode generation, Archive compression, and final HEAD rebuild.
 - A disabled-period Gap is explicitly backfillable even while still inside direct context; normal HEAD UPDATE never crosses it.
 - User pause takes effect after current atomic model call.
 - Process restart loses runner registration; convert orphaned persisted `RUNNING` to `PAUSED`.
@@ -99,7 +100,17 @@ IDLE / PAUSED / ERROR
 3. Reload state and reject changed source, revision, user edit, restore, pause, or competing commit.
 4. Validate coverage and budget before any active-page switch.
 5. Save immutable node, page revision/transaction, active state, and pending reduction as one logical commit.
-6. Never clear source or gap state on invalid output or second failed retry.
+6. Never clear source or gap state after output-validation retries are exhausted.
+
+## Selected Node Regeneration
+
+1. Require one active Episode, Arc, or Era node with verifiable persisted coverage.
+2. Capture the selected immutable node and evidence hash. Episode evidence is its raw source turns; Arc/Era evidence is its ordered immutable direct children. Do not bind this review-only task to the session-wide revision.
+3. Re-run the tier's native generation protocol outside the state lock. The current node body is display-only and never enters AI evidence.
+4. Stream each complete growing `summary` snapshot to the editor in callback order. At each validation retry, clear the invalid prior attempt before showing the new stream.
+5. Require exact original child consumption for Arc/Era and the normal Episode length/summary validation for Episode.
+6. Reload state and reject only when this target is no longer active or its node/raw source/child evidence changed. Allow unrelated node checkpoints and run different target nodes concurrently.
+7. Return the validated body to the editor as an unsaved candidate. Only explicit checkpoint save replaces the active node; final failure restores the pre-request editor draft and leaves persisted memory unchanged.
 
 ## Minimum Regression Matrix
 
@@ -109,5 +120,5 @@ IDLE / PAUSED / ERROR
 - Backfill failure: reason visible; retry retains remaining work.
 - Source-turn grouping: appended replies stay in one context/RAG block.
 - Compression: reject skip, overlap, reorder, duplicate, fake range, missing coverage, and non-shrinking output.
-- Preview: contains Archive + HEAD only.
+- Preview: contains unlabeled ordered Archive bodies + HEAD only; no per-node tier/T labels.
 - SaveSlot and old JSON: repeated migration/import remains idempotent and preserves unverifiable data.

@@ -51,6 +51,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.MutableSharedFlow
@@ -699,6 +700,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 longTermMemoryService.editNode(sessionId, nodeId, bodyText)
             }.exceptionOrNull()
             refreshMemoryAfterAction(error)
+        }
+    }
+
+    suspend fun regenerateMemoryNodeCandidate(
+        nodeId: String,
+        onStreamingSummary: (String) -> Unit
+    ): Result<String> = coroutineScope {
+        val streamedSummaries = Channel<String>(Channel.UNLIMITED)
+        val streamCollector = launch(Dispatchers.Main.immediate) {
+            for (summary in streamedSummaries) onStreamingSummary(summary)
+        }
+        try {
+            val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
+            val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
+            Result.success(
+                longTermMemoryService.regenerateNodeCandidate(sessionId, nodeId, model) { summary ->
+                    streamedSummaries.trySend(summary)
+                }
+            )
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            Result.failure(error)
+        } finally {
+            streamedSummaries.close()
+            streamCollector.join()
         }
     }
 

@@ -75,6 +75,12 @@ private data class LoadedMemory(
     val nodes: MutableMap<String, MemoryNode>
 )
 
+private data class MemoryNodeRegenerationRequest(
+    val plan: MemoryNodeRegenerationPlan,
+    val renderedEvidence: String,
+    val evidenceHash: String
+)
+
 private sealed interface MaintenanceResult {
     data class Ready(
         val state: MemorySessionState,
@@ -581,6 +587,77 @@ class LongTermMemoryService(
         compileAndCacheLocked(loaded.copy(state = checkpoint.state, nodes = loaded.nodes.apply {
             put(edited.id, edited)
         }))
+    }
+
+    /**
+     * Re-runs the original generation protocol for one active node.
+     * Returns a review candidate only; persistence still goes through editNode/checkpoint.
+     */
+    suspend fun regenerateNodeCandidate(
+        sessionId: String,
+        nodeId: String,
+        model: ModelConfig,
+        onStreamingSummary: ((String) -> Unit)? = null
+    ): String {
+        val request = stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            buildNodeRegenerationRequest(loaded, nodeId)
+        }
+        val responseText = when (request.plan.node.tier) {
+            MemoryTier.EPISODE -> {
+                val sourceTurnCount = request.plan.node.sourceTurnIds.size
+                ai.episode(
+                    model = model,
+                    renderedTurns = request.renderedEvidence,
+                    summaryMaxChars = MemoryEpisodeSummaryPolicy.maxChars(sourceTurnCount),
+                    onStreamingSummary = onStreamingSummary
+                ) { output -> validateEpisodeResponse(output, sourceTurnCount) }.summary
+            }
+
+            MemoryTier.ARC, MemoryTier.ERA -> {
+                val children = request.plan.children
+                val candidate = MemoryCompressionCandidate(
+                    candidates = children,
+                    minConsume = children.size,
+                    maxConsume = children.size
+                )
+                ai.compression(
+                    model = model,
+                    kind = requireNotNull(request.plan.compressionKind),
+                    forcedConsumedChildIds = children.map { it.id },
+                    renderedChildren = request.renderedEvidence,
+                    onStreamingSummary = onStreamingSummary
+                ) { output ->
+                    check(output.compressible) { "重新生成不得返回不可压缩" }
+                    validateCompressionResponse(output, candidate)
+                    val coverageChars = output.childCoverage.sumOf { it.text.trim().length } +
+                        (output.childCoverage.size - 1).coerceAtLeast(0)
+                    check(coverageChars < children.sumOf { it.body.length }) {
+                        "重新生成的child覆盖没有形成压缩"
+                    }
+                    check(output.summary.trim().length < children.sumOf { it.body.length }) {
+                        "重新生成的正文没有形成压缩"
+                    }
+                    check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(output.summary)) {
+                        "重新生成正文包含无T限定的现在/目前/仍然"
+                    }
+                }.summary
+            }
+
+            MemoryTier.LEGACY_REFERENCE -> error("Legacy Reference无法从可靠来源重新生成")
+        }.trim()
+
+        stateLock(sessionId) {
+            val current = loadLocked(sessionId)
+            val currentRequest = buildNodeRegenerationRequest(current, nodeId)
+            MemoryNodeRegenerationPolicy.requireStillCurrent(
+                originalPlan = request.plan,
+                originalEvidenceHash = request.evidenceHash,
+                currentPlan = currentRequest.plan,
+                currentEvidenceHash = currentRequest.evidenceHash
+            )
+        }
+        return responseText
     }
 
     suspend fun editHead(sessionId: String, head: MemoryHead) = stateLock(sessionId) {
@@ -1705,9 +1782,46 @@ class LongTermMemoryService(
                 state = reconciled
             }
         }
+        val stateBeforeOrderRepair = checkNotNull(state)
         val nodes = memoryRepository.getReachableNodes(
-            state.activeNodeIds + state.legacyReferenceNodeIds
+            stateBeforeOrderRepair.activeNodeIds + stateBeforeOrderRepair.legacyReferenceNodeIds
         ).associateBy { it.id }.toMutableMap()
+        val orderReconciled = MemoryPageOrderPolicy.normalize(stateBeforeOrderRepair, nodes)
+        if (orderReconciled != stateBeforeOrderRepair) {
+            var repaired = stateBeforeOrderRepair
+            listOf(
+                orderReconciled.episodePage,
+                orderReconciled.arcPage,
+                orderReconciled.eraPage
+            ).forEach { orderedPage ->
+                val currentPage = repaired.page(orderedPage.tier)
+                if (currentPage.activeNodeIds == orderedPage.activeNodeIds) return@forEach
+                val repairRevision = MemoryTierRevision(
+                    id = MemoryTierRevision.newId(),
+                    sessionId = stateBeforeOrderRepair.sessionId,
+                    tier = orderedPage.tier,
+                    parentRevisionId = currentPage.currentRevisionId,
+                    operation = MemoryRevisionOperation.MIGRATE,
+                    author = MemoryAuthor.MIGRATION,
+                    snapshotNodeIds = orderedPage.activeNodeIds,
+                    visible = false
+                )
+                memoryRepository.saveRevision(repairRevision)
+                repaired = repaired.replacePage(
+                    currentPage.copy(
+                        activeNodeIds = orderedPage.activeNodeIds,
+                        currentRevisionId = repairRevision.id,
+                        uncheckpointedAddedNodeIds = emptyList(),
+                        revisionSequence = currentPage.revisionSequence + 1
+                    )
+                )
+            }
+            state = repaired.copy(
+                revision = stateBeforeOrderRepair.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+            memoryRepository.saveState(state)
+        }
         val boundaryReconciled = reconcileBackfillBoundary(
             state = state,
             messages = messages,
@@ -2146,26 +2260,11 @@ class LongTermMemoryService(
     }
 
     private fun renderArchive(loaded: LoadedMemory): String {
-        val state = loaded.state
-        val active = MemoryTimelinePolicy.sortNodes(
-            state.activeNodeIds.mapNotNull(loaded.nodes::get),
-            state.timeline
+        return MemoryArchiveInjectionPolicy.render(
+            activeNodes = loaded.state.activeNodeIds.mapNotNull(loaded.nodes::get),
+            legacyReferenceNodes = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
+            timeline = loaded.state.timeline
         )
-        val lines = active.mapNotNull { node ->
-            val range = MemoryTimelinePolicy.range(node, state.timeline) ?: return@mapNotNull null
-            "[${node.tier.displayName()} T${range.startT}-T${range.endT}] ${node.body.replace('\n', ' ')}"
-        }.toMutableList()
-        state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get).forEach { node ->
-            val range = MemoryTimelinePolicy.range(node, state.timeline)
-            val label = range?.let { "旧记忆参考 T${it.startT}-T${it.endT}" }
-                ?: "时间未知｜不代表当前进展"
-            lines += "[Legacy｜$label] ${node.body.replace('\n', ' ')}"
-        }
-        if (lines.isEmpty()) return ""
-        return buildString {
-            appendLine("【ARCHIVE｜历史档案】")
-            append(lines.joinToString("\n"))
-        }
     }
 
     private fun headPathCrossesGap(loaded: LoadedMemory, targetSourceTurnId: String): Boolean {
@@ -2193,24 +2292,11 @@ class LongTermMemoryService(
             state.activeNodeIds.mapNotNull(loaded.nodes::get),
             state.timeline
         )
-        val archiveLines = active.mapNotNull { node ->
-            val range = MemoryTimelinePolicy.range(node, state.timeline) ?: return@mapNotNull null
-            "[${node.tier.displayName()} T${range.startT}-T${range.endT}] ${node.body.replace('\n', ' ')}"
-        }.toMutableList()
-        state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get).forEach { node ->
-            val range = MemoryTimelinePolicy.range(node, state.timeline)
-            val label = range?.let { "旧记忆参考 T${it.startT}-T${it.endT}" }
-                ?: "时间未知｜不代表当前进展"
-            archiveLines += "[Legacy｜$label] ${node.body.replace('\n', ' ')}"
-        }
-        val archive = if (archiveLines.isEmpty()) {
-            ""
-        } else {
-            buildString {
-                appendLine("【ARCHIVE｜历史档案】")
-                append(archiveLines.joinToString("\n"))
-            }
-        }
+        val archive = MemoryArchiveInjectionPolicy.render(
+            activeNodes = active,
+            legacyReferenceNodes = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
+            timeline = state.timeline
+        )
         val archiveThroughT = active.mapNotNull { MemoryTimelinePolicy.range(it, state.timeline)?.endT }
             .maxOrNull()
         val stableIds = stableSourceTurnIds(loaded.messages)
@@ -2393,6 +2479,46 @@ class LongTermMemoryService(
                 "压缩正文包含无T限定的现在/目前/仍然"
             }
         }
+    }
+
+    private fun buildNodeRegenerationRequest(
+        loaded: LoadedMemory,
+        nodeId: String
+    ): MemoryNodeRegenerationRequest {
+        val node = loaded.nodes[nodeId] ?: error("记忆节点不存在")
+        check(nodeId in loaded.state.page(node.tier).activeNodeIds) { "只能重新生成当前分页活跃节点" }
+        val plan = MemoryNodeRegenerationPolicy.plan(node, loaded.nodes)
+        val renderedEvidence = if (node.tier == MemoryTier.EPISODE) {
+            val availableSourceIds = loaded.messages.asSequence()
+                .filter { it.role != MessageRole.SYSTEM }
+                .mapNotNull { it.sourceTurnId }
+                .toSet()
+            check(node.sourceTurnIds.all { it in availableSourceIds }) {
+                "原始聊天轮已删除，无法重新生成Episode"
+            }
+            renderSourceTurns(
+                node.sourceTurnIds,
+                loaded.messages,
+                loaded.state.timeline,
+                loaded.session
+            )
+        } else {
+            renderChildren(plan.children, loaded.state.timeline)
+        }
+        val evidenceHash = if (node.tier == MemoryTier.EPISODE) {
+            MemoryHashes.text(node.sourceTurnIds.joinToString("\n") { sourceId ->
+                "$sourceId:${sourceHash(sourceId, loaded.messages, loaded.session)}"
+            })
+        } else {
+            MemoryHashes.text(plan.children.joinToString("\n") { child ->
+                "${child.id}:${child.sourceHash}:${child.coverageHash}:${MemoryHashes.text(child.body)}"
+            })
+        }
+        return MemoryNodeRegenerationRequest(
+            plan = plan,
+            renderedEvidence = renderedEvidence,
+            evidenceHash = evidenceHash
+        )
     }
 
     private fun createEpisodeNode(

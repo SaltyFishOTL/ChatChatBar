@@ -57,4 +57,15 @@ class MemoryNodeContentTest {
             extractStreamingJsonString("```json\n{\"summary\":\"两轮发生了\\n新事件", "summary")
         )
     }
+
+    @Test
+    fun streamingSummaryParserReadsCompressionSummaryAfterProtocolFields() {
+        assertEquals(
+            "跨层流式候选",
+            extractStreamingJsonString(
+                "{\"compressible\":true,\"consumedChildIds\":[\"episode\"],\"summary\":\"跨层流式候选",
+                "summary"
+            )
+        )
+    }
 }

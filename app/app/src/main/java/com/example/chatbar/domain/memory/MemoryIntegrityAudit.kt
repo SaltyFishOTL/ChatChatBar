@@ -30,13 +30,17 @@ object MemoryIntegrityAudit {
         val storedNodes = activeIds.mapNotNull(nodesById::get)
         val nodes = MemoryTimelinePolicy.sortNodes(storedNodes, state.timeline)
         listOf(state.episodePage, state.arcPage, state.eraPage).forEach { page ->
-            val pageNodes = page.activeNodeIds.mapNotNull(nodesById::get)
-            if (pageNodes.map { it.id } !=
-                MemoryTimelinePolicy.sortNodes(pageNodes, state.timeline).map { it.id }
-            ) warnings += MemoryIntegrityWarning(
-                message = "${page.tier}分页节点顺序与T时间线倒序。",
-                affectedNodeIds = pageNodes.map { it.id }
+            val orderedIds = MemoryPageOrderPolicy.orderedNodeIdsOrNull(
+                nodeIds = page.activeNodeIds,
+                nodesById = nodesById,
+                timeline = state.timeline
             )
+            if (orderedIds != null && page.activeNodeIds != orderedIds) {
+                warnings += MemoryIntegrityWarning(
+                    message = "${page.tier}分页节点未按T时间线升序排列。",
+                    affectedNodeIds = page.activeNodeIds
+                )
+            }
         }
         val firstRange = nodes.firstOrNull()?.let { MemoryTimelinePolicy.range(it, state.timeline) }
         if (firstRange != null && firstRange.startT > 0) warnings += MemoryIntegrityWarning(

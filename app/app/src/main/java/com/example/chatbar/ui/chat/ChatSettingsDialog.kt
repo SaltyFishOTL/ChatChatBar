@@ -285,6 +285,8 @@ fun ChatSettingsDialog(
                             state = memoryUi,
                             onRefresh = viewModel::refreshLongTermMemory,
                             onEditNode = viewModel::editMemoryNode,
+                            onRegenerateNode = viewModel::regenerateMemoryNodeCandidate,
+                            onOpenNodeEditor = ::openFullscreen,
                             onEditHead = viewModel::editMemoryHead,
                             onMarkSourcesCorrected = viewModel::markMemorySourcesCorrected,
                             onJumpToSource = onJumpToSource,
@@ -541,6 +543,8 @@ private fun LongTermMemoryContent(
     state: LongTermMemoryUiState,
     onRefresh: () -> Unit,
     onEditNode: (String, String) -> Unit,
+    onRegenerateNode: suspend (String, (String) -> Unit) -> Result<String>,
+    onOpenNodeEditor: (String, String, (String) -> Unit) -> Unit,
     onEditHead: (MemoryHead) -> Unit,
     onMarkSourcesCorrected: (List<String>) -> Unit,
     onJumpToSource: (String) -> Unit,
@@ -693,7 +697,13 @@ private fun LongTermMemoryContent(
                                     onMarkSourcesCorrected = { onMarkSourcesCorrected(listOf(it)) },
                                     onJumpToSource = onJumpToSource
                                 )
-                                1 -> MemoryTierEditor(state, tier, onEditNode)
+                                1 -> MemoryTierEditor(
+                                    state = state,
+                                    tier = tier,
+                                    onEditNode = onEditNode,
+                                    onRegenerateNode = onRegenerateNode,
+                                    onOpenNodeEditor = onOpenNodeEditor
+                                )
                                 else -> MemoryVersionHistory(
                                     state,
                                     tier,
@@ -937,29 +947,116 @@ internal fun MemoryHeadPage(
 internal fun MemoryTierEditor(
     state: LongTermMemoryUiState,
     tier: MemoryTier,
-    onEditNode: (String, String) -> Unit
+    onEditNode: (String, String) -> Unit,
+    onRegenerateNode: suspend (String, (String) -> Unit) -> Result<String>,
+    onOpenNodeEditor: (String, String, (String) -> Unit) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(10.dp)
     ) {
         state.nodes.filter { it.tier == tier }.forEach { node ->
             var draft by remember(node.id, node.body) { mutableStateOf(node.body) }
+            var regenerating by remember(node.id) { mutableStateOf(false) }
+            var regenerationStatus by remember(node.id) { mutableStateOf<Pair<Boolean, String>?>(null) }
+            val hasUnsavedChanges = draft != node.body
             CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
                 Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbText(node.memoryRangeLabel(state), style = ChatBarTheme.typography.heading)
                     CbText(
-                        "只修改这条记忆的正文；覆盖范围和来源关系不会改变。",
+                        "AI会从原始聊天轮或直接子节点重新生成；当前错误正文不会作为依据。覆盖范围和来源关系不会改变。",
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
                     )
-                    CbField("正文") {
-                        CbInput(draft, { draft = it }, singleLine = false, minLines = 4)
+                    CbField(
+                        label = "正文",
+                        onFullscreenEdit = if (regenerating) null else {
+                            {
+                                onOpenNodeEditor(
+                                    "${when (tier) {
+                                        MemoryTier.EPISODE -> "近期流程"
+                                        MemoryTier.ARC -> "事件总结"
+                                        MemoryTier.ERA -> "故事进程"
+                                        MemoryTier.LEGACY_REFERENCE -> "旧版记忆参考"
+                                    }}正文",
+                                    draft
+                                ) { draft = it }
+                            }
+                        }
+                    ) {
+                        CbInput(
+                            draft,
+                            { draft = it },
+                            enabled = !regenerating,
+                            singleLine = false,
+                            minLines = 4
+                        )
+                    }
+                    CbText(
+                        if (hasUnsavedChanges) {
+                            "有未保存修改，离开此页面会丢失。"
+                        } else {
+                            "当前内容已保存到Checkpoint。"
+                        },
+                        color = if (hasUnsavedChanges) {
+                            ChatBarTheme.colors.destructive
+                        } else {
+                            ChatBarTheme.colors.mutedForeground
+                        },
+                        style = ChatBarTheme.typography.label
+                    )
+                    regenerationStatus?.let { (failed, message) ->
+                        CbText(
+                            message,
+                            color = if (failed) {
+                                ChatBarTheme.colors.destructive
+                            } else {
+                                ChatBarTheme.colors.mutedForeground
+                            },
+                            style = ChatBarTheme.typography.caption
+                        )
                     }
                     CbButton(
-                        "保存此节点Checkpoint",
+                        if (regenerating) "正在从原始依据重新生成…" else "AI重新生成此节点",
+                        {
+                            scope.launch {
+                                val originalDraft = draft
+                                regenerating = true
+                                regenerationStatus = false to "AI正在流式生成候选；校验失败会自动重试。"
+                                try {
+                                    onRegenerateNode(node.id) { streamedSummary ->
+                                        draft = streamedSummary
+                                    }.fold(
+                                        onSuccess = { candidate ->
+                                            draft = candidate
+                                            regenerationStatus = false to "AI候选已写入正文；确认后再保存Checkpoint。"
+                                        },
+                                        onFailure = { error ->
+                                            draft = originalDraft
+                                            regenerationStatus = true to
+                                                (error.message ?: "AI重新生成失败")
+                                        }
+                                    )
+                                } finally {
+                                    regenerating = false
+                                }
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !regenerating,
+                        variant = ButtonVariant.Outline
+                    )
+                    CbButton(
+                        if (hasUnsavedChanges) {
+                            "保存修改到Checkpoint（未保存）"
+                        } else {
+                            "当前内容已保存到Checkpoint"
+                        },
                         { onEditNode(node.id, draft) },
-                        modifier = Modifier.fillMaxWidth()
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = !regenerating && hasUnsavedChanges && draft.isNotBlank(),
+                        variant = if (hasUnsavedChanges) ButtonVariant.Default else ButtonVariant.Outline
                     )
                 }
             }

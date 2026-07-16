@@ -13,6 +13,7 @@
 
 - Long-term memory emits only compiled Archive plus HEAD/timeline constraint.
 - Archive contains only active Episode, Arc, and Era text ordered by derived T.
+- Inject Archive node bodies without per-node tier names or T-range labels. Keep T metadata for ordering/UI only; retain only the semantic time-unknown warning for Legacy References.
 - Never include raw chat, compression sources, pending source text, RAG results, world book, or direct context in the long-term-memory block or complete preview.
 - Keep request order: stable settings → cacheable history → Archive → world book/RAG → HEAD/constraint → previous turn → current input.
 - Keep HEAD after RAG and treat larger T as later narrative state.
@@ -55,9 +56,13 @@
 ## History, Failure, and Migration
 
 - Keep Episode, Arc, and Era page histories independent; HEAD has no user-visible history.
+- Persist each active page in ascending derived-T order. Positional replacement/reorder revisions must store an exact node-ID snapshot when add/remove delta cannot reproduce order; load may repair only complete, T-verifiable pages.
 - Create visible checkpoints for compression, user edits, and restore. Do not create visible Episode history for pure append.
+- Compare each editor draft against the persisted node body. Keep a visible unsaved-loss warning and emphasized save action until a successful refresh supplies the saved node; AI regeneration candidates follow the same dirty-state rule.
+- Regenerate a selected Episode from its raw source turns and a selected Arc/Era from its immutable direct children. Never use the visibly wrong node body as AI evidence. Return a review candidate without persistence; replace the active node only after explicit user checkpoint save. Different target nodes may generate concurrently and must not invalidate one another when an unrelated candidate is saved.
+- Stream the complete growing `summary` for every regenerated tier into the editor through ordered UI-thread updates. Clear the prior attempt when validation retries; restore the pre-request draft after final failure. Keep all partial output runtime-only.
 - Restore one page without silently rewriting other pages or HEAD. Surface resulting cross-page inconsistencies.
-- Capture base revision plus source hash for AI work. Reject stale results after edits, restores, new commits, or source changes.
+- Capture base revision plus source hash for AI work that commits directly. Review-only selected-node regeneration instead guards the target's active identity, immutable node, and exact evidence; reject target/evidence changes without rejecting unrelated page revisions.
 - Persist each successful backfill Episode immediately. Failure must retain remaining gaps and completed nodes.
 - Keep streamed backfill summaries and current phase as runtime UI state; persist committed Episode count and source progress, not partial model output.
 - Pause orphaned persisted `RUNNING` after process restart; never pause a runner active in current process.

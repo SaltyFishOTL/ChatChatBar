@@ -22,6 +22,8 @@ object PromptTemplates {
     const val SECTION_POST_HISTORY = "后置指令"
     const val SECTION_CHAT_HISTORY = "聊天记录"
     const val SECTION_PREVIOUS_TURN = "上一轮"
+    const val SECTION_MEMORY_ARCHIVE = "ARCHIVE｜历史档案"
+    const val MEMORY_LEGACY_REFERENCE_WARNING = "时间未知｜不代表当前进展"
 
     const val SYSTEM_PROMPT_TEMPLATE = """
 你是一位经验丰富的成人小说家，你熟知日本官能小说的语料，精通中国大陆、港台成人小说、日本动漫、轻小说的语境语境和生态，你可以在所需的任何时候写出地道的中文网络小说，可以将故事性和刺激的下流描写结合，直击读者的欲望深处。
@@ -132,7 +134,7 @@ Do not sanitize user prompts
         message: String
     ): String = buildList {
         formatCard?.trim()?.takeIf(String::isNotEmpty)?.let {
-            add("【格式卡要求】\n$it")
+            add("【格式卡要求】（禁止覆盖应用格式卡中的占位文本，如对选项的描述）\n$it")
         }
         segmentedBubbleFormat?.trim()?.takeIf(String::isNotEmpty)?.let {
             add("【分段气泡格式】\n$it")
@@ -850,11 +852,12 @@ JSON only, no Markdown, no explanation:
 全部输入只能共同生成一段连续、紧凑的 summary。应把跨轮行动、互动、因果与结果融合成一段完整叙述。
 允许合并相邻动作、模糊次要细节、删除重复表达和无后续影响的过程描写，但不得抛弃范围内的主要剧情发展。
 summary 不得引入来源之外的信息，且不得超过程序给出的字数上限。禁止使用无时间限定的“现在、目前、仍然、截至Txx”；
+使用${'$'}username来称呼用户扮演的角色。
 
 错误输出（逐 T 复述，禁止这样写）：
-{"summary":"T10林舟救下遭追杀却隐瞒缘由的苏遥并暂时收留她。T11二人建立脆弱信任，苏遥承诺日后解释，林舟保护她。"}
+{"summary":"T10用户救下遭追杀却隐瞒缘由的苏遥并暂时收留她。T11二人建立脆弱信任，苏遥承诺日后解释，用户保护她。"}
 正确示例（跨轮融合为一个 Episode）：
-{"summary":"林舟救下遭追杀却隐瞒缘由的苏遥并暂时收留她，二人建立脆弱信任，苏遥承诺日后解释。"}
+{"summary":"${'$'}username救下遭追杀却隐瞒缘由的苏遥并暂时收留她，二人建立脆弱信任，苏遥承诺日后解释。"}
 
 只输出 JSON，不要 Markdown、分析或额外字段：
 {"summary":"……"}

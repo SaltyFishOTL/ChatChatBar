@@ -35,6 +35,12 @@ class MemoryRevisionService(private val repository: MemoryRepository) {
     ): MemorySessionState {
         val page = state.page(tier)
         if (page.uncheckpointedAddedNodeIds.isEmpty()) return state
+        val pendingSet = page.uncheckpointedAddedNodeIds.toSet()
+        val expectedParentNodeIds = page.activeNodeIds.filterNot { it in pendingSet }
+        val materializedParentNodeIds = page.currentRevisionId
+            ?.let { repository.materializeRevision(it) }
+            .orEmpty()
+        val requiresSnapshot = materializedParentNodeIds != expectedParentNodeIds
         val revision = MemoryTierRevision(
             id = MemoryTierRevision.newId(),
             sessionId = state.sessionId,
@@ -42,7 +48,8 @@ class MemoryRevisionService(private val repository: MemoryRepository) {
             parentRevisionId = page.currentRevisionId,
             operation = MemoryRevisionOperation.PURE_APPEND_SYNC,
             author = MemoryAuthor.AI,
-            addedNodeIds = page.uncheckpointedAddedNodeIds,
+            addedNodeIds = if (requiresSnapshot) emptyList() else page.uncheckpointedAddedNodeIds,
+            snapshotNodeIds = page.activeNodeIds.takeIf { requiresSnapshot },
             visible = false
         )
         repository.saveRevision(revision)
@@ -90,6 +97,16 @@ class MemoryRevisionService(private val repository: MemoryRepository) {
         val before = page.activeNodeIds
         val materialize = (page.revisionSequence + 1) %
             MemoryRepository.MATERIALIZED_SNAPSHOT_INTERVAL == 0L
+        val addedNodeIds = afterNodeIds.filterNot { it in before }
+        val removedNodeIds = before.filterNot { it in afterNodeIds }
+        val deltaResult = (before.filterNot { it in removedNodeIds.toSet() } + addedNodeIds)
+            .distinct()
+        val requiresOrderSnapshot = deltaResult != afterNodeIds
+        val materializedParentNodeIds = requireNotNull(page.currentRevisionId)
+            .let { repository.materializeRevision(it) }
+        val storeSnapshot = materialize ||
+            requiresOrderSnapshot ||
+            materializedParentNodeIds != before
         val revision = MemoryTierRevision(
             id = MemoryTierRevision.newId(),
             sessionId = state.sessionId,
@@ -99,9 +116,9 @@ class MemoryRevisionService(private val repository: MemoryRepository) {
             author = author,
             modelId = modelId,
             transactionId = transactionId,
-            addedNodeIds = if (materialize) emptyList() else afterNodeIds.filterNot { it in before },
-            removedNodeIds = if (materialize) emptyList() else before.filterNot { it in afterNodeIds },
-            snapshotNodeIds = afterNodeIds.takeIf { materialize || page.currentRevisionId == null },
+            addedNodeIds = if (storeSnapshot) emptyList() else addedNodeIds,
+            removedNodeIds = if (storeSnapshot) emptyList() else removedNodeIds,
+            snapshotNodeIds = afterNodeIds.takeIf { storeSnapshot },
             affectedSourceTurnIds = affectedSourceTurnIds,
             visible = visible
         )
@@ -125,7 +142,13 @@ class MemoryRevisionService(private val repository: MemoryRepository) {
     ): MemoryCheckpointResult {
         val historical = repository.getRevision(revisionId) ?: error("历史版本不存在")
         check(historical.sessionId == state.sessionId) { "历史版本不属于当前会话" }
-        val target = repository.materializeRevision(revisionId)
+        val materializedTarget = repository.materializeRevision(revisionId)
+        val targetNodes = repository.getNodes(materializedTarget).associateBy { it.id }
+        val target = MemoryPageOrderPolicy.orderedNodeIdsOrNull(
+            nodeIds = materializedTarget,
+            nodesById = targetNodes,
+            timeline = state.timeline
+        ) ?: materializedTarget
         val synced = syncPureAdditions(state, historical.tier)
         val safety = checkpoint(
             initialState = synced,
