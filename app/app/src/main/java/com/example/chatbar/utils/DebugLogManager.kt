@@ -1,6 +1,7 @@
 package com.example.chatbar.utils
 
 import com.example.chatbar.domain.chat.PromptCacheUsage
+import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -44,6 +45,12 @@ data class DebugLogEntry(
             val input = apiPromptTokens ?: (cached + (cacheMissTokens ?: 0))
             "缓存命中 $cached / $input" + cacheWriteTokens?.let { "，写入 $it" }.orEmpty()
         }
+
+    val requestContainsArchive: Boolean
+        get() = requestBodyJson.contains("【${PromptTemplates.SECTION_MEMORY_ARCHIVE}】")
+
+    val requestContainsHead: Boolean
+        get() = requestBodyJson.contains("【HEAD｜")
 }
 
 object DebugLogManager {

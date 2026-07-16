@@ -40,12 +40,18 @@ object MemoryTimelinePolicy {
         return sourceTurnIds.none { it in gapIds }
     }
 
+    fun verifiedRange(
+        node: MemoryNode,
+        timeline: List<MemoryTimelineEntry>
+    ): MemoryDisplayRange? = range(node, timeline)
+        ?.takeIf { isContinuous(node.sourceTurnIds, timeline) }
+
     fun sortNodes(
         nodes: List<MemoryNode>,
         timeline: List<MemoryTimelineEntry>
     ): List<MemoryNode> = nodes.sortedWith(
-        compareBy<MemoryNode> { range(it, timeline)?.startT ?: Long.MAX_VALUE }
-            .thenBy { range(it, timeline)?.endT ?: Long.MAX_VALUE }
+        compareBy<MemoryNode> { verifiedRange(it, timeline)?.startT ?: Long.MAX_VALUE }
+            .thenBy { verifiedRange(it, timeline)?.endT ?: Long.MAX_VALUE }
             .thenBy { it.createdAt }
             .thenBy { it.id }
     )

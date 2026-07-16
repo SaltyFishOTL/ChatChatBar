@@ -12,7 +12,6 @@ object MemoryArchiveInjectionPolicy {
     ): String {
         val lines = buildList {
             MemoryTimelinePolicy.sortNodes(activeNodes, timeline).mapNotNullTo(this) { node ->
-                MemoryTimelinePolicy.range(node, timeline) ?: return@mapNotNullTo null
                 normalizeBody(node.body)
             }
             legacyReferenceNodes.mapNotNullTo(this) { node ->

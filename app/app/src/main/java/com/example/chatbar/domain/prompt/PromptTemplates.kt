@@ -914,6 +914,23 @@ HEAD代表截至指定T的当前状态。
 必须从当前最大T继续扮演。
 """
 
+    fun memoryTimelineDirectLabel(
+        archivePresent: Boolean,
+        archiveRangeUnverifiable: Boolean,
+        archiveLabel: String,
+        archiveThroughT: Long?,
+        hasGapAfterArchive: Boolean,
+        latestStableT: Long
+    ): String = when {
+        !archivePresent -> "Archive为空；直接上下文截至 T$latestStableT"
+        archiveRangeUnverifiable || archiveThroughT == null ->
+            "Archive包含时间范围待修复的历史记忆；直接上下文截至 T$latestStableT"
+        hasGapAfterArchive -> "$archiveLabel < 当前最大剧情序号 T$latestStableT"
+        archiveThroughT < latestStableT ->
+            "$archiveLabel < 直接上下文 T${archiveThroughT + 1}-T$latestStableT"
+        else -> "$archiveLabel；直接上下文无更大 T"
+    }
+
     const val RETRIEVAL_PLANNER_SYSTEM_PROMPT = """
 只输出一行 JSON。不要 Markdown。不要解释。最多 80 个输出 token。
 任务：提炼本轮聊天可用于检索长期设定/记忆的关键词。

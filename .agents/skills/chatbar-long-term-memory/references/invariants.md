@@ -14,9 +14,13 @@
 - Long-term memory emits only compiled Archive plus HEAD/timeline constraint.
 - Archive contains only active Episode, Arc, and Era text ordered by derived T.
 - Inject Archive node bodies without per-node tier names or T-range labels. Keep T metadata for ordering/UI only; retain only the semantic time-unknown warning for Legacy References.
+- Never drop a nonblank active Archive body only because its T proof is missing or invalid. Order verified nodes first, use a stable fallback for unverifiable nodes, and expose an integrity warning instead of hiding text.
 - Never include raw chat, compression sources, pending source text, RAG results, world book, or direct context in the long-term-memory block or complete preview.
 - Keep request order: stable settings → cacheable history → Archive → world book/RAG → HEAD/constraint → previous turn → current input.
+- Serialize nonblank Archive as its own system message immediately after history. Before network I/O, assert that expected Archive exists in the final message list; never swallow prompt-view failures or silently send HEAD alone.
+- Diagnose memory delivery from serialized Request JSON, not assembled preview alone. Show separate Archive/HEAD presence indicators in debug logs.
 - Keep HEAD after RAG and treat larger T as later narrative state.
+- Never emit a chat-history message containing only a derived `[Txx]` prefix. After assistant status exclusion, omit blank assistant text and unsupported assistant image records; a supported user image may carry its T prefix without text.
 - Keep RAG data independent: do not index or query long-term-memory nodes and do not limit RAG by memory-node T ranges.
 
 ## Gap and Backfill

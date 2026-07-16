@@ -14,6 +14,8 @@ import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
+import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
@@ -1995,7 +1997,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ragInjectionMode = appSettings.ragInjectionMode,
                         replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
                         replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
-                        memoryArchive = memory?.archive,
+                        memoryArchive = null,
                         memoryHeadAndTimeline = memory?.headAndTimeline,
                         worldBookPrompt = wbPrompt,
                         worldBookOutlets = wbOutlets,
@@ -2004,9 +2006,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 headPreparation?.await()
                 val memoryView = if (currentSession.longTermMemoryEnabled) {
-                    runCatching {
-                        longTermMemoryService.promptView(sessionId)
-                    }.getOrNull()
+                    longTermMemoryService.promptView(sessionId).also { view ->
+                        check(view.usedArchiveChars == 0 || view.archive.isNotBlank()) {
+                            "长期记忆Archive有正文，但请求快照为空"
+                        }
+                    }
                 } else {
                     null
                 }
@@ -2018,6 +2022,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 val promptSystemDebug = listOf(
                     promptLayers.stableSystemPrompt,
+                    memoryView?.archive.orEmpty(),
                     promptLayers.dynamicSystemPrompt,
                     promptLayers.tailSystemPrompt
                 ).filter(String::isNotBlank).joinToString("\n\n")
@@ -2037,11 +2042,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     } else {
                         msg.displayContent
                     }
-                    val text = timelinePrefix(msg) + renderSessionText(sourceText)
-                    if (msg.images.isNotEmpty() &&
+                    val renderedBody = renderSessionText(sourceText)
+                    val hasSupportedImage = msg.images.isNotEmpty() &&
                         modelConfig.isMultimodal &&
                         msg.role == MessageRole.USER
-                    ) {
+                    val text = ChatHistoryPromptPolicy.payloadText(
+                        renderedBody = renderedBody,
+                        timelinePrefix = timelinePrefix(msg),
+                        hasSupportedImage = hasSupportedImage
+                    ) ?: return
+                    if (hasSupportedImage) {
                         try {
                             val base64 = encodeImageToBase64(msg.images.first())
                             apiMessages.add(
@@ -2052,11 +2062,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 )
                             )
                         } catch (e: Exception) {
-                            if (text.isNotBlank()) {
+                            if (renderedBody.isNotBlank()) {
                                 apiMessages.add(ChatApiMessage.text(role, text))
                             }
                         }
-                    } else if (text.isNotBlank()) {
+                    } else {
                         apiMessages.add(ChatApiMessage.text(role, text))
                     }
                 }
@@ -2072,7 +2082,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 2. 长期记忆、RAG、世界书等动态资料置于较早历史与完整上一轮之间。
+                // 2. Archive独立注入；RAG、世界书、HEAD等动态资料随后注入。
+                ChatRequestMemoryPolicy.archiveMessage(memoryView?.archive)?.let(apiMessages::add)
                 promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
                 }
@@ -2149,6 +2160,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
+                ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, memoryView?.archive)
+
                 // 8. 开启流式响应
                 var accumulatedText = ""
                 var accumulatedReasoning = ""
@@ -2220,6 +2233,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         is StreamEvent.Done -> {
                             ChatBarApp.instance.streamingStopRequested.value = false
                             // 流生成完毕，保存到数据库
+                            ChatHistoryPromptPolicy.requirePersistableAssistantBody(accumulatedText)
                             val assistantMsg = ChatMessage(
                                 id = assistantMsgId,
                                 sessionId = sessionId,

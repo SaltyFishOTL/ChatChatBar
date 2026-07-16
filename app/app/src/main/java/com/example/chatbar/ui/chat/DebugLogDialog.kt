@@ -152,6 +152,16 @@ fun DebugLogCard(logEntry: DebugLogEntry) {
                         }
                     }
                     DebugTextSection("System Prompt", logEntry.systemPrompt, { clipboard.setText(AnnotatedString(it)) })
+                    CbText(
+                        text = "实际长期记忆：Archive ${if (logEntry.requestContainsArchive) "已发送" else "未发送"} · " +
+                            "HEAD ${if (logEntry.requestContainsHead) "已发送" else "未发送"}",
+                        color = if (logEntry.requestContainsHead && !logEntry.requestContainsArchive) {
+                            ChatBarTheme.colors.destructive
+                        } else {
+                            ChatBarTheme.colors.mutedForeground
+                        },
+                        style = ChatBarTheme.typography.caption
+                    )
                     DebugTextSection("Request JSON", logEntry.requestBodyJson, { clipboard.setText(AnnotatedString(it)) })
                     DebugTextSection("Raw SSE", logEntry.rawSseOutputText.ifBlank { "等待流数据…" }, { clipboard.setText(AnnotatedString(it)) }, logEntry.error != null)
                     DebugTextSection("AI 原始文本", logEntry.rawAiOutputText.ifBlank { "无原始输出" }, { clipboard.setText(AnnotatedString(it)) })

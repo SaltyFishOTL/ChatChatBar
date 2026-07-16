@@ -19,8 +19,8 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 - Persisted models: `data/local/entity/LongTermMemory.kt`, `ChatMessage.kt`, `ChatSession.kt`, `AppSettings.kt`, `SaveSlot.kt`.
 - Storage: `data/repository/MemoryRepository.kt`, `ChatRepository.kt`.
 - Core behavior: `domain/memory/LongTermMemoryService.kt`, `MemoryHeadUpdatePolicy.kt`, `MemoryAiGateway.kt`, and focused policies under `domain/memory/`.
-- Timeline/context boundaries: `domain/chat/TimelineTurnPolicy.kt`, `TimelineArchiveBoundaryPolicy.kt`, `ContextWindowManager.kt`.
-- Injection: `domain/chat/PromptAssembler.kt`; AI task templates: `domain/prompt/PromptTemplates.kt`.
+- Timeline/context boundaries: `domain/chat/TimelineTurnPolicy.kt`, `TimelineArchiveBoundaryPolicy.kt`, `ContextWindowManager.kt`, `ChatHistoryPromptPolicy.kt`.
+- Injection: `domain/chat/ChatRequestMemoryPolicy.kt`, `PromptAssembler.kt`; actual-request diagnostics: `utils/DebugLogManager.kt`, `ui/chat/DebugLogDialog.kt`; AI task templates: `domain/prompt/PromptTemplates.kt`.
 - RAG boundary consumers: `domain/rag/ChatMemoryIndexPolicy.kt`, `RagManager.kt`, `RagRepository.kt`.
 - UI orchestration: `ui/chat/ChatViewModel.kt`, `ChatSettingsDialog.kt`, `ChatScreen.kt`.
 - Verification: matching JVM tests under `app/app/src/test/` and Compose tests under `app/app/src/androidTest/`.

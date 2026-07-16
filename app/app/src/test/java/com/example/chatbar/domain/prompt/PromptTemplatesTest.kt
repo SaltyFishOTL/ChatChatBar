@@ -46,6 +46,37 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun unresolvedArchiveRangeIsNotReportedAsEmptyArchive() {
+        val label = PromptTemplates.memoryTimelineDirectLabel(
+            archivePresent = true,
+            archiveRangeUnverifiable = true,
+            archiveLabel = "",
+            archiveThroughT = null,
+            hasGapAfterArchive = false,
+            latestStableT = 9
+        )
+
+        assertTrue(label.contains("待修复"))
+        assertTrue(label.contains("T9"))
+        assertFalse(label.contains("Archive为空"))
+    }
+
+    @Test
+    fun archiveBodyWithoutAnyDerivedRangeNeverBuildsNullRangeLabel() {
+        val label = PromptTemplates.memoryTimelineDirectLabel(
+            archivePresent = true,
+            archiveRangeUnverifiable = false,
+            archiveLabel = "Archive最大T Tnull",
+            archiveThroughT = null,
+            hasGapAfterArchive = false,
+            latestStableT = 4
+        )
+
+        assertTrue(label.contains("待修复"))
+        assertFalse(label.contains("Tnull"))
+    }
+
+    @Test
     fun headPromptDeclaresModeAndKeepsInputsSeparated() {
         val prompt = PromptTemplates.memoryHeadPrompt(
             mode = "BACKFILL",

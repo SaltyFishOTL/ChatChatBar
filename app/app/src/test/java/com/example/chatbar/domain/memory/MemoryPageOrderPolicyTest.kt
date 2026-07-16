@@ -52,9 +52,21 @@ class MemoryPageOrderPolicyTest {
         val normalized = MemoryPageOrderPolicy.normalize(state, nodes)
 
         assertEquals(state, normalized)
-        assertFalse(
+        val warnings = MemoryIntegrityAudit.warnings(state, nodes)
+        assertFalse(warnings.any { "未按T时间线升序排列" in it.message })
+        assertTrue(warnings.any { "无法关联T时间线" in it.message })
+    }
+
+    @Test
+    fun `audit reports blank active body separately`() {
+        val nodes = mapOf(
+            "blank" to node("blank", 0, body = "")
+        )
+        val state = state(listOf("blank"), timelineEnd = 0)
+
+        assertTrue(
             MemoryIntegrityAudit.warnings(state, nodes)
-                .any { "未按T时间线升序排列" in it.message }
+                .any { "节点正文为空" in it.message }
         )
     }
 
@@ -66,10 +78,11 @@ class MemoryPageOrderPolicyTest {
         }
     )
 
-    private fun node(id: String, t: Int) = MemoryNode(
+    private fun node(id: String, t: Int, body: String = id) = MemoryNode(
         id = id,
         sessionId = "session",
         tier = MemoryTier.EPISODE,
-        sourceTurnIds = listOf("s$t")
+        sourceTurnIds = listOf("s$t"),
+        content = body
     )
 }

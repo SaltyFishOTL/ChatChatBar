@@ -56,10 +56,11 @@ class MemoryArchiveInjectionPolicyTest {
     }
 
     @Test
-    fun omitsUnverifiableActiveNodesAndBlankBodies() {
+    fun keepsUnverifiableActiveBodiesButOmitsBlankBodies() {
         val rendered = MemoryArchiveInjectionPolicy.render(
             activeNodes = listOf(
-                node("missing-range", MemoryTier.EPISODE, listOf("missing"), "不可注入")
+                node("missing-range", MemoryTier.EPISODE, listOf("missing"), "必须保留"),
+                node("blank-active", MemoryTier.EPISODE, emptyList(), "   ")
             ),
             legacyReferenceNodes = listOf(
                 node("blank", MemoryTier.LEGACY_REFERENCE, emptyList(), "   ")
@@ -67,7 +68,25 @@ class MemoryArchiveInjectionPolicyTest {
             timeline = emptyList()
         )
 
-        assertEquals("", rendered)
+        assertEquals("【ARCHIVE｜历史档案】\n必须保留", rendered)
+    }
+
+    @Test
+    fun ordersVerifiableBodiesBeforeStableUnverifiableFallback() {
+        val rendered = MemoryArchiveInjectionPolicy.render(
+            activeNodes = listOf(
+                node("unknown-late", MemoryTier.ARC, listOf("missing-2"), "未知二", createdAt = 20),
+                node("known", MemoryTier.EPISODE, listOf("turn-0"), "已知", createdAt = 30),
+                node("unknown-early", MemoryTier.ERA, emptyList(), "未知一", createdAt = 10)
+            ),
+            legacyReferenceNodes = emptyList(),
+            timeline = listOf(timeline("turn-0", 0))
+        )
+
+        assertEquals(
+            "【ARCHIVE｜历史档案】\n已知\n未知一\n未知二",
+            rendered
+        )
     }
 
     private fun timeline(sourceTurnId: String, displayT: Long) = MemoryTimelineEntry(
@@ -80,7 +99,8 @@ class MemoryArchiveInjectionPolicyTest {
         id: String,
         tier: MemoryTier,
         sourceTurnIds: List<String>,
-        content: String
+        content: String,
+        createdAt: Long = sourceTurnIds.firstOrNull()?.substringAfterLast('-')?.toLongOrNull() ?: 0L
     ) = MemoryNode(
         id = id,
         sessionId = "session",
@@ -88,6 +108,6 @@ class MemoryArchiveInjectionPolicyTest {
         sourceTurnIds = sourceTurnIds,
         content = content,
         author = MemoryAuthor.AI,
-        createdAt = sourceTurnIds.firstOrNull()?.substringAfterLast('-')?.toLongOrNull() ?: 0L
+        createdAt = createdAt
     )
 }

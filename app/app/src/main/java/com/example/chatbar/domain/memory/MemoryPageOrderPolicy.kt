@@ -32,7 +32,7 @@ object MemoryPageOrderPolicy {
     ): List<String>? {
         val nodes = nodeIds.mapNotNull(nodesById::get)
         if (nodes.size != nodeIds.size) return null
-        if (nodes.any { MemoryTimelinePolicy.range(it, timeline) == null }) return null
+        if (nodes.any { MemoryTimelinePolicy.verifiedRange(it, timeline) == null }) return null
         return MemoryTimelinePolicy.sortNodes(nodes, timeline).map { it.id }
     }
 }

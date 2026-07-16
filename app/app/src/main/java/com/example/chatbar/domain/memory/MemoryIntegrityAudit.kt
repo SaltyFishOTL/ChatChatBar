@@ -28,6 +28,18 @@ object MemoryIntegrityAudit {
             affectedNodeIds = duplicatedIds
         )
         val storedNodes = activeIds.mapNotNull(nodesById::get)
+        val unverifiableNodes = storedNodes.filter {
+            it.body.isNotBlank() && MemoryTimelinePolicy.verifiedRange(it, state.timeline) == null
+        }
+        if (unverifiableNodes.isNotEmpty()) warnings += MemoryIntegrityWarning(
+            message = "当前Archive有${unverifiableNodes.size}个节点无法关联T时间线；正文仍会发送，请检查旧数据。",
+            affectedNodeIds = unverifiableNodes.map { it.id }
+        )
+        val blankNodes = storedNodes.filter { it.body.isBlank() }
+        if (blankNodes.isNotEmpty()) warnings += MemoryIntegrityWarning(
+            message = "当前Archive有${blankNodes.size}个节点正文为空，无法发送。",
+            affectedNodeIds = blankNodes.map { it.id }
+        )
         val nodes = MemoryTimelinePolicy.sortNodes(storedNodes, state.timeline)
         listOf(state.episodePage, state.arcPage, state.eraPage).forEach { page ->
             val orderedIds = MemoryPageOrderPolicy.orderedNodeIdsOrNull(
@@ -42,14 +54,14 @@ object MemoryIntegrityAudit {
                 )
             }
         }
-        val firstRange = nodes.firstOrNull()?.let { MemoryTimelinePolicy.range(it, state.timeline) }
+        val firstRange = nodes.firstOrNull()?.let { MemoryTimelinePolicy.verifiedRange(it, state.timeline) }
         if (firstRange != null && firstRange.startT > 0) warnings += MemoryIntegrityWarning(
             message = "T0-T${firstRange.startT - 1}未生成长期记忆，推荐一键补录。",
             affectedNodeIds = listOf(nodes.first().id)
         )
         nodes.zipWithNext().forEach { (left, right) ->
-            val leftRange = MemoryTimelinePolicy.range(left, state.timeline) ?: return@forEach
-            val rightRange = MemoryTimelinePolicy.range(right, state.timeline) ?: return@forEach
+            val leftRange = MemoryTimelinePolicy.verifiedRange(left, state.timeline) ?: return@forEach
+            val rightRange = MemoryTimelinePolicy.verifiedRange(right, state.timeline) ?: return@forEach
             when {
                 rightRange.startT <= leftRange.endT -> warnings += MemoryIntegrityWarning(
                     message = "T${rightRange.startT}-T${leftRange.endT}存在重叠，模型会同时收到两份记录。",

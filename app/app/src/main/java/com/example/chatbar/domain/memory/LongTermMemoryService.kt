@@ -1866,7 +1866,7 @@ class LongTermMemoryService(
             coverageUnits = listOf(
                 MemoryCoverageUnit(
                     sourceId = "legacy:${old.id}",
-                    text = "时间未知，不代表当前进展：${old.summary.ifBlank { old.overview }}"
+                    text = "时间未知，不代表当前进展：${old.body.ifBlank { "旧节点无法读取正文" }}"
                 )
             ),
             overview = reason,
@@ -1894,7 +1894,9 @@ class LongTermMemoryService(
                     converting.remove(id)
                 }
             }
-            if (old.sourceTurnIds.isNotEmpty() && old.coverageUnits.isNotEmpty()) {
+            if (old.coverageUnits.isNotEmpty() &&
+                MemoryTimelinePolicy.isContinuous(old.sourceTurnIds, timeline)
+            ) {
                 return old.also {
                     converted[id] = it
                     converting.remove(id)
@@ -2292,12 +2294,15 @@ class LongTermMemoryService(
             state.activeNodeIds.mapNotNull(loaded.nodes::get),
             state.timeline
         )
+        val legacyReferences = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
         val archive = MemoryArchiveInjectionPolicy.render(
             activeNodes = active,
-            legacyReferenceNodes = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
+            legacyReferenceNodes = legacyReferences,
             timeline = state.timeline
         )
-        val archiveThroughT = active.mapNotNull { MemoryTimelinePolicy.range(it, state.timeline)?.endT }
+        val archiveThroughT = active.mapNotNull {
+            MemoryTimelinePolicy.verifiedRange(it, state.timeline)?.endT
+        }
             .maxOrNull()
         val stableIds = stableSourceTurnIds(loaded.messages)
         val latestStableT = stableIds.lastOrNull()
@@ -2321,8 +2326,11 @@ class LongTermMemoryService(
             state.head.throughSourceTurnId,
             state.timeline
         )
-        val activeRanges = active.mapNotNull { MemoryTimelinePolicy.range(it, state.timeline) }
+        val activeRanges = active.mapNotNull { MemoryTimelinePolicy.verifiedRange(it, state.timeline) }
             .sortedBy { it.startT }
+        val archiveRangeUnverifiable = active.any {
+            it.body.isNotBlank() && MemoryTimelinePolicy.verifiedRange(it, state.timeline) == null
+        } || legacyReferences.any { it.body.isNotBlank() }
         val archiveIsContinuousFromZero = activeRanges.firstOrNull()?.startT == 0L &&
             activeRanges.zipWithNext().all { (left, right) -> right.startT == left.endT + 1 }
         val archiveLabel = if (archiveIsContinuousFromZero) {
@@ -2336,13 +2344,14 @@ class LongTermMemoryService(
                 t != null && t > archiveThroughT && t <= latestStableT
             }
         }
-        val directLabel = when {
-            archiveThroughT == null -> "Archive为空；直接上下文截至 T$latestStableT"
-            hasGapAfterArchive -> "$archiveLabel < 当前最大剧情序号 T$latestStableT"
-            archiveThroughT < latestStableT ->
-                "$archiveLabel < 直接上下文 T${archiveThroughT + 1}-T$latestStableT"
-            else -> "$archiveLabel；直接上下文无更大 T"
-        }
+        val directLabel = PromptTemplates.memoryTimelineDirectLabel(
+            archivePresent = archive.isNotBlank(),
+            archiveRangeUnverifiable = archiveRangeUnverifiable,
+            archiveLabel = archiveLabel,
+            archiveThroughT = archiveThroughT,
+            hasGapAfterArchive = hasGapAfterArchive,
+            latestStableT = latestStableT
+        )
         val headAndTimeline = buildString {
             if (headPresent && !headBackfillRequired && headThroughT != null) {
                 appendLine("【HEAD｜当前状态｜截至 T$headThroughT】")
@@ -2901,6 +2910,7 @@ class LongTermMemoryService(
                 legacyT to sourceId
             }
             .toMap()
+        val timeline = sourceTimeline(loaded.messages, loaded.session)
 
         fun legacyReference(old: MemoryNode?, reason: String, oldId: String): MemoryNode {
             val mappedIds = old?.sourceTurns
@@ -2951,7 +2961,9 @@ class LongTermMemoryService(
                     converting.remove(oldId)
                 }
             }
-            if (old.sourceTurnIds.isNotEmpty() && old.coverageUnits.isNotEmpty()) {
+            if (old.coverageUnits.isNotEmpty() &&
+                MemoryTimelinePolicy.isContinuous(old.sourceTurnIds, timeline)
+            ) {
                 return old.also {
                     converted[oldId] = it
                     converting.remove(oldId)
@@ -3046,7 +3058,6 @@ class LongTermMemoryService(
         val arcIds = active(commit.activeArcNodeIds, MemoryTier.ARC)
         val eraIds = active(commit.activeEraNodeIds, MemoryTier.ERA)
         commit.legacyReferenceNodeIds.forEach(::convert)
-        val timeline = sourceTimeline(loaded.messages, loaded.session)
         val allConverted = converted.values.distinctBy { it.id }
         val covered = (episodeIds + arcIds + eraIds)
             .mapNotNull { id -> allConverted.firstOrNull { it.id == id } }
