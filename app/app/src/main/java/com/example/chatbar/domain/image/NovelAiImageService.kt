@@ -5,11 +5,15 @@ import java.io.IOException
 import java.net.ConnectException
 import java.net.SocketTimeoutException
 import java.net.UnknownHostException
+import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.TimeUnit
 import javax.net.ssl.SSLException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
@@ -43,88 +47,105 @@ class NovelAiImageService(
         seed: Int,
         imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
     ): Flow<NovelAiImageEvent> = callbackFlow {
-        val correlationId = correlationId()
-        val request = Request.Builder()
-            .url(ENDPOINT)
-            .header("Authorization", "Bearer ${token.trim()}")
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/octet-stream")
-            .header("x-correlation-id", correlationId)
-            .post(buildRequestBody(prompt, seed, imageSize).toRequestBody(JSON_MEDIA_TYPE))
-            .build()
-        val call = client.newCall(request)
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, error: IOException) {
-                val reason = when (error) {
-                    is SocketTimeoutException -> "连接/读取超时"
-                    is ConnectException -> "无法连接到服务器"
-                    is UnknownHostException -> "DNS 解析失败: ${error.message}"
-                    is SSLException -> "SSL 握手失败: ${error.message}"
-                    is java.io.EOFException -> "服务器连接意外断开"
-                    else -> error.javaClass.simpleName + if (error.message != null) ": ${error.message}" else ""
-                }
-                trySend(NovelAiImageEvent.Error("NovelAI 生图请求失败 ($reason)"))
-                close()
-            }
+        val requestBody = buildRequestBody(prompt, seed, imageSize).toRequestBody(JSON_MEDIA_TYPE)
+        val activeCall = AtomicReference<Call?>()
 
-            override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    if (!response.isSuccessful) {
-                        val body = response.body?.string().orEmpty().take(1000)
-                        val reason = when (response.code) {
-                            400 -> "请求参数有误"
-                            401 -> "认证失败，请检查 NovelAI Token 是否有效"
-                            402 -> "账户余额不足"
-                            403 -> "无权访问，Token 权限不足"
-                            429 -> "请求频率过高，请稍后重试"
-                            500 -> "NovelAI 服务器内部错误"
-                            502 -> "NovelAI 网关错误"
-                            503 -> "NovelAI 服务暂不可用"
-                            else -> "未知服务端错误"
+        fun enqueueAttempt(attempt: Int) {
+            if (!this@callbackFlow.isActive) return
+            val correlationId = correlationId()
+            val request = Request.Builder()
+                .url(ENDPOINT)
+                .header("Authorization", "Bearer ${token.trim()}")
+                .header("Content-Type", "application/json")
+                .header("Accept", "application/octet-stream")
+                .header("x-correlation-id", correlationId)
+                .post(requestBody)
+                .build()
+            val call = client.newCall(request)
+            activeCall.set(call)
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    val reason = when (e) {
+                        is SocketTimeoutException -> "连接/读取超时"
+                        is ConnectException -> "无法连接到服务器"
+                        is UnknownHostException -> "DNS 解析失败: ${e.message}"
+                        is SSLException -> "SSL 握手失败: ${e.message}"
+                        is java.io.EOFException -> "服务器连接意外断开"
+                        else -> e.javaClass.simpleName + if (e.message != null) ": ${e.message}" else ""
+                    }
+                    trySend(NovelAiImageEvent.Error("NovelAI 生图请求失败 ($reason)"))
+                    close()
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    response.use {
+                        if (!response.isSuccessful) {
+                            if (response.code == 429 && attempt < MAX_GENERATION_ATTEMPTS) {
+                                val retryDelay = retryDelayMillis(attempt, response.header("Retry-After"))
+                                launch {
+                                    delay(retryDelay)
+                                    enqueueAttempt(attempt + 1)
+                                }
+                                return
+                            }
+                            val body = response.body?.string().orEmpty().take(1000)
+                            val reason = when (response.code) {
+                                400 -> "请求参数有误"
+                                401 -> "认证失败，请检查 NovelAI Token 是否有效"
+                                402 -> "账户余额不足"
+                                403 -> "无权访问，Token 权限不足"
+                                429 -> "请求频率过高，已尝试 $MAX_GENERATION_ATTEMPTS 次仍失败"
+                                500 -> "NovelAI 服务器内部错误"
+                                502 -> "NovelAI 网关错误"
+                                503 -> "NovelAI 服务暂不可用"
+                                else -> "未知服务端错误"
+                            }
+                            trySend(NovelAiImageEvent.Error("NovelAI 生图失败 ($reason, HTTP ${response.code})${if (body.isNotEmpty()) ": $body" else ""}"))
+                            close()
+                            return
                         }
-                        trySend(NovelAiImageEvent.Error("NovelAI 生图失败 ($reason, HTTP ${response.code})${if (body.isNotEmpty()) ": $body" else ""}"))
-                        close()
-                        return
-                    }
-                    val stream = response.body?.byteStream()
-                    if (stream == null) {
-                        trySend(NovelAiImageEvent.Error("NovelAI 生图响应为空：服务器未返回图片数据"))
-                        close()
-                        return
-                    }
-                    try {
-                        val decoder = NovelAiStreamFrameDecoder()
-                        val buffer = ByteArray(16 * 1024)
-                        while (!call.isCanceled()) {
-                            val count = stream.read(buffer)
-                            if (count < 0) break
-                            decoder.feed(buffer.copyOf(count)).forEach { frame ->
-                                when (val event = decodeFrame(frame)) {
-                                    is NovelAiImageEvent.Intermediate -> trySend(event)
-                                    is NovelAiImageEvent.Final -> trySend(event)
-                                    is NovelAiImageEvent.Error -> trySend(
-                                        NovelAiImageEvent.Error("${event.message} [request: $correlationId]")
-                                    )
+                        val stream = response.body?.byteStream()
+                        if (stream == null) {
+                            trySend(NovelAiImageEvent.Error("NovelAI 生图响应为空：服务器未返回图片数据"))
+                            close()
+                            return
+                        }
+                        try {
+                            val decoder = NovelAiStreamFrameDecoder()
+                            val buffer = ByteArray(16 * 1024)
+                            while (!call.isCanceled()) {
+                                val count = stream.read(buffer)
+                                if (count < 0) break
+                                decoder.feed(buffer.copyOf(count)).forEach { frame ->
+                                    when (val event = decodeFrame(frame)) {
+                                        is NovelAiImageEvent.Intermediate -> trySend(event)
+                                        is NovelAiImageEvent.Final -> trySend(event)
+                                        is NovelAiImageEvent.Error -> trySend(
+                                            NovelAiImageEvent.Error("${event.message} [request: $correlationId]")
+                                        )
+                                    }
                                 }
                             }
-                        }
-                    } catch (error: Throwable) {
-                        if (!call.isCanceled()) {
-                            val detail = buildString {
-                                append("NovelAI 流解析失败")
-                                append(" (${error.javaClass.simpleName}")
-                                if (error.message != null) append(": ${error.message}")
-                                append(")")
+                        } catch (error: Throwable) {
+                            if (!call.isCanceled()) {
+                                val detail = buildString {
+                                    append("NovelAI 流解析失败")
+                                    append(" (${error.javaClass.simpleName}")
+                                    if (error.message != null) append(": ${error.message}")
+                                    append(")")
+                                }
+                                trySend(NovelAiImageEvent.Error(detail))
                             }
-                            trySend(NovelAiImageEvent.Error(detail))
+                        } finally {
+                            close()
                         }
-                    } finally {
-                        close()
                     }
                 }
-            }
-        })
-        awaitClose { call.cancel() }
+            })
+        }
+
+        enqueueAttempt(attempt = 1)
+        awaitClose { activeCall.get()?.cancel() }
     }
 
     fun buildRequestBody(
@@ -243,6 +264,9 @@ class NovelAiImageService(
         const val CONNECT_TIMEOUT_SECONDS = 30L
         const val READ_TIMEOUT_MINUTES = 10L
         const val WRITE_TIMEOUT_SECONDS = 30L
+        const val MAX_GENERATION_ATTEMPTS = 3
+        const val BASE_RETRY_DELAY_MS = 1_000L
+        const val MAX_RETRY_AFTER_SECONDS = 30L
         fun randomSeed(): Int = kotlin.random.Random.nextInt(0, Int.MAX_VALUE)
         fun correlationId(): String = (1..6).map { ALPHANUMERIC.random() }.joinToString("")
         const val ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -253,6 +277,14 @@ class NovelAiImageService(
                 .filter(String::isNotBlank)
                 .distinct()
                 .joinToString(", ")
+
+        fun retryDelayMillis(failedAttempt: Int, retryAfterHeader: String?): Long {
+            val retryAfterSeconds = retryAfterHeader
+                ?.trim()
+                ?.toLongOrNull()
+                ?.coerceIn(0L, MAX_RETRY_AFTER_SECONDS)
+            return retryAfterSeconds?.times(1_000L) ?: BASE_RETRY_DELAY_MS * failedAttempt
+        }
     }
 
     fun newSeed(): Int = randomSeed()

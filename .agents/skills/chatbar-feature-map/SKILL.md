@@ -28,7 +28,8 @@ Use this as a first-hop map. Read specific files or skills, then search only if 
 - Chat settings/model selection: `ui/chat/ChatSettingsDialog.kt`, `ui/manage/ManageScreen.kt`, app settings repository/classes.
 - Chat save slots/archive transfer: `data/local/entity/SaveSlot.kt`, `data/repository/SaveSlotRepository.kt`, `domain/chat/SaveSlotJsonTransfer.kt`, `ui/chat/ChatViewModel.kt`, and `ui/chat/ChatSettingsDialog.kt`.
 - RAG/search/indexing: `domain/rag/RagManager.kt`, `domain/rag/ChatMemoryIndexPolicy.kt`, `data/repository/RagRepository.kt`, `domain/search/CharacterResearchService.kt`. RAG data stays independent from long-term memory. When changing source-turn or context grouping, also use `chatbar-long-term-memory` and verify both consumers share the same turn boundary.
-- NovelAI prompt/image: use `chatbar-novelai-prompt`; then read `domain/image/NovelAiPromptDesigner.kt`, `domain/image/NovelAiImageService.kt`. Per-character avatar generation also uses `chatbar-character-card-ai`; do not bypass `NovelAiPromptDesigner`.
+- NovelAI prompt/tag design: use `chatbar-novelai-prompt`; then read `domain/image/NovelAiPromptDesigner.kt`. Per-character avatar generation also uses `chatbar-character-card-ai`; do not bypass `NovelAiPromptDesigner`.
+- NovelAI HTTP generation/retry: `domain/image/NovelAiImageService.kt` is the shared entry for chat, character images, prompt tool, and Moments; it owns the three-attempt HTTP 429 retry, so callers must not duplicate 429 retries.
 - Moments: use `chatbar-moments` before reading Moments UI, ViewModel, scheduler, prompts, or storage.
 - Community: use `chatbar-community-platform` before reading `ui/community/CommunityScreen.kt` or Supabase/Edge Function code.
 - UI kit and Compose styling: use `chatbar-shadcn-compose`; then read `ui/kit/*` and target screen.
