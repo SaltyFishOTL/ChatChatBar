@@ -716,7 +716,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
 除了给定 tags 外，不要使用质量 tags（`masterpiece`, `best quality`）。
 不要 negative tags。
 末尾保留逗号。
-总 token <=500，单栏 <=200，角色部分尽量简洁。
+总token<=500，单角色<=100，角色部分尽量简洁。
 
 权重：`y::tag::`
 Boost `y>1`：视觉焦点，强化对比。
@@ -783,7 +783,7 @@ Size preset：
 `PORTRAIT` = 垂直单角色肖像、近景、上半身、竖构图。
 `SQUARE` = 居中/平衡肖像、物体焦点、紧凑群像、中性构图。
 `HORIZONTAL` = 宽场景、两人以上、环境焦点、动作铺开。
-输出 JSON only（总 token <=500，单栏 <=200，角色部分尽量简洁。）：
+输出 JSON only（总 token <=500，角色部分尽量简洁，每个角色<=100。）：
 ```json
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
 ```
