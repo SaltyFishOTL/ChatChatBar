@@ -140,7 +140,7 @@ data class ChatApiMessage(
  * data: [DONE]
  */
 class StreamingChatService(
-    allowCleartextHttp: () -> Boolean = { false }
+    private val allowCleartextHttp: () -> Boolean = { false }
 ) {
 
     companion object {
@@ -672,8 +672,13 @@ class StreamingChatService(
         includeStreamUsage: Boolean = false,
         disableThinking: Boolean = false
     ): String {
+        val requestMessages = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = messages,
+            allowCleartextHttp = allowCleartextHttp(),
+            baseUrl = modelConfig.baseUrl
+        )
         val messagesArray = buildJsonArray {
-            for (msg in messages) {
+            for (msg in requestMessages) {
                 add(buildJsonObject {
                     put("role", msg.role)
                     put("content", msg.content)

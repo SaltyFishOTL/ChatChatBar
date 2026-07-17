@@ -13,6 +13,7 @@ Treat the serialized API message list as source of truth. Constant declaration o
 - Section collection, layer rendering, RAG cards, outlets: app/app/src/main/java/com/example/chatbar/domain/chat/PromptAssembler.kt
 - History and previous-turn grouping: app/app/src/main/java/com/example/chatbar/domain/chat/ContextWindowManager.kt
 - Final role/message insertion and request launch: app/app/src/main/java/com/example/chatbar/ui/chat/ChatViewModel.kt
+- Cleartext HTTP final role adaptation: app/app/src/main/java/com/example/chatbar/domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Request diagnostics: app/app/src/main/java/com/example/chatbar/utils/DebugLogManager.kt and ui/chat/DebugLogDialog.kt
 - Core tests: PromptAssemblerCharacterModeTest.kt, ContextWindowManagerTest.kt, RoleplaySpeakerPromptTest.kt, and PromptTemplatesTest.kt
 
@@ -22,7 +23,7 @@ Use chatbar-long-term-memory when Archive, HEAD, timeline constraints, source-tu
 
 - Keep model-facing task text in PromptTemplates.
 - Keep section selection, titles, and layer assignment in PromptAssembler.
-- Keep actual ChatApiMessage roles and interleaving with raw history in ChatViewModel.
+- Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles only for opted-in `http://` requests.
 - Keep conversation grouping in ContextWindowManager and shared turn policies.
 - Verify transport request fields with chatbar-model-request-runtime.
 
@@ -37,6 +38,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Insert cacheable earlier history after the stable layer.
 - Move a complete adjacent USER + ASSISTANT previous turn into the tail hot zone when available. Preserve opening assistants, consecutive users, unanswered users, and other abnormal messages in original order.
 - Append current user input last. Per-turn speaker/length constraints remain system messages near the tail, not merged into user text.
+- Cleartext HTTP adaptation changes later system roles to assistant in serialized JSON but never moves or merges their content; stable prefix and tail positions remain unchanged.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.
 - Keep cache keys aligned with exact sent stable content, including conditional history headings.
@@ -66,6 +68,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Stable outlet present versus absent.
 - Document-only, memory-only, and mixed RAG cards.
 - Cache path and non-cache fallback produce equivalent semantic order.
+- Cleartext HTTP serialization preserves message/content order while rewriting only system roles after the first.
 - Expected Archive and HEAD markers exist in final serialized messages.
 
 ## Stop Conditions

@@ -13,6 +13,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Chat model availability and send gating: ui/chat/ChatViewModel.kt
 - Shared HTTP client, proxy, cleartext policy, Authorization helper: domain/ProxyAwareClient.kt
 - Chat/text request body, SSE parsing, retries, thinking fields: domain/chat/StreamingChatService.kt
+- Cleartext HTTP strict-template role adaptation: domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, and domain/memory/MemoryAiGateway.kt
@@ -36,6 +37,7 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - Do not blindly send max_tokens, max_completion_tokens, thinking_budget, reasoning_effort, and thinking controls together.
 - When disableThinking is true, remove configured thinking/reasoning parameters and send the supported explicit off control.
 - Keep connection-test requests small and deterministic, but ensure reasoning-only models can still produce a usable probe result. Current test flow disables thinking.
+- For opted-in `http://` model requests, preserve the first system role and serialize later system roles as assistant without moving or merging messages. Do not apply this adaptation to HTTPS or when cleartext access is disabled.
 - Treat strict JSON or protocol parsing as a separate failure layer from HTTP transport. Preserve raw diagnostic evidence within privacy limits.
 - Verify current provider behavior against official provider documentation when compatibility may have changed.
 
@@ -65,6 +67,7 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - Allowed HTTP local model with and without its own key; HTTPS inheritance.
 - Thinking enabled, disabled, reasoning effort, and custom conflicting fields.
 - Chat streaming, auxiliary text streaming, and connection test.
+- Cleartext HTTP enabled, HTTPS with cleartext enabled, and HTTP with cleartext disabled role serialization.
 - HTTP error, empty content, reasoning-only content, malformed JSON, timeout, peer reset, and user cancellation.
 
 ## Stop Conditions
