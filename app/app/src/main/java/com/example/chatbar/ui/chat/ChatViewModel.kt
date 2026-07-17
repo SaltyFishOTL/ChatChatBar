@@ -39,6 +39,7 @@ import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
+import com.example.chatbar.domain.model.isModelAuthenticationConfigured
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
@@ -312,7 +313,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             chatRepository.observeSessions().collect { sessions ->
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
+                    val modelChanged = _session.value?.modelId != updatedSession.modelId
                     _session.value = updatedSession
+                    if (modelChanged) refreshConfigurations()
                 }
             }
         }
@@ -376,6 +379,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             val settings = settingsRepository.getAppSettings()
             val availableModels = modelResolver.availableChatModels(settings)
+            val currentSession = chatRepository.getSession(sessionId) ?: _session.value
             _availableModels.value = availableModels
             _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
             _effectiveDefaultImageModelId.value = modelResolver.resolveImageModel(null, settings)?.id
@@ -383,7 +387,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _availableFormats.value = formats
             _availableWorldBooks.value = worldBookRepository.getAll()
             _effectiveDefaultFormatCardId.value = settings.defaultFormatCardId
-            val status = modelResolver.status(settings)
+            val status = modelResolver.status(currentSession?.modelId, settings)
             _modelConfigurationErrors.value = status.errors
             _isModelUsable.value = status.isUsable
         }
@@ -1677,14 +1681,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
 
             // 确定要使用的 LLM 模型
-            val configurationStatus = modelResolver.status(appSettings)
+            val configurationStatus = modelResolver.status(currentSession.modelId, appSettings)
             val modelConfig = modelResolver.resolveChatModel(currentSession.modelId, appSettings)
                 ?: run {
                     addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "未找到可用模型配置"}")
                     _isResponding.value = false
                     return@launch
                 }
-            if (modelConfig.apiKey.isBlank()) {
+            if (
+                !isModelAuthenticationConfigured(
+                    baseUrl = modelConfig.baseUrl,
+                    apiKey = modelConfig.apiKey,
+                    allowCleartextModelApi = appSettings.allowCleartextModelApi
+                )
+            ) {
                 addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "API Key 未配置"}")
                 _isResponding.value = false
                 return@launch

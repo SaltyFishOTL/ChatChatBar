@@ -29,8 +29,7 @@ class EffectiveModelResolver(
         appSettings: AppSettings
     ): ModelConfig? {
         val available = availableChatModels(appSettings)
-        return available.firstOrNull { it.id == requestedId }
-            ?: defaultChatModel(appSettings, available)
+        return selectChatModel(requestedId, appSettings, available)
     }
 
     suspend fun resolveChatModel(requestedId: String?): ModelConfig? =
@@ -130,14 +129,19 @@ class EffectiveModelResolver(
             }
         )?.takeIf { it.hasConfiguredAuthentication(appSettings) }
 
-    suspend fun status(): ModelConfigurationStatus = status(settings.getAppSettings())
+    suspend fun status(): ModelConfigurationStatus = status(null, settings.getAppSettings())
 
-    suspend fun status(appSettings: AppSettings): ModelConfigurationStatus {
-        val default = defaultChatModel(appSettings)
+    suspend fun status(appSettings: AppSettings): ModelConfigurationStatus = status(null, appSettings)
+
+    suspend fun status(
+        requestedChatModelId: String?,
+        appSettings: AppSettings
+    ): ModelConfigurationStatus {
+        val chatModel = resolveChatModel(requestedChatModelId, appSettings)
         val retrieval = retrievalModel(appSettings)
         val embedding = embeddingModel(appSettings)
         return modelConfigurationStatus(
-            default = default,
+            default = chatModel,
             retrieval = retrieval,
             embedding = embedding,
             allowCleartextModelApi = appSettings.allowCleartextModelApi
@@ -215,6 +219,13 @@ internal fun selectFormatRepairModel(
 } else {
     available.firstOrNull { it.id == requestedId }
 }
+
+internal fun selectChatModel(
+    requestedId: String?,
+    appSettings: AppSettings,
+    available: List<ModelConfig>
+): ModelConfig? = available.firstOrNull { it.id == requestedId }
+    ?: selectDefaultChatModel(appSettings, available)
 
 internal fun selectDefaultChatModel(
     appSettings: AppSettings,

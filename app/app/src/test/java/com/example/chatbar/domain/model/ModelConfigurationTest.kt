@@ -166,6 +166,30 @@ class ModelConfigurationTest {
         )
     }
 
+    @Test fun sessionModelWithOwnKeyDoesNotDependOnGlobalDefaultKey() {
+        val globalDependent = model(apiKey = "", id = "global-dependent")
+        val sessionModel = model(apiKey = "session-key", id = "session-model")
+        val settings = AppSettings(
+            defaultModelId = globalDependent.id,
+            siliconFlowApiKey = ""
+        )
+
+        val resolved = selectChatModel(
+            requestedId = sessionModel.id,
+            appSettings = settings,
+            available = listOf(globalDependent, sessionModel)
+        )
+        val status = modelConfigurationStatus(
+            default = resolved,
+            retrieval = null,
+            embedding = null
+        )
+
+        assertEquals(sessionModel, resolved)
+        assertTrue(status.isUsable)
+        assertEquals(emptyList<String>(), status.errors)
+    }
+
     @Test fun blankChatModelKeyStillBlocksChat() {
         val status = modelConfigurationStatus(
             default = model(apiKey = ""),
@@ -189,6 +213,19 @@ class ModelConfigurationTest {
         assertEquals(emptyList<String>(), status.errors)
     }
 
+    @Test fun optedInHttpModelCanStartChatWithoutDefaultApiKey() {
+        val settings = AppSettings(allowCleartextModelApi = true)
+        val chat = model(apiKey = "", baseUrl = "http://127.0.0.1:8080/v1")
+
+        assertTrue(
+            isModelAuthenticationConfigured(
+                baseUrl = chat.baseUrl,
+                apiKey = chat.apiKey,
+                allowCleartextModelApi = settings.allowCleartextModelApi
+            )
+        )
+    }
+
     @Test fun optedInHttpModelDoesNotInheritGlobalApiKey() {
         val settings = AppSettings(
             siliconFlowApiKey = "global-key",
@@ -210,6 +247,15 @@ class ModelConfigurationTest {
         assertEquals(
             "local-key",
             resolveEffectiveModelApiKey(" local-key ", "http://127.0.0.1:8080/v1", settings)
+        )
+    }
+
+    @Test fun httpsModelKeepsItsOwnApiKeyWithoutGlobalDefaultKey() {
+        val settings = AppSettings(siliconFlowApiKey = "")
+
+        assertEquals(
+            "model-key",
+            resolveEffectiveModelApiKey(" model-key ", "https://example.test/v1", settings)
         )
     }
 
