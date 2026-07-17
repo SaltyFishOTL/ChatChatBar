@@ -33,6 +33,16 @@
 - Keep ordinary Episode pending separate from backfill pending. Raw pending text belongs to chat/context storage, not memory budget or Archive.
 - Honor `recordingStartsAfterSourceOrder`; permanent clear must not resurrect older turns.
 
+## Source Mutation Repair
+
+- Detect historical message edit/delete by comparing persisted node/HEAD source hashes with current source turns. Partial edit keeps `sourceTurnId`; whole-turn deletion remains a tombstoned timeline gap.
+- Exclude stale active roots and stale HEAD from injection immediately. A stale root may expose only unchanged descendants when their hashes still match and the whole safe frontier fits the Archive budget; otherwise omit that root and warn.
+- Repair only after explicit user action on the memory page. Persist ordered root work, completed count, HEAD work, pause/error state, and per-root commits; keep phase and streamed summaries runtime-only.
+- Regenerate stale Episode leaves from current raw source runs. Never let one regenerated node cross a deleted-turn gap.
+- Rebuild Arc/Era only from an exact, continuous one-to-one repaired child set. When deletion breaks that structure, promote the safe repaired child frontier instead of inventing a parent across the gap.
+- Automatically regenerate only AI-authored stale nodes. A stale user-authored node requires explicit editor review/save.
+- Rebuild or clear stale HEAD only after all queued Archive roots commit. Reject a final commit when source evidence or active root identity changed during AI work.
+
 ## HEAD and Archive
 
 - Update HEAD independently from Archive. Failure in one does not roll back the other.
@@ -69,6 +79,7 @@
 - Capture base revision plus source hash for AI work that commits directly. Review-only selected-node regeneration instead guards the target's active identity, immutable node, and exact evidence; reject target/evidence changes without rejecting unrelated page revisions.
 - Persist each successful backfill Episode immediately. Failure must retain remaining gaps and completed nodes.
 - Keep streamed backfill summaries and current phase as runtime UI state; persist committed Episode count and source progress, not partial model output.
-- Pause orphaned persisted `RUNNING` after process restart; never pause a runner active in current process.
+- Persist each successful source-mutation root repair immediately. Failure must retain remaining roots and already committed replacements.
+- Pause orphaned persisted backfill or source-repair `RUNNING` after process restart; never pause a runner active in current process.
 - Load old JSON through defaults. Make repairs idempotent. Preserve unverifiable old memory as time-unknown Legacy Reference.
 - SaveSlot carries current memory snapshot, not complete revision history or runtime task objects.

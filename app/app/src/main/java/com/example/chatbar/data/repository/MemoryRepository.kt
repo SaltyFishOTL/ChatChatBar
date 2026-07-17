@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.MemoryPageState
 import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySessionState
 import com.example.chatbar.data.local.entity.MemorySnapshot
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTierRevision
 
@@ -192,6 +193,13 @@ class MemoryRepository(private val storage: JsonFileStorage) {
                 com.example.chatbar.data.local.entity.MemoryBackfillStatus.PAUSED
             } else {
                 backfill.status
+            }
+        ),
+        sourceRepair = sourceRepair.copy(
+            status = if (sourceRepair.status == MemorySourceRepairStatus.RUNNING) {
+                MemorySourceRepairStatus.PAUSED
+            } else {
+                sourceRepair.status
             }
         )
     )

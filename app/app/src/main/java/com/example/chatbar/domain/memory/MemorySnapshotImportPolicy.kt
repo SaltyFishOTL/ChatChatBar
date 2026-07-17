@@ -75,7 +75,10 @@ object MemorySnapshotImportPolicy {
                 legacyReferenceNodeIds = remap(oldState.legacyReferenceNodeIds),
                 staleSourcesByNodeId = oldState.staleSourcesByNodeId.mapKeys { (nodeId, _) ->
                     idMap[nodeId] ?: error("存档来源变化状态引用未知节点：$nodeId")
-                }
+                },
+                sourceRepair = oldState.sourceRepair.copy(
+                    pendingRootNodeIds = remap(oldState.sourceRepair.pendingRootNodeIds)
+                )
             ),
             nodes = reboundNodes,
             legacyCommit = snapshot.legacyCommit?.copy(

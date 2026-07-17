@@ -4,6 +4,8 @@ import com.example.chatbar.data.local.entity.MemoryCoverageUnit
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySnapshot
+import com.example.chatbar.data.local.entity.MemorySourceRepairState
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
 import org.junit.Assert.assertEquals
@@ -40,7 +42,12 @@ class MemorySnapshotImportPolicyTest {
             state = MemorySessionSnapshot(
                 arcNodeIds = listOf(arc.id),
                 timeline = timeline,
-                staleSourcesByNodeId = mapOf(arc.id to listOf("s0"))
+                staleSourcesByNodeId = mapOf(arc.id to listOf("s0")),
+                sourceRepair = MemorySourceRepairState(
+                    status = MemorySourceRepairStatus.PAUSED,
+                    pendingRootNodeIds = listOf(arc.id),
+                    totalRootCount = 1
+                )
             ),
             nodes = listOf(arc, episode0, episode1)
         )
@@ -54,6 +61,7 @@ class MemorySnapshotImportPolicyTest {
         assertEquals(setOf("target"), rebound.nodes.map { it.sessionId }.toSet())
         assertEquals(reboundArc.childIds, reboundArc.coverageUnits.map { it.sourceId })
         assertEquals(setOf(reboundArc.id), rebound.state!!.staleSourcesByNodeId.keys)
+        assertEquals(listOf(reboundArc.id), rebound.state!!.sourceRepair.pendingRootNodeIds)
         assertTrue(MemoryContinuityPolicy.validateNode(reboundArc, nodes, timeline).valid)
     }
 

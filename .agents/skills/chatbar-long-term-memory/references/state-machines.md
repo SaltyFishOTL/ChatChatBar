@@ -63,6 +63,32 @@ IDLE / PAUSED / ERROR
 - Budget expansion or compression decisions may pause backfill; do not mark it complete.
 - During a live batch, expose source progress, phase, T range, committed Episode count, and streamed aggregate summary. Never persist partial streamed output.
 
+## Historical Source Mutation Repair
+
+Refresh/load compares active Archive and HEAD source hashes with current chat sources. Detection never calls AI. Once stale, affected old summary/HEAD stops injection before repair begins.
+
+```text
+IDLE / PAUSED / ERROR
+  -> user presses repair on memory page
+  -> persist fixed ordered stale root IDs + stale-HEAD flag as RUNNING
+  -> repair one active root outside state lock
+     -> Episode: regenerate each current continuous raw-source run; deleted run may vanish
+     -> Arc/Era: recursively repair children; rebuild only exact continuous one-to-one parent
+     -> otherwise promote safe repaired child frontier across deletion boundary
+  -> reload and validate root identity + current source hashes
+  -> atomically save immutable replacements, active-page checkpoints, and remaining-root progress
+  -> repeat
+  -> rebuild HEAD from repaired Archive, or clear it when no legal baseline exists
+  -> IDLE
+```
+
+- User pause takes effect after current model call; uncommitted result is discarded and root remains pending.
+- Process restart converts orphaned `RUNNING` to `PAUSED`; current-process runner keeps `RUNNING`.
+- On failure set `ERROR`, retain pending roots and completed commits, show exact reason, and allow retry.
+- New source mutations discovered mid-run prevent final completion and remain repairable.
+- Stale user-authored nodes stop automatic repair and require explicit editor save.
+- While repair is required/running, hide backfill action; while running, block chat send like backfill.
+
 ## Budget Compression
 
 ### Episode → Arc
@@ -118,6 +144,10 @@ IDLE / PAUSED / ERROR
 - Live backfill internal reload: remains `RUNNING`; process-restart residue becomes `PAUSED`.
 - Backfill batches: Episode persists and Gap shrinks per batch.
 - Backfill failure: reason visible; retry retains remaining work.
+- Historical edit/delete: stale root and stale HEAD stop injection before manual repair.
+- Source repair restart/pause/failure: pending roots survive; committed roots remain committed.
+- Deleted interior turn: Episode splits into continuous runs; Arc/Era never rebuild across the gap.
+- Safe frontier: inject only current descendants when entire expansion fits budget; otherwise omit stale root.
 - Source-turn grouping: appended replies stay in one context/RAG block.
 - Compression: reject skip, overlap, reorder, duplicate, fake range, missing coverage, and non-shrinking output.
 - Preview: contains unlabeled ordered Archive bodies + HEAD only; no per-node tier/T labels.

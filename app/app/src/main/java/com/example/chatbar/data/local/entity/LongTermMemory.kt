@@ -31,6 +31,7 @@ enum class MemoryRevisionOperation {
     PRE_RESTORE_CHECKPOINT,
     RESTORE,
     LOAD_SAVE,
+    SOURCE_MUTATION_REPAIR,
     DEBUG_REBUILD
 }
 
@@ -50,6 +51,14 @@ enum class MemoryDecisionTier {
 
 @Serializable
 enum class MemoryBackfillStatus {
+    IDLE,
+    RUNNING,
+    PAUSED,
+    ERROR
+}
+
+@Serializable
+enum class MemorySourceRepairStatus {
     IDLE,
     RUNNING,
     PAUSED,
@@ -204,6 +213,19 @@ data class MemoryBackfillState(
 )
 
 @Serializable
+data class MemorySourceRepairState(
+    val status: MemorySourceRepairStatus = MemorySourceRepairStatus.IDLE,
+    /** 固定本轮待修活跃根；每个根成功后立即移除并持久化。 */
+    val pendingRootNodeIds: List<String> = emptyList(),
+    val completedRootCount: Int = 0,
+    val totalRootCount: Int = 0,
+    /** Archive修复后是否还需从当前Archive重建HEAD。 */
+    val repairHead: Boolean = false,
+    val error: String? = null,
+    val updatedAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
 data class MemoryCompressionEvent(
     val id: String,
     val transactionId: String,
@@ -247,6 +269,7 @@ data class MemorySessionState(
     val eraCompressionsSincePrompt: Int = 0,
     val pendingDecision: PendingMemoryDecision? = null,
     val backfill: MemoryBackfillState = MemoryBackfillState(),
+    val sourceRepair: MemorySourceRepairState = MemorySourceRepairState(),
     /** UI消费后删除；SaveSlot不携带。 */
     val pendingCompressionEvents: List<MemoryCompressionEvent> = emptyList(),
     val memoryWasEnabled: Boolean = true,
@@ -341,7 +364,8 @@ data class MemorySessionSnapshot(
     val disabledAfterSourceOrder: Long? = null,
     val recordingStartsAfterSourceOrder: Long? = null,
     val gapRetentionVersion: Int = 0,
-    val backfill: MemoryBackfillState = MemoryBackfillState()
+    val backfill: MemoryBackfillState = MemoryBackfillState(),
+    val sourceRepair: MemorySourceRepairState = MemorySourceRepairState()
 )
 
 /** SaveSlot v4只携带当前活跃快照和完整可达树，不复制版本历史。 */

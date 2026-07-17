@@ -1,6 +1,7 @@
 package com.example.chatbar.ui.chat
 
 import androidx.activity.ComponentActivity
+import androidx.compose.foundation.layout.Column
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
@@ -18,6 +19,8 @@ import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemoryPageState
 import com.example.chatbar.data.local.entity.MemoryRevisionOperation
 import com.example.chatbar.data.local.entity.MemorySessionState
+import com.example.chatbar.data.local.entity.MemorySourceRepairState
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTierRevision
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
@@ -25,6 +28,8 @@ import com.example.chatbar.domain.memory.MemoryHashes
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
+import com.example.chatbar.domain.memory.MemorySourceRepairPhase
+import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.ui.kit.ChatBarTheme
 import kotlinx.coroutines.CompletableDeferred
 import org.junit.Assert.assertEquals
@@ -170,6 +175,73 @@ class LongTermMemoryUiTest {
         composeTestRule.onNodeWithText("正在生成 T1-T1").assertIsDisplayed()
         composeTestRule.onNodeWithText("已处理 1/2 轮 · 已生成 1 条近期流程").assertIsDisplayed()
         composeTestRule.onNodeWithText("正在流式生成的近期流程").assertIsDisplayed()
+    }
+
+    @Test
+    fun changedSourceShowsManualRepairAndHidesBackfillAction() {
+        var started = false
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                staleSourcesByNodeId = mapOf("episode" to listOf("s0"))
+            )
+        ).copy(
+            backfillEstimate = MemoryBackfillEstimate(
+                missingSourceTurns = 1,
+                episodeCallsMin = 1,
+                episodeCallsMax = 1
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                Column {
+                    MemorySourceRepairAction(state, onStart = { started = true }, onPause = {})
+                    MemoryBackfillAction(state, onStart = {}, onPause = {})
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithText("修复变更后的长期记忆").performClick()
+        composeTestRule.runOnIdle { assertTrue(started) }
+        assertTrue(composeTestRule.onAllNodesWithText("一键补录长期记忆").fetchSemanticsNodes().isEmpty())
+    }
+
+    @Test
+    fun runningSourceRepairShowsProgressStreamingSummaryAndPause() {
+        var paused = false
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                staleSourcesByNodeId = mapOf("episode" to listOf("s0")),
+                sourceRepair = MemorySourceRepairState(
+                    status = MemorySourceRepairStatus.RUNNING,
+                    pendingRootNodeIds = listOf("episode"),
+                    completedRootCount = 1,
+                    totalRootCount = 2
+                )
+            )
+        ).copy(
+            sourceRepairProgress = MemorySourceRepairProgress(
+                phase = MemorySourceRepairPhase.GENERATING_EPISODE,
+                totalRoots = 2,
+                completedRoots = 1,
+                currentRootNodeId = "episode",
+                currentSourceTurnIds = listOf("s0"),
+                currentRangeLabel = "T0-T0",
+                streamingSummary = "正在流式生成修复摘要"
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemorySourceRepairAction(state, onStart = {}, onPause = { paused = true })
+            }
+        }
+
+        composeTestRule.onNodeWithText("正在修复近期流程 T0-T0").assertIsDisplayed()
+        composeTestRule.onNodeWithText("已处理 1/2 个受影响根节点").assertIsDisplayed()
+        composeTestRule.onNodeWithText("正在流式生成修复摘要").assertIsDisplayed()
+        composeTestRule.onNodeWithText("完成当前节点后暂停").performClick()
+        composeTestRule.runOnIdle { assertTrue(paused) }
     }
 
     @Test

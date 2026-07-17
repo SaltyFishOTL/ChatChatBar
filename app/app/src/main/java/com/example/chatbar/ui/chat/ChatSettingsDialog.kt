@@ -52,6 +52,7 @@ import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.MemoryHead
 import com.example.chatbar.data.local.entity.MemoryBackfillStatus
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryAuthor
 import com.example.chatbar.data.local.entity.MemoryDecisionTier
 import com.example.chatbar.data.local.entity.MemoryNode
@@ -66,6 +67,7 @@ import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
+import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -288,8 +290,9 @@ fun ChatSettingsDialog(
                             onRegenerateNode = viewModel::regenerateMemoryNodeCandidate,
                             onOpenNodeEditor = ::openFullscreen,
                             onEditHead = viewModel::editMemoryHead,
-                            onMarkSourcesCorrected = viewModel::markMemorySourcesCorrected,
                             onJumpToSource = onJumpToSource,
+                            onRepairChangedSources = viewModel::repairChangedMemorySources,
+                            onPauseSourceRepair = viewModel::pauseChangedMemorySourceRepair,
                             onRebuildFromOriginal = viewModel::rebuildMemoryFromOriginal,
                             onPauseBackfill = viewModel::pauseMemoryUpdates,
                             onIncreaseLimit = viewModel::increaseMemoryLimit,
@@ -546,8 +549,9 @@ private fun LongTermMemoryContent(
     onRegenerateNode: suspend (String, (String) -> Unit) -> Result<String>,
     onOpenNodeEditor: (String, String, (String) -> Unit) -> Unit,
     onEditHead: (MemoryHead) -> Unit,
-    onMarkSourcesCorrected: (List<String>) -> Unit,
     onJumpToSource: (String) -> Unit,
+    onRepairChangedSources: () -> Unit,
+    onPauseSourceRepair: () -> Unit,
     onRebuildFromOriginal: () -> Unit,
     onPauseBackfill: () -> Unit,
     onIncreaseLimit: () -> Unit,
@@ -560,6 +564,7 @@ private fun LongTermMemoryContent(
     var page by remember { mutableIntStateOf(0) }
     var tierSection by remember { mutableIntStateOf(0) }
     var showBackfillConfirm by remember { mutableStateOf(false) }
+    var showSourceRepairConfirm by remember { mutableStateOf(false) }
     if (showBackfillConfirm) {
         val estimate = state.backfillEstimate
         CbDialog(
@@ -585,6 +590,37 @@ private fun LongTermMemoryContent(
                     }
                     if (state.headBackfillRequired) append("还会根据长期记忆与最新基线剧情更新当前状态。")
                     append("补录期间暂时无法继续聊天，可以随时暂停。不同模型耗时和额度消耗不同。")
+                },
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
+    if (showSourceRepairConfirm) {
+        val memoryState = state.memoryState
+        val affectedSources = memoryState?.staleSourcesByNodeId?.values
+            .orEmpty()
+            .flatten()
+            .distinct()
+        CbDialog(
+            onDismissRequest = { showSourceRepairConfirm = false },
+            title = "修复变更后的长期记忆",
+            dismiss = {
+                CbButton("取消", { showSourceRepairConfirm = false }, variant = ButtonVariant.Outline)
+            },
+            confirm = {
+                CbButton("开始修复", {
+                    showSourceRepairConfirm = false
+                    onRepairChangedSources()
+                })
+            }
+        ) {
+            CbText(
+                buildString {
+                    append("检测到 ${memoryState?.staleSourcesByNodeId?.size ?: 0} 个活跃记忆节点受历史消息修改或删除影响")
+                    if (affectedSources.isNotEmpty()) append("，涉及 ${affectedSources.size} 个剧情轮")
+                    append("。将只重新生成受影响Episode及其必要祖先，未变化节点保持不动。")
+                    if (memoryState?.head?.stale == true) append("完成Archive后还会重建HEAD。")
+                    append("修复期间暂时无法继续聊天，可以暂停。模型调用次数取决于受影响节点层级。")
                 },
                 color = ChatBarTheme.colors.mutedForeground
             )
@@ -650,6 +686,11 @@ private fun LongTermMemoryContent(
         state.warnings.forEach {
             CbText("⚠ $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
         }
+        MemorySourceRepairAction(
+            state = state,
+            onStart = { showSourceRepairConfirm = true },
+            onPause = onPauseSourceRepair
+        )
         MemoryBackfillAction(
             state = state,
             onStart = { showBackfillConfirm = true },
@@ -678,8 +719,7 @@ private fun LongTermMemoryContent(
             when (page) {
                 0 -> MemoryHeadPage(
                     state,
-                    onEditHead,
-                    onMarkSourcesCorrected = { onMarkSourcesCorrected(emptyList()) }
+                    onEditHead
                 )
                 1, 2, 3 -> {
                     val tier = when (page) {
@@ -694,7 +734,6 @@ private fun LongTermMemoryContent(
                                 0 -> MemoryTierCurrent(
                                     state,
                                     tier,
-                                    onMarkSourcesCorrected = { onMarkSourcesCorrected(listOf(it)) },
                                     onJumpToSource = onJumpToSource
                                 )
                                 1 -> MemoryTierEditor(
@@ -722,12 +761,140 @@ private fun LongTermMemoryContent(
     }
 }
 
+private fun LongTermMemoryUiState.needsSourceRepair(): Boolean {
+    val state = memoryState ?: return false
+    return state.staleSourcesByNodeId.isNotEmpty() ||
+        state.head.stale ||
+        state.sourceRepair.pendingRootNodeIds.isNotEmpty() ||
+        state.sourceRepair.repairHead
+}
+
+@Composable
+internal fun MemorySourceRepairAction(
+    state: LongTermMemoryUiState,
+    onStart: () -> Unit,
+    onPause: () -> Unit
+) {
+    val repair = state.memoryState?.sourceRepair ?: return
+    val needsRepair = state.needsSourceRepair()
+    if (!needsRepair && repair.status == MemorySourceRepairStatus.IDLE) return
+    when (repair.status) {
+        MemorySourceRepairStatus.RUNNING -> {
+            val runtime = state.sourceRepairProgress
+            val completedRoots = runtime?.completedRoots ?: repair.completedRootCount
+            val totalRoots = runtime?.totalRoots ?: repair.totalRootCount
+            val fraction = runtime?.fraction ?: if (totalRoots <= 0) {
+                if (repair.repairHead) 0f else 1f
+            } else {
+                (completedRoots.toFloat() / totalRoots).coerceIn(0f, 1f)
+            }
+            val phaseText = when (runtime?.phase) {
+                MemorySourceRepairPhase.PREPARING -> "正在准备下一个受影响记忆节点"
+                MemorySourceRepairPhase.GENERATING_EPISODE ->
+                    "正在修复近期流程${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
+                MemorySourceRepairPhase.REBUILDING_PARENT ->
+                    "正在更新上层记忆${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
+                MemorySourceRepairPhase.SAVING_ROOT -> "正在保存本批修复"
+                MemorySourceRepairPhase.UPDATING_HEAD -> "正在重建当前状态"
+                null -> "正在准备来源修复"
+            }
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(phaseText, style = ChatBarTheme.typography.label)
+                    Box(
+                        Modifier
+                            .fillMaxWidth()
+                            .height(6.dp)
+                            .clip(RoundedCornerShape(99.dp))
+                            .background(ChatBarTheme.colors.border)
+                    ) {
+                        Box(
+                            Modifier
+                                .fillMaxWidth(fraction)
+                                .height(6.dp)
+                                .background(ChatBarTheme.colors.primary)
+                        )
+                    }
+                    CbText(
+                        if (totalRoots == 0) "Archive无需修复，正在处理HEAD" else "已处理 $completedRoots/$totalRoots 个受影响根节点",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    if (runtime?.phase == MemorySourceRepairPhase.GENERATING_EPISODE ||
+                        runtime?.phase == MemorySourceRepairPhase.REBUILDING_PARENT
+                    ) {
+                        CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+                            CbText(
+                                runtime.streamingSummary.ifBlank { "模型正在生成摘要…" },
+                                modifier = Modifier.padding(8.dp),
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
+                    }
+                    CbText("修复期间聊天暂时不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                    CbButton(
+                        "完成当前节点后暂停",
+                        onPause,
+                        variant = ButtonVariant.Outline,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+            }
+        }
+
+        MemorySourceRepairStatus.ERROR -> {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(
+                        "来源修复失败：${repair.error ?: "未知错误"}",
+                        color = ChatBarTheme.colors.destructive
+                    )
+                    if (needsRepair) {
+                        CbButton(
+                            "重试来源修复",
+                            onStart,
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = ButtonVariant.Outline
+                        )
+                    }
+                }
+            }
+        }
+
+        MemorySourceRepairStatus.PAUSED -> {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText("来源修复已暂停，受影响旧摘要仍不会注入。", style = ChatBarTheme.typography.label)
+                    if (needsRepair) {
+                        CbButton("继续来源修复", onStart, modifier = Modifier.fillMaxWidth())
+                    }
+                }
+            }
+        }
+
+        MemorySourceRepairStatus.IDLE -> if (needsRepair) {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbText(
+                        "历史消息已修改或删除。受影响旧摘要与HEAD已停止注入。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton("修复变更后的长期记忆", onStart, modifier = Modifier.fillMaxWidth())
+                }
+            }
+        }
+    }
+}
+
 @Composable
 internal fun MemoryBackfillAction(
     state: LongTermMemoryUiState,
     onStart: () -> Unit,
     onPause: () -> Unit
 ) {
+    if (state.needsSourceRepair()) return
     val backfill = state.memoryState?.backfill
     val missingCount = state.backfillEstimate?.missingSourceTurns ?: 0
     val needsBackfill = missingCount > 0 || state.headBackfillRequired
@@ -830,7 +997,6 @@ internal fun MemoryBackfillAction(
 internal fun MemoryTierCurrent(
     state: LongTermMemoryUiState,
     tier: MemoryTier,
-    onMarkSourcesCorrected: (String) -> Unit = {},
     onJumpToSource: (String) -> Unit = {}
 ) {
     Column(
@@ -858,24 +1024,16 @@ internal fun MemoryTierCurrent(
                 CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         CbText(
-                            "来源已变化${labels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "：") ?: ""}。旧正文继续注入。",
+                            "来源已变化${labels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "：") ?: ""}。旧正文已停止注入，等待页面顶部整体修复。",
                             color = ChatBarTheme.colors.mutedForeground,
                             style = ChatBarTheme.typography.caption
                         )
-                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            sourceIds.firstOrNull()?.let { sourceId ->
-                                CbButton(
-                                    "跳转来源",
-                                    { onJumpToSource(sourceId) },
-                                    variant = ButtonVariant.Ghost,
-                                    modifier = Modifier.weight(1f)
-                                )
-                            }
+                        sourceIds.firstOrNull()?.let { sourceId ->
                             CbButton(
-                                "已按新来源校正",
-                                { onMarkSourcesCorrected(node.id) },
-                                variant = ButtonVariant.Outline,
-                                modifier = Modifier.weight(1f)
+                                "跳转来源",
+                                { onJumpToSource(sourceId) },
+                                variant = ButtonVariant.Ghost,
+                                modifier = Modifier.fillMaxWidth()
                             )
                         }
                     }
@@ -888,8 +1046,7 @@ internal fun MemoryTierCurrent(
 @Composable
 internal fun MemoryHeadPage(
     state: LongTermMemoryUiState,
-    onEditHead: (MemoryHead) -> Unit,
-    onMarkSourcesCorrected: () -> Unit = {}
+    onEditHead: (MemoryHead) -> Unit
 ) {
     val head = state.head ?: return
     if (!state.headPresent) {
@@ -926,15 +1083,9 @@ internal fun MemoryHeadPage(
             CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     CbText(
-                        "HEAD来源已变化。旧状态继续注入，直到保存修正或确认已校正。",
+                        "HEAD来源已变化。旧状态已停止注入，等待页面顶部整体修复；也可手工修改后保存。",
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
-                    )
-                    CbButton(
-                        "已按新来源校正",
-                        onMarkSourcesCorrected,
-                        variant = ButtonVariant.Outline,
-                        modifier = Modifier.fillMaxWidth()
                     )
                 }
             }
@@ -1136,6 +1287,7 @@ private fun MemoryRevisionOperation.memoryDisplayName(): String = when (this) {
     MemoryRevisionOperation.PRE_RESTORE_CHECKPOINT -> "恢复前备份"
     MemoryRevisionOperation.RESTORE -> "恢复历史"
     MemoryRevisionOperation.LOAD_SAVE -> "载入存档"
+    MemoryRevisionOperation.SOURCE_MUTATION_REPAIR -> "来源修复"
     MemoryRevisionOperation.DEBUG_REBUILD -> "Debug重新补录"
 }
 

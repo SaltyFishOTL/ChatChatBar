@@ -23,6 +23,8 @@ import com.example.chatbar.data.local.entity.MemoryRevisionOperation
 import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySessionState
 import com.example.chatbar.data.local.entity.MemorySnapshot
+import com.example.chatbar.data.local.entity.MemorySourceRepairState
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTierRevision
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
@@ -81,6 +83,11 @@ private data class MemoryNodeRegenerationRequest(
     val evidenceHash: String
 )
 
+private data class MemorySourceRepairNodeResult(
+    val frontier: List<MemoryNode>,
+    val createdNodes: List<MemoryNode>
+)
+
 private sealed interface MaintenanceResult {
     data class Ready(
         val state: MemorySessionState,
@@ -115,6 +122,8 @@ class LongTermMemoryService(
     private val headMutexes = ConcurrentHashMap<String, Mutex>()
     /** 区分本进程活跃补录与进程重启后遗留的RUNNING状态。 */
     private val activeBackfillSessionIds = ConcurrentHashMap.newKeySet<String>()
+    /** 区分本进程活跃来源修复与进程重启后遗留的RUNNING状态。 */
+    private val activeSourceRepairSessionIds = ConcurrentHashMap.newKeySet<String>()
 
     suspend fun ensureMigrated(sessionId: String): MemoryPromptView = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
@@ -172,6 +181,9 @@ class LongTermMemoryService(
             val loaded = loadLocked(sessionId)
             if (!loaded.session.longTermMemoryEnabled ||
                 loaded.state.backfill.status == MemoryBackfillStatus.RUNNING ||
+                loaded.state.sourceRepair.status == MemorySourceRepairStatus.RUNNING ||
+                loaded.state.staleSourcesByNodeId.isNotEmpty() ||
+                loaded.state.head.stale ||
                 loaded.state.pendingDecision != null
             ) {
                 return@stateLock null
@@ -312,7 +324,11 @@ class LongTermMemoryService(
             val loaded = loadLocked(sessionId)
             if (!loaded.session.longTermMemoryEnabled ||
                 (loaded.state.backfill.status == MemoryBackfillStatus.RUNNING &&
-                    request != HeadUpdateRequest.BACKFILL)
+                    request != HeadUpdateRequest.BACKFILL) ||
+                (request != HeadUpdateRequest.BACKFILL &&
+                    (loaded.state.sourceRepair.status == MemorySourceRepairStatus.RUNNING ||
+                        loaded.state.staleSourcesByNodeId.isNotEmpty() ||
+                        loaded.state.head.stale))
             ) {
                 return@stateLock null
             }
@@ -694,78 +710,6 @@ class LongTermMemoryService(
         compileAndCacheLocked(loaded.copy(state = checkpoint.state, nodes = restoredNodes))
     }
 
-    suspend fun markSourcesCorrected(sessionId: String, nodeIds: List<String>) = stateLock(sessionId) {
-        val loaded = loadLocked(sessionId)
-        if (nodeIds.isEmpty()) {
-            val throughOrder = loaded.state.head.throughSourceTurnId?.let { sourceId ->
-                loaded.state.timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder
-            }
-            val hashes = loaded.state.timeline.asSequence()
-                .filter { throughOrder != null && it.sourceOrder <= throughOrder }
-                .associate { it.sourceTurnId to sourceHash(it.sourceTurnId, loaded.messages, loaded.session) }
-            val next = loaded.state.copy(
-                head = loaded.state.head.copy(
-                    sourceHashes = hashes,
-                    version = loaded.state.head.version + 1,
-                    stale = false
-                ),
-                revision = loaded.state.revision + 1,
-                updatedAt = System.currentTimeMillis()
-            )
-            memoryRepository.saveState(next)
-            compileAndCacheLocked(loaded.copy(state = next))
-            return@stateLock
-        }
-
-        val requested = nodeIds.toSet()
-        val replacements = loaded.state.activeNodeIds.mapNotNull { nodeId ->
-            val old = loaded.nodes[nodeId] ?: return@mapNotNull null
-            if (nodeId !in requested || nodeId !in loaded.state.staleSourcesByNodeId) return@mapNotNull null
-            val hashes = old.sourceTurnIds.associateWith { sourceId ->
-                sourceHash(sourceId, loaded.messages, loaded.session)
-            }
-            old to old.copy(
-                id = MemoryNode.newId(),
-                sourceHash = if (old.childIds.isEmpty()) {
-                    MemoryHashes.sourceIds(old.sourceTurnIds, old.sourceTurnIds.map(hashes::getValue))
-                } else {
-                    old.sourceHash
-                },
-                sourceHashes = hashes,
-                author = MemoryAuthor.USER,
-                createdAt = System.currentTimeMillis()
-            )
-        }
-        if (replacements.isEmpty()) return@stateLock
-        val replacementByOldId = replacements.associate { (old, replacement) -> old.id to replacement }
-        memoryRepository.saveNodes(replacements.map { it.second })
-        loaded.nodes.putAll(replacements.map { it.second }.associateBy { it.id })
-        var next = loaded.state
-        listOf(MemoryTier.EPISODE, MemoryTier.ARC, MemoryTier.ERA).forEach { tier ->
-            val page = next.page(tier)
-            val changed = page.activeNodeIds.map { replacementByOldId[it]?.id ?: it }
-            if (changed != page.activeNodeIds) {
-                next = revisions.checkpoint(
-                    initialState = next,
-                    tier = tier,
-                    afterNodeIds = changed,
-                    operation = MemoryRevisionOperation.USER_EDIT,
-                    author = MemoryAuthor.USER,
-                    affectedSourceTurnIds = replacements
-                        .filter { it.first.tier == tier }
-                        .flatMap { it.first.sourceTurnIds }
-                ).state
-            }
-        }
-        next = next.copy(
-            staleSourcesByNodeId = next.staleSourcesByNodeId - replacementByOldId.keys,
-            revision = next.revision + 1,
-            updatedAt = System.currentTimeMillis()
-        )
-        memoryRepository.saveState(next)
-        compileAndCacheLocked(loaded.copy(state = next))
-    }
-
     suspend fun increaseLimit(sessionId: String) = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
         if (!MemoryBudgetPolicy.canIncrease(loaded.session.memoryLimitChars)) return@stateLock
@@ -922,6 +866,193 @@ class LongTermMemoryService(
         )
     }
 
+    suspend fun startSourceRepair(
+        sessionId: String,
+        modelConfig: ModelConfig,
+        onProgress: (MemorySourceRepairProgress) -> Unit = {}
+    ) = archiveLock(sessionId) {
+        val initial = stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            check(loaded.session.longTermMemoryEnabled) { "长期记忆未启用" }
+            check(loaded.state.backfill.status != MemoryBackfillStatus.RUNNING) {
+                "长期记忆正在补录，请先暂停补录"
+            }
+            check(loaded.state.pendingDecision == null) { "请先处理长期记忆空间选择" }
+            val roots = MemoryTimelinePolicy.sortNodes(
+                loaded.state.activeNodeIds
+                    .filter { it in loaded.state.staleSourcesByNodeId }
+                    .mapNotNull(loaded.nodes::get),
+                loaded.state.timeline
+            ).map { it.id }
+            val repairHead = loaded.state.head.stale
+            if (roots.isEmpty() && !repairHead) return@stateLock null
+            val next = loaded.state.copy(
+                sourceRepair = MemorySourceRepairPolicy.startOrResume(
+                    repair = loaded.state.sourceRepair,
+                    pendingRootNodeIds = roots,
+                    repairHead = repairHead
+                ),
+                revision = loaded.state.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+            activeSourceRepairSessionIds.add(sessionId)
+            try {
+                memoryRepository.saveState(next)
+            } catch (error: Throwable) {
+                activeSourceRepairSessionIds.remove(sessionId)
+                throw error
+            }
+            loaded.copy(state = next)
+        } ?: return@archiveLock
+
+        val totalRoots = initial.state.sourceRepair.totalRootCount
+        fun notifyProgress(progress: MemorySourceRepairProgress) {
+            runCatching { onProgress(progress) }
+        }
+        try {
+            var loaded = initial
+            while (loaded.state.sourceRepair.status == MemorySourceRepairStatus.RUNNING &&
+                loaded.state.sourceRepair.pendingRootNodeIds.isNotEmpty()
+            ) {
+                val repair = loaded.state.sourceRepair
+                val rootId = repair.pendingRootNodeIds.first()
+                val root = loaded.nodes[rootId] ?: error("待修记忆节点不存在：$rootId")
+                check(rootId in loaded.state.activeNodeIds) { "待修记忆节点已不再活跃" }
+                val baseEvidenceHash = sourceMutationEvidenceHash(root, loaded)
+                val range = MemoryTimelinePolicy.range(root, loaded.state.timeline)
+                val rangeLabel = range?.let { "T${it.startT}-T${it.endT}" }.orEmpty()
+                fun notifyNode(
+                    phase: MemorySourceRepairPhase,
+                    node: MemoryNode = root,
+                    streamingSummary: String = ""
+                ) {
+                    val nodeRange = MemoryTimelinePolicy.range(node, loaded.state.timeline)
+                    notifyProgress(
+                        MemorySourceRepairProgress(
+                            phase = phase,
+                            totalRoots = totalRoots,
+                            completedRoots = repair.completedRootCount,
+                            currentRootNodeId = rootId,
+                            currentSourceTurnIds = node.sourceTurnIds,
+                            currentRangeLabel = nodeRange
+                                ?.let { "T${it.startT}-T${it.endT}" }
+                                ?: rangeLabel,
+                            streamingSummary = streamingSummary
+                        )
+                    )
+                }
+                notifyNode(MemorySourceRepairPhase.PREPARING)
+                val result = repairSourceNode(
+                    sessionId = sessionId,
+                    node = root,
+                    loaded = loaded,
+                    model = modelConfig,
+                    onProgress = ::notifyNode
+                )
+                notifyNode(MemorySourceRepairPhase.SAVING_ROOT)
+                val committed = stateLock(sessionId) {
+                    val current = loadLocked(sessionId)
+                    if (current.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
+                        return@stateLock null
+                    }
+                    check(rootId in current.state.activeNodeIds) { "修复完成前目标节点已变化" }
+                    check(rootId in current.state.staleSourcesByNodeId) { "目标节点已由其他操作修复" }
+                    val currentRoot = current.nodes[rootId] ?: error("修复完成前目标节点已丢失")
+                    check(currentRoot == root) { "修复完成前目标节点内容已变化" }
+                    check(sourceMutationEvidenceHash(currentRoot, current) == baseEvidenceHash) {
+                        "修复完成前原始聊天再次变化"
+                    }
+                    commitSourceRepairRootLocked(
+                        loaded = current,
+                        root = currentRoot,
+                        result = result,
+                        modelId = modelConfig.id
+                    )
+                } ?: return@archiveLock
+                loaded = committed
+                notifyProgress(
+                    MemorySourceRepairProgress(
+                        phase = MemorySourceRepairPhase.PREPARING,
+                        totalRoots = totalRoots,
+                        completedRoots = loaded.state.sourceRepair.completedRootCount
+                    )
+                )
+            }
+
+            val beforeHead = stateLock(sessionId) { loadLocked(sessionId) }
+            if (beforeHead.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
+                return@archiveLock
+            }
+            check(beforeHead.state.staleSourcesByNodeId.isEmpty()) {
+                "修复期间出现新的历史消息变化，请重新启动修复"
+            }
+            if (beforeHead.state.sourceRepair.repairHead || beforeHead.state.head.stale) {
+                notifyProgress(
+                    MemorySourceRepairProgress(
+                        phase = MemorySourceRepairPhase.UPDATING_HEAD,
+                        totalRoots = totalRoots,
+                        completedRoots = totalRoots
+                    )
+                )
+                repairHeadAfterSourceMutation(sessionId, modelConfig)
+                val checked = stateLock(sessionId) { loadLocked(sessionId) }
+                check(!checked.state.head.stale) {
+                    val session = chatRepository.getSession(sessionId)
+                    session?.memoryHeadError ?: "HEAD来源修复失败"
+                }
+            }
+            stateLock(sessionId) {
+                val current = loadLocked(sessionId)
+                if (current.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
+                    return@stateLock
+                }
+                val next = current.state.copy(
+                    sourceRepair = MemorySourceRepairState(),
+                    revision = current.state.revision + 1,
+                    updatedAt = System.currentTimeMillis()
+                )
+                memoryRepository.saveState(next)
+                compileAndCacheLocked(current.copy(state = next))
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            stateLock(sessionId) {
+                val current = loadLocked(sessionId)
+                if (current.state.sourceRepair.status == MemorySourceRepairStatus.PAUSED) {
+                    return@stateLock
+                }
+                memoryRepository.saveState(
+                    current.state.copy(
+                        sourceRepair = current.state.sourceRepair.copy(
+                            status = MemorySourceRepairStatus.ERROR,
+                            error = error.message ?: error::class.simpleName,
+                            updatedAt = System.currentTimeMillis()
+                        ),
+                        revision = current.state.revision + 1,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                )
+            }
+        } finally {
+            activeSourceRepairSessionIds.remove(sessionId)
+        }
+    }
+
+    suspend fun pauseSourceRepair(sessionId: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        if (loaded.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) return@stateLock
+        memoryRepository.saveState(
+            loaded.state.copy(
+                sourceRepair = loaded.state.sourceRepair.copy(
+                    status = MemorySourceRepairStatus.PAUSED,
+                    updatedAt = System.currentTimeMillis()
+                ),
+                revision = loaded.state.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+        )
+    }
+
     suspend fun startBackfill(
         sessionId: String,
         modelConfig: ModelConfig,
@@ -929,6 +1060,12 @@ class LongTermMemoryService(
     ) = archiveLock(sessionId) {
         val initial = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)
+            check(loaded.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
+                "长期记忆正在修复历史消息来源"
+            }
+            check(loaded.state.staleSourcesByNodeId.isEmpty() && !loaded.state.head.stale) {
+                "请先修复修改或删除历史消息造成的旧记忆"
+            }
             val appSettings = settingsRepository.getAppSettings()
             val missing = backfillableSourceTurnIds(
                 loaded,
@@ -1318,6 +1455,13 @@ class LongTermMemoryService(
                     MemoryBackfillStatus.PAUSED
                 } else {
                     importedState.backfill.status
+                }
+            ),
+            sourceRepair = importedState.sourceRepair.copy(
+                status = if (importedState.sourceRepair.status == MemorySourceRepairStatus.RUNNING) {
+                    MemorySourceRepairStatus.PAUSED
+                } else {
+                    importedState.sourceRepair.status
                 }
             ),
             pendingCompressionEvents = emptyList(),
@@ -2177,6 +2321,10 @@ class LongTermMemoryService(
             backfill = state.backfill,
             hasActiveRunner = session.id in activeBackfillSessionIds
         )
+        val pausedSourceRepair = MemorySourceRepairPolicy.pauseOrphanedRun(
+            repair = state.sourceRepair,
+            hasActiveRunner = session.id in activeSourceRepairSessionIds
+        )
         val existingGapSourceIds = state.gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
         val deletedSourceIds = session.sourceTurnTombstones
             .filter { watermark == null || it.sourceOrder > watermark }
@@ -2201,10 +2349,12 @@ class LongTermMemoryService(
             gaps = state.gaps + deletionGaps,
             pendingSourceTurnIds = state.pendingSourceTurnIds.filterNot(unavailable::contains),
             backfill = reconciledBackfill,
+            sourceRepair = pausedSourceRepair,
             memoryWasEnabled = session.longTermMemoryEnabled,
             revision = if (
                 appendable.isNotEmpty() || deletionGaps.isNotEmpty() ||
                 reconciledBackfill != state.backfill ||
+                pausedSourceRepair != state.sourceRepair ||
                 state.pendingSourceTurnIds.any(unavailable::contains)
             ) {
                 state.revision + 1
@@ -2214,6 +2364,7 @@ class LongTermMemoryService(
             updatedAt = if (
                 appendable.isNotEmpty() || deletionGaps.isNotEmpty() ||
                 reconciledBackfill != state.backfill ||
+                pausedSourceRepair != state.sourceRepair ||
                 state.pendingSourceTurnIds.any(unavailable::contains)
             ) {
                 System.currentTimeMillis()
@@ -2252,20 +2403,61 @@ class LongTermMemoryService(
                 }
             } ?: false
         }
-        if (stale == state.staleSourcesByNodeId && headStale == state.head.stale) return state
+        val sourceRepair = when (state.sourceRepair.status) {
+            MemorySourceRepairStatus.RUNNING,
+            MemorySourceRepairStatus.IDLE -> state.sourceRepair
+            MemorySourceRepairStatus.PAUSED,
+            MemorySourceRepairStatus.ERROR -> if (stale.isEmpty() && !headStale) {
+                MemorySourceRepairState()
+            } else {
+                state.sourceRepair.copy(
+                    pendingRootNodeIds = state.activeNodeIds.filter { it in stale },
+                    repairHead = headStale,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        }
+        if (stale == state.staleSourcesByNodeId &&
+            headStale == state.head.stale &&
+            sourceRepair == state.sourceRepair
+        ) {
+            return state
+        }
         return state.copy(
             staleSourcesByNodeId = stale,
             head = state.head.copy(stale = headStale),
+            sourceRepair = sourceRepair,
             revision = state.revision + 1,
             updatedAt = System.currentTimeMillis()
         )
     }
 
     private fun renderArchive(loaded: LoadedMemory): String {
+        val frontier = effectiveArchiveFrontier(loaded)
         return MemoryArchiveInjectionPolicy.render(
-            activeNodes = loaded.state.activeNodeIds.mapNotNull(loaded.nodes::get),
+            activeNodes = frontier.nodes,
             legacyReferenceNodes = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
             timeline = loaded.state.timeline
+        )
+    }
+
+    private fun effectiveArchiveFrontier(loaded: LoadedMemory): MemorySafeFrontier {
+        val active = loaded.state.activeNodeIds.mapNotNull(loaded.nodes::get)
+        if (loaded.state.staleSourcesByNodeId.isEmpty()) {
+            return MemorySafeFrontier(
+                nodes = MemoryTimelinePolicy.sortNodes(active, loaded.state.timeline)
+            )
+        }
+        val currentHashes = sourceTimeline(loaded.messages, loaded.session).associate { entry ->
+            entry.sourceTurnId to sourceHash(entry.sourceTurnId, loaded.messages, loaded.session)
+        }
+        return MemorySourceRepairPolicy.safeFrontier(
+            activeNodes = active,
+            nodesById = loaded.nodes,
+            staleRootIds = loaded.state.staleSourcesByNodeId.keys,
+            currentSourceHashes = currentHashes,
+            timeline = loaded.state.timeline,
+            maxChars = MemoryBudgetPolicy.normalizedLimit(loaded.session.memoryLimitChars)
         )
     }
 
@@ -2290,10 +2482,8 @@ class LongTermMemoryService(
         headError: String? = null
     ): MemoryPromptView {
         val state = loaded.state
-        val active = MemoryTimelinePolicy.sortNodes(
-            state.activeNodeIds.mapNotNull(loaded.nodes::get),
-            state.timeline
-        )
+        val safeFrontier = effectiveArchiveFrontier(loaded)
+        val active = safeFrontier.nodes
         val legacyReferences = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
         val archive = MemoryArchiveInjectionPolicy.render(
             activeNodes = active,
@@ -2353,7 +2543,7 @@ class LongTermMemoryService(
             latestStableT = latestStableT
         )
         val headAndTimeline = buildString {
-            if (headPresent && !headBackfillRequired && headThroughT != null) {
+            if (headPresent && !state.head.stale && !headBackfillRequired && headThroughT != null) {
                 appendLine("【HEAD｜当前状态｜截至 T$headThroughT】")
                 appendLine(state.head.render())
             }
@@ -2381,7 +2571,19 @@ class LongTermMemoryService(
             addAll(integrity)
             addAll(missingMemoryWarnings)
             if (state.staleSourcesByNodeId.isNotEmpty()) add(
-                MemoryIntegrityWarning("部分来源已修改，旧摘要仍会注入，等待人工校正。", state.staleSourcesByNodeId.keys.toList())
+                MemoryIntegrityWarning(
+                    "部分历史消息已修改或删除；受影响旧摘要已停止注入，请手动修复长期记忆。",
+                    state.staleSourcesByNodeId.keys.toList()
+                )
+            )
+            if (state.head.stale) add(
+                MemoryIntegrityWarning("HEAD来源已变化；旧HEAD已停止注入，请手动修复长期记忆。", emptyList())
+            )
+            if (safeFrontier.omittedRootIds.isNotEmpty()) add(
+                MemoryIntegrityWarning(
+                    "部分受影响记忆无法在当前预算内安全展开，修复前暂不注入。",
+                    safeFrontier.omittedRootIds.toList()
+                )
             )
             if (MemoryBudgetPolicy.isOverLimit(state, loaded.nodes, loaded.session.memoryLimitChars)) add(
                 MemoryIntegrityWarning("人工版本超过当前自动预算，将在下一稳定剧情轮尝试维护。", emptyList())
@@ -2397,7 +2599,7 @@ class LongTermMemoryService(
             archiveThroughT = archiveThroughT,
             latestStableT = latestStableT,
             effectiveBudgetChars = loaded.session.memoryLimitChars,
-            usedArchiveChars = MemoryBudgetPolicy.archiveChars(state, loaded.nodes),
+            usedArchiveChars = active.sumOf { it.body.length },
             displayTBySourceTurnId = state.timeline.associate {
                 it.sourceTurnId to it.displayT
             },
@@ -2488,6 +2690,207 @@ class LongTermMemoryService(
             check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(unit.text)) {
                 "压缩正文包含无T限定的现在/目前/仍然"
             }
+        }
+    }
+
+    private suspend fun repairSourceNode(
+        sessionId: String,
+        node: MemoryNode,
+        loaded: LoadedMemory,
+        model: ModelConfig,
+        onProgress: (MemorySourceRepairPhase, MemoryNode, String) -> Unit
+    ): MemorySourceRepairNodeResult {
+        if (nodeSourcesCurrent(node, loaded)) {
+            return MemorySourceRepairNodeResult(listOf(node), emptyList())
+        }
+        check(node.author != MemoryAuthor.USER) {
+            "${node.tier.displayName()} ${MemoryTimelinePolicy.range(node, loaded.state.timeline)?.let { "T${it.startT}-T${it.endT}" }.orEmpty()}含用户手工正文，请在编辑页按新来源修正并保存"
+        }
+        return when (node.tier) {
+            MemoryTier.EPISODE -> {
+                val availableSourceIds = loaded.messages.asSequence()
+                    .filter { it.role != MessageRole.SYSTEM }
+                    .mapNotNull { it.sourceTurnId }
+                    .toSet()
+                val runs = MemorySourceRepairPolicy.availableSourceRuns(
+                    sourceTurnIds = node.sourceTurnIds,
+                    availableSourceTurnIds = availableSourceIds,
+                    timeline = loaded.state.timeline,
+                    gaps = loaded.state.gaps
+                )
+                val created = runs.map { sourceIds ->
+                    val refs = sourceRefs(sourceIds, loaded.messages, loaded.session)
+                    onProgress(MemorySourceRepairPhase.GENERATING_EPISODE, node, "")
+                    val response = ai.episode(
+                        model = model,
+                        renderedTurns = renderSourceTurns(
+                            sourceIds,
+                            loaded.messages,
+                            loaded.state.timeline,
+                            loaded.session
+                        ),
+                        summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(sourceIds.size),
+                        onStreamingSummary = { summary ->
+                            onProgress(MemorySourceRepairPhase.GENERATING_EPISODE, node, summary)
+                        }
+                    ) { output -> validateEpisodeResponse(output, sourceIds.size) }
+                    createEpisodeNode(sessionId, refs, response)
+                }
+                MemorySourceRepairNodeResult(created, created)
+            }
+
+            MemoryTier.ARC, MemoryTier.ERA -> {
+                val children = node.childIds.map { childId ->
+                    loaded.nodes[childId] ?: error("待修父节点缺少child：$childId")
+                }
+                val childResults = children.map { child ->
+                    repairSourceNode(sessionId, child, loaded, model, onProgress)
+                }
+                val createdChildren = childResults.flatMap { it.createdNodes }.distinctBy { it.id }
+                val rebuildable = MemorySourceRepairPolicy.rebuildableChildren(
+                    originalParent = node,
+                    repairedByChild = childResults.map { it.frontier },
+                    timeline = loaded.state.timeline,
+                    gaps = loaded.state.gaps
+                )
+                if (rebuildable == null) {
+                    MemorySourceRepairNodeResult(
+                        frontier = childResults.flatMap { it.frontier }.distinctBy { it.id },
+                        createdNodes = createdChildren
+                    )
+                } else {
+                    val kind = when {
+                        node.tier == MemoryTier.ARC -> MemoryCompressionKind.EPISODE_TO_ARC
+                        rebuildable.all { it.tier == MemoryTier.ARC } -> MemoryCompressionKind.ARC_TO_ERA
+                        rebuildable.all { it.tier == MemoryTier.ERA } -> MemoryCompressionKind.ERA_TO_ERA
+                        else -> error("待修父节点层级不合法")
+                    }
+                    val candidate = MemoryCompressionCandidate(
+                        candidates = rebuildable,
+                        minConsume = rebuildable.size,
+                        maxConsume = rebuildable.size
+                    )
+                    onProgress(MemorySourceRepairPhase.REBUILDING_PARENT, node, "")
+                    val response = ai.compression(
+                        model = model,
+                        kind = kind,
+                        forcedConsumedChildIds = rebuildable.map { it.id },
+                        renderedChildren = renderChildren(rebuildable, loaded.state.timeline),
+                        onStreamingSummary = { summary ->
+                            onProgress(MemorySourceRepairPhase.REBUILDING_PARENT, node, summary)
+                        }
+                    ) { output ->
+                        check(output.compressible) { "来源修复不得返回不可压缩" }
+                        validateCompressionResponse(output, candidate)
+                        val childChars = rebuildable.sumOf { it.body.length }
+                        val coverageChars = output.childCoverage.sumOf { it.text.trim().length } +
+                            (output.childCoverage.size - 1).coerceAtLeast(0)
+                        check(coverageChars < childChars) { "来源修复child覆盖没有形成压缩" }
+                        check(output.summary.trim().length < childChars) { "来源修复正文没有形成压缩" }
+                        check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(output.summary)) {
+                            "来源修复正文包含无T限定的现在/目前/仍然"
+                        }
+                    }
+                    val parent = createParentNode(sessionId, node.tier, rebuildable, response)
+                    MemorySourceRepairNodeResult(
+                        frontier = listOf(parent),
+                        createdNodes = (createdChildren + parent).distinctBy { it.id }
+                    )
+                }
+            }
+
+            MemoryTier.LEGACY_REFERENCE -> error("Legacy Reference无法从可靠来源修复")
+        }
+    }
+
+    private fun nodeSourcesCurrent(node: MemoryNode, loaded: LoadedMemory): Boolean =
+        node.sourceTurnIds.isNotEmpty() &&
+            node.sourceHashes.keys == node.sourceTurnIds.toSet() &&
+            node.sourceHashes.all { (sourceId, storedHash) ->
+                sourceHash(sourceId, loaded.messages, loaded.session) == storedHash
+            }
+
+    private fun sourceMutationEvidenceHash(node: MemoryNode, loaded: LoadedMemory): String =
+        MemoryHashes.text(node.sourceTurnIds.joinToString("\n") { sourceId ->
+            "$sourceId:${sourceHash(sourceId, loaded.messages, loaded.session)}"
+        })
+
+    private suspend fun commitSourceRepairRootLocked(
+        loaded: LoadedMemory,
+        root: MemoryNode,
+        result: MemorySourceRepairNodeResult,
+        modelId: String
+    ): LoadedMemory {
+        val created = result.createdNodes.distinctBy { it.id }
+        val nodes = loaded.nodes.toMutableMap().apply {
+            putAll(created.associateBy { it.id })
+        }
+        created.forEach { requireValidNode(it, nodes, loaded.state) }
+        result.frontier.forEach { requireValidNode(it, nodes, loaded.state) }
+        memoryRepository.saveNodes(created)
+
+        var next = loaded.state
+        val transactionId = MemoryTierRevision.newId()
+        listOf(MemoryTier.EPISODE, MemoryTier.ARC, MemoryTier.ERA).forEach { tier ->
+            val before = next.page(tier).activeNodeIds
+            val afterCandidates = before.filterNot { it == root.id } +
+                result.frontier.filter { it.tier == tier }.map { it.id }
+            val after = MemoryTimelinePolicy.sortNodes(
+                afterCandidates.distinct().mapNotNull(nodes::get),
+                next.timeline
+            ).map { it.id }
+            if (after != before) {
+                next = revisions.checkpoint(
+                    initialState = next,
+                    tier = tier,
+                    afterNodeIds = after,
+                    operation = MemoryRevisionOperation.SOURCE_MUTATION_REPAIR,
+                    author = MemoryAuthor.AI,
+                    modelId = modelId,
+                    transactionId = transactionId,
+                    affectedSourceTurnIds = root.sourceTurnIds
+                ).state
+            }
+        }
+        next = next.copy(
+            staleSourcesByNodeId = next.staleSourcesByNodeId - root.id,
+            sourceRepair = next.sourceRepair.copy(
+                pendingRootNodeIds = next.sourceRepair.pendingRootNodeIds.filterNot { it == root.id },
+                completedRootCount = next.sourceRepair.completedRootCount + 1,
+                error = null,
+                updatedAt = System.currentTimeMillis()
+            ),
+            revision = next.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(loaded.copy(state = next, nodes = nodes))
+        return loaded.copy(state = next, nodes = nodes)
+    }
+
+    private suspend fun repairHeadAfterSourceMutation(
+        sessionId: String,
+        modelConfig: ModelConfig
+    ) {
+        val canBackfill = stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            if (!loaded.state.head.stale) return@stateLock false
+            MemoryHeadUpdatePolicy.backfill(stableSourceTurnIds(loaded.messages)) != null
+        }
+        if (canBackfill) {
+            backfillHead(sessionId, modelConfig)
+            return
+        }
+        stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            if (!loaded.state.head.stale) return@stateLock
+            val next = loaded.state.copy(
+                head = MemoryHead(version = loaded.state.head.version + 1),
+                revision = loaded.state.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+            memoryRepository.saveState(next)
+            compileAndCacheLocked(loaded.copy(state = next))
         }
     }
 
@@ -3116,7 +3519,7 @@ class LongTermMemoryService(
                 root = node,
                 nodesById = nodes,
                 timeline = state.timeline,
-                // 来源删除后旧节点仍允许注入并显示警告；Gap只阻止后续自动压缩。
+                // 导入先验证节点自身历史结构；当前来源stale与安全注入在加载后重算。
                 gaps = emptyList()
             )
             check(result.valid) { result.error ?: "存档记忆节点校验失败" }
@@ -3125,6 +3528,9 @@ class LongTermMemoryService(
             check(nodes[id]?.tier == MemoryTier.LEGACY_REFERENCE) {
                 "存档Legacy Reference不存在或层级错误：$id"
             }
+        }
+        check(state.sourceRepair.pendingRootNodeIds.all { it in activeIds }) {
+            "存档来源修复状态引用非活跃节点"
         }
     }
 

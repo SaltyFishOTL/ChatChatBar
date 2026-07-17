@@ -78,6 +78,7 @@ import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.MemoryDecisionTier
 import com.example.chatbar.data.local.entity.MemoryBackfillStatus
+import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
@@ -148,8 +149,10 @@ fun ChatScreen(
     val longTermMemoryUiState by viewModel.longTermMemoryUiState.collectAsState()
     val memoryBackfillRunning = longTermMemoryUiState.memoryState?.backfill?.status ==
         MemoryBackfillStatus.RUNNING
+    val memorySourceRepairRunning = longTermMemoryUiState.memoryState?.sourceRepair?.status ==
+        MemorySourceRepairStatus.RUNNING
     val memoryStateLoading = session?.longTermMemoryEnabled == true && longTermMemoryUiState.loading
-    val memoryChatBlocked = memoryBackfillRunning || memoryStateLoading
+    val memoryChatBlocked = memoryBackfillRunning || memorySourceRepairRunning || memoryStateLoading
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
