@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Prompt Pipeline"
+  short_description: "Trace prompt layers, ordering, caching, and RAG injection"
+  default_prompt: "Use $chatbar-prompt-pipeline to trace and safely update ChatBar prompt assembly."

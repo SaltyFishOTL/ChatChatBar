@@ -1,4 +1,4 @@
 interface:
   display_name: "ChatBar Character Card AI"
   short_description: "Find and change role-card AI workflows"
-  default_prompt: "Use this skill when changing ChatBar character-card AI autofill, rewrite, candidate preview, apply, diff, or cover generation flows."
+  default_prompt: "Use $chatbar-character-card-ai to update ChatBar character-card AI workflows."

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Android Testing"
+  short_description: "Run ChatBar builds, CI, emulator, device, and ADB checks"
+  default_prompt: "Use $chatbar-emulator-test to verify ChatBar with the correct build and device flow."

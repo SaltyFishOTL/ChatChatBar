@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Model Request Runtime"
+  short_description: "Diagnose model selection, request fields, auth, and streaming"
+  default_prompt: "Use $chatbar-model-request-runtime to diagnose or update ChatBar model requests."

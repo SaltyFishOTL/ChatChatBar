@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Message Format Repair"
+  short_description: "Maintain reversible AI format repair and persisted undo state"
+  default_prompt: "Use $chatbar-message-format-repair to update ChatBar message format repair safely."

@@ -16,6 +16,8 @@ Use before editing NovelAI-related prompt flow:
 
 Do not use this skill for non-NAI image planning, UI, storage, scheduling, memory, chat behavior, or feature policy unless those changes alter NovelAI prompt construction.
 
+Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming frames, retries, metadata, regeneration, concurrency, or file replacement.
+
 ## Shared NovelAI Entry
 
 - `NOVELAI_IMAGE_PROMPT_SYSTEM` is the shared system prompt for NovelAI tag design.

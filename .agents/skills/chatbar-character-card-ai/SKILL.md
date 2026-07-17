@@ -7,6 +7,8 @@ description: Maintain ChatBar character-card AI workflows. Use when changing AI 
 
 Keep AI role-card work narrow. Read these files before broad search.
 
+Use chatbar-model-request-runtime for provider parameters, model fallback, authentication, or streaming transport. Use chatbar-image-generation-runtime for shared NovelAI HTTP generation, retry, metadata, regeneration, and file lifecycle. Keep card candidate/apply policy in this skill.
+
 ## First Read
 
 - UI dialog, candidate preview, diff display: `app/app/src/main/java/com/example/chatbar/ui/character/CharacterEditScreen.kt`

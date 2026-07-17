@@ -1,46 +1,51 @@
 ---
 name: chatbar-feature-map
-description: Locate ChatBar feature entry points before broad repository search. Use at the start of ChatBar tasks when the requested area is unclear, when reducing redundant rg/search work, or when mapping a user-visible feature to likely screens, ViewModels, domain services, repositories, tests, and existing project skills.
+description: Locate ChatBar feature entry points before broad repository search. Use at the start of ChatBar tasks when the requested area is unclear, when reducing redundant search work, or when mapping a user-visible feature to likely screens, ViewModels, domain services, repositories, tests, and existing project skills.
 ---
 
 # ChatBar Feature Map
 
-Use this as a first-hop map. Read specific files or skills, then search only if the map misses.
+Use this as a first-hop map. Read a specific skill or listed files, then search only if the map misses.
 
 ## Workflow
 
-1. Match request to one or two rows below.
-2. Read listed skill first when present, otherwise read listed files.
-3. Use focused `rg -n "term" path` only after first-read files do not answer location.
-4. On Windows, avoid regex alternation and shell pipes in search commands.
-5. Update this map when a feature moves or a repeated search pattern appears.
+1. Match request to one or two rows.
+2. Read the listed skill first when present.
+3. Read listed files before broad search.
+4. Use focused search only after first-read files do not answer location.
+5. Replace stale rows when ownership moves; do not grow this file into an architecture guide.
 
 ## Feature Rows
 
-- App wiring: `app/app/src/main/java/com/example/chatbar/ChatBarApp.kt`, `Navigation.kt`, `NavigationKeys.kt`.
-- Character card edit UI: `ui/character/CharacterEditScreen.kt`, `ui/character/CharacterEditViewModel.kt`.
-- Character-card AI auto-fill/rewrite/diff/cover: use `chatbar-character-card-ai`.
-- Chat screen behavior: `ui/chat/ChatScreen.kt`, `ui/chat/ChatViewModel.kt`, `domain/chat/PromptAssembler.kt`.
-- Long-term memory, HEAD, Episode/Arc/Era, source-turn/T mapping, Gap/backfill, compression, tier history, Archive injection, or SaveSlot memory migration: use `chatbar-long-term-memory` first.
-- Message AI format repair: persisted settings/notice in `AppSettings.kt` and `ChatMessage.kt`; prompt in `domain/prompt/PromptTemplates.kt`; auxiliary model resolution in `domain/model/EffectiveModelResolver.kt` (unset follows default chat model, explicit stale IDs fail visibly); streaming request/service and pure replacement rules in `domain/chat/StreamingChatService.kt`, `MessageFormatRepairService.kt`, and `MessageFormatRepairPolicy.kt`; auto/manual orchestration in `ui/chat/ChatViewModel.kt`; long-press, progress, error, and restore UI in `ui/chat/ChatScreen.kt`; global controls in `ui/manage/ManageScreen.kt`.
-- Assistant segmented bubble rendering: `ui/components/ChatBubble.kt`, speaker-marker parser/block IDs in `domain/chat/RoleplayContentSegments.kt`, per-turn marker prompt in `domain/prompt/PromptTemplates.kt` and `ui/chat/ChatViewModel.kt`, segment edit/delete in `ui/chat/ChatViewModel.kt`, segment selection/long screenshot in `ui/chat/ChatScreenshotSelection.kt` and `ui/chat/ChatLongScreenshot.kt`. Global default-on toggle is `AppSettings.assistantSegmentedBubblesEnabled`, edited in `ManageScreen` appearance settings and observed by `ChatViewModel`. Dialogue/thought avatars resolve `<n="人物名"/>` against `CharacterCard.characters[*].appearanceImage`; card-level `avatar` is cover/header plus legacy unmarked chat fallback. Invariants: first missing marker shows card avatar and no speaker name; later missing marker in the same message inherits the previous valid speaker marker; malformed/empty marker shows `?`/`未标注`; chat speaker avatar is 40dp circular crop with no border.
-- Character speaker names/history: uniqueness and legacy normalization live in `domain/card/CharacterSpeakerNamePolicy.kt` and `CharacterSpeakerMigration.kt`; durable rename retries live on `CharacterCard.pendingSpeakerRenameTasks`, coordinated by `domain/chat/SpeakerTagHistoryService.kt` and `ChatRepository.rewriteSpeakerTagsForCharacterCard`.
-- Chat settings/model selection: `ui/chat/ChatSettingsDialog.kt`, `ui/manage/ManageScreen.kt`, app settings repository/classes.
-- Chat save slots/archive transfer: `data/local/entity/SaveSlot.kt`, `data/repository/SaveSlotRepository.kt`, `domain/chat/SaveSlotJsonTransfer.kt`, `ui/chat/ChatViewModel.kt`, and `ui/chat/ChatSettingsDialog.kt`.
-- RAG/search/indexing: `domain/rag/RagManager.kt`, `domain/rag/ChatMemoryIndexPolicy.kt`, `data/repository/RagRepository.kt`, `domain/search/CharacterResearchService.kt`. RAG data stays independent from long-term memory. When changing source-turn or context grouping, also use `chatbar-long-term-memory` and verify both consumers share the same turn boundary.
-- NovelAI prompt/tag design: use `chatbar-novelai-prompt`; then read `domain/image/NovelAiPromptDesigner.kt`. Per-character avatar generation also uses `chatbar-character-card-ai`; do not bypass `NovelAiPromptDesigner`.
-- NovelAI HTTP generation/retry: `domain/image/NovelAiImageService.kt` is the shared entry for chat, character images, prompt tool, and Moments; it owns the three-attempt HTTP 429 retry, so callers must not duplicate 429 retries.
-- Moments: use `chatbar-moments` before reading Moments UI, ViewModel, scheduler, prompts, or storage.
-- Community: use `chatbar-community-platform` before reading `ui/community/CommunityScreen.kt` or Supabase/Edge Function code.
-- UI kit and Compose styling: use `chatbar-shadcn-compose`; then read `ui/kit/*` and target screen.
-- Emulator/device verification: use `chatbar-emulator-test`.
-- Import/export/card packages: `domain/card/CardTransferModels.kt`, `CharacterCardTransferService.kt`, `CharacterCardPngRenderer.kt`, `SillyTavernCardParser.kt`, `SillyTavernCardMapper.kt`; character PNG export dialog/preview/crop lives in `ui/manage/ManageScreen.kt`.
-- Persistence/entities: `data/local/entity/*`, `data/local/JsonFileStorage.kt`, related repository under `data/repository/*`.
-- World books: `data/local/entity/WorldBook*.kt`, `ui/character/CharacterEditScreen.kt`, `ui/character/CharacterEditViewModel.kt`.
-- Tutorial/help: `ui/tutorial/TutorialScreen.kt`.
+- App wiring and navigation: app/app/src/main/java/com/example/chatbar/ChatBarApp.kt, Navigation.kt, NavigationKeys.kt.
+- Character card edit UI: ui/character/CharacterEditScreen.kt, CharacterEditViewModel.kt.
+- Character-card AI auto-fill, rewrite, diff, apply, cover, or per-character avatar: use chatbar-character-card-ai.
+- Chat prompt composition, stable/dynamic/tail cache layers, history roles, previous-turn hot zone, World Book/RAG/Archive/HEAD order, or prompt-delivery diagnosis: use chatbar-prompt-pipeline.
+- Chat screen behavior outside a specific skill: ui/chat/ChatScreen.kt and ChatViewModel.kt.
+- Long-term memory, HEAD, Episode/Arc/Era, source-turn/T mapping, Gap/backfill, historical source repair, compression, tier history, Archive injection, or SaveSlot memory migration: use chatbar-long-term-memory.
+- Message AI format repair, automatic checks, restore-original notices, repair model selection, or repair state: use chatbar-message-format-repair.
+- Model fallback, provider request fields, HTTP/local auth, thinking controls, connection tests, SSE timeout/reset, or auxiliary text requests: use chatbar-model-request-runtime.
+- Generated-image runtime, NovelAI HTTP generation, 429 retry, editable regeneration, metadata, dimensions, seeds, concurrency, or file replacement: use chatbar-image-generation-runtime.
+- Assistant segmented bubble rendering: ui/components/ChatBubble.kt; marker parsing in domain/chat/RoleplayContentSegments.kt; per-turn protocol in PromptTemplates.kt and ChatViewModel.kt; edit/delete in ChatViewModel.kt; selection/screenshot in ChatScreenshotSelection.kt and ChatLongScreenshot.kt.
+- Character speaker names/history: domain/card/CharacterSpeakerNamePolicy.kt, CharacterSpeakerMigration.kt, domain/chat/SpeakerTagHistoryService.kt, and ChatRepository.rewriteSpeakerTagsForCharacterCard.
+- Chat settings and model selection UI: ui/chat/ChatSettingsDialog.kt, ui/manage/ManageScreen.kt, AppSettings.kt, and SettingsRepository.kt.
+- Chat save slots/archive transfer: data/local/entity/SaveSlot.kt, data/repository/SaveSlotRepository.kt, domain/chat/SaveSlotJsonTransfer.kt, ChatViewModel.kt, ChatSettingsDialog.kt.
+- RAG/search/indexing: domain/rag/RagManager.kt, ChatMemoryIndexPolicy.kt, data/repository/RagRepository.kt, domain/search/CharacterResearchService.kt. RAG stays independent from long-term memory; source-turn grouping changes require chatbar-long-term-memory.
+- NovelAI prompt/tag design: use chatbar-novelai-prompt, then read domain/image/NovelAiPromptDesigner.kt.
+- Moments: use chatbar-moments before Moments UI, ViewModel, scheduler, prompts, storage, or post image policy.
+- Community: use chatbar-community-platform before community UI or Supabase/Edge Function code.
+- UI kit and Compose styling: use chatbar-shadcn-compose, then read ui/kit/ and target screen.
+- Emulator/device/build verification: use chatbar-emulator-test.
+- Crash diagnostics and report sharing: domain/diagnostics/CrashDiagnosticReport.kt, utils/diagnostics/CrashReportManager.kt and SystemExitInfoReader.kt, ui/components/CrashReportDialog.kt, ChatBarApp.kt, MainActivity.kt, Navigation.kt, ManageScreen.kt.
+- Import/export/card packages: domain/card/CardTransferModels.kt, CharacterCardTransferService.kt, CharacterCardPngRenderer.kt, SillyTavernCardParser.kt, SillyTavernCardMapper.kt; PNG export UI in ManageScreen.kt.
+- Persistence/entities: data/local/entity/, data/local/JsonFileStorage.kt, related repository under data/repository/.
+- World books: data/local/entity/WorldBook*.kt, CharacterEditScreen.kt, CharacterEditViewModel.kt.
+- Tutorial/help: ui/tutorial/TutorialScreen.kt.
+
+All abbreviated source paths are relative to app/app/src/main/java/com/example/chatbar/.
 
 ## Stop Conditions
 
-- If a request matches a specific project skill, read that skill instead of continuing map expansion.
-- If three focused searches miss, report uncertainty and widen search deliberately.
-- Do not create a large architecture summary here; keep rows short and actionable.
+- If a request matches a specific project skill, stop expanding this map and read that skill.
+- If three focused searches miss, report uncertainty and widen deliberately.
+- Keep each row short, ownership-focused, and actionable.

@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Image Generation Runtime"
+  short_description: "Maintain image generation, regeneration, metadata, and retries"
+  default_prompt: "Use $chatbar-image-generation-runtime to update ChatBar image generation runtime."

@@ -1,4 +1,4 @@
 interface:
-  display_name: "ChatBar 朋友圈"
-  short_description: "维护 ChatBar 朋友圈生成、排程、提示词与时间线交互"
-  default_prompt: "维护 ChatBar 朋友圈模块，遵守当前 MCP 版范围、提示词归属和排程规则。"
+  display_name: "ChatBar Moments"
+  short_description: "Maintain Moments generation, scheduling, images, and timeline"
+  default_prompt: "Use $chatbar-moments to update ChatBar Moments generation, scheduling, or UI."
