@@ -7,7 +7,7 @@
 3. Append remaining IDs to ordinary Episode pending.
 4. Group oldest continuous 1–N IDs; do not shorten solely because Archive budget is tight.
 5. Send all 1–N raw turns together and generate exactly one aggregate Episode `summary`; never request per-turn summaries or coverage text.
-6. Enforce source-count hard limit (1T=50 characters, +20 each additional T, 6T=150), and state exact computed limit in prompt. Build structural coverage from ordered source IDs, source hashes, and summary.
+6. State the source-count target in the prompt (1T=50 characters, +20 each additional T, 6T=150), but enforce a program hard limit at twice that target (1T=100 through 6T=300). Build structural coverage from ordered source IDs, source hashes, and summary.
 7. Run budget maintenance before commit.
 8. Save immutable Episode, append active Episode page, then remove committed pending IDs.
 9. On failure, preserve pending IDs and raw chat; expose error.

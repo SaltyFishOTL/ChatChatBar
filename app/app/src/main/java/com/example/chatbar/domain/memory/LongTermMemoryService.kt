@@ -225,11 +225,11 @@ class LongTermMemoryService(
 
                 val sourceRefs = sourceRefs(batch, messages, latest.session)
                 val baseSourceHash = MemoryHashes.sourceRefs(sourceRefs)
-                val summaryMaxChars = MemoryEpisodeSummaryPolicy.maxChars(batch.size)
+                val summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(batch.size)
                 val response = ai.episode(
                     model = modelConfig,
                     renderedTurns = renderSourceTurns(batch, messages, state.timeline, latest.session),
-                    summaryMaxChars = summaryMaxChars
+                    summaryPromptMaxChars = summaryPromptMaxChars
                 ) { output -> validateEpisodeResponse(output, batch.size) }
                 val currentSourceRefs = sourceRefs(batch, chatRepository.getMessages(sessionId), latest.session)
                 check(MemoryHashes.sourceRefs(currentSourceRefs) == baseSourceHash) {
@@ -609,7 +609,7 @@ class LongTermMemoryService(
                 ai.episode(
                     model = model,
                     renderedTurns = request.renderedEvidence,
-                    summaryMaxChars = MemoryEpisodeSummaryPolicy.maxChars(sourceTurnCount),
+                    summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(sourceTurnCount),
                     onStreamingSummary = onStreamingSummary
                 ) { output -> validateEpisodeResponse(output, sourceTurnCount) }.summary
             }
@@ -1016,11 +1016,11 @@ class LongTermMemoryService(
                     streamingSummary = streamingSummary
                 )
                 notifyProgress(progress(MemoryBackfillPhase.GENERATING_EPISODE))
-                val summaryMaxChars = MemoryEpisodeSummaryPolicy.maxChars(batch.size)
+                val summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(batch.size)
                 val response = ai.episode(
                     modelConfig,
                     renderSourceTurns(batch, loaded.messages, loaded.state.timeline, loaded.session),
-                    summaryMaxChars,
+                    summaryPromptMaxChars,
                     onStreamingSummary = { summary ->
                         notifyProgress(progress(MemoryBackfillPhase.GENERATING_EPISODE, summary))
                     }
@@ -1220,11 +1220,11 @@ class LongTermMemoryService(
         val (base, latest) = prepared
         val refs = sourceRefs(listOf(latest), base.messages, base.session)
         val baseRevision = base.state.revision
-        val summaryMaxChars = MemoryEpisodeSummaryPolicy.maxChars(1)
+        val summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(1)
         val response = ai.episode(
             modelConfig,
             renderSourceTurns(listOf(latest), base.messages, base.state.timeline, base.session),
-            summaryMaxChars
+            summaryPromptMaxChars
         ) { output -> validateEpisodeResponse(output, 1) }
         val node = createEpisodeNode(sessionId, refs, response)
         val current = stateLock(sessionId) { loadLocked(sessionId) }
@@ -2463,9 +2463,10 @@ class LongTermMemoryService(
     private fun validateEpisodeResponse(response: EpisodeResponse, sourceTurnCount: Int) {
         val summary = response.summary.trim()
         check(summary.isNotBlank()) { "Episode summary为空" }
-        val maxChars = MemoryEpisodeSummaryPolicy.maxChars(sourceTurnCount)
-        check(MemoryEpisodeSummaryPolicy.characterCount(summary) <= maxChars) {
-            "Episode summary超过${maxChars}字上限"
+        val promptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(sourceTurnCount)
+        val hardMaxChars = MemoryEpisodeSummaryPolicy.hardMaxChars(sourceTurnCount)
+        check(MemoryEpisodeSummaryPolicy.isWithinHardLimit(summary, sourceTurnCount)) {
+            "Episode summary超过${hardMaxChars}字程序硬上限（Prompt目标${promptMaxChars}字）"
         }
         check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(summary)) {
             "Episode包含无T限定的现在/目前/仍然"

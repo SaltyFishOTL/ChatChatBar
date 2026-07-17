@@ -77,14 +77,14 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
     suspend fun episode(
         model: ModelConfig,
         renderedTurns: String,
-        summaryMaxChars: Int,
+        summaryPromptMaxChars: Int,
         onStreamingSummary: ((String) -> Unit)? = null,
         validate: (EpisodeResponse) -> Unit
     ): EpisodeResponse = requestJson(
         serializer = EpisodeResponse.serializer(),
         model = model,
-        basePrompt = PromptTemplates.memoryEpisodePrompt(renderedTurns, summaryMaxChars),
-        maxTokens = summaryMaxChars * 2 + 128,
+        basePrompt = PromptTemplates.memoryEpisodePrompt(renderedTurns, summaryPromptMaxChars),
+        maxTokens = summaryPromptMaxChars * 2 + 128,
         onStreamingText = onStreamingSummary,
         validate = validate
     )

@@ -7,19 +7,22 @@ import org.junit.Test
 
 class MemoryEpisodeSummaryPolicyTest {
     @Test
-    fun maxLengthStartsAtFiftyAndAddsTwentyPerTurn() {
-        assertEquals(50, MemoryEpisodeSummaryPolicy.maxChars(1))
-        assertEquals(70, MemoryEpisodeSummaryPolicy.maxChars(2))
-        assertEquals(90, MemoryEpisodeSummaryPolicy.maxChars(3))
-        assertEquals(110, MemoryEpisodeSummaryPolicy.maxChars(4))
-        assertEquals(130, MemoryEpisodeSummaryPolicy.maxChars(5))
-        assertEquals(150, MemoryEpisodeSummaryPolicy.maxChars(6))
+    fun promptTargetStartsAtFiftyAndAddsTwentyPerTurn() {
+        assertEquals(50, MemoryEpisodeSummaryPolicy.promptMaxChars(1))
+        assertEquals(70, MemoryEpisodeSummaryPolicy.promptMaxChars(2))
+        assertEquals(90, MemoryEpisodeSummaryPolicy.promptMaxChars(3))
+        assertEquals(110, MemoryEpisodeSummaryPolicy.promptMaxChars(4))
+        assertEquals(130, MemoryEpisodeSummaryPolicy.promptMaxChars(5))
+        assertEquals(150, MemoryEpisodeSummaryPolicy.promptMaxChars(6))
     }
 
     @Test
-    fun hardLimitCountsUnicodeCharacters() {
+    fun hardLimitIsTwicePromptTargetAndCountsUnicodeCharacters() {
+        assertEquals(100, MemoryEpisodeSummaryPolicy.hardMaxChars(1))
+        assertEquals(140, MemoryEpisodeSummaryPolicy.hardMaxChars(2))
+        assertEquals(300, MemoryEpisodeSummaryPolicy.hardMaxChars(6))
         assertEquals(2, MemoryEpisodeSummaryPolicy.characterCount("人🙂"))
-        assertTrue(MemoryEpisodeSummaryPolicy.isWithinLimit("事".repeat(70), 2))
-        assertFalse(MemoryEpisodeSummaryPolicy.isWithinLimit("事".repeat(71), 2))
+        assertTrue(MemoryEpisodeSummaryPolicy.isWithinHardLimit("事".repeat(140), 2))
+        assertFalse(MemoryEpisodeSummaryPolicy.isWithinHardLimit("事".repeat(141), 2))
     }
 }

@@ -50,7 +50,7 @@
 
 - Treat `MemoryNode.content`/`body` as the single formal node text used by UI, injection, budget, diff, editing, and later compression. Keep `coverageUnits` internal and never render them as duplicate user-facing text.
 - Episode covers 1–N source turns with one direct aggregate paragraph. New Episodes contain no per-source summary text; ordered source IDs, source hashes, and structural coverage hash are program-owned evidence. Old per-source coverage remains read-compatible only.
-- Enforce Episode summary hard limits from source-turn count: 1T=50 characters, +20 per additional T, up to 6T=150. Include exact computed limit in every Episode prompt.
+- Set Episode summary prompt targets from source-turn count: 1T=50 characters, +20 per additional T, up to 6T=150. Include the exact target in every Episode prompt, but reject only above twice that target (1T=100 through 6T=300) so AI character-count error has bounded tolerance.
 - Let programs choose ordered candidates and calculate ranges. AI may only consume a legal continuous prefix.
 - Preserve every child's identity and coverage. Compression changes active frontier, not immutable source nodes.
 - Require exact program-owned source coverage, child coverage, hashes, legal counts, correct order, and actual text reduction before commit.
