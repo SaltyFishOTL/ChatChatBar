@@ -17,6 +17,7 @@ enum class MessageRole {
 
 @Serializable
 enum class MessageFormatRepairNoticeKind {
+    APPLIED,
     ERROR,
     STOPPED,
     LENGTH_ANOMALY

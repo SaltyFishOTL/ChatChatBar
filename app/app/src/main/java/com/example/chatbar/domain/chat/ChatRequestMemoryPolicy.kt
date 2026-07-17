@@ -11,6 +11,16 @@ object ChatRequestMemoryPolicy {
         ?.takeIf(String::isNotBlank)
         ?.let { ChatApiMessage.text("system", it) }
 
+    fun orderedDynamicMessages(
+        worldBookAndRag: String?,
+        archive: String?,
+        headAndTimeline: String?
+    ): List<ChatApiMessage> = listOfNotNull(
+        systemMessage(worldBookAndRag),
+        archiveMessage(archive),
+        systemMessage(headAndTimeline)
+    )
+
     fun containsArchive(messages: List<ChatApiMessage>): Boolean = messages.any { message ->
         message.role == "system" && runCatching {
             message.content.jsonPrimitive.contentOrNull?.contains(archiveMarker) == true
@@ -21,4 +31,8 @@ object ChatRequestMemoryPolicy {
         if (archive.isNullOrBlank()) return
         check(containsArchive(messages)) { "长期记忆Archive未写入最终请求，已阻止发送" }
     }
+
+    private fun systemMessage(content: String?): ChatApiMessage? = content
+        ?.takeIf(String::isNotBlank)
+        ?.let { ChatApiMessage.text("system", it) }
 }

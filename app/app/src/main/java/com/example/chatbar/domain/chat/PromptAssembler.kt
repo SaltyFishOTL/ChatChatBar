@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
+import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
@@ -178,7 +179,6 @@ class PromptAssembler {
             PromptTemplates.SECTION_CHARACTER,
             buildCharacterSection(characterCard)
         )
-        addRawSection(PromptLayer.DYNAMIC, memoryArchive.orEmpty())
         addSection(
             PromptLayer.DYNAMIC,
             PromptTemplates.SECTION_WORLD_BOOK,
@@ -189,6 +189,7 @@ class PromptAssembler {
             PromptTemplates.SECTION_REFERENCE,
             buildRagCardsSection(ragResults, ragInjectionMode)
         )
+        addRawSection(PromptLayer.DYNAMIC, memoryArchive.orEmpty())
         addRawSection(PromptLayer.DYNAMIC, memoryHeadAndTimeline.orEmpty())
         if (formatCard != null && formatCard.content.isNotBlank()) {
             addSection(
@@ -331,9 +332,17 @@ class PromptAssembler {
         ragInjectionMode: String
     ): String {
         if (ragResults.isEmpty() || ragInjectionMode.equals("OFF", ignoreCase = true)) return ""
+        val (memoryCards, otherCards) = ragResults.partition {
+            it.type == ChunkSourceType.CHAT_MEMORY
+        }
+        val orderedCards = otherCards + memoryCards
         return buildString {
             appendLine(ragInjectionInstruction(ragInjectionMode))
-            ragResults.forEachIndexed { index, chunk ->
+            orderedCards.forEachIndexed { index, chunk ->
+                if (memoryCards.isNotEmpty() && index == otherCards.size) {
+                    appendLine()
+                    appendLine(PromptTemplates.RAG_CHAT_MEMORY_USAGE_NOTE.trim())
+                }
                 appendLine()
                 appendLine("[卡片 ${index + 1}]")
                 appendLine("类型: ${chunk.typeLabel}")

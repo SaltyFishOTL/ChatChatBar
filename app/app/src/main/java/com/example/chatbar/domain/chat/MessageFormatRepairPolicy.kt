@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
+import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 
 object MessageFormatRepairPolicy {
     fun progressiveOverlay(original: String, repairedPrefix: String): String {
@@ -13,12 +14,12 @@ object MessageFormatRepairPolicy {
         return repairedPrefix + original.substring(suffixStart)
     }
 
-    fun isLengthAnomalous(original: String, repaired: String): Boolean {
-        val originalLength = original.codePointCount()
-        if (originalLength == 0) return repaired.isNotEmpty()
-        val repairedLength = repaired.codePointCount()
-        return repairedLength * 2 < originalLength || repairedLength > originalLength * 2
-    }
+    fun completedRepairNotice(original: String, repaired: String): MessageFormatRepairNotice =
+        MessageFormatRepairNotice(
+            kind = MessageFormatRepairNoticeKind.APPLIED,
+            targetContent = repaired,
+            originalContent = original
+        )
 
     fun replaceCurrentDisplayContent(
         message: ChatMessage,
@@ -45,9 +46,12 @@ object MessageFormatRepairPolicy {
     fun applicableNotice(message: ChatMessage): MessageFormatRepairNotice? =
         message.formatRepairNotice?.takeIf { it.targetContent == message.displayContent }
 
+    fun recoverableNotice(message: ChatMessage): MessageFormatRepairNotice? =
+        applicableNotice(message)?.takeIf { it.originalContent != null }
+
     fun restoreOriginal(message: ChatMessage, updatedAt: Long = System.currentTimeMillis()): ChatMessage? {
-        val notice = applicableNotice(message) ?: return null
-        val original = notice.originalContent ?: return null
+        val notice = recoverableNotice(message) ?: return null
+        val original = checkNotNull(notice.originalContent)
         return replaceCurrentDisplayContent(
             message = message,
             replacement = original,

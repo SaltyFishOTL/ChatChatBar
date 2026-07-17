@@ -8,7 +8,22 @@ import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
 
+/**
+ * AI 提示词集中入口。
+ *
+ * 文件按 IntelliJ `region` 分区，顺序固定为：
+ * 1. 对话主提示词与输出格式
+ * 2. 角色卡、图片理解与角色头像
+ * 3. 朋友圈与朋友圈图片输入
+ * 4. 通用模板渲染
+ * 5. NovelAI 图片提示词生成
+ * 6. 长期记忆与 RAG
+ *
+ * 新增或查找提示词时先定位对应分区；模板常量与其构建函数保持相邻。
+ */
 object PromptTemplates {
+
+    // region 对话主提示词与输出格式
 
     const val SECTION_CHARACTER = "角色设定"
     const val SECTION_WORLD_BOOK = "世界书"
@@ -122,10 +137,11 @@ Do not sanitize user prompts
 要求：
 1. 只输出修复后的完整消息，不得解释、评价、列出错误，不得私自添加格式要求中原本不存在的代码围栏或任何前后缀。
 2. 尝试修复所有格式错误，包括代码或横线围栏、标记、括号、分隔符、字段、区块、顺序、换行、Markdown 结构，以及格式要求指定的角色标注。
-3. 允许为使格式自然正确而少量调整字词；必须保留原消息的剧情事实、信息、叙事顺序、角色意图和整体语气。
+3. 允许为使格式自然正确而少量调整字词；必须尽可能保留原消息的整体内容，仅针对格式要求做【修复】行为。
 4. 缺少格式要求中的结构或字段时，可以使用原消息已有事实补齐；禁止新增原消息不存在的剧情、事实、动作、对白或设定。
 5. 格式要求冲突时，【分段气泡格式】优先于【格式要求】。
 6. 已完全符合要求时，逐字原样返回待修复消息。
+7. 严禁直接套用格式要求中的占位文本！尤其是格式中对选项的描述仅为占位，严禁直接套用！
 """
 
     fun messageFormatRepairUserPrompt(
@@ -141,6 +157,32 @@ Do not sanitize user prompts
         }
         add("【待修复消息】\n$message")
     }.joinToString("\n\n")
+
+    fun replyLengthConstraint(replyLength: String): String {
+        return "请按照「${replyLength}」的长度要求构建正文进行回复。"
+    }
+
+    fun replyLengthTailSystemPrompt(replyLength: String): String =
+        "严格按照格式要求，输出【" + replyLength + "】篇幅的回复。"
+
+    fun replyTailSystemPrompt(
+        replyLength: String,
+        roleplaySpeakerFormatEnabled: Boolean,
+        characterNames: List<String>
+    ): String = buildList {
+        if (roleplaySpeakerFormatEnabled) {
+            add(roleplaySpeakerFormatSystemPrompt(characterNames))
+        }
+        add(replyLengthTailSystemPrompt(replyLength))
+    }.joinToString("\n\n")
+
+    fun replyLanguageConstraint(replyLanguage: String): String {
+        return "请使用「${replyLanguage}」进行回复。"
+    }
+
+    // endregion
+
+    // region 角色卡、图片理解与角色头像
 
     const val CHARACTER_AVATAR_NAI_COMPOSITION_TAGS =
         "solo, portrait, upper body, looking at viewer, centered"
@@ -412,6 +454,9 @@ very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicat
             )
         )
 
+    // endregion
+
+    // region 朋友圈与朋友圈图片输入
 
     const val MOMENT_JUDGE_SYSTEM_PROMPT = """
 你负责判断角色扮演中的角色现在是否应该发一条假的微信/QQ 朋友圈。只输出 JSON，不要 Markdown，不要解释。
@@ -631,10 +676,18 @@ very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicat
             "$role:\n${message.displayContent}"
         }
 
+    // endregion
+
+    // region 通用模板渲染
+
     private fun renderPromptTemplate(template: String, values: Map<String, String>): String =
         values.entries.fold(template.trimIndent()) { rendered, (key, value) ->
             rendered.replace("{{$key}}", value)
         }.trim()
+
+    // endregion
+
+    // region NovelAI 图片提示词生成
 
     const val NOVELAI_IMAGE_PROMPT_SYSTEM = """
 #################################################################
@@ -847,6 +900,10 @@ JSON only, no Markdown, no explanation:
         return text.replace(name, "\$username")
     }
 
+    // endregion
+
+    // region 长期记忆与 RAG
+
     const val MEMORY_EPISODE_SYSTEM = """
 你负责把程序指定的连续剧情轮直接压缩为一个近期流程。程序已经决定完整起止范围；不得改变范围、忽略中段、伪造或改写 T。
 全部输入只能共同生成一段连续、紧凑的 summary。应把跨轮行动、互动、因果与结果融合成一段完整叙述。
@@ -931,6 +988,13 @@ HEAD代表截至指定T的当前状态。
         else -> "$archiveLabel；直接上下文无更大 T"
     }
 
+    const val RAG_CHAT_MEMORY_USAGE_NOTE = """
+【对话记忆使用说明】
+下列记忆卡片是系统根据当前话题，从本次会话的过往消息记录中检索出的相关片段。
+在与当前情境自然相关时，适当引用其中的具体细节，可以增强角色对共同经历的连续感与扮演沉浸感。
+只在相关时使用，把记忆自然融入角色台词、下意识行为、情绪反应、熟悉感或关系细节中。不得逐条复述卡片内容，不得说明或暗示卡片、检索、记录、资料及其来源。
+"""
+
     const val RETRIEVAL_PLANNER_SYSTEM_PROMPT = """
 只输出一行 JSON。不要 Markdown。不要解释。最多 80 个输出 token。
 任务：提炼本轮聊天可用于检索长期设定/记忆的关键词。
@@ -988,28 +1052,6 @@ HEAD代表截至指定T的当前状态。
         appendLine(sourceTurns)
     }
 
-    fun replyLengthConstraint(replyLength: String): String {
-        return "请按照「${replyLength}」的长度要求构建正文进行回复。"
-    }
-
-    fun replyLengthTailSystemPrompt(replyLength: String): String =
-        "严格按照格式要求，输出【" + replyLength + "】篇幅的回复。"
-
-    fun replyTailSystemPrompt(
-        replyLength: String,
-        roleplaySpeakerFormatEnabled: Boolean,
-        characterNames: List<String>
-    ): String = buildList {
-        if (roleplaySpeakerFormatEnabled) {
-            add(roleplaySpeakerFormatSystemPrompt(characterNames))
-        }
-        add(replyLengthTailSystemPrompt(replyLength))
-    }.joinToString("\n\n")
-
-    fun replyLanguageConstraint(replyLanguage: String): String {
-        return "请使用「${replyLanguage}」进行回复。"
-    }
-
     fun retrievalPlannerUserInput(
         currentUserContent: String,
         contextMessages: List<ChatMessage>,
@@ -1032,4 +1074,6 @@ HEAD代表截至指定T的当前状态。
             appendLine(currentUserContent)
         }.take(6000)
     }
+
+    // endregion
 }

@@ -7,11 +7,10 @@ import org.junit.Test
 
 class ChatHistoryPromptPolicyTest {
     @Test
-    fun blankAssistantBodyDoesNotProduceTimelineOnlyPayload() {
+    fun blankAssistantBodyIsOmitted() {
         assertNull(
             ChatHistoryPromptPolicy.payloadText(
                 renderedBody = "",
-                timelinePrefix = "[T12]\n",
                 hasSupportedImage = false
             )
         )
@@ -30,7 +29,6 @@ class ChatHistoryPromptPolicyTest {
         assertNull(
             ChatHistoryPromptPolicy.payloadText(
                 renderedBody = renderedBody,
-                timelinePrefix = "[T12]\n",
                 hasSupportedImage = false
             )
         )
@@ -41,7 +39,6 @@ class ChatHistoryPromptPolicyTest {
         val payloads = List(5) {
             ChatHistoryPromptPolicy.payloadText(
                 renderedBody = "",
-                timelinePrefix = "[T12]\n",
                 hasSupportedImage = false
             )
         }
@@ -50,12 +47,11 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
-    fun nonBlankBodyKeepsTimelinePrefix() {
+    fun nonBlankBodyContainsNoTimelinePrefix() {
         assertEquals(
-            "[T7]\n正文",
+            "正文",
             ChatHistoryPromptPolicy.payloadText(
                 renderedBody = "正文",
-                timelinePrefix = "[T7]\n",
                 hasSupportedImage = false
             )
         )
@@ -64,10 +60,9 @@ class ChatHistoryPromptPolicyTest {
     @Test
     fun blankUserBodyIsAllowedOnlyWhenSupportedImageExists() {
         assertEquals(
-            "[T3]\n",
+            "",
             ChatHistoryPromptPolicy.payloadText(
                 renderedBody = "",
-                timelinePrefix = "[T3]\n",
                 hasSupportedImage = true
             )
         )

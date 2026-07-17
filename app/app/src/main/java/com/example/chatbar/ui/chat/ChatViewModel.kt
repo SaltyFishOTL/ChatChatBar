@@ -1508,7 +1508,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     result = when {
                         repairedPrefix == originalContent -> {
                             val unchanged = message.copy(
-                                formatRepairNotice = null,
+                                formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
                             )
                             if (unchanged != message) persistFormatRepairMessage(unchanged)
@@ -1516,20 +1516,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             unchanged
                         }
                         else -> {
-                            val notice = if (
-                                MessageFormatRepairPolicy.isLengthAnomalous(
-                                    original = originalContent,
-                                    repaired = repairedPrefix
-                                )
-                            ) {
-                                MessageFormatRepairNotice(
-                                    kind = MessageFormatRepairNoticeKind.LENGTH_ANOMALY,
-                                    targetContent = repairedPrefix,
-                                    originalContent = originalContent
-                                )
-                            } else {
-                                null
-                            }
+                            val notice = MessageFormatRepairPolicy.completedRepairNotice(
+                                original = originalContent,
+                                repaired = repairedPrefix
+                            )
                             persistFormatRepairMessage(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
@@ -1986,7 +1976,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     contextMessages = contextMsgs,
                     latestMessageId = latestMessageId
                 )
-                fun assemblePromptLayers(memory: MemoryPromptView?) =
+                fun assemblePromptLayers() =
                     promptAssembler.assembleCachePromptLayers(
                         characterCard = charCard,
                         playerSetting = activePlayerSetting,
@@ -1998,7 +1988,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
                         replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
                         memoryArchive = null,
-                        memoryHeadAndTimeline = memory?.headAndTimeline,
+                        memoryHeadAndTimeline = null,
                         worldBookPrompt = wbPrompt,
                         worldBookOutlets = wbOutlets,
                         hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty(),
@@ -2014,16 +2004,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } else {
                     null
                 }
-                val promptLayers = assemblePromptLayers(memoryView)
-                fun timelinePrefix(message: ChatMessage?): String {
-                    val displayT = message?.sourceTurnId
-                        ?.let { memoryView?.displayTBySourceTurnId?.get(it) }
-                    return displayT?.let { "[T$it]\n" }.orEmpty()
-                }
+                val promptLayers = assemblePromptLayers()
                 val promptSystemDebug = listOf(
                     promptLayers.stableSystemPrompt,
-                    memoryView?.archive.orEmpty(),
                     promptLayers.dynamicSystemPrompt,
+                    memoryView?.archive.orEmpty(),
+                    memoryView?.headAndTimeline.orEmpty(),
                     promptLayers.tailSystemPrompt
                 ).filter(String::isNotBlank).joinToString("\n\n")
                 val promptCacheKey = promptLayers.stableSystemPrompt
@@ -2048,7 +2034,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         msg.role == MessageRole.USER
                     val text = ChatHistoryPromptPolicy.payloadText(
                         renderedBody = renderedBody,
-                        timelinePrefix = timelinePrefix(msg),
                         hasSupportedImage = hasSupportedImage
                     ) ?: return
                     if (hasSupportedImage) {
@@ -2082,11 +2067,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 2. Archive独立注入；RAG、世界书、HEAD等动态资料随后注入。
-                ChatRequestMemoryPolicy.archiveMessage(memoryView?.archive)?.let(apiMessages::add)
-                promptLayers.dynamicSystemPrompt.takeIf(String::isNotBlank)?.let { dynamicPrompt ->
-                    apiMessages.add(ChatApiMessage.text("system", dynamicPrompt))
-                }
+                // 2. 动态资料固定顺序：世界书 → RAG → Archive → HEAD。
+                ChatRequestMemoryPolicy.orderedDynamicMessages(
+                    worldBookAndRag = promptLayers.dynamicSystemPrompt,
+                    archive = memoryView?.archive,
+                    headAndTimeline = memoryView?.headAndTimeline
+                ).forEach(apiMessages::add)
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))
                 }
@@ -2115,20 +2101,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
                     persistUserMessage -> {
-                        val persistedUser = allMsgs.firstOrNull { it.id == userMsg.id }
-                        currentUserContent = timelinePrefix(persistedUser) + renderSessionText(finalUserContent)
+                        currentUserContent = renderSessionText(finalUserContent)
                         currentUserImages = userMsgImages
                         true
                     }
                     regenTargetUserMsg != null -> {
-                        currentUserContent = timelinePrefix(regenTargetUserMsg) +
-                            renderSessionText(regenTargetUserMsg.displayContent)
+                        currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
                         currentUserImages = regenTargetUserMsg.images
                         true
                     }
                     content.isNotBlank() -> {
-                        val latestStoryMessage = allMsgs.lastOrNull { it.role != MessageRole.SYSTEM }
-                        currentUserContent = timelinePrefix(latestStoryMessage) + renderSessionText(content)
+                        currentUserContent = renderSessionText(content)
                         currentUserImages = emptyList()
                         true
                     }

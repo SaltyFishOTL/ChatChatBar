@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
@@ -171,18 +172,25 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(layers.dynamicSystemPrompt.isBlank())
     }
 
-    @Test fun dynamicLayersKeepArchiveWorldBookRagHeadTimelineOrder() {
+    @Test fun dynamicLayersKeepWorldBookRagArchiveHeadTimelineOrder() {
         val layers = assembler.assembleCachePromptLayers(
             characterCard = card(basicSetting = "stable"),
-            memoryArchive = "【ARCHIVE｜历史档案】\n[Era T0-T20] archive",
+            memoryArchive = "【ARCHIVE｜历史档案】\narchive",
             worldBookPrompt = "world-book",
             ragResults = listOf(
+                RetrievedKnowledgeCard(
+                    id = "document",
+                    type = ChunkSourceType.DOCUMENT,
+                    sourceId = "document-source",
+                    sourceLabel = "document",
+                    content = "document-recalled"
+                ),
                 RetrievedKnowledgeCard(
                     id = "rag",
                     type = ChunkSourceType.CHAT_MEMORY,
                     sourceId = "session",
                     sourceLabel = "memory",
-                    content = "recalled",
+                    content = "memory-recalled",
                     metadata = mapOf("timelineStart" to "8", "timelineEnd" to "8")
                 )
             ),
@@ -196,15 +204,44 @@ class PromptAssemblerCharacterModeTest {
         val worldBook = dynamic.indexOf("【世界书】")
         val rag = dynamic.indexOf("【RAG｜召回资料】")
         val head = dynamic.indexOf("【HEAD｜当前状态｜截至 T30】")
+        val documentCard = dynamic.indexOf("document-recalled")
+        val memoryNote = dynamic.indexOf(PromptTemplates.RAG_CHAT_MEMORY_USAGE_NOTE.trim())
+        val memoryCard = dynamic.indexOf("memory-recalled")
 
         assertTrue(archive >= 0)
-        assertTrue(archive < worldBook)
         assertTrue(worldBook < rag)
-        assertTrue(rag < head)
+        assertTrue(rag < archive)
+        assertTrue(archive < head)
         assertTrue(dynamic.contains("[卡片 1]"))
+        assertTrue(dynamic.contains("[卡片 2]"))
+        assertTrue(documentCard < memoryNote)
+        assertTrue(memoryNote < memoryCard)
+        assertTrue(memoryNote == dynamic.lastIndexOf(PromptTemplates.RAG_CHAT_MEMORY_USAGE_NOTE.trim()))
         assertFalse(dynamic.contains("[召回自 T8]"))
         assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
         assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
+    }
+
+    @Test fun documentOnlyRagSkipsChatMemoryUsageNote() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card(basicSetting = "stable"),
+            ragResults = listOf(
+                RetrievedKnowledgeCard(
+                    id = "document",
+                    type = ChunkSourceType.DOCUMENT,
+                    sourceId = "document-source",
+                    sourceLabel = "document",
+                    content = "document-recalled"
+                )
+            ),
+            hasHistoryMessages = true,
+            hasPreviousTurn = true
+        )
+
+        assertTrue(layers.dynamicSystemPrompt.contains("document-recalled"))
+        assertFalse(
+            layers.dynamicSystemPrompt.contains(PromptTemplates.RAG_CHAT_MEMORY_USAGE_NOTE.trim())
+        )
     }
 
     private fun card(

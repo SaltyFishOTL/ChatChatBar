@@ -1360,7 +1360,7 @@ private fun MessageFormatRepairNoticeRow(
                 notice?.kind == MessageFormatRepairNoticeKind.ERROR ->
                     "格式修复失败：${notice.errorMessage ?: "未知错误"}"
                 notice?.kind == MessageFormatRepairNoticeKind.STOPPED -> "格式修复已停止"
-                else -> "修复后长度异常"
+                else -> "格式已修复"
             },
             modifier = Modifier.weight(1f),
             color = if (notice?.kind == MessageFormatRepairNoticeKind.ERROR) {

@@ -5,9 +5,7 @@ import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageFormatRepairPolicyTest {
@@ -19,11 +17,53 @@ class MessageFormatRepairPolicyTest {
     }
 
     @Test
-    fun lengthAnomaly_usesExclusiveHalfAndDoubleBounds() {
-        assertFalse(MessageFormatRepairPolicy.isLengthAnomalous("1234", "12"))
-        assertFalse(MessageFormatRepairPolicy.isLengthAnomalous("1234", "12345678"))
-        assertTrue(MessageFormatRepairPolicy.isLengthAnomalous("1234", "1"))
-        assertTrue(MessageFormatRepairPolicy.isLengthAnomalous("1234", "123456789"))
+    fun completedRepairNotice_keepsOriginalForNormalLengthRepair() {
+        val original = "原始回复"
+        val repaired = "错误回复"
+        val notice = MessageFormatRepairPolicy.completedRepairNotice(original, repaired)
+
+        assertEquals(MessageFormatRepairNoticeKind.APPLIED, notice.kind)
+        assertEquals(original, notice.originalContent)
+        assertEquals(repaired, notice.targetContent)
+
+        val updated = MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+            message = message().copy(content = original),
+            replacement = repaired,
+            notice = notice,
+            updatedAt = 9
+        )
+        val restored = MessageFormatRepairPolicy.restoreOriginal(updated, updatedAt = 10)
+
+        assertEquals(original, restored?.displayContent)
+        assertNull(restored?.formatRepairNotice)
+    }
+
+    @Test
+    fun completedRepairNotice_acceptsLargeLengthChangeAndKeepsOriginal() {
+        val notice = MessageFormatRepairPolicy.completedRepairNotice("原始回复很长", "坏")
+
+        assertEquals(MessageFormatRepairNoticeKind.APPLIED, notice.kind)
+        assertEquals("原始回复很长", notice.originalContent)
+        assertEquals("坏", notice.targetContent)
+    }
+
+    @Test
+    fun recoverableNotice_keepsRollbackPointAcrossNoOpRepair() {
+        val notice = MessageFormatRepairPolicy.completedRepairNotice("原始回复", "修复回复")
+        val repaired = message().copy(
+            content = "修复回复",
+            formatRepairNotice = notice
+        )
+
+        assertEquals(notice, MessageFormatRepairPolicy.recoverableNotice(repaired))
+
+        val failed = repaired.copy(
+            formatRepairNotice = MessageFormatRepairNotice(
+                kind = MessageFormatRepairNoticeKind.ERROR,
+                targetContent = repaired.displayContent
+            )
+        )
+        assertNull(MessageFormatRepairPolicy.recoverableNotice(failed))
     }
 
     @Test
