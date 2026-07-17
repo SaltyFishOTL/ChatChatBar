@@ -14,6 +14,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import com.example.chatbar.domain.ProxyAwareClient
+import com.example.chatbar.domain.addModelApiAuthorization
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -76,7 +77,7 @@ class EmbeddingService(
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${config.apiKey}")
+            .addModelApiAuthorization(config.apiKey)
             .addHeader("Content-Type", "application/json")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()

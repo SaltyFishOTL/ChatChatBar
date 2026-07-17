@@ -113,6 +113,7 @@ import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CbAvatar
+import com.example.chatbar.ui.components.CrashReportDeleteConfirmationDialog
 import com.example.chatbar.ui.components.RagConfigurationNoticeDialog
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -137,6 +138,7 @@ import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.swipeToAdjacentTab
+import com.example.chatbar.utils.diagnostics.CrashReportManager
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -1408,6 +1410,8 @@ private fun SettingsTab(
     val scope = rememberCoroutineScope()
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var confirmingCrashReportDelete by remember { mutableStateOf(false) }
+    val pendingCrashReport by CrashReportManager.pendingReport.collectAsState()
     var momentDebugCardId by rememberSaveable { mutableStateOf<String?>(null) }
     LaunchedEffect(characters) {
         if (momentDebugCardId == null || characters.none { it.id == momentDebugCardId }) {
@@ -1542,7 +1546,7 @@ private fun SettingsTab(
     ) {
         SettingsSection("模型与 API") {
             CbText(
-                "模型 API Key 留空时使用全局默认 API Key。",
+                "HTTPS 模型 API Key 留空时使用全局默认 API Key；允许明文 HTTP 后，HTTP 模型留空表示无需鉴权。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -1567,7 +1571,13 @@ private fun SettingsTab(
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 CbButton(
                     "测试连接",
-                    { onTestApiKey(siliconFlowApiKey, allowCleartextModelApi) },
+                    {
+                        CrashReportManager.recordBreadcrumb(
+                            "action",
+                            "test_model_connection cleartext=$allowCleartextModelApi"
+                        )
+                        onTestApiKey(siliconFlowApiKey, allowCleartextModelApi)
+                    },
                     variant = ButtonVariant.Outline
                 )
             }
@@ -1893,6 +1903,48 @@ private fun SettingsTab(
                 }
             }
         }
+        SettingsSection("崩溃诊断") {
+            CbText(
+                "异常退出时在本机生成一个脱敏文本文件；下次启动可直接发送。不会包含 API Key、Token、聊天正文或 Prompt。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            val report = pendingCrashReport
+            if (report == null) {
+                CbText(
+                    "暂无待发送报告",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            } else {
+                CbText(
+                    "${report.trigger} · ${SimpleDateFormat("M月d日 HH:mm", Locale.getDefault()).format(Date(report.createdAt))}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "发送报告",
+                        {
+                            CrashReportManager.sharePendingReport(context)
+                                .onFailure { error ->
+                                    Toast.makeText(
+                                        context,
+                                        "发送报告失败：${error.message}",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                        },
+                        variant = ButtonVariant.Outline
+                    )
+                    CbButton(
+                        "删除报告",
+                        { confirmingCrashReportDelete = true },
+                        variant = ButtonVariant.Destructive
+                    )
+                }
+            }
+        }
         SettingsSection("应用更新") {
             CbText(
                 "当前版本：${BuildConfig.VERSION_NAME}",
@@ -1941,6 +1993,15 @@ private fun SettingsTab(
                 }
                 updateInfo = null
             }
+        )
+    }
+    if (confirmingCrashReportDelete) {
+        CrashReportDeleteConfirmationDialog(
+            onConfirm = {
+                CrashReportManager.deletePendingReport()
+                confirmingCrashReportDelete = false
+            },
+            onDismiss = { confirmingCrashReportDelete = false }
         )
     }
 }

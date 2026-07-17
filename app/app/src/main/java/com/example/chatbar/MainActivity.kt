@@ -20,6 +20,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -33,6 +34,8 @@ import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.kit.CbLoadingState
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.components.AppUpdateDialog
+import com.example.chatbar.ui.components.CrashReportDialog
+import com.example.chatbar.utils.diagnostics.CrashReportManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
@@ -41,6 +44,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_created")
 
         handleSharedIntent(intent)
 
@@ -56,6 +60,10 @@ class MainActivity : ComponentActivity() {
             val uriHandler = LocalUriHandler.current
             val view = LocalView.current
             var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+            val pendingCrashReport by CrashReportManager.pendingReport.collectAsState()
+            var crashDialogDismissed by rememberSaveable(pendingCrashReport?.createdAt) {
+                mutableStateOf(false)
+            }
             LaunchedEffect(settingsInitialized) {
                 if (settingsInitialized) {
                     runCatching {
@@ -87,7 +95,8 @@ class MainActivity : ComponentActivity() {
                     } else {
                         CbLoadingState(label = "ChatBar")
                     }
-                    updateInfo?.let { info ->
+                    val showCrashDialog = pendingCrashReport != null && !crashDialogDismissed
+                    if (!showCrashDialog) updateInfo?.let { info ->
                         AppUpdateDialog(
                             updateInfo = info,
                             onDismiss = { updateInfo = null },
@@ -103,6 +112,24 @@ class MainActivity : ComponentActivity() {
                             }
                         )
                     }
+                    if (showCrashDialog) pendingCrashReport?.let { report ->
+                        CrashReportDialog(
+                            report = report,
+                            onShare = {
+                                CrashReportManager.sharePendingReport(context)
+                                    .onFailure { error ->
+                                        Toast.makeText(
+                                            context,
+                                            "发送报告失败：${error.message}",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                crashDialogDismissed = true
+                            },
+                            onDelete = CrashReportManager::deletePendingReport,
+                            onDismiss = { crashDialogDismissed = true }
+                        )
+                    }
                 }
             }
         }
@@ -110,6 +137,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_new_intent")
         setIntent(intent)
         handleSharedIntent(intent)
     }
@@ -119,6 +147,7 @@ class MainActivity : ComponentActivity() {
             return
         }
         if (intent.action == Intent.ACTION_SEND) {
+            CrashReportManager.recordBreadcrumb("action", "receive_shared_file")
             val uri = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
                 intent.getParcelableExtra(Intent.EXTRA_STREAM, Uri::class.java)
             } else {

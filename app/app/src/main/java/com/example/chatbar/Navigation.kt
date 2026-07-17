@@ -43,6 +43,7 @@ import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.worldbook.WorldBookEditScreen
 import com.example.chatbar.ui.tutorial.TutorialScreen
 import com.example.chatbar.ui.kit.swipeToAdjacentTab
+import com.example.chatbar.utils.diagnostics.CrashReportManager
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
@@ -115,6 +116,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
         if ((!communityEnabled && currentRoute == CommunityRoute) || (!momentsEnabled && currentRoute == MomentsRoute)) {
             showRoot(HomeRoute)
         }
+    }
+    LaunchedEffect(currentRoute) {
+        CrashReportManager.recordBreadcrumb("navigation", currentRoute.diagnosticRouteName())
     }
     LaunchedEffect(Unit) {
         ChatBarApp.instance.chatRepository.initialize()
@@ -275,3 +279,18 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
 
 const val CURRENT_TUTORIAL_VERSION = 1
 private const val EXIT_CONFIRM_WINDOW_MS = 2_000L
+
+private fun NavKey.diagnosticRouteName(): String = when (this) {
+    HomeRoute -> "home"
+    MomentsRoute -> "moments"
+    CommunityRoute -> "community"
+    ManageRoute -> "manage"
+    ImagePromptToolRoute -> "image_prompt_tool"
+    is ChatRoute -> "chat"
+    is CharacterEditRoute -> "character_edit"
+    is FormatCardEditRoute -> "format_card_edit"
+    is WorldBookEditRoute -> "world_book_edit"
+    is ModelEditRoute -> "model_edit"
+    is TutorialRoute -> if (advanced) "tutorial_advanced" else "tutorial"
+    else -> "unknown"
+}

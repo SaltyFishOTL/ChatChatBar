@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
+import java.net.URI
 
 data class ModelConfigurationStatus(
     val isUsable: Boolean,
@@ -111,7 +112,7 @@ class EffectiveModelResolver(
     suspend fun retrievalModel(appSettings: AppSettings): ModelConfig? =
         (models.getRetrievalModel()?.withEffectiveApiKey(appSettings)
             ?: presets.catalog.retrievalModel?.takeIf(::isConfigured)?.toModelConfig(appSettings)
-        )?.takeIf { it.apiKey.isNotBlank() }
+        )?.takeIf { it.hasConfiguredAuthentication(appSettings) }
 
     suspend fun embeddingModel(): EmbeddingConfig? = embeddingModel(settings.getAppSettings())
 
@@ -127,7 +128,7 @@ class EffectiveModelResolver(
                     dimensions = it.dimensions
                 )
             }
-        )?.takeIf { it.apiKey.isNotBlank() }
+        )?.takeIf { it.hasConfiguredAuthentication(appSettings) }
 
     suspend fun status(): ModelConfigurationStatus = status(settings.getAppSettings())
 
@@ -135,7 +136,12 @@ class EffectiveModelResolver(
         val default = defaultChatModel(appSettings)
         val retrieval = retrievalModel(appSettings)
         val embedding = embeddingModel(appSettings)
-        return modelConfigurationStatus(default, retrieval, embedding)
+        return modelConfigurationStatus(
+            default = default,
+            retrieval = retrieval,
+            embedding = embedding,
+            allowCleartextModelApi = appSettings.allowCleartextModelApi
+        )
     }
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
@@ -188,10 +194,16 @@ class EffectiveModelResolver(
     private fun presetRef(key: String): String = PresetModelCatalogService.PRESET_REF_PREFIX + key
 
     private fun ModelConfig.withEffectiveApiKey(appSettings: AppSettings): ModelConfig =
-        copy(apiKey = apiKey.trim().ifBlank { effectivePresetApiKey(appSettings) })
+        copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
-        copy(apiKey = apiKey.trim().ifBlank { effectivePresetApiKey(appSettings) })
+        copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
+
+    private fun ModelConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
+        isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)
+
+    private fun EmbeddingConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
+        isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)
 }
 
 internal fun selectFormatRepairModel(
@@ -224,11 +236,14 @@ internal fun selectDefaultImageModel(
 internal fun modelConfigurationStatus(
     default: ModelConfig?,
     retrieval: ModelConfig?,
-    embedding: EmbeddingConfig?
+    embedding: EmbeddingConfig?,
+    allowCleartextModelApi: Boolean = false
 ): ModelConfigurationStatus {
     val errors = buildList {
         if (default == null) add("未配置可用默认对话模型")
-        else if (default.apiKey.isBlank()) add("默认对话模型/API Key 未配置")
+        else if (!isModelAuthenticationConfigured(default.baseUrl, default.apiKey, allowCleartextModelApi)) {
+            add("默认对话模型/API Key 未配置")
+        }
     }
     val warnings = buildList {
         if (retrieval == null) add("检索规划模型未配置，RAG 检索规划将回退到对话模型")
@@ -240,3 +255,24 @@ internal fun modelConfigurationStatus(
         warnings = warnings
     )
 }
+
+internal fun resolveEffectiveModelApiKey(
+    modelApiKey: String,
+    baseUrl: String,
+    appSettings: AppSettings
+): String {
+    val localKey = modelApiKey.trim()
+    if (localKey.isNotEmpty()) return localKey
+    if (appSettings.allowCleartextModelApi && baseUrl.isCleartextHttpUrl()) return ""
+    return appSettings.siliconFlowApiKey.trim()
+}
+
+internal fun isModelAuthenticationConfigured(
+    baseUrl: String,
+    apiKey: String,
+    allowCleartextModelApi: Boolean
+): Boolean = apiKey.isNotBlank() || (allowCleartextModelApi && baseUrl.isCleartextHttpUrl())
+
+private fun String.isCleartextHttpUrl(): Boolean = runCatching {
+    URI(trim()).scheme.equals("http", ignoreCase = true)
+}.getOrDefault(false)

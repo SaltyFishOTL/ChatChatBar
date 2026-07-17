@@ -2,6 +2,7 @@ package com.example.chatbar.domain
 
 import okhttp3.Dns
 import okhttp3.OkHttpClient
+import okhttp3.Request
 import java.io.IOException
 import java.net.Inet4Address
 import java.net.InetSocketAddress
@@ -86,4 +87,10 @@ object ProxyAwareClient {
 internal object CleartextHttpPolicy {
     fun isAllowed(isHttps: Boolean, allowCleartextHttp: Boolean): Boolean =
         isHttps || allowCleartextHttp
+}
+
+internal fun Request.Builder.addModelApiAuthorization(apiKey: String): Request.Builder = apply {
+    apiKey.trim()
+        .takeIf(String::isNotEmpty)
+        ?.let { addHeader("Authorization", "Bearer $it") }
 }

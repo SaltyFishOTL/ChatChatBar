@@ -32,6 +32,7 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import okhttp3.sse.EventSource
 import com.example.chatbar.domain.ProxyAwareClient
+import com.example.chatbar.domain.addModelApiAuthorization
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
@@ -208,7 +209,7 @@ class StreamingChatService(
             var retrying = false
             val request = Request.Builder()
                 .url(url)
-                .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+                .addModelApiAuthorization(modelConfig.apiKey)
                 .addHeader("Content-Type", "application/json")
                 .addHeader("Accept", "text/event-stream")
                 .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
@@ -349,7 +350,7 @@ class StreamingChatService(
         )
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addModelApiAuthorization(modelConfig.apiKey)
             .addHeader("Content-Type", "application/json")
             .addHeader("Accept", "text/event-stream")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
@@ -422,7 +423,7 @@ class StreamingChatService(
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addModelApiAuthorization(modelConfig.apiKey)
             .addHeader("Content-Type", "application/json")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -495,7 +496,7 @@ class StreamingChatService(
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addModelApiAuthorization(modelConfig.apiKey)
             .addHeader("Content-Type", "application/json")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
@@ -578,7 +579,7 @@ class StreamingChatService(
 
         val request = Request.Builder()
             .url(url)
-            .addHeader("Authorization", "Bearer ${modelConfig.apiKey}")
+            .addModelApiAuthorization(modelConfig.apiKey)
             .addHeader("Content-Type", "application/json")
             .addHeader("Accept", "text/event-stream")
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))

@@ -3,4 +3,7 @@
     <files-path
         name="chatbar_images"
         path="images/" />
+    <files-path
+        name="chatbar_diagnostics"
+        path="diagnostics/share/" />
 </paths>

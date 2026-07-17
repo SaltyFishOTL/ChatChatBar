@@ -19,6 +19,7 @@ import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.worldbook.WorldBookEngine
+import com.example.chatbar.utils.diagnostics.CrashReportManager
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
@@ -137,6 +138,7 @@ class ChatBarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        CrashReportManager.initialize(this)
 
         // 1. 初始化文件存储
         jsonFileStorage = JsonFileStorage(this)

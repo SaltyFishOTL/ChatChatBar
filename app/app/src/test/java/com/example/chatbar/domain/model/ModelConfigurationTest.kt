@@ -177,10 +177,62 @@ class ModelConfigurationTest {
         assertEquals(listOf("默认对话模型/API Key 未配置"), status.errors)
     }
 
-    private fun model(apiKey: String, id: String = "m1"): ModelConfig = ModelConfig(
+    @Test fun optedInHttpModelAllowsBlankAuthentication() {
+        val status = modelConfigurationStatus(
+            default = model(apiKey = "", baseUrl = "http://127.0.0.1:8080/v1"),
+            retrieval = null,
+            embedding = null,
+            allowCleartextModelApi = true
+        )
+
+        assertTrue(status.isUsable)
+        assertEquals(emptyList<String>(), status.errors)
+    }
+
+    @Test fun optedInHttpModelDoesNotInheritGlobalApiKey() {
+        val settings = AppSettings(
+            siliconFlowApiKey = "global-key",
+            allowCleartextModelApi = true
+        )
+
+        assertEquals(
+            "",
+            resolveEffectiveModelApiKey("", "http://127.0.0.1:8080/v1", settings)
+        )
+    }
+
+    @Test fun optedInHttpModelKeepsItsOwnApiKey() {
+        val settings = AppSettings(
+            siliconFlowApiKey = "global-key",
+            allowCleartextModelApi = true
+        )
+
+        assertEquals(
+            "local-key",
+            resolveEffectiveModelApiKey(" local-key ", "http://127.0.0.1:8080/v1", settings)
+        )
+    }
+
+    @Test fun httpsModelStillInheritsGlobalApiKey() {
+        val settings = AppSettings(
+            siliconFlowApiKey = "global-key",
+            allowCleartextModelApi = true
+        )
+
+        assertEquals(
+            "global-key",
+            resolveEffectiveModelApiKey("", "https://example.test/v1", settings)
+        )
+    }
+
+    private fun model(
+        apiKey: String,
+        id: String = "m1",
+        baseUrl: String = "https://example.test/v1"
+    ): ModelConfig = ModelConfig(
         id = id,
         displayName = "M",
-        baseUrl = "https://example.test/v1",
+        baseUrl = baseUrl,
         apiKey = apiKey,
         modelName = "provider/model",
         createdAt = 1L
