@@ -96,6 +96,7 @@ import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
+import com.example.chatbar.domain.card.SharedImportEvent
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
@@ -146,6 +147,7 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -163,7 +165,9 @@ fun ManageScreen(
     onNavigate: (Any) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ManageViewModel = viewModel(),
-    sharedUri: android.net.Uri? = null,
+    sharedImportEvent: SharedImportEvent<Uri>? = null,
+    onSharedImportClaimed: (Long) -> Boolean = { false },
+    onSharedImportCompleted: (Long) -> Boolean = { false },
     onSwipePastFirstTab: () -> Unit = {}
 ) {
     val characters by viewModel.characterCards.collectAsState()
@@ -211,6 +215,7 @@ fun ManageScreen(
     var showEmbedding by remember { mutableStateOf(false) }
     var showRetrieval by remember { mutableStateOf(false) }
     var deleteTarget by remember { mutableStateOf<DeleteTarget?>(null) }
+    var pendingDraftClear by remember { mutableStateOf<EditorDraft?>(null) }
     var message by remember { mutableStateOf<String?>(null) }
     var showTutorialMenu by remember { mutableStateOf(false) }
     var exportCharacterId by remember { mutableStateOf<String?>(null) }
@@ -225,21 +230,25 @@ fun ManageScreen(
     var pendingWorldBookImport by remember { mutableStateOf<Pair<WorldBookPackage, WorldBook?>?>(null) }
     var pendingCharacterChatId by remember { mutableStateOf<String?>(null) }
 
-    LaunchedEffect(sharedUri) {
-        sharedUri?.let { uri ->
-            scope.launch {
-                runCatching {
-                    val data = viewModel.decodeCharacterImport(uri, context)
-                    val conflict = viewModel.findCharacterImportConflict(data)
-                    if (conflict == null) {
-                        viewModel.importCharacterAsNew(data)
-                        message = "角色卡已导入，文档 RAG 待重建。"
-                    } else {
-                        pendingCharacterImport = data to conflict
-                        tab = 0
-                    }
-                }.onFailure { message = "导入失败：${it.message}" }
+    LaunchedEffect(sharedImportEvent?.id) {
+        val importEvent = sharedImportEvent ?: return@LaunchedEffect
+        if (!onSharedImportClaimed(importEvent.id)) return@LaunchedEffect
+        try {
+            val data = viewModel.decodeCharacterImport(importEvent.value, context)
+            val conflict = viewModel.findCharacterImportConflict(data)
+            if (conflict == null) {
+                viewModel.importCharacterAsNew(data)
+                message = "角色卡已导入，文档 RAG 待重建。"
+            } else {
+                pendingCharacterImport = data to conflict
+                tab = 0
             }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Throwable) {
+            message = "导入失败：${error.message}"
+        } finally {
+            onSharedImportCompleted(importEvent.id)
         }
     }
 
@@ -415,7 +424,7 @@ fun ManageScreen(
                         val data = viewModel.recoverCharacterPreset(entry)
                         val conflict = viewModel.findCharacterImportConflict(data)
                         if (conflict == null) viewModel.importCharacterAsNew(data) else pendingCharacterImport = data to conflict
-                    } }, ::openDraft, viewModel::discardEditorDraft)
+                    } }, ::openDraft, { pendingDraftClear = it })
                     1 -> FormatTab(formats, editorDrafts.filter { it.entityType == EditorDraftType.FORMAT_CARD }, settings.defaultFormatCardId, formatPresets, viewModel::formatHasUpdate, { onNavigate(FormatCardEditRoute(it)) }, { id ->
                         deleteTarget = DeleteTarget.Format(id, formats.firstOrNull { it.id == id }?.name ?: "未命名格式")
                     }, viewModel::setFormatCardDefault, viewModel::duplicateFormatCard, { card ->
@@ -425,7 +434,7 @@ fun ManageScreen(
                         val data = viewModel.recoverFormatPreset(entry)
                         val conflict = viewModel.findFormatNameConflict(data.name)
                         if (conflict == null) viewModel.importFormatAsNew(data) else pendingFormatImport = data to conflict
-                    } }, ::openDraft, viewModel::discardEditorDraft)
+                    } }, ::openDraft, { pendingDraftClear = it })
                     2 -> WorldBookTab(
                         worldBooks, editorDrafts.filter { it.entityType == EditorDraftType.WORLD_BOOK }, worldBookPresets, viewModel::worldBookHasUpdate,
                         onEdit = { onNavigate(WorldBookEditRoute(it)) },
@@ -445,7 +454,7 @@ fun ManageScreen(
                             if (conflict == null) viewModel.importWorldBookAsNew(data) else pendingWorldBookImport = data to conflict
                         } },
                         onOpenDraft = ::openDraft,
-                        onDiscardDraft = viewModel::discardEditorDraft
+                        onDiscardDraft = { pendingDraftClear = it }
                     )
                     3 -> ModelsTab(
                         models, settings.defaultModelId, settings.defaultImageModelId, modelPresets, embeddingModel, retrievalModel,
@@ -536,6 +545,24 @@ fun ManageScreen(
                 }, variant = ButtonVariant.Destructive)
             }
         ) { CbText(body, color = ChatBarTheme.colors.mutedForeground) }
+    }
+    pendingDraftClear?.let { draft ->
+        CbDialog(
+            onDismissRequest = { pendingDraftClear = null },
+            title = "清除草稿",
+            dismiss = { CbButton("取消", { pendingDraftClear = null }, variant = ButtonVariant.Ghost) },
+            confirm = {
+                CbButton("清除", {
+                    viewModel.discardEditorDraft(draft)
+                    pendingDraftClear = null
+                }, variant = ButtonVariant.Destructive)
+            }
+        ) {
+            CbText(
+                "确定清除“${draft.title}”的草稿？正式内容不会受影响。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
     }
     pendingCharacterImport?.let { (data, existing) ->
         val readOnlyConflict = existing?.isCommunityDownload == true
@@ -1035,7 +1062,7 @@ private fun CharacterTab(
                 badge = "草稿",
                 onClick = { onOpenDraft(draft) },
                 actions = {
-                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                    CbIconButton(AppIcons.DeleteSweep, "清除草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
                 }
             )
         }
@@ -1068,6 +1095,14 @@ private fun CharacterTab(
                 onClick = editClick,
                 onLongClick = { menuCard = card },
                 actions = {
+                    if (draft != null) {
+                        CbIconButton(
+                            AppIcons.DeleteSweep,
+                            "清除草稿",
+                            { onDiscardDraft(draft) },
+                            tint = ChatBarTheme.colors.destructive
+                        )
+                    }
                     if (remoteUpdate != null) {
                         CbIconButton(
                             AppIcons.Refresh,
@@ -1127,7 +1162,7 @@ private fun FormatTab(
                 badge = "草稿",
                 onClick = { onOpenDraft(draft) },
                 actions = {
-                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                    CbIconButton(AppIcons.DeleteSweep, "清除草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
                 }
             )
         }
@@ -1148,7 +1183,17 @@ private fun FormatTab(
                 badge = when { draft != null -> "有草稿"; hasUpdate(card) -> "有更新"; isDefault -> "默认"; else -> null },
                 onClick = { onEdit(card.id) },
                 onLongClick = { menuCard = card },
-                actions = { CbButton(if (isDefault) "当前默认" else "设为默认", { onDefault(card.id) }, variant = ButtonVariant.Secondary) }
+                actions = {
+                    if (draft != null) {
+                        CbIconButton(
+                            AppIcons.DeleteSweep,
+                            "清除草稿",
+                            { onDiscardDraft(draft) },
+                            tint = ChatBarTheme.colors.destructive
+                        )
+                    }
+                    CbButton(if (isDefault) "当前默认" else "设为默认", { onDefault(card.id) }, variant = ButtonVariant.Secondary)
+                }
             )
         }
     }
@@ -1188,7 +1233,7 @@ private fun WorldBookTab(
                 badge = "草稿",
                 onClick = { onOpenDraft(draft) },
                 actions = {
-                    CbIconButton(AppIcons.Delete, "丢弃草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
+                    CbIconButton(AppIcons.DeleteSweep, "清除草稿", { onDiscardDraft(draft) }, tint = ChatBarTheme.colors.destructive)
                 }
             )
         }
@@ -1222,6 +1267,14 @@ private fun WorldBookTab(
                 onClick = { onEdit(book.id) },
                 onLongClick = { menuBook = book },
                 actions = {
+                    if (draft != null) {
+                        CbIconButton(
+                            AppIcons.DeleteSweep,
+                            "清除草稿",
+                            { onDiscardDraft(draft) },
+                            tint = ChatBarTheme.colors.destructive
+                        )
+                    }
                     CbIconButton(AppIcons.Edit, "编辑", { onEdit(book.id) }, tint = ChatBarTheme.colors.primary)
                     CbIconButton(AppIcons.Delete, "删除", { onDelete(book.id) }, tint = ChatBarTheme.colors.destructive)
                 }

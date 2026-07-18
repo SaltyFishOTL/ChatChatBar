@@ -203,12 +203,15 @@ class EffectiveModelResolver(
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
         copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
 
-    private fun ModelConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
-        isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)
-
     private fun EmbeddingConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
         isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)
 }
+
+internal fun ModelConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
+    hasConfiguredAuthentication(appSettings.allowCleartextModelApi)
+
+internal fun ModelConfig.hasConfiguredAuthentication(allowCleartextModelApi: Boolean): Boolean =
+    isModelAuthenticationConfigured(baseUrl, apiKey, allowCleartextModelApi)
 
 internal fun selectFormatRepairModel(
     requestedId: String?,

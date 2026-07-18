@@ -39,6 +39,7 @@ import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.model.isModelAuthenticationConfigured
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
@@ -1104,16 +1105,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
             val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
+            val modelUsable = model?.hasConfiguredAuthentication(settings) == true
             val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
             val globalPlayerName = settingsRepository.getPlayerSetting()
                 .playerName
                 .takeIf { it.isNotBlank() }
             val playerName = currentSession?.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
-            if (token == null || (promptOverride == null && (card == null || model == null || model.apiKey.isBlank()))) {
+            if (token == null || (promptOverride == null && (card == null || !modelUsable))) {
                 val missing = mutableListOf<String>()
                 if (token == null) missing.add("NovelAI Token")
                 if (promptOverride == null && card == null) missing.add("角色卡")
-                if (promptOverride == null && (model == null || model.apiKey.isBlank())) missing.add("默认生图模型/API Key")
+                if (promptOverride == null && !modelUsable) missing.add("默认生图模型/API Key")
                 updateImageGeneration(taskId) {
                     it.copy(
                         phase = ImageGenerationPhase.FAILED,

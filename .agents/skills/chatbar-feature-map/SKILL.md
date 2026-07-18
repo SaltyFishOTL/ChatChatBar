@@ -30,7 +30,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Character speaker names/history: domain/card/CharacterSpeakerNamePolicy.kt, CharacterSpeakerMigration.kt, domain/chat/SpeakerTagHistoryService.kt, and ChatRepository.rewriteSpeakerTagsForCharacterCard.
 - Chat settings and model selection UI: ui/chat/ChatSettingsDialog.kt, ui/manage/ManageScreen.kt, AppSettings.kt, and SettingsRepository.kt.
 - Chat save slots/archive transfer: data/local/entity/SaveSlot.kt, data/repository/SaveSlotRepository.kt, domain/chat/SaveSlotJsonTransfer.kt, ChatViewModel.kt, ChatSettingsDialog.kt.
-- RAG/search/indexing: domain/rag/RagManager.kt, ChatMemoryIndexPolicy.kt, data/repository/RagRepository.kt, domain/search/CharacterResearchService.kt. RAG stays independent from long-term memory; source-turn grouping changes require chatbar-long-term-memory.
+- RAG/search/indexing and vector persistence: domain/rag/RagManager.kt, domain/rag/ChatMemoryIndexPolicy.kt, domain/rag/RagRepository.kt, data/local/entity/VectorChunk.kt, data/local/JsonFileStorage.kt, domain/search/CharacterResearchService.kt. RAG stays independent from long-term memory; source-turn grouping changes require chatbar-long-term-memory.
 - NovelAI prompt/tag design: use chatbar-novelai-prompt, then read domain/image/NovelAiPromptDesigner.kt.
 - Moments: use chatbar-moments before Moments UI, ViewModel, scheduler, prompts, storage, or post image policy.
 - Community: use chatbar-community-platform before community UI or Supabase/Edge Function code.

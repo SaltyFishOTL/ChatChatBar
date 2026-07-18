@@ -47,6 +47,7 @@ import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.hasImageDesignSource
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -916,10 +917,11 @@ class CharacterEditViewModel(
                 val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
                 val settings = settingsRepository.getAppSettings()
                 val model = modelResolver.defaultImageModel(settings)
-                if (token == null || model == null || model.apiKey.isBlank()) {
+                    ?.takeIf { it.hasConfiguredAuthentication(settings) }
+                if (token == null || model == null) {
                     val missing = mutableListOf<String>()
                     if (token == null) missing += "NovelAI Token"
-                    if (model == null || model.apiKey.isBlank()) missing += "默认生图模型/API Key"
+                    if (model == null) missing += "默认生图模型/API Key"
                     _avatarImageState.value = _avatarImageState.value.copy(
                         isGenerating = false,
                         error = "缺少${missing.joinToString("、")}，未生成头像",
@@ -1156,11 +1158,12 @@ class CharacterEditViewModel(
                 val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
                 val settings = settingsRepository.getAppSettings()
                 val model = modelResolver.defaultImageModel(settings)
+                    ?.takeIf { it.hasConfiguredAuthentication(settings) }
                 val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
-                if (token == null || model == null || model.apiKey.isBlank()) {
+                if (token == null || model == null) {
                     val missing = mutableListOf<String>()
                     if (token == null) missing += "NovelAI Token"
-                    if (model == null || model.apiKey.isBlank()) missing += "默认生图模型/API Key"
+                    if (model == null) missing += "默认生图模型/API Key"
                     updateCoverImageStateIfCurrent(generationToken, target) {
                         it.copy(
                             isGenerating = false,

@@ -64,7 +64,7 @@ fun WorldBookEditScreen(
     var showExitDialog by remember { mutableStateOf(false) }
 
     fun requestExit() {
-        if (viewModel.hasUnsavedDraftChanges) showExitDialog = true else onBack()
+        if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
     }
 
     BackHandler {
@@ -177,7 +177,7 @@ fun WorldBookEditScreen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 CbButton("恢复草稿", viewModel::restoreDraft, modifier = Modifier.fillMaxWidth())
                 CbButton("查看原内容", viewModel::keepOriginal, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
-                CbButton("丢弃草稿", { viewModel.discardDraft() }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+                CbButton("清除草稿", { viewModel.discardDraft() }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
             }
         }
     }
@@ -193,7 +193,7 @@ fun WorldBookEditScreen(
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 CbButton("保存草稿并退出", { viewModel.saveDraftAndExit(onBack) }, modifier = Modifier.fillMaxWidth())
                 CbButton("继续编辑", { showExitDialog = false }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
-                CbButton("丢弃草稿", { viewModel.discardDraft(onBack) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+                CbButton("清除草稿并退出", { viewModel.discardDraft(onBack) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
             }
         }
     }

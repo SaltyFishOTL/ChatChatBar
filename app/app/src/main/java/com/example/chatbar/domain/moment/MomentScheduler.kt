@@ -14,6 +14,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MomentRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import com.example.chatbar.domain.model.EffectiveModelResolver
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CancellationException
@@ -151,7 +152,7 @@ class MomentScheduler(
             return
         }
         val model = resolveModel(settings)
-        if (model == null || model.apiKey.isBlank()) {
+        if (model == null || !model.hasConfiguredAuthentication(settings)) {
             saveFailurePlaceholder(task, card, session, "未配置可用默认对话模型/API Key")
             return
         }
@@ -172,6 +173,7 @@ class MomentScheduler(
                     imageModel = imageModel,
                     scheduledAt = task.scheduledAt,
                     finalPromptRequirement = settings.imagePromptToolPreference,
+                    allowCleartextModelApi = settings.allowCleartextModelApi,
                     onCheckpoint = { generationCheckpoint = it }
                 )
             }

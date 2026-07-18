@@ -20,6 +20,7 @@ import com.example.chatbar.domain.image.toGeneratedImageMetadata
 import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.moment.MomentGenerationProgressPhase
 import com.example.chatbar.domain.moment.MomentGenerationResult
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -223,7 +224,7 @@ class MomentsViewModel : ViewModel() {
                 val session = chatRepository.getSession(placeholder.sessionId) ?: error("会话不存在")
                 val settings = settingsRepository.getAppSettings()
                 val model = modelResolver.defaultChatModel(settings) ?: error("未配置可用默认对话模型")
-                require(model.apiKey.isNotBlank()) { "默认对话模型/API Key 未配置" }
+                require(model.hasConfiguredAuthentication(settings)) { "默认对话模型/API Key 未配置" }
                 val imageModel = modelResolver.defaultImageModel(settings)
                 val messages = chatRepository.getMessages(session.id)
                 val latestPost = repository.latestPostForCard(card.id)
@@ -237,6 +238,7 @@ class MomentsViewModel : ViewModel() {
                         imageModel = imageModel,
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
+                        allowCleartextModelApi = settings.allowCleartextModelApi,
                         resumeFrom = generationService.decodeCheckpoint(placeholder.generationCheckpoint),
                         onCheckpoint = { checkpoint ->
                             repository.getPost(id)?.takeIf { it.isPlaceholder }?.let { current ->

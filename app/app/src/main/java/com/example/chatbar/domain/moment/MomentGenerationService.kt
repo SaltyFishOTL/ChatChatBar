@@ -18,6 +18,7 @@ import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.toGeneratedImageMetadata
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.coroutines.delay
@@ -100,6 +101,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
+        allowCleartextModelApi: Boolean = false,
         resumeFrom: MomentGenerationCheckpoint? = null,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {}
     ): MomentGenerationResult = generateInternal(
@@ -111,6 +113,7 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        allowCleartextModelApi = allowCleartextModelApi,
         resumeFrom = resumeFrom,
         onCheckpoint = onCheckpoint,
         streamText = true,
@@ -126,6 +129,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
+        allowCleartextModelApi: Boolean = false,
         resumeFrom: MomentGenerationCheckpoint? = null,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {},
         onProgress: (MomentGenerationProgress) -> Unit
@@ -138,6 +142,7 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        allowCleartextModelApi = allowCleartextModelApi,
         resumeFrom = resumeFrom,
         onCheckpoint = onCheckpoint,
         streamText = true,
@@ -153,6 +158,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String,
+        allowCleartextModelApi: Boolean,
         resumeFrom: MomentGenerationCheckpoint?,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit,
         streamText: Boolean,
@@ -202,7 +208,9 @@ class MomentGenerationService(
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成无图朋友圈", progress = 1f))
             return MomentGenerationResult.Posted(post)
         }
-        require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
+        require(imageModel != null && imageModel.hasConfiguredAuthentication(allowCleartextModelApi)) {
+            "默认生图模型/API Key 未配置"
+        }
         val prompt = checkpoint.imagePrompt ?: run {
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
             promptDesigner.designForMoment(
@@ -274,7 +282,8 @@ class MomentGenerationService(
         model: ModelConfig,
         imageModel: ModelConfig?,
         scheduledAt: Long = System.currentTimeMillis(),
-        finalPromptRequirement: String = ""
+        finalPromptRequirement: String = "",
+        allowCleartextModelApi: Boolean = false
     ): MomentDebugGenerationResult {
         val exchanges = mutableListOf<MomentDebugExchange>()
         return runCatching {
@@ -315,7 +324,9 @@ class MomentGenerationService(
                 )
                 return@runCatching MomentDebugGenerationResult(post = post, exchanges = exchanges)
             }
-            require(imageModel != null && imageModel.apiKey.isNotBlank()) { "默认生图模型/API Key 未配置" }
+            require(imageModel != null && imageModel.hasConfiguredAuthentication(allowCleartextModelApi)) {
+                "默认生图模型/API Key 未配置"
+            }
             val promptDebug = promptDesigner.designForMomentDebug(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,

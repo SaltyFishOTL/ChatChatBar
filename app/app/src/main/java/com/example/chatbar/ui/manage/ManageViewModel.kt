@@ -26,6 +26,7 @@ import com.example.chatbar.domain.moment.MomentBackgroundReliability
 import com.example.chatbar.domain.moment.MomentDebugGenerationResult
 import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityState
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.chat.StreamingChatService
@@ -732,7 +733,7 @@ class ManageViewModel : ViewModel() {
                 val settings = settingsRepository.getAppSettings()
                 val model = modelResolver.defaultChatModel(settings)
                     ?: error("未配置可用默认对话模型")
-                require(model.apiKey.isNotBlank()) { "默认对话模型/API Key 未配置" }
+                require(model.hasConfiguredAuthentication(settings)) { "默认对话模型/API Key 未配置" }
                 val imageModel = modelResolver.defaultImageModel(settings)
                 val latestPost = momentRepository.latestPostForCard(cardId)
                 AiBackgroundWorkManager.run("moments_debug_$cardId") {
@@ -744,7 +745,8 @@ class ManageViewModel : ViewModel() {
                         model = model,
                         imageModel = imageModel,
                         scheduledAt = System.currentTimeMillis(),
-                        finalPromptRequirement = settings.imagePromptToolPreference
+                        finalPromptRequirement = settings.imagePromptToolPreference,
+                        allowCleartextModelApi = settings.allowCleartextModelApi
                     )
                 }.also { debugResult ->
                     debugResult.post?.let { momentRepository.savePost(it) }

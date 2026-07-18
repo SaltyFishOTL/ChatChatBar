@@ -29,6 +29,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.resolveDarkTheme
+import com.example.chatbar.domain.card.SharedImportEventFlow
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.kit.CbLoadingState
@@ -36,17 +37,20 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CrashReportDialog
 import com.example.chatbar.utils.diagnostics.CrashReportManager
-import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    val sharedImportUri = MutableStateFlow<Uri?>(null)
+    private val sharedImportEvents = SharedImportEventFlow<Uri>()
+    private var currentIntentHandled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_created")
 
-        handleSharedIntent(intent)
+        currentIntentHandled = savedInstanceState?.getBoolean(STATE_CURRENT_INTENT_HANDLED) == true
+        if (!currentIntentHandled) {
+            handleSharedIntent(intent)
+        }
 
         enableEdgeToEdge()
         setContent {
@@ -90,7 +94,9 @@ class MainActivity : ComponentActivity() {
                     if (settingsInitialized) {
                         MainNavigation(
                             tutorialCompleted = settings.tutorialVersion >= CURRENT_TUTORIAL_VERSION,
-                            sharedImportUri = sharedImportUri
+                            sharedImportEvents = sharedImportEvents.events,
+                            onSharedImportClaimed = ::claimSharedImport,
+                            onSharedImportCompleted = ::completeSharedImport
                         )
                     } else {
                         CbLoadingState(label = "ChatBar")
@@ -138,12 +144,19 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_new_intent")
+        currentIntentHandled = false
         setIntent(intent)
         handleSharedIntent(intent)
     }
 
+    override fun onSaveInstanceState(outState: Bundle) {
+        outState.putBoolean(STATE_CURRENT_INTENT_HANDLED, currentIntentHandled)
+        super.onSaveInstanceState(outState)
+    }
+
     private fun handleSharedIntent(intent: Intent) {
         if (intent.action == Intent.ACTION_VIEW && handleCommunityAuthCallback(intent.data)) {
+            currentIntentHandled = true
             return
         }
         if (intent.action == Intent.ACTION_SEND) {
@@ -155,9 +168,23 @@ class MainActivity : ComponentActivity() {
                 intent.getParcelableExtra(Intent.EXTRA_STREAM)
             }
             if (uri != null) {
-                sharedImportUri.value = uri
+                sharedImportEvents.publish(uri)
+                return
             }
         }
+        currentIntentHandled = true
+    }
+
+    private fun completeSharedImport(id: Long): Boolean {
+        val completed = sharedImportEvents.complete(id)
+        if (completed) currentIntentHandled = true
+        return completed
+    }
+
+    private fun claimSharedImport(id: Long): Boolean {
+        val claimed = sharedImportEvents.claim(id)
+        if (claimed) currentIntentHandled = true
+        return claimed
     }
 
     private fun handleCommunityAuthCallback(uri: Uri?): Boolean {
@@ -180,5 +207,6 @@ class MainActivity : ComponentActivity() {
 
     companion object {
         private const val TAG = "MainActivity"
+        private const val STATE_CURRENT_INTENT_HANDLED = "current_intent_handled"
     }
 }

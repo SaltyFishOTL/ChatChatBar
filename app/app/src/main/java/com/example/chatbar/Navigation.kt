@@ -38,6 +38,7 @@ import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.moments.MomentsScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.card.SharedImportEvent
 import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.worldbook.WorldBookEditScreen
@@ -48,7 +49,12 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 @Composable
-fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>) {
+fun MainNavigation(
+    tutorialCompleted: Boolean,
+    sharedImportEvents: StateFlow<SharedImportEvent<Uri>?>,
+    onSharedImportClaimed: (Long) -> Boolean,
+    onSharedImportCompleted: (Long) -> Boolean
+) {
     val initialRoute: NavKey = if (tutorialCompleted) HomeRoute else TutorialRoute(firstLaunch = true)
     val backStack = rememberNavBackStack(initialRoute)
     val currentRoute = backStack.lastOrNull() ?: HomeRoute
@@ -80,7 +86,7 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
-    val sharedUri by sharedImportUri.collectAsState()
+    val sharedImportEvent by sharedImportEvents.collectAsState()
 
     fun popBackStack() {
         if (backStack.size > 1) {
@@ -217,7 +223,9 @@ fun MainNavigation(tutorialCompleted: Boolean, sharedImportUri: StateFlow<Uri?>)
                     entry<ManageRoute> {
                         ManageScreen(
                             onNavigate = { route -> pushRoute(route as NavKey) },
-                            sharedUri = sharedUri,
+                            sharedImportEvent = sharedImportEvent,
+                            onSharedImportClaimed = onSharedImportClaimed,
+                            onSharedImportCompleted = onSharedImportCompleted,
                             onSwipePastFirstTab = { showRootAt(currentRootIndex - 1) }
                         )
                     }

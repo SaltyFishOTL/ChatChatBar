@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -130,7 +131,7 @@ class ImagePromptToolViewModel : ViewModel() {
         if (_uiState.value.isBusy) return
         val snapshot = _uiState.value
         val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
-        if (model == null || model.apiKey.isBlank()) {
+        if (model == null || !snapshot.modelUsable) {
             _uiState.update { it.copy(error = "默认生图模型/API Key 未配置") }
             return
         }
@@ -333,7 +334,7 @@ class ImagePromptToolViewModel : ViewModel() {
                 val imageModelErrors = buildList {
                     if (defaultModel == null) {
                         add("未配置可用默认生图模型")
-                    } else if (defaultModel.apiKey.isBlank()) {
+                    } else if (!defaultModel.hasConfiguredAuthentication(settings)) {
                         add("默认生图模型/API Key 未配置")
                     }
                 }

@@ -226,6 +226,20 @@ class ModelConfigurationTest {
         )
     }
 
+    @Test fun optedInHttpImageModelCanDesignPromptWithoutDefaultApiKey() {
+        val settings = AppSettings(allowCleartextModelApi = true)
+        val imageModel = model(apiKey = "", baseUrl = "http://127.0.0.1:8080/v1")
+
+        assertTrue(imageModel.hasConfiguredAuthentication(settings))
+    }
+
+    @Test fun httpsImageModelOwnApiKeyCanDesignPromptWithoutDefaultApiKey() {
+        val settings = AppSettings(siliconFlowApiKey = "")
+        val imageModel = model(apiKey = "image-model-key")
+
+        assertTrue(imageModel.hasConfiguredAuthentication(settings))
+    }
+
     @Test fun optedInHttpModelDoesNotInheritGlobalApiKey() {
         val settings = AppSettings(
             siliconFlowApiKey = "global-key",

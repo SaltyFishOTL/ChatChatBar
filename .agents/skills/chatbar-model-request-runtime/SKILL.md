@@ -28,6 +28,7 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - Keep selected custom, preset, retrieval, embedding, and auxiliary model sources distinct.
 - Prefer each model's own API key. Use the global default key only when an HTTPS or otherwise authenticated model has a blank key.
 - For an existing chat, compute usability with `status(session.modelId, appSettings)` and resolve the send model from the same ID. Use unscoped `status(appSettings)` only for flows that intentionally follow the app default, such as new-session gating.
+- Gate every `ModelConfig` request, including image-prompt design, through `hasConfiguredAuthentication`; do not infer usability from raw `apiKey` blankness.
 - Resolve effective API keys once. For allowed cleartext HTTP local models, a blank model key means no Authorization header and must not inherit the global key.
 - Never emit an empty Bearer header.
 
