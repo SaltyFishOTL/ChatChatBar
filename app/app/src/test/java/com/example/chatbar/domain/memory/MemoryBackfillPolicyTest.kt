@@ -320,6 +320,23 @@ class MemoryBackfillPolicyTest {
         assertEquals(listOf("s1"), afterLeaving)
     }
 
+    @Test
+    fun disabledGapExcludesUnstableSourceTurnWhileReplyIsStillOpen() {
+        val eligible = MemoryBackfillPolicy.eligibleDisabledGapSourceTurnIds(
+            gaps = listOf(
+                MemoryGap(
+                    id = "gap",
+                    sourceTurnIds = listOf("stable", "open"),
+                    reason = MemoryGapReason.DISABLED
+                )
+            ),
+            availableSourceTurnIds = setOf("stable", "open"),
+            stableSourceTurnIds = setOf("stable")
+        )
+
+        assertEquals(listOf("stable"), eligible)
+    }
+
     private fun sourceIds(range: IntRange): List<String> = range.map { "s$it" }
 
     private fun timeline(range: IntRange): List<MemoryTimelineEntry> = range.map { t ->

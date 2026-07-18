@@ -51,6 +51,35 @@ fun HeadResponse.hasContent(): Boolean = listOf(
 
 internal const val MEMORY_AI_MAX_ATTEMPTS = 5
 
+internal interface MemoryAiClient {
+    suspend fun episode(
+        model: ModelConfig,
+        renderedTurns: String,
+        summaryPromptMaxChars: Int,
+        onStreamingSummary: ((String) -> Unit)? = null,
+        validate: (EpisodeResponse) -> Unit
+    ): EpisodeResponse
+
+    suspend fun compression(
+        model: ModelConfig,
+        kind: MemoryCompressionKind,
+        forcedConsumedChildIds: List<String>,
+        renderedChildren: String,
+        onStreamingSummary: ((String) -> Unit)? = null,
+        validate: (CompressionResponse) -> Unit
+    ): CompressionResponse
+
+    suspend fun head(
+        model: ModelConfig,
+        mode: MemoryHeadUpdateMode,
+        throughT: Long,
+        currentHead: String,
+        archive: String,
+        sourceTurns: String,
+        validate: (HeadResponse) -> Unit
+    ): HeadResponse
+}
+
 internal suspend fun <T> retryMemoryAiOutput(
     maxAttempts: Int,
     request: suspend (attempt: Int, lastError: Throwable?) -> T
@@ -71,14 +100,14 @@ internal suspend fun <T> retryMemoryAiOutput(
     )
 }
 
-class MemoryAiGateway(private val chatService: StreamingChatService) {
+class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiClient {
     private val json = Json { ignoreUnknownKeys = false }
 
-    suspend fun episode(
+    override suspend fun episode(
         model: ModelConfig,
         renderedTurns: String,
         summaryPromptMaxChars: Int,
-        onStreamingSummary: ((String) -> Unit)? = null,
+        onStreamingSummary: ((String) -> Unit)?,
         validate: (EpisodeResponse) -> Unit
     ): EpisodeResponse = requestJson(
         serializer = EpisodeResponse.serializer(),
@@ -89,12 +118,12 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
         validate = validate
     )
 
-    suspend fun compression(
+    override suspend fun compression(
         model: ModelConfig,
         kind: MemoryCompressionKind,
         forcedConsumedChildIds: List<String>,
         renderedChildren: String,
-        onStreamingSummary: ((String) -> Unit)? = null,
+        onStreamingSummary: ((String) -> Unit)?,
         validate: (CompressionResponse) -> Unit
     ): CompressionResponse = requestJson(
         serializer = CompressionResponse.serializer(),
@@ -108,7 +137,7 @@ class MemoryAiGateway(private val chatService: StreamingChatService) {
         validate = validate
     )
 
-    suspend fun head(
+    override suspend fun head(
         model: ModelConfig,
         mode: MemoryHeadUpdateMode,
         throughT: Long,

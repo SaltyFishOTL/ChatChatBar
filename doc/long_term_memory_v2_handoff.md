@@ -1,13 +1,15 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-07-17
+Last updated: 2026-07-18
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
-Status: 长期记忆重构版V1主体完成；历史消息修改/删除现会停用受影响旧记忆，并由用户在长期记忆页手动执行最小依赖修复；真实模型修复结果尚待用户验证。
+Status: 长期记忆重构版V1主体完成；自动Episode、补录、压缩与HEAD已改为目标证据级并发提交；历史消息修改/删除现会停用受影响旧记忆，并由用户在长期记忆页手动执行最小依赖修复；真实模型结果尚待用户验证。
 
 ## Completed
 
 - 已实现HEAD、Episode、Arc、Era结构，连续source turn覆盖、派生显示T、预算压缩、独立分页历史、SaveSlot v4、编辑/恢复和完整注入预览。
+- 自动Episode、手动补录、当前锚点、Archive压缩与HEAD不再把整份`MemorySessionState.revision`当作AI任务冲突锁。Episode只关联其source hash、目标pending成员和同源覆盖；压缩只关联模型实际读取的全部候选节点；HEAD只关联自身版本、输入source，`BACKFILL`额外关联实际发送的Archive文本。提交前在状态锁内重载并基于当前状态重放，因此无关聊天新增、其他节点编辑/新增、HEAD或分页变更不会误杀任务，也不会被旧快照覆盖。
+- 禁用期Gap即使位于直接上下文也可补录，但用户刚发送、尚无助手回复的开放source turn不再进入补录；等AI回复加入同一source turn并稳定后才可选，避免补录中途证据真实变化。
 - Episode/Arc/Era活跃分页ID现按派生T升序持久化。中间节点编辑/替换或任意重排会在增删delta无法复现位置时保存精确顺序快照；若旧revision父链已错误物化，后续Checkpoint/纯新增同步会自愈为快照。加载旧状态时只自动修复节点齐全、T可验证的分页，并写入隐藏修复revision；缺节点或缺T不强排。恢复旧历史也先按当前派生T规范化。
 - Episode/Arc/Era编辑卡已增加“AI重新生成此节点”：Episode只读其原始聊天轮，Arc/Era只读其有序直接子节点，错误节点正文不进入AI输入。三层`summary`均完整流式写入编辑框；校验重试先清除上一轮流稿，最终失败恢复请求前草稿。结果仍是未保存候选；用户确认并点击Checkpoint后才替换活跃节点。不同目标节点可真正并发；保存一个候选不会让其他节点失效。完成时只校验该目标仍活跃、不可变节点与原始聊天/直接子节点依据未变；目标自身被替换或依据变化仍拒绝。
 - Episode/Arc/Era编辑卡持续比较草稿与已持久化正文：未修改时显示“已保存到Checkpoint”；手工编辑或AI候选产生后显示红色“未保存，离开会丢失”，并把保存按钮切为高强调未保存状态。只有保存成功并刷新出新节点后才恢复已保存提示。
@@ -50,6 +52,7 @@ Status: 长期记忆重构版V1主体完成；历史消息修改/删除现会停
 - 旧RAG按相邻消息对分块，遗漏序章和同轮追加回复。已改为完整source turn分块。
 - 旧revision用“删旧ID，再把新ID追加末尾”重建编辑后的中间节点，导致底层分页乱序；UI又在展示前排序，因此肉眼正常但完整性检查持续报警。已改为位置敏感快照 + 加载期隐藏修复revision，未通过关闭告警掩盖问题。
 - 旧节点重新生成共用整会话Archive锁，并绑定全局`state.revision`；多个任务实际串行，保存任一候选都会误杀其他未变节点。已移除整会话锁和全局revision守卫，改为节点及其证据级校验。
+- 旧自动Episode、手动补录、压缩和HEAD部分路径仍绑定整会话`state.revision`。聊天新增、无关HEAD滚动或其他节点提交都会提升revision，导致正确AI结果被当作竞态丢弃；两个回复后的Archive/HEAD后台任务也会互相误杀。现统一改为操作证据集合校验并重载rebase；全局revision仅保留为单调持久化版本号。
 - 旧Archive注入先要求每个活跃节点都能从当前timeline推导完整T范围；旧迁移数据只要有一个sourceTurnId缺失，整段非空正文就被静默过滤。已把正文与T证明解耦：正文始终保留，异常范围单独告警并使用稳定排序。
 - 旧发送链把Archive、RAG、世界书、HEAD拼成同一动态字符串，且发送前重新读取记忆时会吞掉异常；最终消息列表没有Archive存在性断言，预览正确不能证明实际请求正确。已改为Archive独立消息、读取异常显式失败、正文预算与编译结果交叉校验、最终列表硬断言和Request JSON实际发送指示。
 - v1.2.6紧急修复先把独立Archive放在世界书/RAG之前，虽保证正文实际发送，但不符合动态资料语义顺序。现已统一主聊天与通用PromptAssembler为世界书→RAG→Archive→HEAD，并用最终序列化JSON验证位置。
@@ -69,6 +72,7 @@ Status: 长期记忆重构版V1主体完成；历史消息修改/删除现会停
 - 真实长聊下三层扩容询问、`compressible=false`链、Era平级压缩和多批补录仍缺少完整端到端证据。
 - 多节点AI重新生成及其真实并发流式表现尚待用户再次调用模型验证；自动测试已覆盖流稿、候选不自动保存、无关节点Checkpoint不失效、目标/依据变化仍拒绝。
 - 旧SaveSlot、补录暂停后继续仍需真实数据手动回归。
+- 自动Episode/HEAD与用户继续聊天并发、手动多批补录期间继续聊天、压缩期间编辑无关节点，纯策略测试已通过；真实服务instrumented测试已编译但因当前无设备且SDK缺`emulator.exe`未执行，仍待真实长聊和真实模型手动回归。
 - 来源修改/整轮删除后的警告、安全注入、分批暂停/继续、Arc/Era结构降级和HEAD重建已有纯策略、序列化与UI测试；真实长会话和真实模型输出尚未手动回归。
 
 ## Unconfirmed
@@ -97,11 +101,14 @@ Status: 长期记忆重构版V1主体完成；历史消息修改/删除现会停
 - Gap表示历史缺失事实；当前上下文只控制是否可补录。不要再次把二者合并为同一可变列表。
 - 活跃分页ID必须按派生T升序；UI排序不能替代持久层顺序。revision delta只有在从父revision能精确复现节点顺序时才可使用，否则保存快照。
 - 重新生成是节点级只读候选任务，不持有Archive整会话锁，也不绑定全局revision。失效边界是目标活跃身份、不可变目标节点和该节点确切依据。
+- 所有直接提交AI任务都必须绑定其实际输入证据并在提交锁内重载rebase：Episode=目标source/pending/覆盖，压缩=全部模型候选节点，HEAD=HEAD版本+输入source，回填HEAD再加Archive文本。全局revision不是冲突键。
 - HEAD、Archive、RAG独立失败和持久化；主聊天不等待后台记忆任务。
 - 来源变更检测与修复分离：检测只刷新过期状态和安全注入；用户按钮才启动AI。修复必须沿不可变节点依赖向上重算，不能通过改哈希认可旧正文。
 
 ## Verification Baseline
 
+- 2026-07-18目标证据并发切片：`app/gradlew.bat test`、`app/ci.ps1 -SkipAssemble`、完整`app/ci.ps1`均通过；Debug APK成功生成。新增策略测试覆盖无关revision/节点/pending变更放行及目标source/节点/HEAD/Archive变更拒绝；真实仓库+服务instrumented测试源码编译通过。
+- 本切片`adb devices -l`无连接设备；尝试`emu.cmd`时本机Android SDK缺少`C:\Users\Administrator\AppData\Local\Android\Sdk\emulator\emulator.exe`，因此未运行instrumented测试、未部署APK、未调用真实模型。
 - 当前来源修复切片：`ci.ps1 -SkipAssemble`与完整`ci.ps1`均通过；JVM测试、Android测试源码编译和Debug APK打包成功。`adb devices -l`无连接设备，因此本切片未部署；未调用真实模型。
 - 定向回归通过：Episode Prompt目标与2倍程序硬上限边界、全部长期记忆策略、聊天消息无合成`[Txx]`前缀、空消息过滤、世界书→RAG→Archive→HEAD最终JSON顺序、RAG记忆卡专用说明且文档卡无说明、Archive独立请求与HEAD-only拒绝、最终JSON标记、状态栏排除和时间线提示。
 - `app/.\gradlew.bat test`：全量JVM测试通过。

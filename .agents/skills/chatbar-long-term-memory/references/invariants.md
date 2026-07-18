@@ -26,7 +26,7 @@
 ## Gap and Backfill
 
 - Treat `MemoryGap` as durable evidence that source turns lack long-term memory.
-- Compute current backfill eligibility as missing and uncovered turns that are outside direct context and still have raw source text.
+- Compute ordinary backfill eligibility as missing and uncovered turns that are outside direct context and still have raw source text. A disabled-period Gap may be backfilled inside direct context, but only after that source turn contains an assistant reply and is stable.
 - Make explicit memory-page refresh re-read persisted settings/chat and discover stable archived turns that are uncovered, outside normal pending, and not already in a Gap. Persist them as durable gaps without calling AI.
 - When context expands, hide newly direct turns from eligibility without deleting them from durable gaps. When context shrinks, expose them again.
 - Remove a gap source only after successful Episode commit, explicit supported product action, or permanent clear boundary.
@@ -76,7 +76,7 @@
 - Regenerate a selected Episode from its raw source turns and a selected Arc/Era from its immutable direct children. Never use the visibly wrong node body as AI evidence. Return a review candidate without persistence; replace the active node only after explicit user checkpoint save. Different target nodes may generate concurrently and must not invalidate one another when an unrelated candidate is saved.
 - Stream the complete growing `summary` for every regenerated tier into the editor through ordered UI-thread updates. Clear the prior attempt when validation retries; restore the pre-request draft after final failure. Keep all partial output runtime-only.
 - Restore one page without silently rewriting other pages or HEAD. Surface resulting cross-page inconsistencies.
-- Capture base revision plus source hash for AI work that commits directly. Review-only selected-node regeneration instead guards the target's active identity, immutable node, and exact evidence; reject target/evidence changes without rejecting unrelated page revisions.
+- Bind every AI task to the exact evidence it read, never the session-wide revision. Episode commit guards its source hashes, target pending membership, and absence of competing coverage; compression guards every immutable candidate node shown to the model; HEAD guards its own version, exact input sources, and the rendered Archive for `BACKFILL`. Reload and rebase onto current state; reject only target/evidence changes, pause/disable, or competing coverage. Unrelated chat append, HEAD update, node edit, page checkpoint, or memory addition must not invalidate the task.
 - Persist each successful backfill Episode immediately. Failure must retain remaining gaps and completed nodes.
 - Keep streamed backfill summaries and current phase as runtime UI state; persist committed Episode count and source progress, not partial model output.
 - Persist each successful source-mutation root repair immediately. Failure must retain remaining roots and already committed replacements.

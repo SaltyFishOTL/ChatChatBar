@@ -112,6 +112,17 @@ object MemoryBackfillPolicy {
             .toList()
     }
 
+    fun eligibleDisabledGapSourceTurnIds(
+        gaps: Collection<MemoryGap>,
+        availableSourceTurnIds: Set<String>,
+        stableSourceTurnIds: Set<String>
+    ): List<String> = gaps.asSequence()
+        .filter { it.reason == MemoryGapReason.DISABLED }
+        .flatMap { it.sourceTurnIds.asSequence() }
+        .distinct()
+        .filter { it in availableSourceTurnIds && it in stableSourceTurnIds }
+        .toList()
+
     private fun List<MemoryTimelineEntry>.toContiguousGaps(): List<MemoryGap> {
         if (isEmpty()) return emptyList()
         val groups = mutableListOf<MutableList<MemoryTimelineEntry>>()

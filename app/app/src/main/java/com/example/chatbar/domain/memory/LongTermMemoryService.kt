@@ -97,6 +97,12 @@ private sealed interface MaintenanceResult {
     data class DecisionRequired(val state: MemorySessionState) : MaintenanceResult
 }
 
+private sealed interface EpisodeCommitResult {
+    data class Committed(val loaded: LoadedMemory) : EpisodeCommitResult
+    data class DecisionRequired(val state: MemorySessionState) : EpisodeCommitResult
+    data object Aborted : EpisodeCommitResult
+}
+
 private enum class CompressionAttempt {
     SUCCESS,
     NOT_COMPRESSIBLE
@@ -108,14 +114,27 @@ private enum class HeadUpdateRequest {
     BACKFILL
 }
 
-class LongTermMemoryService(
+class LongTermMemoryService internal constructor(
     private val chatRepository: ChatRepository,
     private val memoryRepository: MemoryRepository,
     private val settingsRepository: SettingsRepository,
-    streamingChatService: StreamingChatService,
+    private val ai: MemoryAiClient,
     private val contextWindowManager: ContextWindowManager
 ) {
-    private val ai = MemoryAiGateway(streamingChatService)
+    constructor(
+        chatRepository: ChatRepository,
+        memoryRepository: MemoryRepository,
+        settingsRepository: SettingsRepository,
+        streamingChatService: StreamingChatService,
+        contextWindowManager: ContextWindowManager
+    ) : this(
+        chatRepository = chatRepository,
+        memoryRepository = memoryRepository,
+        settingsRepository = settingsRepository,
+        ai = MemoryAiGateway(streamingChatService),
+        contextWindowManager = contextWindowManager
+    )
+
     private val revisions = MemoryRevisionService(memoryRepository)
     private val stateMutexes = ConcurrentHashMap<String, Mutex>()
     private val archiveMutexes = ConcurrentHashMap<String, Mutex>()
@@ -193,8 +212,7 @@ class LongTermMemoryService(
         } ?: return@archiveLock
 
         try {
-            var state = initial.state
-            var nodes = initial.nodes
+            val initialState = initial.state
             val messages = initial.messages
             val session = initial.session
             val appSettings = settingsRepository.getAppSettings()
@@ -204,84 +222,84 @@ class LongTermMemoryService(
                 windowSize = contextWindowSize
                     ?: appSettings.defaultContextWindowSize.coerceAtLeast(1)
             ).filter { sourceId ->
-                val watermark = state.recordingStartsAfterSourceOrder
+                val watermark = initialState.recordingStartsAfterSourceOrder
                 watermark == null || sourceOrder(sourceId, messages, session) > watermark
             }
-            val covered = state.activeNodeIds.mapNotNull(nodes::get).flatMapTo(mutableSetOf()) {
+            val covered = initialState.activeNodeIds.mapNotNull(initial.nodes::get).flatMapTo(mutableSetOf()) {
                 it.sourceTurnIds
             }
-            val gapIds = state.gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
+            val gapIds = initialState.gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
             val newPending = archivedSourceIds.filter { id ->
-                id !in covered && id !in gapIds && id !in state.pendingSourceTurnIds
+                id !in covered && id !in gapIds && id !in initialState.pendingSourceTurnIds
             }
             if (newPending.isNotEmpty()) {
-                state = state.copy(
-                    pendingSourceTurnIds = sortSourceIds(
-                        state.pendingSourceTurnIds + newPending,
-                        messages,
-                        session
-                    ),
-                    revision = state.revision + 1,
-                    updatedAt = System.currentTimeMillis()
-                )
-                persistStateIfCurrent(state, expectedPreviousRevision = initial.state.revision)
+                stateLock(sessionId) {
+                    val current = loadLocked(sessionId)
+                    val currentCovered = current.state.activeNodeIds.mapNotNull(current.nodes::get)
+                        .flatMapTo(mutableSetOf()) { it.sourceTurnIds }
+                    val currentGaps = current.state.gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
+                    val eligible = newPending.filter { sourceId ->
+                        sourceId !in currentCovered &&
+                            sourceId !in currentGaps &&
+                            sourceId !in current.state.pendingSourceTurnIds
+                    }
+                    if (eligible.isEmpty()) return@stateLock current
+                    val next = current.state.copy(
+                        pendingSourceTurnIds = sortSourceIds(
+                            current.state.pendingSourceTurnIds + eligible,
+                            current.messages,
+                            current.session
+                        ),
+                        revision = current.state.revision + 1,
+                        updatedAt = System.currentTimeMillis()
+                    )
+                    memoryRepository.saveState(next)
+                    current.copy(state = next)
+                }
             }
 
             while (true) {
                 val latest = stateLock(sessionId) { loadLocked(sessionId) }
-                state = latest.state
-                nodes = latest.nodes
+                val state = latest.state
                 if (!latest.session.longTermMemoryEnabled || state.pendingDecision != null) break
-                val batch = nextEpisodeBatch(state, messages, maxTurns, forcePartial = false)
+                val batch = nextEpisodeBatch(state, latest.messages, maxTurns, forcePartial = false)
                 if (batch.isEmpty()) break
 
-                val sourceRefs = sourceRefs(batch, messages, latest.session)
-                val baseSourceHash = MemoryHashes.sourceRefs(sourceRefs)
+                val sourceRefs = sourceRefs(batch, latest.messages, latest.session)
                 val summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(batch.size)
                 val response = ai.episode(
                     model = modelConfig,
-                    renderedTurns = renderSourceTurns(batch, messages, state.timeline, latest.session),
+                    renderedTurns = renderSourceTurns(
+                        batch,
+                        latest.messages,
+                        state.timeline,
+                        latest.session
+                    ),
                     summaryPromptMaxChars = summaryPromptMaxChars
                 ) { output -> validateEpisodeResponse(output, batch.size) }
-                val currentSourceRefs = sourceRefs(batch, chatRepository.getMessages(sessionId), latest.session)
-                check(MemoryHashes.sourceRefs(currentSourceRefs) == baseSourceHash) {
-                    "Episode来源已变化，丢弃过期结果"
-                }
                 val episode = createEpisodeNode(
                     sessionId = sessionId,
                     sourceRefs = sourceRefs,
                     response = response
                 )
-                val maintenance = maintainUntilFits(
+                val commit = commitEpisodeWithScopedEvidence(
                     sessionId = sessionId,
-                    initialState = state,
-                    initialNodes = nodes,
-                    stagedEpisode = episode,
+                    episode = episode,
+                    expectedSourceHash = MemoryHashes.sourceRefs(sourceRefs),
+                    pendingSourceTurnIds = { it.pendingSourceTurnIds },
+                    updateAfterAppend = { appended ->
+                        appended.copy(
+                            pendingSourceTurnIds = appended.pendingSourceTurnIds.filterNot { it in batch }
+                        )
+                    },
                     model = modelConfig,
-                    limitChars = latest.session.memoryLimitChars
+                    label = "Episode"
                 )
-                if (maintenance is MaintenanceResult.DecisionRequired) break
-                maintenance as MaintenanceResult.Ready
-                state = maintenance.state
-                nodes = maintenance.nodes
-
-                val refreshed = stateLock(sessionId) { loadLocked(sessionId) }
-                check(refreshed.state.revision == state.revision) { "Episode提交前版本已变化" }
-                val finalNodes = refreshed.nodes.toMutableMap().apply { put(episode.id, episode) }
-                val finalState = revisions.appendPure(refreshed.state, MemoryTier.EPISODE, episode.id)
-                    .copy(
-                        pendingSourceTurnIds = refreshed.state.pendingSourceTurnIds.filterNot { it in batch },
-                        revision = refreshed.state.revision + 1,
-                        updatedAt = System.currentTimeMillis()
-                    )
-                check(!MemoryBudgetPolicy.isOverLimit(finalState, finalNodes, refreshed.session.memoryLimitChars)) {
-                    "Episode提交后仍超过自动预算"
+                when (commit) {
+                    EpisodeCommitResult.Aborted -> break
+                    is EpisodeCommitResult.DecisionRequired -> break
+                    is EpisodeCommitResult.Committed -> Unit
                 }
-                requireValidNode(episode, finalNodes, finalState)
-                memoryRepository.saveNodes(listOf(episode))
-                memoryRepository.saveState(finalState)
-                state = finalState
-                nodes = finalNodes
             }
 
             stateLock(sessionId) {
@@ -394,14 +412,18 @@ class LongTermMemoryService(
             val throughT = MemoryTimelinePolicy.displayT(targetId, base.state.timeline)
                 ?: error("HEAD目标source turn没有显示T")
             val baseHeadVersion = base.state.head.version
-            val baseStateRevision = base.state.revision
+            val baseArchive = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
+                renderArchive(base)
+            } else {
+                null
+            }
             val sourceHash = MemoryHashes.sourceRefs(sourceRefs(newIds, base.messages, base.session))
             val response = ai.head(
                 model = modelConfig,
                 mode = plan.mode,
                 throughT = throughT,
                 currentHead = if (plan.mode == MemoryHeadUpdateMode.UPDATE) base.state.head.render() else "",
-                archive = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) renderArchive(base) else "",
+                archive = baseArchive.orEmpty(),
                 sourceTurns = renderSourceTurns(newIds, base.messages, base.state.timeline, base.session)
             ) { output ->
                 check(output.throughT == throughT) { "HEAD伪造throughT" }
@@ -410,17 +432,22 @@ class LongTermMemoryService(
 
             stateLock(sessionId) {
                 val current = loadLocked(sessionId)
-                if (!current.session.longTermMemoryEnabled ||
-                    current.state.head.version != baseHeadVersion ||
-                    (plan.mode == MemoryHeadUpdateMode.BACKFILL && current.state.revision != baseStateRevision)
-                ) {
+                if (!current.session.longTermMemoryEnabled) {
                     setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
                     return@stateLock
                 }
                 val currentHash = MemoryHashes.sourceRefs(
                     sourceRefs(newIds, current.messages, current.session)
                 )
-                if (currentHash != sourceHash) {
+                if (!MemoryTaskCommitPolicy.headEvidenceCurrent(
+                        expectedHeadVersion = baseHeadVersion,
+                        currentHeadVersion = current.state.head.version,
+                        expectedSourceHash = sourceHash,
+                        currentSourceHash = currentHash,
+                        expectedArchive = baseArchive,
+                        currentArchive = baseArchive?.let { renderArchive(current) }
+                    )
+                ) {
                     setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
                     return@stateLock
                 }
@@ -1135,7 +1162,6 @@ class LongTermMemoryService(
                 check(batch.isNotEmpty()) { "补录范围无法按连续source turn分组" }
                 val refs = sourceRefs(batch, loaded.messages, loaded.session)
                 val sourceHash = MemoryHashes.sourceRefs(refs)
-                val baseRevision = loaded.state.revision
                 val completedTurnsBefore = loaded.state.backfill.completedSourceTurnIds.size
                 val completedEpisodesBefore = loaded.state.backfill.completedEpisodeCount
                 val range = MemoryTimelinePolicy.range(batch, loaded.state.timeline)
@@ -1163,76 +1189,65 @@ class LongTermMemoryService(
                     }
                 ) { output -> validateEpisodeResponse(output, batch.size) }
                 val node = createEpisodeNode(sessionId, refs, response)
-                val current = stateLock(sessionId) { loadLocked(sessionId) }
-                if (current.state.backfill.status != MemoryBackfillStatus.RUNNING) break
-                check(current.state.revision == baseRevision) { "补录Episode运行期间版本已变化" }
-                val currentHash = MemoryHashes.sourceRefs(
-                    sourceRefs(batch, current.messages, current.session)
-                )
-                check(currentHash == sourceHash) { "补录Episode来源已变化，丢弃过期结果" }
                 notifyProgress(progress(MemoryBackfillPhase.CHECKING_SPACE, response.summary.trim()))
-                val maintenance = maintainUntilFits(
+                val commit = commitEpisodeWithScopedEvidence(
                     sessionId = sessionId,
-                    initialState = current.state,
-                    initialNodes = current.nodes,
-                    stagedEpisode = node,
-                    model = modelConfig,
-                    limitChars = current.session.memoryLimitChars
-                )
-                if (maintenance is MaintenanceResult.DecisionRequired) {
-                    stateLock(sessionId) {
-                        val waiting = loadLocked(sessionId)
-                        memoryRepository.saveState(
-                            waiting.state.copy(
-                                backfill = waiting.state.backfill.copy(
-                                    status = MemoryBackfillStatus.PAUSED,
-                                    updatedAt = System.currentTimeMillis()
-                                ),
-                                revision = waiting.state.revision + 1,
+                    episode = node,
+                    expectedSourceHash = sourceHash,
+                    pendingSourceTurnIds = { it.backfill.pendingSourceTurnIds },
+                    updateAfterAppend = { appended ->
+                        appended.copy(
+                            backfill = appended.backfill.copy(
+                                pendingSourceTurnIds = appended.backfill.pendingSourceTurnIds
+                                    .filterNot { it in batch },
+                                completedSourceTurnIds = appended.backfill.completedSourceTurnIds + batch,
+                                completedEpisodeCount = appended.backfill.completedEpisodeCount + 1,
+                                capturedEpisodeMaxSourceTurns = n,
                                 updatedAt = System.currentTimeMillis()
-                            )
+                            ),
+                            gaps = appended.gaps.mapNotNull { gap ->
+                                val remaining = gap.sourceTurnIds.filterNot { it in batch }
+                                gap.copy(sourceTurnIds = remaining).takeIf { remaining.isNotEmpty() }
+                            }
                         )
-                    }
-                    break
-                }
-                maintenance as MaintenanceResult.Ready
-                val refreshed = stateLock(sessionId) { loadLocked(sessionId) }
-                check(refreshed.state.revision == maintenance.state.revision) {
-                    "补录Episode提交前版本已变化"
-                }
-                check(refreshed.state.backfill.status == MemoryBackfillStatus.RUNNING) {
-                    "补录已暂停"
-                }
-                notifyProgress(progress(MemoryBackfillPhase.SAVING_EPISODE, response.summary.trim()))
-                val nodes = refreshed.nodes.toMutableMap().apply { put(node.id, node) }
-                val nextState = revisions.appendPure(refreshed.state, MemoryTier.EPISODE, node.id).copy(
-                    backfill = refreshed.state.backfill.copy(
-                        pendingSourceTurnIds = refreshed.state.backfill.pendingSourceTurnIds.filterNot { it in batch },
-                        completedSourceTurnIds = refreshed.state.backfill.completedSourceTurnIds + batch,
-                        completedEpisodeCount = refreshed.state.backfill.completedEpisodeCount + 1,
-                        capturedEpisodeMaxSourceTurns = n,
-                        updatedAt = System.currentTimeMillis()
-                    ),
-                    gaps = refreshed.state.gaps.mapNotNull { gap ->
-                        val remaining = gap.sourceTurnIds.filterNot { it in batch }
-                        gap.copy(sourceTurnIds = remaining).takeIf { remaining.isNotEmpty() }
                     },
-                    revision = refreshed.state.revision + 1,
-                    updatedAt = System.currentTimeMillis()
+                    model = modelConfig,
+                    label = "补录Episode",
+                    canContinue = {
+                        it.state.backfill.status == MemoryBackfillStatus.RUNNING
+                    }
                 )
-                check(!MemoryBudgetPolicy.isOverLimit(nextState, nodes, refreshed.session.memoryLimitChars)) {
-                    "补录Episode提交后仍超过自动预算"
+                when (commit) {
+                    EpisodeCommitResult.Aborted -> break
+                    is EpisodeCommitResult.DecisionRequired -> {
+                        stateLock(sessionId) {
+                            val waiting = loadLocked(sessionId)
+                            memoryRepository.saveState(
+                                waiting.state.copy(
+                                    backfill = waiting.state.backfill.copy(
+                                        status = MemoryBackfillStatus.PAUSED,
+                                        updatedAt = System.currentTimeMillis()
+                                    ),
+                                    revision = waiting.state.revision + 1,
+                                    updatedAt = System.currentTimeMillis()
+                                )
+                            )
+                        }
+                        break
+                    }
+                    is EpisodeCommitResult.Committed -> {
+                        notifyProgress(
+                            progress(MemoryBackfillPhase.SAVING_EPISODE, response.summary.trim())
+                        )
+                        loaded = commit.loaded
+                    }
                 }
-                requireValidNode(node, nodes, nextState)
-                memoryRepository.saveNodes(listOf(node))
-                memoryRepository.saveState(nextState)
-                loaded = refreshed.copy(state = nextState, nodes = nodes)
                 notifyProgress(
                     MemoryBackfillProgress(
                         phase = MemoryBackfillPhase.PREPARING,
                         totalSourceTurns = totalSourceTurns,
-                        completedSourceTurns = nextState.backfill.completedSourceTurnIds.size,
-                        completedEpisodes = nextState.backfill.completedEpisodeCount
+                        completedSourceTurns = loaded.state.backfill.completedSourceTurnIds.size,
+                        completedEpisodes = loaded.state.backfill.completedEpisodeCount
                     )
                 )
             }
@@ -1356,7 +1371,6 @@ class LongTermMemoryService(
 
         val (base, latest) = prepared
         val refs = sourceRefs(listOf(latest), base.messages, base.session)
-        val baseRevision = base.state.revision
         val summaryPromptMaxChars = MemoryEpisodeSummaryPolicy.promptMaxChars(1)
         val response = ai.episode(
             modelConfig,
@@ -1364,38 +1378,23 @@ class LongTermMemoryService(
             summaryPromptMaxChars
         ) { output -> validateEpisodeResponse(output, 1) }
         val node = createEpisodeNode(sessionId, refs, response)
-        val current = stateLock(sessionId) { loadLocked(sessionId) }
-        check(current.state.revision == baseRevision) { "当前锚点运行期间版本已变化" }
-        check(current.state.pendingSourceTurnIds == listOf(latest)) { "当前锚点提交前状态已变化" }
-        check(
-            MemoryHashes.sourceRefs(sourceRefs(listOf(latest), current.messages, current.session)) ==
-                MemoryHashes.sourceRefs(refs)
-        ) { "当前锚点来源已变化" }
-        val maintenance = maintainUntilFits(
-            sessionId,
-            current.state,
-            current.nodes,
-            node,
-            modelConfig,
-            current.session.memoryLimitChars
+        val commit = commitEpisodeWithScopedEvidence(
+            sessionId = sessionId,
+            episode = node,
+            expectedSourceHash = MemoryHashes.sourceRefs(refs),
+            pendingSourceTurnIds = { it.pendingSourceTurnIds },
+            updateAfterAppend = { appended ->
+                appended.copy(
+                    pendingSourceTurnIds = appended.pendingSourceTurnIds.filterNot { it == latest }
+                )
+            },
+            model = modelConfig,
+            label = "当前锚点"
         )
-        if (maintenance is MaintenanceResult.DecisionRequired) return@archiveLock
-        maintenance as MaintenanceResult.Ready
-        val refreshed = stateLock(sessionId) { loadLocked(sessionId) }
-        check(refreshed.state.revision == maintenance.state.revision) { "当前锚点提交前版本已变化" }
-        val nodes = refreshed.nodes.toMutableMap().apply { put(node.id, node) }
-        val next = revisions.appendPure(refreshed.state, MemoryTier.EPISODE, node.id).copy(
-            pendingSourceTurnIds = emptyList(),
-            revision = refreshed.state.revision + 1,
-            updatedAt = System.currentTimeMillis()
-        )
-        check(!MemoryBudgetPolicy.isOverLimit(next, nodes, refreshed.session.memoryLimitChars)) {
-            "当前锚点提交后仍超过自动预算"
+        if (commit !is EpisodeCommitResult.Committed) return@archiveLock
+        stateLock(sessionId) {
+            compileAndCacheLocked(loadLocked(sessionId))
         }
-        requireValidNode(node, nodes, next)
-        memoryRepository.saveNodes(listOf(node))
-        memoryRepository.saveState(next)
-        compileAndCacheLocked(refreshed.copy(state = next, nodes = nodes))
         rebuildHeadFromAnchor(sessionId, latest, modelConfig)
     }
 
@@ -1573,6 +1572,86 @@ class LongTermMemoryService(
 
     // ===== 预算与压缩 =====
 
+    private suspend fun commitEpisodeWithScopedEvidence(
+        sessionId: String,
+        episode: MemoryNode,
+        expectedSourceHash: String,
+        pendingSourceTurnIds: (MemorySessionState) -> List<String>,
+        updateAfterAppend: (MemorySessionState) -> MemorySessionState,
+        model: ModelConfig,
+        label: String,
+        canContinue: (LoadedMemory) -> Boolean = { true },
+        validateScope: (LoadedMemory) -> Unit = {}
+    ): EpisodeCommitResult {
+        while (true) {
+            val beforeMaintenance = stateLock(sessionId) { loadLocked(sessionId) }
+            if (!beforeMaintenance.session.longTermMemoryEnabled || !canContinue(beforeMaintenance)) {
+                return EpisodeCommitResult.Aborted
+            }
+            validateScope(beforeMaintenance)
+            MemoryTaskCommitPolicy.requireEpisodeTargetCurrent(
+                sourceTurnIds = episode.sourceTurnIds,
+                expectedSourceHash = expectedSourceHash,
+                currentSourceHash = MemoryHashes.sourceRefs(
+                    sourceRefs(episode.sourceTurnIds, beforeMaintenance.messages, beforeMaintenance.session)
+                ),
+                pendingSourceTurnIds = pendingSourceTurnIds(beforeMaintenance.state),
+                activeNodes = beforeMaintenance.state.activeNodeIds.mapNotNull(beforeMaintenance.nodes::get),
+                label = label
+            )
+            val maintenance = maintainUntilFits(
+                sessionId = sessionId,
+                initialState = beforeMaintenance.state,
+                initialNodes = beforeMaintenance.nodes.toMutableMap(),
+                stagedEpisode = episode,
+                model = model,
+                limitChars = beforeMaintenance.session.memoryLimitChars
+            )
+            if (maintenance is MaintenanceResult.DecisionRequired) {
+                return EpisodeCommitResult.DecisionRequired(maintenance.state)
+            }
+
+            val committed = stateLock(sessionId) {
+                val current = loadLocked(sessionId)
+                if (!current.session.longTermMemoryEnabled || !canContinue(current)) {
+                    return@stateLock EpisodeCommitResult.Aborted
+                }
+                validateScope(current)
+                MemoryTaskCommitPolicy.requireEpisodeTargetCurrent(
+                    sourceTurnIds = episode.sourceTurnIds,
+                    expectedSourceHash = expectedSourceHash,
+                    currentSourceHash = MemoryHashes.sourceRefs(
+                        sourceRefs(episode.sourceTurnIds, current.messages, current.session)
+                    ),
+                    pendingSourceTurnIds = pendingSourceTurnIds(current.state),
+                    activeNodes = current.state.activeNodeIds.mapNotNull(current.nodes::get),
+                    label = label
+                )
+                val finalNodes = current.nodes.toMutableMap().apply { put(episode.id, episode) }
+                val appended = revisions.appendPure(current.state, MemoryTier.EPISODE, episode.id)
+                val finalState = updateAfterAppend(appended).copy(
+                    revision = current.state.revision + 1,
+                    updatedAt = System.currentTimeMillis()
+                )
+                if (MemoryBudgetPolicy.isOverLimit(
+                        finalState,
+                        finalNodes,
+                        current.session.memoryLimitChars
+                    )
+                ) {
+                    return@stateLock null
+                }
+                requireValidNode(episode, finalNodes, finalState)
+                memoryRepository.saveNodes(listOf(episode))
+                memoryRepository.saveState(finalState)
+                EpisodeCommitResult.Committed(
+                    current.copy(state = finalState, nodes = finalNodes)
+                )
+            }
+            if (committed != null) return committed
+        }
+    }
+
     private suspend fun maintainUntilFits(
         sessionId: String,
         initialState: MemorySessionState,
@@ -1690,10 +1769,13 @@ class LongTermMemoryService(
     private suspend fun persistDecision(sessionId: String, state: MemorySessionState) {
         stateLock(sessionId) {
             val current = loadLocked(sessionId)
-            check(current.state.revision + 1 == state.revision || current.state.revision == state.revision) {
-                "扩容决策提交前版本已变化"
-            }
-            memoryRepository.saveState(state)
+            val decision = state.pendingDecision ?: error("缺少待处理扩容决策")
+            val next = current.state.copy(
+                pendingDecision = decision,
+                revision = current.state.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+            memoryRepository.saveState(next)
             setArchiveStatusLocked(
                 current.session,
                 MemoryUpdateStatus.LIMIT_DECISION_REQUIRED,
@@ -1734,7 +1816,15 @@ class LongTermMemoryService(
         val parent = createParentNode(sessionId, parentTier, consumed, response)
         check(parent.body.length < consumed.sumOf { it.body.length }) { "压缩后正文没有缩短" }
         requireValidNode(parent, nodes + (parent.id to parent), state)
-        val next = commitCompression(sessionId, state, nodes, kind, consumed, parent, model.id)
+        val next = commitCompression(
+            sessionId = sessionId,
+            nodes = nodes,
+            kind = kind,
+            evidenceNodes = candidate.candidates,
+            consumed = consumed,
+            parent = parent,
+            modelId = model.id
+        )
         return CompressionAttempt.SUCCESS to next
     }
 
@@ -1771,39 +1861,52 @@ class LongTermMemoryService(
         check(parent.body.length < consumed.sumOf { it.body.length }) { "Era压缩后正文没有缩短" }
         requireValidNode(parent, nodes + (parent.id to parent), state)
         val committed = commitCompression(
-            sessionId,
-            state,
-            nodes,
-            MemoryCompressionKind.ERA_TO_ERA,
-            consumed,
-            parent,
-            model.id
+            sessionId = sessionId,
+            nodes = nodes,
+            kind = MemoryCompressionKind.ERA_TO_ERA,
+            evidenceNodes = candidate.candidates,
+            consumed = consumed,
+            parent = parent,
+            modelId = model.id
         )
-        val next = committed.copy(
-            eraCompressionsSincePrompt = state.eraCompressionsSincePrompt + 1,
-            revision = committed.revision + 1,
-            updatedAt = System.currentTimeMillis()
-        )
-        memoryRepository.saveState(next)
-        return CompressionAttempt.SUCCESS to next
+        return CompressionAttempt.SUCCESS to committed
     }
 
     private suspend fun commitCompression(
         sessionId: String,
-        initialState: MemorySessionState,
         nodes: MutableMap<String, MemoryNode>,
         kind: MemoryCompressionKind,
+        evidenceNodes: List<MemoryNode>,
         consumed: List<MemoryNode>,
         parent: MemoryNode,
         modelId: String
-    ): MemorySessionState {
-        val current = stateLock(sessionId) { loadLocked(sessionId) }
-        check(current.state.revision == initialState.revision) { "压缩提交前版本已变化" }
+    ): MemorySessionState = stateLock(sessionId) {
+        val current = loadLocked(sessionId)
         val sourceTier = consumed.first().tier
         val targetTier = parent.tier
+        MemoryTaskCommitPolicy.requireNodeEvidenceCurrent(
+            expectedNodes = evidenceNodes,
+            currentNodesById = current.nodes,
+            activeNodeIds = current.state.page(sourceTier).activeNodeIds.toSet(),
+            staleNodeIds = current.state.staleSourcesByNodeId.keys,
+            label = "压缩"
+        )
+        val initialState = current.state
+        nodes.clear()
+        nodes.putAll(current.nodes)
         val transactionId = MemoryCompressionTransaction.newId()
         memoryRepository.saveNodes(listOf(parent))
         nodes[parent.id] = parent
+        requireValidNode(parent, nodes, initialState)
+
+        fun withEraCompressionCount(state: MemorySessionState): MemorySessionState {
+            if (kind != MemoryCompressionKind.ERA_TO_ERA) return state
+            return state.copy(
+                eraCompressionsSincePrompt = state.eraCompressionsSincePrompt + 1,
+                revision = state.revision + 1,
+                updatedAt = System.currentTimeMillis()
+            )
+        }
 
         val sourceAfter = initialState.page(sourceTier).activeNodeIds.filterNot { id ->
             consumed.any { it.id == id }
@@ -1842,12 +1945,12 @@ class LongTermMemoryService(
                 kind = kind,
                 consumedCount = consumed.size
             )
-            val next = checkpoint.state.copy(
+            val next = withEraCompressionCount(checkpoint.state.copy(
                 pendingCompressionEvents = checkpoint.state.pendingCompressionEvents + event,
                 updatedAt = System.currentTimeMillis()
-            )
+            ))
             memoryRepository.saveState(next)
-            return next
+            return@stateLock next
         }
         val sourceCheckpoint = revisions.checkpoint(
             initialState = initialState,
@@ -1893,12 +1996,12 @@ class LongTermMemoryService(
             kind = kind,
             consumedCount = consumed.size
         )
-        val next = targetCheckpoint.state.copy(
+        val next = withEraCompressionCount(targetCheckpoint.state.copy(
             pendingCompressionEvents = targetCheckpoint.state.pendingCompressionEvents + event,
             updatedAt = System.currentTimeMillis()
-        )
+        ))
         memoryRepository.saveState(next)
-        return next
+        next
     }
 
     // ===== 迁移、编译与辅助 =====
@@ -2653,15 +2756,6 @@ class LongTermMemoryService(
         )
     }
 
-    private suspend fun persistStateIfCurrent(
-        state: MemorySessionState,
-        expectedPreviousRevision: Long
-    ) = stateLock(state.sessionId) {
-        val current = memoryRepository.getState(state.sessionId) ?: error("记忆状态不存在")
-        check(current.revision == expectedPreviousRevision) { "记忆状态已变化" }
-        memoryRepository.saveState(state)
-    }
-
     private fun validateEpisodeResponse(response: EpisodeResponse, sourceTurnCount: Int) {
         val summary = response.summary.trim()
         check(summary.isNotBlank()) { "Episode summary为空" }
@@ -3173,10 +3267,11 @@ class LongTermMemoryService(
             availableSourceTurnIds = availableSourceIds,
             archivedSourceTurnIds = archivedSourceIds
         )
-        val disabledEligible = loaded.state.gaps
-            .filter { it.reason == MemoryGapReason.DISABLED }
-            .flatMap { it.sourceTurnIds }
-            .filter { it in availableSourceIds }
+        val disabledEligible = MemoryBackfillPolicy.eligibleDisabledGapSourceTurnIds(
+            gaps = loaded.state.gaps,
+            availableSourceTurnIds = availableSourceIds,
+            stableSourceTurnIds = stableSourceTurnIds(loaded.messages).toSet()
+        )
         return sortSourceIds(
             archivedEligible + disabledEligible,
             loaded.messages,
