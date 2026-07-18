@@ -184,6 +184,32 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
+    /** 逐文件筛选，不把完整实体集合放入通用缓存。适合大型实体查询。 */
+    @OptIn(ExperimentalSerializationApi::class)
+    suspend fun <T : Any> queryUncached(
+        entityType: String,
+        serializer: KSerializer<T>,
+        predicate: (T) -> Boolean
+    ): List<T> = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            val matches = mutableListOf<T>()
+            entityDir(entityType)
+                .listFiles { file -> file.extension == "json" }
+                .orEmpty()
+                .forEach { file ->
+                    val entity = try {
+                        file.inputStream().buffered().use { input ->
+                            json.decodeFromStream(serializer, input)
+                        }
+                    } catch (_: Exception) {
+                        return@forEach
+                    }
+                    if (predicate(entity)) matches.add(entity)
+                }
+            matches
+        }
+    }
+
     /** 保存大型实体，但不长期保留其完整对象。 */
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> saveEntityUncached(
@@ -197,6 +223,19 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
+    /** 批量保存大型实体，但不把完整对象放入通用缓存。 */
+    suspend fun <T : Any> saveAllUncached(
+        entityType: String,
+        entities: Map<String, T>,
+        serializer: KSerializer<T>
+    ) = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            entities.forEach { (id, entity) ->
+                writeJsonFile(entityFile(entityType, id), entity, serializer)
+            }
+        }
+    }
+
     /** 删除未进入通用缓存的大型实体。 */
     suspend fun deleteEntityUncached(entityType: String, id: String) =
         mutexFor(entityType).withLock {
@@ -204,6 +243,28 @@ class JsonFileStorage(private val context: Context) {
                 entityFile(entityType, id).delete()
             }
         }
+
+    /** 逐文件删除大型实体，不创建或更新通用缓存。 */
+    suspend fun <T : Any> deleteWhereUncached(
+        entityType: String,
+        serializer: KSerializer<T>,
+        predicate: (T) -> Boolean
+    ): Int = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            entityDir(entityType)
+                .listFiles { file -> file.extension == "json" }
+                .orEmpty()
+                .count { file ->
+                    val matches = runCatching {
+                        file.inputStream().buffered().use { input ->
+                            @OptIn(ExperimentalSerializationApi::class)
+                            predicate(json.decodeFromStream(serializer, input))
+                        }
+                    }.getOrDefault(false)
+                    matches && file.delete()
+                }
+        }
+    }
 
     /**
      * 删除实体

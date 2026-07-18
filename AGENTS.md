@@ -59,6 +59,10 @@ All newly added hardcoded AI prompts, prompt templates, and prompt-builder text 
 
 Fallback paths are failure signals, not success paths. When fallback is triggered, first investigate and fix the upstream failure reason, and make the failure visible in status/debug output. Do not optimize fallback behavior to hide broken primary functionality unless the user explicitly asks for graceful degradation.
 
+## Intent-Preserving Bug Fixes
+
+Before fixing a bug, reconstruct why the current design exists from its call sites, data flow, user-visible behavior, history, and surrounding architecture. Separate the intended outcome from the faulty mechanism. Preserve the original outcome and invariants with the smallest scoped change possible; do not remove caching, synchronization, fallback, persistence, validation, or other behavior merely because it appears in the failing path. If the design intent remains uncertain and plausible fixes would change behavior differently, explain the inferred intent and tradeoffs and obtain user confirmation before implementation.
+
 ## Skill Maintenance
 
 Before changing an area covered by a project skill under `.agents/skills`, read the relevant `SKILL.md`. After any change, update related skills in the same turn only when the change makes their existing content stale, incomplete, or misleading. Keep skills compact: replace stale facts, avoid logs, and do not add generic knowledge that Codex should already know.
