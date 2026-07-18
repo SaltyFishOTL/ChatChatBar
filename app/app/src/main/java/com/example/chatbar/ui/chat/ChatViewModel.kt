@@ -133,6 +133,7 @@ data class LongTermMemoryUiState(
     val headInitializationPending: Boolean = false,
     val headBackfillRequired: Boolean = false,
     val warnings: List<String> = emptyList(),
+    val archiveMaintenanceRunning: Boolean = false,
     val loading: Boolean = false,
     val error: String? = null
 )
@@ -277,6 +278,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _longTermMemoryUiState = MutableStateFlow(LongTermMemoryUiState(loading = true))
     val longTermMemoryUiState: StateFlow<LongTermMemoryUiState> = _longTermMemoryUiState.asStateFlow()
+    @Volatile
+    private var memoryArchiveMaintenanceRunning = false
     @Volatile
     private var memoryBackfillProgress: MemoryBackfillProgress? = null
     @Volatile
@@ -781,18 +784,30 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun retryMemoryMaintenance() {
+        if (memoryArchiveMaintenanceRunning) return
+        memoryArchiveMaintenanceRunning = true
+        _longTermMemoryUiState.update {
+            it.copy(archiveMaintenanceRunning = true, error = null)
+        }
         viewModelScope.launch {
-            val error = runCatching {
-                val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.updateArchiveAfterReply(
-                    sessionId,
-                    model,
-                    _contextWindowSize.value
-                )
-            }.exceptionOrNull()
-            refreshMemoryAfterAction(error)
-            drainMemoryCompressionEvents()
+            try {
+                val error = runCatching {
+                    val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
+                    val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
+                    longTermMemoryService.updateArchiveAfterReply(
+                        sessionId,
+                        model,
+                        _contextWindowSize.value
+                    )
+                }.exceptionOrNull()
+                refreshMemoryAfterAction(error)
+                drainMemoryCompressionEvents()
+            } finally {
+                memoryArchiveMaintenanceRunning = false
+                _longTermMemoryUiState.update {
+                    it.copy(archiveMaintenanceRunning = false)
+                }
+            }
         }
     }
 
@@ -972,6 +987,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             headInitializationPending = view.headInitializationPending,
             headBackfillRequired = view.headBackfillRequired,
             warnings = view.warnings.map { it.message },
+            archiveMaintenanceRunning = memoryArchiveMaintenanceRunning,
             loading = false
         )
     }

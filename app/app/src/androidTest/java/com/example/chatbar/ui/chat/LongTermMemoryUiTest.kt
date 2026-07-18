@@ -24,6 +24,7 @@ import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTierRevision
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
+import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.domain.memory.MemoryHashes
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
@@ -175,6 +176,46 @@ class LongTermMemoryUiTest {
         composeTestRule.onNodeWithText("正在生成 T1-T1").assertIsDisplayed()
         composeTestRule.onNodeWithText("已处理 1/2 轮 · 已生成 1 条近期流程").assertIsDisplayed()
         composeTestRule.onNodeWithText("正在流式生成的近期流程").assertIsDisplayed()
+    }
+
+    @Test
+    fun failedArchiveMaintenanceExplainsRetryPurpose() {
+        var retried = false
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryArchiveMaintenanceAction(
+                    status = MemoryUpdateStatus.ERROR,
+                    retryRunning = false,
+                    onRetry = { retried = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("历史归档维护失败").assertIsDisplayed()
+        composeTestRule.onNodeWithText(
+            "重试会扫描尚未归档的旧对话，生成 Episode，并在空间不足时压缩已有记忆；不会修改聊天原文。"
+        ).assertIsDisplayed()
+        composeTestRule.onNodeWithText("重新维护历史归档").performClick()
+        composeTestRule.runOnIdle { assertTrue(retried) }
+    }
+
+    @Test
+    fun retryingArchiveMaintenanceShowsImmediateProgress() {
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryArchiveMaintenanceAction(
+                    status = MemoryUpdateStatus.ERROR,
+                    retryRunning = true,
+                    onRetry = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("正在维护历史归档").assertIsDisplayed()
+        composeTestRule.onNodeWithText(
+            "重试已提交。正在等待或调用模型生成 Episode，并在需要时压缩记忆；耗时取决于模型响应。"
+        ).assertIsDisplayed()
+        assertTrue(composeTestRule.onAllNodesWithText("重新维护历史归档").fetchSemanticsNodes().isEmpty())
     }
 
     @Test

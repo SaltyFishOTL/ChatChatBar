@@ -79,6 +79,7 @@ import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSelect
+import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbTabs
@@ -641,8 +642,13 @@ private fun LongTermMemoryContent(
                     style = ChatBarTheme.typography.label
                 )
                 CbText(
-                    "历史记忆：${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
-                        "当前状态：${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
+                    "历史归档（Archive）：${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
+                        "当前摘要（HEAD）：${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbText(
+                    "Archive 保存较早剧情摘要；HEAD 保存最近场景和人物状态。两者会在后台自动维护。",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
@@ -654,7 +660,14 @@ private fun LongTermMemoryContent(
                 tint = ChatBarTheme.colors.mutedForeground
             )
         }
-        (session?.memoryArchiveError ?: session?.memoryHeadError ?: state.error)?.let {
+        val archiveBusy = state.archiveMaintenanceRunning ||
+            session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING
+        val visibleError = if (archiveBusy) {
+            session?.memoryHeadError ?: state.error
+        } else {
+            session?.memoryArchiveError ?: session?.memoryHeadError ?: state.error
+        }
+        visibleError?.let {
             CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
         }
         if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
@@ -667,14 +680,11 @@ private fun LongTermMemoryContent(
                 modifier = Modifier.fillMaxWidth()
             )
         }
-        if (session?.memoryArchiveStatus == MemoryUpdateStatus.ERROR) {
-            CbButton(
-                "重试 Archive 维护",
-                onRetryMaintenance,
-                variant = ButtonVariant.Outline,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
+        MemoryArchiveMaintenanceAction(
+            status = session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE,
+            retryRunning = state.archiveMaintenanceRunning,
+            onRetry = onRetryMaintenance
+        )
         if (session?.memoryHeadStatus == MemoryUpdateStatus.ERROR) {
             CbButton(
                 "重试 HEAD 更新",
@@ -755,6 +765,64 @@ private fun LongTermMemoryContent(
                 }
                 else -> Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
                     MemoryReadOnlyCard("Archive + HEAD", state.preview.ifBlank { "（空）" })
+                }
+            }
+        }
+    }
+}
+
+@Composable
+internal fun MemoryArchiveMaintenanceAction(
+    status: MemoryUpdateStatus,
+    retryRunning: Boolean,
+    onRetry: () -> Unit
+) {
+    val running = retryRunning || status == MemoryUpdateStatus.UPDATING
+    when {
+        running -> {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Row(
+                    Modifier.padding(10.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbSpinner(Modifier.size(20.dp))
+                    Column(
+                        Modifier.weight(1f),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        CbText("正在维护历史归档", style = ChatBarTheme.typography.label)
+                        CbText(
+                            if (retryRunning) {
+                                "重试已提交。正在等待或调用模型生成 Episode，并在需要时压缩记忆；耗时取决于模型响应。"
+                            } else {
+                                "正在扫描旧对话并生成或压缩长期记忆；聊天可继续使用。"
+                            },
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                }
+            }
+        }
+        status == MemoryUpdateStatus.ERROR -> {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                Column(
+                    Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    CbText("历史归档维护失败", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "重试会扫描尚未归档的旧对话，生成 Episode，并在空间不足时压缩已有记忆；不会修改聊天原文。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton(
+                        "重新维护历史归档",
+                        onRetry,
+                        variant = ButtonVariant.Outline,
+                        modifier = Modifier.fillMaxWidth()
+                    )
                 }
             }
         }

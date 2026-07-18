@@ -13,6 +13,7 @@
 9. On failure, preserve pending IDs and raw chat; expose error.
 
 - Before Episode commit, reload current state and require only exact source hashes, continued target-pending membership, and no active node covering those target sources. Rebase unrelated HEAD/page/chat revisions instead of rejecting them.
+- Manual Archive retry enters a runtime running state before waiting for the per-session Archive mutex or model. Explain that it scans unarchived turns, creates Episode, and may compress Archive; hide the stale Archive error, prevent duplicate retry, and show indeterminate progress until refreshed persisted state replaces it.
 
 ## HEAD
 
