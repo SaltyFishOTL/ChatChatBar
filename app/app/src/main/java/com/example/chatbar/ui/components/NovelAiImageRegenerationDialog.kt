@@ -36,7 +36,8 @@ fun NovelAiImageRegenerationDialog(
     onDeleteImage: (() -> Unit)? = null
 ) {
     var fullscreenTarget by remember { mutableStateOf<Int?>(null) }
-    CbDialog(
+    // CbDialog owns a separate window that would cover the activity-hosted fullscreen editor.
+    if (fullscreenTarget == null) CbDialog(
         onDismissRequest = {
             if (!submitting) {
                 fullscreenTarget = null
