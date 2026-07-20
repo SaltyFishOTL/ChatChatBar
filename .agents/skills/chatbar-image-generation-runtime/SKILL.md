@@ -17,7 +17,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
 - Background protection: domain/service/AiBackgroundWorkManager.kt
-- Tests: NovelAiImageRetryTest.kt, ChatImageActionPolicyTest.kt, and image metadata serialization tests
+- Tests: NovelAiImageRetryTest.kt, ChatImageActionPolicyTest.kt, NovelAiImageRegenerationDialogTest.kt, and image metadata serialization tests
 
 Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar-moments for post identity, scheduling, and placeholder behavior.
 
@@ -38,6 +38,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Preserve original pixel dimensions and request a fresh seed for each regeneration.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
 - Keep shared dialog content scrollable and bottom actions visible.
+- While FullscreenTextEditor is active, stop composing CbDialog; its separate Android window otherwise covers the activity-hosted editor. Restore the dialog when fullscreen editing closes.
 
 ## File and State Safety
 
@@ -62,6 +63,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - 429 succeeds on third attempt and fails once after three total attempts.
 - New image and legacy image metadata loading.
 - Editable prompt round-trip, original dimensions, and new seed.
+- Fullscreen prompt editor hides the dialog window, then restores it on close without losing the draft.
 - Save failure, repository failure, and old-file cleanup failure.
 - Concurrent text generation and image generation; two unrelated image tasks.
 - Chat and Moments reuse of shared regeneration dialog.
