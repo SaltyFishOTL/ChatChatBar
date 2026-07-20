@@ -438,7 +438,7 @@ class NovelAiPromptDesigner(
             val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
             val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
             val effectiveNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
-            val characters = designed.characters.take(6)
+            val characters = designed.characters.take(NOVEL_AI_MAX_CHARACTER_PROMPTS)
             if (characters.isEmpty()) return NovelAiPromptPlan(
                 normalizedBase,
                 emptyList(),

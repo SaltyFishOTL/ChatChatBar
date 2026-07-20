@@ -11,6 +11,27 @@ data class NovelAiImageRegenerationDraft(
     val width: Int,
     val height: Int
 ) {
+    val canRegenerate: Boolean
+        get() = baseCaption.isNotBlank() && characterPrompts.all { it.prompt.isNotBlank() }
+
+    fun addCharacterPrompt(): NovelAiImageRegenerationDraft {
+        if (characterPrompts.size >= NOVEL_AI_MAX_CHARACTER_PROMPTS) return this
+        val newCount = characterPrompts.size + 1
+        val center = NovelAiPromptDesigner.fallbackCenter(characterPrompts.size, newCount)
+        return copy(
+            characterPrompts = characterPrompts + GeneratedImageCharacterPrompt(
+                prompt = "",
+                centerX = center.x,
+                centerY = center.y
+            )
+        )
+    }
+
+    fun removeCharacterPrompt(index: Int): NovelAiImageRegenerationDraft {
+        if (index !in characterPrompts.indices) return this
+        return copy(characterPrompts = characterPrompts.filterIndexed { itemIndex, _ -> itemIndex != index })
+    }
+
     fun toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
         baseCaption = baseCaption,
         characterCaptions = characterPrompts.map {
@@ -23,6 +44,8 @@ data class NovelAiImageRegenerationDraft(
         negativePrompt = negativePrompt
     )
 }
+
+const val NOVEL_AI_MAX_CHARACTER_PROMPTS = 6
 
 fun GeneratedImageMetadata.toRegenerationDraft(): NovelAiImageRegenerationDraft =
     NovelAiImageRegenerationDraft(

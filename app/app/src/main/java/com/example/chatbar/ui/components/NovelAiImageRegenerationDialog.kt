@@ -6,18 +6,23 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.size
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbField
+import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbText
@@ -60,7 +65,7 @@ fun NovelAiImageRegenerationDialog(
             CbButton(
                 if (submitting) "生成中" else "重新生成",
                 { draft?.let(onRegenerate) },
-                enabled = draft?.baseCaption?.isNotBlank() == true && !loading && !submitting
+                enabled = draft?.canRegenerate == true && !loading && !submitting
             )
         }
     ) {
@@ -98,28 +103,6 @@ fun NovelAiImageRegenerationDialog(
                             isError = current.baseCaption.isBlank()
                         )
                     }
-                    current.characterPrompts.forEachIndexed { index, characterPrompt ->
-                        CbField(
-                            label = "角色提示词 ${index + 1}",
-                            description = "该角色的外观、服装和动作标签",
-                            onFullscreenEdit = { fullscreenTarget = index }
-                        ) {
-                            CbInput(
-                                value = characterPrompt.prompt,
-                                onValueChange = { value ->
-                                    onDraftChange(
-                                        current.copy(
-                                            characterPrompts = current.characterPrompts.mapIndexed { itemIndex, item ->
-                                                if (itemIndex == index) item.copy(prompt = value) else item
-                                            }
-                                        )
-                                    )
-                                },
-                                singleLine = false,
-                                minLines = 3
-                            )
-                        }
-                    }
                     CbField(
                         label = "负面提示词",
                         description = "不希望图片出现的内容或质量问题",
@@ -131,6 +114,71 @@ fun NovelAiImageRegenerationDialog(
                             singleLine = false,
                             minLines = 3
                         )
+                    }
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            CbText("角色提示词", style = ChatBarTheme.typography.label)
+                            CbText(
+                                "${current.characterPrompts.size}/$NOVEL_AI_MAX_CHARACTER_PROMPTS，可按需添加或删除",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
+                        CbButton(
+                            text = "添加角色",
+                            onClick = { onDraftChange(current.addCharacterPrompt()) },
+                            enabled = current.characterPrompts.size < NOVEL_AI_MAX_CHARACTER_PROMPTS && !submitting,
+                            variant = ButtonVariant.Outline
+                        )
+                    }
+                    if (current.characterPrompts.isEmpty()) {
+                        CbText(
+                            "当前没有独立角色提示词。",
+                            color = ChatBarTheme.colors.mutedForeground
+                        )
+                    }
+                    current.characterPrompts.forEachIndexed { index, characterPrompt ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            verticalAlignment = Alignment.Top
+                        ) {
+                            CbField(
+                                label = "角色提示词 ${index + 1}",
+                                modifier = Modifier.weight(1f),
+                                description = "该角色的外观、服装和动作标签",
+                                error = if (characterPrompt.prompt.isBlank()) "角色提示词不能为空；不需要时可删除" else null,
+                                onFullscreenEdit = { fullscreenTarget = index }
+                            ) {
+                                CbInput(
+                                    value = characterPrompt.prompt,
+                                    onValueChange = { value ->
+                                        onDraftChange(
+                                            current.copy(
+                                                characterPrompts = current.characterPrompts.mapIndexed { itemIndex, item ->
+                                                    if (itemIndex == index) item.copy(prompt = value) else item
+                                                }
+                                            )
+                                        )
+                                    },
+                                    singleLine = false,
+                                    minLines = 3,
+                                    isError = characterPrompt.prompt.isBlank()
+                                )
+                            }
+                            CbIconButton(
+                                imageVector = AppIcons.Delete,
+                                contentDescription = "删除角色提示词 ${index + 1}",
+                                onClick = { onDraftChange(current.removeCharacterPrompt(index)) },
+                                modifier = Modifier.size(48.dp),
+                                enabled = !submitting,
+                                tint = ChatBarTheme.colors.destructive
+                            )
+                        }
                     }
                 }
             }

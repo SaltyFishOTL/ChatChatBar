@@ -17,7 +17,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
 - Background protection: domain/service/AiBackgroundWorkManager.kt
-- Tests: NovelAiImageRetryTest.kt, ChatImageActionPolicyTest.kt, NovelAiImageRegenerationDialogTest.kt, and image metadata serialization tests
+- Tests: NovelAiImageRetryTest.kt, NovelAiImageRegenerationTest.kt, ChatImageActionPolicyTest.kt, NovelAiImageRegenerationDialogTest.kt, and image metadata serialization tests
 
 Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar-moments for post identity, scheduling, and placeholder behavior.
 
@@ -34,7 +34,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 
 - Persist image path, base caption, per-character prompts, negative prompt, size preset, width, and height with every generated image.
 - Convert metadata through NovelAiImageRegenerationDraft and NovelAiPromptPlan helpers instead of reconstructing fields in each screen.
-- Regeneration exposes editable main, character, and negative prompts.
+- Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
 - Preserve original pixel dimensions and request a fresh seed for each regeneration.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
 - Keep shared dialog content scrollable and bottom actions visible.
@@ -62,7 +62,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Intermediate then final stream; server error frame; malformed frame; cancellation.
 - 429 succeeds on third attempt and fails once after three total attempts.
 - New image and legacy image metadata loading.
-- Editable prompt round-trip, original dimensions, and new seed.
+- Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.
 - Fullscreen prompt editor hides the dialog window, then restores it on close without losing the draft.
 - Save failure, repository failure, and old-file cleanup failure.
 - Concurrent text generation and image generation; two unrelated image tasks.
