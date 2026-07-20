@@ -1,6 +1,6 @@
 ---
 name: chatbar-model-request-runtime
-description: Maintain and diagnose ChatBar model resolution, OpenAI-compatible request construction, provider-specific parameters, API authentication, cleartext local-model policy, thinking/reasoning controls, streaming transport, connection tests, and response parsing. Use for model fallback bugs, HTTP 400 compatibility errors, empty responses, SSE stalls, timeout or stream-reset failures, auth differences, and auxiliary-model request issues.
+description: Maintain and diagnose ChatBar model resolution, OpenAI-compatible request construction, provider-specific parameters, API authentication, cleartext local-model policy, thinking/reasoning controls, streaming transport, connection tests, and response parsing. Use for model fallback bugs, HTTP 400 compatibility errors, empty responses, SSE stalls, stuck stop controls, user-cancellation persistence, timeout or stream-reset failures, auth differences, and auxiliary-model request issues.
 ---
 
 # ChatBar Model Request Runtime
@@ -17,7 +17,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, and domain/memory/MemoryAiGateway.kt
-- Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, and request-body tests near each caller
+- Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, InterruptedReplyPolicyTest.kt, and request-body tests near each caller
 
 Use chatbar-message-format-repair for repair state behavior and chatbar-image-generation-runtime for NovelAI image HTTP generation.
 
@@ -49,8 +49,9 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - HTTP 200 proves stream establishment only.
 - stream was reset: CANCEL after 200 is an HTTP/2 transport failure, not a 200 business error.
 - A fixed read timeout measures silence between bytes/events; reasoning models can hit it after emitting a short reasoning prefix.
-- Treat either `[DONE]` or a non-null `finish_reason` as the terminal success signal. Deliver one terminal event only; a peer close without either signal is an explicit protocol error.
+- Treat either `[DONE]` or a non-null `finish_reason` as terminal success evidence. Because `finish_reason` can precede a usage-only chunk and `[DONE]`, keep a short bounded grace before cancelling transport; still deliver one terminal event only. A peer close without either signal is an explicit protocol error.
 - SSE callback flows use an unbounded handoff buffer because provider callbacks cannot suspend. Never ignore terminal delivery behind the default 64-slot callbackFlow capacity.
+- Keep main-chat user stop distinct from transport failure. Persist only a nonblank raw assistant draft through the normal repository path, make the save non-cancellable and idempotent across completion races, then clear streaming UI state. Do not run full-reply-only post-processing for a genuinely interrupted draft.
 - Distinguish user cancellation, background-protection cancellation, client timeout, peer reset, proxy/VPN reset, and parser failure.
 - Record timestamps for stream open, reasoning delta, content delta, terminal event, request ID, protocol, and exception class when improving diagnostics.
 - Do not retry after partial visible output without a duplication and billing policy.
@@ -73,7 +74,7 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - Thinking enabled, disabled, reasoning effort, and custom conflicting fields.
 - Chat streaming, auxiliary text streaming, and connection test.
 - Cleartext HTTP enabled, HTTPS with cleartext enabled, and HTTP with cleartext disabled role serialization.
-- HTTP error, empty content, reasoning-only content, malformed JSON, timeout, peer reset, and user cancellation.
+- HTTP error, empty content, reasoning-only content, malformed JSON, timeout, peer reset, user cancellation before content, cancellation after partial content, and cancellation during final persistence.
 
 ## Stop Conditions
 

@@ -1,6 +1,6 @@
 ---
 name: chatbar-long-term-memory
-description: Maintain and diagnose ChatBar long-term memory v2 across source-turn identity, derived T labels, HEAD, Episode/Arc/Era Archive, durable gaps and backfill, historical source-mutation detection and manual repair, compression budgets, tier revisions, prompt injection, SaveSlot migration, and memory UI. Use when changing long-term memory behavior or when chat/context/RAG grouping or historical message edits/deletes may affect source-turn evidence.
+description: Maintain and diagnose ChatBar long-term memory v2 across source-turn identity, interrupted-reply persistence, derived T labels, HEAD, Episode/Arc/Era Archive, durable gaps and backfill, historical source-mutation detection and manual repair, compression budgets, tier revisions, prompt injection, SaveSlot migration, and memory UI. Use when changing long-term memory behavior or when chat/context/RAG grouping, interrupted assistant replies, or historical message edits/deletes may affect source-turn evidence.
 ---
 
 # ChatBar Long-Term Memory
@@ -21,7 +21,7 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 - Core behavior: domain/memory/LongTermMemoryService.kt, MemoryHeadUpdatePolicy.kt, MemoryAiGateway.kt, and focused policies under domain/memory/.
 - App-owned maintenance: domain/memory/LongTermMemoryAutoMaintenanceCoordinator.kt. Episode grouping owner: MemoryEpisodeBatchPolicy.kt. Semantic source evidence owner: MemorySourceFingerprint.kt.
 - Historical source repair: domain/memory/MemorySourceRepairPolicy.kt and MemorySourceRepairProgress.kt.
-- Timeline/context boundaries: domain/chat/TimelineTurnPolicy.kt, TimelineArchiveBoundaryPolicy.kt, ContextWindowManager.kt, ChatHistoryPromptPolicy.kt.
+- Timeline/context boundaries: domain/chat/TimelineTurnPolicy.kt, TimelineArchiveBoundaryPolicy.kt, ContextWindowManager.kt, ChatHistoryPromptPolicy.kt, InterruptedReplyPolicy.kt.
 - Injection: domain/chat/ChatRequestMemoryPolicy.kt, PromptAssembler.kt; actual-request diagnostics: utils/DebugLogManager.kt, ui/chat/DebugLogDialog.kt; AI task templates: domain/prompt/PromptTemplates.kt.
 - RAG boundary consumers: domain/rag/ChatMemoryIndexPolicy.kt, RagManager.kt, RagRepository.kt.
 - UI orchestration: ui/chat/ChatViewModel.kt, ChatSettingsDialog.kt, ChatScreen.kt.
@@ -47,6 +47,7 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Distinguish live in-process work from persisted crash residue. Internal reads must not cancel their own active task.
 - Keep failed work visible and retryable. Preserve source data, pending ranges, gaps, source-repair roots, and completed batches.
 - Keep RAG storage independent from long-term memory while using consistent source-turn boundaries.
+- Treat a manually interrupted nonblank assistant draft as normal persisted chat evidence: save it through `ChatRepository` so it inherits the current user source turn, then enqueue application-owned maintenance. Never persist a blank/reasoning-only assistant placeholder or run full-completion-only side effects for that draft.
 - Reject preview or injection changes that leak raw source turns through the long-term-memory block.
 - Generate multi-turn Episode as one direct aggregate body. Keep coverage program-owned through ordered source IDs and hashes; never ask AI for per-turn proof text.
 - Treat `episodeMaxSourceTurns` as exact target count. A trailing remainder is normal pending, never a Gap. Only a historical internal one-turn remainder bounded by active memory on both sides may be committed alone.
