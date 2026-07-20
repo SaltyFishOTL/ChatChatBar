@@ -18,6 +18,7 @@ import com.example.chatbar.domain.memory.LongTermMemoryService
 import com.example.chatbar.domain.memory.LongTermMemoryAutoMaintenanceCoordinator
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
+import com.example.chatbar.domain.update.AppUpdateManager
 import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.utils.diagnostics.CrashReportManager
@@ -131,6 +132,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var appUpdateChecker: AppUpdateChecker
         private set
+    lateinit var appUpdateManager: AppUpdateManager
+        private set
     lateinit var communityService: CommunityService
         private set
     lateinit var momentGenerationService: MomentGenerationService
@@ -178,6 +181,7 @@ class ChatBarApp : Application() {
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
         appUpdateChecker = AppUpdateChecker()
+        appUpdateManager = AppUpdateManager(this, applicationScope)
 
         ragManager = RagManager(
             chunkingEngine = chunkingEngine,

@@ -2,6 +2,7 @@ package com.example.chatbar.ui.manage
 
 import com.example.chatbar.ui.kit.AppIcons
 
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
@@ -59,7 +60,6 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
@@ -111,7 +111,9 @@ import com.example.chatbar.domain.moment.MomentPolicy
 import com.example.chatbar.domain.moment.MomentReliabilityLevel
 import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.update.AppUpdateChecker
+import com.example.chatbar.domain.update.AppUpdateDownloadState
 import com.example.chatbar.domain.update.AppUpdateInfo
+import com.example.chatbar.domain.update.AppUpdateInstallResult
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.components.CrashReportDeleteConfirmationDialog
@@ -1459,8 +1461,9 @@ private fun SettingsTab(
     var docThreshold by remember { mutableFloatStateOf(settings.docRagSimilarityThreshold) }
     var ragMode by remember { mutableFloatStateOf(settings.ragInjectionMode.toModeIndex().toFloat()) }
     val context = LocalContext.current
-    val uriHandler = LocalUriHandler.current
     val scope = rememberCoroutineScope()
+    val updateManager = ChatBarApp.instance.appUpdateManager
+    val updateDownloadState by updateManager.downloadState.collectAsState()
     var checkingUpdate by remember { mutableStateOf(false) }
     var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
     var confirmingCrashReportDelete by remember { mutableStateOf(false) }
@@ -2034,17 +2037,51 @@ private fun SettingsTab(
         Spacer(Modifier.height(80.dp))
     }
     updateInfo?.let { info ->
+        val visibleDownloadState = remember(updateDownloadState, info) {
+            updateManager.stateFor(info)
+        }
         AppUpdateDialog(
             updateInfo = info,
-            onDismiss = { updateInfo = null },
-            onOpenRelease = {
-                val releaseUrl = info.releaseUrl.ifBlank { AppUpdateChecker.DEFAULT_RELEASES_URL }
-                runCatching {
-                    uriHandler.openUri(releaseUrl)
-                }.onFailure {
-                    Toast.makeText(context, "无法打开 GitHub Release 页面", Toast.LENGTH_SHORT).show()
+            downloadState = visibleDownloadState,
+            onDismiss = {
+                if (visibleDownloadState is AppUpdateDownloadState.Downloading) {
+                    updateManager.cancelDownload()
                 }
                 updateInfo = null
+            },
+            onUpdate = {
+                when {
+                    info.apkAsset == null -> {
+                        val releaseUrl = info.releaseUrl.ifBlank { AppUpdateChecker.DEFAULT_RELEASES_URL }
+                        runCatching {
+                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)))
+                        }.onFailure {
+                            Toast.makeText(context, "无法打开 GitHub Release 页面", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                    visibleDownloadState is AppUpdateDownloadState.Ready -> {
+                        updateManager.requestInstall(context, info)
+                            .onSuccess { result ->
+                                if (result == AppUpdateInstallResult.PermissionRequired) {
+                                    Toast.makeText(
+                                        context,
+                                        "请允许 ChatBar 安装未知应用，返回后再次点“安装更新”",
+                                        Toast.LENGTH_LONG
+                                    ).show()
+                                }
+                            }
+                            .onFailure { error ->
+                                Toast.makeText(
+                                    context,
+                                    "无法安装更新：${error.message}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            }
+                    }
+                    visibleDownloadState !is AppUpdateDownloadState.Downloading -> {
+                        updateManager.startDownload(info)
+                    }
+                }
             }
         )
     }

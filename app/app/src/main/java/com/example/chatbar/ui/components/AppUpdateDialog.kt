@@ -13,10 +13,12 @@ import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.chatbar.domain.update.AppReleaseNote
+import com.example.chatbar.domain.update.AppUpdateDownloadState
 import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarElevation
@@ -26,16 +28,26 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 @Composable
 fun AppUpdateDialog(
     updateInfo: AppUpdateInfo,
+    downloadState: AppUpdateDownloadState,
     onDismiss: () -> Unit,
-    onOpenRelease: () -> Unit
+    onUpdate: () -> Unit
 ) {
+    val downloading = downloadState is AppUpdateDownloadState.Downloading
+    val actionText = when {
+        updateInfo.apkAsset == null -> "打开发布页"
+        downloadState is AppUpdateDownloadState.Downloading -> "下载中..."
+        downloadState is AppUpdateDownloadState.Ready -> "安装更新"
+        downloadState is AppUpdateDownloadState.Failed -> "重试下载"
+        else -> "下载更新"
+    }
     CbDialog(
         onDismissRequest = onDismiss,
         title = "发现新版本",
         confirm = {
             CbButton(
-                text = "去更新",
-                onClick = onOpenRelease
+                text = actionText,
+                onClick = onUpdate,
+                enabled = !downloading
             )
         },
         dismiss = {
@@ -44,7 +56,9 @@ fun AppUpdateDialog(
                 onClick = onDismiss,
                 variant = ButtonVariant.Ghost
             )
-        }
+        },
+        dismissOnClickOutside = !downloading,
+        dismissOnBackPress = !downloading
     ) {
         CbText(
             text = "当前版本：${updateInfo.currentVersion}",
@@ -56,10 +70,7 @@ fun AppUpdateDialog(
             color = ChatBarTheme.colors.foreground
         )
         Spacer(Modifier.height(ChatBarSpacing.md))
-        CbText(
-            text = "可前往 GitHub Releases 下载更新。",
-            color = ChatBarTheme.colors.mutedForeground
-        )
+        UpdateDownloadStatus(updateInfo, downloadState)
         Spacer(Modifier.height(ChatBarSpacing.md))
         CbText(
             text = "更新日志",
@@ -85,6 +96,53 @@ fun AppUpdateDialog(
             }
         }
     }
+}
+
+@Composable
+private fun UpdateDownloadStatus(
+    updateInfo: AppUpdateInfo,
+    downloadState: AppUpdateDownloadState
+) {
+    when {
+        updateInfo.apkAsset == null -> CbText(
+            text = "此版本未附带可安装 APK，只能打开发布页。",
+            color = ChatBarTheme.colors.destructive
+        )
+
+        downloadState is AppUpdateDownloadState.Downloading -> {
+            val progress = downloadState.progress
+            val status = if (progress != null) {
+                "正在下载：${(progress * 100).toInt()}%（${formatBytes(downloadState.bytesDownloaded)} / ${formatBytes(downloadState.totalBytes ?: 0L)}）"
+            } else {
+                "正在下载：${formatBytes(downloadState.bytesDownloaded)}"
+            }
+            CbText(status, color = ChatBarTheme.colors.mutedForeground)
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            CbProgress(progress ?: 0.04f)
+        }
+
+        downloadState is AppUpdateDownloadState.Ready -> CbText(
+            text = "更新包已下载。点击“安装更新”进入系统安装确认。",
+            color = ChatBarTheme.colors.mutedForeground
+        )
+
+        downloadState is AppUpdateDownloadState.Failed -> CbText(
+            text = "下载失败：${downloadState.message}",
+            color = ChatBarTheme.colors.destructive
+        )
+
+        else -> CbText(
+            text = "可在应用内直接下载更新包。首次安装可能需要允许 ChatBar 安装未知应用。",
+            color = ChatBarTheme.colors.mutedForeground
+        )
+    }
+}
+
+private fun formatBytes(bytes: Long): String {
+    if (bytes < 1024L) return "$bytes B"
+    val kib = bytes / 1024.0
+    if (kib < 1024.0) return "%.1f KB".format(kib)
+    return "%.1f MB".format(kib / 1024.0)
 }
 
 @Composable

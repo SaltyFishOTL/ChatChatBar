@@ -20,7 +20,14 @@ data class AppUpdateInfo(
     val latestVersion: String,
     val releaseUrl: String,
     val releaseName: String,
-    val releaseNotes: List<AppReleaseNote> = emptyList()
+    val releaseNotes: List<AppReleaseNote> = emptyList(),
+    val apkAsset: AppUpdateAsset? = null
+)
+
+data class AppUpdateAsset(
+    val name: String,
+    val downloadUrl: String,
+    val sizeBytes: Long? = null
 )
 
 data class AppReleaseNote(
@@ -74,7 +81,8 @@ class AppUpdateChecker(
                     releases = releases.ifEmpty { listOf(release) },
                     currentVersion = currentVersion,
                     latestVersion = latestVersion
-                )
+                ),
+                apkAsset = release.resolveApkAsset(owner, repo)
             )
         } else {
             null
@@ -200,7 +208,18 @@ internal data class GitHubRelease(
     val name: String = "",
     val body: String = "",
     val draft: Boolean = false,
-    val prerelease: Boolean = false
+    val prerelease: Boolean = false,
+    val assets: List<GitHubReleaseAsset> = emptyList()
+)
+
+@Serializable
+internal data class GitHubReleaseAsset(
+    val name: String = "",
+    @SerialName("browser_download_url")
+    val browserDownloadUrl: String = "",
+    @SerialName("content_type")
+    val contentType: String = "",
+    val size: Long = 0L
 )
 
 private fun List<GitHubRelease>.filterStable(): List<GitHubRelease> =
@@ -208,6 +227,42 @@ private fun List<GitHubRelease>.filterStable(): List<GitHubRelease> =
 
 private fun GitHubRelease.versionName(): String =
     tagName.ifBlank { name }.trim()
+
+internal fun GitHubRelease.resolveApkAsset(owner: String, repo: String): AppUpdateAsset? {
+    val publishedAsset = assets
+        .asSequence()
+        .filter { asset ->
+            asset.browserDownloadUrl.isNotBlank() &&
+                (asset.name.endsWith(".apk", ignoreCase = true) ||
+                    asset.contentType.equals("application/vnd.android.package-archive", ignoreCase = true))
+        }
+        .sortedWith(
+            compareBy<GitHubReleaseAsset> { it.name.contains("unsigned", ignoreCase = true) }
+                .thenBy { it.name.contains("debug", ignoreCase = true) }
+                .thenByDescending { it.name.startsWith("ChatBar-", ignoreCase = true) }
+        )
+        .firstOrNull()
+
+    if (publishedAsset != null) {
+        return AppUpdateAsset(
+            name = publishedAsset.name.ifBlank { "ChatBar-${versionName()}.apk" },
+            downloadUrl = publishedAsset.browserDownloadUrl,
+            sizeBytes = publishedAsset.size.takeIf { it > 0L }
+        )
+    }
+
+    val tag = tagName.trim().takeIf { it.isNotBlank() } ?: return null
+    val normalizedVersion = versionName()
+        .removePrefix("v")
+        .removePrefix("V")
+        .takeIf { it.isNotBlank() }
+        ?: return null
+    val assetName = "ChatBar-$normalizedVersion.apk"
+    return AppUpdateAsset(
+        name = assetName,
+        downloadUrl = "https://github.com/$owner/$repo/releases/download/$tag/$assetName"
+    )
+}
 
 internal fun releaseNotesBetween(
     releases: List<GitHubRelease>,

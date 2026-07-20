@@ -53,4 +53,43 @@ class AppUpdateCheckerTest {
         assertEquals(listOf("v1.2.0", "v1.1.5"), notes.map { it.version })
         assertEquals(listOf("note 120", "note 115"), notes.map { it.body })
     }
+
+    @Test
+    fun `published signed apk asset is selected`() {
+        val release = GitHubRelease(
+            tagName = "v1.3.0",
+            assets = listOf(
+                GitHubReleaseAsset(
+                    name = "ChatBar-1.3.0-unsigned.apk",
+                    browserDownloadUrl = "https://example.invalid/unsigned.apk"
+                ),
+                GitHubReleaseAsset(
+                    name = "ChatBar-1.3.0.apk",
+                    browserDownloadUrl = "https://example.invalid/release.apk",
+                    contentType = "application/vnd.android.package-archive",
+                    size = 1234L
+                )
+            )
+        )
+
+        assertEquals(
+            AppUpdateAsset(
+                name = "ChatBar-1.3.0.apk",
+                downloadUrl = "https://example.invalid/release.apk",
+                sizeBytes = 1234L
+            ),
+            release.resolveApkAsset("owner", "repo")
+        )
+    }
+
+    @Test
+    fun `predictable workflow asset url is used when api asset data is unavailable`() {
+        val asset = GitHubRelease(tagName = "v1.3.0").resolveApkAsset("owner", "repo")
+
+        assertEquals("ChatBar-1.3.0.apk", asset?.name)
+        assertEquals(
+            "https://github.com/owner/repo/releases/download/v1.3.0/ChatBar-1.3.0.apk",
+            asset?.downloadUrl
+        )
+    }
 }
