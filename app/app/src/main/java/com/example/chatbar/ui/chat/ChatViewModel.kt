@@ -2069,12 +2069,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } else {
                     null
                 }
+                val renderedMemoryArchive = memoryView?.archive?.let(renderSessionText)
+                val renderedMemoryHeadAndTimeline = memoryView?.headAndTimeline?.let(renderSessionText)
                 val promptLayers = assemblePromptLayers()
                 val promptSystemDebug = listOf(
                     promptLayers.stableSystemPrompt,
                     promptLayers.dynamicSystemPrompt,
-                    memoryView?.archive.orEmpty(),
-                    memoryView?.headAndTimeline.orEmpty(),
+                    renderedMemoryArchive.orEmpty(),
+                    renderedMemoryHeadAndTimeline.orEmpty(),
                     promptLayers.tailSystemPrompt
                 ).filter(String::isNotBlank).joinToString("\n\n")
                 val promptCacheKey = promptLayers.stableSystemPrompt
@@ -2136,7 +2138,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 ChatRequestMemoryPolicy.orderedDynamicMessages(
                     worldBookAndRag = promptLayers.dynamicSystemPrompt,
                     archive = memoryView?.archive,
-                    headAndTimeline = memoryView?.headAndTimeline
+                    headAndTimeline = memoryView?.headAndTimeline,
+                    playerName = activePlayerNameOrNull,
+                    botName = charCard.name
                 ).forEach(apiMessages::add)
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))
@@ -2208,7 +2212,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, memoryView?.archive)
+                ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
 
                 // 8. 开启流式响应
                 var accumulatedText = ""

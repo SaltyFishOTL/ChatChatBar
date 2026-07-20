@@ -38,6 +38,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Insert cacheable earlier history after the stable layer.
 - Move a complete adjacent USER + ASSISTANT previous turn into the tail hot zone when available. Preserve opening assistants, consecutive users, unanswered users, and other abnormal messages in original order.
 - Append current user input last. Per-turn speaker/length constraints remain system messages near the tail, not merged into user text.
+- Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
 - Cleartext HTTP adaptation changes later system roles to assistant in serialized JSON but never moves or merges their content; stable prefix and tail positions remain unchanged.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.

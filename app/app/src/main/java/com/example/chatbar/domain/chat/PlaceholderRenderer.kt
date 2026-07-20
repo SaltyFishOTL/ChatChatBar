@@ -6,6 +6,8 @@ object PlaceholderRenderer {
     fun normalize(text: String): String =
         text.replace("{{char}}", "\$botname")
             .replace("{{user}}", "\$username")
+            .replace("{char}", "\$botname")
+            .replace("{user}", "\$username")
             .replace("<BOT>", "\$botname")
             .replace("<USER>", "\$username")
 

@@ -14,11 +14,13 @@ object ChatRequestMemoryPolicy {
     fun orderedDynamicMessages(
         worldBookAndRag: String?,
         archive: String?,
-        headAndTimeline: String?
+        headAndTimeline: String?,
+        playerName: String?,
+        botName: String
     ): List<ChatApiMessage> = listOfNotNull(
         systemMessage(worldBookAndRag),
-        archiveMessage(archive),
-        systemMessage(headAndTimeline)
+        archiveMessage(renderMemoryText(archive, playerName, botName)),
+        systemMessage(renderMemoryText(headAndTimeline, playerName, botName))
     )
 
     fun containsArchive(messages: List<ChatApiMessage>): Boolean = messages.any { message ->
@@ -35,4 +37,7 @@ object ChatRequestMemoryPolicy {
     private fun systemMessage(content: String?): ChatApiMessage? = content
         ?.takeIf(String::isNotBlank)
         ?.let { ChatApiMessage.text("system", it) }
+
+    private fun renderMemoryText(content: String?, playerName: String?, botName: String): String? =
+        content?.let { PlaceholderRenderer.render(it, playerName, botName) }
 }

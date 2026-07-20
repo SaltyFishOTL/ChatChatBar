@@ -10,12 +10,12 @@ class PlaceholderRendererTest {
     @Test
     fun renderReplacesSystemStylePlaceholders() {
         val rendered = PlaceholderRenderer.render(
-            text = "{{user}} meets {{char}}. <USER> trusts <BOT>. \$username calls \$botname.",
+            text = "{{user}} meets {{char}}. {user} follows {char}. <USER> trusts <BOT>. \$username calls \$botname.",
             playerName = "Alice",
             botName = "Bot"
         )
 
-        assertEquals("Alice meets Bot. Alice trusts Bot. Alice calls Bot.", rendered)
+        assertEquals("Alice meets Bot. Alice follows Bot. Alice trusts Bot. Alice calls Bot.", rendered)
     }
 
     @Test
