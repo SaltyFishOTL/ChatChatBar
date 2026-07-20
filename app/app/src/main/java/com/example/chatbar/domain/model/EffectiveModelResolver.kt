@@ -189,6 +189,8 @@ class EffectiveModelResolver(
         reasoningEffort = reasoningEffort,
         enableThinking = enableThinking,
         maxOutputTokens = maxOutputTokens,
+        supportsJsonMode = presets.catalog.provider.equals("SILICONFLOW", ignoreCase = true),
+        supportsDisableThinking = presets.catalog.provider.equals("SILICONFLOW", ignoreCase = true),
         sourcePresetKey = modelKey,
         sourcePresetVersion = presets.entries().firstOrNull()?.version,
         createdAt = 0L

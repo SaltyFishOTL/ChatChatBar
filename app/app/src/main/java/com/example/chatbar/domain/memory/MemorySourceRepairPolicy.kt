@@ -115,12 +115,14 @@ object MemorySourceRepairPolicy {
         var usedChars = retained.sumOf { it.body.length }
         val omitted = mutableSetOf<String>()
 
-        fun isCurrent(node: MemoryNode): Boolean =
-            node.sourceTurnIds.isNotEmpty() &&
-                node.sourceHashes.keys == node.sourceTurnIds.toSet() &&
-                node.sourceHashes.all { (sourceId, storedHash) ->
+        fun isCurrent(node: MemoryNode): Boolean {
+            val evidence = node.sourceFingerprints.ifEmpty { node.sourceHashes }
+            return node.sourceTurnIds.isNotEmpty() &&
+                evidence.keys == node.sourceTurnIds.toSet() &&
+                evidence.all { (sourceId, storedHash) ->
                     currentSourceHashes[sourceId] == storedHash
                 }
+        }
 
         fun safeDescendants(node: MemoryNode, path: MutableSet<String>): List<MemoryNode> {
             if (!path.add(node.id)) return emptyList()

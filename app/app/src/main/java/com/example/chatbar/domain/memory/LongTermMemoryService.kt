@@ -16,6 +16,10 @@ import com.example.chatbar.data.local.entity.MemoryCoverageUnit
 import com.example.chatbar.data.local.entity.MemoryDecisionTier
 import com.example.chatbar.data.local.entity.MemoryGap
 import com.example.chatbar.data.local.entity.MemoryGapReason
+import com.example.chatbar.data.local.entity.MemoryFailureArea
+import com.example.chatbar.data.local.entity.MemoryFailureCategory
+import com.example.chatbar.data.local.entity.MemoryFailureInfo
+import com.example.chatbar.data.local.entity.MemoryFailureStage
 import com.example.chatbar.data.local.entity.MemoryHead
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemoryPageState
@@ -177,6 +181,87 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    suspend fun recoverOrphanedMaintenance(sessionId: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val session = chatRepository.getSession(sessionId) ?: return@stateLock
+        val archive = if (session.memoryArchiveStatus == MemoryUpdateStatus.UPDATING) {
+            MemoryUpdateStatus.IDLE
+        } else session.memoryArchiveStatus
+        val head = if (session.memoryHeadStatus == MemoryUpdateStatus.UPDATING) {
+            MemoryUpdateStatus.IDLE
+        } else session.memoryHeadStatus
+        if (archive != session.memoryArchiveStatus || head != session.memoryHeadStatus) {
+            chatRepository.updateSession(session.copy(
+                memoryArchiveStatus = archive,
+                memoryHeadStatus = head,
+                memoryUpdateStatus = archive
+            ))
+        }
+        compileAndCacheLocked(loaded)
+    }
+
+    suspend fun setWaitingForNetwork(sessionId: String, message: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val failure = MemoryFailureInfo(
+            area = MemoryFailureArea.ARCHIVE,
+            stage = MemoryFailureStage.NETWORK,
+            category = MemoryFailureCategory.NETWORK,
+            message = message,
+            automaticallyRetryable = true
+        )
+        val next = loaded.state.copy(
+            archiveFailure = failure,
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(
+            loaded.copy(state = next),
+            archiveStatus = MemoryUpdateStatus.WAITING_FOR_NETWORK,
+            archiveError = message,
+            headStatus = MemoryUpdateStatus.WAITING_FOR_NETWORK,
+            headError = "等待Archive维护完成"
+        )
+    }
+
+    suspend fun setMaintenancePreflightError(sessionId: String, message: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val failure = MemoryFailureInfo(
+            area = MemoryFailureArea.ARCHIVE,
+            stage = MemoryFailureStage.PREFLIGHT,
+            category = if (message.contains("鉴权")) MemoryFailureCategory.AUTH else MemoryFailureCategory.UNKNOWN,
+            message = message
+        )
+        val next = loaded.state.copy(
+            archiveFailure = failure,
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(
+            loaded.copy(state = next),
+            archiveStatus = MemoryUpdateStatus.ERROR,
+            archiveError = message
+        )
+    }
+
+    suspend fun maintainHeadAutomatically(sessionId: String, modelConfig: ModelConfig) {
+        val shouldBackfill = stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            if (loaded.state.gaps.isNotEmpty() || loaded.state.staleSourcesByNodeId.isNotEmpty() ||
+                loaded.state.head.stale || loaded.state.pendingDecision != null
+            ) return@stateLock false
+            val stable = stableSourceTurnIds(loaded.messages)
+            MemoryHeadUpdatePolicy.requiresBackfill(
+                hasHeadContent = loaded.state.head.render().isNotBlank(),
+                throughSourceTurnId = loaded.state.head.throughSourceTurnId,
+                stableSourceTurnIds = stable,
+                hasHistoricalMemory = loaded.state.activeNodeIds.isNotEmpty()
+            )
+        }
+        if (shouldBackfill) backfillHead(sessionId, modelConfig) else prepareHeadBeforePrompt(sessionId, modelConfig)
+    }
+
     suspend fun reachableNodes(sessionId: String): List<MemoryNode> = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
         reachableNodes(loaded.state, loaded.nodes)
@@ -262,7 +347,13 @@ class LongTermMemoryService internal constructor(
                 val latest = stateLock(sessionId) { loadLocked(sessionId) }
                 val state = latest.state
                 if (!latest.session.longTermMemoryEnabled || state.pendingDecision != null) break
-                val batch = nextEpisodeBatch(state, latest.messages, maxTurns, forcePartial = false)
+                val batch = MemoryEpisodeBatchPolicy.nextBatch(
+                    pendingSourceTurnIds = state.pendingSourceTurnIds,
+                    state = state,
+                    activeNodes = state.activeNodeIds.mapNotNull(latest.nodes::get),
+                    targetSourceTurns = maxTurns,
+                    mode = MemoryEpisodeBatchMode.NORMAL
+                )
                 if (batch.isEmpty()) break
 
                 val sourceRefs = sourceRefs(batch, latest.messages, latest.session)
@@ -309,12 +400,27 @@ class LongTermMemoryService internal constructor(
                 } else {
                     MemoryUpdateStatus.IDLE
                 }
-                compileAndCacheLocked(loaded, archiveStatus = status, archiveError = null)
+                val cleared = if (loaded.state.archiveFailure != null && status == MemoryUpdateStatus.IDLE) {
+                    loaded.state.copy(
+                        archiveFailure = null,
+                        revision = loaded.state.revision + 1,
+                        updatedAt = System.currentTimeMillis()
+                    ).also { memoryRepository.saveState(it) }
+                } else loaded.state
+                compileAndCacheLocked(loaded.copy(state = cleared), archiveStatus = status, archiveError = null)
             }
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             stateLock(sessionId) {
+                val loaded = loadLocked(sessionId)
                 val session = chatRepository.getSession(sessionId) ?: return@stateLock
+                val failure = failureInfo(MemoryFailureArea.ARCHIVE, error)
+                val next = loaded.state.copy(
+                    archiveFailure = failure,
+                    revision = loaded.state.revision + 1,
+                    updatedAt = System.currentTimeMillis()
+                )
+                memoryRepository.saveState(next)
                 setArchiveStatusLocked(
                     session,
                     if (session.longTermMemoryEnabled) MemoryUpdateStatus.ERROR else MemoryUpdateStatus.IDLE,
@@ -454,10 +560,21 @@ class LongTermMemoryService internal constructor(
                 val inputHashes = sourceRefs(newIds, current.messages, current.session).associate {
                     it.sourceTurnId to it.sourceHash
                 }
+                val inputFingerprints = sourceRefs(newIds, current.messages, current.session).associate {
+                    it.sourceTurnId to it.sourceFingerprint
+                }
                 val archiveHashes = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
                     (current.state.activeNodeIds + current.state.legacyReferenceNodeIds)
                         .mapNotNull(current.nodes::get)
                         .flatMap { it.sourceHashes.entries }
+                        .associate { it.key to it.value }
+                } else {
+                    emptyMap()
+                }
+                val archiveFingerprints = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
+                    (current.state.activeNodeIds + current.state.legacyReferenceNodeIds)
+                        .mapNotNull(current.nodes::get)
+                        .flatMap { it.sourceFingerprints.entries }
                         .associate { it.key to it.value }
                 } else {
                     emptyMap()
@@ -475,11 +592,17 @@ class LongTermMemoryService internal constructor(
                         MemoryHeadUpdateMode.INITIALIZE -> inputHashes
                         MemoryHeadUpdateMode.BACKFILL -> archiveHashes + inputHashes
                     },
+                    sourceFingerprints = when (plan.mode) {
+                        MemoryHeadUpdateMode.UPDATE -> current.state.head.sourceFingerprints + inputFingerprints
+                        MemoryHeadUpdateMode.INITIALIZE -> inputFingerprints
+                        MemoryHeadUpdateMode.BACKFILL -> archiveFingerprints + inputFingerprints
+                    },
                     version = baseHeadVersion + 1,
                     stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale
                 )
                 val next = current.state.copy(
                     head = head,
+                    headFailure = null,
                     revision = current.state.revision + 1,
                     updatedAt = System.currentTimeMillis()
                 )
@@ -493,7 +616,15 @@ class LongTermMemoryService internal constructor(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             stateLock(sessionId) {
+                val loaded = loadLocked(sessionId)
                 val session = chatRepository.getSession(sessionId) ?: return@stateLock
+                val failure = failureInfo(MemoryFailureArea.HEAD, error)
+                val next = loaded.state.copy(
+                    headFailure = failure,
+                    revision = loaded.state.revision + 1,
+                    updatedAt = System.currentTimeMillis()
+                )
+                memoryRepository.saveState(next)
                 setHeadStatusLocked(
                     session,
                     if (session.longTermMemoryEnabled) MemoryUpdateStatus.ERROR else MemoryUpdateStatus.IDLE,
@@ -549,6 +680,7 @@ class LongTermMemoryService internal constructor(
                     unresolved = response.unresolved.trim(),
                     worldState = response.worldState.trim(),
                     sourceHashes = refs.associate { it.sourceTurnId to it.sourceHash },
+                    sourceFingerprints = refs.associate { it.sourceTurnId to it.sourceFingerprint },
                     version = baseVersion + 1
                 )
                 val next = current.state.copy(
@@ -592,7 +724,7 @@ class LongTermMemoryService internal constructor(
             "Archive包含无T限定的现在/目前/仍然"
         }
         val currentSourceHashes = old.sourceTurnIds.associateWith { sourceId ->
-            sourceHash(sourceId, loaded.messages, loaded.session)
+            MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
         }
         val edited = old.copy(
             id = MemoryNode.newId(),
@@ -710,7 +842,7 @@ class LongTermMemoryService internal constructor(
         }
         val currentHashes = loaded.state.timeline.asSequence()
             .filter { throughOrder != null && it.sourceOrder <= throughOrder }
-            .associate { it.sourceTurnId to sourceHash(it.sourceTurnId, loaded.messages, loaded.session) }
+            .associate { it.sourceTurnId to MemorySourceFingerprint.semantic(it.sourceTurnId, loaded.messages, loaded.session) }
         val corrected = head.copy(
             throughSourceTurnId = loaded.state.head.throughSourceTurnId,
             throughT = null,
@@ -1150,16 +1282,16 @@ class LongTermMemoryService internal constructor(
             while (loaded.state.backfill.status == MemoryBackfillStatus.RUNNING &&
                 loaded.state.backfill.pendingSourceTurnIds.isNotEmpty()
             ) {
-                val n = settingsRepository.getAppSettings().episodeMaxSourceTurns.coerceIn(1, 6)
+                val n = loaded.state.backfill.capturedEpisodeMaxSourceTurns.coerceIn(1, 6)
                 val pending = loaded.state.backfill.pendingSourceTurnIds
-                val batch = nextSourceBatch(
-                    pending = pending,
+                val batch = MemoryEpisodeBatchPolicy.nextBatch(
+                    pendingSourceTurnIds = pending,
                     state = loaded.state,
-                    messages = loaded.messages,
-                    maxTurns = n,
-                    forcePartial = true
+                    activeNodes = loaded.state.activeNodeIds.mapNotNull(loaded.nodes::get),
+                    targetSourceTurns = n,
+                    mode = MemoryEpisodeBatchMode.HISTORICAL_BACKFILL
                 )
-                check(batch.isNotEmpty()) { "补录范围无法按连续source turn分组" }
+                if (batch.isEmpty()) break
                 val refs = sourceRefs(batch, loaded.messages, loaded.session)
                 val sourceHash = MemoryHashes.sourceRefs(refs)
                 val completedTurnsBefore = loaded.state.backfill.completedSourceTurnIds.size
@@ -1264,6 +1396,19 @@ class LongTermMemoryService internal constructor(
                     compileAndCacheLocked(current.copy(state = next))
                     true
                 } else {
+                    if (current.state.backfill.status == MemoryBackfillStatus.RUNNING) {
+                        val waiting = current.state.copy(
+                            backfill = current.state.backfill.copy(
+                                status = MemoryBackfillStatus.PAUSED,
+                                error = null,
+                                updatedAt = System.currentTimeMillis()
+                            ),
+                            revision = current.state.revision + 1,
+                            updatedAt = System.currentTimeMillis()
+                        )
+                        memoryRepository.saveState(waiting)
+                        compileAndCacheLocked(current.copy(state = waiting))
+                    }
                     false
                 }
             }
@@ -1463,6 +1608,8 @@ class LongTermMemoryService internal constructor(
                     importedState.sourceRepair.status
                 }
             ),
+            archiveFailure = importedState.archiveFailure,
+            headFailure = importedState.headFailure,
             pendingCompressionEvents = emptyList(),
             revision = state.revision + 1,
             updatedAt = System.currentTimeMillis()
@@ -1642,8 +1789,11 @@ class LongTermMemoryService internal constructor(
                     return@stateLock null
                 }
                 requireValidNode(episode, finalNodes, finalState)
-                memoryRepository.saveNodes(listOf(episode))
-                memoryRepository.saveState(finalState)
+                memoryRepository.commitStateLast(
+                    expectedStateRevision = current.state.revision,
+                    nextState = finalState,
+                    nodes = listOf(episode)
+                )
                 EpisodeCommitResult.Committed(
                     current.copy(state = finalState, nodes = finalNodes)
                 )
@@ -1727,16 +1877,22 @@ class LongTermMemoryService internal constructor(
                 rejectedArcCandidate = arcCandidateIds
             }
 
-            val eraCandidate = MemoryCompressionPolicy.eraCandidate(
-                nodes = state.eraPage.activeNodeIds.mapNotNull(nodes::get),
-                timeline = state.timeline,
-                gaps = state.gaps
-            ) ?: error("长期记忆压缩失败：Episode、Arc均不可压缩，且可用Era少于3条")
             val eraDecision = requireDecisionIfNeeded(state, MemoryDecisionTier.ERA, limitChars)
             if (eraDecision != null) {
                 persistDecision(sessionId, eraDecision)
                 return MaintenanceResult.DecisionRequired(eraDecision)
             }
+            val eraCandidate = MemoryCompressionPolicy.eraCandidate(
+                nodes = state.eraPage.activeNodeIds.mapNotNull(nodes::get),
+                timeline = state.timeline,
+                gaps = state.gaps
+            ) ?: error(
+                if (limitChars >= MAX_MEMORY_LIMIT_CHARS) {
+                    "长期记忆已达20000字上限，且Episode、Arc、Era均无合法连续压缩候选"
+                } else {
+                    "已选择保持当前上限，但Episode、Arc、Era均无合法连续压缩候选"
+                }
+            )
             val eraAttempt = compressEra(sessionId, state, nodes, eraCandidate, model)
             if (eraAttempt.first != CompressionAttempt.SUCCESS) {
                 error("长期记忆压缩失败：Episode、Arc均不可压缩，且可用Era少于3条")
@@ -2477,25 +2633,60 @@ class LongTermMemoryService internal constructor(
         )
     }
 
-    private fun refreshSourceStaleness(
+    private suspend fun refreshSourceStaleness(
         state: MemorySessionState,
         nodes: Map<String, MemoryNode>,
         messages: List<ChatMessage>,
         session: ChatSession
     ): MemorySessionState {
-        val currentHashes = sourceTimeline(messages, session).associate { entry ->
-            entry.sourceTurnId to sourceHash(entry.sourceTurnId, messages, session)
+        val sourceIds = sourceTimeline(messages, session).map { it.sourceTurnId }
+        val currentFingerprints = sourceIds.associateWith { sourceId ->
+            MemorySourceFingerprint.semantic(sourceId, messages, session)
         }
+        val currentLegacyHashes = sourceIds.associateWith { sourceId ->
+            MemorySourceFingerprint.legacy(sourceId, messages, session)
+        }
+        val migratedNodes = mutableListOf<MemoryNode>()
+        state.activeNodeIds.forEach { id ->
+            val node = nodes[id] ?: return@forEach
+            if (node.sourceFingerprints.isNotEmpty() || id in state.staleSourcesByNodeId) return@forEach
+            val safelyMatchesLegacy = node.sourceHashes.isNotEmpty() && node.sourceHashes.all { (sourceId, hash) ->
+                currentLegacyHashes[sourceId] == hash
+            }
+            if (safelyMatchesLegacy) {
+                val migrated = node.copy(
+                    sourceFingerprints = node.sourceTurnIds.associateWith(currentFingerprints::getValue)
+                )
+                (nodes as? MutableMap<String, MemoryNode>)?.set(id, migrated)
+                migratedNodes += migrated
+            }
+        }
+        if (migratedNodes.isNotEmpty()) memoryRepository.saveNodes(migratedNodes)
         val stale = state.activeNodeIds.mapNotNull { id ->
             val node = nodes[id] ?: return@mapNotNull null
-            val changed = node.sourceHashes.mapNotNull { (sourceId, storedHash) ->
-                sourceId.takeIf { currentHashes[sourceId] != storedHash }
+            val evidence = node.sourceFingerprints.ifEmpty { node.sourceHashes }
+            val current = if (node.sourceFingerprints.isEmpty()) currentLegacyHashes else currentFingerprints
+            val changed = evidence.mapNotNull { (sourceId, storedHash) ->
+                sourceId.takeIf { current[sourceId] != storedHash }
             }
             id.takeIf { changed.isNotEmpty() }?.let { it to changed }
         }.toMap()
-        val headStale = if (state.head.sourceHashes.isNotEmpty()) {
-            state.head.sourceHashes.any { (sourceId, storedHash) ->
-                currentHashes[sourceId] != storedHash
+        val migratedHead = if (
+            !state.head.stale && state.head.sourceFingerprints.isEmpty() &&
+            state.head.sourceHashes.isNotEmpty() &&
+            state.head.sourceHashes.all { (sourceId, hash) -> currentLegacyHashes[sourceId] == hash }
+        ) {
+            state.head.copy(
+                sourceFingerprints = state.head.sourceHashes.keys.associateWith(currentFingerprints::getValue)
+            )
+        } else {
+            state.head
+        }
+        val headEvidence = migratedHead.sourceFingerprints.ifEmpty { migratedHead.sourceHashes }
+        val headCurrent = if (migratedHead.sourceFingerprints.isEmpty()) currentLegacyHashes else currentFingerprints
+        val headStale = if (headEvidence.isNotEmpty()) {
+            headEvidence.any { (sourceId, storedHash) ->
+                headCurrent[sourceId] != storedHash
             }
         } else {
             state.head.throughSourceTurnId?.let { throughId ->
@@ -2521,14 +2712,14 @@ class LongTermMemoryService internal constructor(
             }
         }
         if (stale == state.staleSourcesByNodeId &&
-            headStale == state.head.stale &&
+            headStale == state.head.stale && migratedHead == state.head &&
             sourceRepair == state.sourceRepair
         ) {
             return state
         }
         return state.copy(
             staleSourcesByNodeId = stale,
-            head = state.head.copy(stale = headStale),
+            head = migratedHead.copy(stale = headStale),
             sourceRepair = sourceRepair,
             revision = state.revision + 1,
             updatedAt = System.currentTimeMillis()
@@ -2552,7 +2743,11 @@ class LongTermMemoryService internal constructor(
             )
         }
         val currentHashes = sourceTimeline(loaded.messages, loaded.session).associate { entry ->
-            entry.sourceTurnId to sourceHash(entry.sourceTurnId, loaded.messages, loaded.session)
+            entry.sourceTurnId to MemorySourceFingerprint.semantic(
+                entry.sourceTurnId,
+                loaded.messages,
+                loaded.session
+            )
         }
         return MemorySourceRepairPolicy.safeFrontier(
             activeNodes = active,
@@ -2756,6 +2951,30 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    private fun failureInfo(area: MemoryFailureArea, error: Throwable): MemoryFailureInfo {
+        val modelError = error as? com.example.chatbar.domain.chat.ModelRequestException
+        val category = when {
+            error is com.example.chatbar.domain.chat.ModelResponseTruncatedException -> MemoryFailureCategory.TRUNCATED
+            modelError?.isAuthenticationFailure == true -> MemoryFailureCategory.AUTH
+            modelError?.httpStatus != null -> MemoryFailureCategory.HTTP
+            modelError != null -> MemoryFailureCategory.NETWORK
+            error is kotlinx.serialization.SerializationException -> MemoryFailureCategory.JSON
+            error is IllegalStateException -> MemoryFailureCategory.BUSINESS
+            else -> MemoryFailureCategory.UNKNOWN
+        }
+        return MemoryFailureInfo(
+            area = area,
+            stage = if (category == MemoryFailureCategory.JSON || category == MemoryFailureCategory.BUSINESS) {
+                MemoryFailureStage.VALIDATION
+            } else MemoryFailureStage.REQUEST,
+            category = category,
+            message = error.message ?: error::class.simpleName.orEmpty(),
+            automaticallyRetryable = modelError?.isRetryable == true,
+            httpStatus = modelError?.httpStatus,
+            traceId = modelError?.traceId
+        )
+    }
+
     private fun validateEpisodeResponse(response: EpisodeResponse, sourceTurnCount: Int) {
         val summary = response.summary.trim()
         check(summary.isNotBlank()) { "Episode summary为空" }
@@ -2901,12 +3120,12 @@ class LongTermMemoryService internal constructor(
         node.sourceTurnIds.isNotEmpty() &&
             node.sourceHashes.keys == node.sourceTurnIds.toSet() &&
             node.sourceHashes.all { (sourceId, storedHash) ->
-                sourceHash(sourceId, loaded.messages, loaded.session) == storedHash
+                MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session) == storedHash
             }
 
     private fun sourceMutationEvidenceHash(node: MemoryNode, loaded: LoadedMemory): String =
         MemoryHashes.text(node.sourceTurnIds.joinToString("\n") { sourceId ->
-            "$sourceId:${sourceHash(sourceId, loaded.messages, loaded.session)}"
+            "$sourceId:${MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)}"
         })
 
     private suspend fun commitSourceRepairRootLocked(
@@ -3014,7 +3233,7 @@ class LongTermMemoryService internal constructor(
         }
         val evidenceHash = if (node.tier == MemoryTier.EPISODE) {
             MemoryHashes.text(node.sourceTurnIds.joinToString("\n") { sourceId ->
-                "$sourceId:${sourceHash(sourceId, loaded.messages, loaded.session)}"
+                "$sourceId:${MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)}"
             })
         } else {
             MemoryHashes.text(plan.children.joinToString("\n") { child ->
@@ -3034,6 +3253,7 @@ class LongTermMemoryService internal constructor(
         response: EpisodeResponse
     ): MemoryNode {
         val hashes = sourceRefs.associate { it.sourceTurnId to it.sourceHash }
+        val fingerprints = sourceRefs.associate { it.sourceTurnId to it.sourceFingerprint }
         val content = response.summary.trim()
         val sourceTurnIds = sourceRefs.map { it.sourceTurnId }
         return MemoryNode(
@@ -3046,6 +3266,7 @@ class LongTermMemoryService internal constructor(
             overview = content,
             sourceHash = MemoryHashes.sourceRefs(sourceRefs),
             sourceHashes = hashes,
+            sourceFingerprints = fingerprints,
             coverageHash = MemoryHashes.episodeCoverage(sourceTurnIds, hashes, content),
             author = MemoryAuthor.AI
         )
@@ -3074,6 +3295,7 @@ class LongTermMemoryService internal constructor(
             overview = response.summary.trim(),
             sourceHash = MemoryHashes.text(children.joinToString("\n") { "${it.id}:${it.sourceHash}" }),
             sourceHashes = children.flatMap { it.sourceHashes.entries }.associate { it.key to it.value },
+            sourceFingerprints = children.flatMap { it.sourceFingerprints.entries }.associate { it.key to it.value },
             coverageHash = MemoryHashes.parentCoverage(children, units),
             author = MemoryAuthor.AI
         )
@@ -3091,69 +3313,6 @@ class LongTermMemoryService internal constructor(
             gaps = state.gaps
         )
         check(validation.valid) { validation.error ?: "记忆节点覆盖校验失败" }
-    }
-
-    private fun nextEpisodeBatch(
-        state: MemorySessionState,
-        messages: List<ChatMessage>,
-        maxTurns: Int,
-        forcePartial: Boolean
-    ): List<String> = nextSourceBatch(
-        pending = state.pendingSourceTurnIds,
-        state = state,
-        messages = messages,
-        maxTurns = maxTurns,
-        forcePartial = forcePartial
-    )
-
-    private fun nextSourceBatch(
-        pending: List<String>,
-        state: MemorySessionState,
-        messages: List<ChatMessage>,
-        maxTurns: Int,
-        forcePartial: Boolean
-    ): List<String> {
-        val sortedPending = sortSourceIds(pending, messages, null)
-        if (sortedPending.isEmpty()) return emptyList()
-        val firstSegment = sortedPending.takeWhileIndexed { index, sourceId ->
-            if (index == 0) true else {
-                val previous = sortedPending[index - 1]
-                areSourceTurnsAdjacent(previous, sourceId, state.timeline)
-            }
-        }
-        val lastT = firstSegment.lastOrNull()
-            ?.let { MemoryTimelinePolicy.displayT(it, state.timeline) }
-        val endsAtGap = lastT != null && state.gaps
-            .flatMap { it.sourceTurnIds }
-            .any { gapSourceId ->
-                MemoryTimelinePolicy.displayT(gapSourceId, state.timeline) == lastT + 1
-            }
-        val endsAtPendingBoundary = firstSegment.size < sortedPending.size
-        return when {
-            firstSegment.size >= maxTurns -> firstSegment.take(maxTurns)
-            forcePartial || endsAtGap || endsAtPendingBoundary -> firstSegment
-            else -> emptyList()
-        }
-    }
-
-    private fun List<String>.takeWhileIndexed(predicate: (Int, String) -> Boolean): List<String> {
-        val result = mutableListOf<String>()
-        forEachIndexed { index, value ->
-            if (!predicate(index, value)) return result
-            result += value
-        }
-        return result
-    }
-
-    private fun areSourceTurnsAdjacent(
-        left: String,
-        right: String,
-        timeline: List<MemoryTimelineEntry>
-    ): Boolean {
-        val byId = timeline.associateBy { it.sourceTurnId }
-        val leftT = byId[left]?.displayT ?: return false
-        val rightT = byId[right]?.displayT ?: return false
-        return rightT == leftT + 1
     }
 
     private fun completeArchivedSourceTurnIds(messages: List<ChatMessage>, windowSize: Int): List<String> {
@@ -3205,24 +3364,9 @@ class LongTermMemoryService internal constructor(
             sourceOrder = sourceMessages.first().sourceTurnOrder
                 ?: error("source turn $id 缺少稳定顺序"),
             messageIds = sourceMessages.map { it.id },
-            sourceHash = sourceHash(id, messages, session)
+            sourceHash = MemorySourceFingerprint.semantic(id, messages, session),
+            sourceFingerprint = MemorySourceFingerprint.semantic(id, messages, session)
         )
-    }
-
-    private fun sourceHash(
-        sourceTurnId: String,
-        messages: List<ChatMessage>,
-        session: ChatSession
-    ): String {
-        val sourceMessages = messages.filter { it.sourceTurnId == sourceTurnId && it.role != MessageRole.SYSTEM }
-        if (sourceMessages.isEmpty()) {
-            val tombstone = session.sourceTurnTombstones.firstOrNull { it.sourceTurnId == sourceTurnId }
-            return MemoryHashes.text("$sourceTurnId:tombstone:${tombstone?.sourceOrder}")
-        }
-        return MemoryHashes.text(sourceMessages.joinToString("\n") { message ->
-            "${message.id}:${message.sourceTurnOrder}:${message.orderKey}:${message.updatedAt}:" +
-                "${message.displayContent}:${message.images.joinToString(",")}"
-        })
     }
 
     private fun renderSourceTurns(
@@ -3310,6 +3454,7 @@ class LongTermMemoryService internal constructor(
         if (
             boundary.gaps == state.gaps &&
             boundary.backfill == state.backfill &&
+            boundary.normalPendingSourceTurnIds == state.pendingSourceTurnIds &&
             gapRetentionVersion == state.gapRetentionVersion
         ) {
             return state
@@ -3317,6 +3462,7 @@ class LongTermMemoryService internal constructor(
         return state.copy(
             gaps = boundary.gaps,
             backfill = boundary.backfill.copy(updatedAt = System.currentTimeMillis()),
+            pendingSourceTurnIds = boundary.normalPendingSourceTurnIds,
             gapRetentionVersion = gapRetentionVersion,
             revision = state.revision + 1,
             updatedAt = System.currentTimeMillis()
@@ -3482,7 +3628,7 @@ class LongTermMemoryService internal constructor(
                     }
                     val hashes = old.sourceTurns.zip(sourceIds).associate { (source, sourceId) ->
                         sourceId to source.sourceHash.ifBlank {
-                            sourceHash(sourceId, loaded.messages, loaded.session)
+                            MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
                         }
                     }
                     old.copy(

@@ -155,10 +155,9 @@ class MemoryBackfillPolicyTest {
             discoverUntrackedArchived = true
         )
 
-        assertEquals(sourceIds.take(8), recovered.gaps.single().sourceTurnIds)
-        assertEquals(0L, recovered.gaps.single().startSourceOrder)
-        assertEquals(7L, recovered.gaps.single().endSourceOrder)
-        assertEquals(true, recovered.recoveryCompleted)
+        assertEquals(emptyList<MemoryGap>(), recovered.gaps)
+        assertEquals(sourceIds.take(8), recovered.normalPendingSourceTurnIds)
+        assertEquals(false, recovered.recoveryCompleted)
     }
 
     @Test
@@ -183,8 +182,9 @@ class MemoryBackfillPolicyTest {
 
         assertEquals(false, whileExpanded.recoveryCompleted)
         assertEquals(emptyList<MemoryGap>(), whileExpanded.gaps)
-        assertEquals(sourceIds.take(8), afterShrink.gaps.single().sourceTurnIds)
-        assertEquals(true, afterShrink.recoveryCompleted)
+        assertEquals(emptyList<MemoryGap>(), afterShrink.gaps)
+        assertEquals(sourceIds.take(8), afterShrink.normalPendingSourceTurnIds)
+        assertEquals(false, afterShrink.recoveryCompleted)
     }
 
     @Test
@@ -201,7 +201,8 @@ class MemoryBackfillPolicyTest {
             discoverUntrackedArchived = true
         )
 
-        assertEquals(sourceIds(4..7), recovered.gaps.single().sourceTurnIds)
+        assertEquals(emptyList<MemoryGap>(), recovered.gaps)
+        assertEquals(sourceIds(2..7), recovered.normalPendingSourceTurnIds)
     }
 
     @Test
@@ -265,17 +266,12 @@ class MemoryBackfillPolicyTest {
         )
 
         assertEquals(emptyList<MemoryGap>(), whileAllDirect.gaps)
-        assertEquals(sourceIds.take(18), afterShrink.gaps.single().sourceTurnIds)
-        assertEquals(
-            sourceIds.take(18),
-            MemoryBackfillPolicy.eligibleSourceTurnIds(
-                activeNodes = emptyList(),
-                gaps = afterShrink.gaps,
-                timeline = timeline(0..23),
-                availableSourceTurnIds = sourceIds.toSet(),
-                archivedSourceTurnIds = sourceIds.take(18).toSet()
-            )
-        )
+        assertEquals(emptyList<MemoryGap>(), afterShrink.gaps)
+        assertEquals(sourceIds.take(18), afterShrink.normalPendingSourceTurnIds)
+        assertEquals(emptyList<String>(), MemoryBackfillPolicy.eligibleSourceTurnIds(
+            activeNodes = emptyList(), gaps = afterShrink.gaps, timeline = timeline(0..23),
+            availableSourceTurnIds = sourceIds.toSet(), archivedSourceTurnIds = sourceIds.take(18).toSet()
+        ))
     }
 
     @Test

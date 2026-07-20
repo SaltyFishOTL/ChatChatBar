@@ -1052,6 +1052,9 @@ HEAD代表截至指定T的当前状态。
         appendLine(sourceTurns)
     }
 
+    fun memoryJsonCorrectionPrompt(error: String): String =
+        "\n\n上次输出校验失败：$error\n请修正并重新输出完整JSON。"
+
     fun retrievalPlannerUserInput(
         currentUserContent: String,
         contextMessages: List<ChatMessage>,

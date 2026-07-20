@@ -66,21 +66,22 @@ object AiBackgroundWorkManager {
 
     private class NetworkGuard(
         context: Context,
-        private val protection: ProtectionSignal
+        private val protection: ProtectionSignal,
+        private val requireValidatedInternet: Boolean
     ) {
         private val connectivityManager = context.getSystemService(ConnectivityManager::class.java)
         private val lossHandler = Handler(Looper.getMainLooper())
         @Volatile private var pendingLossReason: String? = null
         private val confirmLoss = Runnable {
             val reason = pendingLossReason ?: return@Runnable
-            if (!hasValidatedInternet()) {
+            if (!hasRequiredNetwork()) {
                 protection.fail("$reason（持续 ${NETWORK_LOSS_GRACE_MS / 1000} 秒）")
             }
         }
         private var callbackRegistered = false
         private val callback = object : ConnectivityManager.NetworkCallback() {
             override fun onCapabilitiesChanged(network: Network, capabilities: NetworkCapabilities) {
-                if (!capabilities.isValidatedInternet()) {
+                if (!capabilities.isRequiredNetwork(requireValidatedInternet)) {
                     scheduleLossConfirmation("网络失去互联网验证")
                 } else {
                     cancelLossConfirmation()
@@ -101,7 +102,7 @@ object AiBackgroundWorkManager {
         }
 
         init {
-            if (!hasValidatedInternet()) {
+            if (!hasRequiredNetwork()) {
                 protection.fail("未检测到可用网络，未发送模型请求")
             } else {
                 try {
@@ -146,6 +147,14 @@ object AiBackgroundWorkManager {
                 ?: return false
             return capabilities.isValidatedInternet()
         }
+
+        private fun hasRequiredNetwork(): Boolean {
+            val capabilities = connectivityManager
+                ?.activeNetwork
+                ?.let(connectivityManager::getNetworkCapabilities)
+                ?: return false
+            return capabilities.isRequiredNetwork(requireValidatedInternet)
+        }
     }
 
     private val lock = Any()
@@ -157,7 +166,10 @@ object AiBackgroundWorkManager {
         acquireForegroundLease(sessionId)
     }
 
-    private fun acquireForegroundLease(sessionId: String): ForegroundLease = synchronized(lock) {
+    private fun acquireForegroundLease(
+        sessionId: String,
+        requireValidatedInternet: Boolean = true
+    ): ForegroundLease = synchronized(lock) {
         val context = ChatBarApp.instance
         val lease = if (activeCount == 0) {
             val protection = ProtectionSignal()
@@ -165,7 +177,7 @@ object AiBackgroundWorkManager {
                 generation = ++nextGeneration,
                 ready = CompletableDeferred(),
                 protection = protection,
-                networkGuard = NetworkGuard(context, protection)
+                networkGuard = NetworkGuard(context, protection, requireValidatedInternet)
             ).also { currentLease = it }
         } else {
             checkNotNull(currentLease)
@@ -235,6 +247,19 @@ object AiBackgroundWorkManager {
         lease.networkGuard.requireValidatedInternet()
     }
 
+    private suspend fun awaitForegroundProtection(
+        lease: ForegroundLease,
+        requireValidatedInternet: Boolean
+    ) {
+        if (requireValidatedInternet) lease.networkGuard.requireValidatedInternet()
+        try {
+            withTimeout(FOREGROUND_READY_TIMEOUT_MS) { lease.ready.await() }
+        } catch (error: TimeoutCancellationException) {
+            throw BackgroundGenerationProtectionException("后台生成保护启动超时，未发送模型请求")
+        }
+        if (requireValidatedInternet) lease.networkGuard.requireValidatedInternet()
+    }
+
     suspend fun awaitForegroundProtection() {
         val lease = synchronized(lock) {
             checkNotNull(currentLease) { "没有正在启动的后台生成前台服务" }
@@ -264,10 +289,14 @@ object AiBackgroundWorkManager {
         }
     }
 
-    suspend fun <T> run(sessionId: String = "", block: suspend () -> T): T {
-        val lease = acquireForegroundLease(sessionId)
+    suspend fun <T> run(
+        sessionId: String = "",
+        requireValidatedInternet: Boolean = true,
+        block: suspend () -> T
+    ): T {
+        val lease = acquireForegroundLease(sessionId, requireValidatedInternet)
         return try {
-            awaitForegroundProtection(lease)
+            awaitForegroundProtection(lease, requireValidatedInternet)
             runWhileProtected(lease, block)
         } finally {
             finish()
@@ -300,6 +329,12 @@ object AiBackgroundWorkManager {
     private fun NetworkCapabilities.isValidatedInternet(): Boolean =
         hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
             hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED) &&
+            (Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
+                hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
+
+    private fun NetworkCapabilities.isRequiredNetwork(requireValidated: Boolean): Boolean =
+        hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+            (!requireValidated || hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)) &&
             (Build.VERSION.SDK_INT < Build.VERSION_CODES.P ||
                 hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_SUSPENDED))
 }

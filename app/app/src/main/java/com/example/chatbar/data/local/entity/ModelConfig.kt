@@ -18,6 +18,12 @@ enum class ModelTemplate {
     CUSTOM
 }
 
+@Serializable
+enum class OutputTokenParameter {
+    MAX_TOKENS,
+    MAX_COMPLETION_TOKENS
+}
+
 /**
  * 自定义参数值 - 支持多种类型
  */
@@ -54,6 +60,9 @@ data class ModelConfig(
     val reasoningEffort: String? = null,
     val enableThinking: Boolean? = null,
     val maxOutputTokens: Int? = null,
+    val outputTokenParameter: OutputTokenParameter = OutputTokenParameter.MAX_TOKENS,
+    val supportsJsonMode: Boolean = false,
+    val supportsDisableThinking: Boolean = false,
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null,
     val createdAt: Long

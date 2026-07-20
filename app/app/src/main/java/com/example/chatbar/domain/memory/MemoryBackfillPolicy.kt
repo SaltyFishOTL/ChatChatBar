@@ -12,6 +12,7 @@ const val CURRENT_MEMORY_GAP_RETENTION_VERSION = 1
 data class MemoryBackfillBoundary(
     val gaps: List<MemoryGap>,
     val backfill: MemoryBackfillState,
+    val normalPendingSourceTurnIds: List<String> = emptyList(),
     val recoveryCompleted: Boolean = true
 )
 
@@ -56,7 +57,18 @@ object MemoryBackfillPolicy {
         } else {
             emptyList()
         }
-        val recoveredEntries = untracked.filter { it.sourceTurnId in archivedSourceTurnIds }
+        val coveredDisplayTs = timeline
+            .filter { it.sourceTurnId in coveredSourceTurnIds }
+            .mapTo(mutableSetOf()) { it.displayT }
+        val recoveredEntries = untracked.filter { entry ->
+            entry.sourceTurnId in archivedSourceTurnIds && coveredDisplayTs.any { it > entry.displayT }
+        }
+        val normalPending = (normalPendingSourceTurnIds + untracked.asSequence()
+            .filter { it.sourceTurnId in archivedSourceTurnIds }
+            .filterNot { it in recoveredEntries }
+            .map { it.sourceTurnId })
+            .distinct()
+            .sortedBy { sourceId -> timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder }
         val recoveredGaps = recoveredEntries.toContiguousGaps()
         val nextGaps = gaps + recoveredGaps
         val retainedGapIds = nextGaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
@@ -74,6 +86,7 @@ object MemoryBackfillPolicy {
         return MemoryBackfillBoundary(
             gaps = nextGaps,
             backfill = nextBackfill,
+            normalPendingSourceTurnIds = normalPending,
             recoveryCompleted = !discoverUntrackedArchived ||
                 recoveredEntries.isNotEmpty() ||
                 untracked.isEmpty()

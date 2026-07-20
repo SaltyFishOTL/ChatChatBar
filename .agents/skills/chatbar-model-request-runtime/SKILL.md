@@ -36,6 +36,8 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 
 - Map model/provider capabilities before adding request fields.
 - Do not blindly send max_tokens, max_completion_tokens, thinking_budget, reasoning_effort, and thinking controls together.
+- `ModelConfig.outputTokenParameter` selects exactly one output-token key. Auxiliary isolated tasks strip sampling, stop, penalties, token overrides, and thinking parameters before adding task-owned limits.
+- Long-term memory sends no thinking budget. Explicit thinking-off and JSON Mode are capability-gated; unknown custom providers default to `max_tokens` without JSON Mode or provider-specific off controls.
 - When disableThinking is true, remove configured thinking/reasoning parameters and send the supported explicit off control.
 - Keep connection-test requests small and deterministic, but ensure reasoning-only models can still produce a usable probe result. Current test flow disables thinking.
 - For opted-in `http://` model requests, preserve the first system role and serialize later system roles as assistant without moving or merging messages. Do not apply this adaptation to HTTPS or when cleartext access is disabled.

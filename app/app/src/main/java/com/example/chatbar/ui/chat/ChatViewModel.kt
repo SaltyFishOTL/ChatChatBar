@@ -39,6 +39,8 @@ import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
+import com.example.chatbar.domain.memory.MemoryEpisodeBatchPolicy
+import com.example.chatbar.domain.memory.MemoryMaintenanceTrigger
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.model.isModelAuthenticationConfigured
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
@@ -134,6 +136,8 @@ data class LongTermMemoryUiState(
     val headBackfillRequired: Boolean = false,
     val warnings: List<String> = emptyList(),
     val archiveMaintenanceRunning: Boolean = false,
+    val episodeTargetSourceTurns: Int = 2,
+    val trailingPendingSourceTurns: Int = 0,
     val loading: Boolean = false,
     val error: String? = null
 )
@@ -363,6 +367,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
             _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
             if (s != null) {
+                ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.activateSession(sessionId)
                 val card = characterRepository.getById(s.characterCardId)
                 _characterCard.value = card
                 _isArchived.value = card == null
@@ -789,37 +794,24 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _longTermMemoryUiState.update {
             it.copy(archiveMaintenanceRunning = true, error = null)
         }
+        ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
+            sessionId,
+            MemoryMaintenanceTrigger.MANUAL,
+            manual = true
+        )
         viewModelScope.launch {
-            try {
-                val error = runCatching {
-                    val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                    val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                    longTermMemoryService.updateArchiveAfterReply(
-                        sessionId,
-                        model,
-                        _contextWindowSize.value
-                    )
-                }.exceptionOrNull()
-                refreshMemoryAfterAction(error)
-                drainMemoryCompressionEvents()
-            } finally {
-                memoryArchiveMaintenanceRunning = false
-                _longTermMemoryUiState.update {
-                    it.copy(archiveMaintenanceRunning = false)
-                }
-            }
+            kotlinx.coroutines.delay(500)
+            memoryArchiveMaintenanceRunning = false
+            refreshMemoryAfterAction(null)
         }
     }
 
     fun retryMemoryHead() {
-        viewModelScope.launch {
-            val error = runCatching {
-                val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.prepareHeadBeforePrompt(sessionId, model)
-            }.exceptionOrNull()
-            refreshMemoryAfterAction(error)
-        }
+        ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
+            sessionId,
+            MemoryMaintenanceTrigger.MANUAL,
+            manual = true
+        )
     }
 
     fun drainMemoryCompressionEvents() {
@@ -934,6 +926,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val state = longTermMemoryService.currentState(sessionId) ?: error("当前记忆状态不存在")
         val nodes = longTermMemoryService.activeNodes(sessionId)
         val backfillEstimate = longTermMemoryService.estimateBackfill(sessionId)
+        val episodeTarget = settingsRepository.getAppSettings().episodeMaxSourceTurns.coerceIn(1, 6)
         fun rangeLabel(sourceTurnIds: List<String>): String {
             val range = MemoryTimelinePolicy.range(sourceTurnIds, state.timeline)
             return if (range == null) "T?" else "T${range.startT}-T${range.endT}"
@@ -988,6 +981,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             headBackfillRequired = view.headBackfillRequired,
             warnings = view.warnings.map { it.message },
             archiveMaintenanceRunning = memoryArchiveMaintenanceRunning,
+            episodeTargetSourceTurns = episodeTarget,
+            trailingPendingSourceTurns = MemoryEpisodeBatchPolicy.trailingWaitCount(
+                state.pendingSourceTurnIds.size,
+                episodeTarget
+            ),
             loading = false
         )
     }
@@ -2422,27 +2420,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         contextWindowSize: Int
     ) {
         if (!session.longTermMemoryEnabled) return
-        ChatBarApp.instance.applicationScope.launch {
-            AiBackgroundWorkManager.run(sessionId) {
-                val latestSession = chatRepository.getSession(sessionId) ?: return@run
-                if (!latestSession.longTermMemoryEnabled) return@run
-                longTermMemoryService.updateArchiveAfterReply(sessionId, modelConfig, contextWindowSize)
-                _session.value = chatRepository.getSession(sessionId)
-                runCatching { loadLongTermMemoryUiState() }
-                    .onSuccess { _longTermMemoryUiState.value = it }
-                drainMemoryCompressionEvents()
-            }
-        }
-        ChatBarApp.instance.applicationScope.launch {
-            AiBackgroundWorkManager.run(sessionId) {
-                val latestSession = chatRepository.getSession(sessionId) ?: return@run
-                if (!latestSession.longTermMemoryEnabled) return@run
-                longTermMemoryService.updateHeadAfterReply(sessionId, modelConfig)
-                _session.value = chatRepository.getSession(sessionId)
-                runCatching { loadLongTermMemoryUiState() }
-                    .onSuccess { _longTermMemoryUiState.value = it }
-            }
-        }
+        ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
+            sessionId,
+            MemoryMaintenanceTrigger.REPLY_PERSISTED
+        )
     }
 
     fun deleteMessage(messageId: String) {

@@ -481,7 +481,9 @@ class StreamingChatService(
         modelConfig: ModelConfig,
         maxTokens: Int? = null,
         thinkingBudget: Int? = null,
-        disableThinking: Boolean = false
+        disableThinking: Boolean = false,
+        isolatedTaskParameters: Boolean = false,
+        responseFormatJson: Boolean = false
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -491,7 +493,9 @@ class StreamingChatService(
             stream = false,
             maxTokens = maxTokens,
             thinkingBudget = thinkingBudget,
-            disableThinking = disableThinking
+            disableThinking = disableThinking,
+            isolatedTaskParameters = isolatedTaskParameters,
+            responseFormatJson = responseFormatJson
         )
 
         val request = Request.Builder()
@@ -507,9 +511,9 @@ class StreamingChatService(
             override fun onFailure(call: Call, e: IOException) {
                 if (continuation.isActive) {
                     continuation.resumeWithException(
-                        RuntimeException(
+                        ModelRequestException(
                             "文本补全请求失败: ${e.message ?: e::class.java.simpleName}",
-                            e
+                            cause = e
                         )
                     )
                 }
@@ -521,8 +525,17 @@ class StreamingChatService(
                     val body = response.body?.string().orEmpty()
                     if (!response.isSuccessful) {
                         continuation.resumeWithException(
-                            RuntimeException("文本补全失败 (${response.code}): ${body.take(2000)}")
+                            ModelRequestException(
+                                message = "文本补全失败 (${response.code}): ${body.take(2000)}",
+                                httpStatus = response.code,
+                                traceId = response.header("x-request-id") ?: response.header("x-trace-id"),
+                                retryAfterMillis = response.header("Retry-After")?.toRetryAfterMillis()
+                            )
                         )
+                        return
+                    }
+                    if (parseFinishReason(body) == "length") {
+                        continuation.resumeWithException(ModelResponseTruncatedException())
                         return
                     }
                     runCatching { parseNonStreamResponse(body) }
@@ -561,7 +574,9 @@ class StreamingChatService(
         reasoningEffort: String? = null,
         onDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {},
-        disableThinking: Boolean = false
+        disableThinking: Boolean = false,
+        isolatedTaskParameters: Boolean = false,
+        responseFormatJson: Boolean = false
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -574,7 +589,9 @@ class StreamingChatService(
             maxThinkingTokens = maxThinkingTokens,
             thinkingBudget = thinkingBudget,
             reasoningEffortOverride = reasoningEffort,
-            disableThinking = disableThinking
+            disableThinking = disableThinking,
+            isolatedTaskParameters = isolatedTaskParameters,
+            responseFormatJson = responseFormatJson
         )
 
         val request = Request.Builder()
@@ -588,13 +605,16 @@ class StreamingChatService(
         val text = StringBuilder()
         val lock = Any()
         var completed = false
+        var finishReason: String? = null
 
         fun resumeSuccessIfActive() {
             synchronized(lock) {
                 if (completed || !continuation.isActive) return
                 completed = true
                 val content = text.toString()
-                if (content.isBlank()) {
+                if (finishReason == "length") {
+                    continuation.resumeWithException(ModelResponseTruncatedException())
+                } else if (content.isBlank()) {
                     continuation.resumeWithException(RuntimeException("流式文本补全返回空内容"))
                 } else {
                     continuation.resume(content)
@@ -624,6 +644,7 @@ class StreamingChatService(
                         return
                     }
                     val delta = parseDelta(data)
+                    if (delta.finishReason != null) finishReason = delta.finishReason
                     delta.reasoningContent?.takeIf(String::isNotBlank)?.let(onReasoningDelta)
                     delta.content?.takeIf(String::isNotBlank)?.let { chunk ->
                         text.append(chunk)
@@ -645,7 +666,15 @@ class StreamingChatService(
                         }
                         if (t != null) append(" - ${t.message ?: t::class.java.simpleName}")
                     }
-                    resumeFailureIfActive(RuntimeException(message, t))
+                    resumeFailureIfActive(
+                        ModelRequestException(
+                            message = message,
+                            httpStatus = response?.code,
+                            traceId = response?.header("x-request-id") ?: response?.header("x-trace-id"),
+                            retryAfterMillis = response?.header("Retry-After")?.toRetryAfterMillis(),
+                            cause = t
+                        )
+                    )
                 }
 
                 override fun onClosed(eventSource: EventSource) {
@@ -670,7 +699,9 @@ class StreamingChatService(
         reasoningEffortOverride: String? = null,
         promptCacheKey: String? = null,
         includeStreamUsage: Boolean = false,
-        disableThinking: Boolean = false
+        disableThinking: Boolean = false,
+        isolatedTaskParameters: Boolean = false,
+        responseFormatJson: Boolean = false
     ): String {
         val requestMessages = CleartextHttpChatTemplatePolicy.adaptMessages(
             messages = messages,
@@ -698,6 +729,7 @@ class StreamingChatService(
             // 追加自定义参数
             for ((key, value) in modelConfig.customParams) {
                 if (disableThinking && key in THINKING_PARAMETER_KEYS) continue
+                if (isolatedTaskParameters && key in ISOLATED_TASK_PARAMETER_KEYS) continue
                 when (value) {
                     is ParamValue.NumberValue -> {
                         val d = value.value
@@ -713,8 +745,12 @@ class StreamingChatService(
             }
             val outputTokenLimit = maxTokens ?: modelConfig.maxOutputTokens
             if (outputTokenLimit != null) {
-                put("max_tokens", outputTokenLimit)
-                put("max_completion_tokens", outputTokenLimit)
+                when (modelConfig.outputTokenParameter) {
+                    com.example.chatbar.data.local.entity.OutputTokenParameter.MAX_TOKENS ->
+                        put("max_tokens", outputTokenLimit)
+                    com.example.chatbar.data.local.entity.OutputTokenParameter.MAX_COMPLETION_TOKENS ->
+                        put("max_completion_tokens", outputTokenLimit)
+                }
             }
             if (disableThinking) {
                 put(PARAM_ENABLE_THINKING, false)
@@ -725,6 +761,9 @@ class StreamingChatService(
                 (enableThinkingOverride ?: modelConfig.enableThinking)?.let { put(PARAM_ENABLE_THINKING, it) }
                 maxThinkingTokens?.let { put(PARAM_MAX_THINKING_TOKENS, it) }
                 thinkingBudget?.let { put(PARAM_THINKING_BUDGET, it) }
+            }
+            if (responseFormatJson) {
+                put("response_format", buildJsonObject { put("type", "json_object") })
             }
         }
 
@@ -738,7 +777,11 @@ class StreamingChatService(
             .take(220)
     }
 
-    data class DeltaResult(val content: String?, val reasoningContent: String?)
+    data class DeltaResult(
+        val content: String?,
+        val reasoningContent: String?,
+        val finishReason: String? = null
+    )
 
     /** 从 SSE data 行解析增量文本和思维链 */
     private fun parseDelta(data: String): DeltaResult {
@@ -749,7 +792,9 @@ class StreamingChatService(
             val content = delta?.get("content")?.jsonPrimitive?.contentOrNull
             val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
                 ?: delta?.get("reasoning")?.jsonPrimitive?.contentOrNull
-            DeltaResult(content, reasoning)
+            val finishReason = obj["choices"]?.jsonArray?.firstOrNull()
+                ?.jsonObject?.get("finish_reason")?.jsonPrimitive?.contentOrNull
+            DeltaResult(content, reasoning, finishReason)
         } catch (_: Exception) {
             DeltaResult(null, null)
         }
@@ -790,6 +835,11 @@ class StreamingChatService(
         throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
     }
 
+    private fun parseFinishReason(body: String): String? = runCatching {
+        json.decodeFromString<JsonObject>(body)["choices"]?.jsonArray?.firstOrNull()
+            ?.jsonObject?.get("finish_reason")?.jsonPrimitive?.contentOrNull
+    }.getOrNull()
+
     private fun parsePromptCacheUsage(data: String): PromptCacheUsage? {
         val usage = runCatching {
             json.decodeFromString<JsonObject>(data)["usage"]?.jsonObject
@@ -812,11 +862,41 @@ class StreamingChatService(
     }
 }
 
+class ModelRequestException(
+    message: String,
+    val httpStatus: Int? = null,
+    val traceId: String? = null,
+    val retryAfterMillis: Long? = null,
+    cause: Throwable? = null
+) : RuntimeException(message, cause) {
+    val isAuthenticationFailure: Boolean get() = httpStatus == 401 || httpStatus == 403
+    val isRetryable: Boolean get() = httpStatus == null || httpStatus in setOf(408, 425, 429) ||
+        (httpStatus != null && httpStatus in 500..599)
+}
+
+class ModelResponseTruncatedException : RuntimeException("模型输出因token上限截断")
+
+private fun String.toRetryAfterMillis(): Long? = trim().toLongOrNull()?.times(1000L)
+
 private val THINKING_PARAMETER_KEYS = setOf(
     PARAM_ENABLE_THINKING,
     PARAM_THINKING_BUDGET,
     PARAM_MAX_THINKING_TOKENS,
     PARAM_REASONING_EFFORT
+)
+
+private val ISOLATED_TASK_PARAMETER_KEYS = THINKING_PARAMETER_KEYS + setOf(
+    "temperature",
+    "top_p",
+    "top_k",
+    "min_p",
+    "stop",
+    "presence_penalty",
+    "frequency_penalty",
+    "repetition_penalty",
+    "seed",
+    "max_tokens",
+    "max_completion_tokens"
 )
 
 private fun ModelConfig.supportsOpenAiPromptCacheInstrumentation(): Boolean {

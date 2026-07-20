@@ -87,7 +87,8 @@ data class MemorySourceTurnRef(
     val sourceTurnId: String,
     val sourceOrder: Long,
     val messageIds: List<String> = emptyList(),
-    val sourceHash: String
+    val sourceHash: String,
+    val sourceFingerprint: String = sourceHash
 )
 
 /**
@@ -107,6 +108,8 @@ data class MemoryNode(
     val overview: String = "",
     val sourceHash: String = "",
     val sourceHashes: Map<String, String> = emptyMap(),
+    /** 仅包含来源语义；排除updatedAt和数值orderKey。 */
+    val sourceFingerprints: Map<String, String> = emptyMap(),
     val coverageHash: String = "",
     val staleSourceTurnIds: Set<String> = emptySet(),
     val author: MemoryAuthor = MemoryAuthor.MIGRATION,
@@ -155,6 +158,8 @@ data class MemoryHead(
     val worldState: String = "",
     /** HEAD正文实际采用过的source turn哈希；用于持久识别旧来源编辑/删除。 */
     val sourceHashes: Map<String, String> = emptyMap(),
+    /** 仅包含来源语义；排除updatedAt和数值orderKey。 */
+    val sourceFingerprints: Map<String, String> = emptyMap(),
     val version: Long = 0,
     val stale: Boolean = false
 ) {
@@ -270,6 +275,8 @@ data class MemorySessionState(
     val pendingDecision: PendingMemoryDecision? = null,
     val backfill: MemoryBackfillState = MemoryBackfillState(),
     val sourceRepair: MemorySourceRepairState = MemorySourceRepairState(),
+    val archiveFailure: MemoryFailureInfo? = null,
+    val headFailure: MemoryFailureInfo? = null,
     /** UI消费后删除；SaveSlot不携带。 */
     val pendingCompressionEvents: List<MemoryCompressionEvent> = emptyList(),
     val memoryWasEnabled: Boolean = true,
@@ -365,8 +372,49 @@ data class MemorySessionSnapshot(
     val recordingStartsAfterSourceOrder: Long? = null,
     val gapRetentionVersion: Int = 0,
     val backfill: MemoryBackfillState = MemoryBackfillState(),
-    val sourceRepair: MemorySourceRepairState = MemorySourceRepairState()
+    val sourceRepair: MemorySourceRepairState = MemorySourceRepairState(),
+    val archiveFailure: MemoryFailureInfo? = null,
+    val headFailure: MemoryFailureInfo? = null
 )
+
+@Serializable
+enum class MemoryFailureArea { ARCHIVE, HEAD }
+
+@Serializable
+enum class MemoryFailureStage { PREFLIGHT, NETWORK, REQUEST, RESPONSE, VALIDATION, COMMIT, STORAGE, CLEANUP }
+
+@Serializable
+enum class MemoryFailureCategory { NETWORK, HTTP, AUTH, TRUNCATED, JSON, BUSINESS, COMMIT, STORAGE, CANCELLED, UNKNOWN }
+
+@Serializable
+data class MemoryFailureInfo(
+    val area: MemoryFailureArea,
+    val stage: MemoryFailureStage,
+    val category: MemoryFailureCategory,
+    val message: String,
+    val automaticallyRetryable: Boolean = false,
+    val httpStatus: Int? = null,
+    val attemptCount: Int = 0,
+    val traceId: String? = null,
+    val occurredAt: Long = System.currentTimeMillis()
+)
+
+@Serializable
+data class MemoryCommitJournal(
+    val id: String,
+    val sessionId: String,
+    val expectedStateRevision: Long,
+    val nodes: List<MemoryNode> = emptyList(),
+    val revisions: List<MemoryTierRevision> = emptyList(),
+    val transactions: List<MemoryCompressionTransaction> = emptyList(),
+    val nextState: MemorySessionState,
+    val createdAt: Long = System.currentTimeMillis()
+) {
+    companion object {
+        @OptIn(ExperimentalUuidApi::class)
+        fun newId(): String = Uuid.random().toString()
+    }
+}
 
 /** SaveSlot v4只携带当前活跃快照和完整可达树，不复制版本历史。 */
 @Serializable

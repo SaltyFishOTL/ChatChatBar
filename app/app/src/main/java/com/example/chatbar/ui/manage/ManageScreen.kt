@@ -1680,13 +1680,13 @@ private fun SettingsTab(
                 }
             }
             SliderField(
-                "每条近期记忆包含：${episodeMaxSourceTurns.roundToInt()} 轮对话",
+                "每条近期记忆目标：${episodeMaxSourceTurns.roundToInt()} 轮连续对话",
                 episodeMaxSourceTurns,
                 1f..6f,
                 4
             ) { episodeMaxSourceTurns = it }
             CbText(
-                "数值越小，记录越细、调用模型越频繁；数值越大，记录越概括、调用次数越少。默认 2 轮。",
+                "固定按目标轮数生成；末尾不足时正常等待。仅修复旧BUG留下且两侧已有记忆的内部缺口时，允许单轮收尾。默认 2 轮。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )

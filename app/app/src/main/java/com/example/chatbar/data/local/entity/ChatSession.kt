@@ -8,6 +8,7 @@ import kotlin.uuid.Uuid
 enum class MemoryUpdateStatus {
     IDLE,
     UPDATING,
+    WAITING_FOR_NETWORK,
     ERROR,
     LIMIT_DECISION_REQUIRED,
     PAUSED

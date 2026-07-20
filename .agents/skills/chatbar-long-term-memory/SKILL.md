@@ -19,6 +19,7 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 - Persisted models: data/local/entity/LongTermMemory.kt, ChatMessage.kt, ChatSession.kt, AppSettings.kt, SaveSlot.kt.
 - Storage: data/repository/MemoryRepository.kt, ChatRepository.kt.
 - Core behavior: domain/memory/LongTermMemoryService.kt, MemoryHeadUpdatePolicy.kt, MemoryAiGateway.kt, and focused policies under domain/memory/.
+- App-owned maintenance: domain/memory/LongTermMemoryAutoMaintenanceCoordinator.kt. Episode grouping owner: MemoryEpisodeBatchPolicy.kt. Semantic source evidence owner: MemorySourceFingerprint.kt.
 - Historical source repair: domain/memory/MemorySourceRepairPolicy.kt and MemorySourceRepairProgress.kt.
 - Timeline/context boundaries: domain/chat/TimelineTurnPolicy.kt, TimelineArchiveBoundaryPolicy.kt, ContextWindowManager.kt, ChatHistoryPromptPolicy.kt.
 - Injection: domain/chat/ChatRequestMemoryPolicy.kt, PromptAssembler.kt; actual-request diagnostics: utils/DebugLogManager.kt, ui/chat/DebugLogDialog.kt; AI task templates: domain/prompt/PromptTemplates.kt.
@@ -48,6 +49,9 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Keep RAG storage independent from long-term memory while using consistent source-turn boundaries.
 - Reject preview or injection changes that leak raw source turns through the long-term-memory block.
 - Generate multi-turn Episode as one direct aggregate body. Keep coverage program-owned through ordered source IDs and hashes; never ask AI for per-turn proof text.
+- Treat `episodeMaxSourceTurns` as exact target count. A trailing remainder is normal pending, never a Gap. Only a historical internal one-turn remainder bounded by active memory on both sides may be committed alone.
+- Compare source meaning with `sourceFingerprints`; numeric `orderKey` and `updatedAt` are excluded. Preserve legacy hashes only for safe one-time migration and structural compatibility.
+- Automatic Archive then HEAD work belongs to the application coordinator; page destruction must not cancel it. Only current session receives new automatic work.
 - Keep HEAD modes distinct: initialize from opening plus first round, update by exactly one baseline group, and backfill from compiled Archive plus latest eligible baseline group.
 - Detect historical source edits/deletes without calling AI. Stop stale roots and stale HEAD from injection before repair.
 - Start source repair only from explicit user action. Rebuild immutable dependencies; never accept old summary text by updating only its hash.

@@ -1,5 +1,9 @@
 # Long-Term Memory Invariants
 
+- Episode目标轮数是固定批次，不是上限。尾部不足目标数属于普通pending；只有两侧活跃记忆包围的历史内部单轮余数可例外提交。
+- 来源语义一致性使用`sourceFingerprints`：保留source/message身份、角色、显示正文、图片及相对消息顺序；排除`updatedAt`与数值`orderKey`。
+- 自动Archive与HEAD由应用级协调器串行维护；新任务仅属于当前会话，已开始的模型调用不因页面销毁或切换会话取消。
+
 ## Identity and Timeline
 
 - Use immutable `sourceTurnId` as persisted identity. User turn, matching AI reply, appended reply, and derived image stay in the same source turn.

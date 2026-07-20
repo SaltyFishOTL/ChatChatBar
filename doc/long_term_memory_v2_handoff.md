@@ -1,9 +1,9 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-07-18
+Last updated: 2026-07-20
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
-Status: 长期记忆重构版V1主体完成；自动Episode、补录、压缩与HEAD已改为目标证据级并发提交；历史消息修改/删除现会停用受影响旧记忆，并由用户在长期记忆页手动执行最小依赖修复；真实模型结果尚待用户验证。
+Status: 全生命周期修复已落地并通过JVM测试：固定Episode批次、正常尾部等待、历史内部单轮例外、语义来源指纹、应用级Archive→HEAD协调器、独立请求参数/错误分类、等待网络状态与state-last提交journal。设备与真实模型结果仍待验证。
 
 ## Completed
 
@@ -42,7 +42,7 @@ Status: 长期记忆重构版V1主体完成；自动Episode、补录、压缩与
 
 ## In Progress
 
-- 历史来源手动修复代码与自动测试已完成；待完整APK构建、设备数据保留部署及用户真实旧会话模型验证。
+- 固定批次、指纹、请求隔离、协调器、journal及UI状态代码已完成；`test`通过。待CI、设备数据保留部署及真实旧会话验证。
 
 ## Tried And Failed
 

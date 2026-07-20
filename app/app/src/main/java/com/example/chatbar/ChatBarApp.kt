@@ -15,6 +15,7 @@ import com.example.chatbar.domain.model.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.moment.*
 import com.example.chatbar.domain.memory.LongTermMemoryService
+import com.example.chatbar.domain.memory.LongTermMemoryAutoMaintenanceCoordinator
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
@@ -77,6 +78,8 @@ class ChatBarApp : Application() {
     lateinit var contextWindowManager: ContextWindowManager
         private set
     lateinit var longTermMemoryService: LongTermMemoryService
+        private set
+    lateinit var longTermMemoryAutoMaintenanceCoordinator: LongTermMemoryAutoMaintenanceCoordinator
         private set
     lateinit var speakerTagHistoryService: SpeakerTagHistoryService
         private set
@@ -216,6 +219,14 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        longTermMemoryAutoMaintenanceCoordinator = LongTermMemoryAutoMaintenanceCoordinator(
+            context = this,
+            scope = applicationScope,
+            chatRepository = chatRepository,
+            settingsRepository = settingsRepository,
+            modelResolver = effectiveModelResolver,
+            memoryService = longTermMemoryService
+        )
         messageFormatRepairService = MessageFormatRepairService(streamingChatService)
         momentScheduler = MomentScheduler(
             context = this,

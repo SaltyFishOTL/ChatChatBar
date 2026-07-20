@@ -2,6 +2,7 @@ package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.MemoryCommit
+import com.example.chatbar.data.local.entity.MemoryCommitJournal
 import com.example.chatbar.data.local.entity.MemoryCompressionTransaction
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemoryPageState
@@ -39,11 +40,62 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         storage.saveAll(NODE_TYPE, nodes.associateBy { it.id }, MemoryNode.serializer())
     }
 
-    suspend fun getState(sessionId: String): MemorySessionState? =
-        storage.loadEntity(STATE_TYPE, sessionId, MemorySessionState.serializer())
+    suspend fun getState(sessionId: String): MemorySessionState? {
+        recoverJournals(sessionId)
+        return storage.loadEntity(STATE_TYPE, sessionId, MemorySessionState.serializer())
+    }
 
     suspend fun saveState(state: MemorySessionState) {
         storage.saveEntity(STATE_TYPE, state.sessionId, state, MemorySessionState.serializer())
+    }
+
+    /** Crash-safe multi-file commit. State pointer is always written last. */
+    suspend fun commitStateLast(
+        expectedStateRevision: Long,
+        nextState: MemorySessionState,
+        nodes: List<MemoryNode> = emptyList(),
+        revisions: List<MemoryTierRevision> = emptyList(),
+        transactions: List<MemoryCompressionTransaction> = emptyList()
+    ) {
+        val journal = MemoryCommitJournal(
+            id = MemoryCommitJournal.newId(),
+            sessionId = nextState.sessionId,
+            expectedStateRevision = expectedStateRevision,
+            nodes = nodes,
+            revisions = revisions,
+            transactions = transactions,
+            nextState = nextState
+        )
+        storage.saveEntity(JOURNAL_TYPE, journal.id, journal, MemoryCommitJournal.serializer())
+        applyJournal(journal)
+        storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
+    }
+
+    private suspend fun recoverJournals(sessionId: String) {
+        val journals = storage.query(JOURNAL_TYPE, MemoryCommitJournal.serializer()) {
+            it.sessionId == sessionId
+        }.sortedBy { it.createdAt }
+        for (journal in journals) {
+            val current = storage.loadEntity(STATE_TYPE, sessionId, MemorySessionState.serializer())
+            when (current?.revision) {
+                journal.expectedStateRevision,
+                journal.nextState.revision -> applyJournal(journal)
+                else -> Unit
+            }
+            storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
+        }
+    }
+
+    private suspend fun applyJournal(journal: MemoryCommitJournal) {
+        saveNodes(journal.nodes)
+        saveRevisions(journal.revisions)
+        journal.transactions.forEach { saveTransaction(it) }
+        storage.saveEntity(
+            STATE_TYPE,
+            journal.sessionId,
+            journal.nextState,
+            MemorySessionState.serializer()
+        )
     }
 
     suspend fun getRevision(id: String): MemoryTierRevision? =
@@ -167,6 +219,7 @@ class MemoryRepository(private val storage: JsonFileStorage) {
             MemoryCompressionTransaction.serializer()
         ) { it.sessionId == sessionId }
         storage.deleteWhere(LEGACY_COMMIT_TYPE, MemoryCommit.serializer()) { it.sessionId == sessionId }
+        storage.deleteWhere(JOURNAL_TYPE, MemoryCommitJournal.serializer()) { it.sessionId == sessionId }
     }
 
     private fun MemorySessionState.toSnapshot(): MemorySessionSnapshot = MemorySessionSnapshot(
@@ -201,7 +254,9 @@ class MemoryRepository(private val storage: JsonFileStorage) {
             } else {
                 sourceRepair.status
             }
-        )
+        ),
+        archiveFailure = archiveFailure,
+        headFailure = headFailure
     )
 
     companion object {
@@ -210,6 +265,7 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         private const val REVISION_TYPE = "memory_tier_revisions"
         private const val TRANSACTION_TYPE = "memory_compression_transactions"
         private const val LEGACY_COMMIT_TYPE = "memory_commits"
+        private const val JOURNAL_TYPE = "memory_commit_journals"
         const val MATERIALIZED_SNAPSHOT_INTERVAL = 20
     }
 }

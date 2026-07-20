@@ -662,13 +662,21 @@ private fun LongTermMemoryContent(
         }
         val archiveBusy = state.archiveMaintenanceRunning ||
             session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING
-        val visibleError = if (archiveBusy) {
-            session?.memoryHeadError ?: state.error
-        } else {
-            session?.memoryArchiveError ?: session?.memoryHeadError ?: state.error
+        session?.memoryArchiveError?.let {
+            CbText("Archive：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
         }
-        visibleError?.let {
+        session?.memoryHeadError?.let {
+            CbText("HEAD：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+        }
+        state.error?.let {
             CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+        }
+        if (state.trailingPendingSourceTurns > 0) {
+            CbText(
+                "近期记忆等待凑满 ${state.episodeTargetSourceTurns} 轮（已有 ${state.trailingPendingSourceTurns} 轮）",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
         }
         if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
             (session?.memoryLimitChars ?: 2000) < 20000
@@ -1369,6 +1377,7 @@ private fun MemoryAuthor.memoryDisplayName(): String = when (this) {
 private fun MemoryUpdateStatus.memoryDisplayName(): String = when (this) {
     MemoryUpdateStatus.IDLE -> "空闲"
     MemoryUpdateStatus.UPDATING -> "更新中"
+    MemoryUpdateStatus.WAITING_FOR_NETWORK -> "等待网络"
     MemoryUpdateStatus.ERROR -> "失败"
     MemoryUpdateStatus.LIMIT_DECISION_REQUIRED -> "等待选择"
     MemoryUpdateStatus.PAUSED -> "已暂停"
