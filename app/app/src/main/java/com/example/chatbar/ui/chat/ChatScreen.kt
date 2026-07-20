@@ -600,8 +600,8 @@ fun ChatScreen(
             onAddImage = { editImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { editingImages.remove(it) },
             onDismiss = { editingMessage = null; editingImages.clear() },
-            onConfirm = {
-                editingMessage?.let { viewModel.editMessage(it.id, editingText.text, editingImages.toList()) }
+            onConfirm = { finalValue ->
+                editingMessage?.let { viewModel.editMessage(it.id, finalValue.text, editingImages.toList()) }
                 editingMessage = null; editingImages.clear()
             },
             confirmIcon = AppIcons.Save,
@@ -616,13 +616,13 @@ fun ChatScreen(
             onValueChange = { editingSegmentText = it },
             images = emptyList(),
             onDismiss = { editingSegment = null },
-            onConfirm = {
+            onConfirm = { finalValue ->
                 editingSegment?.let {
                     viewModel.editMessageSegment(
                         messageId = it.messageId,
                         start = it.start,
                         endExclusive = it.endExclusive,
-                        replacement = editingSegmentText.text
+                        replacement = finalValue.text
                     )
                 }
                 editingSegment = null
@@ -644,8 +644,8 @@ fun ChatScreen(
             onAddImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { selectedImages.remove(it) },
             onDismiss = { fullComposer = false },
-            onConfirm = {
-                if (viewModel.sendMessage(input.text, selectedImages.toList())) {
+            onConfirm = { finalValue ->
+                if (viewModel.sendMessage(finalValue.text, selectedImages.toList())) {
                     input = TextFieldValue(""); selectedImages.clear(); fullComposer = false
                 }
             },

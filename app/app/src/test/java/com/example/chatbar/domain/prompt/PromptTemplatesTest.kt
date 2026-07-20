@@ -7,6 +7,16 @@ import org.junit.Test
 
 class PromptTemplatesTest {
     @Test
+    fun referenceImagePromptRequiresVisibleContentReverseEngineeringUnderSharedRules() {
+        val prompt = PromptTemplates.novelAiImagePromptReferenceImageUser()
+
+        assertTrue(prompt.contains("NOVELAI_IMAGE_PROMPT_SYSTEM"))
+        assertTrue(prompt.contains("逆向"))
+        assertTrue(prompt.contains("可见"))
+        assertTrue(prompt.contains("NovelAI Diffusion V4.5 Full"))
+    }
+
+    @Test
     fun replyLengthTailSystemPrompt_repeatsConfiguredLengthAtPromptTail() {
         assertEquals(
             "严格按照格式要求，输出【500字】篇幅的回复。",

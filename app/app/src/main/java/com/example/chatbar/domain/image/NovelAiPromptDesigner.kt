@@ -273,18 +273,21 @@ class NovelAiPromptDesigner(
         stylePrompt: String,
         characterPrompt: String,
         finalPromptRequirement: String = "",
+        imageBase64s: List<String> = emptyList(),
+        referenceImageProvided: Boolean = imageBase64s.any(String::isNotBlank),
         model: ModelConfig,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
+        val sourceImages = imageBase64s.filter(String::isNotBlank)
         val request = promptToolInputText(
             imageDescription = imageDescription,
             stylePrompt = stylePrompt,
             characterPrompt = characterPrompt
         )
-        require(request.isNotBlank()) { "请输入图片描述、画风或角色提示词" }
-        val systemPrompt = PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.trim()
-        val userPrompt = PromptTemplates.novelAiImagePromptConversation(
+        require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、画风、角色提示词或上传图片" }
+        val systemPrompt = PromptTemplates.novelAiImagePromptCoreSystem()
+        val scenePrompt = PromptTemplates.novelAiImagePromptConversation(
             listOf(
                 ChatMessage.create(
                     sessionId = PROMPT_TOOL_SESSION_ID,
@@ -294,10 +297,23 @@ class NovelAiPromptDesigner(
             ),
             finalPromptRequirement = finalPromptRequirement
         )
+        val userPrompt = buildString {
+            append(scenePrompt)
+            if (referenceImageProvided) {
+                appendLine()
+                appendLine()
+                append(PromptTemplates.novelAiImagePromptReferenceImageUser())
+            }
+        }
+        val userMessage = if (sourceImages.isEmpty()) {
+            ChatApiMessage.text("user", userPrompt)
+        } else {
+            ChatApiMessage.withImages("user", userPrompt, sourceImages)
+        }
         val raw = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", userPrompt)
+                userMessage
             ),
             model = model,
             onContentDelta = onContentDelta,

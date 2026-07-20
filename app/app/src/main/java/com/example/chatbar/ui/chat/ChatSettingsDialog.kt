@@ -365,16 +365,17 @@ fun ChatSettingsDialog(
                     onTextChange = { ragEditor = editor.copy(content = it) },
                     visible = true,
                     onDismiss = { if (!ragBusy) ragEditor = null },
-                    onConfirm = {
+                    onConfirm = { finalContent ->
                         scope.launch {
-                            if (viewModel.saveRagMemoryChunk(editor.chunkId, editor.content)) {
+                            if (viewModel.saveRagMemoryChunk(editor.chunkId, finalContent)) {
                                 ragEditor = null
                             }
                         }
                     },
                     placeholder = "输入需要参与检索的记忆文本…",
                     confirmIcon = AppIcons.Save,
-                    confirmEnabled = editor.content.isNotBlank() && !ragBusy
+                    confirmEnabled = !ragBusy,
+                    canConfirm = { it.isNotBlank() }
                 )
             }
         }

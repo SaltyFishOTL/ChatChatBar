@@ -1,6 +1,6 @@
 ---
 name: chatbar-image-generation-runtime
-description: Maintain ChatBar image-generation runtime across NovelAI HTTP generation, streaming frames, retries, background-work coordination, generated-image metadata, editable regeneration, new-seed behavior, safe file replacement, and shared chat/Moments UI. Use when changing image generation concurrency, retry or error handling, regeneration dialogs, prompt metadata persistence, dimensions, seeds, or owned-image lifecycle.
+description: Maintain ChatBar image-generation runtime across NovelAI HTTP generation, streaming frames, retries, background-work coordination, prompt-tool generation, generated-image metadata, editable regeneration, new-seed behavior, safe file replacement, and shared chat/Moments UI. Use when changing image generation concurrency, retry or error handling, prompt-tool manual generation, regeneration dialogs, prompt metadata persistence, dimensions, seeds, or owned-image lifecycle.
 ---
 
 # ChatBar Image Generation Runtime
@@ -14,6 +14,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Prompt-plan/metadata conversion: domain/image/NovelAiImageRegeneration.kt
 - Prompt design boundary: domain/image/NovelAiPromptDesigner.kt
 - Shared editor: ui/components/NovelAiImageRegenerationDialog.kt
+- Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
 - Background protection: domain/service/AiBackgroundWorkManager.kt
@@ -34,6 +35,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 
 - Persist image path, base caption, per-character prompts, negative prompt, size preset, width, and height with every generated image.
 - Convert metadata through NovelAiImageRegenerationDraft and NovelAiPromptPlan helpers instead of reconstructing fields in each screen.
+- Prompt tool starts with `emptyNovelAiImageRegenerationDraft()`, converts AI plans through `toRegenerationDraft()`, and converts edited/manual drafts back through `toPromptPlan()` before generation.
 - Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
 - Preserve original pixel dimensions and request a fresh seed for each regeneration.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
@@ -45,6 +47,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Save the new image and persist its metadata/path before deleting an old app-owned file.
 - On generation or save failure, retain the old image and metadata.
 - Never delete unrelated or user-owned files.
+- Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
 - Keep text generation and independent image tasks from blocking each other unless they mutate the same owned image slot.
 - Route long-running work through AiBackgroundWorkManager where the caller already uses foreground protection.
@@ -63,6 +66,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - 429 succeeds on third attempt and fails once after three total attempts.
 - New image and legacy image metadata loading.
 - Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.
+- Prompt-tool blank manual draft, AI-plan materialization, manual generation, reference-image replacement, and vision fallback.
 - Fullscreen prompt editor hides the dialog window, then restores it on close without losing the draft.
 - Save failure, repository failure, and old-file cleanup failure.
 - Concurrent text generation and image generation; two unrelated image tasks.

@@ -32,6 +32,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Chat save slots/archive transfer: data/local/entity/SaveSlot.kt, data/repository/SaveSlotRepository.kt, domain/chat/SaveSlotJsonTransfer.kt, ChatViewModel.kt, ChatSettingsDialog.kt.
 - RAG/search/indexing and vector persistence: domain/rag/RagManager.kt, domain/rag/ChatMemoryIndexPolicy.kt, domain/rag/RagRepository.kt, data/local/entity/VectorChunk.kt, data/local/JsonFileStorage.kt, domain/search/CharacterResearchService.kt. RAG stays independent from long-term memory; source-turn grouping changes require chatbar-long-term-memory.
 - NovelAI prompt/tag design: use chatbar-novelai-prompt, then read domain/image/NovelAiPromptDesigner.kt.
+- Home image prompt tool, reference-image reverse prompting, or manual NovelAI prompt editing: use chatbar-novelai-prompt and chatbar-image-generation-runtime, then read ui/imageprompt/ImagePromptToolScreen.kt and ImagePromptToolViewModel.kt.
 - Moments: use chatbar-moments before Moments UI, ViewModel, scheduler, prompts, storage, or post image policy.
 - Community: use chatbar-community-platform before community UI or Supabase/Edge Function code.
 - UI kit and Compose styling: use chatbar-shadcn-compose, then read ui/kit/ and target screen.

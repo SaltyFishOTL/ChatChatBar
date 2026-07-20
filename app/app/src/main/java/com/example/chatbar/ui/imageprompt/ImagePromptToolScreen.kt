@@ -1,8 +1,13 @@
 package com.example.chatbar.ui.imageprompt
 
+import android.net.Uri
 import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -22,6 +27,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,6 +45,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -70,6 +78,16 @@ fun ImagePromptToolScreen(
     val selectedCharacterCard = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId }
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
+    var promptExpanded by remember { mutableStateOf(false) }
+    val referenceImagePicker = rememberLauncherForActivityResult(
+        ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        uri?.let(viewModel::selectReferenceImage)
+    }
+
+    LaunchedEffect(state.promptRevision) {
+        if (state.promptRevision > 0) promptExpanded = true
+    }
 
     Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         Column(Modifier.fillMaxSize()) {
@@ -102,6 +120,12 @@ fun ImagePromptToolScreen(
                         onStyle = viewModel::updateStylePrompt,
                         onCharacter = viewModel::updateCharacterPrompt,
                         onPreference = viewModel::updateImagePromptPreference,
+                        onSelectReferenceImage = {
+                            referenceImagePicker.launch(
+                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
+                            )
+                        },
+                        onRemoveReferenceImage = viewModel::removeReferenceImage,
                         onFullscreenEdit = { title, text, onChange ->
                             fullscreenField = title to text
                             fullscreenOnChange = onChange
@@ -110,6 +134,44 @@ fun ImagePromptToolScreen(
                         onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
                         onGeneratePrompt = viewModel::designPrompt
                     )
+                }
+                item {
+                    PromptEditorPanel(
+                        draft = state.promptDraft,
+                        expanded = promptExpanded,
+                        enabled = !state.isBusy,
+                        canGenerateImage = novelAiConfigured && state.promptDraft.canRegenerate && !state.isBusy,
+                        imageGenerating = state.isGeneratingImage,
+                        onExpandedChange = { promptExpanded = it },
+                        onDraftChange = viewModel::updatePromptDraft,
+                        onFullscreenEdit = { title, text, onChange ->
+                            fullscreenField = title to text
+                            fullscreenOnChange = onChange
+                        },
+                        onCopy = {
+                            clipboard.setText(AnnotatedString(state.promptDraft.toClipboardText()))
+                            Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
+                        },
+                        onGenerateImage = viewModel::generateImage
+                    )
+                }
+                if (state.isDesigning && state.designStatus.isNotBlank()) {
+                    item {
+                        StreamPanel(
+                            title = "处理进度",
+                            text = state.designStatus,
+                            active = true
+                        )
+                    }
+                }
+                if (state.imageAnalysisStream.isNotBlank()) {
+                    item {
+                        StreamPanel(
+                            title = "图片解析",
+                            text = state.imageAnalysisStream,
+                            active = state.isDesigning
+                        )
+                    }
                 }
                 if (state.reasoningStream.isNotBlank() || state.isDesigning) {
                     item {
@@ -126,24 +188,6 @@ fun ImagePromptToolScreen(
                             title = "结果流",
                             text = state.resultStream,
                             active = state.isDesigning
-                        )
-                    }
-                }
-                if (state.finalPromptParts.isNotEmpty()) {
-                    item {
-                        FinalPromptPanel(
-                            parts = state.finalPromptParts,
-                            canGenerateImage = novelAiConfigured && state.promptPlan != null && !state.isBusy,
-                            imageGenerating = state.isGeneratingImage,
-                            onCopy = {
-                                clipboard.setText(AnnotatedString(state.finalPrompt))
-                                Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
-                            },
-                            onCopyPart = { part ->
-                                clipboard.setText(AnnotatedString(part.text))
-                                Toast.makeText(context, "已复制 ${part.title}", Toast.LENGTH_SHORT).show()
-                            },
-                            onGenerateImage = viewModel::generateImage
                         )
                     }
                 }
@@ -185,6 +229,8 @@ private fun PromptInputPanel(
     onStyle: (String) -> Unit,
     onCharacter: (String) -> Unit,
     onPreference: (String) -> Unit,
+    onSelectReferenceImage: () -> Unit,
+    onRemoveReferenceImage: () -> Unit,
     onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
     selectedCharacterCard: CharacterCard?,
     onImportCharacterCard: (CharacterCard) -> Unit,
@@ -195,6 +241,43 @@ private fun PromptInputPanel(
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            CbField(
+                label = "参考图片",
+                description = "上传后，AI 会根据画面内容反推 NovelAI 提示词。"
+            ) {
+                state.referenceImagePath?.let { path ->
+                    AsyncImage(
+                        model = File(path),
+                        contentDescription = "提示词参考图片",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .clip(RoundedCornerShape(ChatBarShape.sm)),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbButton(
+                        if (state.referenceImagePath == null) "上传图片" else "替换图片",
+                        onSelectReferenceImage,
+                        modifier = Modifier.weight(1f),
+                        enabled = !state.isBusy,
+                        variant = ButtonVariant.Outline
+                    )
+                    if (state.referenceImagePath != null) {
+                        CbIconButton(
+                            AppIcons.Delete,
+                            "移除参考图片",
+                            onRemoveReferenceImage,
+                            enabled = !state.isBusy,
+                            tint = ChatBarTheme.colors.destructive
+                        )
+                    }
+                }
+            }
             CbField("图片描述", onFullscreenEdit = {
                 onFullscreenEdit("图片描述", state.imageDescription, onDescription)
             }) {
@@ -204,7 +287,7 @@ private fun PromptInputPanel(
                     placeholder = "想要生成的画面",
                     enabled = !state.isBusy,
                     singleLine = false,
-                    minLines = 3
+                    minLines = 1
                 )
             }
             CbField("导入角色卡提示词") {
@@ -225,7 +308,7 @@ private fun PromptInputPanel(
                     placeholder = "风格、镜头、质感",
                     enabled = !state.isBusy,
                     singleLine = false,
-                    minLines = 2
+                    minLines = 1
                 )
             }
             CbField("角色提示词", onFullscreenEdit = {
@@ -237,7 +320,7 @@ private fun PromptInputPanel(
                     placeholder = "角色外貌、服装、Danbooru 标签",
                     enabled = !state.isBusy,
                     singleLine = false,
-                    minLines = 3
+                    minLines = 1
                 )
             }
             CbField(
@@ -253,7 +336,7 @@ private fun PromptInputPanel(
                     placeholder = "例如：更重视镜头构图，避免长串无关 tags",
                     enabled = !state.isBusy,
                     singleLine = false,
-                    minLines = 3
+                    minLines = 1
                 )
             }
             CbField("默认生图模型") {
@@ -301,12 +384,16 @@ private fun StreamPanel(
 }
 
 @Composable
-private fun FinalPromptPanel(
-    parts: List<ImagePromptToolPromptPart>,
+private fun PromptEditorPanel(
+    draft: NovelAiImageRegenerationDraft,
+    expanded: Boolean,
+    enabled: Boolean,
     canGenerateImage: Boolean,
     imageGenerating: Boolean,
+    onExpandedChange: (Boolean) -> Unit,
+    onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
+    onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
     onCopy: () -> Unit,
-    onCopyPart: (ImagePromptToolPromptPart) -> Unit,
     onGenerateImage: () -> Unit
 ) {
     CbSurface(
@@ -315,65 +402,153 @@ private fun FinalPromptPanel(
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            CbText("最终提示词", style = ChatBarTheme.typography.heading)
-            parts.forEach { part ->
-                PromptPartBlock(part = part, onCopy = { onCopyPart(part) })
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                CbButton(
-                    "复制全部",
-                    onCopy,
-                    modifier = Modifier.weight(1f),
-                    variant = ButtonVariant.Secondary
-                )
-                if (canGenerateImage) {
-                    CbButton(
-                        "用此提示词生图",
-                        onGenerateImage,
-                        modifier = Modifier.weight(1f),
-                        enabled = !imageGenerating
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 48.dp)
+                    .clickable { onExpandedChange(!expanded) },
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    CbText("NovelAI 提示词", style = ChatBarTheme.typography.heading)
+                    CbText(
+                        if (draft.baseCaption.isBlank()) "未填写；展开后可手写或让 AI 设计" else "已填写；可编辑后直接生图",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
                     )
                 }
-            }
-        }
-    }
-}
-
-@Composable
-private fun PromptPartBlock(
-    part: ImagePromptToolPromptPart,
-    onCopy: () -> Unit
-) {
-    CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.muted,
-        shape = RoundedCornerShape(ChatBarShape.sm)
-    ) {
-        Column(Modifier.padding(ChatBarSpacing.sm), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbText(
-                    part.title,
-                    modifier = Modifier.weight(1f),
-                    color = ChatBarTheme.colors.foreground,
-                    style = ChatBarTheme.typography.label
-                )
                 CbIconButton(
-                    AppIcons.ContentCopy,
-                    "复制${part.title}",
-                    onCopy,
+                    if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
+                    if (expanded) "收起提示词" else "展开提示词",
+                    { onExpandedChange(!expanded) },
                     tint = ChatBarTheme.colors.mutedForeground
                 )
             }
-            SelectionContainer {
-                CbText(
-                    part.text,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 180.dp)
-                        .verticalScroll(rememberScrollState()),
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
-                )
+            if (expanded) {
+                CbField(
+                    label = "主提示词",
+                    description = "场景、构图、画质和全局风格标签",
+                    error = if (draft.baseCaption.isBlank()) "主提示词不能为空" else null,
+                    onFullscreenEdit = {
+                        onFullscreenEdit("编辑主提示词", draft.baseCaption) {
+                            onDraftChange(draft.copy(baseCaption = it))
+                        }
+                    }
+                ) {
+                    CbInput(
+                        value = draft.baseCaption,
+                        onValueChange = { onDraftChange(draft.copy(baseCaption = it)) },
+                        enabled = enabled,
+                        singleLine = false,
+                        minLines = 1,
+                        isError = draft.baseCaption.isBlank()
+                    )
+                }
+                CbField(
+                    label = "负面提示词",
+                    description = "不希望图片出现的内容或质量问题",
+                    onFullscreenEdit = {
+                        onFullscreenEdit("编辑负面提示词", draft.negativePrompt) {
+                            onDraftChange(draft.copy(negativePrompt = it))
+                        }
+                    }
+                ) {
+                    CbInput(
+                        value = draft.negativePrompt,
+                        onValueChange = { onDraftChange(draft.copy(negativePrompt = it)) },
+                        enabled = enabled,
+                        singleLine = false,
+                        minLines = 1
+                    )
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        CbText("角色提示词", style = ChatBarTheme.typography.label)
+                        CbText(
+                            "${draft.characterPrompts.size}/$NOVEL_AI_MAX_CHARACTER_PROMPTS，可按需添加或删除",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                    CbButton(
+                        "添加角色",
+                        { onDraftChange(draft.addCharacterPrompt()) },
+                        enabled = enabled && draft.characterPrompts.size < NOVEL_AI_MAX_CHARACTER_PROMPTS,
+                        variant = ButtonVariant.Outline
+                    )
+                }
+                draft.characterPrompts.forEachIndexed { index, characterPrompt ->
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.Top
+                    ) {
+                        CbField(
+                            label = "角色提示词 ${index + 1}",
+                            modifier = Modifier.weight(1f),
+                            error = if (characterPrompt.prompt.isBlank()) "角色提示词不能为空；不需要时可删除" else null,
+                            onFullscreenEdit = {
+                                onFullscreenEdit("编辑角色提示词 ${index + 1}", characterPrompt.prompt) { value ->
+                                    onDraftChange(
+                                        draft.copy(
+                                            characterPrompts = draft.characterPrompts.mapIndexed { itemIndex, item ->
+                                                if (itemIndex == index) item.copy(prompt = value) else item
+                                            }
+                                        )
+                                    )
+                                }
+                            }
+                        ) {
+                            CbInput(
+                                value = characterPrompt.prompt,
+                                onValueChange = { value ->
+                                    onDraftChange(
+                                        draft.copy(
+                                            characterPrompts = draft.characterPrompts.mapIndexed { itemIndex, item ->
+                                                if (itemIndex == index) item.copy(prompt = value) else item
+                                            }
+                                        )
+                                    )
+                                },
+                                enabled = enabled,
+                                singleLine = false,
+                                minLines = 1,
+                                isError = characterPrompt.prompt.isBlank()
+                            )
+                        }
+                        CbIconButton(
+                            AppIcons.Delete,
+                            "删除角色提示词 ${index + 1}",
+                            { onDraftChange(draft.removeCharacterPrompt(index)) },
+                            modifier = Modifier.size(48.dp),
+                            enabled = enabled,
+                            tint = ChatBarTheme.colors.destructive
+                        )
+                    }
+                }
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbButton(
+                        "复制全部",
+                        onCopy,
+                        modifier = Modifier.weight(1f),
+                        enabled = draft.baseCaption.isNotBlank(),
+                        variant = ButtonVariant.Secondary
+                    )
+                    CbButton(
+                        if (imageGenerating) "生成中" else "用此提示词生图",
+                        onGenerateImage,
+                        modifier = Modifier.weight(1f),
+                        enabled = canGenerateImage
+                    )
+                }
             }
         }
     }
@@ -464,4 +639,17 @@ private fun StreamText(text: String) {
             )
         }
     }
+}
+
+private fun NovelAiImageRegenerationDraft.toClipboardText(): String = buildString {
+    appendLine("Base:")
+    appendLine(baseCaption)
+    characterPrompts.forEachIndexed { index, character ->
+        appendLine()
+        appendLine("Char ${index + 1}:")
+        appendLine(character.prompt)
+    }
+    appendLine()
+    appendLine("Negative:")
+    append(negativePrompt)
 }

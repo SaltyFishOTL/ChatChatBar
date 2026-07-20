@@ -2,6 +2,7 @@ package com.example.chatbar.domain.image
 
 import com.example.chatbar.data.local.entity.GeneratedImageCharacterPrompt
 import com.example.chatbar.data.local.entity.GeneratedImageMetadata
+import com.example.chatbar.domain.prompt.PromptTemplates
 
 data class NovelAiImageRegenerationDraft(
     val baseCaption: String,
@@ -44,6 +45,33 @@ data class NovelAiImageRegenerationDraft(
         negativePrompt = negativePrompt
     )
 }
+
+fun emptyNovelAiImageRegenerationDraft(
+    sizePreset: NovelAiImageSizePreset = NovelAiImageSizePreset.PORTRAIT
+): NovelAiImageRegenerationDraft = NovelAiImageRegenerationDraft(
+    baseCaption = "",
+    characterPrompts = emptyList(),
+    negativePrompt = PromptTemplates.defaultCharacterNaiNegativePrompt(),
+    sizePreset = sizePreset.name,
+    width = sizePreset.width,
+    height = sizePreset.height
+)
+
+fun NovelAiPromptPlan.toRegenerationDraft(): NovelAiImageRegenerationDraft =
+    NovelAiImageRegenerationDraft(
+        baseCaption = baseCaption,
+        characterPrompts = characterCaptions.map {
+            GeneratedImageCharacterPrompt(
+                prompt = it.prompt,
+                centerX = it.center.x,
+                centerY = it.center.y
+            )
+        },
+        negativePrompt = effectiveNegativePrompt,
+        sizePreset = sizePreset.name,
+        width = sizePreset.width,
+        height = sizePreset.height
+    )
 
 const val NOVEL_AI_MAX_CHARACTER_PROMPTS = 6
 

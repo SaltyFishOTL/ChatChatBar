@@ -856,6 +856,13 @@ JSON only, no Markdown, no explanation:
 
     fun novelAiImagePromptCoreSystem(): String = NOVELAI_IMAGE_PROMPT_SYSTEM.trim()
 
+    fun novelAiImagePromptReferenceImageUser(): String =
+        """
+        参考图片逆向任务：
+        请严格使用 NOVELAI_IMAGE_PROMPT_SYSTEM 规定的规则，分析上传图片中的可见内容，并将其逆向还原为 NovelAI Diffusion V4.5 Full 提示词。
+        只还原图片中有视觉依据的主体、外观、服装、动作、表情、构图、视角、场景、光照与风格；不要补充图片中不可见或无依据的内容。
+        """.trimIndent()
+
     fun novelAiImagePromptDefaultStyleSystem(cardDefaultImagePrompt: String): String =
         """
         Preset style prompt (include verbatim in baseCaption):

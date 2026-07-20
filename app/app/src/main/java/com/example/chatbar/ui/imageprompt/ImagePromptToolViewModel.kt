@@ -1,13 +1,17 @@
 package com.example.chatbar.ui.imageprompt
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
-import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.emptyNovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -36,6 +40,7 @@ data class ImagePromptToolUiState(
     val stylePrompt: String = "",
     val characterPrompt: String = "",
     val imagePromptPreference: String = "",
+    val referenceImagePath: String? = null,
     val characterCards: List<CharacterCard> = emptyList(),
     val selectedCharacterCardId: String? = null,
     val models: List<ModelConfig> = emptyList(),
@@ -43,11 +48,12 @@ data class ImagePromptToolUiState(
     val modelErrors: List<String> = emptyList(),
     val modelUsable: Boolean = false,
     val phase: ImagePromptToolPhase = ImagePromptToolPhase.IDLE,
+    val designStatus: String = "",
+    val imageAnalysisStream: String = "",
     val reasoningStream: String = "",
     val resultStream: String = "",
-    val finalPrompt: String = "",
-    val finalPromptParts: List<ImagePromptToolPromptPart> = emptyList(),
-    val promptPlan: NovelAiPromptPlan? = null,
+    val promptDraft: NovelAiImageRegenerationDraft = emptyNovelAiImageRegenerationDraft(),
+    val promptRevision: Int = 0,
     val imagePreview: ByteArray? = null,
     val imagePath: String? = null,
     val imageProgress: Float = 0f,
@@ -63,13 +69,9 @@ data class ImagePromptToolUiState(
         get() = !isBusy &&
             modelUsable &&
             selectedModelId != null &&
-            listOf(imageDescription, stylePrompt, characterPrompt).any { it.isNotBlank() }
+            (referenceImagePath != null ||
+                listOf(imageDescription, stylePrompt, characterPrompt).any { it.isNotBlank() })
 }
-
-data class ImagePromptToolPromptPart(
-    val title: String,
-    val text: String
-)
 
 class ImagePromptToolViewModel : ViewModel() {
     private val settingsRepository = ChatBarApp.instance.settingsRepository
@@ -79,6 +81,8 @@ class ImagePromptToolViewModel : ViewModel() {
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val imageService = ChatBarApp.instance.novelAiImageService
     private val imageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val imageUnderstandingService = ChatBarApp.instance.imageUnderstandingService
+    private val draftAssetService = ChatBarApp.instance.editorDraftAssetService
 
     private val _uiState = MutableStateFlow(ImagePromptToolUiState())
     val uiState: StateFlow<ImagePromptToolUiState> = _uiState.asStateFlow()
@@ -115,6 +119,59 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
+    fun selectReferenceImage(uri: Uri) {
+        if (_uiState.value.isBusy) return
+        viewModelScope.launch {
+            val previousPath = _uiState.value.referenceImagePath
+            try {
+                val extension = when (ChatBarApp.instance.contentResolver.getType(uri)) {
+                    "image/png" -> "png"
+                    "image/gif" -> "gif"
+                    "image/webp" -> "webp"
+                    else -> "jpg"
+                }
+                val newPath = draftAssetService.copyImageToDraft(
+                    draftSessionId = PROMPT_TOOL_DRAFT_SESSION_ID,
+                    uri = uri,
+                    extension = extension
+                )
+                updateInput { it.copy(referenceImagePath = newPath) }
+                previousPath?.takeIf(draftAssetService::isDraftAsset)?.let { oldPath ->
+                    draftAssetService.deleteFiles(listOf(oldPath))
+                }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(error = "读取参考图片失败：${error.message ?: "未知错误"}")
+                }
+            }
+        }
+    }
+
+    fun removeReferenceImage() {
+        if (_uiState.value.isBusy) return
+        val oldPath = _uiState.value.referenceImagePath ?: return
+        updateInput { it.copy(referenceImagePath = null) }
+        if (draftAssetService.isDraftAsset(oldPath)) {
+            viewModelScope.launch { draftAssetService.deleteFiles(listOf(oldPath)) }
+        }
+    }
+
+    fun updatePromptDraft(draft: NovelAiImageRegenerationDraft) {
+        if (_uiState.value.isBusy) return
+        _uiState.update {
+            it.copy(
+                phase = if (draft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
+                promptDraft = draft,
+                imagePreview = null,
+                imagePath = null,
+                imageProgress = 0f,
+                error = null
+            )
+        }
+    }
+
     fun importCharacterCardPrompts(cardId: String) {
         if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
@@ -140,11 +197,10 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.DESIGNING,
+                    designStatus = if (snapshot.referenceImagePath == null) "正在设计提示词" else "正在读取参考图片",
+                    imageAnalysisStream = "",
                     reasoningStream = "",
                     resultStream = "",
-                    finalPrompt = "",
-                    finalPromptParts = emptyList(),
-                    promptPlan = null,
                     imagePreview = null,
                     imagePath = null,
                     imageProgress = 0f,
@@ -152,11 +208,36 @@ class ImagePromptToolViewModel : ViewModel() {
                 )
             }
             try {
+                var imageDescription = snapshot.imageDescription
+                var directImageBase64s = emptyList<String>()
+                snapshot.referenceImagePath?.let { imagePath ->
+                    val imageBase64 = ImageFileEncoder.encodeToJpegBase64(imagePath)
+                    val understanding = imageUnderstandingService.prepare(
+                        imageBase64s = listOf(imageBase64),
+                        generationModel = model,
+                        requireUnderstanding = true,
+                        announceDirect = true,
+                        onStatus = { status ->
+                            _uiState.update { it.copy(designStatus = status) }
+                        },
+                        onDescriptionText = { _, text ->
+                            _uiState.update { it.copy(imageAnalysisStream = text) }
+                        }
+                    )
+                    directImageBase64s = understanding.directImageBase64s
+                    imageDescription = listOf(
+                        snapshot.imageDescription,
+                        understanding.descriptions.joinToString("\n")
+                    ).filter(String::isNotBlank).joinToString("\n\n")
+                }
+                _uiState.update { it.copy(designStatus = "正在设计 NovelAI 提示词") }
                 val plan = promptDesigner.designForPromptTool(
-                    imageDescription = snapshot.imageDescription,
+                    imageDescription = imageDescription,
                     stylePrompt = snapshot.stylePrompt,
                     characterPrompt = snapshot.characterPrompt,
                     finalPromptRequirement = snapshot.imagePromptPreference,
+                    imageBase64s = directImageBase64s,
+                    referenceImageProvided = snapshot.referenceImagePath != null,
                     model = model,
                     onContentDelta = { text ->
                         _uiState.update { it.copy(resultStream = text) }
@@ -165,13 +246,12 @@ class ImagePromptToolViewModel : ViewModel() {
                         _uiState.update { it.copy(reasoningStream = text) }
                     }
                 )
-                val promptParts = plan.toPromptParts()
                 _uiState.update {
                     it.copy(
                         phase = ImagePromptToolPhase.READY,
-                        promptPlan = plan,
-                        finalPrompt = promptParts.toClipboardText(),
-                        finalPromptParts = promptParts,
+                        designStatus = "提示词设计完成",
+                        promptDraft = plan.toRegenerationDraft(),
+                        promptRevision = it.promptRevision + 1,
                         error = null
                     )
                 }
@@ -195,7 +275,12 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun generateImage() {
         if (_uiState.value.isBusy) return
-        val plan = _uiState.value.promptPlan ?: return
+        val draft = _uiState.value.promptDraft
+        if (!draft.canRegenerate) {
+            _uiState.update { it.copy(error = "主提示词不能为空，已添加的角色提示词也必须填写") }
+            return
+        }
+        val plan = draft.toPromptPlan()
         imageJob = viewModelScope.launch {
             val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
             if (token == null) {
@@ -322,6 +407,9 @@ class ImagePromptToolViewModel : ViewModel() {
     override fun onCleared() {
         designJob?.cancel()
         imageJob?.cancel()
+        _uiState.value.referenceImagePath
+            ?.takeIf(draftAssetService::isDraftAsset)
+            ?.let { path -> runCatching { java.io.File(path).delete() } }
         super.onCleared()
     }
 
@@ -370,11 +458,11 @@ class ImagePromptToolViewModel : ViewModel() {
         _uiState.update {
             transform(it).copy(
                 phase = ImagePromptToolPhase.IDLE,
+                designStatus = "",
+                imageAnalysisStream = "",
                 reasoningStream = "",
                 resultStream = "",
-                finalPrompt = "",
-                finalPromptParts = emptyList(),
-                promptPlan = null,
+                promptDraft = emptyNovelAiImageRegenerationDraft(),
                 imagePreview = null,
                 imagePath = null,
                 imageProgress = 0f,
@@ -382,19 +470,6 @@ class ImagePromptToolViewModel : ViewModel() {
             )
         }
     }
-
-    private fun NovelAiPromptPlan.toPromptParts(): List<ImagePromptToolPromptPart> =
-        buildList {
-            add(ImagePromptToolPromptPart("Base", baseCaption))
-            characterCaptions.forEachIndexed { index, caption ->
-                add(ImagePromptToolPromptPart("Char ${index + 1}", caption.prompt))
-            }
-        }
-
-    private fun List<ImagePromptToolPromptPart>.toClipboardText(): String =
-        joinToString("\n\n") { part ->
-            "${part.title}:\n${part.text}"
-        }
 
     private fun CharacterCard.characterImagePromptText(): String =
         characters
@@ -407,5 +482,6 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private companion object {
         const val PROMPT_TOOL_IMAGE_SESSION_ID = "image-prompt-tool"
+        const val PROMPT_TOOL_DRAFT_SESSION_ID = "image-prompt-tool-reference"
     }
 }

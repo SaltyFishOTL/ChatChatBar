@@ -9,6 +9,44 @@ import org.junit.Test
 
 class NovelAiImageRegenerationTest {
     @Test
+    fun emptyDraft_startsWithBlankMainPromptAndDefaultNegativePrompt() {
+        val draft = emptyNovelAiImageRegenerationDraft()
+
+        assertEquals("", draft.baseCaption)
+        assertTrue(draft.characterPrompts.isEmpty())
+        assertTrue(draft.negativePrompt.isNotBlank())
+        assertEquals(NovelAiImageSizePreset.PORTRAIT.name, draft.sizePreset)
+        assertEquals(NovelAiImageSizePreset.PORTRAIT.width, draft.width)
+        assertEquals(NovelAiImageSizePreset.PORTRAIT.height, draft.height)
+        assertFalse(draft.canRegenerate)
+    }
+
+    @Test
+    fun promptPlan_roundTripsIntoEditableDraft() {
+        val plan = NovelAiPromptPlan(
+            baseCaption = "1girl, rainy street",
+            characterCaptions = listOf(
+                NovelAiCharacterCaption(
+                    prompt = "girl, black hair",
+                    center = DesignedCharacterCenter(0.4f, 0.6f)
+                )
+            ),
+            sizePreset = NovelAiImageSizePreset.HORIZONTAL,
+            negativePrompt = "lowres"
+        )
+
+        val draft = plan.toRegenerationDraft()
+
+        assertEquals(plan.baseCaption, draft.baseCaption)
+        assertEquals("girl, black hair", draft.characterPrompts.single().prompt)
+        assertEquals(0.4f, draft.characterPrompts.single().centerX)
+        assertEquals(0.6f, draft.characterPrompts.single().centerY)
+        assertEquals("lowres", draft.negativePrompt)
+        assertEquals(NovelAiImageSizePreset.HORIZONTAL.name, draft.sizePreset)
+        assertTrue(draft.canRegenerate)
+    }
+
+    @Test
     fun characterPrompts_canBeAddedAndRemovedWithinNovelAiLimit() {
         val initial = draft(characterPrompts = emptyList())
 

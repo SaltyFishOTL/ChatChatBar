@@ -26,7 +26,7 @@ class NovelAiImageRegenerationDialogTest {
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
 
     @Test
-    fun fullscreenEdit_hidesDialogWindowUntilEditorCloses() {
+    fun fullscreenEdit_cancelDiscardsAndConfirmCommitsDraft() {
         val initialDraft = NovelAiImageRegenerationDraft(
             baseCaption = "masterpiece, 1girl",
             characterPrompts = listOf(
@@ -61,10 +61,21 @@ class NovelAiImageRegenerationDialogTest {
             composeTestRule.onAllNodesWithText("图片操作").fetchSemanticsNodes().isEmpty()
         )
         composeTestRule.onNodeWithText("编辑主提示词").assertIsDisplayed()
+        composeTestRule.onNodeWithText("masterpiece, 1girl")
+            .performTextReplacement("discarded prompt")
 
         composeTestRule.onNodeWithContentDescription("退出").performClick()
 
         composeTestRule.onNodeWithText("图片操作").assertIsDisplayed()
+        composeTestRule.onNodeWithText("masterpiece, 1girl").assertIsDisplayed()
+
+        composeTestRule.onAllNodesWithContentDescription("全屏编辑")[0].performClick()
+        composeTestRule.onNodeWithText("masterpiece, 1girl")
+            .performTextReplacement("confirmed prompt")
+        composeTestRule.onNodeWithContentDescription("确认").performClick()
+
+        composeTestRule.onNodeWithText("图片操作").assertIsDisplayed()
+        composeTestRule.onNodeWithText("confirmed prompt").assertIsDisplayed()
     }
 
     @Test

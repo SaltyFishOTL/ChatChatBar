@@ -379,29 +379,30 @@ fun FullscreenTextEditor(
     visible: Boolean,
     onDismiss: () -> Unit,
     placeholder: String = "输入内容…",
-    onConfirm: (() -> Unit)? = null,
+    onConfirm: ((String) -> Unit)? = null,
     images: List<String> = emptyList(),
     onAddImage: (() -> Unit)? = null,
     onRemoveImage: ((String) -> Unit)? = null,
     confirmIcon: ImageVector = AppIcons.Check,
-    confirmEnabled: Boolean = true
+    confirmEnabled: Boolean = true,
+    canConfirm: (String) -> Boolean = { true }
 ) {
     if (!visible) return
-    val confirm = onConfirm ?: onDismiss
-    var editorValue by remember { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
-        LaunchedEffect(text, focused) {
-            if (!focused && text != editorValue.text) {
-                val start = editorValue.selection.start.coerceIn(0, text.length)
-                val end = editorValue.selection.end.coerceIn(0, text.length)
-                editorValue = editorValue.copy(text = text, selection = TextRange(start, end), composition = null)
-            }
+    var editorValue by remember(text) { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
+    val confirm = {
+        val finalText = editorValue.text
+        onTextChange(finalText)
+        if (onConfirm == null) {
+            onDismiss()
+        } else {
+            onConfirm(finalText)
         }
+    }
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorValue.text), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
             value = editorValue,
             onValueChange = { newValue ->
                 editorValue = newValue
-                if (newValue.text != text) onTextChange(newValue.text)
             },
             placeholder = placeholder,
             colors = ctxColors,
@@ -419,19 +420,28 @@ fun FullscreenTextEditor(
     visible: Boolean,
     onDismiss: () -> Unit,
     placeholder: String = "输入消息…",
-    onConfirm: (() -> Unit)? = null,
+    onConfirm: ((TextFieldValue) -> Unit)? = null,
     images: List<String> = emptyList(),
     onAddImage: (() -> Unit)? = null,
     onRemoveImage: ((String) -> Unit)? = null,
     confirmIcon: ImageVector = AppIcons.Check,
-    confirmEnabled: Boolean = true
+    confirmEnabled: Boolean = true,
+    canConfirm: (TextFieldValue) -> Boolean = { true }
 ) {
     if (!visible) return
-    val confirm = onConfirm ?: onDismiss
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled, images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+    var editorValue by remember(value) { mutableStateOf(value) }
+    val confirm = {
+        onValueChange(editorValue)
+        if (onConfirm == null) {
+            onDismiss()
+        } else {
+            onConfirm(editorValue)
+        }
+    }
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorValue), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
-            value = value,
-            onValueChange = onValueChange,
+            value = editorValue,
+            onValueChange = { editorValue = it },
             placeholder = placeholder,
             colors = ctxColors,
             interactionSource = interactionSource,
