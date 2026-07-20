@@ -16,6 +16,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
+import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
@@ -57,6 +58,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
@@ -82,6 +84,8 @@ import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
+
+private class UserStoppedResponseGenerationException : CancellationException("用户停止生成")
 
 enum class ImageGenerationPhase {
     QUEUED,
@@ -1439,7 +1443,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return
         }
         ChatBarApp.instance.streamingStopRequested.value = true
-        responseJob?.cancel(CancellationException("用户停止生成"))
+        responseJob?.cancel(UserStoppedResponseGenerationException())
     }
 
     fun repairMessageFormat(messageId: String) {
@@ -1719,6 +1723,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             // 确定是否要用 Embedding 做 RAG 检索
             startStreamingForegroundWork()
             val generationJob = coroutineContext[Job]
+            var interruptedReplyDraft: ChatMessage? = null
+            var assistantReplyPersisted = false
             val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
                 generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
             }
@@ -2235,12 +2241,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     promptCacheKey = promptCacheKey
                 ).collect { event ->
                     if (ChatBarApp.instance.streamingStopRequested.value) {
-                        throw CancellationException("用户停止生成")
+                        throw UserStoppedResponseGenerationException()
                     }
                     when (event) {
                         is StreamEvent.Usage -> Unit
                         is StreamEvent.ReasoningDelta -> {
                             accumulatedReasoning += event.text
+                            interruptedReplyDraft = ChatMessage(
+                                id = assistantMsgId,
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = accumulatedText,
+                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                createdAt = streamCreatedAt,
+                                updatedAt = System.currentTimeMillis(),
+                                orderKey = streamOrderKey
+                            )
                             _streamingMessage.value = ChatMessage(
                                 id = assistantMsgId,
                                 sessionId = sessionId,
@@ -2256,6 +2272,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         is StreamEvent.Delta -> {
                             accumulatedText += event.text
                             val renderedAccumulatedText = renderSessionText(accumulatedText)
+                            interruptedReplyDraft = ChatMessage(
+                                id = assistantMsgId,
+                                sessionId = sessionId,
+                                role = MessageRole.ASSISTANT,
+                                content = accumulatedText,
+                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                createdAt = streamCreatedAt,
+                                updatedAt = System.currentTimeMillis(),
+                                orderKey = streamOrderKey
+                            )
                             _streamingMessage.value = ChatMessage(
                                 id = assistantMsgId,
                                 sessionId = sessionId,
@@ -2286,28 +2312,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 updatedAt = System.currentTimeMillis(),
                                 orderKey = streamOrderKey
                             )
-                            var persistedAssistantMessage = assistantMsg
-                            if (alternativeTargetMessageId != null) {
-                                val old = chatRepository.getMessage(alternativeTargetMessageId, sessionId)
-                                if (old != null) {
-                                    val existingAlternatives = old.alternatives.takeIf { it.isNotEmpty() }
-                                        ?: listOf(old.content)
-                                    val updatedAlternatives = (existingAlternatives + accumulatedText)
-                                        .takeLast(5)
-                                    persistedAssistantMessage = old.copy(
-                                            content = updatedAlternatives.last(),
-                                            alternatives = updatedAlternatives,
-                                            currentAlternativeIndex = updatedAlternatives.lastIndex,
-                                            reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                            formatRepairNotice = null,
-                                            updatedAt = System.currentTimeMillis()
-                                    )
-                                    chatRepository.updateMessage(persistedAssistantMessage)
-                                } else {
-                                    chatRepository.addMessage(assistantMsg)
-                                }
-                            } else {
-                                chatRepository.addMessage(assistantMsg)
+                            var persistedAssistantMessage = withContext(NonCancellable) {
+                                persistGeneratedAssistantMessage(
+                                    generatedMessage = assistantMsg,
+                                    alternativeTargetMessageId = alternativeTargetMessageId
+                                ).also { assistantReplyPersisted = true }
                             }
 
                             replaceMessagesFromRepository()
@@ -2357,6 +2366,30 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _isResponding.value = false
                 if (e is BackgroundGenerationProtectionCancellationException) {
                     addSystemMessage("后台生成已中止：${e.reason}")
+                } else if (e is UserStoppedResponseGenerationException) {
+                    val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
+                    if (draft != null || assistantReplyPersisted) {
+                        withContext(NonCancellable) {
+                            try {
+                                if (!assistantReplyPersisted && draft != null) {
+                                    persistGeneratedAssistantMessage(
+                                        generatedMessage = draft.copy(updatedAt = System.currentTimeMillis()),
+                                        alternativeTargetMessageId = alternativeTargetMessageId
+                                    )
+                                    assistantReplyPersisted = true
+                                }
+                                replaceMessagesFromRepository()
+                                ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                                    sessionId,
+                                    MemoryMaintenanceTrigger.REPLY_PERSISTED
+                                )
+                            } catch (persistenceError: Exception) {
+                                addSystemMessage(
+                                    "中断回复保存失败：${persistenceError.message ?: persistenceError::class.java.simpleName}"
+                                )
+                            }
+                        }
+                    }
                 } else if (e !is CancellationException) {
                     try {
                         if (alternativeTargetMessageId == null) {
@@ -2409,6 +2442,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         job.invokeOnCompletion {
             if (responseJob == job) responseJob = null
         }
+    }
+
+    private suspend fun persistGeneratedAssistantMessage(
+        generatedMessage: ChatMessage,
+        alternativeTargetMessageId: String?
+    ): ChatMessage {
+        if (alternativeTargetMessageId == null) {
+            return chatRepository.addMessage(generatedMessage)
+        }
+
+        val old = chatRepository.getMessage(alternativeTargetMessageId, generatedMessage.sessionId)
+            ?: return chatRepository.addMessage(generatedMessage)
+        val existingAlternatives = old.alternatives.takeIf { it.isNotEmpty() }
+            ?: listOf(old.content)
+        val updatedAlternatives = (existingAlternatives + generatedMessage.content).takeLast(5)
+        val updated = old.copy(
+            content = updatedAlternatives.last(),
+            alternatives = updatedAlternatives,
+            currentAlternativeIndex = updatedAlternatives.lastIndex,
+            reasoningContent = generatedMessage.reasoningContent,
+            formatRepairNotice = null,
+            updatedAt = System.currentTimeMillis()
+        )
+        chatRepository.updateMessage(updated)
+        return updated
     }
 
     /**

@@ -4,10 +4,14 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
@@ -36,6 +40,7 @@ import com.example.chatbar.domain.addModelApiAuthorization
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.io.IOException
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
@@ -148,6 +153,7 @@ class StreamingChatService(
         private const val CONNECT_TIMEOUT = 30L
         private const val READ_TIMEOUT = 120L // SSE 需要较长读取超时
         private const val IMAGE_DESCRIPTION_OUTPUT_TOKENS = 500
+        private const val FINISH_REASON_GRACE_MILLIS = 250L
     }
 
     private val json = Json {
@@ -216,7 +222,34 @@ class StreamingChatService(
                 .build()
 
             suspendCancellableCoroutine { continuation ->
-                var resumed = false
+                val resumed = AtomicBoolean(false)
+                val terminalDelivered = AtomicBoolean(false)
+                val finishReasonObserved = AtomicBoolean(false)
+                var finishReasonCompletionJob: Job? = null
+
+                fun resumeAttempt() {
+                    if (resumed.compareAndSet(false, true) && continuation.isActive) {
+                        continuation.resume(Unit)
+                    }
+                }
+
+                fun deliverTerminal(
+                    eventSource: EventSource,
+                    event: StreamEvent,
+                    completed: Boolean
+                ) {
+                    if (!terminalDelivered.compareAndSet(false, true)) return
+                    shouldStop = true
+                    if (completed) {
+                        com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
+                    } else if (event is StreamEvent.Error) {
+                        com.example.chatbar.utils.DebugLogManager.logError(sessionId, event.message)
+                    }
+                    trySend(event)
+                    resumeAttempt()
+                    eventSource.cancel()
+                }
+
                 val listener = object : EventSourceListener() {
                     override fun onEvent(
                         eventSource: EventSource,
@@ -225,14 +258,9 @@ class StreamingChatService(
                         data: String
                     ) {
                         if (data.trim() == "[DONE]") {
+                            finishReasonCompletionJob?.cancel()
                             com.example.chatbar.utils.DebugLogManager.appendResponseChunk(sessionId, data)
-                            com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
-                            trySend(StreamEvent.Done)
-                            shouldStop = true
-                            if (!resumed) {
-                                resumed = true
-                                continuation.resume(Unit)
-                            }
+                            deliverTerminal(eventSource, StreamEvent.Done, completed = true)
                             return
                         }
 
@@ -255,9 +283,22 @@ class StreamingChatService(
                                 com.example.chatbar.utils.DebugLogManager.recordPromptCacheUsage(sessionId, usage)
                                 trySend(StreamEvent.Usage(usage))
                             }
+                            if (
+                                delta.finishReason != null &&
+                                finishReasonObserved.compareAndSet(false, true)
+                            ) {
+                                finishReasonCompletionJob = launch {
+                                    delay(FINISH_REASON_GRACE_MILLIS)
+                                    deliverTerminal(eventSource, StreamEvent.Done, completed = true)
+                                }
+                            }
                         } catch (e: Exception) {
                             com.example.chatbar.utils.DebugLogManager.appendResponseChunk(sessionId, data)
-                            trySend(StreamEvent.Error("解析 SSE 数据失败: ${e.message}"))
+                            deliverTerminal(
+                                eventSource,
+                                StreamEvent.Error("解析 SSE 数据失败: ${e.message}"),
+                                completed = false
+                            )
                         }
                     }
 
@@ -266,6 +307,15 @@ class StreamingChatService(
                         t: Throwable?,
                         response: Response?
                     ) {
+                        if (terminalDelivered.get()) {
+                            resumeAttempt()
+                            return
+                        }
+                        if (finishReasonObserved.get()) {
+                            finishReasonCompletionJob?.cancel()
+                            deliverTerminal(eventSource, StreamEvent.Done, completed = true)
+                            return
+                        }
                         val body = try { response?.body?.string() } catch (_: Exception) { null }
 
                         if (retryCount < maxRetries && response?.code == 400 && body?.contains("20015") == true) {
@@ -275,7 +325,7 @@ class StreamingChatService(
                                 sessionId,
                                 "[RETRY #$retryCount] 服务器返回 400/20015，${retryCount}秒后重试..."
                             )
-                            continuation.resume(Unit)
+                            resumeAttempt()
                             return
                         }
 
@@ -290,23 +340,27 @@ class StreamingChatService(
                             }
                             if (retryCount > 0) append(" (已重试${retryCount}次)")
                         }
-                        com.example.chatbar.utils.DebugLogManager.logError(sessionId, errorMsg)
-                        trySend(StreamEvent.Error(errorMsg))
-                        shouldStop = true
-                        if (!resumed) {
-                            resumed = true
-                            continuation.resume(Unit)
-                        }
+                        deliverTerminal(
+                            eventSource,
+                            StreamEvent.Error(errorMsg),
+                            completed = false
+                        )
                     }
 
                     override fun onClosed(eventSource: EventSource) {
-                        if (!retrying) {
-                            com.example.chatbar.utils.DebugLogManager.completeRequest(sessionId)
-                            shouldStop = true
+                        if (retrying || terminalDelivered.get()) {
+                            resumeAttempt()
+                            return
                         }
-                        if (!resumed) {
-                            resumed = true
-                            continuation.resume(Unit)
+                        finishReasonCompletionJob?.cancel()
+                        if (finishReasonObserved.get()) {
+                            deliverTerminal(eventSource, StreamEvent.Done, completed = true)
+                        } else {
+                            deliverTerminal(
+                                eventSource,
+                                StreamEvent.Error("流式连接已关闭，但未收到 finish_reason 或 [DONE]"),
+                                completed = false
+                            )
                         }
                     }
                 }
@@ -325,7 +379,7 @@ class StreamingChatService(
         }
 
         close()
-    }
+    }.buffer(Channel.UNLIMITED)
 
     /** 流式短文本任务；默认不覆盖模型思考配置，完全遵循 ModelConfig。 */
     fun streamText(
@@ -356,17 +410,31 @@ class StreamingChatService(
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
         val listener = object : EventSourceListener() {
-            private var closed = false
+            private val closed = AtomicBoolean(false)
+
+            private fun complete(eventSource: EventSource) {
+                if (!closed.compareAndSet(false, true)) return
+                trySend(StreamEvent.Done)
+                close()
+                eventSource.cancel()
+            }
+
+            private fun fail(eventSource: EventSource, message: String) {
+                if (!closed.compareAndSet(false, true)) return
+                trySend(StreamEvent.Error(message))
+                close()
+                eventSource.cancel()
+            }
 
             override fun onEvent(eventSource: EventSource, id: String?, type: String?, data: String) {
                 if (data.trim() == "[DONE]") {
-                    trySend(StreamEvent.Done)
-                    if (!closed) { closed = true; close() }
+                    complete(eventSource)
                     return
                 }
                 val delta = parseDelta(data)
                 delta.reasoningContent?.let { trySend(StreamEvent.ReasoningDelta(it)) }
                 delta.content?.let { trySend(StreamEvent.Delta(it)) }
+                if (delta.finishReason != null) complete(eventSource)
             }
 
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
@@ -380,17 +448,16 @@ class StreamingChatService(
                     }
                     t?.let { append(" - ${it.message ?: it::class.java.simpleName}") }
                 }
-                trySend(StreamEvent.Error(message))
-                if (!closed) { closed = true; close() }
+                fail(eventSource, message)
             }
 
             override fun onClosed(eventSource: EventSource) {
-                if (!closed) { closed = true; close() }
+                fail(eventSource, "流式文本补全连接已关闭，但未收到 finish_reason 或 [DONE]")
             }
         }
         val eventSource = EventSources.createFactory(client).newEventSource(request, listener)
         awaitClose { eventSource.cancel() }
-    }
+    }.buffer(Channel.UNLIMITED)
 
     /**
      * 使用视觉模型描述图片
@@ -641,6 +708,7 @@ class StreamingChatService(
                 ) {
                     if (data.trim() == "[DONE]") {
                         resumeSuccessIfActive()
+                        eventSource.cancel()
                         return
                     }
                     val delta = parseDelta(data)
@@ -649,6 +717,10 @@ class StreamingChatService(
                     delta.content?.takeIf(String::isNotBlank)?.let { chunk ->
                         text.append(chunk)
                         onDelta(chunk)
+                    }
+                    if (delta.finishReason != null) {
+                        resumeSuccessIfActive()
+                        eventSource.cancel()
                     }
                 }
 
@@ -678,7 +750,9 @@ class StreamingChatService(
                 }
 
                 override fun onClosed(eventSource: EventSource) {
-                    resumeSuccessIfActive()
+                    resumeFailureIfActive(
+                        ModelRequestException("流式文本补全连接已关闭，但未收到 finish_reason 或 [DONE]")
+                    )
                 }
             }
         )

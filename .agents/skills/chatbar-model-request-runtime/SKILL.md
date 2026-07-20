@@ -17,7 +17,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, and domain/memory/MemoryAiGateway.kt
-- Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, and request-body tests near each caller
+- Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, and request-body tests near each caller
 
 Use chatbar-message-format-repair for repair state behavior and chatbar-image-generation-runtime for NovelAI image HTTP generation.
 
@@ -49,6 +49,8 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - HTTP 200 proves stream establishment only.
 - stream was reset: CANCEL after 200 is an HTTP/2 transport failure, not a 200 business error.
 - A fixed read timeout measures silence between bytes/events; reasoning models can hit it after emitting a short reasoning prefix.
+- Treat either `[DONE]` or a non-null `finish_reason` as the terminal success signal. Deliver one terminal event only; a peer close without either signal is an explicit protocol error.
+- SSE callback flows use an unbounded handoff buffer because provider callbacks cannot suspend. Never ignore terminal delivery behind the default 64-slot callbackFlow capacity.
 - Distinguish user cancellation, background-protection cancellation, client timeout, peer reset, proxy/VPN reset, and parser failure.
 - Record timestamps for stream open, reasoning delta, content delta, terminal event, request ID, protocol, and exception class when improving diagnostics.
 - Do not retry after partial visible output without a duplication and billing policy.
