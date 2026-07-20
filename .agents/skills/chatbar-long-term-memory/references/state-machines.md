@@ -5,15 +5,16 @@
 1. Find stable source turns outside direct context.
 2. Exclude covered turns, durable gaps, current pending IDs, and permanent-clear history.
 3. Append remaining IDs to ordinary Episode pending.
-4. Group oldest continuous 1–N IDs; do not shorten solely because Archive budget is tight.
-5. Send all 1–N raw turns together and generate exactly one aggregate Episode `summary`; never request per-turn summaries or coverage text.
-6. State the source-count target in the prompt (1T=50 characters, +20 each additional T, 6T=150), but enforce a program hard limit at twice that target (1T=100 through 6T=300). Build structural coverage from ordered source IDs, source hashes, and summary.
+4. Group oldest continuous IDs into an exact N-turn batch. If trailing count is below N, leave it in normal pending with IDLE status and no Gap/warning/model call.
+5. Send all N raw turns together and generate exactly one aggregate Episode `summary`; never request per-turn summaries or coverage text.
+6. State the source-count target in the prompt (1T=50 characters, +20 each additional T, 6T=150), but enforce a program hard limit at twice that target (1T=100 through 6T=300). Build structural coverage from ordered source IDs, semantic fingerprints, and summary.
 7. Run budget maintenance before commit.
 8. Save immutable Episode, append active Episode page, then remove committed pending IDs.
 9. On failure, preserve pending IDs and raw chat; expose error.
 
-- Before Episode commit, reload current state and require only exact source hashes, continued target-pending membership, and no active node covering those target sources. Rebase unrelated HEAD/page/chat revisions instead of rejecting them.
-- Manual Archive retry enters a runtime running state before waiting for the per-session Archive mutex or model. Explain that it scans unarchived turns, creates Episode, and may compress Archive; hide the stale Archive error, prevent duplicate retry, and show indeterminate progress until refreshed persisted state replaces it.
+- Before Episode commit, reload current state and require only exact source fingerprints, continued target-pending membership, and no active node covering those target sources. Rebase unrelated HEAD/page/chat revisions instead of rejecting them.
+- Application coordinator owns automatic and manual Archive→HEAD maintenance. It deduplicates current-session work and outlives the memory page; switching sessions prevents new old-session work without cancelling an already-started model call.
+- Trigger coordinator on session load, persisted assistant reply, network restoration, manual retry, and orphaned `UPDATING` recovery. Use `WAITING_FOR_NETWORK` without sending a model request when endpoint-specific network requirements fail.
 
 ## HEAD
 
@@ -36,20 +37,21 @@ BACKFILL
 - Keep latest complete group raw at prompt tail; target the immediately preceding group.
 - Treat historical blank HEAD, a watermark more than one group behind, or a Gap-crossing path as requiring explicit backfill. Omit invalid or blank HEAD from injection.
 - On HEAD failure, preserve previous or blank HEAD, expose the error, and let the waiting roleplay request continue after the failed attempt finishes.
-- `INITIALIZE`/`UPDATE` commit binds current HEAD version plus exact input-source hashes. `BACKFILL` additionally binds the exact rendered Archive supplied to AI. Session-wide revision changes and unrelated later chat do not invalidate HEAD.
+- `INITIALIZE`/`UPDATE` commit binds current HEAD version plus exact input-source fingerprints. `BACKFILL` additionally binds the exact rendered Archive supplied to AI. Session-wide revision changes and unrelated later chat do not invalidate HEAD.
 - When long-term memory is disabled, omit Archive, HEAD, and timeline constraint entirely.
 
 ## Backfill
 
-Explicit memory-page refresh first reloads current context-window settings, source turns, timeline, active coverage, normal pending, gaps, and source hashes. Newly archived uncovered turns become durable gaps; refresh itself never calls AI. Repeated refresh is idempotent.
+Explicit memory-page refresh first reloads current context-window settings, source turns, timeline, active coverage, normal pending, gaps, and fingerprints. A latest uncovered suffix becomes normal pending; only uncovered history bounded by later active memory becomes a durable Gap. Refresh itself never calls AI.
 
 ```text
 IDLE / PAUSED / ERROR
   → calculate eligible durable Gap sources
   → register active in-process runner
   → persist RUNNING with fixed ordered pending IDs
-  → generate one Episode batch
-  → validate fixed batch membership + source hash + program-owned structural coverage
+  → generate exact captured-N Episode batches oldest-first
+  → permit one final singleton only for a live continuous internal hole bounded by active memory on both sides
+  → validate fixed batch membership + source fingerprint + program-owned structural coverage
   → run budget maintenance
   → atomically save Episode and remove only committed Gap/pending IDs
   → repeat
@@ -65,11 +67,12 @@ IDLE / PAUSED / ERROR
 - Internal service reads during live run must retain `RUNNING`.
 - On error set `ERROR`, keep remaining Gap/pending IDs, display concrete cause, and allow retry.
 - Budget expansion or compression decisions may pause backfill; do not mark it complete.
+- A remaining count from 2 through N-1 waits without crossing a Gap or overlapping existing nodes. Never reread N between batches.
 - During a live batch, expose source progress, phase, T range, committed Episode count, and streamed aggregate summary. Never persist partial streamed output.
 
 ## Historical Source Mutation Repair
 
-Refresh/load compares active Archive and HEAD source hashes with current chat sources. Detection never calls AI. Once stale, affected old summary/HEAD stops injection before repair begins.
+Refresh/load compares active Archive and HEAD semantic fingerprints with current chat sources. Detection never calls AI. Once stale, affected old summary/HEAD stops injection before repair begins.
 
 ```text
 IDLE / PAUSED / ERROR
@@ -79,7 +82,7 @@ IDLE / PAUSED / ERROR
      -> Episode: regenerate each current continuous raw-source run; deleted run may vanish
      -> Arc/Era: recursively repair children; rebuild only exact continuous one-to-one parent
      -> otherwise promote safe repaired child frontier across deletion boundary
-  -> reload and validate root identity + current source hashes
+  -> reload and validate root identity + current source fingerprints
   -> atomically save immutable replacements, active-page checkpoints, and remaining-root progress
   -> repeat
   -> rebuild HEAD from repaired Archive, or clear it when no legal baseline exists
@@ -116,6 +119,7 @@ IDLE / PAUSED / ERROR
 - Select oldest never-compressed legal window first; otherwise lowest-level then earliest window.
 
 - Compression commit reloads and compares every candidate node shown to AI, including reference-only candidates. Target candidate edit/replacement/staleness rejects the result; unrelated node/page/HEAD/chat changes are rebased and preserved.
+- Before reporting “no legal Era candidate,” run expansion-decision logic while below 20000. Only an already-refused choice or maximum limit may become explicit structural failure.
 
 ## Expansion Decisions
 
@@ -127,11 +131,11 @@ IDLE / PAUSED / ERROR
 
 ## Scoped Evidence and Commit Boundary
 
-1. Capture task parameters and exact evidence actually sent to AI: source IDs/hashes, immutable candidate nodes, target HEAD version, and `BACKFILL` Archive text as applicable. Do not capture session-wide revision as a conflict key.
+1. Capture task parameters and exact evidence actually sent to AI: source IDs/fingerprints, immutable candidate nodes, target HEAD version, and `BACKFILL` Archive text as applicable. Do not capture session-wide revision as a conflict key.
 2. Perform AI call outside state lock.
 3. Reload state. Reject only changed target evidence, target removal/replacement/staleness, pause/disable, or competing coverage of the same source. Preserve unrelated chat, HEAD, page, and node changes.
 4. Run maintenance against reloaded state. Before final save, atomically reload once more, repeat scoped validation, validate coverage/budget, and rebase the result onto that current state.
-5. Save immutable node, page revision/transaction, active state, and target pending reduction as one logical commit. Session revision remains a monotonic persistence marker, not a task lock.
+5. Save journal first, immutable node/revision/transaction next, active state pointer last, then remove journal. Session revision remains a monotonic persistence marker, not a task lock.
 6. Never clear source or gap state after output-validation retries are exhausted.
 
 ## Selected Node Regeneration
@@ -149,6 +153,11 @@ IDLE / PAUSED / ERROR
 - Context expand then shrink: durable Gap survives and eligibility reappears.
 - Live backfill internal reload: remains `RUNNING`; process-restart residue becomes `PAUSED`.
 - Backfill batches: Episode persists and Gap shrinks per batch.
+- Fixed batches: N=2 never emits a normal singleton; 3 pending becomes 2 + normal wait 1; historical internal 3 becomes 2 + bounded 1; disabled/deleted/declined Gap never gets singleton exception.
+- Semantic fingerprint: `updatedAt` and order-key normalization stay current; body/alternative/message order/image/deletion changes go stale; safe legacy migration is idempotent.
+- Lifecycle: disconnected request waits, network restoration resumes, orphan `UPDATING` converges, page destruction does not cancel manual maintenance, and session switch schedules no new old-session work.
+- Request isolation: memory sends no thinking budget or roleplay sampling controls, uses one token field, capability-gates JSON Mode/off control, retries transient transport separately from output validation, and treats auth as non-retryable.
+- Journal recovery: crash injection after journal/dependency/revision/state writes either completes or discards idempotently without deleting reachable nodes.
 - Backfill failure: reason visible; retry retains remaining work.
 - Scoped concurrency: unrelated chat append/HEAD/node edit/addition during Episode or compression still commits and is preserved; changing target source, target candidate, target HEAD, or `BACKFILL` Archive rejects only that task.
 - Disabled-gap backfill: user-only open source turn is excluded until an assistant reply makes it stable.
