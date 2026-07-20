@@ -215,7 +215,40 @@ very aesthetic, absurdres, {realistic background},year 2024,ai-generated,delicat
 """
 
     const val DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT = """
- lowres, jpeg artifacts, worst quality, watermark, blurry, very displeasing, {{{{official art,signature, watermark}}}}, username, screencap, {{{{weibo logo, weibo username,chibi }}}},((((ugly)))), (((duplicate))), ((morbid)), ((mutilated)), extra fingers, mutated hands, ((poorly drawn hands)), ((poorly drawn face)), (((mutation))), (((deformed))), ((ugly)), blurry, ((bad anatomy)), (((bad proportions))), ((extra limbs)), cloned face, (((disfigured))). out of frame, ugly, extra limbs, (bad anatomy), gross proportions, (malformed limbs), ((missing arms)), ((missing legs)), (((extra arms))), (((extra legs))), mutated hands, muscular female, {{collar}}, {{male blush,black nipple}}, nails, {{futanari}}, mosaic censoring, toys, pool, condom, multiple views, multiple girls, tattoo, dark-skinned female, green skin, glasses, frown,sound effects
+worst quality,
+bad quality,
+lowres,
+blurry,
+very displeasing,
+deformed,
+distorted anatomy,
+bad proportions,
+bad hands,
+bad eyes,
+asymmetrical face,
+3.8::extra fingers, fewer digits, artist collaboration::,
+extra hands,
+extra legs,
+jpeg artifacts,
+chromatic aberration,
+film grain,
+halftone,
+watermark,
+logo,
+signature,
+multiple views,
+high contrast, overexposure,
+turnaround,
+reference,
+4koma,
+2koma,
+unfinished,
+toon,
+oekaki,
+chibi,
+old,
+3::dark areola, dark pussy::,
+dark penis
 """
 
     fun defaultCharacterNaiNegativePrompt(): String =
