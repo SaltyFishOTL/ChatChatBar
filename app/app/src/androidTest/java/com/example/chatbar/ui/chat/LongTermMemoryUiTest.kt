@@ -179,6 +179,31 @@ class LongTermMemoryUiTest {
     }
 
     @Test
+    fun queuedApplicationBackfillShowsRangeLoadingFeedback() {
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                backfill = MemoryBackfillState(status = MemoryBackfillStatus.RUNNING)
+            )
+        ).copy(
+            backfillProgress = MemoryBackfillProgress(
+                phase = MemoryBackfillPhase.PREPARING,
+                totalSourceTurns = 0,
+                completedSourceTurns = 0,
+                completedEpisodes = 0
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryBackfillAction(state, onStart = {}, onPause = {})
+            }
+        }
+
+        composeTestRule.onNodeWithText("正在准备下一条近期流程").assertIsDisplayed()
+        composeTestRule.onNodeWithText("正在读取待补录范围").assertIsDisplayed()
+    }
+
+    @Test
     fun failedArchiveMaintenanceExplainsRetryPurpose() {
         var retried = false
         composeTestRule.setContent {

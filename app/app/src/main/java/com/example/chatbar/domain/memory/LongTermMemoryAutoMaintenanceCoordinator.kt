@@ -12,8 +12,13 @@ import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.BackgroundGenerationProtectionException
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -32,6 +37,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val runnerMutex = Mutex()
     private val scheduled = ConcurrentHashMap.newKeySet<String>()
+    private val scheduledBackfills = ConcurrentHashMap.newKeySet<String>()
+    private val _backfillProgress =
+        MutableStateFlow<Map<String, MemoryBackfillProgress>>(emptyMap())
+    val backfillProgress: StateFlow<Map<String, MemoryBackfillProgress>> =
+        _backfillProgress.asStateFlow()
     @Volatile private var currentSessionId: String? = null
 
     init {
@@ -65,6 +75,58 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             } finally {
                 scheduled.remove(sessionId)
             }
+        }
+    }
+
+    /** Manual backfill is application-owned so leaving the chat cannot cancel a paid model call. */
+    fun enqueueBackfill(sessionId: String) {
+        if (!scheduledBackfills.add(sessionId)) return
+        _backfillProgress.update { progress ->
+            progress + (sessionId to MemoryBackfillProgress(
+                phase = MemoryBackfillPhase.PREPARING,
+                totalSourceTurns = 0,
+                completedSourceTurns = 0,
+                completedEpisodes = 0
+            ))
+        }
+        scope.launch {
+            try {
+                runnerMutex.withLock { runBackfill(sessionId) }
+            } finally {
+                _backfillProgress.update { it - sessionId }
+                scheduledBackfills.remove(sessionId)
+            }
+        }
+    }
+
+    private suspend fun runBackfill(sessionId: String) {
+        val session = chatRepository.getSession(sessionId)
+        if (session == null) {
+            return
+        }
+        if (!session.longTermMemoryEnabled) {
+            return
+        }
+        val settings = settingsRepository.getAppSettings()
+        val model = modelResolver.resolveChatModel(session.modelId, settings)
+        if (model == null || !model.hasConfiguredAuthentication(settings)) {
+            memoryService.setBackfillPreflightError(sessionId, "对话模型未配置或缺少鉴权")
+            return
+        }
+        val requireValidated = !isAllowedLocalHttp(model.baseUrl, settings.allowCleartextModelApi)
+        try {
+            AiBackgroundWorkManager.run(sessionId, requireValidatedInternet = requireValidated) {
+                memoryService.startBackfill(sessionId, model) { progress ->
+                    _backfillProgress.update { it + (sessionId to progress) }
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            memoryService.setBackfillPreflightError(
+                sessionId,
+                error.message ?: error::class.simpleName.orEmpty()
+            )
         }
     }
 

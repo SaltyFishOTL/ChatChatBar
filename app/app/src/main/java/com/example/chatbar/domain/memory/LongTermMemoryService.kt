@@ -1477,6 +1477,21 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    suspend fun setBackfillPreflightError(sessionId: String, message: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val next = loaded.state.copy(
+            backfill = loaded.state.backfill.copy(
+                status = MemoryBackfillStatus.ERROR,
+                error = message,
+                updatedAt = System.currentTimeMillis()
+            ),
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(loaded.copy(state = next))
+    }
+
     suspend fun declineBackfill(sessionId: String, modelConfig: ModelConfig) = archiveLock(sessionId) {
         val prepared = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)

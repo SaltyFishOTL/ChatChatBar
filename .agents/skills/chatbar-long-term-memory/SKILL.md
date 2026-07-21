@@ -52,7 +52,7 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Generate multi-turn Episode as one direct aggregate body. Keep coverage program-owned through ordered source IDs and hashes; never ask AI for per-turn proof text.
 - Treat `episodeMaxSourceTurns` as exact target count. A trailing remainder is normal pending, never a Gap. Only a historical internal one-turn remainder bounded by active memory on both sides may be committed alone.
 - Compare source meaning with `sourceFingerprints`; numeric `orderKey` and `updatedAt` are excluded. Preserve legacy hashes only for safe one-time migration and structural compatibility.
-- Automatic Archive then HEAD work belongs to the application coordinator; page destruction must not cancel it. Only current session receives new automatic work.
+- Automatic Archive→HEAD and manual gap-backfill model calls belong to the application coordinator; page ViewModels only observe coordinator progress. Page destruction must not cancel work. Only current session receives new automatic work.
 - Keep HEAD modes distinct: initialize from opening plus first round, update by exactly one baseline group, and backfill from compiled Archive plus latest eligible baseline group.
 - Detect historical source edits/deletes without calling AI. Stop stale roots and stale HEAD from injection before repair.
 - Start source repair only from explicit user action. Rebuild immutable dependencies; never accept old summary text by updating only its hash.

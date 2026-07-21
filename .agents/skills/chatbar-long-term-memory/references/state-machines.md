@@ -14,6 +14,7 @@
 
 - Before Episode commit, reload current state and require only exact source fingerprints, continued target-pending membership, and no active node covering those target sources. Rebase unrelated HEAD/page/chat revisions instead of rejecting them.
 - Application coordinator owns automatic and manual Archive→HEAD maintenance. It deduplicates current-session work and outlives the memory page; switching sessions prevents new old-session work without cancelling an already-started model call.
+- Manual gap backfill also runs in the application coordinator. Keep streaming progress process-local in the coordinator; page ViewModels subscribe and refresh persisted state after completion instead of owning the job.
 - Trigger coordinator on session load, persisted assistant reply, network restoration, manual retry, and orphaned `UPDATING` recovery. Use `WAITING_FOR_NETWORK` without sending a model request when endpoint-specific network requirements fail.
 
 ## HEAD

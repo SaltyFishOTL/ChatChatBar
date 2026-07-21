@@ -184,6 +184,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val promptAssembler = ChatBarApp.instance.promptAssembler
     private val contextWindowManager = ChatBarApp.instance.contextWindowManager
     private val longTermMemoryService = ChatBarApp.instance.longTermMemoryService
+    private val longTermMemoryAutoMaintenanceCoordinator =
+        ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator
     private val streamingChatService = ChatBarApp.instance.streamingChatService
     private val messageFormatRepairService = ChatBarApp.instance.messageFormatRepairService
     private val imageUnderstandingService = ChatBarApp.instance.imageUnderstandingService
@@ -314,6 +316,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     )
 
     init {
+        observeMemoryBackfillProgress()
         loadSessionData()
         refreshConfigurations()
         observeSessionChanges()
@@ -899,7 +902,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun rebuildMemoryFromOriginal() = launchMemoryBackfill()
 
-    private fun launchMemoryBackfill(prepare: suspend () -> Unit = {}) {
+    private fun launchMemoryBackfill() {
         val currentState = _longTermMemoryUiState.value
         _longTermMemoryUiState.value = currentState.copy(
             memoryState = currentState.memoryState?.copy(
@@ -907,21 +910,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     status = MemoryBackfillStatus.RUNNING,
                     error = null
                 )
-            )
+            ),
+            error = null
         )
-        memoryBackfillProgress = null
+        longTermMemoryAutoMaintenanceCoordinator.enqueueBackfill(sessionId)
+    }
+
+    private fun observeMemoryBackfillProgress() {
         viewModelScope.launch {
-            val error = runCatching {
-                prepare()
-                val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.startBackfill(sessionId, model) { progress ->
+            var observedRunningTask = false
+            longTermMemoryAutoMaintenanceCoordinator.backfillProgress.collect { progressBySession ->
+                val progress = progressBySession[sessionId]
+                if (progress != null) {
+                    observedRunningTask = true
                     memoryBackfillProgress = progress
-                    _longTermMemoryUiState.update { it.copy(backfillProgress = progress) }
+                    _longTermMemoryUiState.update { current ->
+                        current.copy(
+                            backfillProgress = progress,
+                            memoryState = current.memoryState?.copy(
+                                backfill = current.memoryState.backfill.copy(
+                                    status = MemoryBackfillStatus.RUNNING,
+                                    error = null
+                                )
+                            )
+                        )
+                    }
+                } else if (observedRunningTask) {
+                    observedRunningTask = false
+                    memoryBackfillProgress = null
+                    refreshMemoryAfterAction(null)
                 }
-            }.exceptionOrNull()
-            memoryBackfillProgress = null
-            refreshMemoryAfterAction(error)
+            }
         }
     }
 
@@ -968,10 +987,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
             }
+        val displayedState = if (memoryBackfillProgress == null) state else {
+            state.copy(
+                backfill = state.backfill.copy(
+                    status = MemoryBackfillStatus.RUNNING,
+                    error = null
+                )
+            )
+        }
         return LongTermMemoryUiState(
             nodes = nodes,
             head = state.head,
-            memoryState = state,
+            memoryState = displayedState,
             versionsByTier = versionsByTier,
             historyHasMoreByTier = historyHasMore,
             preview = view.fullText,

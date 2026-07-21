@@ -6,7 +6,11 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.MemoryBackfillStatus
 import com.example.chatbar.data.local.entity.MemoryCompressionKind
+import com.example.chatbar.data.local.entity.MemoryGap
+import com.example.chatbar.data.local.entity.MemoryGapReason
+import com.example.chatbar.data.local.entity.MemoryTimelineEntry
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.repository.ChatRepository
@@ -15,8 +19,15 @@ import com.example.chatbar.data.repository.SettingsRepository
 import com.example.chatbar.domain.chat.ContextWindowManager
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.async
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
@@ -26,6 +37,86 @@ import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LongTermMemoryScopedCommitTest {
+    @Test
+    fun applicationOwnedBackfillCommitsAfterPageObserverIsCancelled() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val storage = JsonFileStorage(context)
+        val chatRepository = ChatRepository(storage)
+        val memoryRepository = MemoryRepository(storage)
+        val settingsRepository = SettingsRepository(storage)
+        val originalSettings = settingsRepository.getAppSettings()
+        val session = ChatSession.create(
+            characterCardId = "test-character",
+            title = "application-backfill-${UUID.randomUUID()}"
+        )
+        val ai = PausingMemoryAiClient()
+        val service = LongTermMemoryService(
+            chatRepository = chatRepository,
+            memoryRepository = memoryRepository,
+            settingsRepository = settingsRepository,
+            ai = ai,
+            contextWindowManager = ContextWindowManager()
+        )
+        val applicationJob = SupervisorJob()
+        val applicationScope = CoroutineScope(applicationJob + Dispatchers.Default)
+        val pageScope = CoroutineScope(Job() + Dispatchers.Default)
+        val visibleProgress = MutableStateFlow<MemoryBackfillProgress?>(null)
+
+        try {
+            settingsRepository.saveAppSettings(
+                originalSettings.copy(
+                    defaultContextWindowSize = 1,
+                    episodeMaxSourceTurns = 1
+                )
+            )
+            chatRepository.createSession(session.copy(longTermMemoryEnabled = true))
+            service.ensureMigrated(session.id)
+            chatRepository.replaceMessagesForSession(session.id, stableTurns(session.id))
+            val initialState = requireNotNull(memoryRepository.getState(session.id))
+            memoryRepository.saveState(
+                initialState.copy(
+                    timeline = listOf(
+                        MemoryTimelineEntry("s0", 0, 0),
+                        MemoryTimelineEntry("s1", 1, 1)
+                    ),
+                    gaps = listOf(
+                        MemoryGap(
+                            id = "gap-s0",
+                            sourceTurnIds = listOf("s0"),
+                            startSourceOrder = 0,
+                            endSourceOrder = 0,
+                            reason = MemoryGapReason.LEGACY_UNKNOWN
+                        )
+                    )
+                )
+            )
+
+            val observer = pageScope.launch { visibleProgress.collect { } }
+            val backfill = applicationScope.async {
+                service.startBackfill(session.id, model()) { visibleProgress.value = it }
+            }
+            withTimeout(5_000) { ai.episodeStarted.await() }
+            withTimeout(5_000) { ai.summaryStreamed.await() }
+
+            pageScope.cancel()
+            assertTrue(observer.isCancelled)
+            ai.releaseEpisode.complete(Unit)
+            withTimeout(5_000) { backfill.await() }
+
+            val persisted = requireNotNull(MemoryRepository(storage).getState(session.id))
+            assertEquals(MemoryBackfillStatus.IDLE, persisted.backfill.status)
+            assertTrue(persisted.backfill.pendingSourceTurnIds.isEmpty())
+            assertEquals(listOf("s0"), service.activeNodes(session.id).single().sourceTurnIds)
+        } finally {
+            ai.releaseEpisode.complete(Unit)
+            pageScope.cancel()
+            applicationJob.cancel()
+            settingsRepository.saveAppSettings(originalSettings)
+            memoryRepository.deleteForSession(session.id)
+            chatRepository.deleteSession(session.id)
+        }
+    }
+
     @Test
     fun unrelatedHeadUpdateDuringEpisodeGenerationIsRebasedAndPreserved() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()
@@ -132,6 +223,7 @@ class LongTermMemoryScopedCommitTest {
 
     private class PausingMemoryAiClient : MemoryAiClient {
         val episodeStarted = CompletableDeferred<Unit>()
+        val summaryStreamed = CompletableDeferred<Unit>()
         val releaseEpisode = CompletableDeferred<Unit>()
 
         override suspend fun episode(
@@ -142,6 +234,8 @@ class LongTermMemoryScopedCommitTest {
             validate: (EpisodeResponse) -> Unit
         ): EpisodeResponse {
             episodeStarted.complete(Unit)
+            onStreamingSummary?.invoke("Episode摘要")
+            summaryStreamed.complete(Unit)
             releaseEpisode.await()
             return EpisodeResponse("Episode摘要").also(validate)
         }
@@ -163,6 +257,9 @@ class LongTermMemoryScopedCommitTest {
             archive: String,
             sourceTurns: String,
             validate: (HeadResponse) -> Unit
-        ): HeadResponse = error("测试不应触发HEAD")
+        ): HeadResponse = HeadResponse(
+            throughT = throughT,
+            location = "测试地点"
+        ).also(validate)
     }
 }

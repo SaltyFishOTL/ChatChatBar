@@ -1015,7 +1015,11 @@ internal fun MemoryBackfillAction(
                 }
                 CbText(
                     if (totalTurns == 0) {
-                        "近期流程无需补录"
+                        if (runtime?.phase == MemoryBackfillPhase.PREPARING) {
+                            "正在读取待补录范围"
+                        } else {
+                            "近期流程无需补录"
+                        }
                     } else {
                         "已处理 $completedTurns/$totalTurns 轮 · 已生成 ${runtime?.completedEpisodes ?: backfill.completedEpisodeCount} 条近期流程"
                     },
