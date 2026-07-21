@@ -24,6 +24,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 
 - `NOVELAI_IMAGE_PROMPT_SYSTEM` is the shared system prompt for NovelAI tag design.
 - Reuse it through the feature-appropriate `PromptTemplates` helper: the composed system helper for card-backed flows and `novelAiImagePromptCoreSystem()` for the prompt tool.
+- Send final user-specific image requirements through `novelAiImagePromptPreferenceUser(...)` as the last user-role message. Do not turn them into another system message: cleartext chat-template adaptation may rewrite system roles, and the final adapted request must not end on an assistant role.
 - Prompt-tool reference-image reverse design appends `PromptTemplates.novelAiImagePromptReferenceImageUser()` and still uses the shared system prompt. Keep `referenceImageProvided` independent from direct image payloads so vision-model description fallback retains this instruction.
 - `ImagePromptToolViewModel` sends the source image directly when the selected design model is multimodal; otherwise `ImageUnderstandingService` produces a description for the same shared NovelAI prompt flow.
 - Character-card cover image user prompt lives in `PromptTemplates.novelAiImagePromptCharacterCard(...)`; `NovelAiPromptDesigner` should call it instead of embedding cover prompt text.
@@ -55,3 +56,4 @@ After NAI prompt-flow code changes:
 
 - Run `.\gradlew.bat :app:compileDebugKotlin` from `app/`.
 - Run `.\gradlew.bat test` when prompt helpers, parsing, or generation decisions change.
+- Keep a request-shape test covering message roles before and after cleartext chat-template adaptation.
