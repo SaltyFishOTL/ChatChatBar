@@ -16,7 +16,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -38,6 +40,8 @@ fun NovelAiImageRegenerationDialog(
     onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
     onDismiss: () -> Unit,
     onRegenerate: (NovelAiImageRegenerationDraft) -> Unit,
+    batchSizeInput: String? = null,
+    onBatchSizeInputChange: (String) -> Unit = {},
     onDeleteImage: (() -> Unit)? = null
 ) {
     var fullscreenTarget by remember { mutableStateOf<Int?>(null) }
@@ -62,11 +66,26 @@ fun NovelAiImageRegenerationDialog(
             )
         },
         confirm = {
-            CbButton(
-                if (submitting) "生成中" else "重新生成",
-                { draft?.let(onRegenerate) },
-                enabled = draft?.canRegenerate == true && !loading && !submitting
-            )
+            Row(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalAlignment = Alignment.Bottom
+            ) {
+                batchSizeInput?.let { value ->
+                    NovelAiBatchSizeInput(
+                        value = value,
+                        onValueChange = onBatchSizeInputChange,
+                        enabled = !loading && !submitting
+                    )
+                }
+                CbButton(
+                    if (submitting) "生成中" else "重新生成",
+                    { draft?.let(onRegenerate) },
+                    enabled = draft?.canRegenerate == true &&
+                        (batchSizeInput == null || parseNovelAiBatchSize(batchSizeInput) != null) &&
+                        !loading &&
+                        !submitting
+                )
+            }
         }
     ) {
         Column(
@@ -86,7 +105,12 @@ fun NovelAiImageRegenerationDialog(
                 }
                 draft?.let { current ->
                     CbText(
-                        "编辑本次使用的 NovelAI 提示词。尺寸保持 ${current.width}×${current.height}；每次使用新 seed。",
+                        buildString {
+                            append("编辑本次使用的 NovelAI 提示词。尺寸保持 ${current.width}×${current.height}；每次使用新 seed。")
+                            if (batchSizeInput != null) {
+                                append("批量范围 1–$NOVEL_AI_MAX_BATCH_SIZE；多图会额外消耗 Anlas。")
+                            }
+                        },
                         color = ChatBarTheme.colors.mutedForeground
                     )
                     CbField(

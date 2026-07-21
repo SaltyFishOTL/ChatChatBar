@@ -10,7 +10,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 ## First Read
 
 - Persisted generated-image metadata: data/local/entity/ChatMessage.kt and data/local/entity/MomentEntities.kt
-- NovelAI HTTP and frame parsing: domain/image/NovelAiImageService.kt
+- NovelAI HTTP, batch policy, and frame parsing: domain/image/NovelAiImageService.kt and NovelAiBatchPolicy.kt
 - Prompt-plan/metadata conversion: domain/image/NovelAiImageRegeneration.kt
 - Prompt design boundary: domain/image/NovelAiPromptDesigner.kt
 - Shared editor: ui/components/NovelAiImageRegenerationDialog.kt
@@ -26,7 +26,9 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 ## Service Invariants
 
 - Keep NovelAiImageService.generate as shared NovelAI HTTP owner for chat, character images, prompt tool, and Moments.
+- Pass batch size through `n_samples`; current Normal-area presets allow 1–4 images per request. Keep single-image callers on the default value of 1.
 - Emit intermediate, final, and error events consistently; cancel active OkHttp call when Flow closes.
+- Treat a batch as successful only after the stream returns exactly the requested number of final frames. Surface partial or extra results as failure instead of silently accepting them.
 - Retry HTTP 429 at the shared service only. Current contract is three total attempts, Retry-After capped at 30 seconds, otherwise 1-second then 2-second delay.
 - Do not stack caller retries on top of service retries.
 - Preserve correlation IDs and concrete HTTP/stream parse errors.
@@ -38,6 +40,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Convert metadata through NovelAiImageRegenerationDraft and NovelAiPromptPlan helpers instead of reconstructing fields in each screen.
 - Prompt tool starts with `emptyNovelAiImageRegenerationDraft()`, converts AI plans through `toRegenerationDraft()`, and converts edited/manual drafts back through `toPromptPlan()` before generation.
 - Prompt-tool saved results open through ImagePreviewDialog, reusing chat/Moments zoom, mosaic, gallery-save, and share actions; streaming-only frames stay non-actionable until a durable path exists.
+- Persist a chat batch as one message with parallel image and metadata lists. Keep a prompt-tool batch together for result display and pager navigation.
 - Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
 - Preserve original pixel dimensions and request a fresh seed for each regeneration.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
@@ -48,6 +51,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 
 - Save the new image and persist its metadata/path before deleting an old app-owned file.
 - On generation or save failure, retain the old image and metadata.
+- If any image in a batch fails to save or the owning repository update fails, delete only newly saved files from that attempt; do not persist a partial batch.
 - Never delete unrelated or user-owned files.
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
@@ -65,6 +69,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 ## Regression Matrix
 
 - Intermediate then final stream; server error frame; malformed frame; cancellation.
+- Batch size validation, `n_samples` serialization, exact final-frame count, grouped metadata, and partial-save cleanup.
 - 429 succeeds on third attempt and fails once after three total attempts.
 - New image and legacy image metadata loading.
 - Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.

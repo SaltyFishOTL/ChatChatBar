@@ -8,6 +8,7 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -46,8 +48,12 @@ import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.components.ImagePreviewDialog
+import com.example.chatbar.ui.components.ImagePreviewItem
+import com.example.chatbar.ui.components.NovelAiBatchSizeInput
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -80,7 +86,8 @@ fun ImagePromptToolScreen(
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var promptExpanded by remember { mutableStateOf(false) }
-    var expandedImagePath by remember { mutableStateOf<String?>(null) }
+    var imageBatchSizeInput by remember { mutableStateOf("1") }
+    var expandedImageIndex by remember { mutableStateOf<Int?>(null) }
     val referenceImagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -144,8 +151,10 @@ fun ImagePromptToolScreen(
                         enabled = !state.isBusy,
                         canGenerateImage = novelAiConfigured && state.promptDraft.canRegenerate && !state.isBusy,
                         imageGenerating = state.isGeneratingImage,
+                        batchSizeInput = imageBatchSizeInput,
                         onExpandedChange = { promptExpanded = it },
                         onDraftChange = viewModel::updatePromptDraft,
+                        onBatchSizeInputChange = { imageBatchSizeInput = it },
                         onFullscreenEdit = { title, text, onChange ->
                             fullscreenField = title to text
                             fullscreenOnChange = onChange
@@ -154,7 +163,9 @@ fun ImagePromptToolScreen(
                             clipboard.setText(AnnotatedString(state.promptDraft.toClipboardText()))
                             Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
                         },
-                        onGenerateImage = viewModel::generateImage
+                        onGenerateImage = {
+                            parseNovelAiBatchSize(imageBatchSizeInput)?.let(viewModel::generateImage)
+                        }
                     )
                 }
                 if (state.isDesigning && state.designStatus.isNotBlank()) {
@@ -197,7 +208,7 @@ fun ImagePromptToolScreen(
                     item {
                         ImagePreviewPanel(
                             state = state,
-                            onOpenImage = { expandedImagePath = it }
+                            onOpenImage = { expandedImageIndex = it }
                         )
                     }
                 }
@@ -223,10 +234,11 @@ fun ImagePromptToolScreen(
                 }
             )
         }
-        expandedImagePath?.let { path ->
+        expandedImageIndex?.let { initialIndex ->
             ImagePreviewDialog(
-                path = path,
-                onDismiss = { expandedImagePath = null }
+                items = state.imagePaths.map { path -> ImagePreviewItem(messageId = "", path = path) },
+                initialIndex = initialIndex,
+                onDismiss = { expandedImageIndex = null }
             )
         }
     }
@@ -401,8 +413,10 @@ private fun PromptEditorPanel(
     enabled: Boolean,
     canGenerateImage: Boolean,
     imageGenerating: Boolean,
+    batchSizeInput: String,
     onExpandedChange: (Boolean) -> Unit,
     onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
+    onBatchSizeInputChange: (String) -> Unit,
     onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
     onCopy: () -> Unit,
     onGenerateImage: () -> Unit
@@ -544,7 +558,7 @@ private fun PromptEditorPanel(
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically
+                    verticalAlignment = Alignment.Bottom
                 ) {
                     CbButton(
                         "复制全部",
@@ -553,13 +567,23 @@ private fun PromptEditorPanel(
                         enabled = draft.baseCaption.isNotBlank(),
                         variant = ButtonVariant.Secondary
                     )
+                    NovelAiBatchSizeInput(
+                        value = batchSizeInput,
+                        onValueChange = onBatchSizeInputChange,
+                        enabled = enabled
+                    )
                     CbButton(
                         if (imageGenerating) "生成中" else "用此提示词生图",
                         onGenerateImage,
                         modifier = Modifier.weight(1f),
-                        enabled = canGenerateImage
+                        enabled = canGenerateImage && parseNovelAiBatchSize(batchSizeInput) != null
                     )
                 }
+                CbText(
+                    "批量范围 1–$NOVEL_AI_MAX_BATCH_SIZE；多图会额外消耗 Anlas。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
             }
         }
     }
@@ -568,13 +592,13 @@ private fun PromptEditorPanel(
 @Composable
 internal fun ImagePreviewPanel(
     state: ImagePromptToolUiState,
-    onOpenImage: (String) -> Unit
+    onOpenImage: (Int) -> Unit
 ) {
     val label = when (state.phase) {
         ImagePromptToolPhase.GENERATING -> "NovelAI 正在生成"
         ImagePromptToolPhase.STREAMING -> "流式预览 ${(state.imageProgress * 100).toInt()}%"
         ImagePromptToolPhase.SAVING -> "正在保存图片"
-        ImagePromptToolPhase.FINISHED -> "生图完成"
+        ImagePromptToolPhase.FINISHED -> "生图完成（${state.imagePaths.size} 张）"
         ImagePromptToolPhase.FAILED -> "生图失败"
         ImagePromptToolPhase.CANCELLED -> "已停止"
         else -> "图片预览"
@@ -589,28 +613,41 @@ internal fun ImagePreviewPanel(
                 if (state.isGeneratingImage) CbSpinner(Modifier.size(18.dp))
                 CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             }
-            val imageModifier = Modifier
-                .fillMaxWidth()
-                .heightIn(max = 420.dp)
-                .clip(RoundedCornerShape(ChatBarShape.sm))
-                .clickable(enabled = state.imagePath != null) {
-                    state.imagePath?.let(onOpenImage)
-                }
             when {
-                state.imagePreview != null -> AsyncImage(
-                    model = state.imagePreview,
-                    contentDescription = if (state.imagePath == null) {
-                        "NovelAI 流式生图预览"
-                    } else {
-                        "NovelAI 生图结果"
-                    },
-                    modifier = imageModifier,
+                state.imagePaths.size > 1 -> Row(
+                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    state.imagePaths.forEachIndexed { index, path ->
+                        AsyncImage(
+                            model = File(path),
+                            contentDescription = "NovelAI 生图结果 ${index + 1}",
+                            modifier = Modifier
+                                .width(220.dp)
+                                .height(300.dp)
+                                .clip(RoundedCornerShape(ChatBarShape.sm))
+                                .clickable { onOpenImage(index) },
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+                state.imagePaths.size == 1 -> AsyncImage(
+                    model = File(state.imagePaths.first()),
+                    contentDescription = "NovelAI 生图结果",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .clip(RoundedCornerShape(ChatBarShape.sm))
+                        .clickable { onOpenImage(0) },
                     contentScale = ContentScale.Fit
                 )
-                state.imagePath != null -> AsyncImage(
-                    model = File(state.imagePath),
-                    contentDescription = "NovelAI 生图结果",
-                    modifier = imageModifier,
+                state.imagePreview != null -> AsyncImage(
+                    model = state.imagePreview,
+                    contentDescription = "NovelAI 流式生图预览",
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 420.dp)
+                        .clip(RoundedCornerShape(ChatBarShape.sm)),
                     contentScale = ContentScale.Fit
                 )
                 else -> Box(
@@ -620,7 +657,7 @@ internal fun ImagePreviewPanel(
                     CbText("等待图片流", color = ChatBarTheme.colors.mutedForeground)
                 }
             }
-            state.imagePath?.let {
+            if (state.imagePaths.isNotEmpty()) {
                 CbText(
                     "点击查看大图；大图中长按可打码、保存或分享",
                     color = ChatBarTheme.colors.mutedForeground,

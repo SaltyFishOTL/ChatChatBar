@@ -15,6 +15,7 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
 import com.example.chatbar.ui.components.ImagePreviewDialog
+import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
 import org.junit.Rule
@@ -33,19 +34,20 @@ class ImagePromptToolImagePreviewTest {
 
         composeTestRule.setContent {
             ChatBarTheme {
-                var openedPath by remember { mutableStateOf<String?>(null) }
+                var openedIndex by remember { mutableStateOf<Int?>(null) }
                 Box {
                     ImagePreviewPanel(
                         state = ImagePromptToolUiState(
                             phase = ImagePromptToolPhase.FINISHED,
-                            imagePath = file.absolutePath
+                            imagePaths = listOf(file.absolutePath)
                         ),
-                        onOpenImage = { openedPath = it }
+                        onOpenImage = { openedIndex = it }
                     )
-                    openedPath?.let { path ->
+                    openedIndex?.let { initialIndex ->
                         ImagePreviewDialog(
-                            path = path,
-                            onDismiss = { openedPath = null }
+                            items = listOf(ImagePreviewItem(messageId = "", path = file.absolutePath)),
+                            initialIndex = initialIndex,
+                            onDismiss = { openedIndex = null }
                         )
                     }
                 }

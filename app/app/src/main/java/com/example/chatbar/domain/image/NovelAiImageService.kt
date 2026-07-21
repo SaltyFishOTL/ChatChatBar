@@ -45,9 +45,10 @@ class NovelAiImageService(
         token: String,
         prompt: NovelAiPromptPlan,
         seed: Int,
-        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
+        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize,
+        batchSize: Int = 1
     ): Flow<NovelAiImageEvent> = callbackFlow {
-        val requestBody = buildRequestBody(prompt, seed, imageSize).toRequestBody(JSON_MEDIA_TYPE)
+        val requestBody = buildRequestBody(prompt, seed, imageSize, batchSize).toRequestBody(JSON_MEDIA_TYPE)
         val activeCall = AtomicReference<Call?>()
 
         fun enqueueAttempt(attempt: Int) {
@@ -151,8 +152,12 @@ class NovelAiImageService(
     fun buildRequestBody(
         prompt: NovelAiPromptPlan,
         seed: Int = randomSeed(),
-        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize
+        imageSize: NovelAiImageSize = prompt.sizePreset.imageSize,
+        batchSize: Int = 1
     ): String {
+        require(batchSize in 1..NOVEL_AI_MAX_BATCH_SIZE) {
+            "NovelAI 批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间"
+        }
         val negative = deduplicateNegativePrompt(prompt.effectiveNegativePrompt)
         val characterCaptions = buildJsonArray {
             prompt.characterCaptions.forEach { caption ->
@@ -199,7 +204,7 @@ class NovelAiImageService(
                 put("steps", STEPS)
                 put("seed", seed)
                 put("extra_noise_seed", seed)
-                put("n_samples", 1)
+                put("n_samples", batchSize)
                 put("ucPreset", 0)
                 put("qualityToggle", true)
                 put("negative_prompt", negative)

@@ -339,6 +339,7 @@ class NovelAiImageFeatureTest {
         assertEquals("1216", parameters.getValue("height").jsonPrimitive.content)
         assertEquals("28", parameters.getValue("steps").jsonPrimitive.content)
         assertEquals("8.0", parameters.getValue("scale").jsonPrimitive.content)
+        assertEquals("1", parameters.getValue("n_samples").jsonPrimitive.content)
         assertEquals("msgpack", parameters.getValue("stream").jsonPrimitive.content)
         assertEquals("scene", caption.getValue("base_caption").jsonPrimitive.content)
         assertEquals("42", parameters.getValue("seed").jsonPrimitive.content)
@@ -367,6 +368,28 @@ class NovelAiImageFeatureTest {
             parameters.getValue("v4_negative_prompt").jsonObject
                 .getValue("use_coords").jsonPrimitive.content
         )
+    }
+
+    @Test
+    fun `request sends native NovelAI batch size`() {
+        val body = NovelAiImageService().buildRequestBody(
+            prompt = NovelAiPromptPlan("scene", emptyList()),
+            seed = 42,
+            batchSize = 4
+        )
+        val parameters = Json.parseToJsonElement(body).jsonObject
+            .getValue("parameters").jsonObject
+
+        assertEquals("4", parameters.getValue("n_samples").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `batch size parser accepts only normal resolution range`() {
+        assertEquals(1, parseNovelAiBatchSize("1"))
+        assertEquals(4, parseNovelAiBatchSize("4"))
+        assertEquals(null, parseNovelAiBatchSize(""))
+        assertEquals(null, parseNovelAiBatchSize("0"))
+        assertEquals(null, parseNovelAiBatchSize("5"))
     }
 
     @Test

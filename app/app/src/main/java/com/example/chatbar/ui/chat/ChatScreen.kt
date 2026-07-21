@@ -85,6 +85,7 @@ import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
@@ -187,6 +188,7 @@ fun ChatScreen(
     var imageRegenerationDraft by remember(sessionId) { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
     var imageRegenerationLoading by remember(sessionId) { mutableStateOf(false) }
     var imageRegenerationError by remember(sessionId) { mutableStateOf<String?>(null) }
+    var imageRegenerationBatchSizeInput by remember(sessionId) { mutableStateOf("1") }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
     var deleteMessageTargetId by remember { mutableStateOf<String?>(null) }
@@ -223,6 +225,7 @@ fun ChatScreen(
         val target = imageActionTarget
         imageRegenerationDraft = null
         imageRegenerationError = null
+        imageRegenerationBatchSizeInput = "1"
         if (target == null) {
             imageRegenerationLoading = false
         } else {
@@ -1085,9 +1088,13 @@ fun ChatScreen(
             errorMessage = imageRegenerationError,
             onDraftChange = { imageRegenerationDraft = it },
             onDismiss = { imageActionTarget = null },
+            batchSizeInput = imageRegenerationBatchSizeInput,
+            onBatchSizeInputChange = { imageRegenerationBatchSizeInput = it },
             onRegenerate = { draft ->
+                val batchSize = parseNovelAiBatchSize(imageRegenerationBatchSizeInput)
+                    ?: return@NovelAiImageRegenerationDialog
                 imageActionTarget = null
-                viewModel.regenerateNovelAiImage(messageId, path, draft)
+                viewModel.regenerateNovelAiImage(messageId, path, draft, batchSize)
             },
             onDeleteImage = {
                 imageActionTarget = null

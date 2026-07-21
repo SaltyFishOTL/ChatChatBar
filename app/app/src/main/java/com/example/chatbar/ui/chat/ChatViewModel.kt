@@ -33,6 +33,7 @@ import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.toGeneratedImageMetadata
 import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.memory.MemoryPromptView
@@ -106,7 +107,8 @@ data class ImageGenerationState(
     val progress: Float = 0f,
     val error: String? = null,
     val imageContentHint: String = "",
-    val finalPromptRequirement: String = ""
+    val finalPromptRequirement: String = "",
+    val batchSize: Int = 1
 )
 
 data class MemoryNodeDiffUi(
@@ -304,7 +306,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val imageGenerationJobs = ConcurrentHashMap<String, Job>()
     private val imageGenerationPromptCheckpoints =
         ConcurrentHashMap<String, Pair<NovelAiPromptPlan, NovelAiImageSize>>()
-    private val imageGenerationCompletedImageCheckpoints = ConcurrentHashMap<String, ByteArray>()
+    private val imageGenerationCompletedImageCheckpoints = ConcurrentHashMap<String, List<ByteArray>>()
     private val imageGenerationRegenerationSources = ConcurrentHashMap<String, Pair<String, String>>()
     private val imagePromptPreferenceMutationMutex = Mutex()
     private val imagePromptPreferenceSaveSequence = AtomicLong()
@@ -516,7 +518,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             loadNovelAiRegeneration(
                 taskId = taskId,
                 messageId = regenerationSource.first,
-                imagePath = regenerationSource.second
+                imagePath = regenerationSource.second,
+                batchSize = failed.batchSize
             )
             return
         }
@@ -526,7 +529,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             imageContentHint = failed.imageContentHint,
             imagePromptPreference = failed.finalPromptRequirement,
             promptOverride = checkpoint?.first,
-            imageSizeOverride = checkpoint?.second
+            imageSizeOverride = checkpoint?.second,
+            batchSize = failed.batchSize
         )
     }
 
@@ -1024,16 +1028,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     internal fun regenerateNovelAiImage(
         messageId: String,
         imagePath: String,
-        draft: NovelAiImageRegenerationDraft
+        draft: NovelAiImageRegenerationDraft,
+        batchSize: Int = 1
     ) {
-        if (_messages.value.none { it.id == messageId } || draft.baseCaption.isBlank()) return
+        if (
+            _messages.value.none { it.id == messageId } ||
+            draft.baseCaption.isBlank() ||
+            batchSize !in 1..NOVEL_AI_MAX_BATCH_SIZE
+        ) return
         val taskId = UUID.randomUUID().toString()
         imageGenerationRegenerationSources[taskId] = messageId to imagePath
         startNovelAiImageGeneration(
             taskId = taskId,
             anchorMessageId = messageId,
             promptOverride = draft.toPromptPlan(),
-            imageSizeOverride = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸")
+            imageSizeOverride = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸"),
+            batchSize = batchSize
         )
     }
 
@@ -1044,12 +1054,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         loadNovelAiRegeneration(taskId, messageId, imagePath)
     }
 
-    private fun loadNovelAiRegeneration(taskId: String, messageId: String, imagePath: String) {
+    private fun loadNovelAiRegeneration(
+        taskId: String,
+        messageId: String,
+        imagePath: String,
+        batchSize: Int = 1
+    ) {
         putImageGeneration(
             ImageGenerationState(
                 taskId = taskId,
                 anchorMessageId = messageId,
-                phase = ImageGenerationPhase.QUEUED
+                phase = ImageGenerationPhase.QUEUED,
+                batchSize = batchSize
             )
         )
         val job = viewModelScope.launch(start = CoroutineStart.LAZY) {
@@ -1089,7 +1105,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 taskId = taskId,
                 anchorMessageId = messageId,
                 promptOverride = prompt,
-                imageSizeOverride = NovelAiImageSize(metadata.width, metadata.height, "复用原图尺寸")
+                imageSizeOverride = NovelAiImageSize(metadata.width, metadata.height, "复用原图尺寸"),
+                batchSize = batchSize
             )
         }
         imageGenerationJobs[taskId] = job
@@ -1114,14 +1131,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         imagePromptPreference: String? = null,
         persistPreference: Boolean = false,
         promptOverride: NovelAiPromptPlan? = null,
-        imageSizeOverride: NovelAiImageSize? = null
+        imageSizeOverride: NovelAiImageSize? = null,
+        batchSize: Int = 1
     ) {
+        require(batchSize in 1..NOVEL_AI_MAX_BATCH_SIZE)
         if (promptOverride == null) {
             imageGenerationPromptCheckpoints.remove(taskId)
             imageGenerationCompletedImageCheckpoints.remove(taskId)
         } else if (imageSizeOverride != null) {
             imageGenerationPromptCheckpoints[taskId] = promptOverride to imageSizeOverride
-            imageGenerationCompletedImageCheckpoints.remove(taskId)
+            if (imageGenerationCompletedImageCheckpoints[taskId]?.size != batchSize) {
+                imageGenerationCompletedImageCheckpoints.remove(taskId)
+            }
         }
         val initialPreference = imagePromptPreference ?: _session.value?.imagePromptPreference.orEmpty()
         if (persistPreference) persistImagePromptPreference(initialPreference)
@@ -1130,7 +1151,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             anchorMessageId = anchorMessageId,
             phase = ImageGenerationPhase.QUEUED,
             imageContentHint = imageContentHint,
-            finalPromptRequirement = initialPreference
+            finalPromptRequirement = initialPreference,
+            batchSize = batchSize
         ))
         val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
             GlobalImageGenerationConcurrencyGate.instance.run generationPermit@ {
@@ -1195,12 +1217,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val imageSize = imageSizeOverride
                     ?: NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, prompt.sizePreset)
                 imageGenerationPromptCheckpoints[taskId] = prompt to imageSize
-                imageGenerationCompletedImageCheckpoints[taskId]?.let { completedImage ->
-                    saveNovelAiImageResult(taskId, anchorMessageId, prompt, imageSize, completedImage)
+                imageGenerationCompletedImageCheckpoints[taskId]?.let { completedImages ->
+                    saveNovelAiImageResult(taskId, anchorMessageId, prompt, imageSize, completedImages)
                     return@run
                 }
                 val seed = novelAiImageService.newSeed()
-                val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize)
+                val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize, batchSize)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
                     sessionId = sessionId,
                     modelName = "NovelAI Diffusion V4.5 Full",
@@ -1218,34 +1240,69 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     retry = false
                     val currentSeed = if (attempt == 1) seed else novelAiImageService.newSeed()
                     try {
-                        novelAiImageService.generate(token, prompt, currentSeed, imageSize).collect { event ->
+                        val finalImages = mutableListOf<ByteArray>()
+                        var streamError: String? = null
+                        novelAiImageService.generate(
+                            token = token,
+                            prompt = prompt,
+                            seed = currentSeed,
+                            imageSize = imageSize,
+                            batchSize = batchSize
+                        ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Intermediate -> {
                                     updateImageGeneration(taskId) {
                                         it.copy(
                                             phase = ImageGenerationPhase.STREAMING,
                                             previewImage = event.image,
-                                            progress = event.progress,
+                                            progress = ((finalImages.size + event.progress) / batchSize)
+                                                .coerceIn(0f, 1f),
                                             error = null
                                         )
                                     }
                                 }
                                 is NovelAiImageEvent.Final -> {
-                                    imageGenerationCompletedImageCheckpoints[taskId] = event.image
-                                    saveNovelAiImageResult(taskId, anchorMessageId, prompt, imageSize, event.image)
-                                }
-                                is NovelAiImageEvent.Error -> {
-                                    if (isRetryableError(event.message) && attempt < 3) {
-                                        retry = true
-                                        updateImageGeneration(taskId) {
-                                            it.copy(phase = ImageGenerationPhase.GENERATING, error = null)
-                                        }
-                                    } else {
-                                        updateImageGeneration(taskId) {
-                                            it.copy(phase = ImageGenerationPhase.FAILED, error = event.message)
-                                        }
+                                    finalImages += event.image
+                                    updateImageGeneration(taskId) {
+                                        it.copy(
+                                            phase = ImageGenerationPhase.STREAMING,
+                                            previewImage = event.image,
+                                            progress = (finalImages.size / batchSize.toFloat()).coerceIn(0f, 1f),
+                                            error = null
+                                        )
                                     }
                                 }
+                                is NovelAiImageEvent.Error -> {
+                                    streamError = event.message
+                                }
+                            }
+                        }
+                        when {
+                            streamError != null && isRetryableError(streamError) && attempt < 3 -> {
+                                retry = true
+                                updateImageGeneration(taskId) {
+                                    it.copy(phase = ImageGenerationPhase.GENERATING, error = null)
+                                }
+                            }
+                            streamError != null -> updateImageGeneration(taskId) {
+                                it.copy(phase = ImageGenerationPhase.FAILED, error = streamError)
+                            }
+                            finalImages.size != batchSize -> updateImageGeneration(taskId) {
+                                it.copy(
+                                    phase = ImageGenerationPhase.FAILED,
+                                    error = "NovelAI 批量生图返回数量异常：请求 $batchSize 张，收到 ${finalImages.size} 张"
+                                )
+                            }
+                            else -> {
+                                val completedImages = finalImages.toList()
+                                imageGenerationCompletedImageCheckpoints[taskId] = completedImages
+                                saveNovelAiImageResult(
+                                    taskId,
+                                    anchorMessageId,
+                                    prompt,
+                                    imageSize,
+                                    completedImages
+                                )
                             }
                         }
                     } catch (error: Throwable) {
@@ -1259,7 +1316,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             updateImageGeneration(taskId) {
                                 it.copy(
                                     phase = ImageGenerationPhase.FAILED,
-                                    error = "生图失败 (网络/连接错误, 第${attempt}次尝试): ${error.message ?: "未知错误"}"
+                                    error = "生图或保存失败 (第${attempt}次尝试): ${error.message ?: "未知错误"}"
                                 )
                             }
                         }
@@ -1301,30 +1358,47 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         anchorMessageId: String,
         prompt: NovelAiPromptPlan,
         imageSize: NovelAiImageSize,
-        image: ByteArray
+        images: List<ByteArray>
     ) {
+        require(images.isNotEmpty()) { "没有可保存的 NovelAI 图片" }
         updateImageGeneration(taskId) {
             it.copy(
                 phase = ImageGenerationPhase.SAVING,
-                previewImage = image,
+                previewImage = images.last(),
                 progress = 1f,
                 error = null
             )
         }
-        val path = withContext(Dispatchers.IO) {
-            novelAiImageStorage.save(sessionId, image)
+        val paths = withContext(Dispatchers.IO) {
+            val saved = mutableListOf<String>()
+            try {
+                images.forEach { image -> saved += novelAiImageStorage.save(sessionId, image) }
+                saved.toList()
+            } catch (error: Throwable) {
+                saved.forEach { path -> novelAiImageStorage.deleteIfOwned(path) }
+                throw error
+            }
         }
-        chatRepository.addMessageAfter(
-            ChatMessage.create(
-                sessionId = sessionId,
-                role = MessageRole.ASSISTANT,
-                content = "",
-                images = listOf(path),
-                generatedImageMetadata = listOf(prompt.toGeneratedImageMetadata(path, imageSize)),
-                generatedFromMessageId = anchorMessageId
-            ),
-            anchorMessageId
-        )
+        try {
+            chatRepository.addMessageAfter(
+                ChatMessage.create(
+                    sessionId = sessionId,
+                    role = MessageRole.ASSISTANT,
+                    content = "",
+                    images = paths,
+                    generatedImageMetadata = paths.map { path ->
+                        prompt.toGeneratedImageMetadata(path, imageSize)
+                    },
+                    generatedFromMessageId = anchorMessageId
+                ),
+                anchorMessageId
+            )
+        } catch (error: Throwable) {
+            withContext(Dispatchers.IO) {
+                paths.forEach { path -> novelAiImageStorage.deleteIfOwned(path) }
+            }
+            throw error
+        }
         refreshMessages()
         removeImageGeneration(taskId)
     }

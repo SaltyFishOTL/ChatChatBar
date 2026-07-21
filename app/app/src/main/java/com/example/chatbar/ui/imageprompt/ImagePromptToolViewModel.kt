@@ -10,6 +10,7 @@ import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.emptyNovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
@@ -55,10 +56,11 @@ data class ImagePromptToolUiState(
     val promptDraft: NovelAiImageRegenerationDraft = emptyNovelAiImageRegenerationDraft(),
     val promptRevision: Int = 0,
     val imagePreview: ByteArray? = null,
-    val imagePath: String? = null,
+    val imagePaths: List<String> = emptyList(),
     val imageProgress: Float = 0f,
     val error: String? = null
 ) {
+    val imagePath: String? get() = imagePaths.firstOrNull()
     val isDesigning: Boolean get() = phase == ImagePromptToolPhase.DESIGNING
     val isGeneratingImage: Boolean
         get() = phase == ImagePromptToolPhase.GENERATING ||
@@ -90,7 +92,7 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private var designJob: Job? = null
     private var imageJob: Job? = null
-    private var completedImageCheckpoint: ByteArray? = null
+    private var completedImageCheckpoint: Pair<Int, List<ByteArray>>? = null
 
     init {
         observeCharacterCards()
@@ -160,12 +162,13 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun updatePromptDraft(draft: NovelAiImageRegenerationDraft) {
         if (_uiState.value.isBusy) return
+        completedImageCheckpoint = null
         _uiState.update {
             it.copy(
                 phase = if (draft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
                 promptDraft = draft,
                 imagePreview = null,
-                imagePath = null,
+                imagePaths = emptyList(),
                 imageProgress = 0f,
                 error = null
             )
@@ -202,7 +205,7 @@ class ImagePromptToolViewModel : ViewModel() {
                     reasoningStream = "",
                     resultStream = "",
                     imagePreview = null,
-                    imagePath = null,
+                    imagePaths = emptyList(),
                     imageProgress = 0f,
                     error = null
                 )
@@ -273,8 +276,12 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
-    fun generateImage() {
+    fun generateImage(batchSize: Int = 1) {
         if (_uiState.value.isBusy) return
+        if (batchSize !in 1..NOVEL_AI_MAX_BATCH_SIZE) {
+            _uiState.update { it.copy(error = "批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间") }
+            return
+        }
         val draft = _uiState.value.promptDraft
         if (!draft.canRegenerate) {
             _uiState.update { it.copy(error = "主提示词不能为空，已添加的角色提示词也必须填写") }
@@ -300,79 +307,81 @@ class ImagePromptToolViewModel : ViewModel() {
             }
             val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, plan.sizePreset)
             val seed = imageService.newSeed()
-            val resumeImage = completedImageCheckpoint.takeIf { _uiState.value.phase == ImagePromptToolPhase.FAILED }
+            val resumeImages = completedImageCheckpoint
+                ?.takeIf { checkpoint ->
+                    _uiState.value.phase == ImagePromptToolPhase.FAILED && checkpoint.first == batchSize
+                }
+                ?.second
+            if (resumeImages == null) completedImageCheckpoint = null
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.GENERATING,
                     imagePreview = null,
-                    imagePath = null,
+                    imagePaths = emptyList(),
                     imageProgress = 0f,
                     error = null
                 )
             }
             try {
-                if (resumeImage != null) {
-                    _uiState.update {
-                        it.copy(
-                            phase = ImagePromptToolPhase.SAVING,
-                            imagePreview = resumeImage,
-                            imageProgress = 1f
-                        )
+                val completedImages = resumeImages ?: run {
+                    val finalImages = mutableListOf<ByteArray>()
+                    var streamError: String? = null
+                    imageService.generate(
+                        token = token,
+                        prompt = plan,
+                        seed = seed,
+                        imageSize = imageSize,
+                        batchSize = batchSize
+                    ).collect { event ->
+                        when (event) {
+                            is NovelAiImageEvent.Intermediate -> {
+                                _uiState.update {
+                                    it.copy(
+                                        phase = ImagePromptToolPhase.STREAMING,
+                                        imagePreview = event.image,
+                                        imageProgress = ((finalImages.size + event.progress) / batchSize)
+                                            .coerceIn(0f, 1f)
+                                    )
+                                }
+                            }
+                            is NovelAiImageEvent.Final -> {
+                                finalImages += event.image
+                                _uiState.update {
+                                    it.copy(
+                                        phase = ImagePromptToolPhase.STREAMING,
+                                        imagePreview = event.image,
+                                        imageProgress = (finalImages.size / batchSize.toFloat())
+                                            .coerceIn(0f, 1f)
+                                    )
+                                }
+                            }
+                            is NovelAiImageEvent.Error -> streamError = event.message
+                        }
                     }
-                    val path = withContext(Dispatchers.IO) {
-                        imageStorage.save(PROMPT_TOOL_IMAGE_SESSION_ID, resumeImage)
+                    check(streamError == null) { streamError.orEmpty() }
+                    check(finalImages.size == batchSize) {
+                        "NovelAI 批量生图返回数量异常：请求 $batchSize 张，收到 ${finalImages.size} 张"
                     }
-                    _uiState.update {
-                        it.copy(
-                            phase = ImagePromptToolPhase.FINISHED,
-                            imagePath = path,
-                            error = null
-                        )
+                    finalImages.toList().also { images ->
+                        completedImageCheckpoint = batchSize to images
                     }
-                    return@launch
                 }
-                imageService.generate(token, plan, seed, imageSize).collect { event ->
-                    when (event) {
-                        is NovelAiImageEvent.Intermediate -> {
-                            _uiState.update {
-                                it.copy(
-                                    phase = ImagePromptToolPhase.STREAMING,
-                                    imagePreview = event.image,
-                                    imageProgress = event.progress
-                                )
-                            }
-                        }
-                        is NovelAiImageEvent.Final -> {
-                            completedImageCheckpoint = event.image
-                            _uiState.update {
-                                it.copy(
-                                    phase = ImagePromptToolPhase.SAVING,
-                                    imagePreview = event.image,
-                                    imageProgress = 1f
-                                )
-                            }
-                            val path = withContext(Dispatchers.IO) {
-                                imageStorage.save(PROMPT_TOOL_IMAGE_SESSION_ID, event.image)
-                            }
-                            _uiState.update {
-                                it.copy(
-                                    phase = ImagePromptToolPhase.FINISHED,
-                                    imagePreview = event.image,
-                                    imagePath = path,
-                                    imageProgress = 1f,
-                                    error = null
-                                )
-                            }
-                        }
-                        is NovelAiImageEvent.Error -> {
-                            _uiState.update {
-                                it.copy(
-                                    phase = ImagePromptToolPhase.FAILED,
-                                    error = event.message
-                                )
-                            }
-                        }
-                    }
+                _uiState.update {
+                    it.copy(
+                        phase = ImagePromptToolPhase.SAVING,
+                        imagePreview = completedImages.last(),
+                        imageProgress = 1f
+                    )
+                }
+                val paths = saveGeneratedImages(completedImages)
+                _uiState.update {
+                    it.copy(
+                        phase = ImagePromptToolPhase.FINISHED,
+                        imagePreview = completedImages.last(),
+                        imagePaths = paths,
+                        imageProgress = 1f,
+                        error = null
+                    )
                 }
             } catch (error: Throwable) {
                 if (error is CancellationException) {
@@ -391,6 +400,20 @@ class ImagePromptToolViewModel : ViewModel() {
             imageJob = null
         }
     }
+
+    private suspend fun saveGeneratedImages(images: List<ByteArray>): List<String> =
+        withContext(Dispatchers.IO) {
+            val saved = mutableListOf<String>()
+            try {
+                images.forEach { image ->
+                    saved += imageStorage.save(PROMPT_TOOL_IMAGE_SESSION_ID, image)
+                }
+                saved.toList()
+            } catch (error: Throwable) {
+                saved.forEach { path -> imageStorage.deleteIfOwned(path) }
+                throw error
+            }
+        }
 
     fun cancelActiveTask() {
         val active = _uiState.value
@@ -455,6 +478,7 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     private fun updateInput(transform: (ImagePromptToolUiState) -> ImagePromptToolUiState) {
+        completedImageCheckpoint = null
         _uiState.update {
             transform(it).copy(
                 phase = ImagePromptToolPhase.IDLE,
@@ -464,7 +488,7 @@ class ImagePromptToolViewModel : ViewModel() {
                 resultStream = "",
                 promptDraft = emptyNovelAiImageRegenerationDraft(),
                 imagePreview = null,
-                imagePath = null,
+                imagePaths = emptyList(),
                 imageProgress = 0f,
                 error = null
             )
