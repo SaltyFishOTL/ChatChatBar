@@ -47,6 +47,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -79,6 +80,7 @@ fun ImagePromptToolScreen(
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var promptExpanded by remember { mutableStateOf(false) }
+    var expandedImagePath by remember { mutableStateOf<String?>(null) }
     val referenceImagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -193,7 +195,10 @@ fun ImagePromptToolScreen(
                 }
                 if (state.imagePreview != null || state.imagePath != null || state.isGeneratingImage) {
                     item {
-                        ImagePreviewPanel(state)
+                        ImagePreviewPanel(
+                            state = state,
+                            onOpenImage = { expandedImagePath = it }
+                        )
                     }
                 }
                 state.error?.let { error ->
@@ -216,6 +221,12 @@ fun ImagePromptToolScreen(
                     fullscreenField = null
                     fullscreenOnChange = null
                 }
+            )
+        }
+        expandedImagePath?.let { path ->
+            ImagePreviewDialog(
+                path = path,
+                onDismiss = { expandedImagePath = null }
             )
         }
     }
@@ -555,7 +566,10 @@ private fun PromptEditorPanel(
 }
 
 @Composable
-private fun ImagePreviewPanel(state: ImagePromptToolUiState) {
+internal fun ImagePreviewPanel(
+    state: ImagePromptToolUiState,
+    onOpenImage: (String) -> Unit
+) {
     val label = when (state.phase) {
         ImagePromptToolPhase.GENERATING -> "NovelAI 正在生成"
         ImagePromptToolPhase.STREAMING -> "流式预览 ${(state.imageProgress * 100).toInt()}%"
@@ -575,17 +589,28 @@ private fun ImagePreviewPanel(state: ImagePromptToolUiState) {
                 if (state.isGeneratingImage) CbSpinner(Modifier.size(18.dp))
                 CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             }
+            val imageModifier = Modifier
+                .fillMaxWidth()
+                .heightIn(max = 420.dp)
+                .clip(RoundedCornerShape(ChatBarShape.sm))
+                .clickable(enabled = state.imagePath != null) {
+                    state.imagePath?.let(onOpenImage)
+                }
             when {
                 state.imagePreview != null -> AsyncImage(
                     model = state.imagePreview,
-                    contentDescription = "NovelAI 流式生图预览",
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(ChatBarShape.sm)),
+                    contentDescription = if (state.imagePath == null) {
+                        "NovelAI 流式生图预览"
+                    } else {
+                        "NovelAI 生图结果"
+                    },
+                    modifier = imageModifier,
                     contentScale = ContentScale.Fit
                 )
                 state.imagePath != null -> AsyncImage(
                     model = File(state.imagePath),
                     contentDescription = "NovelAI 生图结果",
-                    modifier = Modifier.fillMaxWidth().heightIn(max = 420.dp).clip(RoundedCornerShape(ChatBarShape.sm)),
+                    modifier = imageModifier,
                     contentScale = ContentScale.Fit
                 )
                 else -> Box(
@@ -596,7 +621,11 @@ private fun ImagePreviewPanel(state: ImagePromptToolUiState) {
                 }
             }
             state.imagePath?.let {
-                CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                CbText(
+                    "点击查看大图；大图中长按可打码、保存或分享",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
             }
         }
     }

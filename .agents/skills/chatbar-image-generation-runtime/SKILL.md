@@ -14,6 +14,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Prompt-plan/metadata conversion: domain/image/NovelAiImageRegeneration.kt
 - Prompt design boundary: domain/image/NovelAiPromptDesigner.kt
 - Shared editor: ui/components/NovelAiImageRegenerationDialog.kt
+- Shared image viewer/actions: ui/components/ImagePreviewDialog.kt and ImageMosaicEditor.kt
 - Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
@@ -36,6 +37,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Persist image path, base caption, per-character prompts, negative prompt, size preset, width, and height with every generated image.
 - Convert metadata through NovelAiImageRegenerationDraft and NovelAiPromptPlan helpers instead of reconstructing fields in each screen.
 - Prompt tool starts with `emptyNovelAiImageRegenerationDraft()`, converts AI plans through `toRegenerationDraft()`, and converts edited/manual drafts back through `toPromptPlan()` before generation.
+- Prompt-tool saved results open through ImagePreviewDialog, reusing chat/Moments zoom, mosaic, gallery-save, and share actions; streaming-only frames stay non-actionable until a durable path exists.
 - Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
 - Preserve original pixel dimensions and request a fresh seed for each regeneration.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
