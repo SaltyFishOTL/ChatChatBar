@@ -5,8 +5,9 @@ import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.MessageRole
-import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.chat.CleartextHttpChatTemplatePolicy
 import com.example.chatbar.domain.chat.StreamEvent
+import com.example.chatbar.domain.prompt.PromptTemplates
 import java.nio.ByteBuffer
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.test.runTest
@@ -39,7 +40,7 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
-    fun `conversation image design messages put scene and content hint before system rules`() {
+    fun `conversation image design messages end with user preference after system rules`() {
         val request = NovelAiPromptDesigner.conversationDesignMessages(
             messages = listOf(message("1", MessageRole.ASSISTANT, "林远站在雨夜窗边。")),
             playerName = "林远",
@@ -51,7 +52,7 @@ class NovelAiImageFeatureTest {
         )
 
         assertEquals(
-            listOf("assistant", "user", "system", "system", "system", "system"),
+            listOf("assistant", "user", "system", "system", "system", "user"),
             request.map { it.role }
         )
         assertEquals("\$username站在雨夜窗边。", request[0].content.jsonPrimitive.content)
@@ -60,6 +61,30 @@ class NovelAiImageFeatureTest {
         assertTrue(request[3].content.jsonPrimitive.content.contains("anime screencap"))
         assertTrue(request[4].content.jsonPrimitive.content.contains("林雾: 1girl, silver hair"))
         assertTrue(request[5].content.jsonPrimitive.content.contains("保持 tags 简洁。"))
+    }
+
+    @Test
+    fun `conversation image design avoids assistant tail after cleartext adaptation`() {
+        val request = NovelAiPromptDesigner.conversationDesignMessages(
+            messages = listOf(message("1", MessageRole.ASSISTANT, "林远站在雨夜窗边。")),
+            playerName = "林远",
+            imageContentHint = "",
+            finalPromptRequirement = "",
+            cardDefaultImagePrompt = "anime screencap",
+            characterImagePrompts = emptyList(),
+            structured = false
+        )
+
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = request,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+
+        assertEquals(
+            listOf("assistant", "user", "system", "assistant", "assistant", "user"),
+            adapted.map { it.role }
+        )
     }
 
     @Test

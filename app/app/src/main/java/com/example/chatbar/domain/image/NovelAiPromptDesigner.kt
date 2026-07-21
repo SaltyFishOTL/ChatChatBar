@@ -532,8 +532,8 @@ class NovelAiPromptDesigner(
                     )
                 ),
                 ChatApiMessage.text(
-                    "system",
-                    PromptTemplates.novelAiImagePromptPreferenceSystem(finalPromptRequirement)
+                    "user",
+                    PromptTemplates.novelAiImagePromptPreferenceUser(finalPromptRequirement)
                 )
             )
         }

@@ -890,7 +890,7 @@ JSON only, no Markdown, no explanation:
             append(imageContentHint.trim().ifBlank { "(none)" })
         }
 
-    fun novelAiImagePromptPreferenceSystem(finalPromptRequirement: String): String =
+    fun novelAiImagePromptPreferenceUser(finalPromptRequirement: String): String =
         buildString {
             appendLine("用户针对最终 NovelAI Prompt 的要求（优先级高，用于约束 tag 选择、构图取舍和输出形态；不要原样解释这段文字）：")
             append(finalPromptRequirement.trim().ifBlank { "(none)" })
