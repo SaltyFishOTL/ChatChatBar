@@ -14,20 +14,20 @@ class StreamingForegroundService : Service() {
     private var activeGeneration = -1L
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == StreamingNotificationManager.ACTION_STOP) {
-            ChatBarApp.instance.streamingStopRequested.value = true
-            stopForeground(STOP_FOREGROUND_REMOVE)
-            StreamingNotificationManager.cancel(this)
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
         val sessionId = intent?.getStringExtra("sessionId") ?: ""
         val generation = AiBackgroundWorkManager.workGenerationFrom(intent)
-        activeGeneration = generation
         try {
             val notification = StreamingNotificationManager.buildNotification(this, "", sessionId)
             startForeground(StreamingNotificationManager.NOTIFICATION_ID, notification)
+            if (intent?.action == StreamingNotificationManager.ACTION_STOP) {
+                ChatBarApp.instance.streamingStopRequested.value = true
+                stopForeground(STOP_FOREGROUND_REMOVE)
+                StreamingNotificationManager.cancel(this)
+                stopSelf()
+                return START_NOT_STICKY
+            }
+
+            activeGeneration = generation
             acquireWakeLock()
             acquireWifiLock()
             AiBackgroundWorkManager.foregroundServiceReady(generation)

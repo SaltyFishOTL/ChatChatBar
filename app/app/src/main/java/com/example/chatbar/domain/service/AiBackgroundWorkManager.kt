@@ -27,6 +27,20 @@ class BackgroundGenerationProtectionCancellationException(
     val reason: String
 ) : kotlinx.coroutines.CancellationException("后台生成保护失效：$reason")
 
+internal fun releaseForegroundServiceWhenReady(
+    ready: CompletableDeferred<Unit>,
+    stopStartedService: () -> Unit,
+    clearFailedStartNotification: () -> Unit
+) {
+    ready.invokeOnCompletion { error ->
+        if (error == null) {
+            stopStartedService()
+        } else {
+            clearFailedStartNotification()
+        }
+    }
+}
+
 object AiBackgroundWorkManager {
     private const val FOREGROUND_READY_TIMEOUT_MS = 8_000L
     private const val NETWORK_LOSS_GRACE_MS = 5_000L
@@ -161,6 +175,7 @@ object AiBackgroundWorkManager {
     private var activeCount = 0
     private var nextGeneration = 0L
     private var currentLease: ForegroundLease? = null
+    private val releasingLeases = mutableMapOf<Long, ForegroundLease>()
 
     fun start(sessionId: String = "") {
         acquireForegroundLease(sessionId)
@@ -184,7 +199,6 @@ object AiBackgroundWorkManager {
         }
         activeCount += 1
 
-        StreamingNotificationManager.show(context, sessionId)
         if (activeCount == 1) {
             try {
                 context.startForegroundService(Intent(context, StreamingForegroundService::class.java).apply {
@@ -196,27 +210,23 @@ object AiBackgroundWorkManager {
                     IllegalStateException("无法启动后台生成前台服务", error)
                 )
             }
+        } else {
+            StreamingNotificationManager.show(context, sessionId)
         }
         lease
     }
 
     internal fun foregroundServiceReady(generation: Long) {
         synchronized(lock) {
-            currentLease
-                ?.takeIf { it.generation == generation }
-                ?.ready
-                ?.complete(Unit)
+            leaseForGeneration(generation)?.ready?.complete(Unit)
         }
     }
 
     internal fun foregroundServiceStartFailed(generation: Long, error: Throwable) {
         synchronized(lock) {
-            currentLease
-                ?.takeIf { it.generation == generation }
-                ?.ready
-                ?.completeExceptionally(
-                    IllegalStateException("后台生成前台服务启动失败", error)
-                )
+            leaseForGeneration(generation)?.ready?.completeExceptionally(
+                IllegalStateException("后台生成前台服务启动失败", error)
+            )
         }
     }
 
@@ -276,12 +286,54 @@ object AiBackgroundWorkManager {
             activeCount -= 1
             if (activeCount > 0) return
 
-            currentLease?.networkGuard?.close()
+            val finishedLease = currentLease
+            finishedLease?.networkGuard?.close()
             currentLease = null
+            if (finishedLease == null) {
+                cancelForegroundNotificationIfIdle()
+                return
+            }
+            releasingLeases[finishedLease.generation] = finishedLease
+            releaseForegroundServiceWhenReady(
+                ready = finishedLease.ready,
+                stopStartedService = {
+                    removeReleasingLease(finishedLease.generation)
+                    stopForegroundServiceIfIdle()
+                },
+                clearFailedStartNotification = {
+                    removeReleasingLease(finishedLease.generation)
+                    cancelForegroundNotificationIfIdle()
+                }
+            )
+        }
+    }
+
+    private fun leaseForGeneration(generation: Long): ForegroundLease? =
+        currentLease?.takeIf { it.generation == generation }
+            ?: releasingLeases[generation]
+
+    private fun removeReleasingLease(generation: Long) {
+        synchronized(lock) {
+            releasingLeases.remove(generation)
+        }
+    }
+
+    private fun stopForegroundServiceIfIdle() {
+        synchronized(lock) {
+            if (activeCount > 0) return
             try {
-                ChatBarApp.instance.stopService(Intent(ChatBarApp.instance, StreamingForegroundService::class.java))
+                ChatBarApp.instance.stopService(
+                    Intent(ChatBarApp.instance, StreamingForegroundService::class.java)
+                )
             } catch (_: Exception) {
             }
+            cancelForegroundNotificationIfIdle()
+        }
+    }
+
+    private fun cancelForegroundNotificationIfIdle() {
+        synchronized(lock) {
+            if (activeCount > 0) return
             try {
                 StreamingNotificationManager.cancel(ChatBarApp.instance)
             } catch (_: Exception) {
