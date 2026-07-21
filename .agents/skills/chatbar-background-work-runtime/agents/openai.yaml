@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Background Work Runtime"
+  short_description: "Maintain shared Android foreground AI work protection"
+  default_prompt: "Use $chatbar-background-work-runtime to diagnose and safely fix ChatBar background AI work lifecycle failures."

@@ -16,6 +16,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Cleartext HTTP strict-template role adaptation: domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
+- Shared Android foreground/background protection: use chatbar-background-work-runtime.
 - Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, and domain/memory/MemoryAiGateway.kt
 - Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, InterruptedReplyPolicyTest.kt, and request-body tests near each caller
 

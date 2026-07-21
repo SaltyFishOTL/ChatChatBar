@@ -24,6 +24,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Chat screen behavior outside a specific skill: ui/chat/ChatScreen.kt and ChatViewModel.kt.
 - Long-term memory, HEAD, Episode/Arc/Era, source-turn/T mapping, Gap/backfill, historical source repair, compression, tier history, Archive injection, or SaveSlot memory migration: use chatbar-long-term-memory.
 - Message AI format repair, automatic checks, restore-original notices, repair model selection, or repair state: use chatbar-message-format-repair.
+- Shared AI background protection, foreground-service lifecycle, network guard, notification stop action, wake/Wi-Fi locks, or `ForegroundServiceDidNotStartInTimeException`: use chatbar-background-work-runtime.
 - Model fallback, provider request fields, HTTP/local auth, thinking controls, connection tests, SSE timeout/reset, or auxiliary text requests: use chatbar-model-request-runtime.
 - Generated-image runtime, NovelAI HTTP generation, 429 retry, editable regeneration, metadata, dimensions, seeds, concurrency, or file replacement: use chatbar-image-generation-runtime.
 - Assistant segmented bubble rendering: ui/components/ChatBubble.kt; marker parsing in domain/chat/RoleplayContentSegments.kt; per-turn protocol in PromptTemplates.kt and ChatViewModel.kt; edit/delete in ChatViewModel.kt; selection/screenshot in ChatScreenshotSelection.kt and ChatLongScreenshot.kt.

@@ -17,7 +17,7 @@ Use this skill before editing 朋友圈 code or docs:
 - 朋友圈 prompt builders in `PromptTemplates.kt`
 - 朋友圈 image preview/save/share/set-card-image behavior
 
-Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, `chatbar-image-generation-runtime` before changing shared image generation/regeneration behavior, and `chatbar-shadcn-compose` before changing Compose UI.
+Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, `chatbar-image-generation-runtime` before changing shared image generation/regeneration behavior, `chatbar-background-work-runtime` before changing foreground-service/network protection, and `chatbar-shadcn-compose` before changing Compose UI.
 
 ## Product Rules
 

@@ -18,7 +18,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
-- Background protection: domain/service/AiBackgroundWorkManager.kt
+- Shared foreground/background protection: use `chatbar-background-work-runtime`
 - Tests: NovelAiImageRetryTest.kt, NovelAiImageRegenerationTest.kt, ChatImageActionPolicyTest.kt, NovelAiImageRegenerationDialogTest.kt, and image metadata serialization tests
 
 Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar-moments for post identity, scheduling, and placeholder behavior.
@@ -56,7 +56,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
 - Keep text generation and independent image tasks from blocking each other unless they mutate the same owned image slot.
-- Route long-running work through AiBackgroundWorkManager where the caller already uses foreground protection.
+- Use `chatbar-background-work-runtime` when changing shared protection, notification, network-loss, or foreground-service lifecycle behavior.
 
 ## Workflow
 
