@@ -22,17 +22,18 @@ class CharacterResearchService(
         userInput: String,
         currentCard: CharacterCard,
         modelConfig: ModelConfig,
+        webSearchEnabled: Boolean = true,
         onDebug: (ResearchDebugSnapshot) -> Unit = {},
         resumeFrom: ResearchDebugSnapshot? = null,
         onCheckpoint: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
-        val settings = settingsProvider()
-        if (!settings.webSearchEnabled) {
+        if (!webSearchEnabled) {
             onStatus("搜索增强未启用，跳过搜索")
             return@withContext null
         }
+        val settings = settingsProvider()
 
         val maxResearchItems = MAX_RESEARCH_ITEMS
         val maxResults = settings.webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)

@@ -169,6 +169,8 @@ fun CharacterEditScreen(
     val avatarImageState by viewModel.avatarImageState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
+    val autoFillWebSearchEnabled by viewModel.autoFillWebSearchEnabled.collectAsState()
+    val rewriteWebSearchEnabled by viewModel.rewriteWebSearchEnabled.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
     val context = LocalContext.current
 
@@ -779,17 +781,30 @@ fun CharacterEditScreen(
             state = autoFillState,
             models = autoFillModels,
             defaultModelId = autoFillDefaultModelId,
+            webSearchEnabled = autoFillWebSearchEnabled,
+            onWebSearchEnabledChange = viewModel::setAutoFillWebSearchEnabled,
             onDismiss = {
                 showAutoFillDialog = false
                 viewModel.clearAutoFillDraft()
             },
             onPickImage = { callback -> pickImage(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
-            onGenerate = { input, modelId, imagePath ->
-                viewModel.generateAutoFillDraft(input, modelId, imagePath)
+            onGenerate = { input, modelId, imagePath, webSearchEnabled ->
+                viewModel.generateAutoFillDraft(
+                    input,
+                    modelId,
+                    imagePath,
+                    webSearchEnabled = webSearchEnabled
+                )
             },
-            onRegenerateFinal = { input, modelId, imagePath, regenerateFinal ->
-                viewModel.generateAutoFillDraft(input, modelId, imagePath, reusePrepared = regenerateFinal)
+            onRegenerateFinal = { input, modelId, imagePath, webSearchEnabled, regenerateFinal ->
+                viewModel.generateAutoFillDraft(
+                    input,
+                    modelId,
+                    imagePath,
+                    webSearchEnabled = webSearchEnabled,
+                    reusePrepared = regenerateFinal
+                )
             },
             onGenerateCover = {
                 pendingCoverImageGeneration = PendingCoverImageGeneration.AutoFill
@@ -807,13 +822,22 @@ fun CharacterEditScreen(
             state = rewriteState,
             models = autoFillModels,
             defaultModelId = autoFillDefaultModelId,
+            webSearchEnabled = rewriteWebSearchEnabled,
+            onWebSearchEnabledChange = viewModel::setRewriteWebSearchEnabled,
             onDismiss = {
                 showRewriteDialog = false
                 viewModel.clearRewriteDraft()
             },
-            onGenerate = { input, modelId -> viewModel.generateRewriteDraft(input, modelId) },
-            onRegenerateFinal = { input, modelId, regenerateFinal ->
-                viewModel.generateRewriteDraft(input, modelId, reusePrepared = regenerateFinal)
+            onGenerate = { input, modelId, webSearchEnabled ->
+                viewModel.generateRewriteDraft(input, modelId, webSearchEnabled = webSearchEnabled)
+            },
+            onRegenerateFinal = { input, modelId, webSearchEnabled, regenerateFinal ->
+                viewModel.generateRewriteDraft(
+                    input,
+                    modelId,
+                    webSearchEnabled = webSearchEnabled,
+                    reusePrepared = regenerateFinal
+                )
             },
             onGenerateCover = {
                 pendingCoverImageGeneration = PendingCoverImageGeneration.Rewrite
@@ -1360,11 +1384,13 @@ private fun CharacterAutoFillDialog(
     state: CharacterAutoFillUiState,
     models: List<ModelConfig>,
     defaultModelId: String?,
+    webSearchEnabled: Boolean,
+    onWebSearchEnabledChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
     onDeleteImage: (String?) -> Unit,
-    onGenerate: (String, String?, String?) -> Unit,
-    onRegenerateFinal: (String, String?, String?, Boolean) -> Unit,
+    onGenerate: (String, String?, String?, Boolean) -> Unit,
+    onRegenerateFinal: (String, String?, String?, Boolean, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1448,6 +1474,11 @@ private fun CharacterAutoFillDialog(
                     placeholder = "本次使用模型"
                 )
             }
+            CharacterWebSearchToggle(
+                enabled = webSearchEnabled,
+                onEnabledChange = onWebSearchEnabledChange,
+                busy = busy
+            )
             CbField("角色信息与扮演要求") {
                 CbInput(
                     input,
@@ -1483,7 +1514,7 @@ private fun CharacterAutoFillDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成候选",
-                        { onGenerate(input, selectedModel.id, sourceImagePath) },
+                        { onGenerate(input, selectedModel.id, sourceImagePath, webSearchEnabled) },
                         modifier = Modifier.weight(1f),
                         enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
@@ -1499,7 +1530,15 @@ private fun CharacterAutoFillDialog(
                 if (state.checkpoint != null) {
                     CbButton(
                         if (state.draft != null) "仅重做最终结果" else "从断点继续",
-                        { onRegenerateFinal(input, selectedModel.id, sourceImagePath, state.draft != null) },
+                        {
+                            onRegenerateFinal(
+                                input,
+                                selectedModel.id,
+                                sourceImagePath,
+                                webSearchEnabled,
+                                state.draft != null
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
@@ -1559,9 +1598,11 @@ private fun CharacterRewriteDialog(
     state: CharacterRewriteUiState,
     models: List<ModelConfig>,
     defaultModelId: String?,
+    webSearchEnabled: Boolean,
+    onWebSearchEnabledChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
-    onGenerate: (String, String?) -> Unit,
-    onRegenerateFinal: (String, String?, Boolean) -> Unit,
+    onGenerate: (String, String?, Boolean) -> Unit,
+    onRegenerateFinal: (String, String?, Boolean, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1621,6 +1662,11 @@ private fun CharacterRewriteDialog(
                     placeholder = "本次使用模型"
                 )
             }
+            CharacterWebSearchToggle(
+                enabled = webSearchEnabled,
+                onEnabledChange = onWebSearchEnabledChange,
+                busy = busy
+            )
             CbField("改写要求") {
                 CbInput(
                     input,
@@ -1641,7 +1687,7 @@ private fun CharacterRewriteDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成改写",
-                        { onGenerate(input, selectedModel.id) },
+                        { onGenerate(input, selectedModel.id, webSearchEnabled) },
                         modifier = Modifier.weight(1f),
                         enabled = input.isNotBlank() && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
@@ -1657,7 +1703,14 @@ private fun CharacterRewriteDialog(
                 if (state.checkpoint != null) {
                     CbButton(
                         if (state.draft != null) "仅重做最终结果" else "从断点继续",
-                        { onRegenerateFinal(input, selectedModel.id, state.draft != null) },
+                        {
+                            onRegenerateFinal(
+                                input,
+                                selectedModel.id,
+                                webSearchEnabled,
+                                state.draft != null
+                            )
+                        },
                         modifier = Modifier.fillMaxWidth(),
                         enabled = input.isNotBlank() && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
@@ -2007,6 +2060,29 @@ private fun CharacterPreviewField(label: String, value: String) {
     Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
         CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
         CbText(value)
+    }
+}
+
+@Composable
+private fun CharacterWebSearchToggle(
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    busy: Boolean
+) {
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    ) {
+        Column(Modifier.weight(1f)) {
+            CbText("开启百科搜索", style = ChatBarTheme.typography.label)
+            CbText(
+                "自动判断是否需要检索萌娘百科/Wikipedia，并注入清洗后的资料。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+        CbSwitch(enabled, onEnabledChange, enabled = !busy)
     }
 }
 

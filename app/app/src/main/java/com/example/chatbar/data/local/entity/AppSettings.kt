@@ -31,7 +31,10 @@ data class AppSettings(
     val assistantSegmentedBubblesEnabled: Boolean = true,
     val tutorialVersion: Int = 0,
     val webSearchSettingsVersion: Int = 0,
+    // Legacy shared switch retained for decoding and migrating older settings.
     val webSearchEnabled: Boolean = true,
+    val characterAutoFillWebSearchEnabled: Boolean = true,
+    val characterRewriteWebSearchEnabled: Boolean = true,
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageAspectRatio: String = "",
     val imagePromptToolPreference: String = "",
@@ -91,15 +94,18 @@ enum class ModelConfigurationMode {
     FULL_CUSTOM
 }
 
-const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 3
+const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 4
 
 fun AppSettings.withCurrentWebSearchDefaults(): AppSettings =
     if (webSearchSettingsVersion >= CURRENT_WEB_SEARCH_SETTINGS_VERSION) {
         this
     } else {
+        val migratedEnabled = if (webSearchSettingsVersion == 0) true else webSearchEnabled
         copy(
             webSearchSettingsVersion = CURRENT_WEB_SEARCH_SETTINGS_VERSION,
-            webSearchEnabled = if (webSearchSettingsVersion == 0) true else webSearchEnabled,
+            webSearchEnabled = migratedEnabled,
+            characterAutoFillWebSearchEnabled = migratedEnabled,
+            characterRewriteWebSearchEnabled = migratedEnabled,
             webSearchMaxResultsPerQuery = 1
         )
     }

@@ -16,25 +16,25 @@ class CharacterResearchServiceTest {
     fun `research returns null without touching backend when search disabled`() = runTest {
         val backend = FakeSearchBackend()
         val service = service(
-            settings = AppSettings(webSearchEnabled = false),
+            settings = AppSettings(webSearchEnabled = true),
             backend = backend
         )
 
-        val brief = service.research("request", card(), model())
+        val brief = service.research("request", card(), model(), webSearchEnabled = false)
 
         assertNull(brief)
         assertEquals(0, backend.searchCalls.size)
     }
 
     @Test
-    fun `research touches backend without api key when search enabled`() = runTest {
+    fun `per invocation search setting overrides legacy global setting`() = runTest {
         val backend = FakeSearchBackend()
         val service = service(
-            settings = AppSettings(webSearchEnabled = true),
+            settings = AppSettings(webSearchEnabled = false),
             backend = backend
         )
 
-        val brief = service.research("request", card(), model())
+        val brief = service.research("request", card(), model(), webSearchEnabled = true)
 
         requireNotNull(brief)
         assertEquals(1, backend.searchCalls.size)

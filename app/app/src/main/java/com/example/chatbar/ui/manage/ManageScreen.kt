@@ -1434,7 +1434,6 @@ private fun SettingsTab(
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
-    var webSearchEnabled by remember { mutableStateOf(settings.webSearchEnabled) }
     var momentsEnabled by remember { mutableStateOf(settings.momentsEnabled) }
     val initialMomentDelayRange = MomentPolicy.normalizedDelayHours(
         settings.momentsMinDelayHours,
@@ -1496,7 +1495,6 @@ private fun SettingsTab(
         settings.docRagTopK,
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
-        settings.webSearchEnabled,
         settings.momentsEnabled,
         settings.momentsMinDelayHours,
         settings.momentsMaxDelayHours,
@@ -1516,7 +1514,6 @@ private fun SettingsTab(
         allowCleartextModelApi = settings.allowCleartextModelApi
         themeMode = settings.themeMode
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
-        webSearchEnabled = settings.webSearchEnabled
         momentsEnabled = settings.momentsEnabled
         val momentDelayRange = MomentPolicy.normalizedDelayHours(
             settings.momentsMinDelayHours,
@@ -1564,7 +1561,6 @@ private fun SettingsTab(
         defaultContextWindowSize = draftContextWindowSize,
         episodeMaxSourceTurns = episodeMaxSourceTurns.roundToInt().coerceIn(1, 6),
         excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
-        webSearchEnabled = webSearchEnabled,
         webSearchMaxResultsPerQuery = 1,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
         momentsEnabled = momentsEnabled,
@@ -1892,29 +1888,6 @@ private fun SettingsTab(
             }
         }
             }
-        }
-        SettingsSection("搜索增强") {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                Column(Modifier.weight(1f)) {
-                    CbText("AI 角色卡搜索", style = ChatBarTheme.typography.label)
-                    CbText(
-                        "自动判断是否搜索，并把清洗后的资料注入自动填充/改写。",
-                        color = ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.caption
-                    )
-                }
-                CbSwitch(webSearchEnabled, { webSearchEnabled = it })
-            }
-            CbText(
-                "当前资料源：萌娘百科优先，Wikipedia 兜底。免费、无需 API Key；网络不可达时自动跳过搜索。",
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
-            )
-            CbText(
-                "默认最多规划 20 个搜索词；每个搜索词只取首个结果，减少无关来源噪声。",
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
-            )
         }
         SettingsSection("NovelAI 生图") {
             CbText(

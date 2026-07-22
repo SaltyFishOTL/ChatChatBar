@@ -30,6 +30,8 @@ class ModelConfigurationTest {
         assertEquals(ThemeMode.SYSTEM, settings.themeMode)
         assertEquals(0, settings.tutorialVersion)
         assertTrue(settings.webSearchEnabled)
+        assertTrue(settings.characterAutoFillWebSearchEnabled)
+        assertTrue(settings.characterRewriteWebSearchEnabled)
         assertEquals(0, settings.webSearchSettingsVersion)
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
         assertEquals("", settings.novelAiImageAspectRatio)
@@ -42,18 +44,50 @@ class ModelConfigurationTest {
         ).withCurrentWebSearchDefaults()
 
         assertTrue(settings.webSearchEnabled)
-        assertEquals(3, settings.webSearchSettingsVersion)
+        assertTrue(settings.characterAutoFillWebSearchEnabled)
+        assertTrue(settings.characterRewriteWebSearchEnabled)
+        assertEquals(4, settings.webSearchSettingsVersion)
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
     }
 
-    @Test fun currentSearchSettingsPreserveUserDisabledState() {
-        val settings = AppSettings(
-            webSearchSettingsVersion = 3,
-            webSearchEnabled = false
+    @Test fun v3SharedSearchSettingMigratesToBothCharacterAiActions() {
+        val settings = json.decodeFromString(
+            AppSettings.serializer(),
+            """{"webSearchSettingsVersion":3,"webSearchEnabled":false,"webSearchMaxResultsPerQuery":1}"""
         ).withCurrentWebSearchDefaults()
 
         assertFalse(settings.webSearchEnabled)
-        assertEquals(3, settings.webSearchSettingsVersion)
+        assertFalse(settings.characterAutoFillWebSearchEnabled)
+        assertFalse(settings.characterRewriteWebSearchEnabled)
+        assertEquals(4, settings.webSearchSettingsVersion)
+    }
+
+    @Test fun currentCharacterAiSearchSettingsRemainIndependent() {
+        val settings = AppSettings(
+            webSearchSettingsVersion = 4,
+            webSearchEnabled = false,
+            characterAutoFillWebSearchEnabled = false,
+            characterRewriteWebSearchEnabled = true
+        ).withCurrentWebSearchDefaults()
+
+        assertFalse(settings.characterAutoFillWebSearchEnabled)
+        assertTrue(settings.characterRewriteWebSearchEnabled)
+        assertEquals(4, settings.webSearchSettingsVersion)
+        assertEquals(settings, settings.withCurrentWebSearchDefaults())
+    }
+
+    @Test fun independentCharacterAiSearchSettingsRoundTrip() {
+        val original = AppSettings(
+            webSearchSettingsVersion = 4,
+            characterAutoFillWebSearchEnabled = false,
+            characterRewriteWebSearchEnabled = true
+        )
+
+        val encoded = json.encodeToString(AppSettings.serializer(), original)
+        val decoded = json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertFalse(decoded.characterAutoFillWebSearchEnabled)
+        assertTrue(decoded.characterRewriteWebSearchEnabled)
     }
 
     @Test fun unselectedDefaultImageModelFallsBackToDefaultChatModel() {
@@ -96,7 +130,9 @@ class ModelConfigurationTest {
         ).withCurrentWebSearchDefaults()
 
         assertFalse(settings.webSearchEnabled)
-        assertEquals(3, settings.webSearchSettingsVersion)
+        assertFalse(settings.characterAutoFillWebSearchEnabled)
+        assertFalse(settings.characterRewriteWebSearchEnabled)
+        assertEquals(4, settings.webSearchSettingsVersion)
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
     }
 

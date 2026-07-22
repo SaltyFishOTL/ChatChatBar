@@ -211,6 +211,7 @@ class CharacterEditViewModel(
     private var autoFillGenerationToken = 0
     private var rewriteJob: Job? = null
     private var rewriteGenerationToken = 0
+    private val characterAiSearchPreferenceSaveMutex = Mutex()
     private var coverImageJob: Job? = null
     private var coverImageGenerationToken = 0
     private var coverImageTarget: CoverImageTarget? = null
@@ -250,6 +251,16 @@ class CharacterEditViewModel(
 
     private val _autoFillDefaultModelId = MutableStateFlow<String?>(null)
     val autoFillDefaultModelId: StateFlow<String?> = _autoFillDefaultModelId.asStateFlow()
+
+    private val _autoFillWebSearchEnabled = MutableStateFlow(
+        settingsRepository.currentAppSettings.characterAutoFillWebSearchEnabled
+    )
+    val autoFillWebSearchEnabled: StateFlow<Boolean> = _autoFillWebSearchEnabled.asStateFlow()
+
+    private val _rewriteWebSearchEnabled = MutableStateFlow(
+        settingsRepository.currentAppSettings.characterRewriteWebSearchEnabled
+    )
+    val rewriteWebSearchEnabled: StateFlow<Boolean> = _rewriteWebSearchEnabled.asStateFlow()
 
     private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
@@ -305,9 +316,37 @@ class CharacterEditViewModel(
                 val settings = settingsRepository.getAppSettings()
                 _autoFillModels.value = modelResolver.availableChatModels(settings)
                 _autoFillDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
+                _autoFillWebSearchEnabled.value = settings.characterAutoFillWebSearchEnabled
+                _rewriteWebSearchEnabled.value = settings.characterRewriteWebSearchEnabled
             }.onFailure {
                 _autoFillModels.value = emptyList()
                 _autoFillDefaultModelId.value = null
+            }
+        }
+    }
+
+    fun setAutoFillWebSearchEnabled(enabled: Boolean) {
+        if (_autoFillWebSearchEnabled.value == enabled) return
+        _autoFillWebSearchEnabled.value = enabled
+        persistCharacterAiSearchPreferences()
+    }
+
+    fun setRewriteWebSearchEnabled(enabled: Boolean) {
+        if (_rewriteWebSearchEnabled.value == enabled) return
+        _rewriteWebSearchEnabled.value = enabled
+        persistCharacterAiSearchPreferences()
+    }
+
+    private fun persistCharacterAiSearchPreferences() {
+        viewModelScope.launch(Dispatchers.IO) {
+            characterAiSearchPreferenceSaveMutex.withLock {
+                val settings = settingsRepository.getAppSettings()
+                settingsRepository.saveAppSettings(
+                    settings.copy(
+                        characterAutoFillWebSearchEnabled = _autoFillWebSearchEnabled.value,
+                        characterRewriteWebSearchEnabled = _rewriteWebSearchEnabled.value
+                    )
+                )
             }
         }
     }
@@ -578,6 +617,7 @@ class CharacterEditViewModel(
         userInput: String,
         modelId: String? = null,
         imagePath: String? = null,
+        webSearchEnabled: Boolean = _autoFillWebSearchEnabled.value,
         reusePrepared: Boolean = false
     ) {
         if (editMode != CharacterEditMode.STRUCTURED) {
@@ -597,7 +637,8 @@ class CharacterEditViewModel(
         }
         val selectedModelId = selectedModel?.id
         val currentCard = buildCurrentCard(markDirty = false)
-        val sourceSignature = "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n${currentCard.hashCode()}"
+        val sourceSignature =
+            "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n$webSearchEnabled\n${currentCard.hashCode()}"
         val previousState = _autoFillState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -656,6 +697,7 @@ class CharacterEditViewModel(
                     currentCard = currentCard,
                     modelOverride = selectedModel,
                     imageBase64s = imageBase64s,
+                    webSearchEnabled = webSearchEnabled,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
                         latestCheckpoint = checkpoint
@@ -1356,7 +1398,12 @@ class CharacterEditViewModel(
         }
     }
 
-    fun generateRewriteDraft(userInput: String, modelId: String? = null, reusePrepared: Boolean = false) {
+    fun generateRewriteDraft(
+        userInput: String,
+        modelId: String? = null,
+        webSearchEnabled: Boolean = _rewriteWebSearchEnabled.value,
+        reusePrepared: Boolean = false
+    ) {
         if (userInput.isBlank()) {
             _rewriteState.value = CharacterRewriteUiState(error = "请输入改写要求")
             return
@@ -1369,7 +1416,7 @@ class CharacterEditViewModel(
         }
         val currentCard = buildCurrentCard(markDirty = false)
         val selectedModelId = selectedModel?.id
-        val sourceSignature = "$userInput\n$selectedModelId\n${currentCard.hashCode()}"
+        val sourceSignature = "$userInput\n$selectedModelId\n$webSearchEnabled\n${currentCard.hashCode()}"
         val previousState = _rewriteState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -1407,6 +1454,7 @@ class CharacterEditViewModel(
                     userInput = userInput,
                     currentCard = currentCard,
                     modelOverride = selectedModel,
+                    webSearchEnabled = webSearchEnabled,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
                         latestCheckpoint = checkpoint

@@ -36,6 +36,7 @@ Use chatbar-model-request-runtime for provider parameters, model fallback, authe
 - Failed cover/avatar retries reuse completed Prompt design; if NovelAI already returned a final image and only saving failed, retry saves those bytes without generating again. Changed avatar source input invalidates its checkpoint.
 - Auto-fill/rewrite failure retry inherits completed image understanding, research plan, cleaned sources, organized research brief, and final raw output, then resumes from the next unfinished phase without clearing prior results.
 - Candidate dialogs expose a separate final-result retry. It clears only final raw output while retaining prepared research/image context; normal generate starts a fresh pipeline. Changed input, model, source image, or current card invalidates reuse.
+- Auto-fill and rewrite dialogs own separate persisted encyclopedia-search choices in `AppSettings.characterAutoFillWebSearchEnabled` and `characterRewriteWebSearchEnabled`; no shared global-settings switch controls them. Changed search choice also invalidates prepared retry context.
 - `CharacterInfo.appearanceImage` means character-owned chat/Moments avatar. It must not enter chat-model image understanding or character appearance text.
 
 ## Workflow

@@ -88,13 +88,18 @@ class CharacterAutoFillService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
-        imageBase64s: List<String> = emptyList()
+        imageBase64s: List<String> = emptyList(),
+        webSearchEnabled: Boolean = true
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
         val model = resolveModel(modelOverride)
         val imageContext = prepareImageContext(imageBase64s, model)
-        val researchBrief = if (userInput.isNotBlank()) buildResearchBrief(userInput, currentCard, model) else null
+        val researchBrief = if (userInput.isNotBlank()) {
+            buildResearchBrief(userInput, currentCard, model, webSearchEnabled = webSearchEnabled)
+        } else {
+            null
+        }
         val userPrompt = buildUserPrompt(userInput, currentCard, researchBrief, imageContext.promptContext)
 
         val raw = chatService.completeText(
@@ -115,6 +120,7 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
+        webSearchEnabled: Boolean = true,
         resumeFrom: CharacterAutoFillGenerationCheckpoint? = null,
         onCheckpoint: (CharacterAutoFillGenerationCheckpoint) -> Unit = {},
         onStatus: (String) -> Unit = {},
@@ -140,6 +146,7 @@ class CharacterAutoFillService(
                 userInput,
                 currentCard,
                 model,
+                webSearchEnabled,
                 onStatus,
                 onResearchDebug,
                 onVisibleOutput,
@@ -218,6 +225,7 @@ class CharacterAutoFillService(
         userInput: String,
         currentCard: CharacterCard,
         generationModel: ModelConfig,
+        webSearchEnabled: Boolean = true,
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
@@ -234,6 +242,7 @@ class CharacterAutoFillService(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = researchModel,
+                webSearchEnabled = webSearchEnabled,
                 onDebug = onResearchDebug,
                 resumeFrom = resumeFrom,
                 onCheckpoint = onCheckpoint,
