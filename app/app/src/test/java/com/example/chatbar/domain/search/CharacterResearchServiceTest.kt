@@ -90,6 +90,7 @@ class CharacterResearchServiceTest {
 
         requireNotNull(brief)
         assertEquals(listOf("compressed fact"), brief.facts)
+        assertTrue(brief.sources.isEmpty())
     }
 
     @Test
@@ -108,6 +109,8 @@ class CharacterResearchServiceTest {
         assertTrue(snapshots.any { it.plan?.queries?.singleOrNull()?.query == "canon query" })
         assertTrue(snapshots.any { it.sources.singleOrNull()?.excerpt?.contains("stable fact from extract") == true })
         assertTrue(snapshots.any { it.brief?.facts == listOf("compressed fact") })
+        assertTrue(snapshots.last().sources.isEmpty())
+        assertTrue(snapshots.last().briefRawResponsePreview.isBlank())
     }
 
     @Test
@@ -125,7 +128,10 @@ class CharacterResearchServiceTest {
             onDebug = { snapshots += it }
         )
 
-        assertTrue(snapshots.any { it.briefFailureReason == "summary parse failed" })
+        val finalSnapshot = snapshots.last()
+        assertEquals("summary parse failed", finalSnapshot.briefFailureReason)
+        assertTrue(finalSnapshot.sources.isNotEmpty())
+        assertTrue(finalSnapshot.brief?.sources?.isNotEmpty() == true)
     }
 
     @Test
@@ -191,12 +197,14 @@ class CharacterResearchServiceTest {
     }
 
     @Test
-    fun `research keeps up to ten final sources`() = runTest {
+    fun `research sends up to ten sources to summarizer then replaces them with brief`() = runTest {
         val backend = DistinctSearchBackend()
+        val summarizer = FakeSummarizer()
         val service = service(
             settings = AppSettings(webSearchEnabled = true),
             planner = MultiQueryPlanner(queryCount = 12),
-            backend = backend
+            backend = backend,
+            summarizer = summarizer
         )
 
         val brief = service.research("request", card(), model())
@@ -205,9 +213,10 @@ class CharacterResearchServiceTest {
         assertEquals(10, backend.searchCalls.size)
         assertEquals(10, backend.extractCalls.single().size)
         assertEquals(listOf(10), backend.extractMaxPagesCalls)
-        assertEquals(10, brief.sources.size)
-        assertTrue(brief.sources.all { it.excerpt.length > 900 })
-        assertTrue(brief.sources.last().excerpt.contains("stable fact 10"))
+        assertEquals(10, summarizer.lastSources.size)
+        assertTrue(summarizer.lastSources.all { it.excerpt.length > 900 })
+        assertTrue(summarizer.lastSources.last().excerpt.contains("stable fact 10"))
+        assertTrue(brief.sources.isEmpty())
     }
 
     @Test
@@ -225,9 +234,6 @@ class CharacterResearchServiceTest {
             plan = CharacterResearchPlan(
                 needSearch = true,
                 queries = listOf(CharacterResearchQuery("cached query"))
-            ),
-            sources = listOf(
-                ResearchSource("cached", "Cached", "https://cached", "wiki", "cached query", "cached source")
             ),
             brief = ResearchBrief(facts = listOf("cached fact"))
         )
@@ -400,6 +406,7 @@ class CharacterResearchServiceTest {
         )
     ) : ResearchBriefSummarizer {
         var calls: Int = 0
+        var lastSources: List<ResearchSource> = emptyList()
         override suspend fun summarize(
             request: String,
             currentCard: CharacterCard,
@@ -410,11 +417,18 @@ class CharacterResearchServiceTest {
             onRawText: (String) -> Unit
         ): ResearchBriefResult {
             calls += 1
+            lastSources = sources
             onRawText("{\"facts\":[\"compressed fact\"]}")
             return if (returnNull) {
-                ResearchBriefResult(failureReason = failureReason)
+                ResearchBriefResult(
+                    failureReason = failureReason,
+                    rawResponsePreview = "invalid summary"
+                )
             } else {
-                ResearchBriefResult(brief = brief.copy(sources = sources))
+                ResearchBriefResult(
+                    brief = brief.copy(sources = sources),
+                    rawResponsePreview = "successful summary"
+                )
             }
         }
     }

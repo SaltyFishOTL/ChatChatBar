@@ -63,6 +63,18 @@ class CharacterResearchService(
             onStatus("搜索规划失败，改用保底关键词继续搜索：${plan.queries.joinToString("、") { it.query }.statusSnippet(120)}")
         }
         publish(ResearchDebugSnapshot(plan = plan))
+        val resumedBrief = resumeFrom?.brief?.takeIf(ResearchBrief::hasContent)
+        if (resumedBrief != null) {
+            onStatus("沿用已整理的搜索资料，开始生成")
+            publish(
+                ResearchDebugSnapshot(
+                    plan = plan,
+                    sources = resumedBrief.sources,
+                    brief = resumedBrief
+                )
+            )
+            return@withContext resumedBrief
+        }
         if (!plan.needSearch || plan.queries.isEmpty()) {
             return@withContext null
         }
@@ -137,10 +149,8 @@ class CharacterResearchService(
         }
         publish(ResearchDebugSnapshot(plan = plan, sources = sources))
 
-        val resumedBrief = resumeFrom?.brief?.takeIf(ResearchBrief::hasContent)
-        if (resumedBrief != null) onStatus("沿用已整理的搜索资料，开始生成")
-        if (resumedBrief == null) onStatus("正在清洗并压缩百科资料：${sources.size} 个来源")
-        val summaryResult = if (resumedBrief == null) runCatching {
+        onStatus("正在清洗并压缩百科资料：${sources.size} 个来源")
+        val summaryResult = runCatching {
             summarizer.summarize(
                 request = userInput,
                 currentCard = currentCard,
@@ -152,26 +162,33 @@ class CharacterResearchService(
             )
         }.getOrElse { error ->
             ResearchBriefResult(failureReason = error.message ?: error::class.java.simpleName)
-        } else ResearchBriefResult(brief = resumedBrief)
-        if (summaryResult.failureReason.isNotBlank()) {
-            onStatus("搜索资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
-            publish(
-                ResearchDebugSnapshot(
-                    plan = plan,
-                    sources = sources,
-                    briefFailureReason = summaryResult.failureReason,
-                    briefRawResponsePreview = summaryResult.rawResponsePreview
-                )
-            )
         }
-        val brief = if (summaryResult.brief?.hasContent() == true) {
-            summaryResult.brief
+        val summarizedBrief = summaryResult.brief
+            ?.takeIf { it.hasSummaryText() }
+            ?.copy(sources = emptyList())
+        val brief = if (summarizedBrief != null) {
+            summarizedBrief
         } else {
+            if (summaryResult.failureReason.isNotBlank()) {
+                onStatus("搜索资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
+            }
             onStatus("AI资料整理不可用，使用清洗正文兜底摘要")
             ResearchCleaner.fallbackBrief(plan.reason, queries.map { it.query }, sources)
         }
         if (brief?.hasContent() == true) {
-            publish(ResearchDebugSnapshot(plan = plan, sources = sources, brief = brief))
+            publish(
+                ResearchDebugSnapshot(
+                    plan = plan,
+                    sources = if (summarizedBrief != null) emptyList() else sources,
+                    brief = brief,
+                    briefFailureReason = summaryResult.failureReason.takeIf {
+                        summarizedBrief == null
+                    }.orEmpty(),
+                    briefRawResponsePreview = summaryResult.rawResponsePreview.takeIf {
+                        summarizedBrief == null
+                    }.orEmpty()
+                )
+            )
             onStatus("搜索资料已整理，开始生成")
         } else {
             onStatus("搜索资料为空，继续直接生成")
@@ -183,6 +200,9 @@ class CharacterResearchService(
         replace(Regex("\\s+"), " ").trim().let { text ->
             if (text.length <= maxChars) text else text.take(maxChars - 1) + "…"
         }
+
+    private fun ResearchBrief.hasSummaryText(): Boolean =
+        facts.any(String::isNotBlank) || notes.any(String::isNotBlank)
 
     private fun fallbackPlan(
         userInput: String,

@@ -166,6 +166,7 @@ class CharacterAutoFillService(
             userPrompt.toChatApiMessage(imageContext.directImageBase64s)
         )
         val raw = StringBuilder(checkpoint.rawFinalText)
+        val previewThrottle = StreamingTextPreviewThrottle(onRawText)
         var streamError: String? = null
         if (checkpoint.rawFinalText.isBlank()) chatService.streamText(
             messages = messages,
@@ -176,7 +177,7 @@ class CharacterAutoFillService(
             when (event) {
                 is StreamEvent.Delta -> {
                     raw.append(event.text)
-                    onRawText(raw.toString())
+                    previewThrottle.publishIfDue(raw)
                 }
                 is StreamEvent.Error -> streamError = event.message
                 StreamEvent.Done,
@@ -186,6 +187,7 @@ class CharacterAutoFillService(
         }
 
         val rawText = raw.toString()
+        previewThrottle.publishFinal(rawText)
         if (rawText.isBlank()) {
             error(streamError ?: "AI 自动填充返回空内容")
         }

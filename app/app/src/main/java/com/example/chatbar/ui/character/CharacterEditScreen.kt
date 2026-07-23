@@ -1893,6 +1893,10 @@ private fun GenerationProgressPanel(
 
 @Composable
 private fun AutoFillRawStreamPreview(rawText: String) {
+    val previewText = remember(rawText) {
+        rawText.takeLast(LIVE_STREAM_PREVIEW_MAX_CHARS)
+    }
+    val omittedChars = rawText.length - previewText.length
     CbSurface(
         Modifier.fillMaxWidth(),
         color = ChatBarTheme.colors.muted,
@@ -1900,10 +1904,19 @@ private fun AutoFillRawStreamPreview(rawText: String) {
     ) {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
             CbText("实时输出", style = ChatBarTheme.typography.heading)
-            CbText(rawText, color = ChatBarTheme.colors.mutedForeground)
+            if (omittedChars > 0) {
+                CbText(
+                    "已省略前 ${omittedChars} 字，完整输出仍用于候选解析",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbText(previewText, color = ChatBarTheme.colors.mutedForeground)
         }
     }
 }
+
+private const val LIVE_STREAM_PREVIEW_MAX_CHARS = 4_000
 
 @Composable
 private fun CoverImagePreview(
