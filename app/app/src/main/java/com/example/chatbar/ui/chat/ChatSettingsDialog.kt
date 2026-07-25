@@ -233,7 +233,11 @@ fun ChatSettingsDialog(
         properties = DialogProperties(usePlatformDefaultWidth = false)
     ) {
         Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
-            Column(Modifier.fillMaxSize()) {
+            Column(
+                Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.navigationBars)
+            ) {
                 CbTopBar(
                     title = "会话设置",
                     statusBarInset = true,

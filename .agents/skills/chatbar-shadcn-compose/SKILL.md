@@ -1,6 +1,6 @@
 ---
 name: chatbar-shadcn-compose
-description: Build or migrate ChatBar Android UI using shadcn/ui design principles implemented with Jetpack Compose Foundation primitives. Use for ChatBar themes, UI kit components, screens, forms, dialogs, sheets, tabs, list items, buttons, inputs, visual consistency, or removal of Material 3 UI dependencies.
+description: Build or migrate ChatBar Android UI using shadcn/ui design principles implemented with Jetpack Compose Foundation primitives. Use for ChatBar themes, UI kit components, responsive or compact-height layouts, screens, forms, dialogs, sheets, tabs, list items, buttons, inputs, visual consistency, or removal of Material 3 UI dependencies.
 ---
 
 # ChatBar shadcn Compose
@@ -32,6 +32,8 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 ## Fullscreen and IME Insets
 
 - Every screen must keep actionable content above gesture/navigation controls and IME. Apply navigation-bar and IME insets to scrolling or bottom-action region, including Android three-button navigation.
+- `CbDialog` owns safe-drawing/IME padding, available-window height, and fixed title/action regions. Do not duplicate those insets in ordinary dialog content. Large dialog bodies must still provide their own bounded `LazyColumn` or `verticalScroll` container so the flexible body can scroll on 360×640dp screens.
+- Fullscreen custom `Dialog` pages do not inherit `CbDialog` behavior; keep status-bar handling in `CbTopBar` and apply navigation-bar padding to the full-page content.
 - Every multi-line or otherwise large text input must expose standard `CbField(onFullscreenEdit = ...)` entry and reuse `FullscreenTextEditor`; keep screen state source of truth.
 - `FullscreenTextEditor` owns an internal transient text draft. Dismiss/× discards it; confirm/√ commits once. Custom confirm callbacks receive the final `String` or `TextFieldValue`; use `canConfirm` when validity depends on the transient draft.
 - `FullscreenTextEditor` is activity-hosted. When launching it from `CbDialog`, stop composing the dialog while the editor is visible, then restore it on close; the dialog's separate window otherwise covers the editor.

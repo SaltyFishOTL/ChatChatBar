@@ -12,12 +12,15 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -68,7 +71,12 @@ fun DebugLogDialog(
     var rebuilding by remember { mutableStateOf(false) }
     var rebuildResult by remember { mutableStateOf<String?>(null) }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
+        Column(
+            modifier
+                .fillMaxSize()
+                .background(ChatBarTheme.colors.background)
+                .windowInsetsPadding(WindowInsets.navigationBars)
+        ) {
             CbTopBar(
                 title = "调试控制台",
                 statusBarInset = true,

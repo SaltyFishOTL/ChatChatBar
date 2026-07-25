@@ -1,6 +1,6 @@
 ---
 name: chatbar-emulator-test
-description: Run and verify ChatBar on its configured Android emulator or connected device. Use for Gradle checks, CI-equivalent verification, APK builds, release redeploy, emulator startup, instrumented tests, adb interaction, screenshots, logs, and install troubleshooting.
+description: Run and verify ChatBar on its configured Android emulator or connected device. Use for Gradle checks, CI-equivalent verification, APK builds, release redeploy, emulator startup, instrumented tests, adb interaction, alternate resolution or density checks, screenshots, logs, and install troubleshooting.
 ---
 
 # ChatBar Android Testing
@@ -57,6 +57,14 @@ Use repository scripts as primary entry points. Follow AGENTS.md for verificatio
 4. Use redeploy.bat for a physical phone; use emu.cmd or debug install for the configured emulator.
 5. Launch MainActivity and verify process/activity state.
 6. Use logcat, screenshots, or instrumented tests only for the behavior under test.
+
+## Alternate Resolution Verification
+
+- Apply `wm size` / `wm density` overrides only to an explicitly targeted emulator serial, never a physical device.
+- Read current physical and override values before changing them. For 1080×1920 compact-height coverage, use `1080x1920` and `480`, then confirm `dumpsys window` reports `w360dp h640dp`.
+- Target every install, input, screenshot, test, and cleanup command with `-s emulator-5554` when a physical device is also connected.
+- Once the user starts manual testing, leave the emulator, resolution, app, and test state untouched until the user explicitly says testing is finished or asks for a change.
+- For agent-only verification, reset size/density and close only the emulator instance started by the agent after evidence is collected. Remove temporary screenshots and UI dumps.
 
 ## Useful ADB Checks
 

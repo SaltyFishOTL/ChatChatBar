@@ -9,6 +9,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -18,8 +19,11 @@ import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.CircleShape
@@ -364,34 +368,56 @@ fun CbDialog(
                 .fillMaxSize()
                 .background(ChatBarTheme.colors.dim)
                 .clickable(enabled = dismissOnClickOutside, onClick = onDismissRequest),
-            contentAlignment = Alignment.Center
         ) {
-            CbSurface(
-                modifier = modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = ChatBarSpacing.xxl)
-                    .clickable(
-                        interactionSource = surfaceInteraction,
-                        indication = null,
-                        onClick = {}
+            BoxWithConstraints(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .windowInsetsPadding(WindowInsets.safeDrawing)
+                    .imePadding()
+                    .padding(
+                        horizontal = ChatBarSpacing.xxl,
+                        vertical = ChatBarSpacing.md
                     ),
-                border = BorderStroke(1.dp, ChatBarTheme.colors.border),
-                elevation = ChatBarElevation.high
+                contentAlignment = Alignment.Center
             ) {
-                Column(Modifier.padding(ChatBarSpacing.lg)) {
-                    CbText(title, style = ChatBarTheme.typography.heading)
-                    Spacer(Modifier.height(ChatBarSpacing.md))
-                    content()
-                    if (confirm != null || dismiss != null) {
-                        Spacer(Modifier.height(ChatBarSpacing.lg))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically
+                CbSurface(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = maxHeight)
+                        .then(modifier)
+                        .clickable(
+                            interactionSource = surfaceInteraction,
+                            indication = null,
+                            onClick = {}
+                        ),
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+                    elevation = ChatBarElevation.high
+                ) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .padding(ChatBarSpacing.lg)
+                    ) {
+                        CbText(title, style = ChatBarTheme.typography.heading)
+                        Spacer(Modifier.height(ChatBarSpacing.md))
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = false)
                         ) {
-                            dismiss?.invoke()
-                            if (dismiss != null && confirm != null) Spacer(Modifier.size(ChatBarSpacing.sm))
-                            confirm?.invoke()
+                            Column(Modifier.fillMaxWidth(), content = content)
+                        }
+                        if (confirm != null || dismiss != null) {
+                            Spacer(Modifier.height(ChatBarSpacing.lg))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                dismiss?.invoke()
+                                if (dismiss != null && confirm != null) Spacer(Modifier.size(ChatBarSpacing.sm))
+                                confirm?.invoke()
+                            }
                         }
                     }
                 }
