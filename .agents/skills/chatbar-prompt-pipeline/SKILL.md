@@ -32,12 +32,13 @@ Do not move behavior between these owners without tracing every caller and test.
 ## Layer Invariants
 
 - Stable layer contains reusable role, format, reply, supplementary, player, and core settings.
+- Keep the format card as the final substantive stable section, immediately before the optional chat-history heading.
 - Dynamic layer contains World Book, RAG, Archive, HEAD, and timeline material.
 - Tail layer contains post-history instructions and the previous-turn heading.
 - Preserve dynamic order: World Book, RAG, Archive, then HEAD/timeline constraint.
 - Insert cacheable earlier history after the stable layer.
 - Move a complete adjacent USER + ASSISTANT previous turn into the tail hot zone when available. Preserve opening assistants, consecutive users, unanswered users, and other abnormal messages in original order.
-- Append current user input last. Per-turn speaker/length constraints remain system messages near the tail, not merged into user text.
+- Append current user input last. Add `PromptTemplates` format/length reminder suffix only to that final request copy; never persist, index, or reuse it as history or memory source text. Per-turn speaker/length constraint details remain system messages near the tail.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
 - Cleartext HTTP adaptation changes later system roles to assistant in serialized JSON but never moves or merges their content; stable prefix and tail positions remain unchanged.
 - Omit empty sections and their headings.

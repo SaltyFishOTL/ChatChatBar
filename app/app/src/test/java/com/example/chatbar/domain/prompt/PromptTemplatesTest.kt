@@ -25,6 +25,21 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun currentUserOutputRequirements_areInjectedOnlyIntoRequestCopyAtMessageEnd() {
+        val persistedContent = "扶她起来"
+
+        val requestContent =
+            PromptTemplates.injectCurrentUserOutputRequirements(persistedContent)
+
+        assertEquals("扶她起来", persistedContent)
+        assertEquals(
+            "扶她起来（严格按照格式要求、字数要求进行输出！）",
+            requestContent
+        )
+        assertTrue(requestContent.endsWith(PromptTemplates.CURRENT_USER_OUTPUT_REQUIREMENTS_SUFFIX))
+    }
+
+    @Test
     fun memoryPromptsRequireContinuousCoverageAndProgramRanges() {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(

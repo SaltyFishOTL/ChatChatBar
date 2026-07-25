@@ -191,13 +191,6 @@ class PromptAssembler {
         )
         addRawSection(PromptLayer.DYNAMIC, memoryArchive.orEmpty())
         addRawSection(PromptLayer.DYNAMIC, memoryHeadAndTimeline.orEmpty())
-        if (formatCard != null && formatCard.content.isNotBlank()) {
-            addSection(
-                PromptLayer.STABLE,
-                PromptTemplates.SECTION_FORMAT,
-                "严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}"
-            )
-        }
         addSection(
             PromptLayer.STABLE,
             PromptTemplates.SECTION_REPLY,
@@ -226,6 +219,13 @@ class PromptAssembler {
             PromptTemplates.SECTION_CORE,
             resolveSystemPrompt(characterCard)
         )
+        if (formatCard != null && formatCard.content.isNotBlank()) {
+            addSection(
+                PromptLayer.STABLE,
+                PromptTemplates.SECTION_FORMAT,
+                "严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}"
+            )
+        }
         addSection(
             PromptLayer.TAIL,
             PromptTemplates.SECTION_POST_HISTORY,

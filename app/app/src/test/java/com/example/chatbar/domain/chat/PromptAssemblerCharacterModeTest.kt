@@ -154,6 +154,31 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
     }
 
+    @Test fun cacheLayerKeepsFormatCardAsLastStableContentBeforeHistoryHeading() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card(basicSetting = "稳定角色设定").copy(systemPrompt = "核心规则"),
+            playerSetting = "玩家资料",
+            supplementarySetting = "补充资料",
+            formatCard = FormatCard(
+                id = "format",
+                name = "格式",
+                content = "格式正文",
+                createdAt = 1
+            ),
+            replyLength = "500字中篇",
+            hasHistoryMessages = true
+        )
+        val stable = layers.stableSystemPrompt
+        val core = stable.indexOf("核心规则")
+        val format = stable.indexOf("【格式要求】")
+        val history = stable.indexOf("【聊天记录】")
+
+        assertTrue(core >= 0)
+        assertTrue(core < format)
+        assertTrue(format < history)
+        assertTrue(stable.endsWith("格式正文\n\n【聊天记录】"))
+    }
+
     @Test fun cacheLayersOmitHistoryHeadingsWhenGroupsAreEmpty() {
         val layers = assembler.assembleCachePromptLayers(characterCard = card())
 
