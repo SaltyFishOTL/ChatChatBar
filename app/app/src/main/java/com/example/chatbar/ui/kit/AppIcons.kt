@@ -36,6 +36,7 @@ import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.SlidersHorizontal
 import com.composables.icons.lucide.Smile
 import com.composables.icons.lucide.Star
+import com.composables.icons.lucide.Square
 import com.composables.icons.lucide.Trash
 import com.composables.icons.lucide.Trash2
 import com.composables.icons.lucide.Upload
@@ -84,6 +85,7 @@ object AppIcons {
     val Send: ImageVector get() = Lucide.Send
     val Settings: ImageVector get() = Lucide.Settings
     val Star: ImageVector get() = Lucide.Star
+    val Stop: ImageVector get() = Lucide.Square
     val Tune: ImageVector get() = Lucide.SlidersHorizontal
     val UploadFile: ImageVector get() = Lucide.Upload
     val Volume: ImageVector get() = Lucide.Volume2

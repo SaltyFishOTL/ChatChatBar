@@ -219,6 +219,7 @@ fun ChatBubble(
     voicePlacements: List<VoiceMessagePlacement> = emptyList(),
     voicePlaybackState: VoicePlaybackState = VoicePlaybackState(),
     onVoiceClick: ((GeneratedVoiceMessage) -> Unit)? = null,
+    onVoiceStop: (() -> Unit)? = null,
     onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)? = null,
     selectedBlockIds: Set<String> = emptySet(),
     onToggleBlockSelected: ((String) -> Unit)? = null,
@@ -254,6 +255,7 @@ fun ChatBubble(
             voicePlacements = voicePlacements,
             voicePlaybackState = voicePlaybackState,
             onVoiceClick = onVoiceClick,
+            onVoiceStop = onVoiceStop,
             onVoiceLongPress = onVoiceLongPress,
             selectedBlockIds = selectedBlockIds,
             onToggleBlockSelected = onToggleBlockSelected,
@@ -286,6 +288,7 @@ fun ChatBubble(
             voicePlacements = voicePlacements,
             voicePlaybackState = voicePlaybackState,
             onVoiceClick = onVoiceClick,
+            onVoiceStop = onVoiceStop,
             onVoiceLongPress = onVoiceLongPress,
             selectedBlockIds = selectedBlockIds,
             onToggleBlockSelected = onToggleBlockSelected,
@@ -323,6 +326,7 @@ private fun SegmentedAssistantBubble(
     voicePlacements: List<VoiceMessagePlacement>,
     voicePlaybackState: VoicePlaybackState,
     onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceStop: (() -> Unit)?,
     onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     selectedBlockIds: Set<String>,
     onToggleBlockSelected: ((String) -> Unit)?,
@@ -387,6 +391,7 @@ private fun SegmentedAssistantBubble(
                         blockId = voiceBlockId,
                         onToggleSelected = onToggleBlockSelected,
                         onClick = onVoiceClick,
+                        onStop = onVoiceStop,
                         onLongPress = onVoiceLongPress,
                         exportMode = exportMode
                     )
@@ -471,6 +476,7 @@ private fun SegmentedAssistantBubble(
                         voices = segmentVoices,
                         voicePlaybackState = voicePlaybackState,
                         onVoiceClick = onVoiceClick,
+                        onVoiceStop = onVoiceStop,
                         onVoiceLongPress = onVoiceLongPress,
                         selectedBlockIds = selectedBlockIds,
                         expanded = blockId in expandedStatusBlockIds,
@@ -533,6 +539,7 @@ private fun SegmentBubble(
     voices: List<GeneratedVoiceMessage>,
     voicePlaybackState: VoicePlaybackState,
     onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceStop: (() -> Unit)?,
     onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     selectedBlockIds: Set<String>,
     expanded: Boolean,
@@ -663,6 +670,7 @@ private fun SegmentBubble(
                             blockId = voiceBlockId,
                             onToggleSelected = onToggleSelected,
                             onClick = onVoiceClick,
+                            onStop = onVoiceStop,
                             onLongPress = onVoiceLongPress,
                             exportMode = exportMode
                         )
@@ -702,6 +710,7 @@ private fun SegmentBubble(
                         blockId = voiceBlockId,
                         onToggleSelected = onToggleSelected,
                         onClick = onVoiceClick,
+                        onStop = onVoiceStop,
                         onLongPress = onVoiceLongPress,
                         exportMode = exportMode
                     )
@@ -861,6 +870,7 @@ private fun LegacyChatBubble(
     voicePlacements: List<VoiceMessagePlacement>,
     voicePlaybackState: VoicePlaybackState,
     onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceStop: (() -> Unit)?,
     onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     selectedBlockIds: Set<String>,
     onToggleBlockSelected: ((String) -> Unit)?,
@@ -1015,6 +1025,7 @@ private fun LegacyChatBubble(
                         blockId = voiceBlockId,
                         onToggleSelected = onToggleBlockSelected,
                         onClick = onVoiceClick,
+                        onStop = onVoiceStop,
                         onLongPress = onVoiceLongPress,
                         exportMode = exportMode
                     )
@@ -1057,6 +1068,7 @@ private fun VoiceMessageBubble(
     blockId: String,
     onToggleSelected: ((String) -> Unit)?,
     onClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onStop: (() -> Unit)?,
     onLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     exportMode: Boolean
 ) {
@@ -1078,69 +1090,95 @@ private fun VoiceMessageBubble(
         0.55f
     }
     Row(
-        modifier = Modifier
-            .width(width)
-            .background(
-                if (selected) ChatBarTheme.colors.primaryAlpha else ChatBarTheme.colors.card,
-                RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
-            )
-            .border(
-                1.dp,
-                if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border,
-                RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
-            )
-            .combinedClickable(
-                enabled = if (selectionMode) selectionEnabled && onToggleSelected != null
-                else !exportMode && ((playable && onClick != null) || onLongPress != null),
-                onClick = {
-                    if (selectionMode) onToggleSelected?.invoke(blockId)
-                    else if (playable) onClick?.invoke(voice)
-                },
-                onLongClick = {
-                    if (!selectionMode && !exportMode) onLongPress?.invoke(voice)
-                }
-            )
-            .semantics {
-                contentDescription = buildString {
-                    append("语音消息，")
-                    append(durationSeconds)
-                    append(" 秒")
-                    if (!playable) append("，本地文件不可用")
-                    if (isPlaying) append("，正在播放")
-                }
-            }
-            .padding(horizontal = 11.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(8.dp)
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
     ) {
-        CbIcon(
-            AppIcons.Volume,
-            null,
-            Modifier.size(18.dp),
-            if (isPlaying) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground
-        )
         Row(
-            Modifier.weight(1f),
-            horizontalArrangement = Arrangement.spacedBy(2.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            listOf(8f, 13f, 10f).forEachIndexed { index, height ->
-                Box(
-                    Modifier
-                        .width(2.dp)
-                        .height((height * if (isPlaying) (pulse + index * 0.12f).coerceAtMost(1f) else 0.7f).dp)
-                        .background(
-                            if (isPlaying) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
-                            RoundedCornerShape(1.dp)
-                        )
+            modifier = Modifier
+                .width(width)
+                .background(
+                    if (selected) ChatBarTheme.colors.primaryAlpha else ChatBarTheme.colors.card,
+                    RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
                 )
+                .border(
+                    1.dp,
+                    if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border,
+                    RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
+                )
+                .combinedClickable(
+                    enabled = if (selectionMode) selectionEnabled && onToggleSelected != null
+                    else !exportMode && ((playable && onClick != null) || onLongPress != null),
+                    onClick = {
+                        if (selectionMode) onToggleSelected?.invoke(blockId)
+                        else if (playable) onClick?.invoke(voice)
+                    },
+                    onLongClick = {
+                        if (!selectionMode && !exportMode) onLongPress?.invoke(voice)
+                    }
+                )
+                .semantics {
+                    contentDescription = buildString {
+                        append("语音消息，")
+                        append(durationSeconds)
+                        append(" 秒")
+                        if (!playable) append("，本地文件不可用")
+                        if (isPlaying) append("，正在播放")
+                    }
+                }
+                .padding(horizontal = 11.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CbIcon(
+                AppIcons.Volume,
+                null,
+                Modifier.size(18.dp),
+                if (isPlaying) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground
+            )
+            Row(
+                Modifier.weight(1f),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                listOf(8f, 13f, 10f).forEachIndexed { index, height ->
+                    Box(
+                        Modifier
+                            .width(2.dp)
+                            .height(
+                                (
+                                    height * if (isPlaying) {
+                                        (pulse + index * 0.12f).coerceAtMost(1f)
+                                    } else {
+                                        0.7f
+                                    }
+                                ).dp
+                            )
+                            .background(
+                                if (isPlaying) {
+                                    ChatBarTheme.colors.primary
+                                } else {
+                                    ChatBarTheme.colors.mutedForeground
+                                },
+                                RoundedCornerShape(1.dp)
+                            )
+                    )
+                }
             }
+            CbText(
+                if (playable) "${durationSeconds}″" else "不可用",
+                color = if (playable) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.destructive,
+                style = ChatBarTheme.typography.caption
+            )
         }
-        CbText(
-            if (playable) "${durationSeconds}″" else "不可用",
-            color = if (playable) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.destructive,
-            style = ChatBarTheme.typography.caption
-        )
+        if (isPlaying && onStop != null && !selectionMode && !exportMode) {
+            CbIconButton(
+                imageVector = AppIcons.Stop,
+                contentDescription = "停止语音播放",
+                onClick = onStop,
+                modifier = Modifier.size(48.dp),
+                tint = ChatBarTheme.colors.primary
+            )
+        }
     }
 }
 

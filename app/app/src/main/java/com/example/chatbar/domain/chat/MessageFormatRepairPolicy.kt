@@ -3,9 +3,11 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
+import com.example.chatbar.domain.prompt.PromptTemplates
 
 object MessageFormatRepairPolicy {
     fun progressiveOverlay(original: String, repairedPrefix: String): String {
+        if (isPossibleUnchangedMarkerPrefix(repairedPrefix)) return original
         if (repairedPrefix.isEmpty()) return original
         val prefixLength = repairedPrefix.codePointCount()
         val originalLength = original.codePointCount()
@@ -13,6 +15,9 @@ object MessageFormatRepairPolicy {
         val suffixStart = original.offsetByCodePoints(0, prefixLength)
         return repairedPrefix + original.substring(suffixStart)
     }
+
+    fun isUnchangedResult(modelOutput: String): Boolean =
+        modelOutput.trim() == PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER
 
     fun completedRepairNotice(original: String, repaired: String): MessageFormatRepairNotice =
         MessageFormatRepairNotice(
@@ -58,6 +63,14 @@ object MessageFormatRepairPolicy {
             notice = null,
             updatedAt = updatedAt
         )
+    }
+
+    private fun isPossibleUnchangedMarkerPrefix(outputPrefix: String): Boolean {
+        val marker = PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER
+        val trimmedStart = outputPrefix.trimStart()
+        if (trimmedStart.isEmpty() || marker.startsWith(trimmedStart)) return true
+        if (!trimmedStart.startsWith(marker)) return false
+        return trimmedStart.removePrefix(marker).isBlank()
     }
 }
 

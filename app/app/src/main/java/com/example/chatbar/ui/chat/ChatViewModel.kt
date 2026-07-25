@@ -5,6 +5,7 @@ import android.content.Context
 import android.os.PowerManager
 import android.provider.Settings
 import android.util.Base64
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
@@ -91,6 +92,7 @@ import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.coroutineContext
 
 private class UserStoppedResponseGenerationException : CancellationException("用户停止生成")
+private const val CHAT_VIEW_MODEL_TAG = "ChatViewModel"
 
 enum class ImageGenerationPhase {
     QUEUED,
@@ -317,6 +319,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private var draftTouched = false
     private var draftSaveSequence = 0
+    private val scrollPositionSaveSequence = AtomicLong(System.currentTimeMillis())
     private var responseJob: Job? = null
     private var manualFormatRepairJob: Job? = null
     private var activeFormatRepairJob: Job? = null
@@ -1809,7 +1812,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         throw IllegalStateException("格式修复模型返回空结果")
                     }
                     result = when {
-                        repairedPrefix == originalContent -> {
+                        MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
+                            repairedPrefix == originalContent -> {
                             val unchanged = message.copy(
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
@@ -1899,6 +1903,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     chatRepository.updateSessionDraft(sessionId, text)
                 }
             } catch (_: Exception) {}
+        }
+    }
+
+    internal suspend fun loadChatScrollPosition(): ChatScrollPosition? =
+        runCatching { chatRepository.getScrollPosition(sessionId) }
+            .onFailure { error ->
+                Log.w(CHAT_VIEW_MODEL_TAG, "Failed to load chat scroll position", error)
+            }
+            .getOrNull()
+
+    internal fun persistChatScrollPosition(position: ChatScrollPosition) {
+        val capturedAt = scrollPositionSaveSequence.updateAndGet { previous ->
+            maxOf(previous + 1, System.currentTimeMillis())
+        }
+        ChatBarApp.instance.applicationScope.launch {
+            runCatching {
+                chatRepository.updateScrollPosition(position.copy(capturedAt = capturedAt))
+            }.onFailure { error ->
+                Log.w(CHAT_VIEW_MODEL_TAG, "Failed to persist chat scroll position", error)
+            }
         }
     }
 
@@ -3034,6 +3058,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 message.images.forEach { deleteDisposableChatImage(it) }
                 chatRepository.deleteMessage(message.id, sessionId)
             }
+            chatRepository.deleteScrollPosition(sessionId)
             
             // 2. 清空 RAG 向量库对应的 CHAT_MEMORY 类型
             ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, sessionId)

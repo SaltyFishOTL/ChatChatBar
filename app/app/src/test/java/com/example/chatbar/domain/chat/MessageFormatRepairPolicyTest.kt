@@ -4,8 +4,11 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.prompt.PromptTemplates
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MessageFormatRepairPolicyTest {
@@ -14,6 +17,25 @@ class MessageFormatRepairPolicyTest {
         assertEquals("修😀尾", MessageFormatRepairPolicy.progressiveOverlay("原😀尾", "修😀"))
         assertEquals("完整更长", MessageFormatRepairPolicy.progressiveOverlay("原文", "完整更长"))
         assertEquals("原文", MessageFormatRepairPolicy.progressiveOverlay("原文", ""))
+    }
+
+    @Test
+    fun progressiveOverlay_hidesPossibleUnchangedMarker() {
+        val marker = PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER
+
+        assertEquals("原文", MessageFormatRepairPolicy.progressiveOverlay("原文", "[[CHAT"))
+        assertEquals("原文", MessageFormatRepairPolicy.progressiveOverlay("原文", "\n$marker"))
+        assertEquals("修文", MessageFormatRepairPolicy.progressiveOverlay("原文", "修"))
+    }
+
+    @Test
+    fun unchangedResult_requiresExactTrimmedMarker() {
+        val marker = PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER
+
+        assertTrue(MessageFormatRepairPolicy.isUnchangedResult(marker))
+        assertTrue(MessageFormatRepairPolicy.isUnchangedResult("\n$marker \n"))
+        assertFalse(MessageFormatRepairPolicy.isUnchangedResult("$marker\n额外内容"))
+        assertFalse(MessageFormatRepairPolicy.isUnchangedResult("原文"))
     }
 
     @Test

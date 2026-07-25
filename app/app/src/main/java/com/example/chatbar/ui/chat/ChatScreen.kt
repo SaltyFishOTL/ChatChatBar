@@ -50,6 +50,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
@@ -87,6 +88,7 @@ import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
+import com.example.chatbar.domain.chat.ChatScrollPositionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
@@ -259,6 +261,31 @@ fun ChatScreen(
         session?.memoryHeadCommitId,
         session?.memoryUpdateStatus
     ) { mutableStateOf(false) }
+    val latestMessages by rememberUpdatedState(messages)
+    val latestStreamingMessageId by rememberUpdatedState(streamingMessage?.id)
+    val latestInitialScrollDone by rememberUpdatedState(initialScrollDone)
+
+    fun captureScrollPosition() = ChatScrollPositionPolicy.capture(
+        sessionId = sessionId,
+        messageIds = messages.map { it.id },
+        firstVisibleItemIndex = listState.firstVisibleItemIndex,
+        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+        transientMessageId = streamingMessage?.id
+    )
+
+    DisposableEffect(viewModel, sessionId) {
+        onDispose {
+            if (latestInitialScrollDone) {
+                ChatScrollPositionPolicy.capture(
+                    sessionId = sessionId,
+                    messageIds = latestMessages.map { it.id },
+                    firstVisibleItemIndex = listState.firstVisibleItemIndex,
+                    firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
+                    transientMessageId = latestStreamingMessageId
+                )?.let(viewModel::persistChatScrollPosition)
+            }
+        }
+    }
 
     LaunchedEffect(memoryChatBlocked) {
         if (memoryChatBlocked) fullComposer = false
@@ -602,8 +629,21 @@ fun ChatScreen(
         }
     }
 
-    LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) {
-        if (!restoringViewport) viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+    LaunchedEffect(
+        listState.firstVisibleItemIndex,
+        listState.firstVisibleItemScrollOffset,
+        listState.isScrollInProgress,
+        initialScrollDone,
+        restoringViewport,
+        messages,
+        streamingMessage?.id
+    ) {
+        if (!restoringViewport) {
+            viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+            if (initialScrollDone && !listState.isScrollInProgress) {
+                captureScrollPosition()?.let(viewModel::persistChatScrollPosition)
+            }
+        }
     }
     LaunchedEffect(messages, assistantSegmentedBubblesEnabled, voicePlacements) {
         val cleaned = cleanChatScreenshotSelection(
@@ -647,10 +687,28 @@ fun ChatScreen(
     }
     LaunchedEffect(messages.size) {
         if (!initialScrollDone && messages.isNotEmpty()) {
-            initialScrollDone = true; restoringViewport = true
-            scrollToBottom(animated = false, expectedItemCount = messages.size)
-            viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
-            restoringViewport = false
+            restoringViewport = true
+            try {
+                snapshotFlow { listState.layoutInfo.totalItemsCount }
+                    .first { it >= messages.size }
+                val position = viewModel.loadChatScrollPosition()
+                val restoredIndex = position?.let {
+                    ChatScrollPositionPolicy.restoreMessageIndex(
+                        position = it,
+                        messageIds = messages.map { message -> message.id }
+                    )
+                }
+                if (position != null && restoredIndex != null) {
+                    listState.scrollToItem(restoredIndex, position.scrollOffset)
+                } else {
+                    scrollToBottom(animated = false)
+                }
+                viewportAnchor =
+                    listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+                initialScrollDone = true
+            } finally {
+                restoringViewport = false
+            }
         }
     }
     LaunchedEffect(streamingMessage?.content?.length, streamingMessage?.reasoningContent?.length) {
@@ -799,6 +857,7 @@ fun ChatScreen(
                         voicePlacements = messageVoices,
                         voicePlaybackState = voicePlaybackState,
                         onVoiceClick = if (screenshotSelectionMode) null else viewModel::playVoice,
+                        onVoiceStop = if (screenshotSelectionMode) null else viewModel::stopVoicePlayback,
                         onVoiceLongPress = if (screenshotSelectionMode) null else ({ voice ->
                             voiceActionTarget = voice
                         }),

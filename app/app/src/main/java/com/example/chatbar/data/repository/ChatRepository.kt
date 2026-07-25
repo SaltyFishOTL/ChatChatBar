@@ -3,6 +3,7 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChatScrollPosition
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
@@ -26,6 +27,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         private const val SESSION_TYPE = "chat_sessions"
         private const val MESSAGE_TYPE = "chat_messages"
         private const val DRAFT_TYPE = "chat_drafts"
+        private const val SCROLL_POSITION_TYPE = "chat_scroll_positions"
     }
 
     private val _sessions = MutableStateFlow<List<ChatSession>>(emptyList())
@@ -33,6 +35,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private var initialized = false
     private val messageAppendMutex = Mutex()
+    private val scrollPositionMutex = Mutex()
 
     suspend fun initialize() {
         if (initialized) return
@@ -93,6 +96,32 @@ class ChatRepository(private val storage: JsonFileStorage) {
         storage.deleteEntity<ChatDraft>(DRAFT_TYPE, id)
     }
 
+    suspend fun getScrollPosition(sessionId: String): ChatScrollPosition? {
+        return storage.loadEntity(
+            SCROLL_POSITION_TYPE,
+            sessionId,
+            ChatScrollPosition.serializer()
+        )
+    }
+
+    suspend fun updateScrollPosition(position: ChatScrollPosition) =
+        scrollPositionMutex.withLock {
+            if (getSession(position.sessionId) == null) return@withLock
+            val current = getScrollPosition(position.sessionId)
+            if (current != null && current.capturedAt >= position.capturedAt) return@withLock
+            storage.saveEntity(
+                SCROLL_POSITION_TYPE,
+                position.sessionId,
+                position,
+                ChatScrollPosition.serializer()
+            )
+        }
+
+    suspend fun deleteScrollPosition(sessionId: String) =
+        scrollPositionMutex.withLock {
+            storage.deleteEntity<ChatScrollPosition>(SCROLL_POSITION_TYPE, sessionId)
+        }
+
     suspend fun deleteSession(id: String) {
         deleteSessionRecord(id)
         deleteMessagesForSession(id)
@@ -101,6 +130,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun deleteSessionRecord(id: String) {
         storage.deleteEntity<ChatSession>(SESSION_TYPE, id)
         deleteSessionDraft(id)
+        deleteScrollPosition(id)
         _sessions.value = _sessions.value.filterNot { it.id == id }
     }
 
@@ -274,6 +304,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             messageStorageId(sessionId, normalized.id) to normalized
         }
         deleteMessagesForSession(sessionId)
+        deleteScrollPosition(sessionId)
         storage.saveAll(MESSAGE_TYPE, entities, ChatMessage.serializer())
         getSession(sessionId)?.let { session ->
             val nextSource = messages.mapNotNull { it.sourceTurnOrder }.maxOrNull()?.plus(1) ?: 1

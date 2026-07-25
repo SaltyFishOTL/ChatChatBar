@@ -6,6 +6,15 @@ import org.junit.Test
 
 class MessageFormatRepairPromptTest {
     @Test
+    fun `system prompt includes unchanged result protocol marker`() {
+        assertTrue(
+            PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.contains(
+                PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER
+            )
+        )
+    }
+
+    @Test
     fun `omits empty optional rule blocks`() {
         val prompt = PromptTemplates.messageFormatRepairUserPrompt(
             formatCard = " ",
