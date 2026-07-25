@@ -36,6 +36,13 @@
       "type": "FORMAT",
       "version": 1,
       "file": "presets/formats/thinkchain-format.json",
+      "displayName": "通用思考"
+    },
+    {
+      "presetKey": "novel-format",
+      "type": "FORMAT",
+      "version": 1,
+      "file": "presets/formats/novel-format.json",
       "displayName": "轻小说大师"
     },
     {
