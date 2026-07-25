@@ -59,8 +59,16 @@ class ChatBubbleMarkdownTest {
             sanitizeRoleplayMarkdown("［全角］（） [混合]（低声)")
         )
         assertEquals(
-            "\u200B[全角]\u200B [混合](低声)",
+            "\u200B全角\u200B [混合](低声)",
             sanitizeRoleplayMarkdown("［全角］（） [混合]（低声)", forColoring = true)
+        )
+    }
+
+    @Test
+    fun roleplayMarkdown_hidesEmptyDialogueMarkerBracketsWhenRendering() {
+        assertEquals(
+            "\u200B对白\u200B",
+            sanitizeRoleplayMarkdown("[对白]()", forColoring = true)
         )
     }
 

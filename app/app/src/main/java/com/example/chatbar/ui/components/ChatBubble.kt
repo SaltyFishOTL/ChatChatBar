@@ -1601,7 +1601,7 @@ internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = fa
         return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
             val annotation = match.groupValues[2]
-            if (annotation.isEmpty()) "\u200B[$text]\u200B" else "[$text]($annotation)"
+            if (annotation.isEmpty()) "\u200B$text\u200B" else "[$text]($annotation)"
         }
     }
     return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
