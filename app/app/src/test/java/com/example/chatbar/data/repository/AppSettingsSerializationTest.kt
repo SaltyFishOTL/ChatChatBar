@@ -21,6 +21,7 @@ class AppSettingsSerializationTest {
         assertEquals(null, decoded.formatRepairModelId)
         assertEquals("s2.1-pro-free", decoded.fishAudioTtsModelId)
         assertEquals(null, decoded.voiceTagModelId)
+        assertFalse(decoded.audiobookModeEnabled)
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
     }
 
@@ -30,7 +31,8 @@ class AppSettingsSerializationTest {
             AppSettings.serializer(),
             AppSettings(
                 fishAudioTtsModelId = "s1",
-                voiceTagModelId = "tag-model"
+                voiceTagModelId = "tag-model",
+                audiobookModeEnabled = true
             )
         )
 
@@ -38,6 +40,7 @@ class AppSettingsSerializationTest {
 
         assertEquals("s1", decoded.fishAudioTtsModelId)
         assertEquals("tag-model", decoded.voiceTagModelId)
+        assertTrue(decoded.audiobookModeEnabled)
     }
 
     @Test

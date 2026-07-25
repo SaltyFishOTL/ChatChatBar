@@ -71,11 +71,16 @@ class VoiceMessageRepository(
             val state = VoiceAnchorPolicy.initialState(
                 messageId = message.id,
                 content = message.displayContent,
-                sessionId = message.sessionId
+                sessionId = message.sessionId,
+                includeNarration = true
             )
             com.example.chatbar.domain.voice.VoiceAnchorReconciliation(state, emptyMap())
         } else {
-            VoiceAnchorPolicy.reconcile(current, message.displayContent)
+            VoiceAnchorPolicy.reconcile(
+                old = current,
+                newContent = message.displayContent,
+                includeNarration = true
+            )
         }
         val state = reconciliation.state.copy(sessionId = message.sessionId)
         if (current != state) {
@@ -97,7 +102,10 @@ class VoiceMessageRepository(
             }
             persistChangedVoicesLocked(_voices.value, changed)
         }
-        val segments = VoiceAnchorPolicy.eligibleSegments(message.displayContent)
+        val segments = VoiceAnchorPolicy.eligibleSegments(
+            message.displayContent,
+            includeNarration = true
+        )
         state.anchors.mapIndexedNotNull { index, anchor ->
             segments.getOrNull(index)?.let { VoiceSegmentAnchor(it, anchor) }
         }

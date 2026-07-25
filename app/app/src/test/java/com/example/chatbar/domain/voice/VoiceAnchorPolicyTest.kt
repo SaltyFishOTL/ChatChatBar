@@ -23,6 +23,21 @@ class VoiceAnchorPolicyTest {
     }
 
     @Test
+    fun `audiobook anchors add narration without replacing existing dialogue anchor`() {
+        val content = "夜色渐深。\n<n=\"林雾\"/>[回家吧]()"
+        val old = VoiceAnchorPolicy.initialState("m1", content)
+
+        val result = VoiceAnchorPolicy.reconcile(
+            old = old,
+            newContent = content,
+            includeNarration = true
+        )
+
+        assertEquals(listOf("夜色渐深。", "回家吧"), result.state.anchors.map { it.sourceText })
+        assertEquals(old.anchors.single().id, result.state.anchors.last().id)
+    }
+
+    @Test
     fun `front insertion keeps existing anchor identities`() {
         val old = VoiceAnchorPolicy.initialState(
             "m1",

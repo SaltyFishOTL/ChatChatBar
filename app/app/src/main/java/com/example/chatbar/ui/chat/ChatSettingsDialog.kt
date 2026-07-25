@@ -48,6 +48,7 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.runtime.rememberCoroutineScope
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.MemoryHead
@@ -108,6 +109,7 @@ fun ChatSettingsDialog(
     val worldBooks by viewModel.availableWorldBooks.collectAsState()
     val characterCard by viewModel.characterCard.collectAsState()
     val globalPlayerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
+    val globalAppSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val defaultModelId by viewModel.effectiveDefaultModelId.collectAsState()
     val defaultImageModelId by viewModel.effectiveDefaultImageModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
@@ -128,6 +130,7 @@ fun ChatSettingsDialog(
     var playerName by remember { mutableStateOf(session?.playerName ?: "") }
     var playerSetting by remember { mutableStateOf(session?.playerSetting ?: "") }
     var background by remember { mutableStateOf(session?.chatBackground ?: "") }
+    var audiobookModeEnabled by remember { mutableStateOf(session?.audiobookModeEnabled) }
     var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: true) }
     var longTermMemory by remember { mutableStateOf(session?.longTermMemory ?: "") }
     var extraWorldBookIds by remember { mutableStateOf(session?.extraWorldBookIds ?: emptyList()) }
@@ -185,6 +188,7 @@ fun ChatSettingsDialog(
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
+            audiobookModeEnabled = it.audiobookModeEnabled
             longTermMemoryEnabled = it.longTermMemoryEnabled
             longTermMemory = it.longTermMemory
             extraWorldBookIds = it.extraWorldBookIds
@@ -201,6 +205,7 @@ fun ChatSettingsDialog(
             playerName.takeIf(String::isNotBlank) != it.playerName ||
             playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
             background.takeIf(String::isNotBlank) != it.chatBackground ||
+            audiobookModeEnabled != it.audiobookModeEnabled ||
             longTermMemoryEnabled != it.longTermMemoryEnabled ||
             extraWorldBookIds != it.extraWorldBookIds
     } ?: false
@@ -245,6 +250,7 @@ fun ChatSettingsDialog(
                                 playerName = playerName.takeIf(String::isNotBlank),
                                 playerSetting = playerSetting.takeIf(String::isNotBlank),
                                 chatBackground = background.takeIf(String::isNotBlank),
+                                audiobookModeEnabled = audiobookModeEnabled,
                                 longTermMemoryEnabled = longTermMemoryEnabled,
                                 longTermMemory = session?.longTermMemory.orEmpty(),
                                 extraWorldBookIds = extraWorldBookIds
@@ -280,6 +286,8 @@ fun ChatSettingsDialog(
                             supplementary, { supplementary = it },
                             playerName, { playerName = it }, playerSetting, { playerSetting = it },
                             background, { backgroundPicker.launch("image/*") }, { background = "" },
+                            audiobookModeEnabled, { audiobookModeEnabled = it },
+                            globalAppSettings.audiobookModeEnabled,
                             longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
                             ::openFullscreen
                         )
@@ -430,6 +438,8 @@ private fun SettingsContent(
     supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
     background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit,
+    audiobookModeEnabled: Boolean?, onAudiobookModeEnabled: (Boolean?) -> Unit,
+    globalAudiobookModeEnabled: Boolean,
     longTermMemoryEnabled: Boolean, onLongTermMemoryEnabled: (Boolean) -> Unit, onClearHistory: () -> Unit,
     openFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
@@ -437,6 +447,26 @@ private fun SettingsContent(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
+        val audiobookOptions = listOf(
+            AudiobookModeOption(
+                value = null,
+                label = "跟随全局（${if (globalAudiobookModeEnabled) "已开启" else "已关闭"}）"
+            ),
+            AudiobookModeOption(value = true, label = "开启"),
+            AudiobookModeOption(value = false, label = "关闭")
+        )
+        CbField(
+            "听书模式",
+            description = "分段气泡下可朗读旁白；关闭分段气泡后可把整条助手消息合成为一个语音。"
+        ) {
+            CbSelect(
+                audiobookOptions.first { it.value == audiobookModeEnabled },
+                audiobookOptions,
+                AudiobookModeOption::label,
+                { onAudiobookModeEnabled(it.value) }
+            )
+        }
+        CbDivider()
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 CbText("长期记忆", style = ChatBarTheme.typography.label)
@@ -1639,6 +1669,7 @@ private fun DefaultAwareSelect(
 }
 
 private data class IdOption(val id: String?, val label: String)
+private data class AudiobookModeOption(val value: Boolean?, val label: String)
 private data class RagChunkEditor(val chunkId: String?, val content: String)
 
 private fun formatRagTime(timestamp: Long): String =

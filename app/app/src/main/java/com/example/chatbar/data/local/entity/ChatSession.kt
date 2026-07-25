@@ -39,6 +39,8 @@ data class ChatSession(
     val playerSetting: String? = null,        // 个人设定覆盖
     val chatBackground: String? = null,
     val imagePromptPreference: String = "",
+    /** null 表示跟随全局听书模式设置。 */
+    val audiobookModeEnabled: Boolean? = null,
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,

@@ -30,5 +30,6 @@ class ChatSessionSerializationTest {
         assertEquals(2000, session.memoryLimitChars)
         assertNull(session.memoryHeadCommitId)
         assertEquals(MemoryUpdateStatus.IDLE, session.memoryUpdateStatus)
+        assertNull(session.audiobookModeEnabled)
     }
 }

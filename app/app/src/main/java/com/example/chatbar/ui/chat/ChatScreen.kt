@@ -114,6 +114,7 @@ import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbProgress
+import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
@@ -126,6 +127,11 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
 private val ChatContentMaxWidth = 840.dp
+
+private data class PendingVoiceGeneration(
+    val messageId: String,
+    val segmentIndex: Int? = null
+)
 
 internal fun canUseChatImageLongPress(
     isResponding: Boolean,
@@ -146,6 +152,7 @@ fun ChatScreen(
     val isModelUsable by viewModel.isModelUsable.collectAsState()
     val bubbleFontScale by viewModel.chatBubbleFontScale.collectAsState()
     val assistantSegmentedBubblesEnabled by viewModel.assistantSegmentedBubblesEnabled.collectAsState()
+    val audiobookModeEnabled by viewModel.audiobookModeEnabled.collectAsState()
     val modelConfigurationErrors by viewModel.modelConfigurationErrors.collectAsState()
     val messages by viewModel.messages.collectAsState()
     val isResponding by viewModel.isResponding.collectAsState()
@@ -221,6 +228,9 @@ fun ChatScreen(
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
     var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var pendingVoiceGeneration by remember(sessionId) {
+        mutableStateOf<PendingVoiceGeneration?>(null)
+    }
     var voiceActionTarget by remember { mutableStateOf<GeneratedVoiceMessage?>(null) }
     var voiceTextConfirmationBatchId by remember(sessionId) {
         mutableStateOf<String?>(null)
@@ -256,6 +266,22 @@ fun ChatScreen(
     var imagePromptTargetId by remember(sessionId) { mutableStateOf<String?>(null) }
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
+
+    fun requestVoiceForSegment(messageId: String, segmentIndex: Int) {
+        if (viewModel.voiceCharacterSelectionRequiredForSegment(messageId, segmentIndex)) {
+            pendingVoiceGeneration = PendingVoiceGeneration(messageId, segmentIndex)
+        } else {
+            viewModel.generateVoiceForSegment(messageId, segmentIndex)
+        }
+    }
+
+    fun requestVoiceForMessage(messageId: String) {
+        if (viewModel.voiceCharacterSelectionRequiredForMessage(messageId)) {
+            pendingVoiceGeneration = PendingVoiceGeneration(messageId)
+        } else {
+            viewModel.generateVoiceForMessage(messageId)
+        }
+    }
     var memoryLimitDialogDismissed by remember(
         sessionId,
         session?.memoryHeadCommitId,
@@ -1350,7 +1376,9 @@ fun ChatScreen(
             if (
                 fishAudioConfigured &&
                 (segment.kind == RoleplaySegmentKind.DIALOGUE ||
-                    segment.kind == RoleplaySegmentKind.THOUGHT) &&
+                    segment.kind == RoleplaySegmentKind.THOUGHT ||
+                    (audiobookModeEnabled &&
+                        segment.kind == RoleplaySegmentKind.NARRATION)) &&
                 viewModel.hasVoiceTargetForSegment(segment.messageId, segment.segmentIndex)
             ) {
                 val voiceGenerationEnabled = voiceGenerationAvailabilityError == null
@@ -1358,11 +1386,11 @@ fun ChatScreen(
                     segmentLabel = "为本段生成语音",
                     messageLabel = "为整条生成语音",
                     onSegmentClick = {
-                        viewModel.generateVoiceForSegment(segment.messageId, segment.segmentIndex)
+                        requestVoiceForSegment(segment.messageId, segment.segmentIndex)
                         actionSegment = null
                     },
                     onMessageClick = {
-                        viewModel.generateVoiceForMessage(segment.messageId)
+                        requestVoiceForMessage(segment.messageId)
                         actionSegment = null
                     },
                     segmentEnabled = voiceGenerationEnabled,
@@ -1489,10 +1517,14 @@ fun ChatScreen(
                 if (fishAudioConfigured && viewModel.hasVoiceTargetForMessage(target.id)) {
                     Spacer(Modifier.size(8.dp))
                     CbButton(
-                        "为整条生成语音",
+                        if (audiobookModeEnabled && !assistantSegmentedBubblesEnabled) {
+                            "朗读整条消息"
+                        } else {
+                            "为整条生成语音"
+                        },
                         {
                             actionMessageId = null
-                            viewModel.generateVoiceForMessage(target.id)
+                            requestVoiceForMessage(target.id)
                         },
                         modifier = Modifier.fillMaxWidth(),
                         variant = ButtonVariant.Outline,
@@ -1523,6 +1555,72 @@ fun ChatScreen(
                     target?.id?.let(viewModel::regenerateResponse)
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
+        }
+    }
+    pendingVoiceGeneration?.let { request ->
+        val voiceCharacters = characterCard?.characters
+            .orEmpty()
+            .filter { it.fishAudioVoice != null }
+        var selectedCharacterId by remember(request, voiceCharacters) {
+            mutableStateOf(voiceCharacters.firstOrNull()?.id)
+        }
+        val selectedCharacter = voiceCharacters.firstOrNull {
+            it.id == selectedCharacterId
+        }
+        CbDialog(
+            onDismissRequest = { pendingVoiceGeneration = null },
+            title = "选择朗读音色",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { pendingVoiceGeneration = null },
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton(
+                    "生成",
+                    {
+                        selectedCharacter?.let { character ->
+                            request.segmentIndex?.let { segmentIndex ->
+                                viewModel.generateVoiceForSegment(
+                                    request.messageId,
+                                    segmentIndex,
+                                    character.id
+                                )
+                            } ?: viewModel.generateVoiceForMessage(
+                                request.messageId,
+                                character.id
+                            )
+                        }
+                        pendingVoiceGeneration = null
+                    },
+                    enabled = selectedCharacter != null
+                )
+            }
+        ) {
+            CbText(
+                "多角色卡需指定旁白或整条消息使用的角色音色。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            Spacer(Modifier.size(8.dp))
+            selectedCharacter?.let {
+                CbField("角色音色") {
+                    CbSelect(
+                        it,
+                        voiceCharacters,
+                        { character ->
+                            "${character.name} · ${character.fishAudioVoice?.title.orEmpty()}"
+                        },
+                        { character -> selectedCharacterId = character.id }
+                    )
+                }
+            } ?: CbText(
+                "当前角色卡没有已绑定音色。",
+                color = ChatBarTheme.colors.destructive,
+                style = ChatBarTheme.typography.caption
+            )
         }
     }
     voiceGenerationBatches.firstOrNull {
@@ -1957,7 +2055,11 @@ private fun FishAudioGenerationCard(
         VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION ->
             "${state.textConfirmations.size} 段 AI 文本与原文不同，等待确认"
         VoiceGenerationPhase.SYNTHESIZING ->
-            "阶段 2/2 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
+            if (state.taggingSkipped) {
+                "Fish Audio 正在直接生成 ${state.completedCount}/${state.totalCount}"
+            } else {
+                "阶段 2/2 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
+            }
         VoiceGenerationPhase.FAILED -> "语音生成部分或全部失败"
         VoiceGenerationPhase.CANCELLED -> "语音生成已取消；已完成项已保留"
     }

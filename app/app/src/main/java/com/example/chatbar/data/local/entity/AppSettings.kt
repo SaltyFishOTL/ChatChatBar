@@ -40,6 +40,7 @@ data class AppSettings(
     val imagePromptToolPreference: String = "",
     val fishAudioTtsModelId: String = DEFAULT_FISH_AUDIO_TTS_MODEL,
     val voiceTagModelId: String? = null,
+    val audiobookModeEnabled: Boolean = false,
     val momentsEnabled: Boolean = false,
     val momentsMinDelayHours: Int = 2,
     val momentsMaxDelayHours: Int = 13,

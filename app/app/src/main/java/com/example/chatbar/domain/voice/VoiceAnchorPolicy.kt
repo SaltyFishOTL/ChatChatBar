@@ -4,8 +4,14 @@ import com.example.chatbar.data.local.entity.VoiceAnchor
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.RoleplayTextSegment
+import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import java.util.UUID
 import kotlin.math.abs
+
+enum class VoiceSourceScope {
+    SEGMENT,
+    WHOLE_MESSAGE
+}
 
 data class CurrentVoiceSegment(
     val segmentIndex: Int,
@@ -13,7 +19,8 @@ data class CurrentVoiceSegment(
     val speakerName: String?,
     val spokenText: String,
     val start: Int,
-    val endExclusive: Int
+    val endExclusive: Int,
+    val sourceScope: VoiceSourceScope = VoiceSourceScope.SEGMENT
 )
 
 data class VoiceAnchorReconciliation(
@@ -22,45 +29,82 @@ data class VoiceAnchorReconciliation(
 )
 
 object VoiceAnchorPolicy {
-    fun eligibleSegments(content: String): List<CurrentVoiceSegment> =
+    fun eligibleSegments(
+        content: String,
+        includeNarration: Boolean = false
+    ): List<CurrentVoiceSegment> =
         com.example.chatbar.domain.chat.parseRoleplayTextSegments(content)
             .mapIndexedNotNull { index, segment ->
-                if (segment.kind != RoleplaySegmentKind.DIALOGUE &&
-                    segment.kind != RoleplaySegmentKind.THOUGHT
-                ) {
+                val eligible = segment.kind == RoleplaySegmentKind.DIALOGUE ||
+                    segment.kind == RoleplaySegmentKind.THOUGHT ||
+                    (includeNarration && segment.kind == RoleplaySegmentKind.NARRATION)
+                if (!eligible) {
                     null
                 } else {
+                    val spokenText = spokenText(segment).takeIf(String::isNotBlank)
+                        ?: return@mapIndexedNotNull null
                     CurrentVoiceSegment(
                         segmentIndex = index,
                         kind = segment.kind,
                         speakerName = segment.speakerName,
-                        spokenText = spokenText(segment),
+                        spokenText = spokenText,
                         start = segment.start,
                         endExclusive = segment.endExclusive
                     )
                 }
             }
 
+    fun wholeMessageSegment(content: String): CurrentVoiceSegment? {
+        val spokenText = eligibleSegments(content, includeNarration = true)
+            .joinToString("\n") { it.spokenText }
+            .trim()
+            .takeIf(String::isNotBlank)
+            ?: return null
+        return CurrentVoiceSegment(
+            segmentIndex = WHOLE_MESSAGE_SEGMENT_INDEX,
+            kind = RoleplaySegmentKind.NARRATION,
+            speakerName = null,
+            spokenText = spokenText,
+            start = 0,
+            endExclusive = content.length,
+            sourceScope = VoiceSourceScope.WHOLE_MESSAGE
+        )
+    }
+
     fun initialState(
         messageId: String,
         content: String,
-        sessionId: String = ""
+        sessionId: String = "",
+        includeNarration: Boolean = false
     ): VoiceAnchorState =
         VoiceAnchorState(
             messageId = messageId,
             sessionId = sessionId,
             displayContentSnapshot = content,
-            anchors = eligibleSegments(content).map(::newAnchor)
+            anchors = eligibleSegments(content, includeNarration).map(::newAnchor)
         )
 
     fun reconcile(
         old: VoiceAnchorState,
-        newContent: String
+        newContent: String,
+        includeNarration: Boolean = false
     ): VoiceAnchorReconciliation {
-        if (old.displayContentSnapshot == newContent) {
-            return VoiceAnchorReconciliation(old, old.anchors.associate { it.id to it.id })
+        val nextSegments = eligibleSegments(newContent, includeNarration)
+        val anchorsAlreadyCurrent = old.displayContentSnapshot == newContent &&
+            old.anchors.size == nextSegments.size &&
+            old.anchors.zip(nextSegments).all { (anchor, segment) ->
+                anchor.segmentKind == segment.kind.name &&
+                    anchor.speakerName == segment.speakerName &&
+                    anchor.sourceText == segment.spokenText &&
+                    anchor.start == segment.start &&
+                    anchor.endExclusive == segment.endExclusive
+            }
+        if (anchorsAlreadyCurrent) {
+            return VoiceAnchorReconciliation(
+                old,
+                old.anchors.associate { it.id to it.id }
+            )
         }
-        val nextSegments = eligibleSegments(newContent)
         val matches = align(
             old = old.anchors,
             next = nextSegments,
@@ -199,7 +243,9 @@ object VoiceAnchorPolicy {
             }
             RoleplaySegmentKind.THOUGHT ->
                 trimmed.removeSurrounding("『", "』").trim()
-            else -> trimmed
+            RoleplaySegmentKind.NARRATION ->
+                stripRoleplaySpeakerMarkers(trimmed)
+            RoleplaySegmentKind.STATUS -> ""
         }
         return spoken
             .replace(Regex("!\\[([^]]*)]\\([^)]*\\)"), "$1")
@@ -212,6 +258,7 @@ object VoiceAnchorPolicy {
         value.replace(Regex("\\s+"), " ").trim()
 
     private const val GAP_COST = 3
+    const val WHOLE_MESSAGE_SEGMENT_INDEX = -1
 }
 
 private class CharacterDiffOffsetMapper(

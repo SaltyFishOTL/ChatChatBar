@@ -43,6 +43,7 @@ class SaveSlotSerializationTest {
         assertEquals(emptyList<String>(), slot.extraWorldBookIds)
         assertEquals(emptyMap<String, SaveSlotImageResource>(), slot.imageResources)
         assertTrue(slot.timedWorldInfo.isEmpty())
+        assertEquals(null, slot.audiobookModeEnabled)
     }
 
     @Test
@@ -62,6 +63,7 @@ class SaveSlotSerializationTest {
             name = "完整存档",
             modelId = "model-1",
             formatCardId = "format-1",
+            audiobookModeEnabled = true,
             longTermMemory = "长期记忆",
             longTermMemoryUpdatedThroughMessageId = "message-1",
             extraWorldBookIds = listOf("world-1"),

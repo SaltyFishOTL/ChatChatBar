@@ -28,6 +28,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Model fallback, provider request fields, HTTP/local auth, thinking controls, connection tests, SSE timeout/reset, or auxiliary text requests: use chatbar-model-request-runtime.
 - Generated-image runtime, NovelAI HTTP generation, 429 retry, editable regeneration, metadata, dimensions, seeds, concurrency, or file replacement: use chatbar-image-generation-runtime.
 - Assistant segmented bubble rendering: ui/components/ChatBubble.kt; marker parsing in domain/chat/RoleplayContentSegments.kt; per-turn protocol in PromptTemplates.kt and ChatViewModel.kt; edit/delete in ChatViewModel.kt; selection/screenshot in ChatScreenshotSelection.kt and ChatLongScreenshot.kt.
+- Fish Audio voice generation, audiobook mode, voice anchors, playback, or character voice selection: domain/voice/, data/repository/VoiceMessageRepository.kt, data/local/entity/FishAudioEntities.kt, AppSettings.kt, ChatSession.kt, ui/chat/ChatScreen.kt, and ChatViewModel.kt.
 - Character speaker names/history: domain/card/CharacterSpeakerNamePolicy.kt, CharacterSpeakerMigration.kt, domain/chat/SpeakerTagHistoryService.kt, and ChatRepository.rewriteSpeakerTagsForCharacterCard.
 - Chat settings and model selection UI: ui/chat/ChatSettingsDialog.kt, ui/manage/ManageScreen.kt, AppSettings.kt, and SettingsRepository.kt.
 - Chat save slots/archive transfer: data/local/entity/SaveSlot.kt, data/repository/SaveSlotRepository.kt, domain/chat/SaveSlotJsonTransfer.kt, ChatViewModel.kt, ChatSettingsDialog.kt.

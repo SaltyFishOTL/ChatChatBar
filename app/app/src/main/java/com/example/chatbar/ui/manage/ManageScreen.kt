@@ -1443,6 +1443,7 @@ private fun SettingsTab(
     var fishAudioApiKey by remember { mutableStateOf("") }
     var fishAudioTtsModelId by remember { mutableStateOf(settings.fishAudioTtsModelId) }
     var voiceTagModelId by remember { mutableStateOf(settings.voiceTagModelId) }
+    var audiobookModeEnabled by remember { mutableStateOf(settings.audiobookModeEnabled) }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
@@ -1515,6 +1516,7 @@ private fun SettingsTab(
         settings.novelAiImageAspectRatio,
         settings.fishAudioTtsModelId,
         settings.voiceTagModelId,
+        settings.audiobookModeEnabled,
         settings.chatBubbleFontScale,
         settings.chatBackgroundImageOpacity,
         settings.assistantSegmentedBubblesEnabled
@@ -1530,6 +1532,7 @@ private fun SettingsTab(
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         fishAudioTtsModelId = settings.fishAudioTtsModelId
         voiceTagModelId = settings.voiceTagModelId
+        audiobookModeEnabled = settings.audiobookModeEnabled
         momentsEnabled = settings.momentsEnabled
         val momentDelayRange = MomentPolicy.normalizedDelayHours(
             settings.momentsMinDelayHours,
@@ -1581,6 +1584,7 @@ private fun SettingsTab(
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
         fishAudioTtsModelId = fishAudioTtsModelId,
         voiceTagModelId = voiceTagModelId,
+        audiobookModeEnabled = audiobookModeEnabled,
         momentsEnabled = momentsEnabled,
         momentsMinDelayHours = draftMomentDelayRange.minHours,
         momentsMaxDelayHours = draftMomentDelayRange.maxHours,
@@ -1951,6 +1955,21 @@ private fun SettingsTab(
             }
         }
         SettingsSection("Fish Audio 语音") {
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    CbText("听书模式", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "作为会话默认值；分段模式可朗读旁白，非分段模式可朗读整条助手消息。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(audiobookModeEnabled, { audiobookModeEnabled = it })
+            }
+            CbDivider()
             CbText(
                 if (fishAudioConfigured) {
                     "API Key 已加密保存。角色编辑器和聊天语音入口已启用。"
@@ -2012,7 +2031,7 @@ private fun SettingsTab(
             )
             if (voiceTagModelId != null && auxiliaryTextModels.none { it.id == voiceTagModelId }) {
                 CbText(
-                    "已选标签模型失效。重新选择前，语音生成会被禁用且不会自动回退。",
+                    "已选标签模型失效。重新选择前，普通模式语音生成会被禁用；听书模式不使用此模型。",
                     color = ChatBarTheme.colors.destructive,
                     style = ChatBarTheme.typography.caption
                 )

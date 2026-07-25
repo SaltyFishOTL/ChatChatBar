@@ -53,7 +53,7 @@ import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
-import com.example.chatbar.domain.voice.VoiceAnchorPolicy
+import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import com.example.chatbar.domain.voice.VoiceGenerationBatchState
 import com.example.chatbar.domain.voice.VoicePlaybackState
 import com.example.chatbar.data.repository.VoiceMessagePlacement
@@ -267,6 +267,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val _assistantSegmentedBubblesEnabled = MutableStateFlow(true)
     val assistantSegmentedBubblesEnabled: StateFlow<Boolean> = _assistantSegmentedBubblesEnabled.asStateFlow()
 
+    private val _audiobookModeEnabled = MutableStateFlow(false)
+    val audiobookModeEnabled: StateFlow<Boolean> = _audiobookModeEnabled.asStateFlow()
+
     private val _contextWindowSize = MutableStateFlow(20)
     val contextWindowSize: StateFlow<Int> = _contextWindowSize.asStateFlow()
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
@@ -378,6 +381,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return
         }
         val settings = settingsRepository.getAppSettings()
+        if (_audiobookModeEnabled.value) {
+            _voiceGenerationAvailabilityError.value = null
+            return
+        }
         val model = if (settings.voiceTagModelId.isNullOrBlank()) {
             modelResolver.resolveChatModel(_session.value?.modelId, settings)
                 ?: run {
@@ -411,14 +418,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun hasVoiceTargetForSegment(messageId: String, segmentIndex: Int): Boolean {
         val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
         if (message.role != MessageRole.ASSISTANT) return false
-        val segment = VoiceAnchorPolicy.eligibleSegments(message.displayContent)
+        val segment = currentVoiceGenerationSegments(message)
             .firstOrNull { it.segmentIndex == segmentIndex }
             ?: return false
-        val speaker = segment.speakerName?.trim()?.takeIf(String::isNotEmpty) ?: return false
-        return _characterCard.value?.characters
-            ?.filter { it.name.trim().equals(speaker, ignoreCase = true) }
-            ?.singleOrNull()
-            ?.fishAudioVoice != null
+        val card = _characterCard.value ?: return false
+        return VoiceGenerationPolicy.hasResolvableTarget(card, segment)
     }
 
     fun canGenerateVoiceForMessage(messageId: String): Boolean {
@@ -430,21 +434,63 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun hasVoiceTargetForMessage(messageId: String): Boolean {
         val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
-        return VoiceAnchorPolicy.eligibleSegments(message.displayContent)
-            .any { hasVoiceTargetForSegment(messageId, it.segmentIndex) }
+        if (message.role != MessageRole.ASSISTANT) return false
+        val card = _characterCard.value ?: return false
+        return currentVoiceGenerationSegments(message)
+            .any { VoiceGenerationPolicy.hasResolvableTarget(card, it) }
     }
 
-    fun generateVoiceForSegment(messageId: String, segmentIndex: Int) {
+    fun voiceCharacterSelectionRequiredForSegment(
+        messageId: String,
+        segmentIndex: Int
+    ): Boolean {
+        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+        val segment = currentVoiceGenerationSegments(message)
+            .firstOrNull { it.segmentIndex == segmentIndex }
+            ?: return false
+        val card = _characterCard.value ?: return false
+        return VoiceGenerationPolicy.requiresNarratorSelection(card, listOf(segment))
+    }
+
+    fun voiceCharacterSelectionRequiredForMessage(messageId: String): Boolean {
+        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+        val card = _characterCard.value ?: return false
+        return VoiceGenerationPolicy.requiresNarratorSelection(
+            card,
+            currentVoiceGenerationSegments(message)
+        )
+    }
+
+    fun generateVoiceForSegment(
+        messageId: String,
+        segmentIndex: Int,
+        narratorCharacterId: String? = null
+    ) {
         if (canGenerateVoiceForSegment(messageId, segmentIndex)) {
-            fishAudioCoordinator.generateSingle(sessionId, messageId, segmentIndex)
+            fishAudioCoordinator.generateSingle(
+                sessionId,
+                messageId,
+                segmentIndex,
+                narratorCharacterId
+            )
         }
     }
 
-    fun generateVoiceForMessage(messageId: String) {
+    fun generateVoiceForMessage(
+        messageId: String,
+        narratorCharacterId: String? = null
+    ) {
         if (canGenerateVoiceForMessage(messageId)) {
-            fishAudioCoordinator.generateWhole(sessionId, messageId)
+            fishAudioCoordinator.generateWhole(sessionId, messageId, narratorCharacterId)
         }
     }
+
+    private fun currentVoiceGenerationSegments(message: ChatMessage) =
+        VoiceGenerationPolicy.generationSegments(
+            content = message.displayContent,
+            audiobookEnabled = _audiobookModeEnabled.value,
+            segmentedBubblesEnabled = _assistantSegmentedBubblesEnabled.value
+        )
 
     fun cancelVoiceGeneration(batchId: String) {
         fishAudioCoordinator.cancel(batchId)
@@ -479,9 +525,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             chatRepository.observeSessions().collect { sessions ->
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
                     val modelChanged = _session.value?.modelId != updatedSession.modelId
+                    val previousAudiobookMode = _audiobookModeEnabled.value
                     _session.value = updatedSession
+                    updateEffectiveAudiobookMode()
                     if (modelChanged) {
                         refreshConfigurations()
+                    }
+                    if (
+                        modelChanged ||
+                        previousAudiobookMode != _audiobookModeEnabled.value
+                    ) {
                         refreshVoiceGenerationAvailability()
                     }
                 }
@@ -494,6 +547,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             settingsRepository.appSettings.collect { settings ->
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
                 _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
+                updateEffectiveAudiobookMode(settings)
                 refreshVoiceGenerationAvailability()
             }
         }
@@ -527,6 +581,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
             _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
+            updateEffectiveAudiobookMode(settings)
             refreshVoiceGenerationAvailability()
             if (s != null) {
                 ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.activateSession(sessionId)
@@ -1906,6 +1961,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
+    private fun updateEffectiveAudiobookMode(
+        settings: AppSettings = settingsRepository.currentAppSettings
+    ) {
+        _audiobookModeEnabled.value =
+            _session.value?.audiobookModeEnabled ?: settings.audiobookModeEnabled
+    }
+
     internal suspend fun loadChatScrollPosition(): ChatScrollPosition? =
         runCatching { chatRepository.getScrollPosition(sessionId) }
             .onFailure { error ->
@@ -3175,6 +3237,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         playerName: String?,
         playerSetting: String?,
         chatBackground: String?,
+        audiobookModeEnabled: Boolean?,
         longTermMemoryEnabled: Boolean,
         longTermMemory: String,
         extraWorldBookIds: List<String> = _session.value?.extraWorldBookIds ?: emptyList()
@@ -3195,6 +3258,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerName = playerName?.takeIf { it.isNotBlank() },
                     playerSetting = playerSetting?.takeIf { it.isNotBlank() },
                     chatBackground = chatBackground?.takeIf { it.isNotBlank() },
+                    audiobookModeEnabled = audiobookModeEnabled,
                     longTermMemoryEnabled = longTermMemoryEnabled,
                     longTermMemory = base.longTermMemory,
                     extraWorldBookIds = extraWorldBookIds.distinct()
@@ -3244,6 +3308,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 replyLanguage = curSession.replyLanguage,
                 roleplayStyle = curSession.roleplayStyle,
                 chatBackground = packaged.chatBackground,
+                audiobookModeEnabled = curSession.audiobookModeEnabled,
                 longTermMemoryEnabled = curSession.longTermMemoryEnabled,
                 longTermMemory = curSession.longTermMemory,
                 longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
@@ -3305,6 +3370,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 replyLanguage = materializedSlot.replyLanguage,
                 roleplayStyle = materializedSlot.roleplayStyle,
                 chatBackground = materializedSlot.chatBackground,
+                audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
                 longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
                 longTermMemory = materializedSlot.longTermMemory,
                 longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,

@@ -60,6 +60,7 @@ data class VoiceGenerationBatchState(
     val completedCount: Int = 0,
     val receivedBytes: Long = 0L,
     val tagStreamText: String = "",
+    val taggingSkipped: Boolean = false,
     val textConfirmations: List<VoiceTextConfirmationState> = emptyList(),
     val errors: Map<String, String> = emptyMap(),
     val createdAt: Long = System.currentTimeMillis()
@@ -68,9 +69,11 @@ data class VoiceGenerationBatchState(
 private data class VoiceGenerationTarget(
     val message: ChatMessage,
     val segment: CurrentVoiceSegment,
-    val anchorId: String,
+    val targetId: String,
+    val anchorId: String?,
     val sourceOrder: Long,
-    val character: CharacterInfo
+    val character: CharacterInfo,
+    val sourceKind: String
 )
 
 private data class TargetGenerationResult(
@@ -138,10 +141,11 @@ class FishAudioGenerationCoordinator(
     fun generateSingle(
         sessionId: String,
         messageId: String,
-        segmentIndex: Int
+        segmentIndex: Int,
+        narratorCharacterId: String? = null
     ): String = launchBatch(sessionId, messageId) { batchId, screenGeneration ->
         val context = loadContext(sessionId, messageId)
-        val target = resolveTargets(context.message, context.card)
+        val target = resolveTargets(context, narratorCharacterId)
             .firstOrNull { it.segment.segmentIndex == segmentIndex }
             ?: error("该段没有可唯一匹配的角色音色")
         registerAutoPlay(batchId, context, screenGeneration)
@@ -155,14 +159,24 @@ class FishAudioGenerationCoordinator(
 
     fun generateWhole(
         sessionId: String,
-        messageId: String
+        messageId: String,
+        narratorCharacterId: String? = null
     ): String = launchBatch(sessionId, messageId) { batchId, screenGeneration ->
         val context = loadContext(sessionId, messageId)
         registerAutoPlay(batchId, context, screenGeneration)
         val existing = voiceRepository.listForMessage(messageId)
         val voicedAnchors = existing.mapNotNull(GeneratedVoiceMessage::anchorId).toSet()
-        val targets = resolveTargets(context.message, context.card)
-            .filterNot { it.anchorId in voicedAnchors }
+        val targets = resolveTargets(context, narratorCharacterId)
+            .filterNot { target ->
+                target.anchorId?.let(voicedAnchors::contains) == true ||
+                    (target.segment.sourceScope == VoiceSourceScope.WHOLE_MESSAGE &&
+                        existing.any { voice ->
+                            voice.anchorId == null &&
+                                voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND &&
+                                normalizeVoiceText(voice.sourceText) ==
+                                normalizeVoiceText(target.segment.spokenText)
+                        })
+            }
         if (targets.isEmpty()) {
             finishSuccessfulBatch(
                 batchId = batchId,
@@ -393,6 +407,30 @@ class FishAudioGenerationCoordinator(
         playAllMessageVoices: Boolean
     ) {
         val settings = settingsRepository.getAppSettings()
+        val fishModelId = settings.fishAudioTtsModelId
+            .takeIf { it in FishAudioTtsModels.supported }
+            ?: FishAudioTtsModels.S2_1_PRO_FREE
+        if (!VoiceGenerationPolicy.shouldGenerateAiTags(context.audiobookEnabled)) {
+            updateBatch(batchId) {
+                it.copy(
+                    phase = VoiceGenerationPhase.SYNTHESIZING,
+                    totalCount = targets.size,
+                    taggingSkipped = true
+                )
+            }
+            runSynthesis(
+                batchId = batchId,
+                context = context,
+                targets = targets,
+                fishModelId = fishModelId,
+                taggedTextById = targets.associate { target ->
+                    target.targetId to target.segment.spokenText
+                },
+                initialErrors = emptyMap(),
+                playAllMessageVoices = playAllMessageVoices
+            )
+            return
+        }
         val tagModel = if (settings.voiceTagModelId.isNullOrBlank()) {
             modelResolver.resolveChatModel(context.session.modelId, settings)
                 ?: error("当前会话没有可用对话模型")
@@ -403,9 +441,6 @@ class FishAudioGenerationCoordinator(
         require(tagModel.hasConfiguredAuthentication(settings)) {
             "语音标签模型/API Key 未配置"
         }
-        val fishModelId = settings.fishAudioTtsModelId
-            .takeIf { it in FishAudioTtsModels.supported }
-            ?: FishAudioTtsModels.S2_1_PRO_FREE
         updateBatch(batchId) {
             it.copy(phase = VoiceGenerationPhase.TAGGING, totalCount = targets.size)
         }
@@ -417,7 +452,7 @@ class FishAudioGenerationCoordinator(
                 assistantResponse = context.message.displayContent,
                 inputs = targets.map { target ->
                     VoiceTagInput(
-                        id = target.anchorId,
+                        id = target.targetId,
                         text = target.segment.spokenText,
                         characterName = target.character.name,
                         speakingStyle = target.character.speakingStyle
@@ -431,7 +466,7 @@ class FishAudioGenerationCoordinator(
             )
         }
         if (tagResult.confirmationRequiredById.isNotEmpty()) {
-            val targetById = targets.associateBy(VoiceGenerationTarget::anchorId)
+            val targetById = targets.associateBy(VoiceGenerationTarget::targetId)
             val confirmations = tagResult.confirmationRequiredById.mapNotNull { (targetId, text) ->
                 targetById[targetId]?.let { target ->
                     VoiceTextConfirmationState(
@@ -498,7 +533,7 @@ class FishAudioGenerationCoordinator(
             val completedTargets = AtomicInteger(0)
             val results = supervisorScope {
                 targets.mapNotNull { target ->
-                    val taggedText = taggedTextById[target.anchorId]
+                    val taggedText = taggedTextById[target.targetId]
                     if (taggedText == null) {
                         null
                     } else {
@@ -509,7 +544,7 @@ class FishAudioGenerationCoordinator(
                                 target = target,
                                 taggedText = taggedText,
                                 onBytes = { bytes ->
-                                    bytesByTarget[target.anchorId] = bytes
+                                    bytesByTarget[target.targetId] = bytes
                                     updateBatch(batchId) {
                                         it.copy(receivedBytes = bytesByTarget.values.sum())
                                     }
@@ -525,7 +560,7 @@ class FishAudioGenerationCoordinator(
                 }.awaitAll()
             }
             val generationErrors = results.mapNotNull { result ->
-                result.error?.let { result.target.anchorId to it }
+                result.error?.let { result.target.targetId to it }
             }.toMap()
             val allErrors = initialErrors + generationErrors
             val completedCount = results.count { it.voice != null }
@@ -572,7 +607,7 @@ class FishAudioGenerationCoordinator(
                 messageId = target.message.id,
                 anchorId = currentAnchorId,
                 sourceOrder = target.sourceOrder,
-                sourceSegmentKind = target.segment.kind.name,
+                sourceSegmentKind = target.sourceKind,
                 sourceSpeakerName = target.segment.speakerName.orEmpty(),
                 sourceText = target.segment.spokenText,
                 taggedText = taggedText,
@@ -597,6 +632,7 @@ class FishAudioGenerationCoordinator(
     }
 
     private suspend fun resolveCurrentAnchorId(target: VoiceGenerationTarget): String? {
+        if (target.anchorId == null) return null
         val currentMessage = chatRepository.getMessage(
             target.message.id,
             target.message.sessionId
@@ -634,33 +670,79 @@ class FishAudioGenerationCoordinator(
         val message = chatRepository.getMessage(messageId, sessionId) ?: error("消息不存在")
         require(message.role == MessageRole.ASSISTANT) { "只支持助手消息生成语音" }
         val card = characterRepository.getById(session.characterCardId) ?: error("角色卡不存在")
+        val settings = settingsRepository.getAppSettings()
         val previousUser = chatRepository.getMessages(sessionId)
             .filter { it.role == MessageRole.USER && it.orderKey < message.orderKey }
             .maxWithOrNull(ChatMessage.TimelineComparator)
             ?.displayContent
             .orEmpty()
-        return GenerationContext(session, message, card, previousUser)
+        return GenerationContext(
+            session = session,
+            message = message,
+            card = card,
+            previousUserMessage = previousUser,
+            audiobookEnabled = VoiceGenerationPolicy.audiobookEnabled(session, settings),
+            segmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
+        )
     }
 
     private suspend fun resolveTargets(
-        message: ChatMessage,
-        card: CharacterCard
+        context: GenerationContext,
+        narratorCharacterId: String?
     ): List<VoiceGenerationTarget> {
-        val anchors = voiceRepository.ensureAnchors(message)
-        return anchors.mapNotNull { anchored ->
-            val speaker = anchored.segment.speakerName?.trim()?.takeIf(String::isNotEmpty)
-                ?: return@mapNotNull null
-            val matches = card.characters.filter {
-                it.name.trim().equals(speaker, ignoreCase = true)
+        val segments = VoiceGenerationPolicy.generationSegments(
+            content = context.message.displayContent,
+            audiobookEnabled = context.audiobookEnabled,
+            segmentedBubblesEnabled = context.segmentedBubblesEnabled
+        )
+        if (VoiceGenerationPolicy.requiresNarratorSelection(context.card, segments)) {
+            require(
+                narratorCharacterId != null &&
+                    context.card.characters.any {
+                        it.id == narratorCharacterId && it.fishAudioVoice != null
+                    }
+            ) {
+                "多角色卡需要先选择朗读音色"
             }
-            val character = matches.singleOrNull()?.takeIf { it.fishAudioVoice != null }
+        }
+        if (segments.singleOrNull()?.sourceScope == VoiceSourceScope.WHOLE_MESSAGE) {
+            val segment = segments.single()
+            val character = VoiceGenerationPolicy.resolveCharacter(
+                context.card,
+                segment,
+                narratorCharacterId
+            ) ?: return emptyList()
+            return listOf(
+                VoiceGenerationTarget(
+                    message = context.message,
+                    segment = segment,
+                    targetId = "${context.message.id}::whole-message",
+                    anchorId = null,
+                    sourceOrder = 0L,
+                    character = character,
+                    sourceKind = VoiceGenerationPolicy.sourceKind(segment)
+                )
+            )
+        }
+
+        val segmentByIndex = segments.associateBy(CurrentVoiceSegment::segmentIndex)
+        val anchors = voiceRepository.ensureAnchors(context.message)
+        return anchors.mapNotNull { anchored ->
+            val segment = segmentByIndex[anchored.segment.segmentIndex]
                 ?: return@mapNotNull null
+            val character = VoiceGenerationPolicy.resolveCharacter(
+                context.card,
+                segment,
+                narratorCharacterId
+            ) ?: return@mapNotNull null
             VoiceGenerationTarget(
-                message = message,
-                segment = anchored.segment,
+                message = context.message,
+                segment = segment,
+                targetId = anchored.anchor.id,
                 anchorId = anchored.anchor.id,
                 sourceOrder = anchored.anchor.sourceOrder,
-                character = character
+                character = character,
+                sourceKind = VoiceGenerationPolicy.sourceKind(segment)
             )
         }
     }
@@ -774,6 +856,11 @@ class FishAudioGenerationCoordinator(
         val session: ChatSession,
         val message: ChatMessage,
         val card: CharacterCard,
-        val previousUserMessage: String
+        val previousUserMessage: String,
+        val audiobookEnabled: Boolean,
+        val segmentedBubblesEnabled: Boolean
     )
+
+    private fun normalizeVoiceText(value: String): String =
+        value.replace(Regex("\\s+"), " ").trim()
 }

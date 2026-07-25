@@ -24,6 +24,7 @@ data class SaveSlot(
     val replyLanguage: String? = null,
     val roleplayStyle: String? = null,
     val chatBackground: String? = null,
+    val audiobookModeEnabled: Boolean? = null,
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,
