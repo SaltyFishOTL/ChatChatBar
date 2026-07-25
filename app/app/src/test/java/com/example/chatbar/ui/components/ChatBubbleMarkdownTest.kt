@@ -53,6 +53,26 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_normalizesFullAndMixedWidthDialogueMarkers() {
+        assertEquals(
+            "[全角] [混合]",
+            sanitizeRoleplayMarkdown("［全角］（） [混合]（低声)")
+        )
+        assertEquals(
+            "\u200B[全角]\u200B [混合](低声)",
+            sanitizeRoleplayMarkdown("［全角］（） [混合]（低声)", forColoring = true)
+        )
+    }
+
+    @Test
+    fun roleplayMarkdown_keepsFullWidthImageMarkerUntouched() {
+        val image = "！［图片］（image.png）"
+
+        assertEquals(image, sanitizeRoleplayMarkdown(image))
+        assertEquals(image, sanitizeRoleplayMarkdown(image, forColoring = true))
+    }
+
+    @Test
     fun roleplayContent_stripsHiddenCommentsBeforeSplittingSegments() {
         val marker = "\u0060\u0060\u0060"
         val result = parseRoleplayContent("before\n<!--\n$marker\nsecret\n$marker\n-->\nafter")

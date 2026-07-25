@@ -40,6 +40,9 @@ private data class RoleplaySpeakerPrefix(
     val speakerName: String?
 )
 
+internal val roleplayDialogueMarkerPattern =
+    Regex("(?<![!！])[\\[［]([^\\]］]+)[\\]］][(（]([^\\)）]*)[)）]")
+
 fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
     val visible = visibleRoleplayText(content)
     if (visible.text.isBlank()) return emptyList()
@@ -585,36 +588,73 @@ private fun segmentVisibleEnd(segment: RoleplayTextSegment, visible: VisibleRole
     visible.rawIndexes.indexOf(segment.endExclusive - 1).takeIf { it >= 0 }?.plus(1) ?: visible.text.length
 
 private fun findNextDialogueOpen(text: String, start: Int, end: Int): Int {
-    var index = text.indexOf('[', start)
-    while (index >= 0 && index < end) {
-        if (index == 0 || text[index - 1] != '!') {
-            val bracketClose = text.indexOf(']', index + 1)
-            if (bracketClose < 0 || bracketClose >= end) return index
+    var index = start
+    while (index < end) {
+        if (
+            isDialogueBracketOpen(text[index]) &&
+            (index == 0 || !isImageMarkerPrefix(text[index - 1]))
+        ) {
             return index
         }
-        index = text.indexOf('[', index + 1)
+        index++
     }
     return -1
 }
 
 private fun findDialogueClose(text: String, open: Int, end: Int): Int {
-    val bracketClose = text.indexOf(']', open + 1)
-    if (bracketClose < 0 || bracketClose >= end) return -1
-    if (bracketClose + 1 >= end || text[bracketClose + 1] != '(') return bracketClose + 1
-    val parenClose = text.indexOf(')', bracketClose + 2)
-    if (parenClose < 0 || parenClose >= end) return bracketClose + 1
-    return parenClose + 1
+    var bracketClose = open + 1
+    while (bracketClose < end && !isDialogueBracketClose(text[bracketClose])) {
+        bracketClose++
+    }
+    if (bracketClose >= end) return -1
+    if (bracketClose + 1 >= end || !isDialogueParenthesisOpen(text[bracketClose + 1])) {
+        return bracketClose + 1
+    }
+    var parenthesisClose = bracketClose + 2
+    while (parenthesisClose < end && !isDialogueParenthesisClose(text[parenthesisClose])) {
+        parenthesisClose++
+    }
+    return if (parenthesisClose < end) parenthesisClose + 1 else bracketClose + 1
 }
 
 private fun findNextThoughtOpen(text: String, start: Int, end: Int): Int {
-    val open = text.indexOf('『', start)
-    return open.takeIf { it >= 0 && it < end } ?: -1
+    var index = start
+    while (index < end) {
+        if (isThoughtBracketOpen(text[index])) return index
+        index++
+    }
+    return -1
 }
 
 private fun findThoughtClose(text: String, open: Int, end: Int): Int {
-    val close = text.indexOf('』', open + 1)
-    return if (close >= 0 && close < end) close + 1 else end
+    var index = open + 1
+    while (index < end) {
+        if (isThoughtBracketClose(text[index])) return index + 1
+        index++
+    }
+    return end
 }
+
+private fun isDialogueBracketOpen(char: Char): Boolean =
+    char == '[' || char == '［'
+
+private fun isDialogueBracketClose(char: Char): Boolean =
+    char == ']' || char == '］'
+
+private fun isDialogueParenthesisOpen(char: Char): Boolean =
+    char == '(' || char == '（'
+
+private fun isDialogueParenthesisClose(char: Char): Boolean =
+    char == ')' || char == '）'
+
+private fun isImageMarkerPrefix(char: Char): Boolean =
+    char == '!' || char == '！'
+
+private fun isThoughtBracketOpen(char: Char): Boolean =
+    char == '『' || char == '「' || char == '｢'
+
+private fun isThoughtBracketClose(char: Char): Boolean =
+    char == '』' || char == '」' || char == '｣'
 
 private fun attachRoleplaySpeakerPrefixes(
     content: String,

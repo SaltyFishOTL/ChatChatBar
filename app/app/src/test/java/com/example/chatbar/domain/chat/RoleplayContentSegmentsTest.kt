@@ -100,6 +100,47 @@ class RoleplayContentSegmentsTest {
     }
 
     @Test
+    fun `dialogue accepts full width and mixed width markers`() {
+        val content = "［全角］（轻声） [半角]（低声) ［混合]()"
+
+        val dialogues = parseRoleplayTextSegments(content)
+            .filter { it.kind == RoleplaySegmentKind.DIALOGUE }
+
+        assertEquals(
+            listOf("［全角］（轻声）", "[半角]（低声)", "［混合]()"),
+            dialogues.map { it.rawText }
+        )
+        assertEquals(
+            dialogues.map { content.substring(it.start, it.endExclusive) },
+            dialogues.map { it.rawText }
+        )
+    }
+
+    @Test
+    fun `thought accepts corner bracket width variants and mixed pairs`() {
+        val markers = listOf(
+            "『双书名号』",
+            "「直角引号」",
+            "｢半角直角引号｣",
+            "『混合直角引号｣"
+        )
+
+        markers.forEach { marker ->
+            val thought = parseRoleplayTextSegments(marker)
+                .single { it.kind == RoleplaySegmentKind.THOUGHT }
+
+            assertEquals(marker, thought.rawText)
+        }
+    }
+
+    @Test
+    fun `full width image marker is not parsed as dialogue`() {
+        val segment = parseRoleplayTextSegments("！［图片］（image.png）").single()
+
+        assertEquals(RoleplaySegmentKind.NARRATION, segment.kind)
+    }
+
+    @Test
     fun `empty speaker marker does not replace previous valid inherited speaker`() {
         val dialogues = parseRoleplayTextSegments(
             """

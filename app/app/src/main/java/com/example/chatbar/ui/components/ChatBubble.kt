@@ -69,6 +69,7 @@ import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.RoleplayTextSegment
 import com.example.chatbar.domain.chat.parseRoleplayTextSegments
+import com.example.chatbar.domain.chat.roleplayDialogueMarkerPattern
 import com.example.chatbar.domain.chat.roleplayImageBlockId
 import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
 import com.example.chatbar.domain.chat.roleplayTextBlockId
@@ -184,7 +185,6 @@ internal sealed interface RoleplayContentSegment {
 }
 
 private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
-private val roleplayLinkPattern = Regex("(?<!!)\\[([^\\]]+)]\\([^)]*\\)")
 private val singleNewlinePattern = Regex("(?<!\n)\n(?!\n)")
 private const val hiddenCommentOpen = "<!--"
 private const val hiddenCommentClose = "-->"
@@ -1598,13 +1598,15 @@ internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = fa
     val withoutHiddenComments = stripRoleplayHiddenComments(stripRoleplaySpeakerMarkers(content))
     val withLineBreaks = singleNewlinePattern.replace(withoutHiddenComments, "  \n")
     if (forColoring) {
-        return roleplayLinkPattern.replace(withLineBreaks) { match ->
+        return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
-            val url = match.value.substringAfter("](").substringBefore(")")
-            if (url.isEmpty()) "\u200B[$text]\u200B" else match.value
+            val annotation = match.groupValues[2]
+            if (annotation.isEmpty()) "\u200B[$text]\u200B" else "[$text]($annotation)"
         }
     }
-    return withLineBreaks.replace(roleplayLinkPattern, "[$1]")
+    return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
+        "[${match.groupValues[1]}]"
+    }
 }
 
 private fun stripRoleplayHiddenComments(content: String): String {
