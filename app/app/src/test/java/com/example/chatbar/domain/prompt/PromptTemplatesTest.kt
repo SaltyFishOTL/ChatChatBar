@@ -28,15 +28,17 @@ class PromptTemplatesTest {
     fun currentUserOutputRequirements_areInjectedOnlyIntoRequestCopyAtMessageEnd() {
         val persistedContent = "扶她起来"
 
-        val requestContent =
-            PromptTemplates.injectCurrentUserOutputRequirements(persistedContent)
+        val requestContent = PromptTemplates.injectCurrentUserOutputRequirements(
+            content = persistedContent,
+            replyLength = "500字中篇"
+        )
 
         assertEquals("扶她起来", persistedContent)
         assertEquals(
-            "扶她起来（严格按照格式要求、字数要求进行输出！）",
+            "扶她起来（严格按照格式要求、字数要求输出正文长度为[500字中篇]的内容！）",
             requestContent
         )
-        assertTrue(requestContent.endsWith(PromptTemplates.CURRENT_USER_OUTPUT_REQUIREMENTS_SUFFIX))
+        assertFalse(requestContent.contains("{{replyLength}}"))
     }
 
     @Test

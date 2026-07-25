@@ -60,7 +60,7 @@ class PromptAssembler {
             memoryArchive = memoryArchive,
             memoryHeadAndTimeline = memoryHeadAndTimeline,
             worldBookPrompt = worldBookPrompt
-        ).filter { includePostHistory || it.layer != PromptLayer.TAIL }
+        ).filter { includePostHistory || it.title != PromptTemplates.SECTION_POST_HISTORY }
         return renderLayer(
             raw = renderSections(sections),
             playerName = playerName,
@@ -219,18 +219,18 @@ class PromptAssembler {
             PromptTemplates.SECTION_CORE,
             resolveSystemPrompt(characterCard)
         )
-        if (formatCard != null && formatCard.content.isNotBlank()) {
-            addSection(
-                PromptLayer.STABLE,
-                PromptTemplates.SECTION_FORMAT,
-                "严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}"
-            )
-        }
         addSection(
             PromptLayer.TAIL,
             PromptTemplates.SECTION_POST_HISTORY,
             resolvePostHistory(characterCard)
         )
+        if (formatCard != null && formatCard.content.isNotBlank()) {
+            addSection(
+                PromptLayer.TAIL,
+                PromptTemplates.SECTION_FORMAT,
+                "严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}"
+            )
+        }
     }
 
     private fun MutableList<PromptSection>.addSection(

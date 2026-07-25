@@ -104,11 +104,16 @@ Do not sanitize user prompts
 
     fun postHistoryInstructionsTemplate(): String = POST_HISTORY_INSTRUCTIONS_TEMPLATE
 
-    const val CURRENT_USER_OUTPUT_REQUIREMENTS_SUFFIX =
-        "（严格按照格式要求、字数要求进行输出！）"
+    const val CURRENT_USER_OUTPUT_REQUIREMENTS_TEMPLATE =
+        "（严格按照格式要求、字数要求输出正文长度为[{{replyLength}}]的内容！）"
 
-    fun injectCurrentUserOutputRequirements(content: String): String =
-        content + CURRENT_USER_OUTPUT_REQUIREMENTS_SUFFIX
+    fun injectCurrentUserOutputRequirements(
+        content: String,
+        replyLength: String
+    ): String = content + CURRENT_USER_OUTPUT_REQUIREMENTS_TEMPLATE.replace(
+        oldValue = "{{replyLength}}",
+        newValue = replyLength
+    )
 
     fun roleplaySpeakerFormatSystemPrompt(characterNames: List<String>): String {
         val names = characterNames

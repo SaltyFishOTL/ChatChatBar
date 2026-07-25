@@ -154,29 +154,58 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
     }
 
-    @Test fun cacheLayerKeepsFormatCardAsLastStableContentBeforeHistoryHeading() {
-        val layers = assembler.assembleCachePromptLayers(
-            characterCard = card(basicSetting = "稳定角色设定").copy(systemPrompt = "核心规则"),
-            playerSetting = "玩家资料",
-            supplementarySetting = "补充资料",
+    @Test fun formatCardMovesToTailWithoutChangingStableCachePrefix() {
+        val characterCard = card(basicSetting = "稳定角色设定")
+            .copy(postHistoryInstructions = "尾部规则")
+        val firstLayers = assembler.assembleCachePromptLayers(
+            characterCard = characterCard,
+            formatCard = FormatCard(
+                id = "first-format",
+                name = "格式一",
+                content = "格式正文一",
+                createdAt = 1
+            ),
+            hasPreviousTurn = true
+        )
+        val secondLayers = assembler.assembleCachePromptLayers(
+            characterCard = characterCard,
+            formatCard = FormatCard(
+                id = "second-format",
+                name = "格式二",
+                content = "格式正文二",
+                createdAt = 2
+            ),
+            hasPreviousTurn = true
+        )
+        val tail = firstLayers.tailSystemPrompt
+        val postHistory = tail.indexOf("尾部规则")
+        val format = tail.indexOf("【格式要求】")
+        val previousTurn = tail.indexOf("【上一轮】")
+
+        assertFalse(firstLayers.stableSystemPrompt.contains("格式正文一"))
+        assertTrue(firstLayers.stableSystemPrompt == secondLayers.stableSystemPrompt)
+        assertTrue(postHistory >= 0)
+        assertTrue(postHistory < format)
+        assertTrue(format < previousTurn)
+        assertTrue(tail.endsWith("格式正文一\n\n【上一轮】"))
+        assertTrue(secondLayers.tailSystemPrompt.contains("格式正文二"))
+    }
+
+    @Test fun omittingPostHistoryKeepsTailFormatCard() {
+        val prompt = assembler.assembleSystemPrompt(
+            characterCard = card().copy(postHistoryInstructions = "尾部规则"),
             formatCard = FormatCard(
                 id = "format",
                 name = "格式",
                 content = "格式正文",
                 createdAt = 1
             ),
-            replyLength = "500字中篇",
-            hasHistoryMessages = true
+            includePostHistory = false
         )
-        val stable = layers.stableSystemPrompt
-        val core = stable.indexOf("核心规则")
-        val format = stable.indexOf("【格式要求】")
-        val history = stable.indexOf("【聊天记录】")
 
-        assertTrue(core >= 0)
-        assertTrue(core < format)
-        assertTrue(format < history)
-        assertTrue(stable.endsWith("格式正文\n\n【聊天记录】"))
+        assertFalse(prompt.contains("尾部规则"))
+        assertTrue(prompt.contains("【格式要求】"))
+        assertTrue(prompt.contains("格式正文"))
     }
 
     @Test fun cacheLayersOmitHistoryHeadingsWhenGroupsAreEmpty() {

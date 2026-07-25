@@ -2530,7 +2530,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 if (shouldAddUserPrompt && currentUserContent != null) {
                     // 只修改最终请求副本；持久化消息、RAG、上下文与长期记忆继续使用原文。
                     val userPromptText =
-                        PromptTemplates.injectCurrentUserOutputRequirements(currentUserContent)
+                        PromptTemplates.injectCurrentUserOutputRequirements(
+                            content = currentUserContent,
+                            replyLength = replyLength
+                        )
                     if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
                         try {
                             val base64 = encodeImageToBase64(currentUserImages.first())
