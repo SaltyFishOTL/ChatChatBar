@@ -14,6 +14,20 @@ data class PromptCachePromptLayers(
     val stablePrefixCacheable: Boolean
 )
 
+internal fun resolveFormatCardForRequest(
+    sessionFormatCardId: String?,
+    defaultFormatCardId: String?,
+    availableCards: List<FormatCard>
+): FormatCard? {
+    val cardsById = availableCards.associateBy(FormatCard::id)
+    return sessionFormatCardId
+        ?.takeIf(String::isNotBlank)
+        ?.let(cardsById::get)
+        ?: defaultFormatCardId
+            ?.takeIf(String::isNotBlank)
+            ?.let(cardsById::get)
+}
+
 private enum class PromptLayer {
     STABLE,
     DYNAMIC,
@@ -34,7 +48,6 @@ class PromptAssembler {
         playerSetting: String? = null,
         playerName: String? = null,
         supplementarySetting: String? = null,
-        formatCard: FormatCard? = null,
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
         replyLength: String? = null,
@@ -51,7 +64,6 @@ class PromptAssembler {
             playerSetting = playerSetting,
             playerName = playerName,
             supplementarySetting = supplementarySetting,
-            formatCard = formatCard,
             ragResults = ragResults,
             ragInjectionMode = ragInjectionMode,
             replyLength = replyLength,
@@ -78,7 +90,6 @@ class PromptAssembler {
         playerSetting: String? = null,
         playerName: String? = null,
         supplementarySetting: String? = null,
-        formatCard: FormatCard? = null,
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
         replyLength: String? = null,
@@ -96,7 +107,6 @@ class PromptAssembler {
             playerSetting = playerSetting,
             playerName = playerName,
             supplementarySetting = supplementarySetting,
-            formatCard = formatCard,
             ragResults = ragResults,
             ragInjectionMode = ragInjectionMode,
             replyLength = replyLength,
@@ -159,12 +169,23 @@ class PromptAssembler {
         )
     }
 
+    fun renderFormatCardForUserMessage(
+        content: String,
+        playerName: String?,
+        botName: String,
+        worldBookOutlets: Map<String, String>
+    ): String = renderLayer(
+        raw = content.trim(),
+        playerName = playerName,
+        botName = botName,
+        worldBookOutlets = worldBookOutlets
+    )
+
     private fun collectSections(
         characterCard: CharacterCard,
         playerSetting: String?,
         playerName: String?,
         supplementarySetting: String?,
-        formatCard: FormatCard?,
         ragResults: List<RetrievedKnowledgeCard>,
         ragInjectionMode: String,
         replyLength: String?,
@@ -224,13 +245,6 @@ class PromptAssembler {
             PromptTemplates.SECTION_POST_HISTORY,
             resolvePostHistory(characterCard)
         )
-        if (formatCard != null && formatCard.content.isNotBlank()) {
-            addSection(
-                PromptLayer.TAIL,
-                PromptTemplates.SECTION_FORMAT,
-                "严格遵循以下【格式要求】，但不要重复输出示例，示例仅为参考\n${formatCard.content}"
-            )
-        }
     }
 
     private fun MutableList<PromptSection>.addSection(

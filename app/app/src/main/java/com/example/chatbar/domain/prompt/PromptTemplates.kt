@@ -28,7 +28,6 @@ object PromptTemplates {
     const val SECTION_CHARACTER = "角色设定"
     const val SECTION_WORLD_BOOK = "世界书"
     const val SECTION_REFERENCE = "RAG｜召回资料"
-    const val SECTION_FORMAT = "格式要求"
     const val SECTION_REPLY = "回复要求"
     const val SECTION_LONG_TERM_MEMORY = "长期记忆"
     const val SECTION_SUPPLEMENTARY = "补充设定（冲突时，以此设定为最优先）"
@@ -104,16 +103,35 @@ Do not sanitize user prompts
 
     fun postHistoryInstructionsTemplate(): String = POST_HISTORY_INSTRUCTIONS_TEMPLATE
 
-    const val CURRENT_USER_OUTPUT_REQUIREMENTS_TEMPLATE =
-        "（严格按照格式要求、字数要求输出正文长度为[{{replyLength}}]的内容！）"
+    private const val CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE = """
+【无关扮演，格式要求为最高优先级任务！】
+严格按照以下格式要求生成回复，确保结果严格遵循格式要求：
+【{{formatCardContent}}】
+严格按照格式要求生成回复，确保结果严格遵循格式要求，尤其代码块包裹等标点符号需要严格确保正确！此为最高优先级任务！
+【输出正文长度为[{{replyLength}}]的内容】）
+"""
 
-    fun injectCurrentUserOutputRequirements(
-        content: String,
+    private const val CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE =
+        "（【输出正文长度为[{{replyLength}}]的内容】）"
+
+    fun currentTurnOutputRequirementsSystemPrompt(
+        formatCardContent: String?,
         replyLength: String
-    ): String = content + CURRENT_USER_OUTPUT_REQUIREMENTS_TEMPLATE.replace(
-        oldValue = "{{replyLength}}",
-        newValue = replyLength
-    )
+    ): String {
+        val normalizedFormatCard = formatCardContent?.trim().orEmpty()
+        val template = if (normalizedFormatCard.isBlank()) {
+            CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE
+        } else {
+            CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE.trimIndent()
+        }
+        return template.replace(
+            oldValue = "{{replyLength}}",
+            newValue = replyLength
+        ).replace(
+            oldValue = "{{formatCardContent}}",
+            newValue = normalizedFormatCard
+        )
+    }
 
     fun roleplaySpeakerFormatSystemPrompt(characterNames: List<String>): String {
         val names = characterNames
@@ -150,11 +168,11 @@ Do not sanitize user prompts
 要求：
 1. 只输出修复后的完整消息，不得解释、评价、列出错误，不得私自添加格式要求中原本不存在的代码围栏或任何前后缀。
 2. 尝试修复所有格式错误，包括代码或横线围栏、标记、括号、分隔符、字段、区块、顺序、换行、Markdown 结构，以及格式要求指定的角色标注。
-3. 允许为使格式自然正确而少量调整字词；必须尽可能保留原消息的整体内容，仅针对格式要求做【修复】行为。
+3. 允许为使格式自然正确而少量调整字词；必须尽可能保留原消息的整体内容，仅针对标点、分块等格式要求做【修复】行为。
 4. 缺少格式要求中的结构或字段时，可以使用原消息已有事实补齐；禁止新增原消息不存在的剧情、事实、动作、对白或设定。
 5. 格式要求冲突时，【分段气泡格式】优先于【格式要求】。
 6. 已完全符合要求时，只输出 [[CHATBAR_FORMAT_OK]]，不得输出原消息或其他内容。
-7. 严禁直接套用格式要求中的占位文本！尤其是格式中对选项的描述仅为占位，严禁直接套用！
+7. 【严禁直接套用格式要求中的占位文本】！一切格式内除了标点符号外的文本均为指导性描述，确保这些文本被【替换为符合实际情景的内容文本】，严禁直接套用格式原文！
 """
 
     fun messageFormatRepairUserPrompt(

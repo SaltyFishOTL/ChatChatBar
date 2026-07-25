@@ -21,6 +21,7 @@ import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
+import com.example.chatbar.domain.chat.resolveFormatCardForRequest
 import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.TimelineArchiveBoundaryPolicy
@@ -93,6 +94,21 @@ import kotlin.coroutines.coroutineContext
 
 private class UserStoppedResponseGenerationException : CancellationException("用户停止生成")
 private const val CHAT_VIEW_MODEL_TAG = "ChatViewModel"
+
+internal fun appendCurrentUserAndRequirementsSystemMessages(
+    messages: MutableList<ChatApiMessage>,
+    userMessage: ChatApiMessage,
+    requirementsSystemPrompt: String
+) {
+    require(userMessage.role == "user")
+    messages.add(userMessage)
+    messages.add(
+        ChatApiMessage.text(
+            role = "system",
+            content = requirementsSystemPrompt
+        )
+    )
+}
 
 enum class ImageGenerationPhase {
     QUEUED,
@@ -2354,9 +2370,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
                 // 5. 组装 System Prompt
-                val activeFormatId = currentSession.formatCardId
-                    ?: appSettings.defaultFormatCardId
-                val activeFormatCard = activeFormatId?.let { formatCardRepository.getById(it) }
+                val activeFormatCard = resolveFormatCardForRequest(
+                    sessionFormatCardId = currentSession.formatCardId,
+                    defaultFormatCardId = appSettings.defaultFormatCardId,
+                    availableCards = formatCardRepository.getAll()
+                )
 
                 val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, currentSession, allMsgs, currentSession.timedWorldInfo)
                 if (wbTimed != currentSession.timedWorldInfo) {
@@ -2384,7 +2402,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         playerSetting = activePlayerSetting,
                         playerName = activePlayerName.takeIf { it.isNotBlank() },
                         supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
-                        formatCard = activeFormatCard,
                         ragResults = ragResults,
                         ragInjectionMode = appSettings.ragInjectionMode,
                         replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
@@ -2502,7 +2519,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 3. 本次用户输入（始终放在最底部）
+                // 3. 本次用户输入，随后追加本轮格式要求 System 消息
                 val currentUserContent: String?
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
@@ -2528,29 +2545,49 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
                 if (shouldAddUserPrompt && currentUserContent != null) {
-                    // 只修改最终请求副本；持久化消息、RAG、上下文与长期记忆继续使用原文。
-                    val userPromptText =
-                        PromptTemplates.injectCurrentUserOutputRequirements(
-                            content = currentUserContent,
+                    val renderedFormatCardContent = activeFormatCard
+                        ?.content
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { formatCardContent ->
+                            promptAssembler.renderFormatCardForUserMessage(
+                                content = formatCardContent,
+                                playerName = activePlayerNameOrNull,
+                                botName = charCard.name,
+                                worldBookOutlets = wbOutlets
+                            )
+                        }
+                    val requirementsSystemPrompt =
+                        PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+                            formatCardContent = renderedFormatCardContent,
                             replyLength = replyLength
                         )
-                    if (currentUserImages.isNotEmpty() && modelConfig.isMultimodal) {
+                    val currentUserApiMessage = if (
+                        currentUserImages.isNotEmpty() &&
+                        modelConfig.isMultimodal
+                    ) {
                         try {
                             val base64 = encodeImageToBase64(currentUserImages.first())
-                            apiMessages.add(
-                                ChatApiMessage.withImage(
-                                    role = "user",
-                                    text = userPromptText,
-                                    imageBase64 = base64
-                                )
+                            ChatApiMessage.withImage(
+                                role = "user",
+                                text = currentUserContent,
+                                imageBase64 = base64
                             )
                         } catch (e: Exception) {
-                            if (userPromptText.isNotBlank()) {
-                                apiMessages.add(ChatApiMessage.text("user", userPromptText))
-                            }
+                            currentUserContent
+                                .takeIf(String::isNotBlank)
+                                ?.let { ChatApiMessage.text("user", it) }
                         }
-                    } else if (userPromptText.isNotBlank()) {
-                        apiMessages.add(ChatApiMessage.text("user", userPromptText))
+                    } else if (currentUserContent.isNotBlank()) {
+                        ChatApiMessage.text("user", currentUserContent)
+                    } else {
+                        null
+                    }
+                    currentUserApiMessage?.let { userMessage ->
+                        appendCurrentUserAndRequirementsSystemMessages(
+                            messages = apiMessages,
+                            userMessage = userMessage,
+                            requirementsSystemPrompt = requirementsSystemPrompt
+                        )
                     }
                 }
 

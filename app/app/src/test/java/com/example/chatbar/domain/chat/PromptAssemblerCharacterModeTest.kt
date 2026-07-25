@@ -3,8 +3,8 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
-import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import kotlinx.serialization.json.Json
@@ -74,12 +74,6 @@ class PromptAssemblerCharacterModeTest {
             playerName = "玩家",
             playerSetting = "玩家资料",
             supplementarySetting = "临时规则",
-            formatCard = FormatCard(
-                id = "format",
-                name = "格式",
-                content = "格式正文",
-                createdAt = 1
-            ),
             longTermMemory = "长期内容",
             worldBookPrompt = "世界内容"
         )
@@ -88,7 +82,6 @@ class PromptAssemblerCharacterModeTest {
             "共同世界观",
             "玩家资料",
             "临时规则",
-            "格式正文",
             "长期内容",
             "世界内容"
         ).forEach { assertTrue(prompt.contains(it)) }
@@ -154,58 +147,48 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
     }
 
-    @Test fun formatCardMovesToTailWithoutChangingStableCachePrefix() {
-        val characterCard = card(basicSetting = "稳定角色设定")
-            .copy(postHistoryInstructions = "尾部规则")
-        val firstLayers = assembler.assembleCachePromptLayers(
-            characterCard = characterCard,
-            formatCard = FormatCard(
-                id = "first-format",
-                name = "格式一",
-                content = "格式正文一",
-                createdAt = 1
-            ),
-            hasPreviousTurn = true
+    @Test fun rendersFormatCardPlaceholdersAndOutletsForFinalUserMessage() {
+        val rendered = assembler.renderFormatCardForUserMessage(
+            content = "  {{outlet::format}}  ",
+            playerName = "玩家",
+            botName = "角色",
+            worldBookOutlets = mapOf(
+                "format" to "${'$'}username 遵循 ${'$'}botname 的格式"
+            )
         )
-        val secondLayers = assembler.assembleCachePromptLayers(
-            characterCard = characterCard,
-            formatCard = FormatCard(
-                id = "second-format",
-                name = "格式二",
-                content = "格式正文二",
-                createdAt = 2
-            ),
-            hasPreviousTurn = true
-        )
-        val tail = firstLayers.tailSystemPrompt
-        val postHistory = tail.indexOf("尾部规则")
-        val format = tail.indexOf("【格式要求】")
-        val previousTurn = tail.indexOf("【上一轮】")
 
-        assertFalse(firstLayers.stableSystemPrompt.contains("格式正文一"))
-        assertTrue(firstLayers.stableSystemPrompt == secondLayers.stableSystemPrompt)
-        assertTrue(postHistory >= 0)
-        assertTrue(postHistory < format)
-        assertTrue(format < previousTurn)
-        assertTrue(tail.endsWith("格式正文一\n\n【上一轮】"))
-        assertTrue(secondLayers.tailSystemPrompt.contains("格式正文二"))
+        assertTrue(rendered == "玩家 遵循 角色 的格式")
+        assertFalse(rendered.contains("{{outlet::format}}"))
+        assertFalse(rendered.contains("${'$'}username"))
+        assertFalse(rendered.contains("${'$'}botname"))
     }
 
-    @Test fun omittingPostHistoryKeepsTailFormatCard() {
+    @Test fun staleSessionFormatCardFallsBackToAvailableGlobalDefault() {
+        val defaultCard = FormatCard(
+            id = "default-format",
+            name = "默认格式",
+            content = "格式正文",
+            createdAt = 1
+        )
+
+        val resolved = resolveFormatCardForRequest(
+            sessionFormatCardId = "deleted-session-format",
+            defaultFormatCardId = defaultCard.id,
+            availableCards = listOf(defaultCard)
+        )
+
+        assertTrue(resolved == defaultCard)
+    }
+
+    @Test fun omittingPostHistoryOnlyRemovesPostHistorySection() {
         val prompt = assembler.assembleSystemPrompt(
-            characterCard = card().copy(postHistoryInstructions = "尾部规则"),
-            formatCard = FormatCard(
-                id = "format",
-                name = "格式",
-                content = "格式正文",
-                createdAt = 1
-            ),
+            characterCard = card(basicSetting = "稳定角色设定")
+                .copy(postHistoryInstructions = "尾部规则"),
             includePostHistory = false
         )
 
         assertFalse(prompt.contains("尾部规则"))
-        assertTrue(prompt.contains("【格式要求】"))
-        assertTrue(prompt.contains("格式正文"))
+        assertTrue(prompt.contains("稳定角色设定"))
     }
 
     @Test fun cacheLayersOmitHistoryHeadingsWhenGroupsAreEmpty() {

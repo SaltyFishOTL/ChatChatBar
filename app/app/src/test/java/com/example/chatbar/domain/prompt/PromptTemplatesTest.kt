@@ -25,20 +25,36 @@ class PromptTemplatesTest {
     }
 
     @Test
-    fun currentUserOutputRequirements_areInjectedOnlyIntoRequestCopyAtMessageEnd() {
+    fun currentTurnOutputRequirements_areRenderedAsStandaloneSystemPrompt() {
         val persistedContent = "扶她起来"
 
-        val requestContent = PromptTemplates.injectCurrentUserOutputRequirements(
-            content = persistedContent,
+        val systemPrompt = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = "格式正文",
             replyLength = "500字中篇"
         )
 
         assertEquals("扶她起来", persistedContent)
         assertEquals(
-            "扶她起来（严格按照格式要求、字数要求输出正文长度为[500字中篇]的内容！）",
-            requestContent
+            """
+            （严格按照以下格式要求进行回复，确保遵循格式要求：
+            【格式正文】
+            【输出正文长度为[500字中篇]的内容】）
+            """.trimIndent(),
+            systemPrompt
         )
-        assertFalse(requestContent.contains("{{replyLength}}"))
+        assertFalse(systemPrompt.contains("{{replyLength}}"))
+        assertFalse(systemPrompt.contains("{{formatCardContent}}"))
+    }
+
+    @Test
+    fun currentTurnOutputRequirements_withoutFormatCardKeepOnlyLengthRequirement() {
+        assertEquals(
+            "（【输出正文长度为[300字短篇]的内容】）",
+            PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+                formatCardContent = null,
+                replyLength = "300字短篇"
+            )
+        )
     }
 
     @Test

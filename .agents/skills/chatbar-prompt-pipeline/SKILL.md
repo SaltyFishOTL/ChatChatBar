@@ -33,12 +33,12 @@ Do not move behavior between these owners without tracing every caller and test.
 
 - Stable layer contains reusable role, reply, supplementary, player, and core settings.
 - Dynamic layer contains World Book, RAG, Archive, HEAD, and timeline material.
-- Tail layer contains post-history instructions, the format card, and the previous-turn heading.
-- Keep the format card after post-history instructions and before the optional previous-turn heading; exclude it from the stable cache key.
+- Tail layer contains post-history instructions and the previous-turn heading.
 - Preserve dynamic order: World Book, RAG, Archive, then HEAD/timeline constraint.
 - Insert cacheable earlier history after the stable layer.
 - Move a complete adjacent USER + ASSISTANT previous turn into the tail hot zone when available. Preserve opening assistants, consecutive users, unanswered users, and other abnormal messages in original order.
-- Append current user input last. Render the `PromptTemplates` format/length reminder suffix with the same effective session reply length used by the tail system message, and add it only to that final request copy; never persist, index, or reuse it as history or memory source text. Per-turn speaker/length constraint details remain system messages near the tail.
+- Resolve the active format card by available entities: use an available session override first, then an available global default; a stale session ID must not suppress the default card.
+- Append current user input unchanged, then append a logical `system` message containing the rendered active format card and effective session reply length. Build the complete model-facing requirements text through `PromptTemplates`; never include the format card in stable/dynamic/tail cache layers, persist the requirements, or reuse them as history or memory source text.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
 - Cleartext HTTP adaptation changes later system roles to assistant in serialized JSON but never moves or merges their content; stable prefix and tail positions remain unchanged.
 - Omit empty sections and their headings.
