@@ -186,15 +186,9 @@ fun CbInput(
                 innerTextField()
             }
         )
-        CbText(
-            "${value.length}字",
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
-                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
-                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
-            color = colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
+        CharacterCount(
+            length = value.length,
+            modifier = Modifier.align(Alignment.BottomEnd)
         )
     }
 }
@@ -300,15 +294,9 @@ private fun CursorAwareExpandedStringInput(
                 }
             )
         }
-        CbText(
-            "${value.length} chars",
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
-                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
-                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
-            color = colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
+        CharacterCount(
+            length = value.length,
+            modifier = Modifier.align(Alignment.BottomEnd)
         )
     }
 }
@@ -358,15 +346,9 @@ fun CbInput(
                 inner()
             }
         )
-        CbText(
-            "${value.text.length}字",
-            modifier = Modifier
-                .align(Alignment.BottomEnd)
-                .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
-                .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
-                .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
-            color = colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
+        CharacterCount(
+            length = value.text.length,
+            modifier = Modifier.align(Alignment.BottomEnd)
         )
     }
 }
@@ -523,8 +505,30 @@ private fun CursorAwareFullscreenTextField(
                 inner()
             }
         )
+        CharacterCount(
+            length = value.text.length,
+            modifier = Modifier.align(Alignment.BottomEnd)
+        )
     }
 }
+
+@Composable
+private fun CharacterCount(
+    length: Int,
+    modifier: Modifier = Modifier
+) {
+    val colors = ChatBarTheme.colors
+    CbText(
+        "${length}字",
+        modifier = modifier
+            .padding(end = ChatBarSpacing.sm, bottom = 6.dp)
+            .background(colors.input.copy(alpha = 0.7f), RoundedCornerShape(ChatBarShape.xs))
+            .padding(horizontal = ChatBarSpacing.xs, vertical = 1.dp),
+        color = colors.mutedForeground,
+        style = ChatBarTheme.typography.caption
+    )
+}
+
 @Composable
 private fun FullscreenTextEditorLayout(
     title: String,
