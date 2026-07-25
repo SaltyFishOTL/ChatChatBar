@@ -40,7 +40,7 @@ class LlmResearchBriefSummarizer(
                     ChatApiMessage.text("user", summaryUserPrompt(request, plan, sources))
                 ),
                 modelConfig = modelConfig,
-                maxTokens = 1200,
+                maxTokens = 30000,
                 enableThinking = false,
                 maxThinkingTokens = 128,
                 thinkingBudget = 128,
