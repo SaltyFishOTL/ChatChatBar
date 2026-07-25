@@ -4,6 +4,7 @@ import android.app.ActivityManager
 import android.app.ApplicationExitInfo
 import android.content.Context
 import android.os.Build
+import android.system.OsConstants
 import android.util.Base64
 import androidx.annotation.RequiresApi
 import com.example.chatbar.domain.diagnostics.DiagnosticSystemExitInfo
@@ -35,7 +36,13 @@ internal object SystemExitInfoReader {
         return SystemExitReadResult(
             latestSeenTimestamp = unseen.maxOf(ApplicationExitInfo::getTimestamp),
             abnormalExit = unseen
-                .firstOrNull { it.reason.isDiagnosticAbnormalExit() }
+                .firstOrNull {
+                    SystemExitDiagnosticPolicy.isDiagnosticAbnormalExit(
+                        reason = it.reason,
+                        status = it.status,
+                        importance = it.importance
+                    )
+                }
                 ?.toDiagnosticSystemExitInfo()
         )
     }
@@ -100,17 +107,6 @@ internal object SystemExitInfoReader {
         }
     }
 
-    private fun Int.isDiagnosticAbnormalExit(): Boolean = this in setOf(
-        ApplicationExitInfo.REASON_SIGNALED,
-        ApplicationExitInfo.REASON_LOW_MEMORY,
-        ApplicationExitInfo.REASON_CRASH,
-        ApplicationExitInfo.REASON_CRASH_NATIVE,
-        ApplicationExitInfo.REASON_ANR,
-        ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
-        ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
-        ApplicationExitInfo.REASON_DEPENDENCY_DIED
-    )
-
     private fun Int.diagnosticReasonLabel(): String = when (this) {
         ApplicationExitInfo.REASON_SIGNALED -> "系统信号终止"
         ApplicationExitInfo.REASON_LOW_MEMORY -> "低内存终止"
@@ -128,4 +124,34 @@ internal object SystemExitInfoReader {
         val encoding: String,
         val truncated: Boolean
     )
+}
+
+internal object SystemExitDiagnosticPolicy {
+    fun isDiagnosticAbnormalExit(
+        reason: Int,
+        status: Int,
+        importance: Int
+    ): Boolean {
+        if (isExpectedBackgroundMemoryKill(reason, status, importance)) return false
+        return reason in setOf(
+            ApplicationExitInfo.REASON_SIGNALED,
+            ApplicationExitInfo.REASON_LOW_MEMORY,
+            ApplicationExitInfo.REASON_CRASH,
+            ApplicationExitInfo.REASON_CRASH_NATIVE,
+            ApplicationExitInfo.REASON_ANR,
+            ApplicationExitInfo.REASON_INITIALIZATION_FAILURE,
+            ApplicationExitInfo.REASON_EXCESSIVE_RESOURCE_USAGE,
+            ApplicationExitInfo.REASON_DEPENDENCY_DIED
+        )
+    }
+
+    private fun isExpectedBackgroundMemoryKill(
+        reason: Int,
+        status: Int,
+        importance: Int
+    ): Boolean {
+        if (importance <= ActivityManager.RunningAppProcessInfo.IMPORTANCE_VISIBLE) return false
+        return reason == ApplicationExitInfo.REASON_LOW_MEMORY ||
+            (reason == ApplicationExitInfo.REASON_SIGNALED && status == OsConstants.SIGKILL)
+    }
 }
