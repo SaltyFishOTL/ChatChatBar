@@ -4,6 +4,9 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImageResource
+import com.example.chatbar.data.local.entity.SaveSlotAudioResource
+import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
+import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.toSummary
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
@@ -77,6 +80,47 @@ class SaveSlotSerializationTest {
         )
 
         assertEquals(slot, decoded)
+    }
+
+    @Test
+    fun saveSlotV5RoundTripsEmbeddedVoiceAudio() {
+        val voice = GeneratedVoiceMessage.create(
+            sessionId = "session-1",
+            messageId = "message-1",
+            anchorId = "anchor-1",
+            sourceOrder = 10,
+            sourceSegmentKind = "DIALOGUE",
+            sourceSpeakerName = "林雾",
+            sourceText = "你好",
+            taggedText = "[happy]你好",
+            characterId = "character-1",
+            characterName = "林雾",
+            voice = FishAudioVoiceBinding(
+                referenceId = "reference-1",
+                title = "温柔女声",
+                visibility = "private"
+            ),
+            fishModelId = "s2.1-pro-free",
+            audioPath = "voice-resource",
+            durationMs = 1_200,
+            byteLength = 3
+        )
+        val slot = SaveSlot.create("session-1", "语音存档").copy(
+            voiceMessages = listOf(voice),
+            audioResources = mapOf(
+                "voice-resource" to SaveSlotAudioResource("voice.mp3", "bXAz")
+            )
+        )
+
+        val decoded = SaveSlotJsonTransfer.read(
+            ByteArrayInputStream(
+                ByteArrayOutputStream().also { SaveSlotJsonTransfer.write(slot, it) }.toByteArray()
+            )
+        )
+
+        assertEquals(5, decoded.schemaVersion)
+        assertEquals(voice, decoded.voiceMessages.single())
+        assertEquals("bXAz", decoded.audioResources.getValue("voice-resource").data)
     }
 
     @Test

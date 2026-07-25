@@ -38,6 +38,8 @@ data class AppSettings(
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageAspectRatio: String = "",
     val imagePromptToolPreference: String = "",
+    val fishAudioTtsModelId: String = DEFAULT_FISH_AUDIO_TTS_MODEL,
+    val voiceTagModelId: String? = null,
     val momentsEnabled: Boolean = false,
     val momentsMinDelayHours: Int = 2,
     val momentsMaxDelayHours: Int = 13,
@@ -51,6 +53,7 @@ const val DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY = 0.16f
 const val DEFAULT_EPISODE_MAX_SOURCE_TURNS = 2
 const val MIN_EPISODE_MAX_SOURCE_TURNS = 1
 const val MAX_EPISODE_MAX_SOURCE_TURNS = 6
+const val DEFAULT_FISH_AUDIO_TTS_MODEL = "s2.1-pro-free"
 
 fun AppSettings.withNormalizedAppearance(): AppSettings {
     val normalizedOpacity = chatBackgroundImageOpacity

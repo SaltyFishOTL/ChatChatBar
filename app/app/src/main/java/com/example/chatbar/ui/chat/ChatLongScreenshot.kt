@@ -26,6 +26,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.repository.VoiceMessagePlacement
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.kit.CbTopBar
@@ -49,6 +50,7 @@ data class ChatLongScreenshotRequest(
     val botAvatarPath: String? = null,
     val characterAvatars: List<ChatBubbleCharacterAvatar> = emptyList(),
     val assistantSegmentedBubblesEnabled: Boolean = true,
+    val voicePlacementsByMessage: Map<String, List<VoiceMessagePlacement>> = emptyMap(),
     val selectedBlockIds: Set<String> = emptySet(),
     val expandedStatusBlockIds: Set<String> = emptySet()
 )
@@ -166,6 +168,7 @@ private fun ChatLongScreenshotContent(request: ChatLongScreenshotRequest) {
                     botAvatarPath = request.botAvatarPath,
                     characterAvatars = request.characterAvatars,
                     assistantSegmentedBubblesEnabled = request.assistantSegmentedBubblesEnabled,
+                    voicePlacements = request.voicePlacementsByMessage[message.id].orEmpty(),
                     showActions = false,
                     showMessageMeta = request.selectedBlockIds.isEmpty(),
                     blockFilterIds = request.selectedBlockIds.ifEmpty { null },

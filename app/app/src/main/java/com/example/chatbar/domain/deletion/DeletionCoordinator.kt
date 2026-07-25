@@ -9,8 +9,12 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MomentRepository
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.SaveSlotRepository
+import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.image.NovelAiImageStorage
+import com.example.chatbar.domain.voice.FishAudioStorage
+import com.example.chatbar.domain.voice.FishAudioGenerationCoordinator
+import com.example.chatbar.domain.voice.VoicePlaybackController
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.sync.Mutex
@@ -25,7 +29,11 @@ class DeletionCoordinator(
     private val ragRepository: RagRepository,
     private val memoryRepository: MemoryRepository,
     private val momentRepository: MomentRepository,
-    private val imageStorage: NovelAiImageStorage
+    private val imageStorage: NovelAiImageStorage,
+    private val voiceRepository: VoiceMessageRepository,
+    private val voiceStorage: FishAudioStorage,
+    private val voicePlayback: VoicePlaybackController,
+    private val voiceGeneration: FishAudioGenerationCoordinator
 ) {
     private val cleanupMutex = Mutex()
 
@@ -77,12 +85,18 @@ class DeletionCoordinator(
             }
 
             PendingDeletionType.SESSION -> {
+                voiceGeneration.cancelAndJoinForSession(task.ownerId)
                 chatRepository.deleteSessionRecord(task.ownerId)
                 chatRepository.deleteMessagesForSession(task.ownerId)
                 saveSlotRepository.deleteBySessionId(task.ownerId)
                 ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, task.ownerId)
                 memoryRepository.deleteForSession(task.ownerId)
                 check(imageStorage.deleteSession(task.ownerId)) { "无法清理会话生成图片: ${task.ownerId}" }
+                val removedVoices = voiceRepository.deleteForSession(task.ownerId)
+                if (removedVoices.any { it.id == voicePlayback.state.value.currentVoiceId }) {
+                    voicePlayback.stop()
+                }
+                check(voiceStorage.deleteSession(task.ownerId)) { "无法清理会话语音: ${task.ownerId}" }
             }
         }
     }

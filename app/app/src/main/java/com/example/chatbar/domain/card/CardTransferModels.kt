@@ -1,12 +1,13 @@
 package com.example.chatbar.domain.card
 
 import com.example.chatbar.data.local.entity.CharacterEditMode
+import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.WorldBook
 import kotlinx.serialization.Serializable
 
 @Serializable
 data class CharacterCardPackage(
-    val schemaVersion: Int = 5,
+    val schemaVersion: Int = 6,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
@@ -50,7 +51,8 @@ data class PackagedCharacter(
     val background: String = "",
     val relationships: String = "",
     val speakingStyle: String = "",
-    val imagePrompt: String = ""
+    val imagePrompt: String = "",
+    val fishAudioVoice: FishAudioVoiceBinding? = null
 )
 
 @Serializable
@@ -73,7 +75,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion in 3..5) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..6) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     require(card.name.isNotBlank()) { "角色卡名称不能为空" }
     require(card.characters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
     require(documents.all { it.fileName.isNotBlank() && it.fileType.isNotBlank() }) { "文档名称和类型不能为空" }

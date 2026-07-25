@@ -52,6 +52,10 @@ import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
+import com.example.chatbar.domain.voice.VoiceAnchorPolicy
+import com.example.chatbar.domain.voice.VoiceGenerationBatchState
+import com.example.chatbar.domain.voice.VoicePlaybackState
+import com.example.chatbar.data.repository.VoiceMessagePlacement
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.BackgroundGenerationProtectionCancellationException
 import com.example.chatbar.domain.service.StreamingNotificationManager
@@ -196,6 +200,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val voiceMessageRepository = ChatBarApp.instance.voiceMessageRepository
+    private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
+    private val fishAudioCoordinator = ChatBarApp.instance.fishAudioGenerationCoordinator
     private val ragMemoryMutationMutex = Mutex()
 
     // UI 状态
@@ -215,6 +222,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+    private val _voicePlacements = MutableStateFlow<Map<String, List<VoiceMessagePlacement>>>(emptyMap())
+    val voicePlacements: StateFlow<Map<String, List<VoiceMessagePlacement>>> =
+        _voicePlacements.asStateFlow()
+    val voiceGenerationBatches: StateFlow<List<VoiceGenerationBatchState>> =
+        fishAudioCoordinator.batches
+    val voicePlaybackState: StateFlow<VoicePlaybackState> =
+        ChatBarApp.instance.voicePlaybackController.state
+    val fishAudioConfigured: StateFlow<Boolean> = fishAudioCredentials.configured
+    private val _voiceGenerationAvailabilityError = MutableStateFlow<String?>(null)
+    val voiceGenerationAvailabilityError: StateFlow<String?> =
+        _voiceGenerationAvailabilityError.asStateFlow()
 
     private val _draftInput = MutableStateFlow("")
     val draftInput: StateFlow<String> = _draftInput.asStateFlow()
@@ -324,6 +342,133 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         observeSessionChanges()
         observeCharacterCardChanges()
         observeSettingsChanges()
+        observeFishAudioCredentialChanges()
+        observeVoiceMessages()
+    }
+
+    private fun observeVoiceMessages() {
+        viewModelScope.launch {
+            combine(_messages, voiceMessageRepository.voices) { messages, _ -> messages }
+                .collect { currentMessages ->
+                    val placements = linkedMapOf<String, List<VoiceMessagePlacement>>()
+                    currentMessages.forEach { message ->
+                        if (message.role == MessageRole.ASSISTANT) {
+                            placements[message.id] = voiceMessageRepository.placementsForMessage(message)
+                        }
+                    }
+                    _voicePlacements.value = placements
+                }
+        }
+    }
+
+    private fun observeFishAudioCredentialChanges() {
+        viewModelScope.launch {
+            fishAudioCredentials.configured.collect {
+                refreshVoiceGenerationAvailability()
+            }
+        }
+    }
+
+    private suspend fun refreshVoiceGenerationAvailability() {
+        if (!fishAudioCredentials.isConfigured()) {
+            _voiceGenerationAvailabilityError.value = null
+            return
+        }
+        val settings = settingsRepository.getAppSettings()
+        val model = if (settings.voiceTagModelId.isNullOrBlank()) {
+            modelResolver.resolveChatModel(_session.value?.modelId, settings)
+                ?: run {
+                    _voiceGenerationAvailabilityError.value = "当前会话没有可用对话模型"
+                    return
+                }
+        } else {
+            modelResolver.resolveAuxiliaryTextModelExact(settings.voiceTagModelId, settings)
+                ?: run {
+                    _voiceGenerationAvailabilityError.value =
+                        "所选语音标签模型已失效，请在设置中重新选择"
+                    return
+                }
+        }
+        _voiceGenerationAvailabilityError.value =
+            if (model.hasConfiguredAuthentication(settings)) null
+            else "语音标签模型/API Key 未配置"
+    }
+
+    fun setVoiceScreenForeground(isForeground: Boolean) {
+        fishAudioCoordinator.setForegroundSession(sessionId.takeIf { isForeground })
+    }
+
+    fun canGenerateVoiceForSegment(messageId: String, segmentIndex: Int): Boolean {
+        if (!fishAudioCredentials.isConfigured() || _voiceGenerationAvailabilityError.value != null) {
+            return false
+        }
+        return hasVoiceTargetForSegment(messageId, segmentIndex)
+    }
+
+    fun hasVoiceTargetForSegment(messageId: String, segmentIndex: Int): Boolean {
+        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+        if (message.role != MessageRole.ASSISTANT) return false
+        val segment = VoiceAnchorPolicy.eligibleSegments(message.displayContent)
+            .firstOrNull { it.segmentIndex == segmentIndex }
+            ?: return false
+        val speaker = segment.speakerName?.trim()?.takeIf(String::isNotEmpty) ?: return false
+        return _characterCard.value?.characters
+            ?.filter { it.name.trim().equals(speaker, ignoreCase = true) }
+            ?.singleOrNull()
+            ?.fishAudioVoice != null
+    }
+
+    fun canGenerateVoiceForMessage(messageId: String): Boolean {
+        if (!fishAudioCredentials.isConfigured() || _voiceGenerationAvailabilityError.value != null) {
+            return false
+        }
+        return hasVoiceTargetForMessage(messageId)
+    }
+
+    fun hasVoiceTargetForMessage(messageId: String): Boolean {
+        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+        return VoiceAnchorPolicy.eligibleSegments(message.displayContent)
+            .any { hasVoiceTargetForSegment(messageId, it.segmentIndex) }
+    }
+
+    fun generateVoiceForSegment(messageId: String, segmentIndex: Int) {
+        if (canGenerateVoiceForSegment(messageId, segmentIndex)) {
+            fishAudioCoordinator.generateSingle(sessionId, messageId, segmentIndex)
+        }
+    }
+
+    fun generateVoiceForMessage(messageId: String) {
+        if (canGenerateVoiceForMessage(messageId)) {
+            fishAudioCoordinator.generateWhole(sessionId, messageId)
+        }
+    }
+
+    fun cancelVoiceGeneration(batchId: String) {
+        fishAudioCoordinator.cancel(batchId)
+    }
+
+    fun resolveVoiceTextConfirmation(batchId: String, useAiText: Boolean) {
+        fishAudioCoordinator.resolveTextConfirmation(batchId, useAiText)
+    }
+
+    fun dismissVoiceGeneration(batchId: String) {
+        fishAudioCoordinator.dismiss(batchId)
+    }
+
+    fun playVoice(voice: GeneratedVoiceMessage) {
+        fishAudioCoordinator.playSingle(voice)
+    }
+
+    fun stopVoicePlayback() {
+        fishAudioCoordinator.stopPlayback()
+    }
+
+    fun regenerateVoice(voiceId: String, taggedText: String) {
+        fishAudioCoordinator.regenerate(voiceId, taggedText)
+    }
+
+    fun deleteVoice(voiceId: String) {
+        fishAudioCoordinator.deleteVoice(voiceId)
     }
 
     private fun observeSessionChanges() {
@@ -332,7 +477,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
                     val modelChanged = _session.value?.modelId != updatedSession.modelId
                     _session.value = updatedSession
-                    if (modelChanged) refreshConfigurations()
+                    if (modelChanged) {
+                        refreshConfigurations()
+                        refreshVoiceGenerationAvailability()
+                    }
                 }
             }
         }
@@ -343,6 +491,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             settingsRepository.appSettings.collect { settings ->
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
                 _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
+                refreshVoiceGenerationAvailability()
             }
         }
     }
@@ -375,6 +524,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
             _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
+            refreshVoiceGenerationAvailability()
             if (s != null) {
                 ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.activateSession(sessionId)
                 val card = characterRepository.getById(s.characterCardId)
@@ -2591,12 +2741,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
+            fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
             val currentMessages = chatRepository.getMessages(sessionId)
             val deletedMessage = currentMessages.firstOrNull { it.id == messageId }
 
             deletedMessage
                 ?.images
                 ?.forEach { deleteDisposableChatImage(it) }
+            val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
+            if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
+                fishAudioCoordinator.stopPlayback()
+            }
+            deletedVoices.forEach { voice ->
+                ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
+            }
             _messages.value = _messages.value.filter { it.id != messageId }
             chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
@@ -2624,6 +2782,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val remaining = message.images.filterNot { it == imagePath }
             deleteDisposableChatImage(imagePath)
             if (remaining.isEmpty() && message.content.isBlank()) {
+                val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
+                if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
+                    fishAudioCoordinator.stopPlayback()
+                }
+                deletedVoices.forEach { voice ->
+                    ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
+                }
                 chatRepository.deleteMessage(messageId, sessionId)
                 ragMemoryMutationMutex.withLock {
                     refreshMemoryAfterMessageDeletion(message)
@@ -3023,6 +3188,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val curSession = _session.value ?: return@launch
             val messagesList = _messages.value
             val packaged = packageSaveSlotImages(curSession, messagesList)
+            val packagedVoices = packageSaveSlotAudioRefs(
+                voiceMessageRepository.listForSession(sessionId)
+            )
             
             // 获取当前的向量记忆库快照
             val vectorChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
@@ -3063,7 +3231,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 contextWindowSize = curSession.contextWindowSize,
                 extraWorldBookIds = curSession.extraWorldBookIds,
                 timedWorldInfo = curSession.timedWorldInfo,
-                imageResources = packaged.resources
+                imageResources = packaged.resources,
+                voiceMessages = packagedVoices.voices,
+                audioResources = packagedVoices.resources
             )
 
             saveSlotRepository.save(finalizedSlot)
@@ -3077,12 +3247,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun loadSaveSlot(summary: SaveSlotSummary) {
         viewModelScope.launch {
             val curSession = _session.value ?: return@launch
+            fishAudioCoordinator.cancelAndJoinForSession(sessionId)
             val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
-            val materializedSlot = materializeSaveSlotImages(slot)
+            val materializedImages = materializeSaveSlotImages(slot)
+            val materializedAudio = try {
+                materializeSaveSlotAudio(materializedImages.slot)
+            } catch (error: Throwable) {
+                materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
+                throw error
+            }
+            val materializedSlot = materializedAudio.slot
             val preservedImages = materializedSlot.messages
                 .flatMap { it.images }
                 .toSet() + listOfNotNull(materializedSlot.chatBackground)
+            val preservedAudio = materializedSlot.voiceMessages.mapTo(mutableSetOf()) { it.audioPath }
             val currentMsgs = chatRepository.getMessages(sessionId)
+            val currentVoices = voiceMessageRepository.listForSession(sessionId)
             val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
             longTermMemoryService.ensureMigrated(sessionId)
             val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
@@ -3116,8 +3296,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 lastMessageRole = latest?.role
             )
             val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
+            fishAudioCoordinator.stopPlayback()
             try {
                 chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
+                voiceMessageRepository.restoreForSession(
+                    sessionId,
+                    materializedSlot.voiceMessages,
+                    materializedSlot.messages
+                )
                 ChatBarApp.instance.ragRepository.deleteChunksBySource(
                     ChunkSourceType.CHAT_MEMORY,
                     sessionId
@@ -3127,6 +3313,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
             } catch (error: Throwable) {
                 chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
+                voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
                 ChatBarApp.instance.ragRepository.deleteChunksBySource(
                     ChunkSourceType.CHAT_MEMORY,
                     sessionId
@@ -3135,10 +3322,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 chatRepository.updateSession(curSession)
                 runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
                 preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
+                materializedAudio.createdPaths.forEach {
+                    ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
+                }
+                materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
                 throw error
             }
 
             currentImages.filterNot { it in preservedImages }.forEach { deleteDisposableChatImage(it) }
+            currentVoices
+                .map(GeneratedVoiceMessage::audioPath)
+                .filterNot { it in preservedAudio }
+                .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
             loadSessionData()
         }
     }
@@ -3165,7 +3360,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             messages = packaged.messages,
             imageResources = packaged.resources
         )
-        SaveSlotJsonTransfer.write(portable, output)
+        val packagedVoices = packageSaveSlotAudioRefs(
+            voices = slot.voiceMessages,
+            existingResources = slot.audioResources
+        )
+        SaveSlotJsonTransfer.write(
+            portable.copy(
+                voiceMessages = packagedVoices.voices,
+                audioResources = packagedVoices.resources
+            ),
+            output
+        )
     }
 
     suspend fun importSaveSlotJson(input: InputStream): SaveSlot {
@@ -3180,11 +3385,30 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         } else {
             NamePolicy.normalize(requestedName)
         }
+        val importedVoiceResources = linkedMapOf<String, SaveSlotAudioResource>()
+        val importedVoices = decoded.voiceMessages.map { voice ->
+            val newVoiceId = UUID.randomUUID().toString()
+            val oldResourceId = when {
+                voice.audioPath in decoded.audioResources -> voice.audioPath
+                voice.id in decoded.audioResources -> voice.id
+                else -> null
+            }
+            oldResourceId?.let { resourceId ->
+                importedVoiceResources[newVoiceId] = decoded.audioResources.getValue(resourceId)
+            }
+            voice.copy(
+                id = newVoiceId,
+                sessionId = sessionId,
+                audioPath = if (oldResourceId == null) voice.audioPath else newVoiceId
+            )
+        }
         val imported = decoded.copy(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
             name = importedName,
             messages = decoded.messages.map { it.copy(sessionId = sessionId) },
+            voiceMessages = importedVoices,
+            audioResources = importedVoiceResources,
             vectorChunks = decoded.vectorChunks.map { it.copy(sourceId = sessionId) },
             createdAt = System.currentTimeMillis()
         )
@@ -3198,6 +3422,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val messages: List<ChatMessage>,
         val resources: Map<String, SaveSlotImageResource>
     )
+
+    private data class PackagedSaveSlotAudio(
+        val voices: List<GeneratedVoiceMessage>,
+        val resources: Map<String, SaveSlotAudioResource>
+    )
+
+    private suspend fun packageSaveSlotAudioRefs(
+        voices: List<GeneratedVoiceMessage>,
+        existingResources: Map<String, SaveSlotAudioResource> = emptyMap()
+    ): PackagedSaveSlotAudio = withContext(Dispatchers.IO) {
+        val resources = linkedMapOf<String, SaveSlotAudioResource>().apply {
+            putAll(existingResources)
+        }
+        val packagedVoices = voices.map { voice ->
+            if (voice.id in resources) {
+                voice.copy(audioPath = voice.id)
+            } else {
+                val file = File(voice.audioPath)
+                if (!file.isFile) {
+                    error("语音文件不存在，无法写入存档：${voice.id}")
+                } else {
+                    resources[voice.id] = SaveSlotAudioResource(
+                        fileName = file.name.ifBlank { "${voice.id}.mp3" },
+                        data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
+                    )
+                    voice.copy(audioPath = voice.id)
+                }
+            }
+        }
+        PackagedSaveSlotAudio(packagedVoices, resources)
+    }
 
     private suspend fun packageSaveSlotImages(
         session: ChatSession,
@@ -3242,8 +3497,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
     }
 
-    private suspend fun materializeSaveSlotImages(slot: SaveSlot): SaveSlot = withContext(Dispatchers.IO) {
-        if (slot.imageResources.isEmpty()) return@withContext slot
+    private data class MaterializedSaveSlotImages(
+        val slot: SaveSlot,
+        val createdPaths: List<String>
+    )
+
+    private suspend fun materializeSaveSlotImages(
+        slot: SaveSlot
+    ): MaterializedSaveSlotImages = withContext(Dispatchers.IO) {
+        if (slot.imageResources.isEmpty()) {
+            return@withContext MaterializedSaveSlotImages(slot, emptyList())
+        }
         val createdFiles = mutableListOf<File>()
         try {
             val pathsByResourceId = slot.imageResources.mapValues { (resourceId, image) ->
@@ -3252,14 +3516,59 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 file.writeBytes(Base64.decode(image.data, Base64.DEFAULT))
                 file.absolutePath
             }
-            slot.copy(
-                chatBackground = slot.chatBackground?.let { pathsByResourceId[it] ?: it },
-                messages = slot.messages.map { message ->
-                    message.copy(images = message.images.map { pathsByResourceId[it] ?: it })
-                }
+            MaterializedSaveSlotImages(
+                slot = slot.copy(
+                    chatBackground = slot.chatBackground?.let { pathsByResourceId[it] ?: it },
+                    messages = slot.messages.map { message ->
+                        message.copy(images = message.images.map { pathsByResourceId[it] ?: it })
+                    }
+                ),
+                createdPaths = createdFiles.map(File::getAbsolutePath)
             )
         } catch (error: Throwable) {
             createdFiles.forEach { it.delete() }
+            throw error
+        }
+    }
+
+    private data class MaterializedSaveSlotAudio(
+        val slot: SaveSlot,
+        val createdPaths: List<String>
+    )
+
+    private suspend fun materializeSaveSlotAudio(slot: SaveSlot): MaterializedSaveSlotAudio {
+        if (slot.audioResources.isEmpty()) {
+            return MaterializedSaveSlotAudio(slot, emptyList())
+        }
+        val createdPaths = mutableListOf<String>()
+        return try {
+            val voices = slot.voiceMessages.map { voice ->
+                val resourceId = when {
+                    voice.audioPath in slot.audioResources -> voice.audioPath
+                    voice.id in slot.audioResources -> voice.id
+                    else -> null
+                } ?: return@map voice
+                val resource = slot.audioResources.getValue(resourceId)
+                val audio = ChatBarApp.instance.fishAudioStorage.restoreArchivedAudio(
+                    sessionId = sessionId,
+                    resourceId = resourceId,
+                    data = Base64.decode(resource.data, Base64.DEFAULT)
+                )
+                createdPaths += audio.path
+                voice.copy(
+                    sessionId = sessionId,
+                    audioPath = audio.path,
+                    durationMs = audio.durationMs,
+                    byteLength = audio.byteLength,
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+            MaterializedSaveSlotAudio(
+                slot.copy(voiceMessages = voices),
+                createdPaths
+            )
+        } catch (error: Throwable) {
+            createdPaths.forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
             throw error
         }
     }
@@ -3275,13 +3584,29 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private fun validateSaveSlotImport(slot: SaveSlot) {
-        require(slot.schemaVersion in 1..4) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
+        require(slot.schemaVersion in 1..5) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
         require(slot.name.isNotBlank()) { "存档名称不能为空" }
         require(slot.messages.all { it.id.isNotBlank() }) { "存档包含空消息 ID" }
         require(slot.messages.map { it.id }.distinct().size == slot.messages.size) { "存档包含重复消息 ID" }
         require(slot.imageResources.all { (id, image) -> id.isNotBlank() && image.fileName.isNotBlank() && image.data.isNotBlank() }) {
             "图片资源 ID、文件名和数据不能为空"
         }
+        require(slot.voiceMessages.map { it.id }.distinct().size == slot.voiceMessages.size) {
+            "存档包含重复语音 ID"
+        }
+        require(slot.audioResources.all { (id, audio) ->
+            id.isNotBlank() && audio.fileName.isNotBlank() && audio.data.isNotBlank()
+        }) {
+            "语音资源 ID、文件名和数据不能为空"
+        }
+        val missingAudio = if (slot.schemaVersion >= 5) {
+            slot.voiceMessages.filterNot { voice ->
+                voice.audioPath in slot.audioResources || voice.id in slot.audioResources
+            }.map(GeneratedVoiceMessage::id)
+        } else {
+            emptyList()
+        }
+        require(missingAudio.isEmpty()) { "存档缺少语音资源：${missingAudio.joinToString()}" }
     }
 
     private fun uniqueResourceId(preferredId: String, usedIds: Set<String>): String {

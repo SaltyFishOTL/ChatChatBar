@@ -9,6 +9,11 @@ import android.text.style.ForegroundColorSpan
 import android.widget.TextView
 import android.widget.Toast
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.animation.core.RepeatMode
+import androidx.compose.animation.core.animateFloat
+import androidx.compose.animation.core.infiniteRepeatable
+import androidx.compose.animation.core.rememberInfiniteTransition
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
@@ -57,7 +62,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.repository.VoiceMessagePlacement
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.RoleplayTextSegment
@@ -65,7 +72,9 @@ import com.example.chatbar.domain.chat.parseRoleplayTextSegments
 import com.example.chatbar.domain.chat.roleplayImageBlockId
 import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
 import com.example.chatbar.domain.chat.roleplayTextBlockId
+import com.example.chatbar.domain.chat.roleplayVoiceBlockId
 import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
+import com.example.chatbar.domain.voice.VoicePlaybackState
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbSurface
@@ -83,6 +92,9 @@ import java.util.Locale
 data class ChatBubbleSegmentAction(
     val messageId: String,
     val blockId: String,
+    val segmentIndex: Int,
+    val kind: RoleplaySegmentKind,
+    val speakerName: String?,
     val start: Int,
     val endExclusive: Int,
     val rawText: String,
@@ -204,6 +216,10 @@ fun ChatBubble(
     characterAvatars: List<ChatBubbleCharacterAvatar> = emptyList(),
     assistantSegmentedBubblesEnabled: Boolean = true,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)? = null,
+    voicePlacements: List<VoiceMessagePlacement> = emptyList(),
+    voicePlaybackState: VoicePlaybackState = VoicePlaybackState(),
+    onVoiceClick: ((GeneratedVoiceMessage) -> Unit)? = null,
+    onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)? = null,
     selectedBlockIds: Set<String> = emptySet(),
     onToggleBlockSelected: ((String) -> Unit)? = null,
     blockFilterIds: Set<String>? = null,
@@ -235,6 +251,10 @@ fun ChatBubble(
             showActions = showActions,
             exportMode = exportMode,
             onSegmentLongPress = onSegmentLongPress,
+            voicePlacements = voicePlacements,
+            voicePlaybackState = voicePlaybackState,
+            onVoiceClick = onVoiceClick,
+            onVoiceLongPress = onVoiceLongPress,
             selectedBlockIds = selectedBlockIds,
             onToggleBlockSelected = onToggleBlockSelected,
             blockFilterIds = blockFilterIds,
@@ -263,6 +283,10 @@ fun ChatBubble(
             onToggleSelected = onToggleSelected,
             showActions = showActions,
             exportMode = exportMode,
+            voicePlacements = voicePlacements,
+            voicePlaybackState = voicePlaybackState,
+            onVoiceClick = onVoiceClick,
+            onVoiceLongPress = onVoiceLongPress,
             selectedBlockIds = selectedBlockIds,
             onToggleBlockSelected = onToggleBlockSelected,
             blockFilterIds = blockFilterIds,
@@ -296,6 +320,10 @@ private fun SegmentedAssistantBubble(
     showActions: Boolean,
     exportMode: Boolean,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)?,
+    voicePlacements: List<VoiceMessagePlacement>,
+    voicePlaybackState: VoicePlaybackState,
+    onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     selectedBlockIds: Set<String>,
     onToggleBlockSelected: ((String) -> Unit)?,
     blockFilterIds: Set<String>?,
@@ -313,7 +341,15 @@ private fun SegmentedAssistantBubble(
     val visibleImageBlockCount = message.images.indices.count { index ->
         blockFilterIds == null || roleplayImageBlockId(message.id, index) in blockFilterIds
     }
-    if (visibleTextBlockCount == 0 && visibleImageBlockCount == 0 && blockFilterIds != null) return
+    val visibleVoiceBlockCount = voicePlacements.count { placement ->
+        blockFilterIds == null || roleplayVoiceBlockId(message.id, placement.voice.id) in blockFilterIds
+    }
+    if (
+        visibleTextBlockCount == 0 &&
+        visibleImageBlockCount == 0 &&
+        visibleVoiceBlockCount == 0 &&
+        blockFilterIds != null
+    ) return
 
     BoxWithConstraints(
         modifier = modifier
@@ -338,6 +374,23 @@ private fun SegmentedAssistantBubble(
                     onLongPress = onLongPress,
                     interactive = !selectionMode
                 )
+            }
+            voicePlacements.filter { it.segmentIndex == null }.forEach { placement ->
+                val voiceBlockId = roleplayVoiceBlockId(message.id, placement.voice.id)
+                if (blockFilterIds == null || voiceBlockId in blockFilterIds) {
+                    VoiceMessageBubble(
+                        voice = placement.voice,
+                        playbackState = voicePlaybackState,
+                        selected = voiceBlockId in selectedBlockIds,
+                        selectionMode = selectionMode,
+                        selectionEnabled = selectionEnabled || voiceBlockId in selectedBlockIds,
+                        blockId = voiceBlockId,
+                        onToggleSelected = onToggleBlockSelected,
+                        onClick = onVoiceClick,
+                        onLongPress = onVoiceLongPress,
+                        exportMode = exportMode
+                    )
+                }
             }
             message.images.forEachIndexed { index, imagePath ->
                 val blockId = roleplayImageBlockId(message.id, index)
@@ -365,7 +418,15 @@ private fun SegmentedAssistantBubble(
             )
             textSegments.forEachIndexed { index, segment ->
                 val blockId = roleplayTextBlockId(message.id, index)
-                if (blockFilterIds == null || blockId in blockFilterIds) {
+                val showTextBlock = blockFilterIds == null || blockId in blockFilterIds
+                val segmentVoices = voicePlacements
+                    .filter { placement ->
+                        placement.segmentIndex == index &&
+                            (blockFilterIds == null ||
+                                roleplayVoiceBlockId(message.id, placement.voice.id) in blockFilterIds)
+                    }
+                    .map { it.voice }
+                if (showTextBlock || segmentVoices.isNotEmpty()) {
                     val speaker = if (
                         segment.kind == RoleplaySegmentKind.DIALOGUE ||
                         segment.kind == RoleplaySegmentKind.THOUGHT
@@ -389,6 +450,7 @@ private fun SegmentedAssistantBubble(
                         messageId = message.id,
                         blockId = blockId,
                         segment = segment,
+                        showTextSurface = showTextBlock,
                         displayText = displayText,
                         rawText = rawFragment,
                         copyText = copyText,
@@ -405,6 +467,12 @@ private fun SegmentedAssistantBubble(
                         exportMode = exportMode,
                         onLongPress = onLongPress,
                         onSegmentLongPress = onSegmentLongPress,
+                        segmentIndex = index,
+                        voices = segmentVoices,
+                        voicePlaybackState = voicePlaybackState,
+                        onVoiceClick = onVoiceClick,
+                        onVoiceLongPress = onVoiceLongPress,
+                        selectedBlockIds = selectedBlockIds,
                         expanded = blockId in expandedStatusBlockIds,
                         onExpandedChange = onStatusExpandedChange?.let { callback ->
                             { expanded -> callback(blockId, expanded) }
@@ -443,7 +511,9 @@ private fun SegmentedAssistantBubble(
 private fun SegmentBubble(
     messageId: String,
     blockId: String,
+    segmentIndex: Int,
     segment: RoleplayTextSegment,
+    showTextSurface: Boolean,
     displayText: String,
     rawText: String,
     copyText: String,
@@ -460,6 +530,11 @@ private fun SegmentBubble(
     exportMode: Boolean,
     onLongPress: (() -> Unit)?,
     onSegmentLongPress: ((ChatBubbleSegmentAction) -> Unit)?,
+    voices: List<GeneratedVoiceMessage>,
+    voicePlaybackState: VoicePlaybackState,
+    onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
+    selectedBlockIds: Set<String>,
     expanded: Boolean,
     onExpandedChange: ((Boolean) -> Unit)?
 ) {
@@ -516,6 +591,9 @@ private fun SegmentBubble(
                 ChatBubbleSegmentAction(
                     messageId = messageId,
                     blockId = blockId,
+                    segmentIndex = segmentIndex,
+                    kind = segment.kind,
+                    speakerName = segment.speakerName,
                     start = segment.start,
                     endExclusive = segment.endExclusive,
                     rawText = rawText,
@@ -554,7 +632,7 @@ private fun SegmentBubble(
                             style = ChatBarTheme.typography.caption
                         )
                     }
-                    SegmentBubbleSurface(
+                    if (showTextSurface) SegmentBubbleSurface(
                         modifier = surfaceModifier,
                         shape = shape,
                         background = background,
@@ -574,29 +652,61 @@ private fun SegmentBubble(
                         onExpandedChange = updateExpanded,
                         exportMode = exportMode
                     )
+                    voices.forEach { voice ->
+                        val voiceBlockId = roleplayVoiceBlockId(messageId, voice.id)
+                        VoiceMessageBubble(
+                            voice = voice,
+                            playbackState = voicePlaybackState,
+                            selected = voiceBlockId in selectedBlockIds,
+                            selectionMode = selectionMode,
+                            selectionEnabled = selectionEnabled,
+                            blockId = voiceBlockId,
+                            onToggleSelected = onToggleSelected,
+                            onClick = onVoiceClick,
+                            onLongPress = onVoiceLongPress,
+                            exportMode = exportMode
+                        )
+                    }
                 }
             }
         } else {
-            SegmentBubbleSurface(
-                modifier = surfaceModifier,
-                shape = shape,
-                background = background,
-                selected = selected,
-                blockId = blockId,
-                selectionMode = selectionMode,
-                canToggleSelection = canToggleSelection,
-                onToggleSelected = onToggleSelected,
-                canLongPress = canLongPress,
-                onLongPress = handleLongPress,
-                segmentKind = segment.kind,
-                displayText = displayText,
-                textColor = textColor,
-                textSize = textSize * fontScale,
-                lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
-                expanded = effectiveExpanded,
-                onExpandedChange = updateExpanded,
-                exportMode = exportMode
-            )
+            Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                if (showTextSurface) SegmentBubbleSurface(
+                    modifier = surfaceModifier,
+                    shape = shape,
+                    background = background,
+                    selected = selected,
+                    blockId = blockId,
+                    selectionMode = selectionMode,
+                    canToggleSelection = canToggleSelection,
+                    onToggleSelected = onToggleSelected,
+                    canLongPress = canLongPress,
+                    onLongPress = handleLongPress,
+                    segmentKind = segment.kind,
+                    displayText = displayText,
+                    textColor = textColor,
+                    textSize = textSize * fontScale,
+                    lineSpacingExtra = if (segment.kind == RoleplaySegmentKind.THOUGHT) 1.5f else 2f,
+                    expanded = effectiveExpanded,
+                    onExpandedChange = updateExpanded,
+                    exportMode = exportMode
+                )
+                voices.forEach { voice ->
+                    val voiceBlockId = roleplayVoiceBlockId(messageId, voice.id)
+                    VoiceMessageBubble(
+                        voice = voice,
+                        playbackState = voicePlaybackState,
+                        selected = voiceBlockId in selectedBlockIds,
+                        selectionMode = selectionMode,
+                        selectionEnabled = selectionEnabled,
+                        blockId = voiceBlockId,
+                        onToggleSelected = onToggleSelected,
+                        onClick = onVoiceClick,
+                        onLongPress = onVoiceLongPress,
+                        exportMode = exportMode
+                    )
+                }
+            }
         }
     }
 }
@@ -748,6 +858,10 @@ private fun LegacyChatBubble(
     onToggleSelected: (() -> Unit)?,
     showActions: Boolean,
     exportMode: Boolean,
+    voicePlacements: List<VoiceMessagePlacement>,
+    voicePlaybackState: VoicePlaybackState,
+    onVoiceClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onVoiceLongPress: ((GeneratedVoiceMessage) -> Unit)?,
     selectedBlockIds: Set<String>,
     onToggleBlockSelected: ((String) -> Unit)?,
     blockFilterIds: Set<String>?,
@@ -774,7 +888,10 @@ private fun LegacyChatBubble(
     val visibleImageCount = message.images.indices.count { index ->
         blockFilterIds == null || roleplayImageBlockId(message.id, index) in blockFilterIds
     }
-    if (!showText && visibleImageCount == 0 && blockFilterIds != null) return
+    val visibleVoices = voicePlacements.filter { placement ->
+        blockFilterIds == null || roleplayVoiceBlockId(message.id, placement.voice.id) in blockFilterIds
+    }
+    if (!showText && visibleImageCount == 0 && visibleVoices.isEmpty() && blockFilterIds != null) return
 
     val canToggleSelection = selectionMode && onToggleSelected != null && (selectionEnabled || selected)
     Box(
@@ -803,8 +920,9 @@ private fun LegacyChatBubble(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
             ) {
-                Column(
-                    Modifier
+                if (showText || visibleImageCount > 0) {
+                    Column(
+                        Modifier
                         .widthIn(max = bubbleMaxWidth)
                         .background(
                             (if (isUser) ChatBarTheme.colors.primary else ChatBarTheme.colors.card)
@@ -831,53 +949,75 @@ private fun LegacyChatBubble(
                         )
                         .semantics { contentDescription = if (isUser) "用户消息" else "助手消息" }
                         .padding(horizontal = 12.dp, vertical = 10.dp)
-                ) {
-                    message.images.forEachIndexed { index, imagePath ->
-                        val blockId = roleplayImageBlockId(message.id, index)
-                        if (blockFilterIds == null || blockId in blockFilterIds) {
-                            MessageImage(
-                                imagePath = imagePath,
-                                selectionMode = selectionMode,
-                                selected = blockId in selectedBlockIds,
-                                selectionEnabled = selectionEnabled || blockId in selectedBlockIds,
-                                blockId = blockId,
-                                onToggleSelected = onToggleBlockSelected,
-                                exportMode = exportMode,
-                                onImageClick = onImageClick,
-                                onImageLongPress = onImageLongPress
-                            )
+                    ) {
+                        message.images.forEachIndexed { index, imagePath ->
+                            val blockId = roleplayImageBlockId(message.id, index)
+                            if (blockFilterIds == null || blockId in blockFilterIds) {
+                                MessageImage(
+                                    imagePath = imagePath,
+                                    selectionMode = selectionMode,
+                                    selected = blockId in selectedBlockIds,
+                                    selectionEnabled = selectionEnabled || blockId in selectedBlockIds,
+                                    blockId = blockId,
+                                    onToggleSelected = onToggleBlockSelected,
+                                    exportMode = exportMode,
+                                    onImageClick = onImageClick,
+                                    onImageLongPress = onImageLongPress
+                                )
+                            }
                         }
-                    }
-                    if (showText) {
-                        contentSegments.forEachIndexed { index, segment ->
-                            key(message.id, message.currentAlternativeIndex, index) {
-                                when (segment) {
-                                    is RoleplayContentSegment.Markdown -> RoleplayMarkdownText(
-                                        text = segment.text,
-                                        color = if (isUser) Color.White else ChatBarTheme.colors.foreground,
-                                        fontSize = 14f * fontScale,
-                                        lineSpacingExtra = 2f
-                                    )
-
-                                    is RoleplayContentSegment.Status -> {
-                                        var expanded by remember(message.id, index) { mutableStateOf(false) }
-                                        RoleplayStatusPanel(
+                        if (showText) {
+                            contentSegments.forEachIndexed { index, segment ->
+                                key(message.id, message.currentAlternativeIndex, index) {
+                                    when (segment) {
+                                        is RoleplayContentSegment.Markdown -> RoleplayMarkdownText(
                                             text = segment.text,
-                                            expanded = expanded,
-                                            onExpandedChange = { expanded = it },
-                                            onLongPress = onLongPress,
-                                            interactive = !selectionMode && !exportMode,
-                                            onSelectionClick = if (selectionMode && onToggleBlockSelected != null && showText) {
-                                                { onToggleBlockSelected(legacyTextBlockId) }
-                                            } else {
-                                                null
-                                            }
+                                            color = if (isUser) Color.White else ChatBarTheme.colors.foreground,
+                                            fontSize = 14f * fontScale,
+                                            lineSpacingExtra = 2f
                                         )
+
+                                        is RoleplayContentSegment.Status -> {
+                                            var expanded by remember(message.id, index) {
+                                                mutableStateOf(false)
+                                            }
+                                            RoleplayStatusPanel(
+                                                text = segment.text,
+                                                expanded = expanded,
+                                                onExpandedChange = { expanded = it },
+                                                onLongPress = onLongPress,
+                                                interactive = !selectionMode && !exportMode,
+                                                onSelectionClick = if (
+                                                    selectionMode &&
+                                                    onToggleBlockSelected != null &&
+                                                    showText
+                                                ) {
+                                                    { onToggleBlockSelected(legacyTextBlockId) }
+                                                } else {
+                                                    null
+                                                }
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
+                }
+                visibleVoices.forEach { placement ->
+                    val voiceBlockId = roleplayVoiceBlockId(message.id, placement.voice.id)
+                    VoiceMessageBubble(
+                        voice = placement.voice,
+                        playbackState = voicePlaybackState,
+                        selected = voiceBlockId in selectedBlockIds,
+                        selectionMode = selectionMode,
+                        selectionEnabled = selectionEnabled || voiceBlockId in selectedBlockIds,
+                        blockId = voiceBlockId,
+                        onToggleSelected = onToggleBlockSelected,
+                        onClick = onVoiceClick,
+                        onLongPress = onVoiceLongPress,
+                        exportMode = exportMode
+                    )
                 }
                 if (showMessageMeta) {
                     MessageMetaRow(
@@ -903,6 +1043,104 @@ private fun LegacyChatBubble(
                 modifier = Modifier.align(Alignment.TopStart)
             )
         }
+    }
+}
+
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun VoiceMessageBubble(
+    voice: GeneratedVoiceMessage,
+    playbackState: VoicePlaybackState,
+    selected: Boolean,
+    selectionMode: Boolean,
+    selectionEnabled: Boolean,
+    blockId: String,
+    onToggleSelected: ((String) -> Unit)?,
+    onClick: ((GeneratedVoiceMessage) -> Unit)?,
+    onLongPress: ((GeneratedVoiceMessage) -> Unit)?,
+    exportMode: Boolean
+) {
+    val isPlaying = playbackState.currentVoiceId == voice.id && playbackState.isPlaying
+    val playable = File(voice.audioPath).isFile
+    val durationSeconds = ((voice.durationMs + 999L) / 1_000L).coerceAtLeast(1L)
+    val width = (112 + durationSeconds.coerceAtMost(40L).toInt() * 3).dp
+    val pulse = if (isPlaying) {
+        rememberInfiniteTransition(label = "voicePulse").animateFloat(
+            initialValue = 0.45f,
+            targetValue = 1f,
+            animationSpec = infiniteRepeatable(
+                animation = tween(420),
+                repeatMode = RepeatMode.Reverse
+            ),
+            label = "voicePulseHeight"
+        ).value
+    } else {
+        0.55f
+    }
+    Row(
+        modifier = Modifier
+            .width(width)
+            .background(
+                if (selected) ChatBarTheme.colors.primaryAlpha else ChatBarTheme.colors.card,
+                RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
+            )
+            .border(
+                1.dp,
+                if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border,
+                RoundedCornerShape(12.dp, 12.dp, 12.dp, 4.dp)
+            )
+            .combinedClickable(
+                enabled = if (selectionMode) selectionEnabled && onToggleSelected != null
+                else !exportMode && ((playable && onClick != null) || onLongPress != null),
+                onClick = {
+                    if (selectionMode) onToggleSelected?.invoke(blockId)
+                    else if (playable) onClick?.invoke(voice)
+                },
+                onLongClick = {
+                    if (!selectionMode && !exportMode) onLongPress?.invoke(voice)
+                }
+            )
+            .semantics {
+                contentDescription = buildString {
+                    append("语音消息，")
+                    append(durationSeconds)
+                    append(" 秒")
+                    if (!playable) append("，本地文件不可用")
+                    if (isPlaying) append("，正在播放")
+                }
+            }
+            .padding(horizontal = 11.dp, vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
+        CbIcon(
+            AppIcons.Volume,
+            null,
+            Modifier.size(18.dp),
+            if (isPlaying) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground
+        )
+        Row(
+            Modifier.weight(1f),
+            horizontalArrangement = Arrangement.spacedBy(2.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            listOf(8f, 13f, 10f).forEachIndexed { index, height ->
+                Box(
+                    Modifier
+                        .width(2.dp)
+                        .height((height * if (isPlaying) (pulse + index * 0.12f).coerceAtMost(1f) else 0.7f).dp)
+                        .background(
+                            if (isPlaying) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
+                            RoundedCornerShape(1.dp)
+                        )
+                )
+            }
+        }
+        CbText(
+            if (playable) "${durationSeconds}″" else "不可用",
+            color = if (playable) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.destructive,
+            style = ChatBarTheme.typography.caption
+        )
     }
 }
 

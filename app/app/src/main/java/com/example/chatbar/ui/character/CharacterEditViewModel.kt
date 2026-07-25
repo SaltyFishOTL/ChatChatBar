@@ -51,6 +51,9 @@ import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
+import com.example.chatbar.domain.voice.FishAudioModel
+import com.example.chatbar.domain.voice.FishAudioModelPage
+import com.example.chatbar.domain.voice.FishAudioModelQuery
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -108,6 +111,14 @@ data class CharacterAvatarImageUiState(
     val completedImage: ByteArray? = null,
     val error: String? = null,
     val statusText: String = ""
+)
+
+data class CharacterVoicePickerUiState(
+    val isLoading: Boolean = false,
+    val query: FishAudioModelQuery = FishAudioModelQuery(),
+    val page: FishAudioModelPage = FishAudioModelPage(),
+    val previewingModelId: String? = null,
+    val error: String? = null
 )
 
 data class CharacterRewriteDiffUiState(
@@ -201,6 +212,9 @@ class CharacterEditViewModel(
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
+    private val fishAudioService = ChatBarApp.instance.fishAudioService
+    private val voicePlayback = ChatBarApp.instance.voicePlaybackController
     private val speakerTagHistoryService = ChatBarApp.instance.speakerTagHistoryService
     private val draftJson = Json {
         ignoreUnknownKeys = true
@@ -245,6 +259,9 @@ class CharacterEditViewModel(
 
     private val _avatarImageState = MutableStateFlow(CharacterAvatarImageUiState())
     val avatarImageState: StateFlow<CharacterAvatarImageUiState> = _avatarImageState.asStateFlow()
+    val fishAudioConfigured: StateFlow<Boolean> = fishAudioCredentials.configured
+    private val _voicePickerState = MutableStateFlow(CharacterVoicePickerUiState())
+    val voicePickerState: StateFlow<CharacterVoicePickerUiState> = _voicePickerState.asStateFlow()
 
     private val _autoFillModels = MutableStateFlow<List<ModelConfig>>(emptyList())
     val autoFillModels: StateFlow<List<ModelConfig>> = _autoFillModels.asStateFlow()
@@ -2353,6 +2370,64 @@ class CharacterEditViewModel(
         }
     }
 
+    fun searchFishAudioVoices(query: FishAudioModelQuery) {
+        viewModelScope.launch {
+            val apiKey = fishAudioCredentials.load()
+            if (apiKey == null) {
+                _voicePickerState.value = CharacterVoicePickerUiState(
+                    query = query,
+                    error = "Fish Audio API Key 未配置"
+                )
+                return@launch
+            }
+            _voicePickerState.value = _voicePickerState.value.copy(
+                isLoading = true,
+                query = query,
+                error = null
+            )
+            runCatching { fishAudioService.listModels(apiKey, query) }
+                .onSuccess { page ->
+                    _voicePickerState.value = CharacterVoicePickerUiState(
+                        query = query,
+                        page = page
+                    )
+                }
+                .onFailure { error ->
+                    _voicePickerState.value = _voicePickerState.value.copy(
+                        isLoading = false,
+                        error = error.message ?: error.javaClass.simpleName
+                    )
+                }
+        }
+    }
+
+    fun previewFishAudioVoice(model: FishAudioModel) {
+        val previewUrl = model.samples.firstOrNull { it.previewUrl.isNotBlank() }?.previewUrl ?: return
+        viewModelScope.launch {
+            val apiKey = fishAudioCredentials.load() ?: return@launch
+            _voicePickerState.value = _voicePickerState.value.copy(
+                previewingModelId = model.id,
+                error = null
+            )
+            runCatching { fishAudioService.downloadPreview(apiKey, model.id, previewUrl) }
+                .onSuccess { file ->
+                    voicePlayback.playPreview(file.absolutePath)
+                    _voicePickerState.value = _voicePickerState.value.copy(previewingModelId = null)
+                }
+                .onFailure { error ->
+                    _voicePickerState.value = _voicePickerState.value.copy(
+                        previewingModelId = null,
+                        error = error.message ?: error.javaClass.simpleName
+                    )
+                }
+        }
+    }
+
+    fun stopFishAudioPreview() {
+        voicePlayback.stop()
+        _voicePickerState.value = _voicePickerState.value.copy(previewingModelId = null)
+    }
+
     override fun onCleared() {
         avatarImageGenerationToken += 1
         avatarImageJob?.cancel()
@@ -2360,6 +2435,7 @@ class CharacterEditViewModel(
         transientGeneratedAvatarPaths.forEach(novelAiImageStorage::deleteIfOwned)
         transientGeneratedAvatarPaths.clear()
         freeformAvatarPromptDrafts.clear()
+        voicePlayback.stop()
         super.onCleared()
     }
 }

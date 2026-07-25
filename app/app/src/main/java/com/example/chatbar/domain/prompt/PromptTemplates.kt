@@ -1045,6 +1045,204 @@ HEAD代表截至指定T的当前状态。
 {"t":["当前话题"],"q":["检索词1","检索词2"],"e":["显式实体1","显式实体2"]}
 """
 
+    const val FISH_AUDIO_VOICE_TAG_SYSTEM = """
+你负责为 Fish Audio 语音合成文本添加情绪、语气、停顿或声音标签。
+只输出一行 JSON，不要 Markdown，不要解释，不要思维过程。
+输出格式固定为：
+{"segments":[{"id":"输入ID","ttsText":"添加标签后的原文"}]}
+
+规则：
+1. 每个输入 ID 必须且只能输出一次，顺序与输入一致。
+2. 不得改写、增删、翻译口播文字；只能插入允许标签。
+
+将原始台词拆分为适合语音表演的片段，并为必要的片段添加 Fish Audio 标签。
+标签使用英文方括号格式：
+[emotion]
+[delivery style]
+[voice event]
+例如：
+[slightly nervous][soft tone]那个……你今天有空吗？
+
+## 最重要的规则
+1. 不得修改、增加、删减或改写原始台词。
+2. 所有片段重新拼接后，必须与原始台词完全一致。
+3. 不要为了使用标签而强行添加标签。
+4. 普通、平静、没有明显表演需求的台词不添加标签。
+5. 每个片段最多使用一个主情绪标签。
+6. 每个片段通常使用 0～2 个标签，最多不得超过 3 个。
+7. 不要堆叠含义相近的标签。
+8. 不要同时使用互相冲突的情绪。
+9. 标签必须描述声音能够表现出来的内容。
+10. 禁止描述表情、镜头、肢体动作、环境、背景音乐或心理旁白。
+11. 标签必须简短、明确，优先使用下方受控标签。
+12. 只有当句中情绪或说话方式发生明显变化时，才拆分片段。
+13. 不要把每一个逗号都拆成独立片段。
+14. 感叹号不一定代表 shouting，省略号不一定代表 sad。
+15. 根据角色性格约束表演强度。内向、冷淡或克制的角色不应频繁出现夸张表演。
+16. 同一句台词在上下文不同的情况下，可以使用不同标签。
+17. 不得输出无法可靠发声的抽象标签，例如：
+* [feeling betrayed by the world]
+* [thinking about the past]
+* [with complicated emotions]
+18. 应将抽象心理状态转换为可听见的语音表现，例如：
+* [quietly disappointed]
+* [nervous, trying to sound calm]
+* [soft tone]
+19. 标签使用英文，原始台词保持原语言。
+20. 不输出分析过程或解释。
+
+## 主情绪标签
+优先从以下标签中选择：
+* happy
+* delighted
+* excited
+* relaxed
+* calm
+* confident
+* curious
+* surprised
+* moved
+* grateful
+* proud
+* embarrassed
+* nervous
+* uncertain
+* confused
+* worried
+* anxious
+* scared
+* sad
+* disappointed
+* lonely
+* regretful
+* guilty
+* jealous
+* angry
+* frustrated
+* upset
+* disgusted
+* sarcastic
+* indifferent
+* determined
+* resigned
+* empathetic
+没有明显情绪时使用 null，不要输出 [neutral]。
+
+## 情绪强度
+只有上下文明显需要时才使用强度修饰：
+* mild：slightly
+* normal：不添加修饰词
+* strong：very
+
+例如：
+[slightly nervous]
+[nervous]
+[very nervous]
+默认使用 normal。
+不要轻易使用 extremely、hysterical、screaming 等极端表现。
+
+## 说话方式标签
+只有说话方式明确发生变化时才能使用：
+* [soft tone]
+* [whispering]
+* [in a hurry tone]
+* [shouting]
+* [screaming]
+* [emphasis]
+其中：
+* [soft tone]：轻柔、克制、安慰、低声但不是耳语
+* [whispering]：明确耳语，通常用于秘密、躲藏或非常亲密的场景
+* [in a hurry tone]：急迫、赶时间、快速传达信息
+* [shouting]：明显提高音量
+* [screaming]：极端恐惧、痛苦或失控，不得滥用
+* [emphasis]：直接放在需要强调的词语之前
+不要把害羞自动映射为 whispering。
+不要把生气自动映射为 shouting。
+不要把感叹号自动映射为 excited。
+
+## 声音事件标签
+只有台词或上下文明确支持时才能使用：
+* [laughing]
+* [chuckling]
+* [sighing]
+* [sobbing]
+* [crying loudly]
+* [gasping]
+* [groaning]
+* [panting]
+* [yawning]
+* [clear throat]
+* [break]
+* [long-break]
+声音事件应出现在实际发生的位置。
+例如：
+[chuckling]呵，你居然真的相信了。
+我本来有话想告诉你。[break]算了。
+不得因为台词中有“哈哈”“唉”等文字，就必然添加声音事件。应结合角色状态和上下文判断。
+## 片段拆分规则
+只有以下情况适合拆分：
+1. 句子中途主情绪明显改变。
+2. 说话音量或表达方式明显改变。
+3. 中途发生笑、叹气、吸气、停顿等声音事件。
+4. 某个词语需要单独强调。
+5. 一段台词中包含明显不同的说话对象或意图。
+不要过度拆分。每个片段应尽量保持一个完整的语义单位。
+## 标签组合顺序
+推荐顺序：
+[声音事件][情绪][说话方式]台词
+例如：
+[sighing][slightly disappointed][soft tone]我早就应该猜到的。
+常规组合：
+[情绪]台词
+[情绪][说话方式]台词
+[声音事件][情绪]台词
+不要连续使用多个主情绪：
+错误：
+[nervous][embarrassed][sad]我不知道。
+正确：
+[slightly nervous][soft tone]我不知道。
+## 角色一致性
+设计标签时，优先服从角色设定，而不是只看台词字面。
+例如：
+同样一句“你终于来了。”
+外向角色可能是：
+[very excited]你终于来了。
+内向角色可能是：
+[slightly relieved][soft tone]你终于来了。
+冷淡角色可能不需要标签：
+你终于来了。
+角色的默认性格会限制表演方式，但当前情境可以使角色短暂偏离默认状态。
+
+最终检查：
+
+1. 删除 tts_text 中所有方括号标签后，必须与原始 text 完全一致。
+2. 不得改变标点、换行、空格和用词。
+3. 标签数量是否确有必要。
+4. 是否出现互相冲突或重复的标签。
+5. 表演是否符合角色性格和当前场景。
+6. 是否把无法通过声音表现的内容写进了标签。
+7. JSON 是否有效。
+"""
+
+    fun fishAudioVoiceTagUserInput(
+        fishModelId: String,
+        markerMode: String,
+        tagPolicy: String,
+        previousUserMessage: String,
+        assistantResponse: String,
+        segmentsJson: String
+    ): String = buildString {
+        appendLine("Fish 模型：$fishModelId")
+        appendLine("标签格式：$markerMode")
+        appendLine("标签策略：$tagPolicy")
+        appendLine("上一条用户消息：")
+        appendLine(previousUserMessage.ifBlank { "（无）" })
+        appendLine("当前完整助手回复：")
+        appendLine(assistantResponse)
+        appendLine("待处理段落 JSON：")
+        appendLine(segmentsJson)
+    }
+
     fun memoryEpisodePrompt(
         turns: String,
         summaryMaxChars: Int

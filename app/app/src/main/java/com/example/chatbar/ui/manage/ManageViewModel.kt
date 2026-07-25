@@ -108,6 +108,7 @@ class ManageViewModel : ViewModel() {
     private val presetModelCatalog = ChatBarApp.instance.presetModelCatalogService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
+    private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
     private val json = Json {
         ignoreUnknownKeys = true
         prettyPrint = true
@@ -141,6 +142,8 @@ class ManageViewModel : ViewModel() {
 
     private val _effectiveChatModels = MutableStateFlow<List<ModelConfig>>(emptyList())
     val effectiveChatModels: StateFlow<List<ModelConfig>> = _effectiveChatModels
+    private val _auxiliaryTextModels = MutableStateFlow<List<ModelConfig>>(emptyList())
+    val auxiliaryTextModels: StateFlow<List<ModelConfig>> = _auxiliaryTextModels
     private val _modelConfigurationErrors = MutableStateFlow<List<String>>(emptyList())
     val modelConfigurationErrors: StateFlow<List<String>> = _modelConfigurationErrors
     private val _modelConfigurationWarnings = MutableStateFlow<List<String>>(emptyList())
@@ -154,6 +157,7 @@ class ManageViewModel : ViewModel() {
     private val _communityCharacterUpdates = MutableStateFlow<Map<String, CommunityItem>>(emptyMap())
     val communityCharacterUpdates: StateFlow<Map<String, CommunityItem>> = _communityCharacterUpdates
     val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
+    val fishAudioConfigured: StateFlow<Boolean> = fishAudioCredentials.configured
 
     private val _momentsReliability = MutableStateFlow(MomentReliabilityState())
     val momentsReliability: StateFlow<MomentReliabilityState> = _momentsReliability
@@ -224,6 +228,7 @@ class ManageViewModel : ViewModel() {
     private suspend fun refreshEffectiveModels() {
         val settings = settingsRepository.getAppSettings()
         _effectiveChatModels.value = modelResolver.availableChatModels(settings)
+        _auxiliaryTextModels.value = modelResolver.availableAuxiliaryTextModels(settings)
         val status = modelResolver.status(settings)
         _modelConfigurationErrors.value = status.errors
         _modelConfigurationWarnings.value = status.warnings
@@ -882,6 +887,14 @@ class ManageViewModel : ViewModel() {
 
     fun clearNovelAiToken() {
         novelAiCredentials.clear()
+    }
+
+    fun saveFishAudioApiKey(apiKey: String) {
+        fishAudioCredentials.save(apiKey)
+    }
+
+    fun clearFishAudioApiKey() {
+        fishAudioCredentials.clear()
     }
 
     fun testSiliconFlowApi(apiKey: String, allowCleartextModelApi: Boolean) {

@@ -39,6 +39,8 @@ data class SaveSlot(
     val timedWorldInfo: Map<String, TimedEffectState> = emptyMap(),
     val messages: List<ChatMessage> = emptyList(),
     val imageResources: Map<String, SaveSlotImageResource> = emptyMap(),
+    val voiceMessages: List<GeneratedVoiceMessage> = emptyList(),
+    val audioResources: Map<String, SaveSlotAudioResource> = emptyMap(),
     val vectorChunks: List<VectorChunk> = emptyList(), // 记忆状态
     val createdAt: Long
 ) {
@@ -51,6 +53,7 @@ data class SaveSlot(
             messages: List<ChatMessage> = emptyList(),
             vectorChunks: List<VectorChunk> = emptyList()
         ): SaveSlot = SaveSlot(
+            schemaVersion = 5,
             id = Uuid.random().toString(),
             sessionId = sessionId,
             name = name,
@@ -82,6 +85,12 @@ fun SaveSlot.toSummary(): SaveSlotSummary = SaveSlotSummary(
 
 @Serializable
 data class SaveSlotImageResource(
+    val fileName: String,
+    val data: String
+)
+
+@Serializable
+data class SaveSlotAudioResource(
     val fileName: String,
     val data: String
 )

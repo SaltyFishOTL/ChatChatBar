@@ -59,7 +59,8 @@ private val tutorialPages = listOf(
                     "设置默认模型、格式卡和玩家设定",
                     "申请并配置硅基流动 API",
                     "进阶单元：使用非硅基流动 API，并配置新模型",
-                    "申请并配置 NovelAI Token",
+                    "配置 NovelAI，并在聊天中生成图片",
+                    "配置 Fish Audio、绑定角色音色并生成语音",
                     "添加 RAG 文档、刷新索引和关闭 RAG"
                 )
             )
@@ -135,8 +136,8 @@ private val tutorialPages = listOf(
         )
     ),
     TutorialPage(
-        title = "配置 NovelAI Token",
-        summary = "配置后，可在聊天中使用 NovelAI 生图。",
+        title = "配置并使用 NovelAI 生图",
+        summary = "保存 NovelAI Token 后，可根据助手回复直接生成图片。",
         sections = listOf(
             TutorialSection(
                 title = "获取 Token",
@@ -153,6 +154,46 @@ private val tutorialPages = listOf(
                     "进入“管理 > 设置 > NovelAI 生图”。",
                     "粘贴 Persistent API Token并点击“保存”。",
                     "保存成功后，聊天页会显示生图操作。"
+                )
+            ),
+            TutorialSection(
+                title = "在聊天中生成图片",
+                steps = listOf(
+                    "进入任意可用对话，等待助手生成一条非空回复。",
+                    "点击助手回复下方的图片按钮；ChatBar 会先设计 NovelAI Prompt，再开始生成图片。",
+                    "生成卡片会显示当前阶段和流式预览；完成后图片会附在对应回复中。",
+                    "点击生成图片可全屏查看。失败时可在生成卡片中重试或关闭提示。"
+                )
+            )
+        )
+    ),
+    TutorialPage(
+        title = "配置并使用 Fish Audio 语音",
+        summary = "配置 API Key、为角色绑定音色，再把对白或内心段生成为语音消息。",
+        sections = listOf(
+            TutorialSection(
+                title = "配置 Fish Audio",
+                steps = listOf(
+                    "从 Fish Audio 官方控制台获取 API Key。",
+                    "进入“管理 > 设置 > Fish Audio 语音”，粘贴 API Key并点击“保存”。",
+                    "选择 TTS 模型和语音标签模型，再保存全局设置；语音标签模型留空时使用当前会话对话模型。"
+                )
+            ),
+            TutorialSection(
+                title = "为角色绑定音色",
+                steps = listOf(
+                    "进入“管理 > 角色”，创建或编辑角色卡。",
+                    "在人物的“Fish Audio 音色”中点击“选择音色”，可切换“社区音色”和“我的音色”进行检索。",
+                    "试听满意后点击“使用此音色”，再保存角色卡。每个需要说话的人物都要分别绑定。"
+                )
+            ),
+            TutorialSection(
+                title = "生成和播放语音",
+                steps = listOf(
+                    "进入该角色卡的聊天，长按有明确人物名的对白或内心气泡。",
+                    "选择“为本段生成语音”或“为整条生成语音”。进度卡会依次显示 AI 标签设计和 Fish Audio 合成状态。",
+                    "若 AI 标签文本改变了原文，先查看差异并决定是否使用；确认后才会继续合成。",
+                    "生成成功后会自动播放。点击气泡下方的语音条可从头重播；语音内容不会进入对话上下文或长期记忆。"
                 )
             )
         )
@@ -221,6 +262,7 @@ private val advancedTutorialPages = listOf(
                     "长按一条消息的空白区域，打开“消息操作”。",
                     "可编辑或删除该消息；最后一条可重新生成的回复还会显示“重新生成”。重新生成失败时，长按尾部错误消息也可直接重试。",
                     "助手消息可选择“AI 修复格式”，按当前格式卡与分段气泡规则检查并流式覆盖整条回复；修复完成后可恢复原文。",
+                    "配置 Fish Audio 后，助手消息菜单可选择“为整条生成语音”；只补齐尚无语音且能匹配人物音色的对白和内心段。若 AI 标签文本改变了原文，会展示差异，确认使用后才合成。",
                     "选择“多选”进入长截图模式，继续点选消息或片段，再预览、保存或分享。"
                 )
             ),
@@ -229,6 +271,8 @@ private val advancedTutorialPages = listOf(
                 steps = listOf(
                     "开启“助手回复分段气泡”后，长按某个片段打开“片段操作”。",
                     "复制、编辑、加入长截图和删除操作均横排提供“本段”与“整条”两个选项；多选时点消息左上角小圆可一次勾选或取消整条，状态栏也可直接点选。",
+                    "长按有明确说话人物且已绑定音色的对白或内心气泡，可选择“为本段生成语音”或“为整条生成语音”。",
+                    "点击语音条会立即抢占当前播放并从头播放；长按语音条可编辑标签后文本、重新生成或删除。语音条可作为独立块加入长截图。",
                     "片段菜单中的“AI 修复格式”仍会修复所属整条助手消息。",
                     "最后一条回复的片段菜单还可重新生成整条回复。"
                 )

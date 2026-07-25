@@ -40,6 +40,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.derivedStateOf
@@ -68,11 +69,15 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
@@ -96,6 +101,9 @@ import com.example.chatbar.ui.components.TypingIndicator
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.components.shareImage
 import com.example.chatbar.domain.chat.roleplayScreenshotBlockIds
+import com.example.chatbar.domain.chat.RoleplaySegmentKind
+import com.example.chatbar.domain.voice.VoiceGenerationBatchState
+import com.example.chatbar.domain.voice.VoiceGenerationPhase
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
@@ -103,6 +111,7 @@ import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
@@ -144,6 +153,12 @@ fun ChatScreen(
     val contextWindowSize by viewModel.contextWindowSize.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val imageGenerations by viewModel.imageGenerations.collectAsState()
+    val voicePlacements by viewModel.voicePlacements.collectAsState()
+    val voiceGenerationBatches by viewModel.voiceGenerationBatches.collectAsState()
+    val voicePlaybackState by viewModel.voicePlaybackState.collectAsState()
+    val fishAudioConfigured by viewModel.fishAudioConfigured.collectAsState()
+    val voiceGenerationAvailabilityError by
+        viewModel.voiceGenerationAvailabilityError.collectAsState()
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
@@ -159,8 +174,29 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val lifecycleOwner = LocalLifecycleOwner.current
     val clipboardManager = LocalClipboardManager.current
     val rootView = LocalView.current
+
+    DisposableEffect(viewModel, sessionId, lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            when (event) {
+                Lifecycle.Event.ON_RESUME -> viewModel.setVoiceScreenForeground(true)
+                Lifecycle.Event.ON_PAUSE,
+                Lifecycle.Event.ON_STOP,
+                Lifecycle.Event.ON_DESTROY -> viewModel.setVoiceScreenForeground(false)
+                else -> Unit
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        viewModel.setVoiceScreenForeground(
+            lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.RESUMED)
+        )
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            viewModel.setVoiceScreenForeground(false)
+        }
+    }
 
     LaunchedEffect(viewModel, context) {
         viewModel.messageFormatRepairEvents.collect { message ->
@@ -183,6 +219,13 @@ fun ChatScreen(
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
     var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var voiceActionTarget by remember { mutableStateOf<GeneratedVoiceMessage?>(null) }
+    var voiceTextConfirmationBatchId by remember(sessionId) {
+        mutableStateOf<String?>(null)
+    }
+    var dismissedVoiceTextConfirmationIds by remember(sessionId) {
+        mutableStateOf<Set<String>>(emptySet())
+    }
     var expandedImageIndex by remember(sessionId) { mutableStateOf<Int?>(null) }
     var imageActionTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var imageRegenerationDraft by remember(sessionId) { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
@@ -219,6 +262,22 @@ fun ChatScreen(
 
     LaunchedEffect(memoryChatBlocked) {
         if (memoryChatBlocked) fullComposer = false
+    }
+
+    LaunchedEffect(voiceGenerationBatches, sessionId) {
+        val waitingIds = voiceGenerationBatches
+            .filter {
+                it.sessionId == sessionId &&
+                    it.phase == VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION
+            }
+            .mapTo(linkedSetOf()) { it.id }
+        dismissedVoiceTextConfirmationIds =
+            dismissedVoiceTextConfirmationIds.intersect(waitingIds)
+        if (voiceTextConfirmationBatchId !in waitingIds) {
+            voiceTextConfirmationBatchId = waitingIds.firstOrNull {
+                it !in dismissedVoiceTextConfirmationIds
+            }
+        }
     }
 
     LaunchedEffect(imageActionTarget) {
@@ -354,9 +413,13 @@ fun ChatScreen(
             message.images.map { path -> ImagePreviewItem(message.id, path) }
         }
     }
-    val selectableScreenshotIds = remember(messages, assistantSegmentedBubblesEnabled) {
+    val selectableScreenshotIds = remember(messages, assistantSegmentedBubblesEnabled, voicePlacements) {
         messages.flatMap { message ->
-            roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+            roleplayScreenshotBlockIds(
+                message,
+                assistantSegmentedBubblesEnabled,
+                voicePlacements[message.id].orEmpty().map { it.voice.id }
+            )
         }.toSet()
     }
     val screenshotHeightLimitReached = screenshotHeightPx >= CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX
@@ -384,6 +447,7 @@ fun ChatScreen(
                 botAvatarPath = botAvatarPath,
                 characterAvatars = characterAvatars,
                 assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
+                voicePlacementsByMessage = voicePlacements,
                 selectedBlockIds = ids,
                 expandedStatusBlockIds = expandedStatusBlockIds
             )
@@ -464,7 +528,11 @@ fun ChatScreen(
     }
 
     fun enterMessageScreenshotSelection(message: ChatMessage) {
-        val messageBlockIds = roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+        val messageBlockIds = roleplayScreenshotBlockIds(
+            message,
+            assistantSegmentedBubblesEnabled,
+            voicePlacements[message.id].orEmpty().map { it.voice.id }
+        )
             .filterTo(linkedSetOf()) { it in selectableScreenshotIds }
         if (messageBlockIds.isEmpty()) {
             Toast.makeText(context, "这条消息不能加入长截图", Toast.LENGTH_SHORT).show()
@@ -518,6 +586,7 @@ fun ChatScreen(
                         botAvatarPath = botAvatarPath,
                         characterAvatars = characterAvatars,
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
+                        voicePlacementsByMessage = voicePlacements,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         expandedStatusBlockIds = expandedStatusBlockIds
                     )
@@ -536,11 +605,12 @@ fun ChatScreen(
     LaunchedEffect(listState.firstVisibleItemIndex, listState.firstVisibleItemScrollOffset, listState.isScrollInProgress) {
         if (!restoringViewport) viewportAnchor = listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
     }
-    LaunchedEffect(messages, assistantSegmentedBubblesEnabled) {
+    LaunchedEffect(messages, assistantSegmentedBubblesEnabled, voicePlacements) {
         val cleaned = cleanChatScreenshotSelection(
             selectedScreenshotBlockIds,
             messages,
-            assistantSegmentedBubblesEnabled
+            assistantSegmentedBubblesEnabled,
+            voicePlacements.mapValues { (_, placements) -> placements.map { it.voice.id } }
         )
         if (cleaned != selectedScreenshotBlockIds) {
             selectedScreenshotBlockIds = cleaned
@@ -705,8 +775,13 @@ fun ChatScreen(
                         )
                     } ?: message
                     val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
-                    val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled) {
-                        roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+                    val messageVoices = voicePlacements[message.id].orEmpty()
+                    val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled, messageVoices) {
+                        roleplayScreenshotBlockIds(
+                            message,
+                            assistantSegmentedBubblesEnabled,
+                            messageVoices.map { it.voice.id }
+                        )
                     }
                     val selectedScreenshotBlockCount = messageBlockIds.count { it in selectedScreenshotBlockIds }
                     val selectedForScreenshot = selectedScreenshotBlockCount == messageBlockIds.size && messageBlockIds.isNotEmpty()
@@ -721,6 +796,12 @@ fun ChatScreen(
                         botAvatarPath = botAvatarPath,
                         characterAvatars = characterAvatars,
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
+                        voicePlacements = messageVoices,
+                        voicePlaybackState = voicePlaybackState,
+                        onVoiceClick = if (screenshotSelectionMode) null else viewModel::playVoice,
+                        onVoiceLongPress = if (screenshotSelectionMode) null else ({ voice ->
+                            voiceActionTarget = voice
+                        }),
                         onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
                         onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
                         onImageClick = if (screenshotSelectionMode) null else ({ path ->
@@ -880,6 +961,35 @@ fun ChatScreen(
                             Modifier.padding(12.dp),
                             color = ChatBarTheme.colors.destructive
                         )
+                    }
+                }
+                val currentVoiceBatches = voiceGenerationBatches.filter {
+                    it.sessionId == sessionId
+                }
+                if (currentVoiceBatches.isNotEmpty()) {
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 280.dp)
+                            .verticalScroll(rememberScrollState())
+                    ) {
+                        currentVoiceBatches.forEach { generation ->
+                            key(generation.id) {
+                                FishAudioGenerationCard(
+                                    state = generation,
+                                    onCancel = {
+                                        viewModel.cancelVoiceGeneration(generation.id)
+                                    },
+                                    onReviewText = {
+                                        dismissedVoiceTextConfirmationIds -= generation.id
+                                        voiceTextConfirmationBatchId = generation.id
+                                    },
+                                    onDismiss = {
+                                        viewModel.dismissVoiceGeneration(generation.id)
+                                    }
+                                )
+                            }
+                        }
                     }
                 }
                 if (screenshotSelectionMode) {
@@ -1178,6 +1288,37 @@ fun ChatScreen(
             title = "片段操作",
             dismiss = { CbButton("关闭", { actionSegment = null }, variant = ButtonVariant.Ghost) }
         ) {
+            if (
+                fishAudioConfigured &&
+                (segment.kind == RoleplaySegmentKind.DIALOGUE ||
+                    segment.kind == RoleplaySegmentKind.THOUGHT) &&
+                viewModel.hasVoiceTargetForSegment(segment.messageId, segment.segmentIndex)
+            ) {
+                val voiceGenerationEnabled = voiceGenerationAvailabilityError == null
+                SegmentMessageActionRow(
+                    segmentLabel = "为本段生成语音",
+                    messageLabel = "为整条生成语音",
+                    onSegmentClick = {
+                        viewModel.generateVoiceForSegment(segment.messageId, segment.segmentIndex)
+                        actionSegment = null
+                    },
+                    onMessageClick = {
+                        viewModel.generateVoiceForMessage(segment.messageId)
+                        actionSegment = null
+                    },
+                    segmentEnabled = voiceGenerationEnabled,
+                    messageEnabled = voiceGenerationEnabled &&
+                        viewModel.hasVoiceTargetForMessage(segment.messageId)
+                )
+                voiceGenerationAvailabilityError?.let { error ->
+                    CbText(
+                        error,
+                        color = ChatBarTheme.colors.destructive,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                Spacer(Modifier.size(8.dp))
+            }
             SegmentMessageActionRow(
                 segmentLabel = "复制本段",
                 messageLabel = "复制整条",
@@ -1286,6 +1427,26 @@ fun ChatScreen(
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
             if (target?.role == MessageRole.ASSISTANT) {
+                if (fishAudioConfigured && viewModel.hasVoiceTargetForMessage(target.id)) {
+                    Spacer(Modifier.size(8.dp))
+                    CbButton(
+                        "为整条生成语音",
+                        {
+                            actionMessageId = null
+                            viewModel.generateVoiceForMessage(target.id)
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        variant = ButtonVariant.Outline,
+                        enabled = voiceGenerationAvailabilityError == null
+                    )
+                    voiceGenerationAvailabilityError?.let { error ->
+                        CbText(
+                            error,
+                            color = ChatBarTheme.colors.destructive,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                }
                 Spacer(Modifier.size(8.dp))
                 CbButton("AI 修复格式", {
                     actionMessageId = null
@@ -1303,6 +1464,140 @@ fun ChatScreen(
                     target?.id?.let(viewModel::regenerateResponse)
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
             }
+        }
+    }
+    voiceGenerationBatches.firstOrNull {
+        it.id == voiceTextConfirmationBatchId &&
+            it.phase == VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION
+    }?.let { batch ->
+        CbDialog(
+            onDismissRequest = {
+                dismissedVoiceTextConfirmationIds += batch.id
+                voiceTextConfirmationBatchId = null
+            },
+            title = "确认 AI 标签文本",
+            dismiss = {
+                CbButton(
+                    "稍后决定",
+                    {
+                        dismissedVoiceTextConfirmationIds += batch.id
+                        voiceTextConfirmationBatchId = null
+                    },
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        "不使用改写",
+                        {
+                            voiceTextConfirmationBatchId = null
+                            viewModel.resolveVoiceTextConfirmation(batch.id, false)
+                        },
+                        variant = ButtonVariant.Outline
+                    )
+                    CbButton(
+                        "使用 AI 文本",
+                        {
+                            voiceTextConfirmationBatchId = null
+                            viewModel.resolveVoiceTextConfirmation(batch.id, true)
+                        }
+                    )
+                }
+            }
+        ) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(max = 440.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                CbText(
+                    "AI 输出改变了口播文字。确认后才会发送给 Fish Audio；本次确认会应用到下列全部差异段。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                batch.textConfirmations.forEach { confirmation ->
+                    CbSurface(
+                        modifier = Modifier.fillMaxWidth(),
+                        color = ChatBarTheme.colors.muted,
+                        border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+                        shape = RoundedCornerShape(8.dp)
+                    ) {
+                        Column(
+                            Modifier.padding(10.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            CbText(
+                                confirmation.characterName,
+                                style = ChatBarTheme.typography.label
+                            )
+                            CbText(
+                                "原文",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                            CbText(confirmation.originalText)
+                            CbText(
+                                "AI 标签文本",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                            CbText(confirmation.proposedTaggedText)
+                        }
+                    }
+                }
+            }
+        }
+    }
+    voiceActionTarget?.let { voice ->
+        var taggedText by remember(voice.id) { mutableStateOf(voice.taggedText) }
+        CbDialog(
+            onDismissRequest = { voiceActionTarget = null },
+            title = "语音消息",
+            dismiss = {
+                CbButton("取消", { voiceActionTarget = null }, variant = ButtonVariant.Ghost)
+            },
+            confirm = {
+                CbButton(
+                    "重新生成",
+                    {
+                        viewModel.regenerateVoice(voice.id, taggedText)
+                        voiceActionTarget = null
+                    },
+                    enabled = taggedText.isNotBlank() && fishAudioConfigured
+                )
+            }
+        ) {
+            CbField(
+                "发送给 Fish Audio 的标签后文本",
+                description = "重新生成沿用历史音色与 Fish 模型，不再调用标签模型。文字内容不可被改写。"
+            ) {
+                CbInput(
+                    taggedText,
+                    { taggedText = it },
+                    singleLine = false,
+                    minLines = 3
+                )
+            }
+            if (!fishAudioConfigured) {
+                CbText(
+                    "Fish Audio API Key 未配置；仍可播放或删除本地语音。",
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            Spacer(Modifier.size(10.dp))
+            CbButton(
+                "删除语音",
+                {
+                    viewModel.deleteVoice(voice.id)
+                    voiceActionTarget = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Destructive
+            )
         }
     }
 }
@@ -1586,6 +1881,114 @@ private fun ChatLongScreenshotPreviewDialog(
             }
         }
     }
+}
+
+@Composable
+private fun FishAudioGenerationCard(
+    state: VoiceGenerationBatchState,
+    onCancel: () -> Unit,
+    onReviewText: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val terminal = state.phase == VoiceGenerationPhase.FAILED ||
+        state.phase == VoiceGenerationPhase.CANCELLED
+    val label = when (state.phase) {
+        VoiceGenerationPhase.QUEUED -> "准备语音任务"
+        VoiceGenerationPhase.TAGGING -> "阶段 1/2 · AI 正在设计 Fish Audio 标签"
+        VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION ->
+            "${state.textConfirmations.size} 段 AI 文本与原文不同，等待确认"
+        VoiceGenerationPhase.SYNTHESIZING ->
+            "阶段 2/2 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
+        VoiceGenerationPhase.FAILED -> "语音生成部分或全部失败"
+        VoiceGenerationPhase.CANCELLED -> "语音生成已取消；已完成项已保留"
+    }
+    val streamScrollState = rememberScrollState()
+    LaunchedEffect(state.tagStreamText) {
+        streamScrollState.scrollTo(streamScrollState.maxValue)
+    }
+    CbSurface(
+        Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 5.dp),
+        color = ChatBarTheme.colors.card,
+        border = BorderStroke(
+            1.dp,
+            if (state.phase == VoiceGenerationPhase.FAILED) {
+                ChatBarTheme.colors.destructive
+            } else {
+                ChatBarTheme.colors.border
+            }
+        )
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(7.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (!terminal &&
+                    state.phase != VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION
+                ) {
+                    CbSpinner(Modifier.size(16.dp))
+                    Spacer(Modifier.width(8.dp))
+                }
+                CbText(label, Modifier.weight(1f), style = ChatBarTheme.typography.label)
+                if (state.phase == VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION) {
+                    CbButton(
+                        "查看差异",
+                        onReviewText,
+                        variant = ButtonVariant.Secondary
+                    )
+                    CbButton("取消", onCancel, variant = ButtonVariant.Ghost)
+                } else {
+                    CbButton(
+                        if (terminal) "关闭" else "取消",
+                        if (terminal) onDismiss else onCancel,
+                        variant = ButtonVariant.Ghost
+                    )
+                }
+            }
+            if (state.phase == VoiceGenerationPhase.TAGGING && state.tagStreamText.isNotBlank()) {
+                CbSurface(
+                    modifier = Modifier.fillMaxWidth(),
+                    color = ChatBarTheme.colors.muted,
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    CbText(
+                        state.tagStreamText.takeLast(1_500),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 96.dp)
+                            .verticalScroll(streamScrollState)
+                            .padding(8.dp),
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+            if (state.phase == VoiceGenerationPhase.SYNTHESIZING) {
+                CbProgress(
+                    progress = if (state.totalCount > 0) {
+                        state.completedCount.toFloat() / state.totalCount
+                    } else {
+                        0f
+                    }
+                )
+                CbText(
+                    "已接收 ${formatVoiceBytes(state.receivedBytes)}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            state.errors.values.distinct().forEach { error ->
+                CbText(
+                    error,
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+        }
+    }
+}
+
+private fun formatVoiceBytes(bytes: Long): String = when {
+    bytes >= 1024L * 1024L -> "%.1f MB".format(bytes / (1024f * 1024f))
+    bytes >= 1024L -> "%.1f KB".format(bytes / 1024f)
+    else -> "$bytes B"
 }
 
 @Composable

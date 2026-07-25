@@ -19,7 +19,25 @@ class AppSettingsSerializationTest {
         assertFalse(decoded.allowCleartextModelApi)
         assertFalse(decoded.automaticFormatCheckEnabled)
         assertEquals(null, decoded.formatRepairModelId)
+        assertEquals("s2.1-pro-free", decoded.fishAudioTtsModelId)
+        assertEquals(null, decoded.voiceTagModelId)
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
+    }
+
+    @Test
+    fun fishAudioModelAndVoiceTagModel_roundTrip() {
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(
+                fishAudioTtsModelId = "s1",
+                voiceTagModelId = "tag-model"
+            )
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertEquals("s1", decoded.fishAudioTtsModelId)
+        assertEquals("tag-model", decoded.voiceTagModelId)
     }
 
     @Test

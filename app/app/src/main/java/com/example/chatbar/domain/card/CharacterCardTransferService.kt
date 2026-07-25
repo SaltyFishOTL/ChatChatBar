@@ -139,7 +139,8 @@ class CharacterCardTransferService(
                 background = character.background,
                 relationships = character.relationships,
                 speakingStyle = character.speakingStyle,
-                imagePrompt = character.imagePrompt
+                imagePrompt = character.imagePrompt,
+                fishAudioVoice = character.fishAudioVoice
             )
         }
         return CharacterCardPackage(
@@ -231,7 +232,8 @@ class CharacterCardTransferService(
                             background = character.background,
                             relationships = character.relationships,
                             speakingStyle = character.speakingStyle,
-                            imagePrompt = character.imagePrompt
+                            imagePrompt = character.imagePrompt,
+                            fishAudioVoice = character.fishAudioVoice
                         )
                     }
                 ),

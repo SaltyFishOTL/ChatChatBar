@@ -93,6 +93,10 @@ import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
 import com.example.chatbar.domain.image.imageCropFractionRect
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.voice.FishAudioLibrary
+import com.example.chatbar.domain.voice.FishAudioModel
+import com.example.chatbar.domain.voice.FishAudioModelQuery
+import com.example.chatbar.domain.voice.FishAudioModelSort
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -167,6 +171,8 @@ fun CharacterEditScreen(
     val rewriteState by viewModel.rewriteState.collectAsState()
     val coverImageState by viewModel.coverImageState.collectAsState()
     val avatarImageState by viewModel.avatarImageState.collectAsState()
+    val fishAudioConfigured by viewModel.fishAudioConfigured.collectAsState()
+    val voicePickerState by viewModel.voicePickerState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
     val autoFillWebSearchEnabled by viewModel.autoFillWebSearchEnabled.collectAsState()
@@ -713,6 +719,8 @@ fun CharacterEditScreen(
             },
             structured = viewModel.editMode == CharacterEditMode.STRUCTURED,
             avatarImageState = avatarImageState,
+            fishAudioConfigured = fishAudioConfigured,
+            voicePickerState = voicePickerState,
             freeformAvatarPrompt = viewModel.freeformAvatarPrompt(characterDraft.id),
             onValueChange = { updated ->
                 characterDialogDraft = updated
@@ -763,6 +771,9 @@ fun CharacterEditScreen(
                 }
             },
             onSaveAvatarToGallery = { path -> saveImageToGallery(context, path) },
+            onSearchVoices = viewModel::searchFishAudioVoices,
+            onPreviewVoice = viewModel::previewFishAudioVoice,
+            onStopVoicePreview = viewModel::stopFishAudioPreview,
             onSave = { updated ->
                 viewModel.clearCharacterAvatarCandidate(updated.id)
                 val index = viewModel.charactersList.indexOfFirst { it.id == updated.id }
@@ -2306,6 +2317,8 @@ private fun CharacterDialog(
     nameConflict: Boolean,
     structured: Boolean,
     avatarImageState: CharacterAvatarImageUiState,
+    fishAudioConfigured: Boolean,
+    voicePickerState: CharacterVoicePickerUiState,
     freeformAvatarPrompt: String,
     onValueChange: (CharacterInfo) -> Unit,
     onDismiss: () -> Unit,
@@ -2317,9 +2330,13 @@ private fun CharacterDialog(
     onDiscardAvatar: () -> Unit,
     onApplyAvatar: () -> Unit,
     onSaveAvatarToGallery: (String) -> Unit,
+    onSearchVoices: (FishAudioModelQuery) -> Unit,
+    onPreviewVoice: (FishAudioModel) -> Unit,
+    onStopVoicePreview: () -> Unit,
     onSave: (CharacterInfo) -> Unit,
     onFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
+    var showVoicePicker by remember { mutableStateOf(false) }
     val avatarPending = avatarImageState.characterId == value.id &&
         (avatarImageState.isGenerating || !avatarImageState.path.isNullOrBlank())
     CbDialog(
@@ -2390,6 +2407,38 @@ private fun CharacterDialog(
             CbField("语气与口癖", onFullscreenEdit = { onFullscreen("语气与口癖", value.speakingStyle, { onValueChange(value.copy(speakingStyle = it)) }) }) {
                 CbInput(value.speakingStyle, { onValueChange(value.copy(speakingStyle = it)) }, singleLine = false, minLines = 2)
             }
+            if (fishAudioConfigured) {
+                CbField(
+                    "Fish Audio 音色",
+                    description = value.fishAudioVoice?.let { voice ->
+                        buildString {
+                            append(voice.title)
+                            voice.authorName?.takeIf(String::isNotBlank)?.let { append(" · $it") }
+                            if (voice.visibility.equals("private", ignoreCase = true)) {
+                                append(" · 私有音色；当前 Key 无权限时将显示不可用")
+                            }
+                        }
+                    } ?: "为该人物绑定社区音色或自己的音色。更换只影响以后生成的语音。"
+                ) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CbButton(
+                            if (value.fishAudioVoice == null) "选择音色" else "更换音色",
+                            {
+                                showVoicePicker = true
+                                onSearchVoices(FishAudioModelQuery())
+                            },
+                            variant = ButtonVariant.Outline
+                        )
+                        if (value.fishAudioVoice != null) {
+                            CbButton(
+                                "移除绑定",
+                                { onValueChange(value.copy(fishAudioVoice = null)) },
+                                variant = ButtonVariant.Ghost
+                            )
+                        }
+                    }
+                }
+            }
             CbField(
                 "NovelAI 人物提示词",
                 description = "固定外貌与身份标签。当前服装、动作和表情会由对话 AI 按情景补充。",
@@ -2405,6 +2454,22 @@ private fun CharacterDialog(
             }
             }
         }
+    }
+    if (showVoicePicker) {
+        FishAudioVoicePickerDialog(
+            state = voicePickerState,
+            onDismiss = {
+                onStopVoicePreview()
+                showVoicePicker = false
+            },
+            onSearch = onSearchVoices,
+            onPreview = onPreviewVoice,
+            onUse = { model ->
+                onStopVoicePreview()
+                onValueChange(value.copy(fishAudioVoice = model.toBinding()))
+                showVoicePicker = false
+            }
+        )
     }
 }
 
@@ -2718,6 +2783,168 @@ private fun RewriteDiffRowView(row: CharacterRewriteDiffRow) {
             }
             CharacterRewriteDiffKind.Removed -> {
                 RewriteDiffValue("- 删除", row.beforeFragments, ChatBarTheme.colors.destructive, "（空）")
+            }
+        }
+    }
+}
+
+@Composable
+private fun FishAudioVoicePickerDialog(
+    state: CharacterVoicePickerUiState,
+    onDismiss: () -> Unit,
+    onSearch: (FishAudioModelQuery) -> Unit,
+    onPreview: (FishAudioModel) -> Unit,
+    onUse: (FishAudioModel) -> Unit
+) {
+    var title by remember(state.query.library) { mutableStateOf(state.query.title) }
+    var language by remember(state.query.library) {
+        mutableStateOf(state.query.languages.joinToString(","))
+    }
+    var tags by remember(state.query.library) {
+        mutableStateOf(state.query.tags.joinToString(","))
+    }
+    var sort by remember(state.query.sort) { mutableStateOf(state.query.sort) }
+    fun query(page: Int = 1, library: FishAudioLibrary = state.query.library) =
+        FishAudioModelQuery(
+            library = library,
+            pageNumber = page,
+            title = title.trim(),
+            languages = language.split(",").map(String::trim).filter(String::isNotEmpty),
+            tags = tags.split(",").map(String::trim).filter(String::isNotEmpty),
+            sort = sort
+        )
+
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "选择 Fish Audio 音色",
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        Column(
+            Modifier.heightIn(max = 610.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbChoiceChip(
+                    text = "社区音色",
+                    selected = state.query.library == FishAudioLibrary.COMMUNITY,
+                    onClick = { onSearch(query(library = FishAudioLibrary.COMMUNITY)) }
+                )
+                CbChoiceChip(
+                    text = "我的音色",
+                    selected = state.query.library == FishAudioLibrary.MINE,
+                    onClick = { onSearch(query(library = FishAudioLibrary.MINE)) }
+                )
+            }
+            CbField("标题") {
+                CbInput(title, { title = it }, placeholder = "搜索音色标题")
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbField("语言", Modifier.weight(1f)) {
+                    CbInput(language, { language = it }, placeholder = "zh,en")
+                }
+                CbField("标签", Modifier.weight(1f)) {
+                    CbInput(tags, { tags = it }, placeholder = "female,anime")
+                }
+            }
+            CbField("排序") {
+                CbSelect(
+                    sort,
+                    FishAudioModelSort.entries,
+                    {
+                        when (it) {
+                            FishAudioModelSort.RECOMMENDED -> "推荐"
+                            FishAudioModelSort.POPULAR -> "热度"
+                            FishAudioModelSort.LATEST -> "最新"
+                        }
+                    },
+                    { sort = it }
+                )
+            }
+            CbButton(
+                "搜索",
+                { onSearch(query()) },
+                enabled = !state.isLoading
+            )
+            if (state.isLoading) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CbSpinner()
+                    Spacer(Modifier.width(8.dp))
+                    CbText("正在检索音色…", color = ChatBarTheme.colors.mutedForeground)
+                }
+            }
+            state.error?.let {
+                CbText(it, color = ChatBarTheme.colors.destructive)
+            }
+            state.page.items.forEach { model ->
+                CbSurface(
+                    Modifier.fillMaxWidth(),
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+                ) {
+                    Column(
+                        Modifier.fillMaxWidth().padding(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(7.dp)
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            if (model.coverImage.isNotBlank()) {
+                                AsyncImage(
+                                    model = model.coverImage,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(42.dp).clip(CircleShape),
+                                    contentScale = ContentScale.Crop
+                                )
+                                Spacer(Modifier.width(10.dp))
+                            }
+                            Column(Modifier.weight(1f)) {
+                                CbText(model.title, style = ChatBarTheme.typography.heading)
+                                CbText(
+                                    listOfNotNull(
+                                        model.author?.nickname,
+                                        model.languages.joinToString("/").takeIf(String::isNotBlank),
+                                        model.tags.take(3).joinToString(", ").takeIf(String::isNotBlank)
+                                    ).joinToString(" · ").ifBlank { model.id },
+                                    color = ChatBarTheme.colors.mutedForeground,
+                                    style = ChatBarTheme.typography.caption
+                                )
+                            }
+                        }
+                        model.samples.firstOrNull()?.text?.takeIf(String::isNotBlank)?.let {
+                            CbText(it, maxLines = 2, color = ChatBarTheme.colors.mutedForeground)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            val hasPreview = model.samples.any { it.previewUrl.isNotBlank() }
+                            CbButton(
+                                if (state.previewingModelId == model.id) "加载中…" else "预览",
+                                { onPreview(model) },
+                                variant = ButtonVariant.Outline,
+                                enabled = hasPreview && state.previewingModelId == null
+                            )
+                            CbButton("使用此音色", { onUse(model) })
+                        }
+                    }
+                }
+            }
+            if (!state.isLoading && state.page.items.isEmpty() && state.error == null) {
+                CbText("没有匹配音色。", color = ChatBarTheme.colors.mutedForeground)
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    "上一页",
+                    { onSearch(query((state.query.pageNumber - 1).coerceAtLeast(1))) },
+                    variant = ButtonVariant.Outline,
+                    enabled = state.query.pageNumber > 1 && !state.isLoading
+                )
+                CbText(
+                    "第 ${state.query.pageNumber} 页",
+                    modifier = Modifier.align(Alignment.CenterVertically),
+                    color = ChatBarTheme.colors.mutedForeground
+                )
+                CbButton(
+                    "下一页",
+                    { onSearch(query(state.query.pageNumber + 1)) },
+                    variant = ButtonVariant.Outline,
+                    enabled = state.page.hasMore != false && state.page.items.isNotEmpty() && !state.isLoading
+                )
             }
         }
     }

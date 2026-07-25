@@ -106,7 +106,8 @@ data class CharacterInfo(
     val background: String = "",
     val relationships: String = "",
     val speakingStyle: String = "",
-    val imagePrompt: String = ""
+    val imagePrompt: String = "",
+    val fishAudioVoice: FishAudioVoiceBinding? = null
 ) {
     companion object {
         @OptIn(ExperimentalUuidApi::class)

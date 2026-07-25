@@ -48,10 +48,17 @@ fun toggleChatScreenshotMessageSelection(
 fun cleanChatScreenshotSelection(
     currentIds: Set<String>,
     messages: List<ChatMessage>,
-    assistantSegmentedBubblesEnabled: Boolean = true
+    assistantSegmentedBubblesEnabled: Boolean = true,
+    voiceIdsByMessage: Map<String, List<String>> = emptyMap()
 ): Set<String> {
     val selectableIds = messages
-        .flatMap { message -> roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled) }
+        .flatMap { message ->
+            roleplayScreenshotBlockIds(
+                message,
+                assistantSegmentedBubblesEnabled,
+                voiceIdsByMessage[message.id].orEmpty()
+            )
+        }
         .toSet()
     return currentIds.filterTo(LinkedHashSet()) { it in selectableIds }
 }

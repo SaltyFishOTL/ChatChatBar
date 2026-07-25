@@ -107,12 +107,16 @@ fun roleplayTextBlockId(messageId: String, segmentIndex: Int): String =
 fun roleplayLegacyTextBlockId(messageId: String): String =
     "$messageId::text::legacy"
 
+fun roleplayVoiceBlockId(messageId: String, voiceId: String): String =
+    "$messageId::voice::$voiceId"
+
 fun roleplayBlockMessageId(blockId: String): String =
     blockId.substringBefore("::")
 
 fun roleplayScreenshotBlockIds(
     message: ChatMessage,
-    assistantSegmentedBubblesEnabled: Boolean = true
+    assistantSegmentedBubblesEnabled: Boolean = true,
+    voiceIds: List<String> = emptyList()
 ): List<String> {
     if (message.role != MessageRole.USER && message.role != MessageRole.ASSISTANT) return emptyList()
     val ids = mutableListOf<String>()
@@ -124,15 +128,17 @@ fun roleplayScreenshotBlockIds(
     } else if (message.displayContent.isNotBlank()) {
         ids += roleplayLegacyTextBlockId(message.id)
     }
+    voiceIds.forEach { voiceId -> ids += roleplayVoiceBlockId(message.id, voiceId) }
     return ids
 }
 
 fun roleplayMessageContainsBlock(
     message: ChatMessage,
     blockId: String,
-    assistantSegmentedBubblesEnabled: Boolean = true
+    assistantSegmentedBubblesEnabled: Boolean = true,
+    voiceIds: List<String> = emptyList()
 ): Boolean =
-    blockId in roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled)
+    blockId in roleplayScreenshotBlockIds(message, assistantSegmentedBubblesEnabled, voiceIds)
 
 fun replaceRoleplaySegmentContent(
     content: String,

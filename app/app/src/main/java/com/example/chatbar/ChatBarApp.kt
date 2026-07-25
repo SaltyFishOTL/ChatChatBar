@@ -20,8 +20,10 @@ import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateManager
 import com.example.chatbar.domain.community.CommunityPreviewCache
+import com.example.chatbar.domain.voice.*
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.utils.diagnostics.CrashReportManager
+import com.example.chatbar.data.security.FishAudioCredentialStore
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
@@ -61,6 +63,8 @@ class ChatBarApp : Application() {
     lateinit var editorDraftRepository: EditorDraftRepository
         private set
     lateinit var momentRepository: MomentRepository
+        private set
+    lateinit var voiceMessageRepository: VoiceMessageRepository
         private set
 
     // 领域层服务
@@ -122,6 +126,18 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiImageStorage: NovelAiImageStorage
         private set
+    lateinit var fishAudioCredentialStore: FishAudioCredentialStore
+        private set
+    lateinit var fishAudioStorage: FishAudioStorage
+        private set
+    lateinit var fishAudioService: FishAudioService
+        private set
+    lateinit var fishAudioTagService: FishAudioTagService
+        private set
+    lateinit var voicePlaybackController: VoicePlaybackController
+        private set
+    lateinit var fishAudioGenerationCoordinator: FishAudioGenerationCoordinator
+        private set
     lateinit var searchBackend: SearchBackend
         private set
     lateinit var characterResearchPlanner: CharacterResearchPlanner
@@ -157,7 +173,9 @@ class ChatBarApp : Application() {
         saveSlotRepository = SaveSlotRepository(jsonFileStorage)
         settingsRepository = SettingsRepository(jsonFileStorage)
         momentRepository = MomentRepository(jsonFileStorage)
+        voiceMessageRepository = VoiceMessageRepository(jsonFileStorage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
+        fishAudioCredentialStore = FishAudioCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
         memoryRepository = MemoryRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
@@ -174,6 +192,10 @@ class ChatBarApp : Application() {
         streamingChatService = StreamingChatService {
             settingsRepository.currentAppSettings.allowCleartextModelApi
         }
+        fishAudioStorage = FishAudioStorage(this)
+        fishAudioService = FishAudioService(fishAudioStorage)
+        fishAudioTagService = FishAudioTagService(streamingChatService)
+        voicePlaybackController = VoicePlaybackController(this)
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
@@ -223,6 +245,19 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        fishAudioGenerationCoordinator = FishAudioGenerationCoordinator(
+            scope = applicationScope,
+            chatRepository = chatRepository,
+            characterRepository = characterRepository,
+            settingsRepository = settingsRepository,
+            voiceRepository = voiceMessageRepository,
+            credentials = fishAudioCredentialStore,
+            fishAudioService = fishAudioService,
+            tagService = fishAudioTagService,
+            modelResolver = effectiveModelResolver,
+            storage = fishAudioStorage,
+            playback = voicePlaybackController
+        )
         longTermMemoryAutoMaintenanceCoordinator = LongTermMemoryAutoMaintenanceCoordinator(
             context = this,
             scope = applicationScope,
@@ -306,7 +341,11 @@ class ChatBarApp : Application() {
             ragRepository,
             memoryRepository,
             momentRepository,
-            novelAiImageStorage
+            novelAiImageStorage,
+            voiceMessageRepository,
+            fishAudioStorage,
+            voicePlaybackController,
+            fishAudioGenerationCoordinator
         )
         StreamingNotificationManager.init(this)
         applicationScope.launch {
@@ -326,6 +365,11 @@ class ChatBarApp : Application() {
                 presetModelCatalogService
             ).run()
             settingsRepository.initialize()
+            voiceMessageRepository.initialize()
+            fishAudioStorage.cleanupPartialFiles()
+            fishAudioStorage.cleanupOrphanFiles(
+                voiceMessageRepository.voices.value.mapTo(mutableSetOf()) { it.audioPath }
+            )
             momentRepository.initialize()
             momentScheduler.kick("startup")
         }

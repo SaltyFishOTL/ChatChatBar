@@ -39,6 +39,7 @@ import com.composables.icons.lucide.Star
 import com.composables.icons.lucide.Trash
 import com.composables.icons.lucide.Trash2
 import com.composables.icons.lucide.Upload
+import com.composables.icons.lucide.Volume2
 import com.composables.icons.lucide.X
 
 // Compatibility facade. Icons are provided by Lucide Compose, not hand-drawn paths.
@@ -85,4 +86,5 @@ object AppIcons {
     val Star: ImageVector get() = Lucide.Star
     val Tune: ImageVector get() = Lucide.SlidersHorizontal
     val UploadFile: ImageVector get() = Lucide.Upload
+    val Volume: ImageVector get() = Lucide.Volume2
 }

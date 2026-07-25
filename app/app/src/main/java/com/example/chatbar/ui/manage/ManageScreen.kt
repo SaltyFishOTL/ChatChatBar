@@ -113,6 +113,7 @@ import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateDownloadState
 import com.example.chatbar.domain.update.AppUpdateInfo
+import com.example.chatbar.domain.voice.FishAudioTtsModels
 import com.example.chatbar.domain.update.AppUpdateInstallResult
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CbAvatar
@@ -192,6 +193,8 @@ fun ManageScreen(
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
     val apiTestStatus by viewModel.apiTestStatus.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
+    val fishAudioConfigured by viewModel.fishAudioConfigured.collectAsState()
+    val auxiliaryTextModels by viewModel.auxiliaryTextModels.collectAsState()
     val momentsReliability by viewModel.momentsReliability.collectAsState()
     val momentDebug by viewModel.momentDebug.collectAsState()
     val momentSchedulePreview by viewModel.momentSchedulePreview.collectAsState()
@@ -477,7 +480,7 @@ fun ManageScreen(
                         onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
                     )
                     4 -> SettingsTab(
-                        settingsSaveRequest, settings, player, characters, models, effectiveModels, retrievalModel, formats, modelErrors, apiTestStatus, novelAiConfigured, momentsReliability, momentDebug, momentSchedulePreview,
+                        settingsSaveRequest, settings, player, characters, models, effectiveModels, auxiliaryTextModels, retrievalModel, formats, modelErrors, apiTestStatus, novelAiConfigured, fishAudioConfigured, momentsReliability, momentDebug, momentSchedulePreview,
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
                         viewModel::updateThemeMode,
@@ -486,6 +489,8 @@ fun ManageScreen(
                         viewModel::testSiliconFlowApi,
                         viewModel::saveNovelAiToken,
                         viewModel::clearNovelAiToken,
+                        viewModel::saveFishAudioApiKey,
+                        viewModel::clearFishAudioApiKey,
                         viewModel::refreshMomentsReliability,
                         viewModel::openMomentsAutoStartSettings,
                         viewModel::openMomentsBatterySettings,
@@ -1397,11 +1402,13 @@ private fun SettingsTab(
     characters: List<CharacterCard>,
     customModels: List<ModelConfig>,
     effectiveModels: List<ModelConfig>,
+    auxiliaryTextModels: List<ModelConfig>,
     retrievalModel: ModelConfig?,
     formats: List<FormatCard>,
     modelErrors: List<String>,
     apiTestStatus: String?,
     novelAiConfigured: Boolean,
+    fishAudioConfigured: Boolean,
     momentsReliability: MomentReliabilityState,
     momentDebug: MomentDebugUiState,
     momentSchedulePreview: MomentSchedulePreviewUiState,
@@ -1413,6 +1420,8 @@ private fun SettingsTab(
     onTestApiKey: (String, Boolean) -> Unit,
     onSaveNovelAiToken: (String) -> Unit,
     onClearNovelAiToken: () -> Unit,
+    onSaveFishAudioApiKey: (String) -> Unit,
+    onClearFishAudioApiKey: () -> Unit,
     onRefreshMomentsReliability: () -> Unit,
     onOpenMomentsAutoStartSettings: (android.content.Context) -> Unit,
     onOpenMomentsBatterySettings: (android.content.Context) -> Unit,
@@ -1431,6 +1440,9 @@ private fun SettingsTab(
     var siliconFlowApiKey by remember { mutableStateOf(settings.siliconFlowApiKey) }
     var allowCleartextModelApi by remember { mutableStateOf(settings.allowCleartextModelApi) }
     var novelAiToken by remember { mutableStateOf("") }
+    var fishAudioApiKey by remember { mutableStateOf("") }
+    var fishAudioTtsModelId by remember { mutableStateOf(settings.fishAudioTtsModelId) }
+    var voiceTagModelId by remember { mutableStateOf(settings.voiceTagModelId) }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
@@ -1501,6 +1513,8 @@ private fun SettingsTab(
         settings.momentsBackgroundGuideDismissed,
         settings.momentsAutoStartConfirmed,
         settings.novelAiImageAspectRatio,
+        settings.fishAudioTtsModelId,
+        settings.voiceTagModelId,
         settings.chatBubbleFontScale,
         settings.chatBackgroundImageOpacity,
         settings.assistantSegmentedBubblesEnabled
@@ -1514,6 +1528,8 @@ private fun SettingsTab(
         allowCleartextModelApi = settings.allowCleartextModelApi
         themeMode = settings.themeMode
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
+        fishAudioTtsModelId = settings.fishAudioTtsModelId
+        voiceTagModelId = settings.voiceTagModelId
         momentsEnabled = settings.momentsEnabled
         val momentDelayRange = MomentPolicy.normalizedDelayHours(
             settings.momentsMinDelayHours,
@@ -1563,6 +1579,8 @@ private fun SettingsTab(
         excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
         webSearchMaxResultsPerQuery = 1,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
+        fishAudioTtsModelId = fishAudioTtsModelId,
+        voiceTagModelId = voiceTagModelId,
         momentsEnabled = momentsEnabled,
         momentsMinDelayHours = draftMomentDelayRange.minHours,
         momentsMaxDelayHours = draftMomentDelayRange.maxHours,
@@ -1930,6 +1948,74 @@ private fun SettingsTab(
                 if (novelAiConfigured) {
                     CbButton("清除", onClearNovelAiToken, variant = ButtonVariant.Destructive)
                 }
+            }
+        }
+        SettingsSection("Fish Audio 语音") {
+            CbText(
+                if (fishAudioConfigured) {
+                    "API Key 已加密保存。角色编辑器和聊天语音入口已启用。"
+                } else {
+                    "未配置；隐藏音色选择和新语音生成入口，已有本地语音仍可播放。"
+                },
+                color = if (fishAudioConfigured) {
+                    ChatBarTheme.colors.primary
+                } else {
+                    ChatBarTheme.colors.mutedForeground
+                },
+                style = ChatBarTheme.typography.caption
+            )
+            CbField(
+                "API Key",
+                description = "使用 Android Keystore 加密保存，不写入设置、导出文件或日志。保存时不发起连通性测试。"
+            ) {
+                CbInput(
+                    fishAudioApiKey,
+                    { fishAudioApiKey = it },
+                    placeholder = if (fishAudioConfigured) "输入新 Key 以替换" else "粘贴 Fish Audio API Key",
+                    visualTransformation = PasswordVisualTransformation()
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    "保存",
+                    {
+                        onSaveFishAudioApiKey(fishAudioApiKey)
+                        fishAudioApiKey = ""
+                    },
+                    enabled = fishAudioApiKey.isNotBlank()
+                )
+                if (fishAudioConfigured) {
+                    CbButton(
+                        "清除",
+                        onClearFishAudioApiKey,
+                        variant = ButtonVariant.Destructive
+                    )
+                }
+            }
+            CbField(
+                "TTS 模型",
+                description = "S2 系列使用 [tag]；S1 使用 (tag)。默认免费模型 s2.1-pro-free。"
+            ) {
+                CbSelect(
+                    fishAudioTtsModelId,
+                    FishAudioTtsModels.supported,
+                    { it },
+                    { fishAudioTtsModelId = it }
+                )
+            }
+            OptionalSelect(
+                label = "语音标签模型",
+                selectedId = voiceTagModelId,
+                options = auxiliaryTextModels.map { IdOption(it.id, it.displayName) },
+                onSelected = { voiceTagModelId = it },
+                noneLabel = "当前会话对话模型"
+            )
+            if (voiceTagModelId != null && auxiliaryTextModels.none { it.id == voiceTagModelId }) {
+                CbText(
+                    "已选标签模型失效。重新选择前，语音生成会被禁用且不会自动回退。",
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
             }
         }
         SettingsSection("崩溃诊断") {
