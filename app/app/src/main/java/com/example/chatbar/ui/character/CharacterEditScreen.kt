@@ -2491,7 +2491,7 @@ private fun CharacterDialog(
     onApplyAvatar: () -> Unit,
     onSaveAvatarToGallery: (String) -> Unit,
     onSearchVoices: (FishAudioModelQuery) -> Unit,
-    onPreviewVoice: (FishAudioModel) -> Unit,
+    onPreviewVoice: (FishAudioModel, String) -> Unit,
     onStopVoicePreview: () -> Unit,
     onSave: (CharacterInfo) -> Unit,
     onFullscreen: (String, String, (String) -> Unit) -> Unit
@@ -2963,9 +2963,10 @@ private fun FishAudioVoicePickerDialog(
     state: CharacterVoicePickerUiState,
     onDismiss: () -> Unit,
     onSearch: (FishAudioModelQuery) -> Unit,
-    onPreview: (FishAudioModel) -> Unit,
+    onPreview: (FishAudioModel, String) -> Unit,
     onUse: (FishAudioModel) -> Unit
 ) {
+    var generatedPreviewText by remember { mutableStateOf("") }
     var title by remember(state.query.library) { mutableStateOf(state.query.title) }
     var language by remember(state.query.library) {
         mutableStateOf(state.query.languages.joinToString(","))
@@ -3031,6 +3032,16 @@ private fun FishAudioVoicePickerDialog(
                     { sort = it }
                 )
             }
+            CbField(
+                "指定生成预览文本",
+                description = "填写后将临时生成试听音频；留空时播放原预览。每个音色本次只生成一次。"
+            ) {
+                CbInput(
+                    generatedPreviewText,
+                    { generatedPreviewText = it },
+                    placeholder = "例如：很高兴认识你，请多关照。"
+                )
+            }
             CbButton(
                 "搜索",
                 { onSearch(query()) },
@@ -3083,11 +3094,17 @@ private fun FishAudioVoicePickerDialog(
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             val hasPreview = model.samples.any { it.previewUrl.isNotBlank() }
+                            val generatesPreview = generatedPreviewText.isNotBlank()
                             CbButton(
-                                if (state.previewingModelId == model.id) "加载中…" else "预览",
-                                { onPreview(model) },
+                                if (state.previewingModelId == model.id) {
+                                    if (generatesPreview) "生成中…" else "加载中…"
+                                } else {
+                                    "预览"
+                                },
+                                { onPreview(model, generatedPreviewText) },
                                 variant = ButtonVariant.Outline,
-                                enabled = hasPreview && state.previewingModelId == null
+                                enabled = (hasPreview || generatesPreview) &&
+                                    state.previewingModelId == null
                             )
                             CbButton("使用此音色", { onUse(model) })
                         }

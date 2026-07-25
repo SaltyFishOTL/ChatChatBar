@@ -1,11 +1,14 @@
 package com.example.chatbar.domain.voice
 
 import com.example.chatbar.domain.ProxyAwareClient
+import java.io.File
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
@@ -30,6 +33,8 @@ class FishAudioService(
     private val json: Json = Json { ignoreUnknownKeys = true; encodeDefaults = true },
     private val baseUrl: String = DEFAULT_BASE_URL
 ) {
+    private val ttsSlots = Semaphore(5)
+
     suspend fun listModels(
         apiKey: String,
         query: FishAudioModelQuery
@@ -47,20 +52,22 @@ class FishAudioService(
         voiceId: String,
         onProgress: (FishAudioDownloadProgress.Downloading) -> Unit = {}
     ): FishAudioStoredAudio = withContext(Dispatchers.IO) {
-        val request = FishAudioRequestFactory.tts(
-            baseUrl = baseUrl,
-            apiKey = apiKey,
-            modelId = modelId,
-            referenceId = referenceId,
-            text = text,
-            json = json
-        )
-        val response = awaitResponse(request)
-        response.use {
-            coroutineContext.ensureActive()
-            if (!response.isSuccessful) throw httpError(response.code, response.body?.string().orEmpty())
-            val body = response.body ?: throw FishAudioApiException(response.code, "Fish Audio 未返回音频")
-            storage.persistTtsResponse(sessionId, voiceId, body, onProgress)
+        ttsSlots.withPermit {
+            val request = FishAudioRequestFactory.tts(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                modelId = modelId,
+                referenceId = referenceId,
+                text = text,
+                json = json
+            )
+            val response = awaitResponse(request)
+            response.use {
+                coroutineContext.ensureActive()
+                if (!response.isSuccessful) throw httpError(response.code, response.body?.string().orEmpty())
+                val body = response.body ?: throw FishAudioApiException(response.code, "Fish Audio 未返回音频")
+                storage.persistTtsResponse(sessionId, voiceId, body, onProgress)
+            }
         }
     }
 
@@ -79,6 +86,35 @@ class FishAudioService(
             )
         }
     }
+
+    suspend fun synthesizePreview(
+        apiKey: String,
+        modelId: String,
+        referenceId: String,
+        text: String,
+        previewSessionId: String
+    ): File = withContext(Dispatchers.IO) {
+        ttsSlots.withPermit {
+            val request = FishAudioRequestFactory.tts(
+                baseUrl = baseUrl,
+                apiKey = apiKey,
+                modelId = modelId,
+                referenceId = referenceId,
+                text = text,
+                json = json
+            )
+            val response = awaitResponse(request)
+            response.use {
+                coroutineContext.ensureActive()
+                if (!response.isSuccessful) throw httpError(response.code, response.body?.string().orEmpty())
+                val body = response.body ?: throw FishAudioApiException(response.code, "Fish Audio 未返回音频")
+                storage.persistGeneratedPreview(previewSessionId, referenceId, body)
+            }
+        }
+    }
+
+    fun clearGeneratedPreviews(previewSessionId: String): Boolean =
+        storage.clearGeneratedPreviews(previewSessionId)
 
     private suspend fun <T> execute(request: Request, decode: (String) -> T): T {
         val response = awaitResponse(request)

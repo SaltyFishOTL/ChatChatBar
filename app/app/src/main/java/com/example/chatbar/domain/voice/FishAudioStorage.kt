@@ -16,6 +16,7 @@ import okhttp3.ResponseBody
 class FishAudioStorage(private val context: Context) {
     private val root = File(context.filesDir, "audio/generated")
     private val previewRoot = File(context.cacheDir, "audio/fish_preview")
+    private val generatedPreviewRoot = File(previewRoot, "generated")
 
     suspend fun persistTtsResponse(
         sessionId: String,
@@ -76,6 +77,59 @@ class FishAudioStorage(private val context: Context) {
             throw error
         }
     }
+
+    suspend fun persistGeneratedPreview(
+        previewSessionId: String,
+        referenceId: String,
+        body: ResponseBody
+    ): File = withContext(Dispatchers.IO) {
+        val directory = File(
+            generatedPreviewRoot,
+            safeSegment(previewSessionId)
+        ).also(File::mkdirs)
+        val finalFile = File(directory, "${safeSegment(referenceId)}.mp3")
+        val tempFile = File(directory, ".${finalFile.name}.${UUID.randomUUID()}.part")
+        try {
+            val expected = body.contentLength().takeIf { it >= 0L }
+            var received = 0L
+            body.byteStream().use { input ->
+                tempFile.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = input.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        received += count
+                    }
+                    output.flush()
+                }
+            }
+            require(received > 0L) { "Fish Audio 返回空音频" }
+            require(expected == null || received == expected) {
+                "Fish Audio 音频下载不完整：$received/$expected 字节"
+            }
+            require(readDuration(tempFile) > 0L) { "Fish Audio 音频无法解析时长" }
+            currentCoroutineContext().ensureActive()
+            moveReplacing(tempFile, finalFile)
+            finalFile
+        } catch (error: Throwable) {
+            tempFile.delete()
+            throw error
+        }
+    }
+
+    fun clearGeneratedPreviews(previewSessionId: String): Boolean = runCatching {
+        val directory = File(
+            generatedPreviewRoot,
+            safeSegment(previewSessionId)
+        ).canonicalFile
+        val ownedRoot = generatedPreviewRoot.canonicalFile
+        if (!directory.path.startsWith(ownedRoot.path + File.separator)) {
+            return@runCatching false
+        }
+        !directory.exists() || directory.deleteRecursively()
+    }.getOrDefault(false)
 
     suspend fun restoreArchivedAudio(
         sessionId: String,

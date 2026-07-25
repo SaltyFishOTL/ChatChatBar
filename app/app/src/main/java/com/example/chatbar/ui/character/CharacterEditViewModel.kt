@@ -56,6 +56,8 @@ import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.voice.FishAudioModel
 import com.example.chatbar.domain.voice.FishAudioModelPage
 import com.example.chatbar.domain.voice.FishAudioModelQuery
+import com.example.chatbar.domain.voice.FishAudioPreviewSessionCache
+import com.example.chatbar.domain.voice.FishAudioTtsModels
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -250,6 +252,10 @@ class CharacterEditViewModel(
     private var loadedDraft: EditorDraft? = null
     private var draftJob: Job? = null
     private val draftSessionId = routeDraftId.ifBlank { UUID.randomUUID().toString() }
+    private var voicePreviewJob: Job? = null
+    private var voicePreviewGenerationToken = 0
+    private var voicePreviewSessionId = UUID.randomUUID().toString()
+    private val voicePreviewSessionCache = FishAudioPreviewSessionCache()
     private val pendingDeletedAssets = mutableSetOf<String>()
     private val pendingDeletedDocumentIds = mutableSetOf<String>()
     private val transientGeneratedAvatarPaths = mutableSetOf<String>()
@@ -2518,31 +2524,78 @@ class CharacterEditViewModel(
         }
     }
 
-    fun previewFishAudioVoice(model: FishAudioModel) {
-        val previewUrl = model.samples.firstOrNull { it.previewUrl.isNotBlank() }?.previewUrl ?: return
-        viewModelScope.launch {
-            val apiKey = fishAudioCredentials.load() ?: return@launch
+    fun previewFishAudioVoice(model: FishAudioModel, requestedText: String) {
+        val previewText = requestedText.trim()
+        val previewUrl = model.samples
+            .firstOrNull { it.previewUrl.isNotBlank() }
+            ?.previewUrl
+        if (previewText.isEmpty() && previewUrl == null) return
+
+        voicePreviewJob?.cancel()
+        val generationToken = ++voicePreviewGenerationToken
+        val previewSessionId = voicePreviewSessionId
+        voicePreviewJob = viewModelScope.launch {
             _voicePickerState.value = _voicePickerState.value.copy(
                 previewingModelId = model.id,
                 error = null
             )
-            runCatching { fishAudioService.downloadPreview(apiKey, model.id, previewUrl) }
-                .onSuccess { file ->
-                    voicePlayback.playPreview(file.absolutePath)
-                    _voicePickerState.value = _voicePickerState.value.copy(previewingModelId = null)
+            try {
+                val apiKey = fishAudioCredentials.load()
+                    ?: error("Fish Audio API Key 未配置")
+                val path = if (previewText.isEmpty()) {
+                    fishAudioService.downloadPreview(
+                        apiKey = apiKey,
+                        modelId = model.id,
+                        url = checkNotNull(previewUrl)
+                    ).absolutePath
+                } else {
+                    voicePreviewSessionCache.get(model.id)
+                        ?: AiBackgroundWorkManager.run(draftSessionId) {
+                            val fishModelId = settingsRepository.currentAppSettings
+                                .fishAudioTtsModelId
+                                .takeIf { it in FishAudioTtsModels.supported }
+                                ?: FishAudioTtsModels.S2_1_PRO_FREE
+                            fishAudioService.synthesizePreview(
+                                apiKey = apiKey,
+                                modelId = fishModelId,
+                                referenceId = model.id,
+                                text = previewText,
+                                previewSessionId = previewSessionId
+                            ).absolutePath
+                        }.also { path ->
+                            voicePreviewSessionCache.remember(model.id, path)
+                        }
                 }
-                .onFailure { error ->
+                voicePlayback.playPreview(path)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                if (voicePreviewGenerationToken == generationToken) {
                     _voicePickerState.value = _voicePickerState.value.copy(
-                        previewingModelId = null,
                         error = error.message ?: error.javaClass.simpleName
                     )
                 }
+            } finally {
+                if (voicePreviewGenerationToken == generationToken) {
+                    _voicePickerState.value = _voicePickerState.value.copy(
+                        previewingModelId = null
+                    )
+                    voicePreviewJob = null
+                }
+            }
         }
     }
 
     fun stopFishAudioPreview() {
+        voicePreviewGenerationToken += 1
+        voicePreviewJob?.cancel()
+        voicePreviewJob = null
         voicePlayback.stop()
         _voicePickerState.value = _voicePickerState.value.copy(previewingModelId = null)
+        val closingSessionId = voicePreviewSessionId
+        voicePreviewSessionId = UUID.randomUUID().toString()
+        voicePreviewSessionCache.clear()
+        fishAudioService.clearGeneratedPreviews(closingSessionId)
     }
 
     override fun onCleared() {
@@ -2557,7 +2610,7 @@ class CharacterEditViewModel(
         transientGeneratedAvatarPaths.forEach(novelAiImageStorage::deleteIfOwned)
         transientGeneratedAvatarPaths.clear()
         freeformAvatarPromptDrafts.clear()
-        voicePlayback.stop()
+        stopFishAudioPreview()
         super.onCleared()
     }
 }

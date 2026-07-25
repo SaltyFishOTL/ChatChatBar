@@ -36,7 +36,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 
 - Keep community and personal libraries on `GET /model` with explicit `self`, pagination, title/tag/language filters, and sort mapping.
 - Keep TTS on `POST /v1/tts` with Bearer auth, `model` header, `reference_id`, MP3, and 64 kbps.
-- Do not synthesize paid previews when a model has no official sample. Previewing never binds a voice; only explicit selection mutates the character draft.
+- Do not synthesize paid previews solely because a model lacks an official sample. In the character picker, synthesize only when the user supplies explicit preview text; cache the first generated clip per voice for that picker session and delete generated preview files on close or selection. Previewing never binds a voice; only explicit selection mutates the character draft.
 - Store a non-sensitive `FishAudioVoiceBinding` snapshot on each `CharacterInfo`.
 - Preserve `fishAudioVoice` through character-card copy/import/export/community transfer and AI auto-fill/rewrite materialization. AI output must not create or overwrite it.
 - Treat inaccessible private bindings as unavailable. Never substitute another voice silently.
