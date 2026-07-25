@@ -19,8 +19,9 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 
 - App wiring and navigation: app/app/src/main/java/com/example/chatbar/ChatBarApp.kt, Navigation.kt, NavigationKeys.kt.
 - Character card edit UI: ui/character/CharacterEditScreen.kt, CharacterEditViewModel.kt.
-- Character-card AI auto-fill, rewrite, diff, apply, cover, or per-character avatar: use chatbar-character-card-ai.
+- Character-card AI auto-fill, rewrite, image-to-appearance fill, diff, apply, cover, or per-character avatar: use chatbar-character-card-ai.
 - Chat prompt composition, stable/dynamic/tail cache layers, history roles, previous-turn hot zone, World Book/RAG/Archive/HEAD order, or prompt-delivery diagnosis: use chatbar-prompt-pipeline.
+- Any model-facing prompt text, template, or builder change in PromptTemplates.kt: use chatbar-prompt-pipeline and maintain its file-header AI prompt directory.
 - Chat screen behavior outside a specific skill: ui/chat/ChatScreen.kt and ChatViewModel.kt.
 - Long-term memory, HEAD, Episode/Arc/Era, source-turn/T mapping, Gap/backfill, historical source repair, compression, tier history, Archive injection, or SaveSlot memory migration: use chatbar-long-term-memory.
 - Message AI format repair, automatic checks, restore-original notices, repair model selection, or repair state: use chatbar-message-format-repair.

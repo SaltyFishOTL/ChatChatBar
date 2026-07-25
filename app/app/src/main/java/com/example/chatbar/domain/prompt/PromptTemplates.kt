@@ -11,15 +11,69 @@ import com.example.chatbar.data.local.entity.MessageRole
 /**
  * AI 提示词集中入口。
  *
- * 文件按 IntelliJ `region` 分区，顺序固定为：
- * 1. 对话主提示词与输出格式
- * 2. 角色卡、图片理解与角色头像
- * 3. 朋友圈与朋友圈图片输入
- * 4. 通用模板渲染
- * 5. NovelAI 图片提示词生成
- * 6. 长期记忆与 RAG
+ * ## AI 提示词目录
  *
- * 新增或查找提示词时先定位对应分区；模板常量与其构建函数保持相邻。
+ * 跳转方法：复制下列精确符号名并全文搜索；目录是首个结果，“查找下一个”即到定义。
+ * 目录只收录模型可见提示词、提示词模板与构建函数；`SECTION_*`、token 限额和纯渲染 helper 不列入。
+ *
+ * ### 1. 对话主提示词与输出格式
+ * - 主系统提示词：`SYSTEM_PROMPT_TEMPLATE`
+ * - 后置系统提示词：`POST_HISTORY_INSTRUCTIONS_TEMPLATE`
+ * - 当前轮格式/长度：`CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE`、
+ *   `CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE`、`currentTurnOutputRequirementsSystemPrompt`
+ * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
+ * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
+ * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
+ *   `replyTailSystemPrompt`、`replyLanguageConstraint`
+ *
+ * ### 2. 角色卡、图片理解与角色头像
+ * - 头像 NovelAI 固定组成：`CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`、
+ *   `novelAiCharacterAvatarPositivePrompt`
+ * - 通用图片理解：`IMAGE_DESCRIPTION_PROMPT`
+ * - 角色卡 NovelAI 默认值/规则：`DEFAULT_CHARACTER_NAI_STYLE_PROMPT`、
+ *   `DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`、`CHARACTER_IMAGE_NAI_PROMPT_GUIDE`
+ * - 图片提取外貌/服装：`CHARACTER_APPEARANCE_IMAGE_SYSTEM_PROMPT`、
+ *   `CHARACTER_APPEARANCE_IMAGE_USER_PROMPT_TEMPLATE`、`characterAppearanceImageUserPrompt`
+ * - 角色卡自动填充：`CHARACTER_AUTO_FILL_SOURCE_IMAGE_INSTRUCTIONS`、
+ *   `CHARACTER_AUTO_FILL_SYSTEM_PROMPT`、`CHARACTER_AUTO_FILL_REPAIR_PROMPT`
+ * - 角色卡改写：`CHARACTER_REWRITE_SYSTEM_PROMPT`、`CHARACTER_REWRITE_REPAIR_PROMPT`
+ * - 角色百科研究：`CHARACTER_EXTERNAL_RESEARCH_USAGE_PROMPT`、
+ *   `CHARACTER_RESEARCH_PLANNER_SYSTEM_PROMPT`、`CHARACTER_RESEARCH_PLANNER_USER_PROMPT`、
+ *   `characterResearchPlannerSystemPrompt`、`characterResearchPlannerUserPrompt`
+ * - 角色研究摘要：`CHARACTER_RESEARCH_BRIEF_SYSTEM_PROMPT`、
+ *   `CHARACTER_RESEARCH_BRIEF_USER_PROMPT`、`CHARACTER_RESEARCH_BRIEF_SOURCE_TEMPLATE`、
+ *   `characterResearchBriefSystemPrompt`、`characterResearchBriefUserPrompt`、
+ *   `characterResearchBriefSource`
+ *
+ * ### 3. 朋友圈与朋友圈图片输入
+ * - 动态生成判定：`MOMENT_JUDGE_SYSTEM_PROMPT`、`MOMENT_JUDGE_USER_PROMPT_TEMPLATE`、
+ *   `momentJudgeSystemPrompt`、`momentJudgeUserPrompt`
+ * - 动态正文生成：`MOMENT_GENERATION_SYSTEM_PROMPT`、`MOMENT_GENERATION_USER_PROMPT_TEMPLATE`、
+ *   `momentGenerationSystemPrompt`、`momentGenerationUserPrompt`
+ * - NovelAI 场景任务输入：`novelAiImagePromptMoment`、`novelAiImagePromptCharacterAvatar`、
+ *   `novelAiImagePromptCharacterCard`
+ *
+ * ### 4. NovelAI 图片提示词生成
+ * - 核心/修复 system：`NOVELAI_IMAGE_PROMPT_SYSTEM`、`NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM`
+ * - system 组合入口：`novelAiImagePromptSystem`、`novelAiImagePromptCoreSystem`
+ * - 参考图/默认风格/角色预设：`novelAiImagePromptReferenceImageUser`、
+ *   `novelAiImagePromptDefaultStyleSystem`、`novelAiImagePromptCharacterPresetSystem`
+ * - 图片内容/用户偏好：`novelAiImagePromptImageContentHintUser`、
+ *   `novelAiImagePromptPreferenceUser`
+ * - 对话场景输入：`novelAiImagePromptAssistantScene`、`novelAiImagePromptConversation`
+ *
+ * ### 5. 长期记忆、RAG 与语音标签
+ * - 记忆分层 system：`MEMORY_EPISODE_SYSTEM`、`MEMORY_ARC_COMPRESSION_SYSTEM`、
+ *   `MEMORY_ERA_COMPRESSION_SYSTEM`、`MEMORY_ERA_RECOMPRESSION_SYSTEM`、`MEMORY_HEAD_SYSTEM`
+ * - 记忆时间线约束：`MEMORY_TIMELINE_CONTRACT`
+ * - 记忆任务输入/纠错：`memoryEpisodePrompt`、`memoryCompressionPrompt`、
+ *   `memoryHeadPrompt`、`memoryJsonCorrectionPrompt`
+ * - RAG 记忆使用说明：`RAG_CHAT_MEMORY_USAGE_NOTE`
+ * - 检索规划：`RETRIEVAL_PLANNER_SYSTEM_PROMPT`、`retrievalPlannerUserInput`
+ * - Fish Audio 标签：`FISH_AUDIO_VOICE_TAG_SYSTEM`、`fishAudioVoiceTagUserInput`
+ *
+ * 维护规则：新增、删除、重命名、移动或改变提示词用途时，必须在同一改动中同步本目录；
+ * 仅改正文但用途不变时也必须核对目录仍准确。模板常量与其构建函数保持相邻。
  */
 object PromptTemplates {
 
@@ -303,6 +357,33 @@ dark penis
 
     const val CHARACTER_AUTO_FILL_SOURCE_IMAGE_INSTRUCTIONS =
         "若存在上传图片，则说明用户对此角色卡的灵感、或性欲全部来自这张图片。因此角色卡设计必须优先围绕图片内容场景拓展想象；用户文字只作为信息补充。"
+
+    const val CHARACTER_APPEARANCE_IMAGE_SYSTEM_PROMPT = """
+分析用户上传图片中最主要人物的可见特征，生成可直接写入角色卡的中文设定。
+
+提取规则：
+1. appearance 只写人物本体的稳定外貌：性别表现、年龄段、体型、肤色、脸部、眼睛、头发、耳朵、角、翅膀、尾巴、伤痕、纹身等。
+2. clothing 只写当前可见穿戴：上衣、下装、裙装、外套、内衣、鞋袜、帽子、手套、盔甲、首饰、配饰及其颜色、材质、款式。
+3. 不写动作、姿势、表情、背景、镜头、画风、光影、剧情、身份、性格或图片中看不见的推测。
+4. 图片没有清楚展示的字段写空字符串，不要用“未知”“看不清”“未展示”等占位语。
+5. 若图片出现多人，只分析画面中心、面积最大或视觉焦点最明确的主要人物。
+6. 描述尽可能详细、紧凑，避免重复；不要输出 NovelAI/Danbooru 标签。
+
+只输出一个合法 JSON 对象，不要 Markdown、解释、注释或 JSON 外文字：
+{"appearance":"","clothing":""}
+"""
+
+    const val CHARACTER_APPEARANCE_IMAGE_USER_PROMPT_TEMPLATE = """
+请根据上传图片提取人物“{{characterName}}”的外貌特征与服装，并严格按 system 指定的 JSON 结构输出。
+"""
+
+    fun characterAppearanceImageUserPrompt(characterName: String): String =
+        CHARACTER_APPEARANCE_IMAGE_USER_PROMPT_TEMPLATE
+            .trim()
+            .replace(
+                "{{characterName}}",
+                characterName.trim().ifBlank { "未命名人物" }
+            )
 
     const val CHARACTER_AUTO_FILL_SYSTEM_PROMPT = """
 你要为角色扮演设计扮演卡片：只输出一个合法 JSON 对象；不要 Markdown，不要解释，不要在 JSON 外写任何文字。

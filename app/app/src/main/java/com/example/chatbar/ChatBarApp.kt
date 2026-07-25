@@ -100,6 +100,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var characterAutoFillService: CharacterAutoFillService
         private set
+    lateinit var characterAppearanceImageService: CharacterAppearanceImageService
+        private set
     lateinit var characterRewriteService: CharacterRewriteService
         private set
     lateinit var formatCardTransferService: FormatCardTransferService
@@ -289,6 +291,11 @@ class ChatBarApp : Application() {
             streamingChatService,
             characterResearchService,
             imageUnderstandingService
+        )
+        characterAppearanceImageService = CharacterAppearanceImageService(
+            effectiveModelResolver,
+            streamingChatService,
+            settingsProvider = { settingsRepository.getAppSettings() }
         )
         characterRewriteService = CharacterRewriteService(effectiveModelResolver, streamingChatService, characterResearchService)
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)

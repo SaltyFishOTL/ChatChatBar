@@ -18,7 +18,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Shared Android foreground/background protection: use chatbar-background-work-runtime.
-- Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, domain/memory/MemoryAiGateway.kt, and domain/voice/FishAudioTagService.kt
+- Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, CharacterAppearanceImageService.kt, domain/image/NovelAiPromptDesigner.kt, domain/memory/MemoryAiGateway.kt, and domain/voice/FishAudioTagService.kt
 - Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, InterruptedReplyPolicyTest.kt, and request-body tests near each caller
 
 Use chatbar-message-format-repair for repair state behavior, chatbar-image-generation-runtime for NovelAI image HTTP generation, and chatbar-fish-audio-voice for Fish tag protocol, confirmation, TTS, and playback behavior.

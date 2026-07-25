@@ -35,6 +35,8 @@ import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterAutoFillGenerationCheckpoint
+import com.example.chatbar.domain.card.CharacterAppearanceImageDraft
+import com.example.chatbar.domain.card.CharacterAppearanceImageModelRoute
 import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.card.CharacterRewriteGenerationCheckpoint
 import com.example.chatbar.domain.draft.CharacterOpenModalState
@@ -109,6 +111,16 @@ data class CharacterAvatarImageUiState(
     val sourceSignature: String = "",
     val promptPlan: NovelAiPromptPlan? = null,
     val completedImage: ByteArray? = null,
+    val error: String? = null,
+    val statusText: String = ""
+)
+
+data class CharacterAppearanceImageUiState(
+    val characterId: String? = null,
+    val isGenerating: Boolean = false,
+    val sourcePath: String? = null,
+    val draft: CharacterAppearanceImageDraft? = null,
+    val modelRoute: CharacterAppearanceImageModelRoute? = null,
     val error: String? = null,
     val statusText: String = ""
 )
@@ -207,6 +219,7 @@ class CharacterEditViewModel(
     private val ragManager = ChatBarApp.instance.ragManager
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val characterAutoFillService = ChatBarApp.instance.characterAutoFillService
+    private val characterAppearanceImageService = ChatBarApp.instance.characterAppearanceImageService
     private val characterRewriteService = ChatBarApp.instance.characterRewriteService
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
@@ -231,6 +244,8 @@ class CharacterEditViewModel(
     private var coverImageTarget: CoverImageTarget? = null
     private var avatarImageJob: Job? = null
     private var avatarImageGenerationToken = 0
+    private var appearanceImageJob: Job? = null
+    private var appearanceImageGenerationToken = 0
     private var baseCard: CharacterCard? = null
     private var loadedDraft: EditorDraft? = null
     private var draftJob: Job? = null
@@ -259,6 +274,8 @@ class CharacterEditViewModel(
 
     private val _avatarImageState = MutableStateFlow(CharacterAvatarImageUiState())
     val avatarImageState: StateFlow<CharacterAvatarImageUiState> = _avatarImageState.asStateFlow()
+    private val _appearanceImageState = MutableStateFlow(CharacterAppearanceImageUiState())
+    val appearanceImageState: StateFlow<CharacterAppearanceImageUiState> = _appearanceImageState.asStateFlow()
     val fishAudioConfigured: StateFlow<Boolean> = fishAudioCredentials.configured
     private val _voicePickerState = MutableStateFlow(CharacterVoicePickerUiState())
     val voicePickerState: StateFlow<CharacterVoicePickerUiState> = _voicePickerState.asStateFlow()
@@ -863,6 +880,105 @@ class CharacterEditViewModel(
         }
     }
 
+    fun generateCharacterAppearanceFromImage(
+        character: CharacterInfo,
+        sourcePath: String
+    ) {
+        if (sourcePath.isBlank()) return
+        appearanceImageGenerationToken += 1
+        val generationToken = appearanceImageGenerationToken
+        appearanceImageJob?.cancel()
+        _appearanceImageState.value.sourcePath
+            ?.takeIf { it != sourcePath }
+            ?.let(::deleteCharacterAppearanceSource)
+        _appearanceImageState.value = CharacterAppearanceImageUiState(
+            characterId = character.id,
+            isGenerating = true,
+            sourcePath = sourcePath,
+            statusText = "正在读取上传图片"
+        )
+        appearanceImageJob = viewModelScope.launch {
+            try {
+                val imageBase64 = ImageFileEncoder.encodeToJpegBase64(sourcePath)
+                if (generationToken != appearanceImageGenerationToken) return@launch
+                val result = characterAppearanceImageService.generate(
+                    imageBase64 = imageBase64,
+                    characterName = character.name,
+                    onModelResolved = { route ->
+                        if (generationToken == appearanceImageGenerationToken) {
+                            _appearanceImageState.value = _appearanceImageState.value.copy(
+                                modelRoute = route,
+                                statusText = if (route.usesLinkedVisionModel) {
+                                    "当前模型不支持图片，正在使用视觉模型 ${route.analysisModelLabel}"
+                                } else {
+                                    "正在使用当前对话模型 ${route.analysisModelLabel}"
+                                }
+                            )
+                        }
+                    }
+                )
+                if (generationToken != appearanceImageGenerationToken) return@launch
+                _appearanceImageState.value = _appearanceImageState.value.copy(
+                    isGenerating = false,
+                    draft = result.draft,
+                    modelRoute = result.modelRoute,
+                    error = null,
+                    statusText = "图片识别完成，请预览后应用"
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                if (generationToken == appearanceImageGenerationToken) {
+                    _appearanceImageState.value = _appearanceImageState.value.copy(
+                        isGenerating = false,
+                        error = error.message ?: error::class.java.simpleName,
+                        statusText = "图片识别失败"
+                    )
+                }
+            }
+        }
+    }
+
+    fun applyCharacterAppearanceImageCandidate(
+        characterId: String
+    ): CharacterAppearanceImageDraft? {
+        val state = _appearanceImageState.value
+        if (state.characterId != characterId) return null
+        val draft = state.draft ?: return null
+        clearCharacterAppearanceImageCandidate(characterId)
+        return draft
+    }
+
+    fun clearCharacterAppearanceImageCandidate(characterId: String? = null) {
+        val state = _appearanceImageState.value
+        if (characterId != null && state.characterId != characterId) return
+        appearanceImageGenerationToken += 1
+        appearanceImageJob?.cancel()
+        appearanceImageJob = null
+        state.sourcePath?.let(::deleteCharacterAppearanceSource)
+        _appearanceImageState.value = CharacterAppearanceImageUiState()
+    }
+
+    fun cancelCharacterAppearanceImageGeneration() {
+        val state = _appearanceImageState.value
+        if (!state.isGenerating) return
+        appearanceImageGenerationToken += 1
+        appearanceImageJob?.cancel()
+        appearanceImageJob = null
+        _appearanceImageState.value = state.copy(
+            isGenerating = false,
+            error = "已取消图片识别",
+            statusText = "图片识别已取消"
+        )
+    }
+
+    private fun deleteCharacterAppearanceSource(path: String) {
+        if (!draftAssetService.isDraftAsset(path)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            draftAssetService.deleteFiles(listOf(path))
+        }
+    }
+
     fun generateCharacterAvatar(character: CharacterInfo) {
         val currentState = _avatarImageState.value
         if (currentState.isGenerating || !currentState.path.isNullOrBlank()) {
@@ -946,6 +1062,7 @@ class CharacterEditViewModel(
     fun removeCharacterTransientState(characterId: String) {
         freeformAvatarPromptDrafts.remove(characterId)
         clearCharacterAvatarCandidate(characterId)
+        clearCharacterAppearanceImageCandidate(characterId)
         charactersList.firstOrNull { it.id == characterId }?.appearanceImage?.let { path ->
             discardTransientGeneratedAvatar(path)
         }
@@ -2431,6 +2548,11 @@ class CharacterEditViewModel(
     override fun onCleared() {
         avatarImageGenerationToken += 1
         avatarImageJob?.cancel()
+        appearanceImageGenerationToken += 1
+        appearanceImageJob?.cancel()
+        _appearanceImageState.value.sourcePath
+            ?.takeIf(draftAssetService::isDraftAsset)
+            ?.let { File(it).delete() }
         _avatarImageState.value.path?.let(novelAiImageStorage::deleteIfOwned)
         transientGeneratedAvatarPaths.forEach(novelAiImageStorage::deleteIfOwned)
         transientGeneratedAvatarPaths.clear()

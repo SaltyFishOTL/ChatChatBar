@@ -1,6 +1,6 @@
 ---
 name: chatbar-character-card-ai
-description: Maintain ChatBar character-card AI workflows. Use when changing AI auto-fill, AI rewrite, rewrite candidate preview, apply candidate behavior, text diff display, generated cover or per-character avatar candidates, character-card merge/materialize logic, or tests around CharacterAutoFillService and CharacterRewriteService.
+description: Maintain ChatBar character-card AI workflows. Use when changing AI auto-fill, AI rewrite, image-to-appearance fill, rewrite candidate preview, apply candidate behavior, text diff display, generated cover or per-character avatar candidates, character-card merge/materialize logic, or related service tests.
 ---
 
 # ChatBar Character Card AI
@@ -15,8 +15,8 @@ Use chatbar-model-request-runtime for provider parameters, model fallback, authe
   - Search anchors: `CharacterAutoFillDialog`, `CharacterRewriteDialog`, `AutoFillDraftPreview`, `RewriteCandidatePreview`, `RewriteDiffPreview`.
 - UI state, generation triggers, candidate apply, cover handoff: `app/app/src/main/java/com/example/chatbar/ui/character/CharacterEditViewModel.kt`
   - Search anchors: `generateAutoFillDraft`, `generateRewriteDraft`, `applyAutoFillDraft`, `applyRewriteDraft`, `generateRewriteCoverImageCandidate`, `generateCharacterAvatar`, `buildRewriteDiff`.
-- Generation, parsing, materialization, merge: `app/app/src/main/java/com/example/chatbar/domain/card/CharacterAutoFillService.kt`, `app/app/src/main/java/com/example/chatbar/domain/card/CharacterRewriteService.kt`.
-- Tests: `app/app/src/test/java/com/example/chatbar/domain/card/CharacterAutoFillServiceTest.kt`, `app/app/src/test/java/com/example/chatbar/domain/card/CharacterRewriteServiceTest.kt`.
+- Generation, parsing, materialization, merge: `app/app/src/main/java/com/example/chatbar/domain/card/CharacterAutoFillService.kt`, `CharacterRewriteService.kt`, `CharacterAppearanceImageService.kt`.
+- Tests: matching `CharacterAutoFillServiceTest.kt`, `CharacterRewriteServiceTest.kt`, and `CharacterAppearanceImageServiceTest.kt` under `app/app/src/test/java/com/example/chatbar/domain/card/`.
 
 ## Domain Rules
 
@@ -39,6 +39,7 @@ Use chatbar-model-request-runtime for provider parameters, model fallback, authe
 - Candidate dialogs expose a separate final-result retry. It clears only final raw output while retaining prepared research/image context; normal generate starts a fresh pipeline. Changed input, model, source image, or current card invalidates reuse.
 - Auto-fill and rewrite dialogs own separate persisted encyclopedia-search choices in `AppSettings.characterAutoFillWebSearchEnabled` and `characterRewriteWebSearchEnabled`; no shared global-settings switch controls them. Changed search choice also invalidates prepared retry context.
 - `CharacterInfo.appearanceImage` means character-owned chat/Moments avatar. It must not enter chat-model image understanding or character appearance text.
+- Per-character image-to-appearance fill uses the current default chat model when multimodal; otherwise it requires that model's exact linked multimodal `visionModelId`. Results stay as an explicit appearance/clothing candidate until apply.
 
 ## Workflow
 

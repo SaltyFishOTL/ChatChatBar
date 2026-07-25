@@ -171,6 +171,7 @@ fun CharacterEditScreen(
     val rewriteState by viewModel.rewriteState.collectAsState()
     val coverImageState by viewModel.coverImageState.collectAsState()
     val avatarImageState by viewModel.avatarImageState.collectAsState()
+    val appearanceImageState by viewModel.appearanceImageState.collectAsState()
     val fishAudioConfigured by viewModel.fishAudioConfigured.collectAsState()
     val voicePickerState by viewModel.voicePickerState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
@@ -719,6 +720,7 @@ fun CharacterEditScreen(
             },
             structured = viewModel.editMode == CharacterEditMode.STRUCTURED,
             avatarImageState = avatarImageState,
+            appearanceImageState = appearanceImageState,
             fishAudioConfigured = fishAudioConfigured,
             voicePickerState = voicePickerState,
             freeformAvatarPrompt = viewModel.freeformAvatarPrompt(characterDraft.id),
@@ -730,6 +732,7 @@ fun CharacterEditScreen(
             },
             onDismiss = {
                 viewModel.clearCharacterAvatarCandidate(characterDraft.id)
+                viewModel.clearCharacterAppearanceImageCandidate(characterDraft.id)
                 viewModel.discardTransientGeneratedAvatar(
                     characterDialogDraft?.appearanceImage,
                     editCharacter?.appearanceImage
@@ -745,6 +748,28 @@ fun CharacterEditScreen(
                         editCharacter?.appearanceImage
                     )
                     callback(path)
+                }
+            },
+            onPickAppearanceImage = {
+                pickImage { path ->
+                    viewModel.generateCharacterAppearanceFromImage(characterDraft, path)
+                }
+            },
+            onCancelAppearanceImage = viewModel::cancelCharacterAppearanceImageGeneration,
+            onDiscardAppearanceImage = {
+                viewModel.clearCharacterAppearanceImageCandidate(characterDraft.id)
+            },
+            onApplyAppearanceImage = {
+                viewModel.applyCharacterAppearanceImageCandidate(characterDraft.id)?.let { draft ->
+                    val currentDraft = characterDialogDraft ?: characterDraft
+                    val updated = currentDraft.copy(
+                        appearance = draft.appearance.ifBlank { currentDraft.appearance },
+                        clothing = draft.clothing.ifBlank { currentDraft.clothing }
+                    )
+                    characterDialogDraft = updated
+                    viewModel.updateOpenModalState(
+                        CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character = updated)
+                    )
                 }
             },
             onClearAvatar = { currentPath ->
@@ -776,6 +801,7 @@ fun CharacterEditScreen(
             onStopVoicePreview = viewModel::stopFishAudioPreview,
             onSave = { updated ->
                 viewModel.clearCharacterAvatarCandidate(updated.id)
+                viewModel.clearCharacterAppearanceImageCandidate(updated.id)
                 val index = viewModel.charactersList.indexOfFirst { it.id == updated.id }
                 if (index >= 0) viewModel.charactersList[index] = updated else viewModel.charactersList.add(updated)
                 showCharacterDialog = false
@@ -2311,18 +2337,152 @@ private fun PromptDebugBlock(title: String, text: String) {
 }
 
 @Composable
+private fun CharacterAppearanceImageEditor(
+    character: CharacterInfo,
+    state: CharacterAppearanceImageUiState,
+    onPick: () -> Unit,
+    onCancel: () -> Unit,
+    onDiscard: () -> Unit,
+    onApply: () -> Unit
+) {
+    val activeState = state.takeIf { it.characterId == character.id }
+    CbField(
+        "从图片填充外貌与服装",
+        description = "优先使用当前对话模型；若它不是多模态模型，则使用其关联视觉模型。应用后只替换有识别结果的字段。"
+    ) {
+        CbButton(
+            if (activeState?.sourcePath.isNullOrBlank()) "上传图片并识别" else "重新上传并识别",
+            onPick,
+            modifier = Modifier.fillMaxWidth(),
+            enabled = activeState?.isGenerating != true,
+            variant = ButtonVariant.Outline
+        )
+    }
+    activeState?.takeIf { stateValue ->
+        stateValue.isGenerating ||
+            !stateValue.sourcePath.isNullOrBlank() ||
+            stateValue.draft != null ||
+            !stateValue.error.isNullOrBlank()
+    }?.let { active ->
+        CbSurface(
+            Modifier.fillMaxWidth(),
+            color = ChatBarTheme.colors.muted,
+            border = BorderStroke(
+                1.dp,
+                if (active.error.isNullOrBlank()) {
+                    ChatBarTheme.colors.border
+                } else {
+                    ChatBarTheme.colors.destructive
+                }
+            )
+        ) {
+            Column(
+                Modifier.padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                active.sourcePath?.takeIf(String::isNotBlank)?.let { path ->
+                    AsyncImage(
+                        model = path,
+                        contentDescription = "待识别人物参考图",
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(180.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(ChatBarTheme.colors.background),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                active.modelRoute?.let { route ->
+                    CbText(
+                        if (route.usesLinkedVisionModel) {
+                            "当前对话模型：${route.currentModelLabel} · 视觉模型：${route.analysisModelLabel}"
+                        } else {
+                            "当前对话模型：${route.analysisModelLabel}"
+                        },
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                if (active.isGenerating) {
+                    CbProgress(0.2f)
+                }
+                CbText(
+                    active.statusText,
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                active.draft?.let { draft ->
+                    CharacterPreviewField(
+                        "外貌特征",
+                        draft.appearance.ifBlank { "图片中未清楚展示" }
+                    )
+                    CharacterPreviewField(
+                        "服装",
+                        draft.clothing.ifBlank { "图片中未清楚展示" }
+                    )
+                }
+                active.error?.takeIf(String::isNotBlank)?.let { error ->
+                    CbText(error, color = ChatBarTheme.colors.destructive)
+                }
+                when {
+                    active.isGenerating -> {
+                        CbButton(
+                            "取消识别",
+                            onCancel,
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = ButtonVariant.Destructive
+                        )
+                    }
+                    active.draft != null -> {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            CbButton(
+                                "丢弃",
+                                onDiscard,
+                                modifier = Modifier.weight(1f),
+                                variant = ButtonVariant.Ghost
+                            )
+                            CbButton(
+                                "应用并替换",
+                                onApply,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                    else -> {
+                        CbButton(
+                            "丢弃",
+                            onDiscard,
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = ButtonVariant.Ghost
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
 private fun CharacterDialog(
     original: CharacterInfo?,
     value: CharacterInfo,
     nameConflict: Boolean,
     structured: Boolean,
     avatarImageState: CharacterAvatarImageUiState,
+    appearanceImageState: CharacterAppearanceImageUiState,
     fishAudioConfigured: Boolean,
     voicePickerState: CharacterVoicePickerUiState,
     freeformAvatarPrompt: String,
     onValueChange: (CharacterInfo) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
+    onPickAppearanceImage: () -> Unit,
+    onCancelAppearanceImage: () -> Unit,
+    onDiscardAppearanceImage: () -> Unit,
+    onApplyAppearanceImage: () -> Unit,
     onClearAvatar: (String?) -> Unit,
     onFreeformAvatarPromptChange: (String) -> Unit,
     onGenerateAvatar: (CharacterInfo) -> Unit,
@@ -2339,6 +2499,8 @@ private fun CharacterDialog(
     var showVoicePicker by remember { mutableStateOf(false) }
     val avatarPending = avatarImageState.characterId == value.id &&
         (avatarImageState.isGenerating || !avatarImageState.path.isNullOrBlank())
+    val appearancePending = appearanceImageState.characterId == value.id &&
+        appearanceImageState.isGenerating
     CbDialog(
         onDismissRequest = onDismiss,
         title = when {
@@ -2353,7 +2515,7 @@ private fun CharacterDialog(
             CbButton(
                 "保存",
                 { onSave(value) },
-                enabled = value.name.isNotBlank() && !nameConflict && !avatarPending
+                enabled = value.name.isNotBlank() && !nameConflict && !avatarPending && !appearancePending
             )
         }
     ) {
@@ -2386,6 +2548,14 @@ private fun CharacterDialog(
                 onDownloadCandidate = { path -> onSaveAvatarToGallery(path) }
             )
             if (structured) {
+            CharacterAppearanceImageEditor(
+                character = value,
+                state = appearanceImageState,
+                onPick = onPickAppearanceImage,
+                onCancel = onCancelAppearanceImage,
+                onDiscard = onDiscardAppearanceImage,
+                onApply = onApplyAppearanceImage
+            )
             CbField("外貌特征", onFullscreenEdit = { onFullscreen("外貌特征", value.appearance, { onValueChange(value.copy(appearance = it)) }) }) {
                 CbInput(value.appearance, { onValueChange(value.copy(appearance = it)) }, singleLine = false, minLines = 2)
             }
