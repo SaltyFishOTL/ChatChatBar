@@ -194,6 +194,7 @@ fun CharacterEditScreen(
     var pendingImagePick by remember { mutableStateOf<PendingImagePick?>(null) }
     var pendingImageCrop by remember { mutableStateOf<PendingImageCrop?>(null) }
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
+    var confirmConvertToFreeform by remember { mutableStateOf(false) }
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
     var charDlgFullscreen by remember { mutableStateOf<Triple<String, String, (String) -> Unit>?>(null) }
@@ -289,6 +290,11 @@ fun CharacterEditScreen(
     }
     fun openRewriteDialog() {
         showRewriteDialog = true
+    }
+    fun convertStructuredToFreeform() {
+        if (viewModel.convertStructuredToFreeform()) {
+            Toast.makeText(context, "已转换为自由模式", Toast.LENGTH_SHORT).show()
+        }
     }
 
     CbScaffold(
@@ -485,6 +491,26 @@ fun CharacterEditScreen(
                 )
             }
             if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CbButton(
+                        "一键转换自由模式",
+                        {
+                            if (viewModel.freeformCharacterText.isBlank()) {
+                                convertStructuredToFreeform()
+                            } else {
+                                confirmConvertToFreeform = true
+                            }
+                        },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = viewModel.canConvertStructuredToFreeform,
+                        variant = ButtonVariant.Outline
+                    )
+                    CbText(
+                        "按姓名、简介、外貌等字段整理为清晰自由文本；原分段数据继续保留。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                     SectionTitle("人物设定 (${viewModel.charactersList.size})")
                     CbButton("添加人物", {
@@ -1011,6 +1037,26 @@ fun CharacterEditScreen(
                     "切换到自由模式后，分段人物数据将保留但不会发送给AI。名称、开场白、基本设定、图片和参考文档不受影响。"
                 else
                     "切换到分段模式后，自由人物数据将保留但不会发送给AI。名称、开场白、基本设定、图片和参考文档不受影响。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
+    if (confirmConvertToFreeform && viewModel.editMode == CharacterEditMode.STRUCTURED) {
+        CbDialog(
+            onDismissRequest = { confirmConvertToFreeform = false },
+            title = "覆盖自由人物设定",
+            confirm = {
+                CbButton("覆盖并转换", {
+                    convertStructuredToFreeform()
+                    confirmConvertToFreeform = false
+                }, variant = ButtonVariant.Destructive)
+            },
+            dismiss = {
+                CbButton("取消", { confirmConvertToFreeform = false }, variant = ButtonVariant.Ghost)
+            }
+        ) {
+            CbText(
+                "现有自由人物设定将被分段人物信息替换，并切换到自由模式。原分段数据仍会保留。",
                 color = ChatBarTheme.colors.mutedForeground
             )
         }

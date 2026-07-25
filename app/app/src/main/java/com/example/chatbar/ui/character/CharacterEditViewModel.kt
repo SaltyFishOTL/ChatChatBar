@@ -39,6 +39,7 @@ import com.example.chatbar.domain.card.CharacterAppearanceImageDraft
 import com.example.chatbar.domain.card.CharacterAppearanceImageModelRoute
 import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.card.CharacterRewriteGenerationCheckpoint
+import com.example.chatbar.domain.card.StructuredCharacterFreeformConverter
 import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
@@ -651,6 +652,19 @@ class CharacterEditViewModel(
         if (target == editMode) return
         editMode = target
         scheduleDraftSave()
+    }
+
+    val canConvertStructuredToFreeform: Boolean
+        get() = editMode == CharacterEditMode.STRUCTURED &&
+            StructuredCharacterFreeformConverter.hasConvertibleContent(charactersList)
+
+    fun convertStructuredToFreeform(): Boolean {
+        if (editMode != CharacterEditMode.STRUCTURED) return false
+        val transition = StructuredCharacterFreeformConverter.createTransition(charactersList)
+            ?: return false
+        freeformCharacterText = transition.freeformCharacterText
+        switchEditMode(transition.targetMode)
+        return true
     }
 
     fun generateAutoFillDraft(
