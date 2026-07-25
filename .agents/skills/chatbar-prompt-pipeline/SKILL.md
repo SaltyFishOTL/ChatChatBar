@@ -15,7 +15,7 @@ Treat the serialized API message list as source of truth. Constant declaration o
 - Final role/message insertion and request launch: app/app/src/main/java/com/example/chatbar/ui/chat/ChatViewModel.kt
 - Cleartext HTTP final role adaptation: app/app/src/main/java/com/example/chatbar/domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Request diagnostics: app/app/src/main/java/com/example/chatbar/utils/DebugLogManager.kt and ui/chat/DebugLogDialog.kt
-- Core tests: PromptAssemblerCharacterModeTest.kt, ContextWindowManagerTest.kt, RoleplaySpeakerPromptTest.kt, and PromptTemplatesTest.kt
+- Core tests: PromptAssemblerCharacterModeTest.kt, ContextWindowManagerTest.kt, CurrentTurnMessageOrderTest.kt, RoleplaySpeakerPromptTest.kt, PromptTemplatesTest.kt, and CleartextHttpPolicyTest.kt
 
 Use chatbar-long-term-memory when Archive, HEAD, timeline constraints, source-turn boundaries, or RAG grouping are involved. Use chatbar-novelai-prompt for NovelAI tag-design prompts and chatbar-character-card-ai for card-generation prompts.
 
@@ -23,7 +23,7 @@ Use chatbar-long-term-memory when Archive, HEAD, timeline constraints, source-tu
 
 - Keep model-facing task text in PromptTemplates.
 - Keep section selection, titles, and layer assignment in PromptAssembler.
-- Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles only for opted-in `http://` requests.
+- Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles only for opted-in `http://` requests; Debug Request JSON records this adapted transport body.
 - Keep conversation grouping in ContextWindowManager and shared turn policies.
 - Verify transport request fields with chatbar-model-request-runtime.
 
@@ -40,7 +40,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Resolve the active format card by available entities: use an available session override first, then an available global default; a stale session ID must not suppress the default card.
 - Append current user input unchanged, then append a logical `system` message containing the rendered active format card and effective session reply length. Build the complete model-facing requirements text through `PromptTemplates`; never include the format card in stable/dynamic/tail cache layers, persist the requirements, or reuse them as history or memory source text.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
-- Cleartext HTTP adaptation changes later system roles to assistant in serialized JSON but never moves or merges their content; stable prefix and tail positions remain unchanged.
+- Cleartext HTTP adaptation changes later system roles to assistant in serialized and debug JSON but never moves or merges their content; HTTPS keeps the post-user requirements role as system.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.
 - Keep cache keys aligned with exact sent stable content, including conditional history headings.

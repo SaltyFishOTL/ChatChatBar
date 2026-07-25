@@ -14,6 +14,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Shared HTTP client, proxy, cleartext policy, Authorization helper: domain/ProxyAwareClient.kt
 - Chat/text request body, SSE parsing, retries, thinking fields: domain/chat/StreamingChatService.kt
 - Cleartext HTTP strict-template role adaptation: domain/chat/CleartextHttpChatTemplatePolicy.kt
+- Final serialized request diagnostics: utils/DebugLogManager.kt and ui/chat/DebugLogDialog.kt
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Shared Android foreground/background protection: use chatbar-background-work-runtime.
@@ -42,6 +43,7 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 - When disableThinking is true, remove configured thinking/reasoning parameters and send the supported explicit off control.
 - Keep connection-test requests small and deterministic, but ensure reasoning-only models can still produce a usable probe result. Current test flow disables thinking.
 - For opted-in `http://` model requests, preserve the first system role and serialize later system roles as assistant without moving or merging messages. Do not apply this adaptation to HTTPS or when cleartext access is disabled.
+- Treat Debug Request JSON as the final `buildRequestBody` output after cleartext role adaptation, not the logical `ChatApiMessage` list assembled by the caller.
 - Treat strict JSON or protocol parsing as a separate failure layer from HTTP transport. Preserve raw diagnostic evidence within privacy limits.
 - Keep Fish voice-tag calls on the shared streaming text service with thinking disabled. Keep strict ID/tag/text validation and confirmation policy in chatbar-fish-audio-voice rather than weakening shared stream parsing.
 - Verify current provider behavior against official provider documentation when compatibility may have changed.
