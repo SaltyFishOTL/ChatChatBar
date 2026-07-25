@@ -5,6 +5,11 @@ import org.junit.Test
 
 class MessageFormatRepairServiceTest {
     @Test
+    fun `repair stream allows long silent model responses`() {
+        assertEquals(600L, MessageFormatRepairService.FORMAT_REPAIR_READ_TIMEOUT_SECONDS)
+    }
+
+    @Test
     fun `output limit follows model and content bounds`() {
         assertEquals(1_024, MessageFormatRepairService.outputTokenLimit("短文", null))
         assertEquals(8_192, MessageFormatRepairService.outputTokenLimit("字".repeat(5_000), null))

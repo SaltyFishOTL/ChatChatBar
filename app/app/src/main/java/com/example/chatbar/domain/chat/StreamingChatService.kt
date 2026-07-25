@@ -389,7 +389,8 @@ class StreamingChatService(
         enableThinking: Boolean? = null,
         maxThinkingTokens: Int? = null,
         thinkingBudget: Int? = null,
-        disableThinking: Boolean = false
+        disableThinking: Boolean = false,
+        readTimeoutSeconds: Long? = null
     ): Flow<StreamEvent> = callbackFlow {
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
@@ -455,7 +456,10 @@ class StreamingChatService(
                 fail(eventSource, "流式文本补全连接已关闭，但未收到 finish_reason 或 [DONE]")
             }
         }
-        val eventSource = EventSources.createFactory(client).newEventSource(request, listener)
+        val requestClient = readTimeoutSeconds
+            ?.let { timeout -> client.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).build() }
+            ?: client
+        val eventSource = EventSources.createFactory(requestClient).newEventSource(request, listener)
         awaitClose { eventSource.cancel() }
     }.buffer(Channel.UNLIMITED)
 
