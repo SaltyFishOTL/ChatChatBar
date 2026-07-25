@@ -18,6 +18,8 @@ import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
+import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
+import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
@@ -862,6 +864,24 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
             settingsRepository.saveAppSettings(current.copy(themeMode = mode))
+        }
+    }
+
+    fun updateThemeColor(color: ThemeColorHsv) {
+        viewModelScope.launch {
+            val current = settingsRepository.getAppSettings()
+            val normalizedColor = color.normalized()
+            val history = ThemeColorHistoryPolicy.update(
+                current = current.themeColor,
+                next = normalizedColor,
+                history = current.themeColorHistory
+            )
+            settingsRepository.saveAppSettings(
+                current.copy(
+                    themeColor = normalizedColor,
+                    themeColorHistory = history
+                )
+            )
         }
     }
 

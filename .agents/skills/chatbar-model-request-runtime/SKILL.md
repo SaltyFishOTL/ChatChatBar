@@ -17,10 +17,10 @@ Separate model selection, request construction, transport, and output parsing. A
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Shared Android foreground/background protection: use chatbar-background-work-runtime.
-- Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, and domain/memory/MemoryAiGateway.kt
+- Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, domain/image/NovelAiPromptDesigner.kt, domain/memory/MemoryAiGateway.kt, and domain/voice/FishAudioTagService.kt
 - Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, InterruptedReplyPolicyTest.kt, and request-body tests near each caller
 
-Use chatbar-message-format-repair for repair state behavior and chatbar-image-generation-runtime for NovelAI image HTTP generation.
+Use chatbar-message-format-repair for repair state behavior, chatbar-image-generation-runtime for NovelAI image HTTP generation, and chatbar-fish-audio-voice for Fish tag protocol, confirmation, TTS, and playback behavior.
 
 ## Resolution Rules
 
@@ -43,6 +43,7 @@ Use chatbar-message-format-repair for repair state behavior and chatbar-image-ge
 - Keep connection-test requests small and deterministic, but ensure reasoning-only models can still produce a usable probe result. Current test flow disables thinking.
 - For opted-in `http://` model requests, preserve the first system role and serialize later system roles as assistant without moving or merging messages. Do not apply this adaptation to HTTPS or when cleartext access is disabled.
 - Treat strict JSON or protocol parsing as a separate failure layer from HTTP transport. Preserve raw diagnostic evidence within privacy limits.
+- Keep Fish voice-tag calls on the shared streaming text service with thinking disabled. Keep strict ID/tag/text validation and confirmation policy in chatbar-fish-audio-voice rather than weakening shared stream parsing.
 - Verify current provider behavior against official provider documentation when compatibility may have changed.
 
 ## Streaming Diagnosis

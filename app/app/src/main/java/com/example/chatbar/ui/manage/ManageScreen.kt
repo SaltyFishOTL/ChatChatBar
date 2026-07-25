@@ -94,6 +94,8 @@ import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
+import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.SharedImportEvent
@@ -484,6 +486,7 @@ fun ManageScreen(
                         viewModel::updateAppSettings,
                         viewModel::updatePlayerSetting,
                         viewModel::updateThemeMode,
+                        viewModel::updateThemeColor,
                         viewModel::updateBubbleFontScale,
                         { settingsDirty = it },
                         viewModel::testSiliconFlowApi,
@@ -1415,6 +1418,7 @@ private fun SettingsTab(
     onSaveSettings: (AppSettings) -> Unit,
     onSavePlayer: (String, String) -> Unit,
     onThemeMode: (ThemeMode) -> Unit,
+    onThemeColor: (ThemeColorHsv) -> Unit,
     onBubbleFontScale: (Float) -> Unit,
     onDirtyChange: (Boolean) -> Unit,
     onTestApiKey: (String, Boolean) -> Unit,
@@ -1447,6 +1451,9 @@ private fun SettingsTab(
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
+    var themeColor by remember { mutableStateOf(settings.themeColor) }
+    var themeColorHistory by remember { mutableStateOf(settings.themeColorHistory) }
+    var themeColorPickerInitial by remember { mutableStateOf<ThemeColorHsv?>(null) }
     var momentsEnabled by remember { mutableStateOf(settings.momentsEnabled) }
     val initialMomentDelayRange = MomentPolicy.normalizedDelayHours(
         settings.momentsMinDelayHours,
@@ -1500,6 +1507,8 @@ private fun SettingsTab(
         settings.allowCleartextModelApi,
         settings.defaultFormatCardId,
         settings.themeMode,
+        settings.themeColor,
+        settings.themeColorHistory,
         settings.defaultContextWindowSize,
         settings.episodeMaxSourceTurns,
         settings.excludeAssistantStatusFromHistory,
@@ -1529,6 +1538,8 @@ private fun SettingsTab(
         siliconFlowApiKey = settings.siliconFlowApiKey; formatId = settings.defaultFormatCardId
         allowCleartextModelApi = settings.allowCleartextModelApi
         themeMode = settings.themeMode
+        themeColor = settings.themeColor
+        themeColorHistory = settings.themeColorHistory
         novelAiImageAspectRatio = settings.novelAiImageAspectRatio
         fishAudioTtsModelId = settings.fishAudioTtsModelId
         voiceTagModelId = settings.voiceTagModelId
@@ -1591,7 +1602,9 @@ private fun SettingsTab(
         momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
         momentsAutoStartConfirmed = momentsAutoStartConfirmed,
         chatBackgroundImageOpacity = chatBackgroundImageOpacity,
-        assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
+        assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
+        themeColor = themeColor,
+        themeColorHistory = themeColorHistory
     )
     val savedSettingsComparable = settings.copy(defaultEmbeddingId = null)
     val settingsDirty = draftSettings != savedSettingsComparable ||
@@ -1613,6 +1626,23 @@ private fun SettingsTab(
                 )
             )
         }
+    }
+    themeColorPickerInitial?.let { initialColor ->
+        ThemeColorPickerDialog(
+            initialColor = initialColor,
+            onDismissRequest = { themeColorPickerInitial = null },
+            onApply = { selectedColor ->
+                val normalizedColor = selectedColor.normalized()
+                themeColorHistory = ThemeColorHistoryPolicy.update(
+                    current = themeColor,
+                    next = normalizedColor,
+                    history = themeColorHistory
+                )
+                themeColor = normalizedColor
+                onThemeColor(normalizedColor)
+                themeColorPickerInitial = null
+            }
+        )
     }
     Column(
         Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 12.dp),
@@ -1734,6 +1764,11 @@ private fun SettingsTab(
             SliderField("记忆相似度：${"%.2f".format(memoryThreshold)}", memoryThreshold, 0.3f..0.95f) { memoryThreshold = it }
         }
         SettingsSection("外观") {
+            ThemeColorSettingControls(
+                current = themeColor,
+                history = themeColorHistory,
+                onSelectColor = { themeColorPickerInitial = it }
+            )
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
                     CbText("角色回复分段气泡", style = ChatBarTheme.typography.label)

@@ -1,5 +1,8 @@
 package com.example.chatbar.data.local.entity
 
+import com.example.chatbar.domain.appearance.DefaultThemeColorHsv
+import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
+import com.example.chatbar.domain.appearance.ThemeColorHsv
 import kotlinx.serialization.Serializable
 
 /**
@@ -26,6 +29,8 @@ data class AppSettings(
     val episodeMaxSourceTurns: Int = DEFAULT_EPISODE_MAX_SOURCE_TURNS,
     val excludeAssistantStatusFromHistory: Boolean = true,
     val themeMode: ThemeMode = ThemeMode.SYSTEM,
+    val themeColor: ThemeColorHsv = DefaultThemeColorHsv,
+    val themeColorHistory: List<ThemeColorHsv> = emptyList(),
     val chatBubbleFontScale: Float = 1.0f,
     val chatBackgroundImageOpacity: Float = DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY,
     val assistantSegmentedBubblesEnabled: Boolean = true,
@@ -65,15 +70,24 @@ fun AppSettings.withNormalizedAppearance(): AppSettings {
         MIN_EPISODE_MAX_SOURCE_TURNS,
         MAX_EPISODE_MAX_SOURCE_TURNS
     )
+    val normalizedThemeColor = themeColor.normalized()
+    val normalizedThemeColorHistory = ThemeColorHistoryPolicy.normalize(
+        current = normalizedThemeColor,
+        history = themeColorHistory
+    )
     return if (
         normalizedOpacity == chatBackgroundImageOpacity &&
-        normalizedEpisodeTurns == episodeMaxSourceTurns
+        normalizedEpisodeTurns == episodeMaxSourceTurns &&
+        normalizedThemeColor == themeColor &&
+        normalizedThemeColorHistory == themeColorHistory
     ) {
         this
     } else {
         copy(
             chatBackgroundImageOpacity = normalizedOpacity,
-            episodeMaxSourceTurns = normalizedEpisodeTurns
+            episodeMaxSourceTurns = normalizedEpisodeTurns,
+            themeColor = normalizedThemeColor,
+            themeColorHistory = normalizedThemeColorHistory
         )
     }
 }

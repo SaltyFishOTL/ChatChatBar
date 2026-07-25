@@ -3,13 +3,17 @@ package com.example.chatbar.ui.kit
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.chatbar.domain.appearance.DefaultThemeColorHsv
+import com.example.chatbar.domain.appearance.ThemeColorHsv
 
 @Immutable
 data class ChatBarColors(
@@ -173,15 +177,143 @@ private val DefaultTypography = ChatBarTypography(
     caption = TextStyle(fontSize = 11.sp, lineHeight = 14.sp)
 )
 
+fun ThemeColorHsv.toComposeColor(): Color = Color(normalized().toOpaqueArgb())
+
+fun chatBarColors(
+    darkTheme: Boolean,
+    themeColor: ThemeColorHsv
+): ChatBarColors {
+    val baseline = if (darkTheme) DarkColors else LightColors
+    val normalizedSeed = themeColor.normalized()
+    val hueDelta = shortestHueDelta(
+        from = DefaultThemeColorHsv.hueDegrees,
+        to = normalizedSeed.hueDegrees
+    )
+    val saturationScale = normalizedSeed.saturation / DefaultThemeColorHsv.saturation
+    val valueDelta = normalizedSeed.value - DefaultThemeColorHsv.value
+
+    fun themed(color: Color, valueInfluence: Float = 0f): Color {
+        val hsv = ThemeColorHsv.fromRgb(color.red, color.green, color.blue)
+        if (hsv.saturation <= 0.0001f) return color
+        return ThemeColorHsv(
+            hueDegrees = hsv.hueDegrees + hueDelta,
+            saturation = hsv.saturation * saturationScale,
+            value = hsv.value + valueDelta * valueInfluence
+        ).normalized().toComposeColor().copy(alpha = color.alpha)
+    }
+
+    val background = themed(baseline.background)
+    val surface = themed(baseline.surface)
+    val card = themed(baseline.card)
+    val primaryCandidate = themed(baseline.primary, valueInfluence = 1f)
+    val primary = adjustValueForContrast(
+        candidate = primaryCandidate,
+        backgrounds = listOf(background, surface, card),
+        darkTheme = darkTheme,
+        minimumRatio = MIN_COMPONENT_CONTRAST
+    )
+    val primaryForeground = ensureForegroundContrast(
+        candidate = themed(baseline.primaryForeground, valueInfluence = 0.35f),
+        background = primary
+    )
+    val accent = themed(baseline.accent, valueInfluence = 0.35f)
+    val accentForeground = ensureForegroundContrast(
+        candidate = themed(baseline.accentForeground, valueInfluence = 0.35f),
+        background = accent
+    )
+
+    return ChatBarColors(
+        background = background,
+        foreground = themed(baseline.foreground),
+        surface = surface,
+        surfaceElevated = themed(baseline.surfaceElevated),
+        surfaceSubtle = themed(baseline.surfaceSubtle),
+        card = card,
+        cardForeground = themed(baseline.cardForeground),
+        cardShadow = themed(baseline.cardShadow),
+        popover = themed(baseline.popover),
+        popoverForeground = themed(baseline.popoverForeground),
+        border = themed(baseline.border),
+        input = themed(baseline.input),
+        ring = primary.copy(alpha = baseline.ring.alpha),
+        primary = primary,
+        primaryForeground = primaryForeground,
+        primaryAlpha = primary.copy(alpha = baseline.primaryAlpha.alpha),
+        secondary = themed(baseline.secondary),
+        secondaryForeground = themed(baseline.secondaryForeground),
+        muted = themed(baseline.muted),
+        mutedForeground = themed(baseline.mutedForeground),
+        accent = accent,
+        accentForeground = accentForeground,
+        success = baseline.success,
+        warning = baseline.warning,
+        destructive = baseline.destructive,
+        destructiveForeground = baseline.destructiveForeground,
+        dim = baseline.dim
+    )
+}
+
+private fun shortestHueDelta(from: Float, to: Float): Float {
+    var delta = (to - from) % 360f
+    if (delta > 180f) delta -= 360f
+    if (delta < -180f) delta += 360f
+    return delta
+}
+
+private fun adjustValueForContrast(
+    candidate: Color,
+    backgrounds: List<Color>,
+    darkTheme: Boolean,
+    minimumRatio: Float
+): Color {
+    if (backgrounds.all { contrastRatio(candidate, it) >= minimumRatio }) return candidate
+    val hsv = ThemeColorHsv.fromRgb(candidate.red, candidate.green, candidate.blue)
+    val targetValue = if (darkTheme) 1f else 0f
+    for (step in 1..CONTRAST_SEARCH_STEPS) {
+        val fraction = step.toFloat() / CONTRAST_SEARCH_STEPS
+        val nextValue = hsv.value + (targetValue - hsv.value) * fraction
+        val nextSaturation = hsv.saturation * (1f - fraction)
+        val adjusted = hsv.copy(
+            saturation = nextSaturation,
+            value = nextValue
+        ).normalized().toComposeColor()
+        if (backgrounds.all { contrastRatio(adjusted, it) >= minimumRatio }) return adjusted
+    }
+    return if (darkTheme) Color.White else Color.Black
+}
+
+private fun ensureForegroundContrast(candidate: Color, background: Color): Color {
+    if (contrastRatio(candidate, background) >= MIN_TEXT_CONTRAST) return candidate
+    val black = Color.Black
+    val white = Color.White
+    return if (contrastRatio(black, background) >= contrastRatio(white, background)) black else white
+}
+
+internal fun contrastRatio(first: Color, second: Color): Float {
+    val lighter = maxOf(first.luminance(), second.luminance())
+    val darker = minOf(first.luminance(), second.luminance())
+    return (lighter + 0.05f) / (darker + 0.05f)
+}
+
 @Composable
 fun ChatBarTheme(
     darkTheme: Boolean = false,
+    themeColor: ThemeColorHsv = DefaultThemeColorHsv,
     content: @Composable () -> Unit
 ) {
+    val normalizedThemeColor = themeColor.normalized()
+    val colors = remember(darkTheme, normalizedThemeColor) {
+        chatBarColors(darkTheme, normalizedThemeColor)
+    }
     CompositionLocalProvider(
-        LocalChatBarColors provides if (darkTheme) DarkColors else LightColors,
+        LocalChatBarColors provides colors,
         LocalChatBarTypography provides DefaultTypography,
     ) {
         ProvideRipple(content = content)
     }
 }
+
+// Keep a small margin because HSV-to-8-bit RGB rounding can otherwise land just below WCAG targets.
+private const val MIN_COMPONENT_CONTRAST = 3.1f
+private const val MIN_TEXT_CONTRAST = 4.6f
+private const val CONTRAST_SEARCH_STEPS = 100

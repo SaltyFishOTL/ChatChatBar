@@ -7,7 +7,7 @@ description: Maintain ChatBar character-card AI workflows. Use when changing AI 
 
 Keep AI role-card work narrow. Read these files before broad search.
 
-Use chatbar-model-request-runtime for provider parameters, model fallback, authentication, or streaming transport. Use chatbar-image-generation-runtime for shared NovelAI HTTP generation, retry, metadata, regeneration, and file lifecycle. Keep card candidate/apply policy in this skill.
+Use chatbar-model-request-runtime for provider parameters, model fallback, authentication, or streaming transport. Use chatbar-image-generation-runtime for shared NovelAI HTTP generation, retry, metadata, regeneration, and file lifecycle. Use chatbar-fish-audio-voice for character voice binding, transfer, availability, and generation behavior. Keep card candidate/apply policy in this skill.
 
 ## First Read
 
@@ -23,6 +23,7 @@ Use chatbar-model-request-runtime for provider parameters, model fallback, authe
 - If AI output seems wrong, first inspect service parsing/materialization and UI merge paths.
 - Preserve data: applying a candidate mutates in-memory edit fields only; saving remains separate.
 - Preserve mode split: structured mode uses `characters`; freeform mode uses `freeformCharacterText`.
+- Treat `CharacterInfo.fishAudioVoice` as user-owned configuration. Auto-fill/rewrite output must not create, clear, or replace it; materialization and merge must preserve the current binding for retained character IDs.
 
 ## Rewrite Model
 

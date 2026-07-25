@@ -47,8 +47,9 @@ class SettingsRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun saveAppSettings(settings: AppSettings) {
-        storage.saveSingleton(APP_SETTINGS_TYPE, settings, AppSettings.serializer())
-        _appSettings.value = settings
+        val normalized = settings.withNormalizedAppearance()
+        storage.saveSingleton(APP_SETTINGS_TYPE, normalized, AppSettings.serializer())
+        _appSettings.value = normalized
     }
 
     private suspend fun migrateAppSettings(settings: AppSettings): AppSettings {

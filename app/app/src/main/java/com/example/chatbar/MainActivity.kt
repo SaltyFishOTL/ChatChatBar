@@ -87,7 +87,10 @@ class MainActivity : ComponentActivity() {
                     isAppearanceLightNavigationBars = !darkTheme
                 }
             }
-            ChatBarTheme(darkTheme = darkTheme) {
+            ChatBarTheme(
+                darkTheme = darkTheme,
+                themeColor = settings.themeColor
+            ) {
                 Box(
                     modifier = Modifier
                         .fillMaxSize()

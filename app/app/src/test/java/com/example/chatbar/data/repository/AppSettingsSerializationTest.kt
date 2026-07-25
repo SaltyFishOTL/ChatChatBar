@@ -3,6 +3,8 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY
 import com.example.chatbar.data.local.entity.withNormalizedAppearance
+import com.example.chatbar.domain.appearance.DefaultThemeColorHsv
+import com.example.chatbar.domain.appearance.ThemeColorHsv
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -23,6 +25,8 @@ class AppSettingsSerializationTest {
         assertEquals(null, decoded.voiceTagModelId)
         assertFalse(decoded.audiobookModeEnabled)
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
+        assertEquals(DefaultThemeColorHsv, decoded.themeColor)
+        assertTrue(decoded.themeColorHistory.isEmpty())
     }
 
     @Test
@@ -99,5 +103,39 @@ class AppSettingsSerializationTest {
     fun backgroundImageOpacity_isNormalizedToSupportedRange() {
         assertEquals(1f, AppSettings(chatBackgroundImageOpacity = 2f).withNormalizedAppearance().chatBackgroundImageOpacity)
         assertEquals(0f, AppSettings(chatBackgroundImageOpacity = -1f).withNormalizedAppearance().chatBackgroundImageOpacity)
+    }
+
+    @Test
+    fun themeColorAndHistory_roundTrip() {
+        val current = ThemeColorHsv(220f, 0.7f, 0.8f)
+        val previous = ThemeColorHsv(30f, 0.6f, 0.5f)
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(themeColor = current, themeColorHistory = listOf(previous))
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertEquals(current, decoded.themeColor)
+        assertEquals(listOf(previous), decoded.themeColorHistory)
+    }
+
+    @Test
+    fun appearanceNormalization_cleansThemeColorAndHistory() {
+        val duplicate = ThemeColorHsv(30f, 0.6f, 0.5f)
+        val normalized = AppSettings(
+            themeColor = ThemeColorHsv(Float.NaN, 2f, -1f),
+            themeColorHistory = listOf(
+                duplicate,
+                duplicate.copy(hueDegrees = 390f),
+                DefaultThemeColorHsv
+            )
+        ).withNormalizedAppearance()
+
+        assertEquals(DefaultThemeColorHsv.hueDegrees, normalized.themeColor.hueDegrees)
+        assertEquals(1f, normalized.themeColor.saturation)
+        assertEquals(0f, normalized.themeColor.value)
+        assertEquals(1, normalized.themeColorHistory.size)
+        assertEquals(duplicate.rgbKey(), normalized.themeColorHistory.single().rgbKey())
     }
 }

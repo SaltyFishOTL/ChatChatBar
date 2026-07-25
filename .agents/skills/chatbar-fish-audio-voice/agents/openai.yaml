@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar Fish Audio Voice"
+  short_description: "Maintain ChatBar Fish Audio voice generation runtime"
+  default_prompt: "Use $chatbar-fish-audio-voice to change or diagnose ChatBar Fish Audio voice behavior safely."

@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.ProgressBarRangeInfo
@@ -254,7 +255,8 @@ fun CbSlider(
     valueRange: ClosedFloatingPointRange<Float>,
     modifier: Modifier = Modifier,
     steps: Int = 0,
-    contentDescription: String? = null
+    contentDescription: String? = null,
+    trackBrush: Brush? = null
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
     fun valueFromX(x: Float): Float {
@@ -302,8 +304,17 @@ fun CbSlider(
             },
         contentAlignment = Alignment.CenterStart
     ) {
-        Box(Modifier.fillMaxWidth().size(height = 4.dp, width = 1.dp).background(ChatBarTheme.colors.muted, RoundedCornerShape(2.dp)))
-        Box(Modifier.fillMaxWidth(fraction).size(height = 4.dp, width = 1.dp).background(ChatBarTheme.colors.primary, RoundedCornerShape(2.dp)))
+        if (trackBrush == null) {
+            Box(Modifier.fillMaxWidth().size(height = 4.dp, width = 1.dp).background(ChatBarTheme.colors.muted, RoundedCornerShape(2.dp)))
+            Box(Modifier.fillMaxWidth(fraction).size(height = 4.dp, width = 1.dp).background(ChatBarTheme.colors.primary, RoundedCornerShape(2.dp)))
+        } else {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .size(height = 4.dp, width = 1.dp)
+                    .background(trackBrush, RoundedCornerShape(2.dp))
+            )
+        }
         Box(
             Modifier
                 .offset(x = ((widthPx * fraction) / androidx.compose.ui.platform.LocalDensity.current.density).dp - 8.dp)
