@@ -9,6 +9,7 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.CharacterResearchService
 import com.example.chatbar.domain.search.ResearchBrief
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
@@ -71,6 +72,7 @@ class CharacterRewriteService(
         userInput: String,
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
+        referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         webSearchEnabled: Boolean = true,
         resumeFrom: CharacterRewriteGenerationCheckpoint? = null,
         onCheckpoint: (CharacterRewriteGenerationCheckpoint) -> Unit = {},
@@ -86,6 +88,7 @@ class CharacterRewriteService(
             userInput,
             currentCard,
             model,
+            referenceDocuments,
             webSearchEnabled,
             onStatus,
             onResearchDebug,
@@ -167,6 +170,7 @@ class CharacterRewriteService(
         userInput: String,
         currentCard: CharacterCard,
         generationModel: ModelConfig,
+        referenceDocuments: List<CharacterReferenceDocument>,
         webSearchEnabled: Boolean,
         onStatus: (String) -> Unit,
         onResearchDebug: (ResearchDebugSnapshot) -> Unit,
@@ -179,19 +183,25 @@ class CharacterRewriteService(
             .getOrNull()
             ?.takeIf { it.apiKey.isNotBlank() }
             ?: generationModel
-        return runCatching {
+        val research: suspend () -> ResearchBrief? = {
             service.research(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 webSearchEnabled = webSearchEnabled,
+                referenceDocuments = referenceDocuments,
                 onDebug = onResearchDebug,
                 resumeFrom = resumeFrom,
                 onCheckpoint = onCheckpoint,
                 onStatus = onStatus,
                 onVisibleOutput = onVisibleOutput
             )
-        }.getOrNull()
+        }
+        return if (referenceDocuments.isNotEmpty()) {
+            research()
+        } else {
+            runCatching { research() }.getOrNull()
+        }
     }
 
     private fun parseGeneratedDraft(raw: String): CharacterRewriteDraft? =

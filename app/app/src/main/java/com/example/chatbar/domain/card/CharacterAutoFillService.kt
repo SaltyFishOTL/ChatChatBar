@@ -11,6 +11,7 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.CharacterResearchService
 import com.example.chatbar.domain.search.ResearchBrief
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
@@ -89,14 +90,25 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
+        referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         webSearchEnabled: Boolean = true
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
-        require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
+        require(
+            userInput.isNotBlank() ||
+                imageBase64s.any(String::isNotBlank) ||
+                referenceDocuments.any { it.content.isNotBlank() }
+        ) { "请输入角色信息，或上传参考图片/文档" }
         val model = resolveModel(modelOverride)
         val imageContext = prepareImageContext(imageBase64s, model)
-        val researchBrief = if (userInput.isNotBlank()) {
-            buildResearchBrief(userInput, currentCard, model, webSearchEnabled = webSearchEnabled)
+        val researchBrief = if (userInput.isNotBlank() || referenceDocuments.isNotEmpty()) {
+            buildResearchBrief(
+                userInput,
+                currentCard,
+                model,
+                referenceDocuments = referenceDocuments,
+                webSearchEnabled = webSearchEnabled
+            )
         } else {
             null
         }
@@ -120,6 +132,7 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
+        referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         webSearchEnabled: Boolean = true,
         resumeFrom: CharacterAutoFillGenerationCheckpoint? = null,
         onCheckpoint: (CharacterAutoFillGenerationCheckpoint) -> Unit = {},
@@ -129,7 +142,11 @@ class CharacterAutoFillService(
         onRawText: (String) -> Unit
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
-        require(userInput.isNotBlank() || imageBase64s.any(String::isNotBlank)) { "请输入角色信息或上传图片" }
+        require(
+            userInput.isNotBlank() ||
+                imageBase64s.any(String::isNotBlank) ||
+                referenceDocuments.any { it.content.isNotBlank() }
+        ) { "请输入角色信息，或上传参考图片/文档" }
         val model = resolveModel(modelOverride)
         var checkpoint = resumeFrom ?: CharacterAutoFillGenerationCheckpoint()
         val imageContext = checkpoint.imageContext?.let {
@@ -141,11 +158,12 @@ class CharacterAutoFillService(
             )
             onCheckpoint(checkpoint)
         }
-        val researchBrief = if (userInput.isNotBlank()) {
+        val researchBrief = if (userInput.isNotBlank() || referenceDocuments.isNotEmpty()) {
             buildResearchBrief(
                 userInput,
                 currentCard,
                 model,
+                referenceDocuments,
                 webSearchEnabled,
                 onStatus,
                 onResearchDebug,
@@ -227,6 +245,7 @@ class CharacterAutoFillService(
         userInput: String,
         currentCard: CharacterCard,
         generationModel: ModelConfig,
+        referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         webSearchEnabled: Boolean = true,
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
@@ -239,19 +258,25 @@ class CharacterAutoFillService(
             .getOrNull()
             ?.takeIf { it.apiKey.isNotBlank() }
             ?: generationModel
-        return runCatching {
+        val research: suspend () -> ResearchBrief? = {
             service.research(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = researchModel,
                 webSearchEnabled = webSearchEnabled,
+                referenceDocuments = referenceDocuments,
                 onDebug = onResearchDebug,
                 resumeFrom = resumeFrom,
                 onCheckpoint = onCheckpoint,
                 onStatus = onStatus,
                 onVisibleOutput = onVisibleOutput
             )
-        }.getOrNull()
+        }
+        return if (referenceDocuments.isNotEmpty()) {
+            research()
+        } else {
+            runCatching { research() }.getOrNull()
+        }
     }
 
     private fun parseGeneratedDraft(raw: String): CharacterAutoFillDraft? =

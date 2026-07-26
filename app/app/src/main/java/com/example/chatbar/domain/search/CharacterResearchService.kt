@@ -16,34 +16,39 @@ class CharacterResearchService(
     private val settingsProvider: suspend () -> AppSettings,
     private val planner: CharacterResearchPlanProvider,
     private val backend: SearchBackend,
-    private val summarizer: ResearchBriefSummarizer
+    private val summarizer: ResearchBriefSummarizer,
+    private val referenceDocumentRetriever: CharacterReferenceDocumentRetriever? = null
 ) {
     suspend fun research(
         userInput: String,
         currentCard: CharacterCard,
         modelConfig: ModelConfig,
         webSearchEnabled: Boolean = true,
+        referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         onDebug: (ResearchDebugSnapshot) -> Unit = {},
         resumeFrom: ResearchDebugSnapshot? = null,
         onCheckpoint: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
-        if (!webSearchEnabled) {
+        if (!webSearchEnabled && referenceDocuments.isEmpty()) {
             onStatus("搜索增强未启用，跳过搜索")
             return@withContext null
         }
-        val settings = settingsProvider()
-
         val maxResearchItems = MAX_RESEARCH_ITEMS
-        val maxResults = settings.webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
+        val maxResults = if (webSearchEnabled) {
+            settingsProvider().webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
+        } else {
+            1
+        }
 
         fun publish(snapshot: ResearchDebugSnapshot) {
             onDebug(snapshot)
             onCheckpoint(snapshot)
         }
-        val planResult = if (resumeFrom?.plan == null) {
-            planner.plan(
+        val planResult = when {
+            resumeFrom?.plan != null -> CharacterResearchPlanResult(plan = resumeFrom.plan)
+            webSearchEnabled -> planner.plan(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = modelConfig,
@@ -51,15 +56,16 @@ class CharacterResearchService(
                 onStatus = onStatus,
                 onRawText = { text -> onVisibleOutput("research-plan", "搜索规划输出", text) }
             )
-        } else {
-            CharacterResearchPlanResult(plan = resumeFrom.plan)
+            else -> CharacterResearchPlanResult(plan = referenceDocumentPlan())
         }
-        val plan = planResult.plan ?: fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
+        val plan = planResult.plan
+            ?: fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
+            ?: referenceDocumentPlan().takeIf { referenceDocuments.isNotEmpty() }
         if (plan == null) {
             onStatus("搜索规划失败，且没有可用保底关键词，跳过搜索")
             return@withContext null
         }
-        if (planResult.plan == null) {
+        if (webSearchEnabled && planResult.plan == null) {
             onStatus("搜索规划失败，改用保底关键词继续搜索：${plan.queries.joinToString("、") { it.query }.statusSnippet(120)}")
         }
         publish(ResearchDebugSnapshot(plan = plan))
@@ -75,81 +81,125 @@ class CharacterResearchService(
             )
             return@withContext resumedBrief
         }
-        if (!plan.needSearch || plan.queries.isEmpty()) {
+        if ((!plan.needSearch || plan.queries.isEmpty()) && referenceDocuments.isEmpty()) {
             return@withContext null
         }
 
-        val queries = plan.queries.take(maxResearchItems)
-        onStatus(
-            buildString {
-                append("AI 决定搜索 ${queries.size} 个关键词")
-                plan.reason.takeIf(String::isNotBlank)?.let { append("：").append(it.statusSnippet(80)) }
+        val queries = if (webSearchEnabled && plan.needSearch) {
+            plan.queries.take(maxResearchItems)
+        } else {
+            emptyList()
+        }
+        if (queries.isNotEmpty()) {
+            onStatus(
+                buildString {
+                    append("AI 决定搜索 ${queries.size} 个关键词")
+                    plan.reason.takeIf(String::isNotBlank)?.let { append("：").append(it.statusSnippet(80)) }
+                }
+            )
+            queries.forEachIndexed { index, query ->
+                onStatus("关键词 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
             }
-        )
-        queries.forEachIndexed { index, query ->
-            onStatus("关键词 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
         }
 
         val resumedSources = resumeFrom?.sources.orEmpty()
-        val hits = if (resumedSources.isEmpty()) withTimeoutOrNull(35_000L) {
-            queries.flatMapIndexed { index, query ->
-                onStatus("正在搜索百科 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
+        val sources = if (resumedSources.isNotEmpty()) {
+            resumedSources
+        } else {
+            val documentHits = if (referenceDocuments.isNotEmpty()) {
+                val retriever = referenceDocumentRetriever
+                    ?: error("参考文档 RAG 检索服务不可用")
+                onStatus("正在检索上传参考文档：Top $CHARACTER_REFERENCE_DOCUMENT_TOP_K")
+                retriever.retrieve(
+                    documents = referenceDocuments,
+                    userInput = userInput,
+                    currentCard = currentCard,
+                    topK = CHARACTER_REFERENCE_DOCUMENT_TOP_K,
+                    onStatus = onStatus
+                ).also { hits ->
+                    onStatus("参考文档检索完成：命中 ${hits.size} 张卡片")
+                }
+            } else {
+                emptyList()
+            }
+
+            val documentSources = if (documentHits.isEmpty()) {
+                emptyList()
+            } else {
+                onStatus("正在清洗参考文档卡片：${documentHits.size} 张")
+                ResearchCleaner.toResearchSources(
+                    hits = documentHits,
+                    extracts = emptyList(),
+                    maxSources = CHARACTER_REFERENCE_DOCUMENT_TOP_K,
+                    maxExcerptChars = FINAL_EXCERPT_CHARS
+                )
+            }
+
+            val webHits = if (queries.isNotEmpty()) withTimeoutOrNull(35_000L) {
+                queries.flatMapIndexed { index, query ->
+                    onStatus("正在搜索百科 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
+                    runCatching {
+                        val queryHits = backend.search(
+                            SearchBackendQuery(
+                                query = query.query,
+                                maxResults = maxResults
+                            )
+                        ).map { it.copy(query = query.query) }
+                        onStatus("百科搜索完成 ${index + 1}/${queries.size}：命中 ${queryHits.size} 条")
+                        queryHits
+                    }.getOrElse { error ->
+                        onStatus("百科搜索失败 ${index + 1}/${queries.size}：${error.message ?: error::class.java.simpleName}")
+                        emptyList()
+                    }
+                }
+            }.orEmpty() else emptyList()
+
+            val firstPassWebSources = ResearchCleaner.toResearchSources(
+                hits = webHits,
+                extracts = emptyList(),
+                maxSources = maxResearchItems,
+                maxExcerptChars = FIRST_PASS_EXCERPT_CHARS
+            )
+            val extracts = if (firstPassWebSources.isEmpty()) {
+                emptyList()
+            } else {
+                onStatus("正在抽取百科正文：${firstPassWebSources.size} 个来源")
                 runCatching {
-                    val queryHits = backend.search(
-                        SearchBackendQuery(
-                            query = query.query,
-                            maxResults = maxResults
-                        )
-                    ).map { it.copy(query = query.query) }
-                    onStatus("百科搜索完成 ${index + 1}/${queries.size}：命中 ${queryHits.size} 条")
-                    queryHits
+                    backend.extract(
+                        urls = firstPassWebSources.map { it.url },
+                        maxPages = maxResearchItems
+                    )
                 }.getOrElse { error ->
-                    onStatus("百科搜索失败 ${index + 1}/${queries.size}：${error.message ?: error::class.java.simpleName}")
+                    onStatus("百科正文抽取失败，改用搜索摘要：${error.message ?: error::class.java.simpleName}")
                     emptyList()
                 }
             }
-        }.orEmpty() else emptyList()
-
-        if (hits.isEmpty() && resumedSources.isEmpty()) {
-            onStatus("没有可用百科结果，继续直接生成")
-            return@withContext null
-        }
-
-        val firstPassSources = ResearchCleaner.toResearchSources(
-            hits = hits,
-            extracts = emptyList(),
-            maxSources = maxResearchItems,
-            maxExcerptChars = FIRST_PASS_EXCERPT_CHARS
-        )
-        val extracts = if (firstPassSources.isEmpty()) {
-            emptyList()
-        } else {
-            onStatus("正在抽取百科正文：${firstPassSources.size} 个来源")
-            runCatching {
-                backend.extract(
-                    urls = firstPassSources.map { it.url },
-                    maxPages = maxResearchItems
-                )
-            }.getOrElse { error ->
-                onStatus("百科正文抽取失败，改用搜索摘要：${error.message ?: error::class.java.simpleName}")
-                emptyList()
-            }
-        }
-        val sources = resumedSources.ifEmpty {
-            ResearchCleaner.toResearchSources(
-                hits = hits,
+            val webSources = ResearchCleaner.toResearchSources(
+                hits = webHits,
                 extracts = extracts,
                 maxSources = maxResearchItems,
                 maxExcerptChars = FINAL_EXCERPT_CHARS
             )
+            (documentSources + webSources).mapIndexed { index, source ->
+                source.copy(sourceId = "S${index + 1}")
+            }
         }
         if (sources.isEmpty()) {
+            if (referenceDocuments.isNotEmpty()) {
+                error("参考文档检索和数据清理后没有可用内容")
+            }
             onStatus("百科结果清洗后为空，继续直接生成")
             return@withContext null
         }
         publish(ResearchDebugSnapshot(plan = plan, sources = sources))
 
-        onStatus("正在清洗并压缩百科资料：${sources.size} 个来源")
+        onStatus(
+            if (referenceDocuments.isNotEmpty()) {
+                "正在清洗并压缩检索资料：${sources.size} 个来源"
+            } else {
+                "正在清洗并压缩百科资料：${sources.size} 个来源"
+            }
+        )
         val summaryResult = runCatching {
             summarizer.summarize(
                 request = userInput,
@@ -173,7 +223,15 @@ class CharacterResearchService(
                 onStatus("搜索资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
             }
             onStatus("AI资料整理不可用，使用清洗正文兜底摘要")
-            ResearchCleaner.fallbackBrief(plan.reason, queries.map { it.query }, sources)
+            ResearchCleaner.fallbackBrief(
+                plan.reason,
+                queries.map { it.query } + if (referenceDocuments.isNotEmpty()) {
+                    listOf("上传参考文档 RAG")
+                } else {
+                    emptyList()
+                },
+                sources
+            )
         }
         if (brief?.hasContent() == true) {
             publish(
@@ -195,6 +253,12 @@ class CharacterResearchService(
         }
         brief
     }
+
+    private fun referenceDocumentPlan(): CharacterResearchPlan = CharacterResearchPlan(
+        needSearch = true,
+        reason = "使用用户要求与角色卡已有内容检索上传参考文档",
+        queries = listOf(CharacterResearchQuery(query = "上传参考文档 RAG", priority = 1))
+    )
 
     private fun String.statusSnippet(maxChars: Int): String =
         replace(Regex("\\s+"), " ").trim().let { text ->

@@ -92,6 +92,7 @@ import com.example.chatbar.domain.image.ImageCropSize
 import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
 import com.example.chatbar.domain.image.imageCropFractionRect
+import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.voice.FishAudioLibrary
 import com.example.chatbar.domain.voice.FishAudioModel
@@ -192,6 +193,9 @@ fun CharacterEditScreen(
     var deleteDocument by remember { mutableStateOf<DocumentInfo?>(null) }
     var confirmClearDocuments by remember { mutableStateOf(false) }
     var pendingImagePick by remember { mutableStateOf<PendingImagePick?>(null) }
+    var pendingReferenceDocumentPick by remember {
+        mutableStateOf<((Result<CharacterReferenceDocument>) -> Unit)?>(null)
+    }
     var pendingImageCrop by remember { mutableStateOf<PendingImageCrop?>(null) }
     var pendingEditMode by remember { mutableStateOf<CharacterEditMode?>(null) }
     var confirmConvertToFreeform by remember { mutableStateOf(false) }
@@ -273,6 +277,13 @@ fun CharacterEditScreen(
     val directoryPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri: Uri? ->
         uri?.let(viewModel::importDocumentsFromFolder)
     }
+    val referenceDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val callback = pendingReferenceDocumentPick
+        pendingReferenceDocumentPick = null
+        if (uri != null && callback != null) {
+            viewModel.readReferenceDocument(uri, callback)
+        }
+    }
     fun pickImage(callback: (String) -> Unit) {
         pendingImagePick = PendingImagePick(null, callback)
         imagePicker.launch("image/*")
@@ -280,6 +291,12 @@ fun CharacterEditScreen(
     fun pickCroppedImage(target: CharacterImageCropTarget, callback: (String) -> Unit) {
         pendingImagePick = PendingImagePick(target, callback)
         imagePicker.launch("image/*")
+    }
+    fun pickReferenceDocument(callback: (Result<CharacterReferenceDocument>) -> Unit) {
+        pendingReferenceDocumentPick = callback
+        referenceDocumentPicker.launch(
+            arrayOf("text/*", "application/json", "application/octet-stream")
+        )
     }
     fun openAutoFillDialog() {
         if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
@@ -851,20 +868,23 @@ fun CharacterEditScreen(
                 viewModel.clearAutoFillDraft()
             },
             onPickImage = { callback -> pickImage(callback) },
+            onPickDocument = { callback -> pickReferenceDocument(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
-            onGenerate = { input, modelId, imagePath, webSearchEnabled ->
+            onGenerate = { input, modelId, imagePath, referenceDocument, webSearchEnabled ->
                 viewModel.generateAutoFillDraft(
                     input,
                     modelId,
                     imagePath,
+                    referenceDocument,
                     webSearchEnabled = webSearchEnabled
                 )
             },
-            onRegenerateFinal = { input, modelId, imagePath, webSearchEnabled, regenerateFinal ->
+            onRegenerateFinal = { input, modelId, imagePath, referenceDocument, webSearchEnabled, regenerateFinal ->
                 viewModel.generateAutoFillDraft(
                     input,
                     modelId,
                     imagePath,
+                    referenceDocument,
                     webSearchEnabled = webSearchEnabled,
                     reusePrepared = regenerateFinal
                 )
@@ -891,13 +911,20 @@ fun CharacterEditScreen(
                 showRewriteDialog = false
                 viewModel.clearRewriteDraft()
             },
-            onGenerate = { input, modelId, webSearchEnabled ->
-                viewModel.generateRewriteDraft(input, modelId, webSearchEnabled = webSearchEnabled)
-            },
-            onRegenerateFinal = { input, modelId, webSearchEnabled, regenerateFinal ->
+            onPickDocument = { callback -> pickReferenceDocument(callback) },
+            onGenerate = { input, modelId, referenceDocument, webSearchEnabled ->
                 viewModel.generateRewriteDraft(
                     input,
                     modelId,
+                    referenceDocument,
+                    webSearchEnabled = webSearchEnabled
+                )
+            },
+            onRegenerateFinal = { input, modelId, referenceDocument, webSearchEnabled, regenerateFinal ->
+                viewModel.generateRewriteDraft(
+                    input,
+                    modelId,
+                    referenceDocument,
                     webSearchEnabled = webSearchEnabled,
                     reusePrepared = regenerateFinal
                 )
@@ -1471,9 +1498,10 @@ private fun CharacterAutoFillDialog(
     onWebSearchEnabledChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
+    onPickDocument: (((Result<CharacterReferenceDocument>) -> Unit) -> Unit),
     onDeleteImage: (String?) -> Unit,
-    onGenerate: (String, String?, String?, Boolean) -> Unit,
-    onRegenerateFinal: (String, String?, String?, Boolean, Boolean) -> Unit,
+    onGenerate: (String, String?, String?, CharacterReferenceDocument?, Boolean) -> Unit,
+    onRegenerateFinal: (String, String?, String?, CharacterReferenceDocument?, Boolean, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1481,6 +1509,8 @@ private fun CharacterAutoFillDialog(
 ) {
     var input by remember { mutableStateOf("") }
     var sourceImagePath by remember { mutableStateOf<String?>(null) }
+    var referenceDocument by remember { mutableStateOf<CharacterReferenceDocument?>(null) }
+    var referenceDocumentError by remember { mutableStateOf<String?>(null) }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
     val modelOptions = remember(models, defaultModelId) {
         val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
@@ -1586,6 +1616,30 @@ private fun CharacterAutoFillDialog(
                     onClear = { if (!busy) clearSourceImage() }
                 )
             }
+            CbField("参考文档") {
+                ReferenceDocumentPickerPanel(
+                    document = referenceDocument,
+                    error = referenceDocumentError,
+                    busy = busy,
+                    onPick = {
+                        onPickDocument { result ->
+                            result.fold(
+                                onSuccess = { document ->
+                                    referenceDocument = document
+                                    referenceDocumentError = null
+                                },
+                                onFailure = { error ->
+                                    referenceDocumentError = error.message ?: "读取参考文档失败"
+                                }
+                            )
+                        }
+                    },
+                    onClear = {
+                        referenceDocument = null
+                        referenceDocumentError = null
+                    }
+                )
+            }
             if (state.isGenerating) {
                 CbButton(
                     "取消生成",
@@ -1597,9 +1651,21 @@ private fun CharacterAutoFillDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成候选",
-                        { onGenerate(input, selectedModel.id, sourceImagePath, webSearchEnabled) },
+                        {
+                            onGenerate(
+                                input,
+                                selectedModel.id,
+                                sourceImagePath,
+                                referenceDocument,
+                                webSearchEnabled
+                            )
+                        },
                         modifier = Modifier.weight(1f),
-                        enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
+                        enabled = (
+                            input.isNotBlank() ||
+                                !sourceImagePath.isNullOrBlank() ||
+                                referenceDocument != null
+                            ) && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(
@@ -1618,12 +1684,17 @@ private fun CharacterAutoFillDialog(
                                 input,
                                 selectedModel.id,
                                 sourceImagePath,
+                                referenceDocument,
                                 webSearchEnabled,
                                 state.draft != null
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = (input.isNotBlank() || !sourceImagePath.isNullOrBlank()) && !state.coverImage.isGenerating,
+                        enabled = (
+                            input.isNotBlank() ||
+                                !sourceImagePath.isNullOrBlank() ||
+                                referenceDocument != null
+                            ) && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
                     )
                 }
@@ -1684,14 +1755,17 @@ private fun CharacterRewriteDialog(
     webSearchEnabled: Boolean,
     onWebSearchEnabledChange: (Boolean) -> Unit,
     onDismiss: () -> Unit,
-    onGenerate: (String, String?, Boolean) -> Unit,
-    onRegenerateFinal: (String, String?, Boolean, Boolean) -> Unit,
+    onPickDocument: (((Result<CharacterReferenceDocument>) -> Unit) -> Unit),
+    onGenerate: (String, String?, CharacterReferenceDocument?, Boolean) -> Unit,
+    onRegenerateFinal: (String, String?, CharacterReferenceDocument?, Boolean, Boolean) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
     onApply: () -> Unit
 ) {
     var input by remember { mutableStateOf("") }
+    var referenceDocument by remember { mutableStateOf<CharacterReferenceDocument?>(null) }
+    var referenceDocumentError by remember { mutableStateOf<String?>(null) }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
     val modelOptions = remember(models, defaultModelId) {
         val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
@@ -1759,6 +1833,30 @@ private fun CharacterRewriteDialog(
                     minLines = 6
                 )
             }
+            CbField("参考文档") {
+                ReferenceDocumentPickerPanel(
+                    document = referenceDocument,
+                    error = referenceDocumentError,
+                    busy = busy,
+                    onPick = {
+                        onPickDocument { result ->
+                            result.fold(
+                                onSuccess = { document ->
+                                    referenceDocument = document
+                                    referenceDocumentError = null
+                                },
+                                onFailure = { error ->
+                                    referenceDocumentError = error.message ?: "读取参考文档失败"
+                                }
+                            )
+                        }
+                    },
+                    onClear = {
+                        referenceDocument = null
+                        referenceDocumentError = null
+                    }
+                )
+            }
             if (state.isGenerating) {
                 CbButton(
                     "取消生成",
@@ -1770,7 +1868,7 @@ private fun CharacterRewriteDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成改写",
-                        { onGenerate(input, selectedModel.id, webSearchEnabled) },
+                        { onGenerate(input, selectedModel.id, referenceDocument, webSearchEnabled) },
                         modifier = Modifier.weight(1f),
                         enabled = input.isNotBlank() && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
@@ -1790,6 +1888,7 @@ private fun CharacterRewriteDialog(
                             onRegenerateFinal(
                                 input,
                                 selectedModel.id,
+                                referenceDocument,
                                 webSearchEnabled,
                                 state.draft != null
                             )
@@ -1843,6 +1942,62 @@ private fun CharacterRewriteDialog(
             state.draft?.let {
                 CbDivider()
                 RewriteDiffPreview(state.diff)
+            }
+        }
+    }
+}
+
+@Composable
+private fun ReferenceDocumentPickerPanel(
+    document: CharacterReferenceDocument?,
+    error: String?,
+    busy: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(
+            1.dp,
+            if (error.isNullOrBlank()) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive
+        )
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (document == null) {
+                CbText("未选择文档", color = ChatBarTheme.colors.mutedForeground)
+            } else {
+                CbText(document.fileName, style = ChatBarTheme.typography.heading)
+                CbText(
+                    "${document.content.length} 字符；生成时临时检索，不会加入角色卡文档库",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbText(
+                "支持 TXT、MD、JSON，最多 100 万字符；RAG 检索 Top 20 卡片后按百科流程清洗整理。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    if (document == null) "选择文档" else "更换文档",
+                    onPick,
+                    modifier = Modifier.weight(1f),
+                    enabled = !busy,
+                    variant = ButtonVariant.Outline
+                )
+                if (document != null) {
+                    CbButton(
+                        "移除",
+                        onClear,
+                        enabled = !busy,
+                        variant = ButtonVariant.Ghost
+                    )
+                }
+            }
+            error?.takeIf(String::isNotBlank)?.let {
+                CbText(it, color = ChatBarTheme.colors.destructive)
             }
         }
     }

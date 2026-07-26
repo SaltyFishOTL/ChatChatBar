@@ -109,7 +109,11 @@ object ResearchCleaner {
     }
 
     fun sourceType(url: String): String {
-        val host = runCatching { URI(url).host?.lowercase().orEmpty() }.getOrDefault(url.lowercase())
+        val uri = runCatching { URI(url) }.getOrNull()
+        if (uri?.scheme.equals("reference-document", ignoreCase = true)) {
+            return "reference-document"
+        }
+        val host = uri?.host?.lowercase().orEmpty().ifBlank { url.lowercase() }
         return when {
             host.endsWith(".gov") || host.contains(".gov.") -> "government"
             host.endsWith(".edu") || host.contains(".edu.") -> "academic"
@@ -129,6 +133,7 @@ object ResearchCleaner {
         sourceTypeWeight(sourceType(url)) + score.coerceAtLeast(0.0)
 
     private fun sourceTypeWeight(type: String): Int = when (type) {
+        "reference-document" -> 92
         "government" -> 90
         "academic" -> 88
         "documentation" -> 86

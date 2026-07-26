@@ -1,0 +1,4 @@
+interface:
+  display_name: "ChatBar 更新发布"
+  short_description: "提交全部改动、推送代码并发布带用户更新日志的新安装版本"
+  default_prompt: "Use $chatbar-release-publish to commit every ChatBar change, push it, and publish a verified user-facing release."

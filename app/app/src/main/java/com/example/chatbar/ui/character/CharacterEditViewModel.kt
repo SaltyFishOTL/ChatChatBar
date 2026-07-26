@@ -10,6 +10,7 @@ import android.graphics.RectF
 import android.net.Uri
 import android.os.Build
 import android.provider.DocumentsContract
+import android.provider.OpenableColumns
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
@@ -52,6 +53,7 @@ import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.voice.FishAudioModel
@@ -201,6 +203,8 @@ data class CharacterRewriteUiState(
     val checkpoint: CharacterRewriteGenerationCheckpoint? = null,
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
+
+private const val MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS = 1_000_000
 
 private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 
@@ -671,6 +675,7 @@ class CharacterEditViewModel(
         userInput: String,
         modelId: String? = null,
         imagePath: String? = null,
+        referenceDocument: CharacterReferenceDocument? = null,
         webSearchEnabled: Boolean = _autoFillWebSearchEnabled.value,
         reusePrepared: Boolean = false
     ) {
@@ -679,8 +684,8 @@ class CharacterEditViewModel(
             return
         }
         val sourceImagePath = imagePath?.takeIf(String::isNotBlank)
-        if (userInput.isBlank() && sourceImagePath == null) {
-            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息或上传图片")
+        if (userInput.isBlank() && sourceImagePath == null && referenceDocument == null) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息，或上传参考图片/文档")
             return
         }
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
@@ -692,7 +697,9 @@ class CharacterEditViewModel(
         val selectedModelId = selectedModel?.id
         val currentCard = buildCurrentCard(markDirty = false)
         val sourceSignature =
-            "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n$webSearchEnabled\n${currentCard.hashCode()}"
+            "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n" +
+                "${referenceDocument?.fileName.orEmpty()}\n${referenceDocument?.content?.hashCode()}\n" +
+                "$webSearchEnabled\n${currentCard.hashCode()}"
         val previousState = _autoFillState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -751,6 +758,7 @@ class CharacterEditViewModel(
                     currentCard = currentCard,
                     modelOverride = selectedModel,
                     imageBase64s = imageBase64s,
+                    referenceDocuments = listOfNotNull(referenceDocument),
                     webSearchEnabled = webSearchEnabled,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
@@ -1555,6 +1563,7 @@ class CharacterEditViewModel(
     fun generateRewriteDraft(
         userInput: String,
         modelId: String? = null,
+        referenceDocument: CharacterReferenceDocument? = null,
         webSearchEnabled: Boolean = _rewriteWebSearchEnabled.value,
         reusePrepared: Boolean = false
     ) {
@@ -1570,7 +1579,9 @@ class CharacterEditViewModel(
         }
         val currentCard = buildCurrentCard(markDirty = false)
         val selectedModelId = selectedModel?.id
-        val sourceSignature = "$userInput\n$selectedModelId\n$webSearchEnabled\n${currentCard.hashCode()}"
+        val sourceSignature =
+            "$userInput\n$selectedModelId\n${referenceDocument?.fileName.orEmpty()}\n" +
+                "${referenceDocument?.content?.hashCode()}\n$webSearchEnabled\n${currentCard.hashCode()}"
         val previousState = _rewriteState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -1608,6 +1619,7 @@ class CharacterEditViewModel(
                     userInput = userInput,
                     currentCard = currentCard,
                     modelOverride = selectedModel,
+                    referenceDocuments = listOfNotNull(referenceDocument),
                     webSearchEnabled = webSearchEnabled,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
@@ -2362,6 +2374,54 @@ class CharacterEditViewModel(
             }
             _indexingStatus.value = "已清空当前角色卡文档，保存角色卡后将清理 RAG 索引"
             scheduleDraftSave()
+        }
+    }
+
+    fun readReferenceDocument(
+        uri: Uri,
+        onResult: (Result<CharacterReferenceDocument>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = try {
+                withContext(Dispatchers.IO) {
+                    val contentResolver = ChatBarApp.instance.contentResolver
+                    val fileName = contentResolver.query(
+                        uri,
+                        arrayOf(OpenableColumns.DISPLAY_NAME),
+                        null,
+                        null,
+                        null
+                    )?.use { cursor ->
+                        val nameColumn = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                        if (nameColumn >= 0 && cursor.moveToFirst()) cursor.getString(nameColumn) else null
+                    }?.takeIf(String::isNotBlank) ?: "参考文档.txt"
+                    val extension = fileName.substringAfterLast('.', "").lowercase()
+                    require(extension in setOf("txt", "md", "json")) {
+                        "仅支持 TXT、MD、JSON 参考文档"
+                    }
+                    val content = contentResolver.openInputStream(uri)?.bufferedReader(Charsets.UTF_8)?.use { reader ->
+                        val output = StringBuilder()
+                        val buffer = CharArray(8_192)
+                        while (true) {
+                            val read = reader.read(buffer)
+                            if (read < 0) break
+                            require(output.length + read <= MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS) {
+                                "参考文档超过 100 万字符限制"
+                            }
+                            output.append(buffer, 0, read)
+                        }
+                        output.toString().trimStart('\uFEFF')
+                    } ?: error("无法读取参考文档")
+                    require(content.isNotBlank()) { "参考文档内容为空" }
+                    CharacterReferenceDocument(fileName = fileName, content = content)
+                }
+                    .let(Result.Companion::success)
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Result.failure(error)
+            }
+            onResult(result)
         }
     }
 

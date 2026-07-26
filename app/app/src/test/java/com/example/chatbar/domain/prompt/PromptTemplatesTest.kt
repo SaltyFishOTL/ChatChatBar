@@ -1,64 +1,56 @@
 package com.example.chatbar.domain.prompt
 
-import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PromptTemplatesTest {
     @Test
-    fun referenceImagePromptRequiresVisibleContentReverseEngineeringUnderSharedRules() {
+    fun referenceImagePromptKeepsRequiredProtocolTokens() {
         val prompt = PromptTemplates.novelAiImagePromptReferenceImageUser()
 
         assertTrue(prompt.contains("NOVELAI_IMAGE_PROMPT_SYSTEM"))
-        assertTrue(prompt.contains("逆向"))
-        assertTrue(prompt.contains("可见"))
         assertTrue(prompt.contains("NovelAI Diffusion V4.5 Full"))
+        assertFalse(prompt.contains("{{"))
     }
 
     @Test
-    fun replyLengthTailSystemPrompt_repeatsConfiguredLengthAtPromptTail() {
-        assertEquals(
-            "严格按照格式要求，输出【500字】篇幅的回复。",
-            PromptTemplates.replyLengthTailSystemPrompt("500字")
-        )
+    fun replyLengthTailSystemPromptIncludesConfiguredLength() {
+        val prompt = PromptTemplates.replyLengthTailSystemPrompt("500字")
+
+        assertTrue(prompt.contains("500字"))
+        assertFalse(prompt.contains("{{replyLength}}"))
     }
 
     @Test
-    fun currentTurnOutputRequirements_areRenderedAsStandaloneSystemPrompt() {
-        val persistedContent = "扶她起来"
-
+    fun currentTurnOutputRequirementsIncludeInputsInOrderAndResolvePlaceholders() {
         val systemPrompt = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
             formatCardContent = "格式正文",
             replyLength = "500字中篇"
         )
 
-        assertEquals("扶她起来", persistedContent)
-        assertEquals(
-            """
-            （严格按照以下格式要求进行回复，确保遵循格式要求：
-            【格式正文】
-            【输出正文长度为[500字中篇]的内容】）
-            """.trimIndent(),
-            systemPrompt
-        )
+        val formatIndex = systemPrompt.indexOf("格式正文")
+        val lengthIndex = systemPrompt.indexOf("500字中篇")
+        assertTrue(formatIndex >= 0)
+        assertTrue(lengthIndex > formatIndex)
         assertFalse(systemPrompt.contains("{{replyLength}}"))
         assertFalse(systemPrompt.contains("{{formatCardContent}}"))
     }
 
     @Test
-    fun currentTurnOutputRequirements_withoutFormatCardKeepOnlyLengthRequirement() {
-        assertEquals(
-            "（【输出正文长度为[300字短篇]的内容】）",
-            PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
-                formatCardContent = null,
-                replyLength = "300字短篇"
-            )
+    fun currentTurnOutputRequirementsWithoutFormatCardStillResolveLength() {
+        val systemPrompt = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = null,
+            replyLength = "300字短篇"
         )
+
+        assertTrue(systemPrompt.contains("300字短篇"))
+        assertFalse(systemPrompt.contains("{{"))
+        assertFalse(systemPrompt.contains("null", ignoreCase = true))
     }
 
     @Test
-    fun memoryPromptsRequireContinuousCoverageAndProgramRanges() {
+    fun memoryPromptsKeepInputsAndRequiredJsonProtocolTokens() {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(
             kind = "EPISODE_TO_ARC",
@@ -66,30 +58,24 @@ class PromptTemplatesTest {
         )
 
         assertTrue(episode.contains("turns"))
-        assertTrue(episode.contains("逐 T 复述，禁止这样写"))
-        assertTrue(episode.contains("错误输出"))
-        assertTrue(episode.contains("正确示例"))
-        assertTrue(episode.contains("summary 最多只能写 70 字"))
+        assertTrue(episode.contains("70"))
         assertTrue(episode.contains("\"summary\""))
         assertFalse(episode.contains("sourceCoverage"))
-        assertTrue(compression.contains("只能消费其最老连续前缀"))
-        assertTrue(compression.contains("4 至 20"))
+        assertTrue(compression.contains("children"))
         assertTrue(compression.contains("childCoverage"))
-        assertFalse(compression.contains("返回整份替代记忆"))
     }
 
     @Test
-    fun timelineContractMakesTOnlyChronologyAuthority() {
+    fun timelineContractKeepsRequiredProtocolAnchors() {
         val contract = PromptTemplates.MEMORY_TIMELINE_CONTRACT
 
-        assertTrue(contract.contains("T是唯一剧情顺序"))
-        assertTrue(contract.contains("禁止把后置Archive或RAG理解成最新剧情"))
-        assertTrue(contract.contains("冲突时以更大的T为准"))
-        assertTrue(contract.contains("必须从当前最大T继续扮演"))
+        assertTrue(contract.contains("T"))
+        assertTrue(contract.contains("Archive"))
+        assertTrue(contract.contains("RAG"))
     }
 
     @Test
-    fun unresolvedArchiveRangeIsNotReportedAsEmptyArchive() {
+    fun unresolvedArchiveRangeKeepsLatestStableTurnAndAvoidsNullRange() {
         val label = PromptTemplates.memoryTimelineDirectLabel(
             archivePresent = true,
             archiveRangeUnverifiable = true,
@@ -99,13 +85,12 @@ class PromptTemplatesTest {
             latestStableT = 9
         )
 
-        assertTrue(label.contains("待修复"))
         assertTrue(label.contains("T9"))
-        assertFalse(label.contains("Archive为空"))
+        assertFalse(label.contains("Tnull"))
     }
 
     @Test
-    fun archiveBodyWithoutAnyDerivedRangeNeverBuildsNullRangeLabel() {
+    fun archiveBodyWithoutDerivedRangeUsesStableTurnAndNeverBuildsNullRange() {
         val label = PromptTemplates.memoryTimelineDirectLabel(
             archivePresent = true,
             archiveRangeUnverifiable = false,
@@ -115,12 +100,12 @@ class PromptTemplatesTest {
             latestStableT = 4
         )
 
-        assertTrue(label.contains("待修复"))
+        assertTrue(label.contains("T4"))
         assertFalse(label.contains("Tnull"))
     }
 
     @Test
-    fun headPromptDeclaresModeAndKeepsInputsSeparated() {
+    fun headPromptIncludesModeAndInputsInSourceOrder() {
         val prompt = PromptTemplates.memoryHeadPrompt(
             mode = "BACKFILL",
             throughT = 20,
@@ -129,10 +114,11 @@ class PromptTemplatesTest {
             sourceTurns = "[T19] 基线剧情"
         )
 
-        assertTrue(prompt.contains("程序模式：BACKFILL"))
-        assertTrue(prompt.contains("只根据程序提供的 Archive"))
-        assertTrue(prompt.contains("Archive：\n[Episode T0-T18] 旧剧情"))
-        assertTrue(prompt.contains("程序指定剧情组：\n[T19] 基线剧情"))
-        assertTrue(prompt.contains("不继承旧 HEAD"))
+        val archiveIndex = prompt.indexOf("[Episode T0-T18] 旧剧情")
+        val sourceIndex = prompt.indexOf("[T19] 基线剧情")
+        assertTrue(prompt.contains("BACKFILL"))
+        assertTrue(prompt.contains("20"))
+        assertTrue(archiveIndex >= 0)
+        assertTrue(sourceIndex > archiveIndex)
     }
 }

@@ -280,11 +280,18 @@ class ChatBarApp : Application() {
             generationService = momentGenerationService
         )
         imageUnderstandingService = ImageUnderstandingService(effectiveModelResolver, streamingChatService)
+        val characterReferenceDocumentRetriever = RagCharacterReferenceDocumentRetriever(
+            chunkingEngine = chunkingEngine,
+            embeddingService = embeddingService,
+            vectorSearch = vectorSearchEngine,
+            embeddingConfigProvider = { effectiveModelResolver.embeddingModel() }
+        )
         characterResearchService = CharacterResearchService(
             settingsProvider = { settingsRepository.getAppSettings() },
             planner = characterResearchPlanner,
             backend = searchBackend,
-            summarizer = researchBriefSummarizer
+            summarizer = researchBriefSummarizer,
+            referenceDocumentRetriever = characterReferenceDocumentRetriever
         )
         characterAutoFillService = CharacterAutoFillService(
             effectiveModelResolver,
