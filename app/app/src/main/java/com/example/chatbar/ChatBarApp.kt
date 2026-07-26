@@ -291,7 +291,8 @@ class ChatBarApp : Application() {
             planner = characterResearchPlanner,
             backend = searchBackend,
             summarizer = researchBriefSummarizer,
-            referenceDocumentRetriever = characterReferenceDocumentRetriever
+            referenceDocumentRetriever = characterReferenceDocumentRetriever,
+            manualWebPageRetriever = HttpManualWebPageRetriever()
         )
         characterAutoFillService = CharacterAutoFillService(
             effectiveModelResolver,

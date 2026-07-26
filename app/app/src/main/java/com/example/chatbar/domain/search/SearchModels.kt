@@ -1,6 +1,77 @@
 package com.example.chatbar.domain.search
 
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import kotlinx.serialization.Serializable
+
+const val MAX_MANUAL_RESEARCH_URLS = 5
+
+data class CharacterResearchOptions(
+    val mode: CharacterResearchSourceMode = CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+    val urls: List<String> = emptyList()
+)
+
+fun CharacterResearchOptions.hasManualUrlSource(): Boolean =
+    mode == CharacterResearchSourceMode.MANUAL_URLS && urls.any(String::isNotBlank)
+
+fun CharacterResearchOptions.sourceSignaturePart(): String =
+    buildString {
+        append(mode.name)
+        urls.map(ResearchCleaner::canonicalUrl).forEach { url -> append('\n').append(url) }
+    }
+
+data class ManualResearchUrlValidation(
+    val urls: List<String> = emptyList(),
+    val errors: List<String> = emptyList(),
+    val hasCleartextHttp: Boolean = false
+) {
+    val isValid: Boolean
+        get() = errors.isEmpty()
+}
+
+fun validateManualResearchUrls(
+    rawText: String,
+    maxUrls: Int = MAX_MANUAL_RESEARCH_URLS
+): ManualResearchUrlValidation =
+    validateManualResearchUrls(rawText.lineSequence().toList(), maxUrls)
+
+fun validateManualResearchUrls(
+    rawUrls: List<String>,
+    maxUrls: Int = MAX_MANUAL_RESEARCH_URLS
+): ManualResearchUrlValidation {
+    val entries = rawUrls.mapIndexedNotNull { index, raw ->
+        raw.trim().takeIf(String::isNotBlank)?.let { value -> index + 1 to value }
+    }
+    val errors = mutableListOf<String>()
+    if (entries.size > maxUrls) {
+        errors += "指定网址最多 $maxUrls 个，当前 ${entries.size} 个"
+    }
+    val normalized = mutableListOf<String>()
+    val firstLineByUrl = mutableMapOf<String, Int>()
+    entries.forEach { (lineNumber, value) ->
+        val uri = runCatching { java.net.URI(value) }.getOrNull()
+        val scheme = uri?.scheme?.lowercase()
+        when {
+            uri == null || scheme !in setOf("http", "https") || uri.host.isNullOrBlank() ->
+                errors += "第 $lineNumber 个网址必须是完整 HTTP(S) 地址"
+            !uri.userInfo.isNullOrBlank() ->
+                errors += "第 $lineNumber 个网址不能包含用户名或密码"
+            else -> {
+                val canonical = ResearchCleaner.canonicalUrl(value)
+                val duplicateLine = firstLineByUrl.putIfAbsent(canonical, lineNumber)
+                if (duplicateLine != null) {
+                    errors += "第 $lineNumber 个网址与第 $duplicateLine 个重复"
+                } else {
+                    normalized += canonical
+                }
+            }
+        }
+    }
+    return ManualResearchUrlValidation(
+        urls = normalized.take(maxUrls),
+        errors = errors.distinct(),
+        hasCleartextHttp = normalized.any { it.startsWith("http://", ignoreCase = true) }
+    )
+}
 
 @Serializable
 data class CharacterResearchPlan(

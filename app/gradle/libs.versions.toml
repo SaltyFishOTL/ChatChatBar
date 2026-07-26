@@ -25,6 +25,8 @@ kotlinxDatetime = "0.6.2"
 msgpack = "0.9.12"
 lucideIcons = "2.2.1"
 media3 = "1.10.1"
+jsoup = "1.22.2"
+desugarJdkLibs = "2.0.3"
 
 [libraries]
 androidx-core-ktx = { module = "androidx.core:core-ktx", version.ref = "androidxCore" }
@@ -73,6 +75,8 @@ kotlinx-coroutines-android = { module = "org.jetbrains.kotlinx:kotlinx-coroutine
 # Icons
 icons-lucide-cmp = { module = "com.composables:icons-lucide-cmp", version.ref = "lucideIcons" }
 androidx-media3-exoplayer = { module = "androidx.media3:media3-exoplayer", version.ref = "media3" }
+jsoup = { module = "org.jsoup:jsoup", version.ref = "jsoup" }
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugarJdkLibs" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "androidGradlePlugin" }

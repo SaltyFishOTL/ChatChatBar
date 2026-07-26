@@ -2,6 +2,7 @@ package com.example.chatbar.domain.search
 
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -17,13 +18,14 @@ class CharacterResearchService(
     private val planner: CharacterResearchPlanProvider,
     private val backend: SearchBackend,
     private val summarizer: ResearchBriefSummarizer,
-    private val referenceDocumentRetriever: CharacterReferenceDocumentRetriever? = null
+    private val referenceDocumentRetriever: CharacterReferenceDocumentRetriever? = null,
+    private val manualWebPageRetriever: ManualWebPageRetriever? = null
 ) {
     suspend fun research(
         userInput: String,
         currentCard: CharacterCard,
         modelConfig: ModelConfig,
-        webSearchEnabled: Boolean = true,
+        researchOptions: CharacterResearchOptions = CharacterResearchOptions(),
         referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
         onDebug: (ResearchDebugSnapshot) -> Unit = {},
         resumeFrom: ResearchDebugSnapshot? = null,
@@ -31,12 +33,23 @@ class CharacterResearchService(
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
-        if (!webSearchEnabled && referenceDocuments.isEmpty()) {
-            onStatus("搜索增强未启用，跳过搜索")
+        val encyclopediaEnabled =
+            researchOptions.mode == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH
+        val manualUrls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+            val validation = validateManualResearchUrls(researchOptions.urls)
+            require(validation.isValid) { validation.errors.joinToString("；") }
+            require(validation.urls.isNotEmpty()) { "指定网址模式至少需要一个有效网址" }
+            validation.urls
+        } else {
+            emptyList()
+        }
+        val manualUrlsEnabled = manualUrls.isNotEmpty()
+        if (!encyclopediaEnabled && !manualUrlsEnabled && referenceDocuments.isEmpty()) {
+            onStatus("未启用外部资料，直接开始生成")
             return@withContext null
         }
         val maxResearchItems = MAX_RESEARCH_ITEMS
-        val maxResults = if (webSearchEnabled) {
+        val maxResults = if (encyclopediaEnabled) {
             settingsProvider().webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
         } else {
             1
@@ -48,7 +61,7 @@ class CharacterResearchService(
         }
         val planResult = when {
             resumeFrom?.plan != null -> CharacterResearchPlanResult(plan = resumeFrom.plan)
-            webSearchEnabled -> planner.plan(
+            encyclopediaEnabled -> planner.plan(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = modelConfig,
@@ -56,22 +69,28 @@ class CharacterResearchService(
                 onStatus = onStatus,
                 onRawText = { text -> onVisibleOutput("research-plan", "搜索规划输出", text) }
             )
-            else -> CharacterResearchPlanResult(plan = referenceDocumentPlan())
+            manualUrlsEnabled -> CharacterResearchPlanResult(plan = manualUrlPlan(manualUrls))
+            referenceDocuments.isNotEmpty() -> CharacterResearchPlanResult(plan = referenceDocumentPlan())
+            else -> CharacterResearchPlanResult()
         }
-        val plan = planResult.plan
-            ?: fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
-            ?: referenceDocumentPlan().takeIf { referenceDocuments.isNotEmpty() }
+        val plan = planResult.plan ?: when {
+            encyclopediaEnabled ->
+                fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
+                    ?: referenceDocumentPlan().takeIf { referenceDocuments.isNotEmpty() }
+            referenceDocuments.isNotEmpty() -> referenceDocumentPlan()
+            else -> null
+        }
         if (plan == null) {
-            onStatus("搜索规划失败，且没有可用保底关键词，跳过搜索")
+            onStatus("资料规划失败，且没有可用来源，直接开始生成")
             return@withContext null
         }
-        if (webSearchEnabled && planResult.plan == null) {
+        if (encyclopediaEnabled && planResult.plan == null) {
             onStatus("搜索规划失败，改用保底关键词继续搜索：${plan.queries.joinToString("、") { it.query }.statusSnippet(120)}")
         }
         publish(ResearchDebugSnapshot(plan = plan))
         val resumedBrief = resumeFrom?.brief?.takeIf(ResearchBrief::hasContent)
         if (resumedBrief != null) {
-            onStatus("沿用已整理的搜索资料，开始生成")
+            onStatus("沿用已整理的外部资料，开始生成")
             publish(
                 ResearchDebugSnapshot(
                     plan = plan,
@@ -81,11 +100,15 @@ class CharacterResearchService(
             )
             return@withContext resumedBrief
         }
-        if ((!plan.needSearch || plan.queries.isEmpty()) && referenceDocuments.isEmpty()) {
+        if (
+            (!plan.needSearch || plan.queries.isEmpty()) &&
+            referenceDocuments.isEmpty() &&
+            !manualUrlsEnabled
+        ) {
             return@withContext null
         }
 
-        val queries = if (webSearchEnabled && plan.needSearch) {
+        val queries = if (encyclopediaEnabled && plan.needSearch) {
             plan.queries.take(maxResearchItems)
         } else {
             emptyList()
@@ -135,6 +158,36 @@ class CharacterResearchService(
                 )
             }
 
+            val manualPageSources = if (manualUrlsEnabled) {
+                val retriever = manualWebPageRetriever
+                    ?: error("指定网页读取服务不可用")
+                val result = retriever.retrieve(manualUrls, onStatus)
+                if (result.failures.isNotEmpty()) {
+                    result.failures.forEachIndexed { index, failure ->
+                        onStatus(
+                            "指定网页失败 ${index + 1}/${result.failures.size}：" +
+                                "${failure.url.statusSnippet(80)}；${failure.reason.statusSnippet(120)}"
+                        )
+                    }
+                    onStatus(
+                        "指定网页读取完成：成功 ${result.hits.size} 个，失败 ${result.failures.size} 个"
+                    )
+                }
+                val cleaned = ResearchCleaner.toResearchSources(
+                    hits = result.hits,
+                    extracts = emptyList(),
+                    maxSources = MAX_MANUAL_RESEARCH_URLS,
+                    maxExcerptChars = MAX_MANUAL_WEB_PAGE_EXCERPT_CHARS
+                )
+                if (cleaned.isEmpty()) {
+                    error("指定网页全部读取失败，或数据清理后没有可用内容")
+                }
+                onStatus("指定网页清洗完成：${cleaned.size} 个来源")
+                cleaned
+            } else {
+                emptyList()
+            }
+
             val webHits = if (queries.isNotEmpty()) withTimeoutOrNull(35_000L) {
                 queries.flatMapIndexed { index, query ->
                     onStatus("正在搜索百科 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
@@ -180,7 +233,7 @@ class CharacterResearchService(
                 maxSources = maxResearchItems,
                 maxExcerptChars = FINAL_EXCERPT_CHARS
             )
-            (documentSources + webSources).mapIndexed { index, source ->
+            (documentSources + manualPageSources + webSources).mapIndexed { index, source ->
                 source.copy(sourceId = "S${index + 1}")
             }
         }
@@ -193,13 +246,7 @@ class CharacterResearchService(
         }
         publish(ResearchDebugSnapshot(plan = plan, sources = sources))
 
-        onStatus(
-            if (referenceDocuments.isNotEmpty()) {
-                "正在清洗并压缩检索资料：${sources.size} 个来源"
-            } else {
-                "正在清洗并压缩百科资料：${sources.size} 个来源"
-            }
-        )
+        onStatus("正在清洗并压缩外部资料：${sources.size} 个来源")
         val summaryResult = runCatching {
             summarizer.summarize(
                 request = userInput,
@@ -220,12 +267,12 @@ class CharacterResearchService(
             summarizedBrief
         } else {
             if (summaryResult.failureReason.isNotBlank()) {
-                onStatus("搜索资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
+                onStatus("外部资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
             }
             onStatus("AI资料整理不可用，使用清洗正文兜底摘要")
             ResearchCleaner.fallbackBrief(
                 plan.reason,
-                queries.map { it.query } + if (referenceDocuments.isNotEmpty()) {
+                plan.queries.map { it.query } + if (referenceDocuments.isNotEmpty()) {
                     listOf("上传参考文档 RAG")
                 } else {
                     emptyList()
@@ -247,12 +294,20 @@ class CharacterResearchService(
                     }.orEmpty()
                 )
             )
-            onStatus("搜索资料已整理，开始生成")
+            onStatus("外部资料已整理，开始生成")
         } else {
-            onStatus("搜索资料为空，继续直接生成")
+            onStatus("外部资料为空，继续直接生成")
         }
         brief
     }
+
+    private fun manualUrlPlan(urls: List<String>): CharacterResearchPlan = CharacterResearchPlan(
+        needSearch = true,
+        reason = "读取并整理用户指定网页，不执行关键词搜索",
+        queries = urls.mapIndexed { index, url ->
+            CharacterResearchQuery(query = url, priority = index + 1)
+        }
+    )
 
     private fun referenceDocumentPlan(): CharacterResearchPlan = CharacterResearchPlan(
         needSearch = true,

@@ -22,6 +22,7 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.DocumentRagStatus
@@ -54,7 +55,10 @@ import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.CharacterReferenceDocument
+import com.example.chatbar.domain.search.CharacterResearchOptions
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.search.sourceSignaturePart
+import com.example.chatbar.domain.search.validateManualResearchUrls
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.voice.FishAudioModel
 import com.example.chatbar.domain.voice.FishAudioModelPage
@@ -297,15 +301,17 @@ class CharacterEditViewModel(
     private val _autoFillDefaultModelId = MutableStateFlow<String?>(null)
     val autoFillDefaultModelId: StateFlow<String?> = _autoFillDefaultModelId.asStateFlow()
 
-    private val _autoFillWebSearchEnabled = MutableStateFlow(
-        settingsRepository.currentAppSettings.characterAutoFillWebSearchEnabled
+    private val _autoFillResearchSourceMode = MutableStateFlow(
+        settingsRepository.currentAppSettings.characterAutoFillResearchSourceMode
     )
-    val autoFillWebSearchEnabled: StateFlow<Boolean> = _autoFillWebSearchEnabled.asStateFlow()
+    val autoFillResearchSourceMode: StateFlow<CharacterResearchSourceMode> =
+        _autoFillResearchSourceMode.asStateFlow()
 
-    private val _rewriteWebSearchEnabled = MutableStateFlow(
-        settingsRepository.currentAppSettings.characterRewriteWebSearchEnabled
+    private val _rewriteResearchSourceMode = MutableStateFlow(
+        settingsRepository.currentAppSettings.characterRewriteResearchSourceMode
     )
-    val rewriteWebSearchEnabled: StateFlow<Boolean> = _rewriteWebSearchEnabled.asStateFlow()
+    val rewriteResearchSourceMode: StateFlow<CharacterResearchSourceMode> =
+        _rewriteResearchSourceMode.asStateFlow()
 
     private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
@@ -361,8 +367,8 @@ class CharacterEditViewModel(
                 val settings = settingsRepository.getAppSettings()
                 _autoFillModels.value = modelResolver.availableChatModels(settings)
                 _autoFillDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
-                _autoFillWebSearchEnabled.value = settings.characterAutoFillWebSearchEnabled
-                _rewriteWebSearchEnabled.value = settings.characterRewriteWebSearchEnabled
+                _autoFillResearchSourceMode.value = settings.characterAutoFillResearchSourceMode
+                _rewriteResearchSourceMode.value = settings.characterRewriteResearchSourceMode
             }.onFailure {
                 _autoFillModels.value = emptyList()
                 _autoFillDefaultModelId.value = null
@@ -370,15 +376,15 @@ class CharacterEditViewModel(
         }
     }
 
-    fun setAutoFillWebSearchEnabled(enabled: Boolean) {
-        if (_autoFillWebSearchEnabled.value == enabled) return
-        _autoFillWebSearchEnabled.value = enabled
+    fun setAutoFillResearchSourceMode(mode: CharacterResearchSourceMode) {
+        if (_autoFillResearchSourceMode.value == mode) return
+        _autoFillResearchSourceMode.value = mode
         persistCharacterAiSearchPreferences()
     }
 
-    fun setRewriteWebSearchEnabled(enabled: Boolean) {
-        if (_rewriteWebSearchEnabled.value == enabled) return
-        _rewriteWebSearchEnabled.value = enabled
+    fun setRewriteResearchSourceMode(mode: CharacterResearchSourceMode) {
+        if (_rewriteResearchSourceMode.value == mode) return
+        _rewriteResearchSourceMode.value = mode
         persistCharacterAiSearchPreferences()
     }
 
@@ -388,8 +394,12 @@ class CharacterEditViewModel(
                 val settings = settingsRepository.getAppSettings()
                 settingsRepository.saveAppSettings(
                     settings.copy(
-                        characterAutoFillWebSearchEnabled = _autoFillWebSearchEnabled.value,
-                        characterRewriteWebSearchEnabled = _rewriteWebSearchEnabled.value
+                        characterAutoFillWebSearchEnabled =
+                            _autoFillResearchSourceMode.value == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+                        characterRewriteWebSearchEnabled =
+                            _rewriteResearchSourceMode.value == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+                        characterAutoFillResearchSourceMode = _autoFillResearchSourceMode.value,
+                        characterRewriteResearchSourceMode = _rewriteResearchSourceMode.value
                     )
                 )
             }
@@ -676,7 +686,8 @@ class CharacterEditViewModel(
         modelId: String? = null,
         imagePath: String? = null,
         referenceDocument: CharacterReferenceDocument? = null,
-        webSearchEnabled: Boolean = _autoFillWebSearchEnabled.value,
+        researchOptions: CharacterResearchOptions =
+            CharacterResearchOptions(mode = _autoFillResearchSourceMode.value),
         reusePrepared: Boolean = false
     ) {
         if (editMode != CharacterEditMode.STRUCTURED) {
@@ -684,8 +695,29 @@ class CharacterEditViewModel(
             return
         }
         val sourceImagePath = imagePath?.takeIf(String::isNotBlank)
-        if (userInput.isBlank() && sourceImagePath == null && referenceDocument == null) {
-            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息，或上传参考图片/文档")
+        val manualUrlValidation = validateManualResearchUrls(researchOptions.urls)
+        if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS &&
+            (!manualUrlValidation.isValid || manualUrlValidation.urls.isEmpty())
+        ) {
+            _autoFillState.value = CharacterAutoFillUiState(
+                error = manualUrlValidation.errors.firstOrNull() ?: "请至少输入一个有效网址"
+            )
+            return
+        }
+        val normalizedResearchOptions = researchOptions.copy(
+            urls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+                manualUrlValidation.urls
+            } else {
+                emptyList()
+            }
+        )
+        if (
+            userInput.isBlank() &&
+            sourceImagePath == null &&
+            referenceDocument == null &&
+            normalizedResearchOptions.urls.isEmpty()
+        ) {
+            _autoFillState.value = CharacterAutoFillUiState(error = "请输入角色信息，或提供参考图片、文档、网址")
             return
         }
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
@@ -699,7 +731,8 @@ class CharacterEditViewModel(
         val sourceSignature =
             "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n" +
                 "${referenceDocument?.fileName.orEmpty()}\n${referenceDocument?.content?.hashCode()}\n" +
-                "$webSearchEnabled\n${currentCard.hashCode()}"
+                "${normalizedResearchOptions.sourceSignaturePart()}\n" +
+                currentCard.hashCode()
         val previousState = _autoFillState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -759,7 +792,7 @@ class CharacterEditViewModel(
                     modelOverride = selectedModel,
                     imageBase64s = imageBase64s,
                     referenceDocuments = listOfNotNull(referenceDocument),
-                    webSearchEnabled = webSearchEnabled,
+                    researchOptions = normalizedResearchOptions,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
                         latestCheckpoint = checkpoint
@@ -1564,13 +1597,30 @@ class CharacterEditViewModel(
         userInput: String,
         modelId: String? = null,
         referenceDocument: CharacterReferenceDocument? = null,
-        webSearchEnabled: Boolean = _rewriteWebSearchEnabled.value,
+        researchOptions: CharacterResearchOptions =
+            CharacterResearchOptions(mode = _rewriteResearchSourceMode.value),
         reusePrepared: Boolean = false
     ) {
         if (userInput.isBlank()) {
             _rewriteState.value = CharacterRewriteUiState(error = "请输入改写要求")
             return
         }
+        val manualUrlValidation = validateManualResearchUrls(researchOptions.urls)
+        if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS &&
+            (!manualUrlValidation.isValid || manualUrlValidation.urls.isEmpty())
+        ) {
+            _rewriteState.value = CharacterRewriteUiState(
+                error = manualUrlValidation.errors.firstOrNull() ?: "请至少输入一个有效网址"
+            )
+            return
+        }
+        val normalizedResearchOptions = researchOptions.copy(
+            urls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+                manualUrlValidation.urls
+            } else {
+                emptyList()
+            }
+        )
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
         if (modelId != null && selectedModel == null) {
             _rewriteState.value = CharacterRewriteUiState(error = "所选模型不可用，请重新选择")
@@ -1581,7 +1631,8 @@ class CharacterEditViewModel(
         val selectedModelId = selectedModel?.id
         val sourceSignature =
             "$userInput\n$selectedModelId\n${referenceDocument?.fileName.orEmpty()}\n" +
-                "${referenceDocument?.content?.hashCode()}\n$webSearchEnabled\n${currentCard.hashCode()}"
+                "${referenceDocument?.content?.hashCode()}\n${normalizedResearchOptions.sourceSignaturePart()}\n" +
+                currentCard.hashCode()
         val previousState = _rewriteState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
@@ -1620,7 +1671,7 @@ class CharacterEditViewModel(
                     currentCard = currentCard,
                     modelOverride = selectedModel,
                     referenceDocuments = listOfNotNull(referenceDocument),
-                    webSearchEnabled = webSearchEnabled,
+                    researchOptions = normalizedResearchOptions,
                     resumeFrom = resumeCheckpoint,
                     onCheckpoint = { checkpoint ->
                         latestCheckpoint = checkpoint

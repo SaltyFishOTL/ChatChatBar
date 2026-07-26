@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.model
 
 import com.example.chatbar.data.local.entity.AppSettings
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PresetChatModel
@@ -46,7 +47,15 @@ class ModelConfigurationTest {
         assertTrue(settings.webSearchEnabled)
         assertTrue(settings.characterAutoFillWebSearchEnabled)
         assertTrue(settings.characterRewriteWebSearchEnabled)
-        assertEquals(4, settings.webSearchSettingsVersion)
+        assertEquals(5, settings.webSearchSettingsVersion)
+        assertEquals(
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+            settings.characterAutoFillResearchSourceMode
+        )
+        assertEquals(
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+            settings.characterRewriteResearchSourceMode
+        )
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
     }
 
@@ -59,7 +68,9 @@ class ModelConfigurationTest {
         assertFalse(settings.webSearchEnabled)
         assertFalse(settings.characterAutoFillWebSearchEnabled)
         assertFalse(settings.characterRewriteWebSearchEnabled)
-        assertEquals(4, settings.webSearchSettingsVersion)
+        assertEquals(5, settings.webSearchSettingsVersion)
+        assertEquals(CharacterResearchSourceMode.NONE, settings.characterAutoFillResearchSourceMode)
+        assertEquals(CharacterResearchSourceMode.NONE, settings.characterRewriteResearchSourceMode)
     }
 
     @Test fun currentCharacterAiSearchSettingsRemainIndependent() {
@@ -72,15 +83,22 @@ class ModelConfigurationTest {
 
         assertFalse(settings.characterAutoFillWebSearchEnabled)
         assertTrue(settings.characterRewriteWebSearchEnabled)
-        assertEquals(4, settings.webSearchSettingsVersion)
+        assertEquals(5, settings.webSearchSettingsVersion)
+        assertEquals(CharacterResearchSourceMode.NONE, settings.characterAutoFillResearchSourceMode)
+        assertEquals(
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+            settings.characterRewriteResearchSourceMode
+        )
         assertEquals(settings, settings.withCurrentWebSearchDefaults())
     }
 
     @Test fun independentCharacterAiSearchSettingsRoundTrip() {
         val original = AppSettings(
-            webSearchSettingsVersion = 4,
+            webSearchSettingsVersion = 5,
             characterAutoFillWebSearchEnabled = false,
-            characterRewriteWebSearchEnabled = true
+            characterRewriteWebSearchEnabled = true,
+            characterAutoFillResearchSourceMode = CharacterResearchSourceMode.MANUAL_URLS,
+            characterRewriteResearchSourceMode = CharacterResearchSourceMode.NONE
         )
 
         val encoded = json.encodeToString(AppSettings.serializer(), original)
@@ -88,6 +106,11 @@ class ModelConfigurationTest {
 
         assertFalse(decoded.characterAutoFillWebSearchEnabled)
         assertTrue(decoded.characterRewriteWebSearchEnabled)
+        assertEquals(CharacterResearchSourceMode.MANUAL_URLS, decoded.characterAutoFillResearchSourceMode)
+        assertEquals(CharacterResearchSourceMode.NONE, decoded.characterRewriteResearchSourceMode)
+        assertFalse(encoded.contains("manualUrls"))
+        assertFalse(encoded.contains("\"urls\""))
+        assertFalse(encoded.contains("https://"))
     }
 
     @Test fun unselectedDefaultImageModelFallsBackToDefaultChatModel() {
@@ -132,7 +155,9 @@ class ModelConfigurationTest {
         assertFalse(settings.webSearchEnabled)
         assertFalse(settings.characterAutoFillWebSearchEnabled)
         assertFalse(settings.characterRewriteWebSearchEnabled)
-        assertEquals(4, settings.webSearchSettingsVersion)
+        assertEquals(5, settings.webSearchSettingsVersion)
+        assertEquals(CharacterResearchSourceMode.NONE, settings.characterAutoFillResearchSourceMode)
+        assertEquals(CharacterResearchSourceMode.NONE, settings.characterRewriteResearchSourceMode)
         assertEquals(1, settings.webSearchMaxResultsPerQuery)
     }
 

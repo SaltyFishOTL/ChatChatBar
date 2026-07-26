@@ -99,6 +99,8 @@ class LlmResearchBriefSummarizer(
             PromptTemplates.characterResearchBriefSource(
                 sourceId = source.sourceId,
                 title = source.title,
+                sourceType = source.sourceType,
+                url = source.url,
                 excerpt = source.excerpt
             )
         }

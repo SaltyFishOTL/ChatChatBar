@@ -12,9 +12,11 @@ import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.CharacterReferenceDocument
+import com.example.chatbar.domain.search.CharacterResearchOptions
 import com.example.chatbar.domain.search.CharacterResearchService
 import com.example.chatbar.domain.search.ResearchBrief
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.search.hasManualUrlSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -91,23 +93,28 @@ class CharacterAutoFillService(
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
         referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
-        webSearchEnabled: Boolean = true
+        researchOptions: CharacterResearchOptions = CharacterResearchOptions()
     ): CharacterAutoFillDraft = withContext(Dispatchers.IO) {
         require(currentCard.editMode == CharacterEditMode.STRUCTURED) { "AI 自动填充仅支持分段模式" }
         require(
             userInput.isNotBlank() ||
                 imageBase64s.any(String::isNotBlank) ||
-                referenceDocuments.any { it.content.isNotBlank() }
-        ) { "请输入角色信息，或上传参考图片/文档" }
+                referenceDocuments.any { it.content.isNotBlank() } ||
+                researchOptions.hasManualUrlSource()
+        ) { "请输入角色信息，或提供参考图片、文档、网址" }
         val model = resolveModel(modelOverride)
         val imageContext = prepareImageContext(imageBase64s, model)
-        val researchBrief = if (userInput.isNotBlank() || referenceDocuments.isNotEmpty()) {
+        val researchBrief = if (
+            userInput.isNotBlank() ||
+            referenceDocuments.isNotEmpty() ||
+            researchOptions.hasManualUrlSource()
+        ) {
             buildResearchBrief(
                 userInput,
                 currentCard,
                 model,
                 referenceDocuments = referenceDocuments,
-                webSearchEnabled = webSearchEnabled
+                researchOptions = researchOptions
             )
         } else {
             null
@@ -133,7 +140,7 @@ class CharacterAutoFillService(
         modelOverride: ModelConfig? = null,
         imageBase64s: List<String> = emptyList(),
         referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
-        webSearchEnabled: Boolean = true,
+        researchOptions: CharacterResearchOptions = CharacterResearchOptions(),
         resumeFrom: CharacterAutoFillGenerationCheckpoint? = null,
         onCheckpoint: (CharacterAutoFillGenerationCheckpoint) -> Unit = {},
         onStatus: (String) -> Unit = {},
@@ -145,8 +152,9 @@ class CharacterAutoFillService(
         require(
             userInput.isNotBlank() ||
                 imageBase64s.any(String::isNotBlank) ||
-                referenceDocuments.any { it.content.isNotBlank() }
-        ) { "请输入角色信息，或上传参考图片/文档" }
+                referenceDocuments.any { it.content.isNotBlank() } ||
+                researchOptions.hasManualUrlSource()
+        ) { "请输入角色信息，或提供参考图片、文档、网址" }
         val model = resolveModel(modelOverride)
         var checkpoint = resumeFrom ?: CharacterAutoFillGenerationCheckpoint()
         val imageContext = checkpoint.imageContext?.let {
@@ -158,13 +166,17 @@ class CharacterAutoFillService(
             )
             onCheckpoint(checkpoint)
         }
-        val researchBrief = if (userInput.isNotBlank() || referenceDocuments.isNotEmpty()) {
+        val researchBrief = if (
+            userInput.isNotBlank() ||
+            referenceDocuments.isNotEmpty() ||
+            researchOptions.hasManualUrlSource()
+        ) {
             buildResearchBrief(
                 userInput,
                 currentCard,
                 model,
                 referenceDocuments,
-                webSearchEnabled,
+                researchOptions,
                 onStatus,
                 onResearchDebug,
                 onVisibleOutput,
@@ -246,14 +258,20 @@ class CharacterAutoFillService(
         currentCard: CharacterCard,
         generationModel: ModelConfig,
         referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
-        webSearchEnabled: Boolean = true,
+        researchOptions: CharacterResearchOptions = CharacterResearchOptions(),
         onStatus: (String) -> Unit = {},
         onResearchDebug: (ResearchDebugSnapshot) -> Unit = {},
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         resumeFrom: ResearchDebugSnapshot? = null,
         onCheckpoint: (ResearchDebugSnapshot) -> Unit = {}
     ): ResearchBrief? {
-        val service = researchService ?: return null
+        val service = researchService ?: if (
+            referenceDocuments.isNotEmpty() || researchOptions.hasManualUrlSource()
+        ) {
+            error("外部资料研究服务不可用")
+        } else {
+            return null
+        }
         val researchModel = runCatching { modelResolver.retrievalModel() }
             .getOrNull()
             ?.takeIf { it.apiKey.isNotBlank() }
@@ -263,7 +281,7 @@ class CharacterAutoFillService(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = researchModel,
-                webSearchEnabled = webSearchEnabled,
+                researchOptions = researchOptions,
                 referenceDocuments = referenceDocuments,
                 onDebug = onResearchDebug,
                 resumeFrom = resumeFrom,
@@ -272,7 +290,10 @@ class CharacterAutoFillService(
                 onVisibleOutput = onVisibleOutput
             )
         }
-        return if (referenceDocuments.isNotEmpty()) {
+        return if (
+            referenceDocuments.isNotEmpty() ||
+            researchOptions.hasManualUrlSource()
+        ) {
             research()
         } else {
             runCatching { research() }.getOrNull()

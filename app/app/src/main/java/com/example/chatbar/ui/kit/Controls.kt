@@ -34,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.composed
+import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
@@ -88,17 +89,19 @@ fun <T> CbSelect(
     optionLabel: (T) -> String,
     onValueChange: (T) -> Unit,
     modifier: Modifier = Modifier,
-    placeholder: String = "请选择"
+    placeholder: String = "请选择",
+    enabled: Boolean = true
 ) {
     var open by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(ChatBarShape.sm)
     Box(
         modifier = modifier
+            .alpha(if (enabled) 1f else 0.6f)
             .fillMaxWidth()
             .heightIn(min = 44.dp)
             .background(ChatBarTheme.colors.surfaceSubtle, shape)
             .border(1.dp, ChatBarTheme.colors.border, shape)
-            .clickable(role = Role.Button) { open = true }
+            .clickable(enabled = enabled, role = Role.Button) { open = true }
             .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.md)
     ) {
         CbText(

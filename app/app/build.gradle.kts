@@ -78,6 +78,7 @@ android {
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
+        isCoreLibraryDesugaringEnabled = true
     }
     buildFeatures {
       compose = true
@@ -104,6 +105,7 @@ tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach 
 }
 
 dependencies {
+  coreLibraryDesugaring(libs.desugar.jdk.libs)
   val composeBom = platform(libs.androidx.compose.bom)
   implementation(composeBom)
   androidTestImplementation(composeBom)
@@ -151,6 +153,7 @@ dependencies {
   implementation(libs.okhttp)
   implementation(libs.okhttp.sse)
   implementation(libs.okhttp.logging)
+  implementation(libs.jsoup)
   implementation(libs.retrofit)
   implementation(libs.retrofit.kotlinx.serialization)
 

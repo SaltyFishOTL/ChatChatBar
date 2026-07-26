@@ -20,6 +20,8 @@ class CharacterResearchPlannerTest {
         val source = PromptTemplates.characterResearchBriefSource(
             sourceId = "S1",
             title = "Source",
+            sourceType = "manual-web-page",
+            url = "https://example.com/source",
             excerpt = "source excerpt"
         )
         val briefUser = PromptTemplates.characterResearchBriefUserPrompt(
@@ -32,7 +34,9 @@ class CharacterResearchPlannerTest {
         assertTrue(plannerUser.contains("design a canon role"))
         assertFalse(plannerUser.contains("{{userInput}}"))
         assertTrue(briefUser.contains("[S1] Source"))
-        assertTrue(briefUser.contains("检索目标"))
+        assertTrue(briefUser.contains("manual-web-page"))
+        assertTrue(briefUser.contains("https://example.com/source"))
+        assertTrue(briefUser.contains("资料整理目标"))
         assertFalse(briefUser.contains("{{sources}}"))
     }
 
@@ -46,6 +50,8 @@ class CharacterResearchPlannerTest {
             PromptTemplates.characterResearchBriefSource(
                 sourceId = "S$index",
                 title = "Source $index",
+                sourceType = "encyclopedia",
+                url = "https://example.com/source-$index",
                 excerpt = "source $index detail ".repeat(260) + "SOURCE_${index}_TAIL_MARKER"
             )
         }

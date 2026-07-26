@@ -40,6 +40,10 @@ data class AppSettings(
     val webSearchEnabled: Boolean = true,
     val characterAutoFillWebSearchEnabled: Boolean = true,
     val characterRewriteWebSearchEnabled: Boolean = true,
+    val characterAutoFillResearchSourceMode: CharacterResearchSourceMode =
+        CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+    val characterRewriteResearchSourceMode: CharacterResearchSourceMode =
+        CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageAspectRatio: String = "",
     val imagePromptToolPreference: String = "",
@@ -112,20 +116,46 @@ enum class ModelConfigurationMode {
     FULL_CUSTOM
 }
 
-const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 4
+@Serializable
+enum class CharacterResearchSourceMode {
+    NONE,
+    ENCYCLOPEDIA_SEARCH,
+    MANUAL_URLS
+}
+
+const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 5
 
 fun AppSettings.withCurrentWebSearchDefaults(): AppSettings =
     if (webSearchSettingsVersion >= CURRENT_WEB_SEARCH_SETTINGS_VERSION) {
         this
     } else {
         val migratedEnabled = if (webSearchSettingsVersion == 0) true else webSearchEnabled
+        val autoFillEnabled = if (webSearchSettingsVersion >= 4) {
+            characterAutoFillWebSearchEnabled
+        } else {
+            migratedEnabled
+        }
+        val rewriteEnabled = if (webSearchSettingsVersion >= 4) {
+            characterRewriteWebSearchEnabled
+        } else {
+            migratedEnabled
+        }
         copy(
             webSearchSettingsVersion = CURRENT_WEB_SEARCH_SETTINGS_VERSION,
             webSearchEnabled = migratedEnabled,
-            characterAutoFillWebSearchEnabled = migratedEnabled,
-            characterRewriteWebSearchEnabled = migratedEnabled,
+            characterAutoFillWebSearchEnabled = autoFillEnabled,
+            characterRewriteWebSearchEnabled = rewriteEnabled,
+            characterAutoFillResearchSourceMode = autoFillEnabled.toCharacterResearchSourceMode(),
+            characterRewriteResearchSourceMode = rewriteEnabled.toCharacterResearchSourceMode(),
             webSearchMaxResultsPerQuery = 1
         )
+    }
+
+private fun Boolean.toCharacterResearchSourceMode(): CharacterResearchSourceMode =
+    if (this) {
+        CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH
+    } else {
+        CharacterResearchSourceMode.NONE
     }
 
 fun ModelConfigurationMode.normalized(): ModelConfigurationMode = when (this) {

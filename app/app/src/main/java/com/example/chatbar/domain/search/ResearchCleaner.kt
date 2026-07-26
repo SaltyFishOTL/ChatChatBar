@@ -9,7 +9,15 @@ object ResearchCleaner {
         Regex("(?i)developer\\s+message"),
         Regex("(?i)you\\s+are\\s+(chatgpt|an\\s+ai|a\\s+language\\s+model)"),
         Regex("(?i)do\\s+not\\s+follow"),
-        Regex("(?i)follow\\s+these\\s+instructions")
+        Regex("(?i)follow\\s+these\\s+instructions"),
+        Regex("(忽略|无视).{0,20}(之前|此前|以上|先前|原有|所有).{0,20}(指令|提示词|要求)"),
+        Regex("(系统提示词|开发者消息|开发者指令)"),
+        Regex("(输出|透露|泄露|显示).{0,12}(系统提示词|开发者消息|开发者指令)"),
+        Regex("(不要|无需).{0,12}遵循.{0,20}(之前|以上|原有).{0,12}(指令|提示词)"),
+        Regex("请.{0,12}(遵循|执行)以下.{0,12}(指令|提示词)"),
+        Regex("(以前|これまで|上記)の.{0,12}(指示|命令).{0,12}(無視|従わ)"),
+        Regex("(システムプロンプト|開発者メッセージ)"),
+        Regex("次の.{0,12}(指示|命令)に従")
     )
 
     fun toResearchSources(
@@ -28,7 +36,12 @@ object ResearchCleaner {
                     ?: best.rawContent
                     ?: best.content
                 val excerpt = sanitizeText(raw).take(maxExcerptChars).trim()
-                if (excerpt.isBlank()) return@mapNotNull null
+                if (
+                    excerpt.isBlank() ||
+                    excerpt.lineSequence().none { it != REMOVED_INSTRUCTION_MARKER }
+                ) {
+                    return@mapNotNull null
+                }
                 ResearchSource(
                     sourceId = "",
                     title = sanitizeText(best.title).take(160),
@@ -73,7 +86,7 @@ object ResearchCleaner {
             .map { line ->
                 val normalized = line.replace(Regex("\\s+"), " ").trim()
                 if (blockedInstructionPatterns.any { it.containsMatchIn(normalized) }) {
-                    "[instruction-like text removed]"
+                    REMOVED_INSTRUCTION_MARKER
                 } else {
                     normalized
                 }
@@ -100,6 +113,9 @@ object ResearchCleaner {
                 ?.takeIf(String::isNotBlank)
             buildString {
                 append(scheme).append("://").append(host)
+                if (uri.port >= 0 && !isDefaultPort(scheme, uri.port)) {
+                    append(':').append(uri.port)
+                }
                 if (path.isNotBlank()) append(path)
                 if (!query.isNullOrBlank()) append('?').append(query)
             }
@@ -107,6 +123,11 @@ object ResearchCleaner {
             url.trim().substringBefore('#').trimEnd('/')
         }
     }
+
+    private fun isDefaultPort(scheme: String, port: Int): Boolean =
+        (scheme == "http" && port == 80) || (scheme == "https" && port == 443)
+
+    private const val REMOVED_INSTRUCTION_MARKER = "[instruction-like text removed]"
 
     fun sourceType(url: String): String {
         val uri = runCatching { URI(url) }.getOrNull()
@@ -119,6 +140,7 @@ object ResearchCleaner {
             host.endsWith(".edu") || host.contains(".edu.") -> "academic"
             host.contains("moegirl.org.cn") -> "moegirlpedia"
             host.contains("wikipedia.org") -> "wikipedia"
+            host.contains("dic.pixiv.net") -> "encyclopedia"
             host.contains("baike.") -> "encyclopedia"
             host.contains("fandom.com") || host.contains("wiki") -> "fan-wiki"
             host.contains("official") || host.contains("fandom") -> "official-or-fan"

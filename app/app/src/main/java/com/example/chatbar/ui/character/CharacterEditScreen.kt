@@ -77,6 +77,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.DocumentInfo
@@ -93,7 +94,10 @@ import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
 import com.example.chatbar.domain.image.imageCropFractionRect
 import com.example.chatbar.domain.search.CharacterReferenceDocument
+import com.example.chatbar.domain.search.CharacterResearchOptions
+import com.example.chatbar.domain.search.ManualResearchUrlValidation
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.search.validateManualResearchUrls
 import com.example.chatbar.domain.voice.FishAudioLibrary
 import com.example.chatbar.domain.voice.FishAudioModel
 import com.example.chatbar.domain.voice.FishAudioModelQuery
@@ -177,8 +181,8 @@ fun CharacterEditScreen(
     val voicePickerState by viewModel.voicePickerState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
-    val autoFillWebSearchEnabled by viewModel.autoFillWebSearchEnabled.collectAsState()
-    val rewriteWebSearchEnabled by viewModel.rewriteWebSearchEnabled.collectAsState()
+    val autoFillResearchSourceMode by viewModel.autoFillResearchSourceMode.collectAsState()
+    val rewriteResearchSourceMode by viewModel.rewriteResearchSourceMode.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
     val context = LocalContext.current
 
@@ -861,8 +865,8 @@ fun CharacterEditScreen(
             state = autoFillState,
             models = autoFillModels,
             defaultModelId = autoFillDefaultModelId,
-            webSearchEnabled = autoFillWebSearchEnabled,
-            onWebSearchEnabledChange = viewModel::setAutoFillWebSearchEnabled,
+            researchSourceMode = autoFillResearchSourceMode,
+            onResearchSourceModeChange = viewModel::setAutoFillResearchSourceMode,
             onDismiss = {
                 showAutoFillDialog = false
                 viewModel.clearAutoFillDraft()
@@ -870,22 +874,22 @@ fun CharacterEditScreen(
             onPickImage = { callback -> pickImage(callback) },
             onPickDocument = { callback -> pickReferenceDocument(callback) },
             onDeleteImage = viewModel::deleteTransientImage,
-            onGenerate = { input, modelId, imagePath, referenceDocument, webSearchEnabled ->
+            onGenerate = { input, modelId, imagePath, referenceDocument, researchOptions ->
                 viewModel.generateAutoFillDraft(
                     input,
                     modelId,
                     imagePath,
                     referenceDocument,
-                    webSearchEnabled = webSearchEnabled
+                    researchOptions = researchOptions
                 )
             },
-            onRegenerateFinal = { input, modelId, imagePath, referenceDocument, webSearchEnabled, regenerateFinal ->
+            onRegenerateFinal = { input, modelId, imagePath, referenceDocument, researchOptions, regenerateFinal ->
                 viewModel.generateAutoFillDraft(
                     input,
                     modelId,
                     imagePath,
                     referenceDocument,
-                    webSearchEnabled = webSearchEnabled,
+                    researchOptions = researchOptions,
                     reusePrepared = regenerateFinal
                 )
             },
@@ -905,27 +909,27 @@ fun CharacterEditScreen(
             state = rewriteState,
             models = autoFillModels,
             defaultModelId = autoFillDefaultModelId,
-            webSearchEnabled = rewriteWebSearchEnabled,
-            onWebSearchEnabledChange = viewModel::setRewriteWebSearchEnabled,
+            researchSourceMode = rewriteResearchSourceMode,
+            onResearchSourceModeChange = viewModel::setRewriteResearchSourceMode,
             onDismiss = {
                 showRewriteDialog = false
                 viewModel.clearRewriteDraft()
             },
             onPickDocument = { callback -> pickReferenceDocument(callback) },
-            onGenerate = { input, modelId, referenceDocument, webSearchEnabled ->
+            onGenerate = { input, modelId, referenceDocument, researchOptions ->
                 viewModel.generateRewriteDraft(
                     input,
                     modelId,
                     referenceDocument,
-                    webSearchEnabled = webSearchEnabled
+                    researchOptions = researchOptions
                 )
             },
-            onRegenerateFinal = { input, modelId, referenceDocument, webSearchEnabled, regenerateFinal ->
+            onRegenerateFinal = { input, modelId, referenceDocument, researchOptions, regenerateFinal ->
                 viewModel.generateRewriteDraft(
                     input,
                     modelId,
                     referenceDocument,
-                    webSearchEnabled = webSearchEnabled,
+                    researchOptions = researchOptions,
                     reusePrepared = regenerateFinal
                 )
             },
@@ -1494,14 +1498,21 @@ private fun CharacterAutoFillDialog(
     state: CharacterAutoFillUiState,
     models: List<ModelConfig>,
     defaultModelId: String?,
-    webSearchEnabled: Boolean,
-    onWebSearchEnabledChange: (Boolean) -> Unit,
+    researchSourceMode: CharacterResearchSourceMode,
+    onResearchSourceModeChange: (CharacterResearchSourceMode) -> Unit,
     onDismiss: () -> Unit,
     onPickImage: (((String) -> Unit) -> Unit),
     onPickDocument: (((Result<CharacterReferenceDocument>) -> Unit) -> Unit),
     onDeleteImage: (String?) -> Unit,
-    onGenerate: (String, String?, String?, CharacterReferenceDocument?, Boolean) -> Unit,
-    onRegenerateFinal: (String, String?, String?, CharacterReferenceDocument?, Boolean, Boolean) -> Unit,
+    onGenerate: (String, String?, String?, CharacterReferenceDocument?, CharacterResearchOptions) -> Unit,
+    onRegenerateFinal: (
+        String,
+        String?,
+        String?,
+        CharacterReferenceDocument?,
+        CharacterResearchOptions,
+        Boolean
+    ) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1511,6 +1522,7 @@ private fun CharacterAutoFillDialog(
     var sourceImagePath by remember { mutableStateOf<String?>(null) }
     var referenceDocument by remember { mutableStateOf<CharacterReferenceDocument?>(null) }
     var referenceDocumentError by remember { mutableStateOf<String?>(null) }
+    var manualUrlsText by remember { mutableStateOf("") }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
     val modelOptions = remember(models, defaultModelId) {
         val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
@@ -1520,6 +1532,17 @@ private fun CharacterAutoFillDialog(
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
     val busy = state.isGenerating || state.coverImage.isGenerating
+    val manualUrlValidation = remember(manualUrlsText) { validateManualResearchUrls(manualUrlsText) }
+    val manualModeReady = researchSourceMode != CharacterResearchSourceMode.MANUAL_URLS ||
+        (manualUrlValidation.isValid && manualUrlValidation.urls.isNotEmpty())
+    val researchOptions = CharacterResearchOptions(
+        mode = researchSourceMode,
+        urls = if (researchSourceMode == CharacterResearchSourceMode.MANUAL_URLS) {
+            manualUrlValidation.urls
+        } else {
+            emptyList()
+        }
+    )
     fun clearSourceImage() {
         onDeleteImage(sourceImagePath)
         sourceImagePath = null
@@ -1587,9 +1610,12 @@ private fun CharacterAutoFillDialog(
                     placeholder = "本次使用模型"
                 )
             }
-            CharacterWebSearchToggle(
-                enabled = webSearchEnabled,
-                onEnabledChange = onWebSearchEnabledChange,
+            CharacterResearchSourceSelector(
+                mode = researchSourceMode,
+                onModeChange = onResearchSourceModeChange,
+                manualUrlsText = manualUrlsText,
+                onManualUrlsTextChange = { manualUrlsText = it },
+                manualUrlValidation = manualUrlValidation,
                 busy = busy
             )
             CbField("角色信息与扮演要求") {
@@ -1657,15 +1683,16 @@ private fun CharacterAutoFillDialog(
                                 selectedModel.id,
                                 sourceImagePath,
                                 referenceDocument,
-                                webSearchEnabled
+                                researchOptions
                             )
                         },
                         modifier = Modifier.weight(1f),
                         enabled = (
                             input.isNotBlank() ||
                                 !sourceImagePath.isNullOrBlank() ||
-                                referenceDocument != null
-                            ) && !state.coverImage.isGenerating,
+                                referenceDocument != null ||
+                                researchOptions.urls.isNotEmpty()
+                            ) && manualModeReady && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(
@@ -1685,7 +1712,7 @@ private fun CharacterAutoFillDialog(
                                 selectedModel.id,
                                 sourceImagePath,
                                 referenceDocument,
-                                webSearchEnabled,
+                                researchOptions,
                                 state.draft != null
                             )
                         },
@@ -1693,8 +1720,9 @@ private fun CharacterAutoFillDialog(
                         enabled = (
                             input.isNotBlank() ||
                                 !sourceImagePath.isNullOrBlank() ||
-                                referenceDocument != null
-                            ) && !state.coverImage.isGenerating,
+                                referenceDocument != null ||
+                                researchOptions.urls.isNotEmpty()
+                            ) && manualModeReady && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
                     )
                 }
@@ -1752,12 +1780,18 @@ private fun CharacterRewriteDialog(
     state: CharacterRewriteUiState,
     models: List<ModelConfig>,
     defaultModelId: String?,
-    webSearchEnabled: Boolean,
-    onWebSearchEnabledChange: (Boolean) -> Unit,
+    researchSourceMode: CharacterResearchSourceMode,
+    onResearchSourceModeChange: (CharacterResearchSourceMode) -> Unit,
     onDismiss: () -> Unit,
     onPickDocument: (((Result<CharacterReferenceDocument>) -> Unit) -> Unit),
-    onGenerate: (String, String?, CharacterReferenceDocument?, Boolean) -> Unit,
-    onRegenerateFinal: (String, String?, CharacterReferenceDocument?, Boolean, Boolean) -> Unit,
+    onGenerate: (String, String?, CharacterReferenceDocument?, CharacterResearchOptions) -> Unit,
+    onRegenerateFinal: (
+        String,
+        String?,
+        CharacterReferenceDocument?,
+        CharacterResearchOptions,
+        Boolean
+    ) -> Unit,
     onGenerateCover: (String?) -> Unit,
     onCancel: () -> Unit,
     onCancelCover: () -> Unit,
@@ -1766,6 +1800,7 @@ private fun CharacterRewriteDialog(
     var input by remember { mutableStateOf("") }
     var referenceDocument by remember { mutableStateOf<CharacterReferenceDocument?>(null) }
     var referenceDocumentError by remember { mutableStateOf<String?>(null) }
+    var manualUrlsText by remember { mutableStateOf("") }
     var selectedModelId by remember { mutableStateOf<String?>(null) }
     val modelOptions = remember(models, defaultModelId) {
         val defaultModelLabel = models.firstOrNull { it.id == defaultModelId }?.autoFillLabel()
@@ -1775,6 +1810,17 @@ private fun CharacterRewriteDialog(
     val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
     val bodyScroll = rememberScrollState()
     val busy = state.isGenerating || state.coverImage.isGenerating
+    val manualUrlValidation = remember(manualUrlsText) { validateManualResearchUrls(manualUrlsText) }
+    val manualModeReady = researchSourceMode != CharacterResearchSourceMode.MANUAL_URLS ||
+        (manualUrlValidation.isValid && manualUrlValidation.urls.isNotEmpty())
+    val researchOptions = CharacterResearchOptions(
+        mode = researchSourceMode,
+        urls = if (researchSourceMode == CharacterResearchSourceMode.MANUAL_URLS) {
+            manualUrlValidation.urls
+        } else {
+            emptyList()
+        }
+    )
     LaunchedEffect(models) {
         if (selectedModelId != null && models.none { it.id == selectedModelId }) {
             selectedModelId = null
@@ -1819,9 +1865,12 @@ private fun CharacterRewriteDialog(
                     placeholder = "本次使用模型"
                 )
             }
-            CharacterWebSearchToggle(
-                enabled = webSearchEnabled,
-                onEnabledChange = onWebSearchEnabledChange,
+            CharacterResearchSourceSelector(
+                mode = researchSourceMode,
+                onModeChange = onResearchSourceModeChange,
+                manualUrlsText = manualUrlsText,
+                onManualUrlsTextChange = { manualUrlsText = it },
+                manualUrlValidation = manualUrlValidation,
                 busy = busy
             )
             CbField("改写要求") {
@@ -1868,9 +1917,9 @@ private fun CharacterRewriteDialog(
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton(
                         "生成改写",
-                        { onGenerate(input, selectedModel.id, referenceDocument, webSearchEnabled) },
+                        { onGenerate(input, selectedModel.id, referenceDocument, researchOptions) },
                         modifier = Modifier.weight(1f),
-                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
+                        enabled = input.isNotBlank() && manualModeReady && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(
@@ -1889,12 +1938,12 @@ private fun CharacterRewriteDialog(
                                 input,
                                 selectedModel.id,
                                 referenceDocument,
-                                webSearchEnabled,
+                                researchOptions,
                                 state.draft != null
                             )
                         },
                         modifier = Modifier.fillMaxWidth(),
-                        enabled = input.isNotBlank() && !state.coverImage.isGenerating,
+                        enabled = input.isNotBlank() && manualModeReady && !state.coverImage.isGenerating,
                         variant = ButtonVariant.Outline
                     )
                 }
@@ -1975,7 +2024,7 @@ private fun ReferenceDocumentPickerPanel(
                 )
             }
             CbText(
-                "支持 TXT、MD、JSON，最多 100 万字符；RAG 检索 Top 20 卡片后按百科流程清洗整理。",
+                "支持 TXT、MD、JSON，最多 100 万字符；RAG 检索 Top 20 卡片后按资料流程清洗整理。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -2006,7 +2055,7 @@ private fun ReferenceDocumentPickerPanel(
 @Composable
 private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
     Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        CbText("检索调试", style = ChatBarTheme.typography.heading)
+        CbText("资料调试", style = ChatBarTheme.typography.heading)
         debug.brief?.takeIf(ResearchBriefVisible::hasBriefText)?.let { brief ->
             DebugTextBlock(
                 title = "整理后的资料",
@@ -2039,7 +2088,7 @@ private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
             )
         }
         if (debug.sources.isNotEmpty()) {
-            CbText("搜索到并清洗后的内容", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            CbText("获取并清洗后的内容", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             debug.sources.asReversed().forEach { source ->
                 DebugTextBlock(
                     title = "[${source.sourceId}] ${source.title}",
@@ -2054,7 +2103,7 @@ private fun ResearchDebugPanel(debug: ResearchDebugSnapshot) {
         }
         debug.plan?.let { plan ->
             DebugTextBlock(
-                title = "搜索规划",
+                title = "资料规划",
                 text = buildString {
                     appendLine("needSearch=${plan.needSearch}")
                     if (plan.reason.isNotBlank()) appendLine("reason=${plan.reason}")
@@ -2315,26 +2364,69 @@ private fun CharacterPreviewField(label: String, value: String) {
 }
 
 @Composable
-private fun CharacterWebSearchToggle(
-    enabled: Boolean,
-    onEnabledChange: (Boolean) -> Unit,
+private fun CharacterResearchSourceSelector(
+    mode: CharacterResearchSourceMode,
+    onModeChange: (CharacterResearchSourceMode) -> Unit,
+    manualUrlsText: String,
+    onManualUrlsTextChange: (String) -> Unit,
+    manualUrlValidation: ManualResearchUrlValidation,
     busy: Boolean
 ) {
-    Row(
-        Modifier.fillMaxWidth(),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
+    CbField(
+        "资料来源",
+        description = when (mode) {
+            CharacterResearchSourceMode.NONE -> "不联网；仍可叠加上传参考文档。"
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH ->
+                "自动判断是否需要检索萌娘百科/Wikipedia；仍可叠加上传参考文档。"
+            CharacterResearchSourceMode.MANUAL_URLS ->
+                "只读取输入页面，不搜索、不递归抓取链接；仍可叠加上传参考文档。"
+        }
     ) {
-        Column(Modifier.weight(1f)) {
-            CbText("开启百科搜索", style = ChatBarTheme.typography.label)
+        CbSelect(
+            value = mode,
+            options = CharacterResearchSourceMode.entries,
+            optionLabel = CharacterResearchSourceMode::displayLabel,
+            onValueChange = onModeChange,
+            placeholder = "选择资料来源",
+            enabled = !busy
+        )
+    }
+    if (mode == CharacterResearchSourceMode.MANUAL_URLS) {
+        CbField(
+            "指定网址",
+            description = "每行一个 HTTP(S) 地址，最多 5 个。网址仅保留到当前对话框关闭。"
+        ) {
+            CbInput(
+                value = manualUrlsText,
+                onValueChange = onManualUrlsTextChange,
+                placeholder = "https://example.com/page",
+                enabled = !busy,
+                singleLine = false,
+                minLines = 4,
+                isError = manualUrlValidation.errors.isNotEmpty()
+            )
+        }
+        manualUrlValidation.errors.takeIf(List<String>::isNotEmpty)?.let { errors ->
             CbText(
-                "自动判断是否需要检索萌娘百科/Wikipedia，并注入清洗后的资料。",
-                color = ChatBarTheme.colors.mutedForeground,
+                errors.joinToString("\n"),
+                color = ChatBarTheme.colors.destructive,
                 style = ChatBarTheme.typography.caption
             )
         }
-        CbSwitch(enabled, onEnabledChange, enabled = !busy)
+        if (manualUrlValidation.hasCleartextHttp) {
+            CbText(
+                "HTTP 未加密，页面内容可能被中途篡改。建议优先使用 HTTPS。",
+                color = ChatBarTheme.colors.destructive,
+                style = ChatBarTheme.typography.caption
+            )
+        }
     }
+}
+
+private fun CharacterResearchSourceMode.displayLabel(): String = when (this) {
+    CharacterResearchSourceMode.NONE -> "不联网"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH -> "百科搜索"
+    CharacterResearchSourceMode.MANUAL_URLS -> "指定网址"
 }
 
 @Composable

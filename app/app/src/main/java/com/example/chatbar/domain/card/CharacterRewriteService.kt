@@ -10,9 +10,11 @@ import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.CharacterReferenceDocument
+import com.example.chatbar.domain.search.CharacterResearchOptions
 import com.example.chatbar.domain.search.CharacterResearchService
 import com.example.chatbar.domain.search.ResearchBrief
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.search.hasManualUrlSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
@@ -73,7 +75,7 @@ class CharacterRewriteService(
         currentCard: CharacterCard,
         modelOverride: ModelConfig? = null,
         referenceDocuments: List<CharacterReferenceDocument> = emptyList(),
-        webSearchEnabled: Boolean = true,
+        researchOptions: CharacterResearchOptions = CharacterResearchOptions(),
         resumeFrom: CharacterRewriteGenerationCheckpoint? = null,
         onCheckpoint: (CharacterRewriteGenerationCheckpoint) -> Unit = {},
         onStatus: (String) -> Unit = {},
@@ -89,7 +91,7 @@ class CharacterRewriteService(
             currentCard,
             model,
             referenceDocuments,
-            webSearchEnabled,
+            researchOptions,
             onStatus,
             onResearchDebug,
             onVisibleOutput,
@@ -171,14 +173,20 @@ class CharacterRewriteService(
         currentCard: CharacterCard,
         generationModel: ModelConfig,
         referenceDocuments: List<CharacterReferenceDocument>,
-        webSearchEnabled: Boolean,
+        researchOptions: CharacterResearchOptions,
         onStatus: (String) -> Unit,
         onResearchDebug: (ResearchDebugSnapshot) -> Unit,
         onVisibleOutput: (String, String, String) -> Unit,
         resumeFrom: ResearchDebugSnapshot? = null,
         onCheckpoint: (ResearchDebugSnapshot) -> Unit = {}
     ): ResearchBrief? {
-        val service = researchService ?: return null
+        val service = researchService ?: if (
+            referenceDocuments.isNotEmpty() || researchOptions.hasManualUrlSource()
+        ) {
+            error("外部资料研究服务不可用")
+        } else {
+            return null
+        }
         val researchModel = runCatching { modelResolver.retrievalModel() }
             .getOrNull()
             ?.takeIf { it.apiKey.isNotBlank() }
@@ -188,7 +196,7 @@ class CharacterRewriteService(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = researchModel,
-                webSearchEnabled = webSearchEnabled,
+                researchOptions = researchOptions,
                 referenceDocuments = referenceDocuments,
                 onDebug = onResearchDebug,
                 resumeFrom = resumeFrom,
@@ -197,7 +205,7 @@ class CharacterRewriteService(
                 onVisibleOutput = onVisibleOutput
             )
         }
-        return if (referenceDocuments.isNotEmpty()) {
+        return if (referenceDocuments.isNotEmpty() || researchOptions.hasManualUrlSource()) {
             research()
         } else {
             runCatching { research() }.getOrNull()
