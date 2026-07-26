@@ -1,11 +1,14 @@
 package com.example.chatbar.domain.update
 
+import android.util.Log
 import com.example.chatbar.BuildConfig
 import com.example.chatbar.domain.ProxyAwareClient
+import java.io.StringReader
 import java.net.URI
 import java.net.URLDecoder
 import java.nio.charset.StandardCharsets
 import java.util.concurrent.TimeUnit
+import javax.xml.parsers.DocumentBuilderFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.SerialName
@@ -14,6 +17,8 @@ import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.w3c.dom.Element
+import org.xml.sax.InputSource
 
 data class AppUpdateInfo(
     val currentVersion: String,
@@ -53,8 +58,22 @@ class AppUpdateChecker(
     }
 
     suspend fun checkLatestRelease(): AppUpdateInfo? = withContext(Dispatchers.IO) {
-        val releasesAttempt = runCatching { fetchReleasesFromApi() }
-        val releases = releasesAttempt.getOrNull().orEmpty().filterStable()
+        val releasesApiAttempt = runCatching { fetchReleasesFromApi() }
+        val apiReleases = releasesApiAttempt.getOrNull().orEmpty().filterStable()
+        val atomAttempt = if (apiReleases.isEmpty()) {
+            runCatching { fetchReleasesFromAtom() }
+        } else {
+            null
+        }
+        releasesApiAttempt.exceptionOrNull()?.let { error ->
+            Log.w(TAG, "GitHub Releases API failed; trying Atom feed", error)
+        }
+        atomAttempt?.exceptionOrNull()?.let { error ->
+            Log.w(TAG, "GitHub Releases Atom feed failed; trying single-release fallback", error)
+        }
+        val releases = apiReleases.ifEmpty {
+            atomAttempt?.getOrNull().orEmpty().filterStable()
+        }
         val release = if (releases.isNotEmpty()) {
             releases.first()
         } else {
@@ -62,7 +81,12 @@ class AppUpdateChecker(
             apiAttempt.getOrNull() ?: run {
                 val webAttempt = runCatching { fetchLatestReleaseFromWebRedirect() }
                 webAttempt.getOrNull()
-                    ?: handleLookupFailures(webAttempt.exceptionOrNull(), apiAttempt.exceptionOrNull())
+                    ?: handleLookupFailures(
+                        webError = webAttempt.exceptionOrNull(),
+                        apiError = apiAttempt.exceptionOrNull(),
+                        releasesApiError = releasesApiAttempt.exceptionOrNull(),
+                        atomError = atomAttempt?.exceptionOrNull()
+                    )
             } ?: return@withContext null
         }
 
@@ -154,12 +178,36 @@ class AppUpdateChecker(
         }
     }
 
+    private fun fetchReleasesFromAtom(): List<GitHubRelease> {
+        val request = Request.Builder()
+            .url(atomReleasesUrl())
+            .header("Accept", "application/atom+xml,application/xml;q=0.9")
+            .header("Cache-Control", "no-cache")
+            .header("User-Agent", userAgent())
+            .get()
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            val body = response.body?.string().orEmpty()
+            if (response.code == 404) return emptyList()
+            if (!response.isSuccessful) {
+                throw httpException("GitHub Releases Atom", response.code)
+            }
+
+            return parseGitHubReleasesAtom(body)
+        }
+    }
+
     private fun apiLatestReleaseUrl(): String {
         return "https://api.github.com/repos/$owner/$repo/releases/latest"
     }
 
     private fun apiReleasesUrl(): String {
         return "https://api.github.com/repos/$owner/$repo/releases?per_page=100"
+    }
+
+    private fun atomReleasesUrl(): String {
+        return "https://github.com/$owner/$repo/releases.atom"
     }
 
     private fun webLatestReleaseUrl(): String {
@@ -177,18 +225,24 @@ class AppUpdateChecker(
 
     private fun handleLookupFailures(
         webError: Throwable?,
-        apiError: Throwable?
+        apiError: Throwable?,
+        releasesApiError: Throwable?,
+        atomError: Throwable?
     ): GitHubRelease? {
-        if (webError == null && apiError == null) return null
+        if (webError == null && apiError == null && releasesApiError == null && atomError == null) return null
         val webMessage = webError?.message ?: "无结果"
         val apiMessage = apiError?.message ?: "无结果"
+        val releasesApiMessage = releasesApiError?.message ?: "无结果"
+        val atomMessage = atomError?.message ?: "无结果"
         throw AppUpdateCheckException(
-            "GitHub 更新检查失败：网页通道 $webMessage；API 通道 $apiMessage",
-            apiError ?: webError
+            "GitHub 更新检查失败：列表 API $releasesApiMessage；Atom $atomMessage；" +
+                "单版本 API $apiMessage；网页通道 $webMessage",
+            apiError ?: releasesApiError ?: atomError ?: webError
         )
     }
 
     companion object {
+        private const val TAG = "AppUpdateChecker"
         const val DEFAULT_RELEASES_URL = "https://github.com/SaltyFishOTL/ChatChatBar/releases"
 
         fun releasesUrl(owner: String = "SaltyFishOTL", repo: String = "ChatChatBar"): String {
@@ -227,6 +281,100 @@ private fun List<GitHubRelease>.filterStable(): List<GitHubRelease> =
 
 private fun GitHubRelease.versionName(): String =
     tagName.ifBlank { name }.trim()
+
+internal fun parseGitHubReleasesAtom(xml: String): List<GitHubRelease> {
+    if (xml.isBlank()) return emptyList()
+    require(!xml.contains("<!DOCTYPE", ignoreCase = true)) {
+        "GitHub Releases Atom contains unsupported DOCTYPE"
+    }
+
+    val factory = DocumentBuilderFactory.newInstance().apply {
+        isNamespaceAware = true
+        isExpandEntityReferences = false
+        runCatching { setFeature("http://apache.org/xml/features/disallow-doctype-decl", true) }
+        runCatching { setFeature("http://xml.org/sax/features/external-general-entities", false) }
+        runCatching { setFeature("http://xml.org/sax/features/external-parameter-entities", false) }
+    }
+    val document = factory.newDocumentBuilder().parse(InputSource(StringReader(xml)))
+    val entries = document.getElementsByTagNameNS(ATOM_NAMESPACE, "entry")
+    return buildList {
+        for (index in 0 until entries.length) {
+            val entry = entries.item(index) as? Element ?: continue
+            val releaseUrl = entry.directChildren("link")
+                .firstOrNull { link ->
+                    link.getAttribute("rel").ifBlank { "alternate" } == "alternate" &&
+                        link.getAttribute("href").isNotBlank()
+                }
+                ?.getAttribute("href")
+                .orEmpty()
+            val tagName = releaseTagFromUrl(releaseUrl)
+                ?: entry.directChildText("id").substringAfterLast('/').takeIf { it.isNotBlank() }
+                ?: continue
+            add(
+                GitHubRelease(
+                    tagName = tagName,
+                    htmlUrl = releaseUrl,
+                    name = entry.directChildText("title").ifBlank { tagName },
+                    body = githubReleaseHtmlToPlainText(entry.directChildText("content")),
+                    prerelease = tagName.looksLikePrerelease()
+                )
+            )
+        }
+    }.sortedWith { left, right ->
+        compareReleaseVersions(right.versionName(), left.versionName())
+    }
+}
+
+internal fun githubReleaseHtmlToPlainText(html: String): String {
+    if (html.isBlank()) return ""
+    val withBlocks = html
+        .replace(Regex("(?i)<br\\s*/?>"), "\n")
+        .replace(Regex("(?i)<li(?:\\s[^>]*)?>"), "- ")
+        .replace(Regex("(?i)</(?:h[1-6]|p|li|ul|ol|pre|blockquote)>"), "\n")
+        .replace(Regex("<[^>]+>"), "")
+    return decodeHtmlEntities(withBlocks)
+        .lineSequence()
+        .map(String::trim)
+        .filter(String::isNotEmpty)
+        .joinToString("\n")
+}
+
+private fun Element.directChildren(localName: String): List<Element> = buildList {
+    val nodes = childNodes
+    for (index in 0 until nodes.length) {
+        val element = nodes.item(index) as? Element ?: continue
+        if (element.localName == localName || element.tagName == localName) add(element)
+    }
+}
+
+private fun Element.directChildText(localName: String): String =
+    directChildren(localName).firstOrNull()?.textContent.orEmpty().trim()
+
+private fun String.looksLikePrerelease(): Boolean {
+    val clean = trim().removePrefix("v").removePrefix("V")
+    val numericPrefix = clean.takeWhile { it.isDigit() || it == '.' }.trimEnd('.')
+    return numericPrefix.isNotBlank() && clean.removePrefix(numericPrefix).isNotBlank()
+}
+
+private fun decodeHtmlEntities(value: String): String {
+    val namedDecoded = value
+        .replace("&nbsp;", " ", ignoreCase = true)
+        .replace("&quot;", "\"", ignoreCase = true)
+        .replace("&#39;", "'", ignoreCase = true)
+        .replace("&apos;", "'", ignoreCase = true)
+        .replace("&lt;", "<", ignoreCase = true)
+        .replace("&gt;", ">", ignoreCase = true)
+        .replace("&amp;", "&", ignoreCase = true)
+    return HTML_NUMERIC_ENTITY.replace(namedDecoded) { match ->
+        val raw = match.groupValues[1]
+        val radix = if (raw.startsWith("x", ignoreCase = true)) 16 else 10
+        val digits = if (radix == 16) raw.drop(1) else raw
+        val codePoint = digits.toIntOrNull(radix)
+            ?.takeIf(Character::isValidCodePoint)
+            ?: return@replace match.value
+        String(Character.toChars(codePoint))
+    }
+}
 
 internal fun GitHubRelease.resolveApkAsset(owner: String, repo: String): AppUpdateAsset? {
     val publishedAsset = assets
@@ -317,6 +465,9 @@ private fun normalizedVersionParts(version: String): List<Int>? {
     }
     return parts
 }
+
+private const val ATOM_NAMESPACE = "http://www.w3.org/2005/Atom"
+private val HTML_NUMERIC_ENTITY = Regex("&#(x?[0-9A-Fa-f]+);", RegexOption.IGNORE_CASE)
 
 internal fun releaseTagFromUrl(url: String): String? {
     val rawPath = runCatching { URI(url).rawPath }.getOrNull() ?: return null

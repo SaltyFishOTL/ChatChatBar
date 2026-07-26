@@ -55,6 +55,72 @@ class AppUpdateCheckerTest {
     }
 
     @Test
+    fun `atom fallback parses release notes when github api is unavailable`() {
+        val releases = parseGitHubReleasesAtom(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v1.3.5</id>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/owner/repo/releases/tag/v1.3.5"/>
+                <title>ChatBar 1.3.5</title>
+                <content type="html">&lt;h2&gt;更新内容&lt;/h2&gt;&lt;ul&gt;&lt;li&gt;支持参考文档 &amp;amp; 图片&lt;/li&gt;&lt;li&gt;输出更稳定&lt;/li&gt;&lt;/ul&gt;</content>
+              </entry>
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v1.3.4</id>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/owner/repo/releases/tag/v1.3.4"/>
+                <title>ChatBar 1.3.4</title>
+                <content type="html">&lt;p&gt;旧版本更新&lt;/p&gt;</content>
+              </entry>
+            </feed>
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("v1.3.5", "v1.3.4"), releases.map { it.tagName })
+        assertEquals("ChatBar 1.3.5", releases.first().name)
+        assertEquals(
+            "更新内容\n- 支持参考文档 & 图片\n- 输出更稳定",
+            releases.first().body
+        )
+    }
+
+    @Test
+    fun `atom prerelease entries do not become stable release notes`() {
+        val releases = parseGitHubReleasesAtom(
+            """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <feed xmlns="http://www.w3.org/2005/Atom">
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v1.4.0-beta</id>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/owner/repo/releases/tag/v1.4.0-beta"/>
+                <title>ChatBar 1.4.0 beta</title>
+                <content type="html">&lt;p&gt;测试版本&lt;/p&gt;</content>
+              </entry>
+              <entry>
+                <id>tag:github.com,2008:Repository/1/v1.3.5</id>
+                <link rel="alternate" type="text/html"
+                    href="https://github.com/owner/repo/releases/tag/v1.3.5"/>
+                <title>ChatBar 1.3.5</title>
+                <content type="html">&lt;p&gt;正式版本&lt;/p&gt;</content>
+              </entry>
+            </feed>
+            """.trimIndent()
+        )
+
+        val notes = releaseNotesBetween(
+            releases = releases,
+            currentVersion = "1.3.4",
+            latestVersion = "1.3.5"
+        )
+
+        assertEquals(listOf("v1.3.5"), notes.map { it.version })
+        assertEquals(listOf("正式版本"), notes.map { it.body })
+    }
+
+    @Test
     fun `published signed apk asset is selected`() {
         val release = GitHubRelease(
             tagName = "v1.3.0",

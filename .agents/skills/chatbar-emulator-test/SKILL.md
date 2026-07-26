@@ -1,6 +1,6 @@
 ---
 name: chatbar-emulator-test
-description: Run and verify ChatBar on its configured Android emulator or connected device. Use for Gradle checks, CI-equivalent verification, APK builds, release redeploy, emulator startup, instrumented tests, adb interaction, alternate resolution or density checks, screenshots, logs, and install troubleshooting.
+description: Run and verify ChatBar on its configured Android emulator or connected device. Use for Gradle checks, CI-equivalent verification, APK builds, release redeploy, emulator startup, instrumented tests, update-dialog Release Notes retrieval, adb interaction, alternate resolution or density checks, screenshots, logs, and install troubleshooting.
 ---
 
 # ChatBar Android Testing
@@ -65,6 +65,16 @@ Use repository scripts as primary entry points. Follow AGENTS.md for verificatio
 - Target every install, input, screenshot, test, and cleanup command with `-s emulator-5554` when a physical device is also connected.
 - Once the user starts manual testing, leave the emulator, resolution, app, and test state untouched until the user explicitly says testing is finished or asks for a change.
 - For agent-only verification, reset size/density and close only the emulator instance started by the agent after evidence is collected. Remove temporary screenshots and UI dumps.
+
+## Update Note Verification
+
+Server metadata checks do not prove the app renders release notes. For update-note changes:
+
+1. Use only a disposable/debug emulator, never a release-signed physical install.
+2. Build with `.\gradlew.bat :app:assembleDebug -PCHATBAR_VERSION_NAME=<previous-version>` so the current stable GitHub Release appears newer.
+3. Install and launch the override build, then confirm the update dialog shows real note bullets rather than “此版本没有填写 release note”.
+4. Inspect `AppUpdateChecker` logs to identify whether API or Atom supplied metadata.
+5. Rebuild once without `CHATBAR_VERSION_NAME` override after verification so the normal debug APK is restored.
 
 ## Useful ADB Checks
 

@@ -1,4 +1,4 @@
 interface:
   display_name: "ChatBar App Update"
-  short_description: "Maintain ChatBar update downloads and installs"
-  default_prompt: "Use $chatbar-app-update to maintain ChatBar update checks, downloads, installation, or release publishing."
+  short_description: "Maintain ChatBar update notes, downloads, and installs"
+  default_prompt: "Use $chatbar-app-update to diagnose or maintain ChatBar release notes, update checks, downloads, installation, or publishing."
