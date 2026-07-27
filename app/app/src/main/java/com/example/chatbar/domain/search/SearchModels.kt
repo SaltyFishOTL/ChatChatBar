@@ -10,8 +10,16 @@ data class CharacterResearchOptions(
     val urls: List<String> = emptyList()
 )
 
+fun CharacterResearchSourceMode.usesEncyclopediaSearch(): Boolean =
+    this == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH ||
+        this == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS
+
+fun CharacterResearchSourceMode.usesManualUrls(): Boolean =
+    this == CharacterResearchSourceMode.MANUAL_URLS ||
+        this == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS
+
 fun CharacterResearchOptions.hasManualUrlSource(): Boolean =
-    mode == CharacterResearchSourceMode.MANUAL_URLS && urls.any(String::isNotBlank)
+    mode.usesManualUrls() && urls.any(String::isNotBlank)
 
 fun CharacterResearchOptions.sourceSignaturePart(): String =
     buildString {

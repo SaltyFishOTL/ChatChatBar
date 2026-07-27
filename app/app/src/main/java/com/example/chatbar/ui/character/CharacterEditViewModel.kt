@@ -58,6 +58,8 @@ import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.CharacterResearchOptions
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
 import com.example.chatbar.domain.search.sourceSignaturePart
+import com.example.chatbar.domain.search.usesEncyclopediaSearch
+import com.example.chatbar.domain.search.usesManualUrls
 import com.example.chatbar.domain.search.validateManualResearchUrls
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.voice.FishAudioModel
@@ -395,9 +397,9 @@ class CharacterEditViewModel(
                 settingsRepository.saveAppSettings(
                     settings.copy(
                         characterAutoFillWebSearchEnabled =
-                            _autoFillResearchSourceMode.value == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+                            _autoFillResearchSourceMode.value.usesEncyclopediaSearch(),
                         characterRewriteWebSearchEnabled =
-                            _rewriteResearchSourceMode.value == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+                            _rewriteResearchSourceMode.value.usesEncyclopediaSearch(),
                         characterAutoFillResearchSourceMode = _autoFillResearchSourceMode.value,
                         characterRewriteResearchSourceMode = _rewriteResearchSourceMode.value
                     )
@@ -696,7 +698,7 @@ class CharacterEditViewModel(
         }
         val sourceImagePath = imagePath?.takeIf(String::isNotBlank)
         val manualUrlValidation = validateManualResearchUrls(researchOptions.urls)
-        if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS &&
+        if (researchOptions.mode.usesManualUrls() &&
             (!manualUrlValidation.isValid || manualUrlValidation.urls.isEmpty())
         ) {
             _autoFillState.value = CharacterAutoFillUiState(
@@ -705,7 +707,7 @@ class CharacterEditViewModel(
             return
         }
         val normalizedResearchOptions = researchOptions.copy(
-            urls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+            urls = if (researchOptions.mode.usesManualUrls()) {
                 manualUrlValidation.urls
             } else {
                 emptyList()
@@ -1606,7 +1608,7 @@ class CharacterEditViewModel(
             return
         }
         val manualUrlValidation = validateManualResearchUrls(researchOptions.urls)
-        if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS &&
+        if (researchOptions.mode.usesManualUrls() &&
             (!manualUrlValidation.isValid || manualUrlValidation.urls.isEmpty())
         ) {
             _rewriteState.value = CharacterRewriteUiState(
@@ -1615,7 +1617,7 @@ class CharacterEditViewModel(
             return
         }
         val normalizedResearchOptions = researchOptions.copy(
-            urls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+            urls = if (researchOptions.mode.usesManualUrls()) {
                 manualUrlValidation.urls
             } else {
                 emptyList()

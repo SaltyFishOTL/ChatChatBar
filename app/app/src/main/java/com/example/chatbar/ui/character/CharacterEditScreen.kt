@@ -97,6 +97,7 @@ import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.CharacterResearchOptions
 import com.example.chatbar.domain.search.ManualResearchUrlValidation
 import com.example.chatbar.domain.search.ResearchDebugSnapshot
+import com.example.chatbar.domain.search.usesManualUrls
 import com.example.chatbar.domain.search.validateManualResearchUrls
 import com.example.chatbar.domain.voice.FishAudioLibrary
 import com.example.chatbar.domain.voice.FishAudioModel
@@ -1533,11 +1534,11 @@ private fun CharacterAutoFillDialog(
     val bodyScroll = rememberScrollState()
     val busy = state.isGenerating || state.coverImage.isGenerating
     val manualUrlValidation = remember(manualUrlsText) { validateManualResearchUrls(manualUrlsText) }
-    val manualModeReady = researchSourceMode != CharacterResearchSourceMode.MANUAL_URLS ||
+    val manualModeReady = !researchSourceMode.usesManualUrls() ||
         (manualUrlValidation.isValid && manualUrlValidation.urls.isNotEmpty())
     val researchOptions = CharacterResearchOptions(
         mode = researchSourceMode,
-        urls = if (researchSourceMode == CharacterResearchSourceMode.MANUAL_URLS) {
+        urls = if (researchSourceMode.usesManualUrls()) {
             manualUrlValidation.urls
         } else {
             emptyList()
@@ -1811,11 +1812,11 @@ private fun CharacterRewriteDialog(
     val bodyScroll = rememberScrollState()
     val busy = state.isGenerating || state.coverImage.isGenerating
     val manualUrlValidation = remember(manualUrlsText) { validateManualResearchUrls(manualUrlsText) }
-    val manualModeReady = researchSourceMode != CharacterResearchSourceMode.MANUAL_URLS ||
+    val manualModeReady = !researchSourceMode.usesManualUrls() ||
         (manualUrlValidation.isValid && manualUrlValidation.urls.isNotEmpty())
     val researchOptions = CharacterResearchOptions(
         mode = researchSourceMode,
-        urls = if (researchSourceMode == CharacterResearchSourceMode.MANUAL_URLS) {
+        urls = if (researchSourceMode.usesManualUrls()) {
             manualUrlValidation.urls
         } else {
             emptyList()
@@ -2380,6 +2381,8 @@ private fun CharacterResearchSourceSelector(
                 "自动判断是否需要检索萌娘百科/Wikipedia；仍可叠加上传参考文档。"
             CharacterResearchSourceMode.MANUAL_URLS ->
                 "只读取输入页面，不搜索、不递归抓取链接；仍可叠加上传参考文档。"
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS ->
+                "同时执行 AI 百科搜索并读取输入页面；两类资料合并整理，仍可叠加上传参考文档。"
         }
     ) {
         CbSelect(
@@ -2391,7 +2394,7 @@ private fun CharacterResearchSourceSelector(
             enabled = !busy
         )
     }
-    if (mode == CharacterResearchSourceMode.MANUAL_URLS) {
+    if (mode.usesManualUrls()) {
         CbField(
             "指定网址",
             description = "每行一个 HTTP(S) 地址，最多 5 个。网址仅保留到当前对话框关闭。"
@@ -2427,6 +2430,7 @@ private fun CharacterResearchSourceMode.displayLabel(): String = when (this) {
     CharacterResearchSourceMode.NONE -> "不联网"
     CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH -> "百科搜索"
     CharacterResearchSourceMode.MANUAL_URLS -> "指定网址"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS -> "百科搜索 + 指定网址"
 }
 
 @Composable

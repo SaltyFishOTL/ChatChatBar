@@ -120,7 +120,8 @@ enum class ModelConfigurationMode {
 enum class CharacterResearchSourceMode {
     NONE,
     ENCYCLOPEDIA_SEARCH,
-    MANUAL_URLS
+    MANUAL_URLS,
+    ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS
 }
 
 const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 5

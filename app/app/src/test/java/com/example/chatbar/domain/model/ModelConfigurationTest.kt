@@ -97,7 +97,8 @@ class ModelConfigurationTest {
             webSearchSettingsVersion = 5,
             characterAutoFillWebSearchEnabled = false,
             characterRewriteWebSearchEnabled = true,
-            characterAutoFillResearchSourceMode = CharacterResearchSourceMode.MANUAL_URLS,
+            characterAutoFillResearchSourceMode =
+                CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS,
             characterRewriteResearchSourceMode = CharacterResearchSourceMode.NONE
         )
 
@@ -106,7 +107,10 @@ class ModelConfigurationTest {
 
         assertFalse(decoded.characterAutoFillWebSearchEnabled)
         assertTrue(decoded.characterRewriteWebSearchEnabled)
-        assertEquals(CharacterResearchSourceMode.MANUAL_URLS, decoded.characterAutoFillResearchSourceMode)
+        assertEquals(
+            CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS,
+            decoded.characterAutoFillResearchSourceMode
+        )
         assertEquals(CharacterResearchSourceMode.NONE, decoded.characterRewriteResearchSourceMode)
         assertFalse(encoded.contains("manualUrls"))
         assertFalse(encoded.contains("\"urls\""))

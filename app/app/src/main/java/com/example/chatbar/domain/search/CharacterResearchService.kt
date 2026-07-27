@@ -2,7 +2,6 @@ package com.example.chatbar.domain.search
 
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterCard
-import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -33,12 +32,11 @@ class CharacterResearchService(
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
-        val encyclopediaEnabled =
-            researchOptions.mode == CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH
-        val manualUrls = if (researchOptions.mode == CharacterResearchSourceMode.MANUAL_URLS) {
+        val encyclopediaEnabled = researchOptions.mode.usesEncyclopediaSearch()
+        val manualUrls = if (researchOptions.mode.usesManualUrls()) {
             val validation = validateManualResearchUrls(researchOptions.urls)
             require(validation.isValid) { validation.errors.joinToString("；") }
-            require(validation.urls.isNotEmpty()) { "指定网址模式至少需要一个有效网址" }
+            require(validation.urls.isNotEmpty()) { "当前资料模式至少需要一个有效网址" }
             validation.urls
         } else {
             emptyList()
@@ -76,6 +74,8 @@ class CharacterResearchService(
         val plan = planResult.plan ?: when {
             encyclopediaEnabled ->
                 fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
+                    ?: manualUrlPlan(manualUrls).copy(needSearch = false)
+                        .takeIf { manualUrlsEnabled }
                     ?: referenceDocumentPlan().takeIf { referenceDocuments.isNotEmpty() }
             referenceDocuments.isNotEmpty() -> referenceDocumentPlan()
             else -> null
@@ -85,7 +85,14 @@ class CharacterResearchService(
             return@withContext null
         }
         if (encyclopediaEnabled && planResult.plan == null) {
-            onStatus("搜索规划失败，改用保底关键词继续搜索：${plan.queries.joinToString("、") { it.query }.statusSnippet(120)}")
+            if (plan.needSearch && plan.queries.isNotEmpty()) {
+                onStatus(
+                    "搜索规划失败，改用保底关键词继续搜索：" +
+                        plan.queries.joinToString("、") { it.query }.statusSnippet(120)
+                )
+            } else {
+                onStatus("搜索规划失败，继续读取指定网页")
+            }
         }
         publish(ResearchDebugSnapshot(plan = plan))
         val resumedBrief = resumeFrom?.brief?.takeIf(ResearchBrief::hasContent)
@@ -180,9 +187,13 @@ class CharacterResearchService(
                     maxExcerptChars = MAX_MANUAL_WEB_PAGE_EXCERPT_CHARS
                 )
                 if (cleaned.isEmpty()) {
-                    error("指定网页全部读取失败，或数据清理后没有可用内容")
+                    if (!encyclopediaEnabled) {
+                        error("指定网页全部读取失败，或数据清理后没有可用内容")
+                    }
+                    onStatus("指定网页没有可用内容，继续使用百科搜索结果")
+                } else {
+                    onStatus("指定网页清洗完成：${cleaned.size} 个来源")
                 }
-                onStatus("指定网页清洗完成：${cleaned.size} 个来源")
                 cleaned
             } else {
                 emptyList()
@@ -240,6 +251,9 @@ class CharacterResearchService(
         if (sources.isEmpty()) {
             if (referenceDocuments.isNotEmpty()) {
                 error("参考文档检索和数据清理后没有可用内容")
+            }
+            if (manualUrlsEnabled) {
+                error("指定网页与百科搜索均没有可用内容")
             }
             onStatus("百科结果清洗后为空，继续直接生成")
             return@withContext null

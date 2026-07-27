@@ -378,6 +378,83 @@ class CharacterResearchServiceTest {
     }
 
     @Test
+    fun `combined mode searches and reads manual urls then merges both sources`() = runTest {
+        val planner = FakePlanner()
+        val backend = FakeSearchBackend()
+        val summarizer = FakeSummarizer()
+        val manualRetriever = FakeManualWebPageRetriever(
+            ManualWebPageRetrievalResult(
+                hits = listOf(
+                    SearchHit(
+                        title = "Manual page",
+                        url = "https://example.com/manual",
+                        content = "Manual page facts.",
+                        query = "用户指定网址"
+                    )
+                )
+            )
+        )
+        val service = service(
+            settings = AppSettings(),
+            planner = planner,
+            backend = backend,
+            summarizer = summarizer,
+            manualWebPageRetriever = manualRetriever
+        )
+
+        val brief = service.research(
+            userInput = "request",
+            currentCard = card(),
+            modelConfig = model(),
+            researchOptions = CharacterResearchOptions(
+                mode = CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS,
+                urls = listOf("https://example.com/manual")
+            )
+        )
+
+        requireNotNull(brief)
+        assertEquals(1, planner.calls)
+        assertEquals(listOf("canon query"), backend.searchCalls.map { it.query })
+        assertEquals(1, backend.extractCalls.size)
+        assertEquals(listOf("https://example.com/manual"), manualRetriever.calls.single())
+        assertEquals(2, summarizer.lastSources.size)
+        assertTrue(summarizer.lastSources.any { it.url == "https://example.com/manual" })
+        assertTrue(summarizer.lastSources.any { it.url == "https://example.com/source" })
+    }
+
+    @Test
+    fun `combined mode continues with search when every manual page fails`() = runTest {
+        val backend = FakeSearchBackend()
+        val summarizer = FakeSummarizer()
+        val service = service(
+            settings = AppSettings(),
+            backend = backend,
+            summarizer = summarizer,
+            manualWebPageRetriever = FakeManualWebPageRetriever(
+                ManualWebPageRetrievalResult(
+                    failures = listOf(
+                        ManualWebPageFailure("https://example.com/broken", "HTTP 500")
+                    )
+                )
+            )
+        )
+
+        val brief = service.research(
+            "request",
+            card(),
+            model(),
+            researchOptions = CharacterResearchOptions(
+                CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS,
+                listOf("https://example.com/broken")
+            )
+        )
+
+        requireNotNull(brief)
+        assertEquals(1, backend.searchCalls.size)
+        assertEquals(listOf("https://example.com/source"), summarizer.lastSources.map { it.url })
+    }
+
+    @Test
     fun `manual urls continue after partial failure and expose reason`() = runTest {
         val statuses = mutableListOf<String>()
         val service = service(

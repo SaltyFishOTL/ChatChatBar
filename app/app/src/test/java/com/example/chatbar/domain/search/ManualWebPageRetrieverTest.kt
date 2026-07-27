@@ -63,6 +63,16 @@ class ManualWebPageRetrieverTest {
     }
 
     @Test
+    fun `combined mode enables search and manual url capabilities`() {
+        val mode = CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS
+        val options = CharacterResearchOptions(mode, listOf("https://example.com/one"))
+
+        assertTrue(mode.usesEncyclopediaSearch())
+        assertTrue(mode.usesManualUrls())
+        assertTrue(options.hasManualUrlSource())
+    }
+
+    @Test
     fun `retriever extracts fandom api before html page`() = runTest {
         val requests = CopyOnWriteArrayList<Request>()
         val retriever = retriever { request ->
