@@ -12,7 +12,7 @@ Use `chatbar-model-request-runtime` for shared auxiliary-model resolution or SSE
 ## First Read
 
 - App wiring: `app/app/src/main/java/com/example/chatbar/ChatBarApp.kt`.
-- Settings and credentials: `data/local/entity/AppSettings.kt`, `data/security/FishAudioCredentialStore.kt`, `ui/manage/ManageScreen.kt`, `ManageViewModel.kt`.
+- Settings and credentials: `data/local/entity/AppSettings.kt`, `data/local/entity/ChatSession.kt`, `data/security/FishAudioCredentialStore.kt`, `ui/manage/ManageScreen.kt`, `ManageViewModel.kt`, `ui/chat/ChatSettingsDialog.kt`.
 - Voice bindings and transfer: `data/local/entity/CharacterCard.kt`, `domain/card/CardTransferModels.kt`, `CharacterCardTransferService.kt`.
 - API and models: `domain/voice/FishAudioModels.kt`, `FishAudioService.kt`.
 - Tagging and orchestration: `domain/voice/FishAudioTagService.kt`, `FishAudioGenerationCoordinator.kt`, `domain/prompt/PromptTemplates.kt`.
@@ -28,6 +28,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 
 - Keep generated voice records outside `ChatMessage`. Chat prompt assembly, RAG, source fingerprints, and long-term memory must continue reading text and existing image fields only.
 - Preserve generated voice history after character deletion, card replacement, speaker-tag edits, or later voice changes. Historical records use generation-time character, voice, and Fish-model snapshots.
+- Keep original bubble text in `GeneratedVoiceMessage.sourceText` for anchors and store the tag-free translated/original synthesis snapshot in `synthesisText`; old records fall back to `sourceText`.
 - Delete voices only with their owning message/session, explicit voice deletion, or failed replacement cleanup.
 - Keep Fish API keys in Android Keystore. Never serialize, export, log, or save blank credentials.
 - Gate new voice selection and generation on a configured Fish key. Keep existing local voice playback and deletion available without the key.
@@ -46,6 +47,8 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Generate tags only for assistant `DIALOGUE` and `THOUGHT` segments with one unique speaker match and a bound voice.
 - Resolve `voiceTagModelId = null` to the current session model. Treat an explicit stale model as disabled; never fall back.
 - Call the shared streaming text service with thinking disabled. Keep prompts in `PromptTemplates`.
+- Treat `ChatSession.voiceLanguage = null` as original-language synthesis. When configured, translate each target through the resolved voice tag model before tag generation; audiobook mode still translates but skips tags.
+- Validate translation JSON IDs, duplicates, omissions, unknown IDs, unknown fields, and blank results. Never fall back to original text after translation failure.
 - Validate strict JSON IDs, duplicates, omissions, unknown IDs, tag syntax, and unchanged spoken text separately.
 - Use fixed parenthesized S1 tags and bracketed S2 cues.
 - Never send original text directly to Fish after tag failure.
@@ -66,9 +69,9 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 
 ## Concurrency, Progress, and Playback
 
-- Share one five-permit TTS semaphore across all batches. Whole-message generation calls the tag model once, then synthesizes missing targets concurrently.
+- Share one five-permit TTS semaphore across all batches. Whole-message generation calls translation once when configured, then tags once when required, then synthesizes missing targets concurrently.
 - Persist successful targets during partial failure, but do not autoplay any partially failed or cancelled batch.
-- Keep visible batch states for queued, tagging stream, text confirmation, synthesis completion count/bytes, failure, and cancellation.
+- Keep visible batch states for queued, translation/tagging streams, text confirmation, synthesis completion count/bytes, failure, and cancellation.
 - Use shared `AiBackgroundWorkManager` only while model/TTS network work is active. Do not hold a lease for user decisions.
 - Preserve autoplay order by session timeline and visual voice order. Later messages must not steal playback when earlier batches are pending.
 - Discard autoplay intent when the originating ChatScreen is no longer resumed. Do not replay it on return.

@@ -405,7 +405,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return
         }
         val settings = settingsRepository.getAppSettings()
-        if (_audiobookModeEnabled.value) {
+        if (_audiobookModeEnabled.value && _session.value?.voiceLanguage.isNullOrBlank()) {
             _voiceGenerationAvailabilityError.value = null
             return
         }
@@ -419,13 +419,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             modelResolver.resolveAuxiliaryTextModelExact(settings.voiceTagModelId, settings)
                 ?: run {
                     _voiceGenerationAvailabilityError.value =
-                        "所选语音标签模型已失效，请在设置中重新选择"
+                        "所选语音翻译/标签模型已失效，请在设置中重新选择"
                     return
                 }
         }
         _voiceGenerationAvailabilityError.value =
             if (model.hasConfiguredAuthentication(settings)) null
-            else "语音标签模型/API Key 未配置"
+            else "语音翻译/标签模型/API Key 未配置"
     }
 
     fun setVoiceScreenForeground(isForeground: Boolean) {
@@ -549,6 +549,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             chatRepository.observeSessions().collect { sessions ->
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
                     val modelChanged = _session.value?.modelId != updatedSession.modelId
+                    val voiceLanguageChanged =
+                        _session.value?.voiceLanguage != updatedSession.voiceLanguage
                     val previousAudiobookMode = _audiobookModeEnabled.value
                     _session.value = updatedSession
                     updateEffectiveAudiobookMode()
@@ -557,6 +559,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                     if (
                         modelChanged ||
+                        voiceLanguageChanged ||
                         previousAudiobookMode != _audiobookModeEnabled.value
                     ) {
                         refreshVoiceGenerationAvailability()
@@ -3292,6 +3295,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         playerSetting: String?,
         chatBackground: String?,
         audiobookModeEnabled: Boolean?,
+        voiceLanguage: String?,
         longTermMemoryEnabled: Boolean,
         longTermMemory: String,
         extraWorldBookIds: List<String> = _session.value?.extraWorldBookIds ?: emptyList()
@@ -3313,6 +3317,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerSetting = playerSetting?.takeIf { it.isNotBlank() },
                     chatBackground = chatBackground?.takeIf { it.isNotBlank() },
                     audiobookModeEnabled = audiobookModeEnabled,
+                    voiceLanguage = voiceLanguage?.trim()?.takeIf { it.isNotBlank() },
                     longTermMemoryEnabled = longTermMemoryEnabled,
                     longTermMemory = base.longTermMemory,
                     extraWorldBookIds = extraWorldBookIds.distinct()
@@ -3363,6 +3368,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 roleplayStyle = curSession.roleplayStyle,
                 chatBackground = packaged.chatBackground,
                 audiobookModeEnabled = curSession.audiobookModeEnabled,
+                voiceLanguage = curSession.voiceLanguage,
                 longTermMemoryEnabled = curSession.longTermMemoryEnabled,
                 longTermMemory = curSession.longTermMemory,
                 longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
@@ -3425,6 +3431,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 roleplayStyle = materializedSlot.roleplayStyle,
                 chatBackground = materializedSlot.chatBackground,
                 audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
+                voiceLanguage = materializedSlot.voiceLanguage,
                 longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
                 longTermMemory = materializedSlot.longTermMemory,
                 longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,

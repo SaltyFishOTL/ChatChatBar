@@ -2058,7 +2058,7 @@ private fun SettingsTab(
                 )
             }
             OptionalSelect(
-                label = "语音标签模型",
+                label = "语音翻译/标签模型",
                 selectedId = voiceTagModelId,
                 options = auxiliaryTextModels.map { IdOption(it.id, it.displayName) },
                 onSelected = { voiceTagModelId = it },
@@ -2066,7 +2066,7 @@ private fun SettingsTab(
             )
             if (voiceTagModelId != null && auxiliaryTextModels.none { it.id == voiceTagModelId }) {
                 CbText(
-                    "已选标签模型失效。重新选择前，普通模式语音生成会被禁用；听书模式不使用此模型。",
+                    "已选语音翻译/标签模型失效。需要 AI 标签或已设置语音使用语言时，语音生成会被禁用；未设置语言的听书模式不使用此模型。",
                     color = ChatBarTheme.colors.destructive,
                     style = ChatBarTheme.typography.caption
                 )

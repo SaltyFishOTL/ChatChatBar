@@ -25,11 +25,72 @@ data class VoiceTagBatchResult(
     val rawOutput: String
 )
 
+data class VoiceTranslationBatchResult(
+    val translatedTextById: Map<String, String>,
+    val errorsById: Map<String, String>,
+    val rawOutput: String
+)
+
 class FishAudioTagService(
     private val chatService: StreamingChatService,
     private val json: Json = Json { ignoreUnknownKeys = true }
 ) {
     private val strictResponseJson = Json { ignoreUnknownKeys = false }
+
+    suspend fun translate(
+        modelConfig: ModelConfig,
+        targetLanguage: String,
+        previousUserMessage: String,
+        assistantResponse: String,
+        inputs: List<VoiceTagInput>,
+        onDelta: (String) -> Unit = {}
+    ): VoiceTranslationBatchResult {
+        require(targetLanguage.isNotBlank()) { "语音使用语言不能为空" }
+        require(inputs.isNotEmpty()) { "没有待翻译的语音段落" }
+        val segmentsJson = json.encodeToString(
+            inputs.map {
+                VoiceTranslationPromptItem(
+                    id = it.id,
+                    text = it.text,
+                    characterName = it.characterName
+                )
+            }
+        )
+        val userInput = PromptTemplates.fishAudioTranslationUserInput(
+            targetLanguage = targetLanguage,
+            previousUserMessage = previousUserMessage,
+            assistantResponse = assistantResponse,
+            segmentsJson = segmentsJson
+        )
+        val raw = StringBuilder()
+        var failure: String? = null
+        chatService.streamText(
+            messages = listOf(
+                ChatApiMessage.text("system", PromptTemplates.FISH_AUDIO_TRANSLATION_SYSTEM.trim()),
+                ChatApiMessage.text("user", userInput)
+            ),
+            modelConfig = modelConfig,
+            maxTokens = 2_000,
+            disableThinking = true
+        ).collect { event ->
+            when (event) {
+                is StreamEvent.Delta -> {
+                    raw.append(event.text)
+                    onDelta(event.text)
+                }
+                is StreamEvent.Error -> failure = event.message
+                else -> Unit
+            }
+        }
+        failure?.let { error ->
+            return VoiceTranslationBatchResult(
+                translatedTextById = emptyMap(),
+                errorsById = inputs.associate { it.id to error },
+                rawOutput = raw.toString()
+            )
+        }
+        return parseTranslation(raw.toString(), inputs)
+    }
 
     suspend fun generate(
         modelConfig: ModelConfig,
@@ -90,6 +151,54 @@ class FishAudioTagService(
         return parseAndValidate(raw.toString(), inputs, mode)
     }
 
+    fun parseTranslation(
+        rawOutput: String,
+        inputs: List<VoiceTagInput>
+    ): VoiceTranslationBatchResult {
+        val parsed = runCatching {
+            strictResponseJson.decodeFromString(
+                VoiceTranslationResponse.serializer(),
+                rawOutput.trim()
+            )
+        }.getOrElse { error ->
+            return VoiceTranslationBatchResult(
+                translatedTextById = emptyMap(),
+                errorsById = inputs.associate {
+                    it.id to "翻译模型 JSON 解析失败：${error.message}"
+                },
+                rawOutput = rawOutput
+            )
+        }
+        val duplicateIds = parsed.segments.groupingBy(VoiceTranslationResponseItem::id)
+            .eachCount()
+            .filterValues { it != 1 }
+            .keys
+        val inputById = inputs.associateBy(VoiceTagInput::id)
+        val translated = linkedMapOf<String, String>()
+        val errors = linkedMapOf<String, String>()
+        inputs.forEach { input ->
+            if (input.id in duplicateIds) {
+                errors[input.id] = "翻译模型重复返回段落 ID"
+                return@forEach
+            }
+            val result = parsed.segments.singleOrNull { it.id == input.id }
+            if (result == null) {
+                errors[input.id] = "翻译模型缺少段落结果"
+                return@forEach
+            }
+            val text = result.translatedText.trim()
+            if (text.isEmpty()) {
+                errors[input.id] = "翻译模型返回空译文"
+            } else {
+                translated[input.id] = text
+            }
+        }
+        parsed.segments.filterNot { it.id in inputById }.forEach {
+            errors[it.id] = "翻译模型返回未知段落 ID"
+        }
+        return VoiceTranslationBatchResult(translated, errors, rawOutput)
+    }
+
     fun parseAndValidate(
         rawOutput: String,
         inputs: List<VoiceTagInput>,
@@ -147,6 +256,25 @@ class FishAudioTagService(
         val characterName: String,
         @SerialName("speaking_style")
         val speakingStyle: String
+    )
+
+    @Serializable
+    private data class VoiceTranslationPromptItem(
+        val id: String,
+        val text: String,
+        @SerialName("character_name")
+        val characterName: String
+    )
+
+    @Serializable
+    private data class VoiceTranslationResponse(
+        val segments: List<VoiceTranslationResponseItem> = emptyList()
+    )
+
+    @Serializable
+    private data class VoiceTranslationResponseItem(
+        val id: String,
+        val translatedText: String
     )
 
     @Serializable

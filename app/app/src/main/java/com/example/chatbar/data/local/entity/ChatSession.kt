@@ -41,6 +41,8 @@ data class ChatSession(
     val imagePromptPreference: String = "",
     /** null 表示跟随全局听书模式设置。 */
     val audiobookModeEnabled: Boolean? = null,
+    /** null 表示语音直接使用气泡原文。 */
+    val voiceLanguage: String? = null,
     val longTermMemoryEnabled: Boolean = true,
     val longTermMemory: String = "",
     val longTermMemoryUpdatedThroughMessageId: String? = null,

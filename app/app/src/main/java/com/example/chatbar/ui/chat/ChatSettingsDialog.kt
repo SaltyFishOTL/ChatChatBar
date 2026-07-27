@@ -131,6 +131,7 @@ fun ChatSettingsDialog(
     var playerSetting by remember { mutableStateOf(session?.playerSetting ?: "") }
     var background by remember { mutableStateOf(session?.chatBackground ?: "") }
     var audiobookModeEnabled by remember { mutableStateOf(session?.audiobookModeEnabled) }
+    var voiceLanguage by remember { mutableStateOf(session?.voiceLanguage ?: "") }
     var longTermMemoryEnabled by remember { mutableStateOf(session?.longTermMemoryEnabled ?: true) }
     var longTermMemory by remember { mutableStateOf(session?.longTermMemory ?: "") }
     var extraWorldBookIds by remember { mutableStateOf(session?.extraWorldBookIds ?: emptyList()) }
@@ -189,6 +190,7 @@ fun ChatSettingsDialog(
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
             audiobookModeEnabled = it.audiobookModeEnabled
+            voiceLanguage = it.voiceLanguage ?: ""
             longTermMemoryEnabled = it.longTermMemoryEnabled
             longTermMemory = it.longTermMemory
             extraWorldBookIds = it.extraWorldBookIds
@@ -206,6 +208,7 @@ fun ChatSettingsDialog(
             playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
             background.takeIf(String::isNotBlank) != it.chatBackground ||
             audiobookModeEnabled != it.audiobookModeEnabled ||
+            voiceLanguage.trim().takeIf(String::isNotBlank) != it.voiceLanguage ||
             longTermMemoryEnabled != it.longTermMemoryEnabled ||
             extraWorldBookIds != it.extraWorldBookIds
     } ?: false
@@ -255,6 +258,7 @@ fun ChatSettingsDialog(
                                 playerSetting = playerSetting.takeIf(String::isNotBlank),
                                 chatBackground = background.takeIf(String::isNotBlank),
                                 audiobookModeEnabled = audiobookModeEnabled,
+                                voiceLanguage = voiceLanguage,
                                 longTermMemoryEnabled = longTermMemoryEnabled,
                                 longTermMemory = session?.longTermMemory.orEmpty(),
                                 extraWorldBookIds = extraWorldBookIds
@@ -292,6 +296,7 @@ fun ChatSettingsDialog(
                             background, { backgroundPicker.launch("image/*") }, { background = "" },
                             audiobookModeEnabled, { audiobookModeEnabled = it },
                             globalAppSettings.audiobookModeEnabled,
+                            voiceLanguage, { voiceLanguage = it },
                             longTermMemoryEnabled, { longTermMemoryEnabled = it }, onClearHistory,
                             ::openFullscreen
                         )
@@ -444,6 +449,7 @@ private fun SettingsContent(
     background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit,
     audiobookModeEnabled: Boolean?, onAudiobookModeEnabled: (Boolean?) -> Unit,
     globalAudiobookModeEnabled: Boolean,
+    voiceLanguage: String, onVoiceLanguage: (String) -> Unit,
     longTermMemoryEnabled: Boolean, onLongTermMemoryEnabled: (Boolean) -> Unit, onClearHistory: () -> Unit,
     openFullscreen: (String, String, (String) -> Unit) -> Unit
 ) {
@@ -468,6 +474,16 @@ private fun SettingsContent(
                 audiobookOptions,
                 AudiobookModeOption::label,
                 { onAudiobookModeEnabled(it.value) }
+            )
+        }
+        CbField(
+            "语音使用语言",
+            description = "留空使用气泡原文；填写后先由 AI 翻译。普通模式再添加标签，听书模式直接合成。"
+        ) {
+            CbInput(
+                voiceLanguage,
+                onVoiceLanguage,
+                placeholder = "例如：日语、英语"
             )
         }
         CbDivider()

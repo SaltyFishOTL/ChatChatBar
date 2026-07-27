@@ -31,5 +31,19 @@ class ChatSessionSerializationTest {
         assertNull(session.memoryHeadCommitId)
         assertEquals(MemoryUpdateStatus.IDLE, session.memoryUpdateStatus)
         assertNull(session.audiobookModeEnabled)
+        assertNull(session.voiceLanguage)
+    }
+
+    @Test
+    fun voiceLanguageRoundTripsWhenConfigured() {
+        val json = Json { encodeDefaults = true }
+        val session = ChatSession.create("card", "会话").copy(voiceLanguage = "日语")
+
+        val decoded = json.decodeFromString(
+            ChatSession.serializer(),
+            json.encodeToString(ChatSession.serializer(), session)
+        )
+
+        assertEquals("日语", decoded.voiceLanguage)
     }
 }

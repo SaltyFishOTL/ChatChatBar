@@ -37,6 +37,7 @@ import kotlinx.coroutines.sync.withPermit
 
 enum class VoiceGenerationPhase {
     QUEUED,
+    TRANSLATING,
     TAGGING,
     AWAITING_TEXT_CONFIRMATION,
     SYNTHESIZING,
@@ -59,7 +60,8 @@ data class VoiceGenerationBatchState(
     val totalCount: Int = 0,
     val completedCount: Int = 0,
     val receivedBytes: Long = 0L,
-    val tagStreamText: String = "",
+    val modelStreamText: String = "",
+    val translationRequested: Boolean = false,
     val taggingSkipped: Boolean = false,
     val textConfirmations: List<VoiceTextConfirmationState> = emptyList(),
     val errors: Map<String, String> = emptyMap(),
@@ -122,6 +124,7 @@ class FishAudioGenerationCoordinator(
         val context: GenerationContext,
         val targets: List<VoiceGenerationTarget>,
         val fishModelId: String,
+        val synthesisTextById: Map<String, String>,
         val tagResult: VoiceTagBatchResult,
         val playAllMessageVoices: Boolean
     )
@@ -222,7 +225,7 @@ class FishAudioGenerationCoordinator(
                     it.copy(sessionId = existing.sessionId, messageId = existing.messageId)
                 }
                 FishAudioTagPolicy.analyze(
-                    originalText = existing.sourceText,
+                    originalText = existing.effectiveSynthesisText,
                     taggedText = editedTaggedText,
                     mode = FishAudioTagPolicy.markerMode(existing.fishModelId)
                 ).getOrThrow()
@@ -303,6 +306,7 @@ class FishAudioGenerationCoordinator(
                     context = pending.context,
                     targets = pending.targets,
                     fishModelId = pending.fishModelId,
+                    synthesisTextById = pending.synthesisTextById,
                     taggedTextById = pending.tagResult.taggedTextById + confirmedText,
                     initialErrors = pending.tagResult.errorsById + rejectedErrors,
                     playAllMessageVoices = pending.playAllMessageVoices
@@ -410,7 +414,14 @@ class FishAudioGenerationCoordinator(
         val fishModelId = settings.fishAudioTtsModelId
             .takeIf { it in FishAudioTtsModels.supported }
             ?: FishAudioTtsModels.S2_1_PRO_FREE
-        if (!VoiceGenerationPolicy.shouldGenerateAiTags(context.audiobookEnabled)) {
+        val shouldGenerateTags =
+            VoiceGenerationPolicy.shouldGenerateAiTags(context.audiobookEnabled)
+        val targetLanguage = context.session.voiceLanguage?.trim().orEmpty()
+        val translationRequested = targetLanguage.isNotEmpty()
+        val originalTextById = targets.associate { target ->
+            target.targetId to target.segment.spokenText
+        }
+        if (!shouldGenerateTags && !translationRequested) {
             updateBatch(batchId) {
                 it.copy(
                     phase = VoiceGenerationPhase.SYNTHESIZING,
@@ -423,9 +434,8 @@ class FishAudioGenerationCoordinator(
                 context = context,
                 targets = targets,
                 fishModelId = fishModelId,
-                taggedTextById = targets.associate { target ->
-                    target.targetId to target.segment.spokenText
-                },
+                synthesisTextById = originalTextById,
+                taggedTextById = originalTextById,
                 initialErrors = emptyMap(),
                 playAllMessageVoices = playAllMessageVoices
             )
@@ -436,13 +446,81 @@ class FishAudioGenerationCoordinator(
                 ?: error("当前会话没有可用对话模型")
         } else {
             modelResolver.resolveAuxiliaryTextModelExact(settings.voiceTagModelId, settings)
-                ?: error("所选语音标签模型已失效，请在设置中重新选择")
+                ?: error("所选语音翻译/标签模型已失效，请在设置中重新选择")
         }
         require(tagModel.hasConfiguredAuthentication(settings)) {
-            "语音标签模型/API Key 未配置"
+            "语音翻译/标签模型/API Key 未配置"
+        }
+        var synthesisTextById = originalTextById
+        var errorsById = emptyMap<String, String>()
+        if (translationRequested) {
+            updateBatch(batchId) {
+                it.copy(
+                    phase = VoiceGenerationPhase.TRANSLATING,
+                    totalCount = targets.size,
+                    translationRequested = true,
+                    modelStreamText = ""
+                )
+            }
+            val translationResult = AiBackgroundWorkManager.run(context.session.id) {
+                tagService.translate(
+                    modelConfig = tagModel,
+                    targetLanguage = targetLanguage,
+                    previousUserMessage = context.previousUserMessage,
+                    assistantResponse = context.message.displayContent,
+                    inputs = targets.map { it.toTagInput() },
+                    onDelta = { delta ->
+                        updateBatch(batchId) { state ->
+                            state.copy(modelStreamText = state.modelStreamText + delta)
+                        }
+                    }
+                )
+            }
+            synthesisTextById = translationResult.translatedTextById
+            errorsById = translationResult.errorsById
+            if (synthesisTextById.isEmpty()) {
+                updateBatch(batchId) {
+                    it.copy(
+                        phase = VoiceGenerationPhase.FAILED,
+                        modelStreamText = "",
+                        errors = errorsById
+                    )
+                }
+                finishAutoPlay(batchId, null)
+                return
+            }
+        }
+        if (!shouldGenerateTags) {
+            updateBatch(batchId) {
+                it.copy(
+                    phase = VoiceGenerationPhase.SYNTHESIZING,
+                    totalCount = targets.size,
+                    modelStreamText = "",
+                    translationRequested = translationRequested,
+                    taggingSkipped = true,
+                    errors = errorsById
+                )
+            }
+            runSynthesis(
+                batchId = batchId,
+                context = context,
+                targets = targets,
+                fishModelId = fishModelId,
+                synthesisTextById = synthesisTextById,
+                taggedTextById = synthesisTextById,
+                initialErrors = errorsById,
+                playAllMessageVoices = playAllMessageVoices
+            )
+            return
         }
         updateBatch(batchId) {
-            it.copy(phase = VoiceGenerationPhase.TAGGING, totalCount = targets.size)
+            it.copy(
+                phase = VoiceGenerationPhase.TAGGING,
+                totalCount = targets.size,
+                modelStreamText = "",
+                translationRequested = translationRequested,
+                errors = errorsById
+            )
         }
         val tagResult = AiBackgroundWorkManager.run(context.session.id) {
             tagService.generate(
@@ -450,29 +528,30 @@ class FishAudioGenerationCoordinator(
                 fishModelId = fishModelId,
                 previousUserMessage = context.previousUserMessage,
                 assistantResponse = context.message.displayContent,
-                inputs = targets.map { target ->
-                    VoiceTagInput(
-                        id = target.targetId,
-                        text = target.segment.spokenText,
-                        characterName = target.character.name,
-                        speakingStyle = target.character.speakingStyle
-                    )
+                inputs = targets.mapNotNull { target ->
+                    synthesisTextById[target.targetId]?.let { text ->
+                        target.toTagInput(text)
+                    }
                 },
                 onDelta = { delta ->
                     updateBatch(batchId) { state ->
-                        state.copy(tagStreamText = state.tagStreamText + delta)
+                        state.copy(modelStreamText = state.modelStreamText + delta)
                     }
                 }
             )
         }
-        if (tagResult.confirmationRequiredById.isNotEmpty()) {
+        val combinedTagResult = tagResult.copy(
+            errorsById = errorsById + tagResult.errorsById
+        )
+        if (combinedTagResult.confirmationRequiredById.isNotEmpty()) {
             val targetById = targets.associateBy(VoiceGenerationTarget::targetId)
-            val confirmations = tagResult.confirmationRequiredById.mapNotNull { (targetId, text) ->
+            val confirmations = combinedTagResult.confirmationRequiredById.mapNotNull { (targetId, text) ->
                 targetById[targetId]?.let { target ->
                     VoiceTextConfirmationState(
                         targetId = targetId,
                         characterName = target.character.name,
-                        originalText = target.segment.spokenText,
+                        originalText = synthesisTextById[targetId]
+                            ?: target.segment.spokenText,
                         proposedTaggedText = text
                     )
                 }
@@ -481,15 +560,16 @@ class FishAudioGenerationCoordinator(
                 context = context,
                 targets = targets,
                 fishModelId = fishModelId,
-                tagResult = tagResult,
+                synthesisTextById = synthesisTextById,
+                tagResult = combinedTagResult,
                 playAllMessageVoices = playAllMessageVoices
             )
             updateBatch(batchId) {
                 it.copy(
                     phase = VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION,
-                    tagStreamText = "",
+                    modelStreamText = "",
                     textConfirmations = confirmations,
-                    errors = tagResult.errorsById
+                    errors = combinedTagResult.errorsById
                 )
             }
             return
@@ -499,8 +579,9 @@ class FishAudioGenerationCoordinator(
             context = context,
             targets = targets,
             fishModelId = fishModelId,
-            taggedTextById = tagResult.taggedTextById,
-            initialErrors = tagResult.errorsById,
+            synthesisTextById = synthesisTextById,
+            taggedTextById = combinedTagResult.taggedTextById,
+            initialErrors = combinedTagResult.errorsById,
             playAllMessageVoices = playAllMessageVoices
         )
     }
@@ -510,6 +591,7 @@ class FishAudioGenerationCoordinator(
         context: GenerationContext,
         targets: List<VoiceGenerationTarget>,
         fishModelId: String,
+        synthesisTextById: Map<String, String>,
         taggedTextById: Map<String, String>,
         initialErrors: Map<String, String>,
         playAllMessageVoices: Boolean
@@ -517,7 +599,7 @@ class FishAudioGenerationCoordinator(
         updateBatch(batchId) {
             it.copy(
                 phase = VoiceGenerationPhase.SYNTHESIZING,
-                tagStreamText = "",
+                modelStreamText = "",
                 textConfirmations = emptyList(),
                 errors = initialErrors
             )
@@ -542,6 +624,8 @@ class FishAudioGenerationCoordinator(
                                 apiKey = apiKey,
                                 fishModelId = fishModelId,
                                 target = target,
+                                synthesisText = synthesisTextById[target.targetId]
+                                    ?: target.segment.spokenText,
                                 taggedText = taggedText,
                                 onBytes = { bytes ->
                                     bytesByTarget[target.targetId] = bytes
@@ -585,6 +669,7 @@ class FishAudioGenerationCoordinator(
         apiKey: String,
         fishModelId: String,
         target: VoiceGenerationTarget,
+        synthesisText: String,
         taggedText: String,
         onBytes: (Long) -> Unit
     ): TargetGenerationResult = try {
@@ -610,6 +695,7 @@ class FishAudioGenerationCoordinator(
                 sourceSegmentKind = target.sourceKind,
                 sourceSpeakerName = target.segment.speakerName.orEmpty(),
                 sourceText = target.segment.spokenText,
+                synthesisText = synthesisText,
                 taggedText = taggedText,
                 characterId = target.character.id,
                 characterName = target.character.name,
@@ -840,7 +926,7 @@ class FishAudioGenerationCoordinator(
         updateBatch(batchId) {
             it.copy(
                 phase = VoiceGenerationPhase.FAILED,
-                tagStreamText = "",
+                modelStreamText = "",
                 errors = it.errors + ("batch" to (error.message ?: error.javaClass.simpleName))
             )
         }
@@ -848,7 +934,7 @@ class FishAudioGenerationCoordinator(
 
     private fun markCancelled(batchId: String) {
         updateBatch(batchId) {
-            it.copy(phase = VoiceGenerationPhase.CANCELLED, tagStreamText = "")
+            it.copy(phase = VoiceGenerationPhase.CANCELLED, modelStreamText = "")
         }
     }
 
@@ -859,6 +945,15 @@ class FishAudioGenerationCoordinator(
         val previousUserMessage: String,
         val audiobookEnabled: Boolean,
         val segmentedBubblesEnabled: Boolean
+    )
+
+    private fun VoiceGenerationTarget.toTagInput(
+        text: String = segment.spokenText
+    ): VoiceTagInput = VoiceTagInput(
+        id = targetId,
+        text = text,
+        characterName = character.name,
+        speakingStyle = character.speakingStyle
     )
 
     private fun normalizeVoiceText(value: String): String =

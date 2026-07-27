@@ -27,6 +27,8 @@ data class GeneratedVoiceMessage(
     val sourceSegmentKind: String,
     val sourceSpeakerName: String,
     val sourceText: String,
+    /** 去除 Fish Audio 标签后的实际合成文本；旧记录为空时等同 sourceText。 */
+    val synthesisText: String? = null,
     val taggedText: String,
     val characterId: String,
     val characterName: String,
@@ -38,6 +40,9 @@ data class GeneratedVoiceMessage(
     val createdAt: Long,
     val updatedAt: Long
 ) {
+    val effectiveSynthesisText: String
+        get() = synthesisText ?: sourceText
+
     companion object {
         fun create(
             sessionId: String,
@@ -47,6 +52,7 @@ data class GeneratedVoiceMessage(
             sourceSegmentKind: String,
             sourceSpeakerName: String,
             sourceText: String,
+            synthesisText: String? = null,
             taggedText: String,
             characterId: String,
             characterName: String,
@@ -66,6 +72,7 @@ data class GeneratedVoiceMessage(
                 sourceSegmentKind = sourceSegmentKind,
                 sourceSpeakerName = sourceSpeakerName,
                 sourceText = sourceText,
+                synthesisText = synthesisText,
                 taggedText = taggedText,
                 characterId = characterId,
                 characterName = characterName,

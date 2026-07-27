@@ -1691,7 +1691,7 @@ fun ChatScreen(
                                 style = ChatBarTheme.typography.label
                             )
                             CbText(
-                                "原文",
+                                if (batch.translationRequested) "翻译后口播" else "原文",
                                 color = ChatBarTheme.colors.mutedForeground,
                                 style = ChatBarTheme.typography.caption
                             )
@@ -2051,12 +2051,24 @@ private fun FishAudioGenerationCard(
         state.phase == VoiceGenerationPhase.CANCELLED
     val label = when (state.phase) {
         VoiceGenerationPhase.QUEUED -> "准备语音任务"
-        VoiceGenerationPhase.TAGGING -> "阶段 1/2 · AI 正在设计 Fish Audio 标签"
+        VoiceGenerationPhase.TRANSLATING -> "阶段 1 · AI 正在翻译语音文本"
+        VoiceGenerationPhase.TAGGING ->
+            if (state.translationRequested) {
+                "阶段 2/3 · AI 正在设计 Fish Audio 标签"
+            } else {
+                "阶段 1/2 · AI 正在设计 Fish Audio 标签"
+            }
         VoiceGenerationPhase.AWAITING_TEXT_CONFIRMATION ->
-            "${state.textConfirmations.size} 段 AI 文本与原文不同，等待确认"
+            "${state.textConfirmations.size} 段 AI 标签文本与口播输入不同，等待确认"
         VoiceGenerationPhase.SYNTHESIZING ->
             if (state.taggingSkipped) {
-                "Fish Audio 正在直接生成 ${state.completedCount}/${state.totalCount}"
+                if (state.translationRequested) {
+                    "阶段 2/2 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
+                } else {
+                    "Fish Audio 正在直接生成 ${state.completedCount}/${state.totalCount}"
+                }
+            } else if (state.translationRequested) {
+                "阶段 3/3 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
             } else {
                 "阶段 2/2 · Fish Audio 正在生成 ${state.completedCount}/${state.totalCount}"
             }
@@ -2064,7 +2076,7 @@ private fun FishAudioGenerationCard(
         VoiceGenerationPhase.CANCELLED -> "语音生成已取消；已完成项已保留"
     }
     val streamScrollState = rememberScrollState()
-    LaunchedEffect(state.tagStreamText) {
+    LaunchedEffect(state.modelStreamText) {
         streamScrollState.scrollTo(streamScrollState.maxValue)
     }
     CbSurface(
@@ -2103,14 +2115,20 @@ private fun FishAudioGenerationCard(
                     )
                 }
             }
-            if (state.phase == VoiceGenerationPhase.TAGGING && state.tagStreamText.isNotBlank()) {
+            if (
+                state.phase in setOf(
+                    VoiceGenerationPhase.TRANSLATING,
+                    VoiceGenerationPhase.TAGGING
+                ) &&
+                state.modelStreamText.isNotBlank()
+            ) {
                 CbSurface(
                     modifier = Modifier.fillMaxWidth(),
                     color = ChatBarTheme.colors.muted,
                     shape = RoundedCornerShape(8.dp)
                 ) {
                     CbText(
-                        state.tagStreamText.takeLast(1_500),
+                        state.modelStreamText.takeLast(1_500),
                         modifier = Modifier
                             .fillMaxWidth()
                             .heightIn(max = 96.dp)

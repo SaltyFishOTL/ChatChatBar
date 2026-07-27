@@ -44,6 +44,7 @@ class SaveSlotSerializationTest {
         assertEquals(emptyMap<String, SaveSlotImageResource>(), slot.imageResources)
         assertTrue(slot.timedWorldInfo.isEmpty())
         assertEquals(null, slot.audiobookModeEnabled)
+        assertEquals(null, slot.voiceLanguage)
     }
 
     @Test
@@ -64,6 +65,7 @@ class SaveSlotSerializationTest {
             modelId = "model-1",
             formatCardId = "format-1",
             audiobookModeEnabled = true,
+            voiceLanguage = "英语",
             longTermMemory = "长期记忆",
             longTermMemoryUpdatedThroughMessageId = "message-1",
             extraWorldBookIds = listOf("world-1"),
@@ -94,7 +96,8 @@ class SaveSlotSerializationTest {
             sourceSegmentKind = "DIALOGUE",
             sourceSpeakerName = "林雾",
             sourceText = "你好",
-            taggedText = "[happy]你好",
+            synthesisText = "Hello",
+            taggedText = "[happy]Hello",
             characterId = "character-1",
             characterName = "林雾",
             voice = FishAudioVoiceBinding(
@@ -122,7 +125,39 @@ class SaveSlotSerializationTest {
 
         assertEquals(5, decoded.schemaVersion)
         assertEquals(voice, decoded.voiceMessages.single())
+        assertEquals("Hello", decoded.voiceMessages.single().effectiveSynthesisText)
         assertEquals("bXAz", decoded.audioResources.getValue("voice-resource").data)
+    }
+
+    @Test
+    fun oldGeneratedVoicePayloadUsesSourceTextAsSynthesisText() {
+        val voice = json.decodeFromString(
+            GeneratedVoiceMessage.serializer(),
+            """
+            {
+              "id":"voice-1",
+              "sessionId":"session-1",
+              "messageId":"message-1",
+              "sourceOrder":1,
+              "sourceSegmentKind":"DIALOGUE",
+              "sourceSpeakerName":"林雾",
+              "sourceText":"你好",
+              "taggedText":"[happy]你好",
+              "characterId":"character-1",
+              "characterName":"林雾",
+              "voice":{"referenceId":"reference-1","title":"音色"},
+              "fishModelId":"s2.1-pro-free",
+              "audioPath":"voice.mp3",
+              "durationMs":1000,
+              "byteLength":10,
+              "createdAt":1,
+              "updatedAt":1
+            }
+            """.trimIndent()
+        )
+
+        assertEquals(null, voice.synthesisText)
+        assertEquals("你好", voice.effectiveSynthesisText)
     }
 
     @Test

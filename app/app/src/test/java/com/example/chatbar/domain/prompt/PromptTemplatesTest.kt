@@ -121,4 +121,24 @@ class PromptTemplatesTest {
         assertTrue(archiveIndex >= 0)
         assertTrue(sourceIndex > archiveIndex)
     }
+
+    @Test
+    fun fishAudioTranslationPromptIncludesLanguageContextAndSegmentsInOrder() {
+        val prompt = PromptTemplates.fishAudioTranslationUserInput(
+            targetLanguage = "日语",
+            previousUserMessage = "上一条",
+            assistantResponse = "完整回复",
+            segmentsJson = """[{"id":"segment-1","text":"你好"}]"""
+        )
+
+        val languageIndex = prompt.indexOf("日语")
+        val previousIndex = prompt.indexOf("上一条")
+        val responseIndex = prompt.indexOf("完整回复")
+        val segmentIndex = prompt.indexOf("segment-1")
+        assertTrue(languageIndex >= 0)
+        assertTrue(previousIndex > languageIndex)
+        assertTrue(responseIndex > previousIndex)
+        assertTrue(segmentIndex > responseIndex)
+        assertTrue(PromptTemplates.FISH_AUDIO_TRANSLATION_SYSTEM.contains("translatedText"))
+    }
 }

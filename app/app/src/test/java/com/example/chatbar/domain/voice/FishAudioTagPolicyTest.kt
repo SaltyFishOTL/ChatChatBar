@@ -150,4 +150,62 @@ class FishAudioTagPolicyTest {
         assertTrue(fenced.taggedTextById.isEmpty())
         assertTrue(unknownField.taggedTextById.isEmpty())
     }
+
+    @Test
+    fun `translation parser accepts one translated text per input id`() {
+        val second = input.copy(id = "segment-2", text = "晚安。")
+        val result = service.parseTranslation(
+            """
+            {"segments":[
+              {"id":"segment-1","translatedText":"Hello, welcome back."},
+              {"id":"segment-2","translatedText":"Good night."}
+            ]}
+            """.trimIndent(),
+            listOf(input, second)
+        )
+
+        assertEquals("Hello, welcome back.", result.translatedTextById["segment-1"])
+        assertEquals("Good night.", result.translatedTextById["segment-2"])
+        assertTrue(result.errorsById.isEmpty())
+    }
+
+    @Test
+    fun `translation parser reports duplicate missing unknown and blank results`() {
+        val second = input.copy(id = "segment-2", text = "晚安。")
+        val result = service.parseTranslation(
+            """
+            {"segments":[
+              {"id":"segment-1","translatedText":"Hello."},
+              {"id":"segment-1","translatedText":"Hi."},
+              {"id":"unknown","translatedText":""}
+            ]}
+            """.trimIndent(),
+            listOf(input, second)
+        )
+
+        assertTrue(result.translatedTextById.isEmpty())
+        assertEquals(
+            setOf("segment-1", "segment-2", "unknown"),
+            result.errorsById.keys
+        )
+    }
+
+    @Test
+    fun `translation parser rejects markdown and unknown fields`() {
+        val fenced = service.parseTranslation(
+            """```json
+            {"segments":[{"id":"segment-1","translatedText":"Hello."}]}
+            ```""".trimIndent(),
+            listOf(input)
+        )
+        val unknownField = service.parseTranslation(
+            """
+            {"segments":[{"id":"segment-1","translatedText":"Hello.","extra":true}]}
+            """.trimIndent(),
+            listOf(input)
+        )
+
+        assertTrue(fenced.translatedTextById.isEmpty())
+        assertTrue(unknownField.translatedTextById.isEmpty())
+    }
 }
