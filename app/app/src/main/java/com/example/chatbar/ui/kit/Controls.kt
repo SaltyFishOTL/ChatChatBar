@@ -262,6 +262,7 @@ fun CbSlider(
     trackBrush: Brush? = null
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
+    val currentOnValueChange by rememberUpdatedState(onValueChange)
     fun valueFromX(x: Float): Float {
         val fraction = (x / widthPx).coerceIn(0f, 1f)
         val raw = valueRange.start + fraction * (valueRange.endInclusive - valueRange.start)
@@ -291,17 +292,17 @@ fun CbSlider(
                 )
                 if (contentDescription != null) this.contentDescription = contentDescription
                 setProgress { target ->
-                    onValueChange(snappedValue(target))
+                    currentOnValueChange(snappedValue(target))
                     true
                 }
             }
             .focusable()
             .pointerInput(widthPx, valueRange, steps) {
                 detectHorizontalDragGestures(
-                    onDragStart = { offset -> onValueChange(valueFromX(offset.x)) },
+                    onDragStart = { offset -> currentOnValueChange(valueFromX(offset.x)) },
                     onHorizontalDrag = { change, _ ->
                         change.consume()
-                        onValueChange(valueFromX(change.position.x))
+                        currentOnValueChange(valueFromX(change.position.x))
                     }
                 )
             },
