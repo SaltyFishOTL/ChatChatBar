@@ -73,8 +73,22 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_rendersDialogueWithoutParentheses() {
+        val content = "[半角] ［全角］ [混合］"
+
+        assertEquals(
+            "[半角] [全角] [混合]",
+            sanitizeRoleplayMarkdown(content)
+        )
+        assertEquals(
+            "\u200B半角\u200B \u200B全角\u200B \u200B混合\u200B",
+            sanitizeRoleplayMarkdown(content, forColoring = true)
+        )
+    }
+
+    @Test
     fun roleplayMarkdown_keepsFullWidthImageMarkerUntouched() {
-        val image = "！［图片］（image.png）"
+        val image = "！［图片］（image.png） ![半角图片] ！［全角图片］"
 
         assertEquals(image, sanitizeRoleplayMarkdown(image))
         assertEquals(image, sanitizeRoleplayMarkdown(image, forColoring = true))
