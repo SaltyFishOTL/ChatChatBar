@@ -59,13 +59,13 @@ class ChatRequestMemoryPolicyTest {
             archive = "【ARCHIVE｜历史档案】\n\$username与{user}遇见{char}。",
             headAndTimeline = "【HEAD｜当前状态】\n\$botname正在等待\$username。",
             playerName = "林夏",
-            botName = "塞尔达"
+            botName = "塞尔达\n公主"
         )
 
         val serialized = serializedContents(dynamicMessages)
 
-        assertEquals("【ARCHIVE｜历史档案】\n林夏与林夏遇见塞尔达。", serialized[1])
-        assertEquals("【HEAD｜当前状态】\n塞尔达正在等待林夏。", serialized[2])
+        assertEquals("【ARCHIVE｜历史档案】\n林夏与林夏遇见塞尔达\n公主。", serialized[1])
+        assertEquals("【HEAD｜当前状态】\n塞尔达\n公主正在等待林夏。", serialized[2])
     }
 
     @Test

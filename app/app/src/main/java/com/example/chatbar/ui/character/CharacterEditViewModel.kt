@@ -319,6 +319,7 @@ class CharacterEditViewModel(
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
 
     var name by mutableStateOf("")
+    var botName by mutableStateOf("")
     var greeting by mutableStateOf("")
     var alternateGreetings by mutableStateOf(listOf<String>())
     var avatar by mutableStateOf<String?>(null)
@@ -2183,6 +2184,7 @@ class CharacterEditViewModel(
     private fun applyCard(card: CharacterCard) {
         _characterCard.value = card
         name = card.name
+        botName = card.botName
         greeting = card.greeting
         alternateGreetings = card.alternateGreetings
         avatar = card.avatar
@@ -2256,6 +2258,7 @@ class CharacterEditViewModel(
         } else {
             base.copy(
                 name = name,
+                botName = botName,
                 greeting = greeting,
                 alternateGreetings = alternateGreetings,
                 avatar = avatar,
@@ -2278,7 +2281,7 @@ class CharacterEditViewModel(
     }
 
     private fun hasNewCharacterInput(): Boolean =
-        name.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||
+        name.isNotBlank() || botName.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||
             avatar != null || chatBackground != null || editMode != CharacterEditMode.STRUCTURED ||
             basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
             systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
@@ -2300,6 +2303,7 @@ class CharacterEditViewModel(
         val dirtyMessage = if (markDirty) "RAG 索引待重建" else base?.ragIndexMessage
         return base?.copy(
             name = name,
+            botName = botName,
             greeting = greeting,
             alternateGreetings = alternateGreetings,
             avatar = avatar,
@@ -2328,6 +2332,7 @@ class CharacterEditViewModel(
         ) ?: CharacterCard(
             id = characterId ?: java.util.UUID.randomUUID().toString(),
             name = name,
+            botName = botName,
             greeting = greeting,
             alternateGreetings = alternateGreetings,
             avatar = avatar,

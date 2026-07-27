@@ -146,6 +146,7 @@ class CharacterCardTransferService(
         return CharacterCardPackage(
             card = PackagedCharacterCard(
                 name = card.name,
+                botName = card.botName,
                 avatarResourceId = packageImage(card.avatar, "avatar", "角色卡头像"),
                 characters = packagedCharacters,
                 greeting = card.greeting,
@@ -217,6 +218,7 @@ class CharacterCardTransferService(
             return CharacterCard(
                 id = id,
                 name = NamePolicy.normalize(name),
+                botName = card.botName,
                 avatar = card.avatarResourceId?.let(imagePathMap::getValue),
                 characters = CharacterSpeakerNamePolicy.normalizeUnique(
                     card.characters.map { character ->

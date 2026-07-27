@@ -1,6 +1,6 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-07-21
+Last updated: 2026-07-27
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `8ab3ba70 Release 1.3.0`
@@ -19,7 +19,7 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 - Archive注入和完整预览只输出按派生T排序的节点正文，不再输出`[Episode/Arc/Era Tx-Tx]`或Legacy类型/T标识；节点层级与T范围只留在程序元数据和UI。Legacy仅保留“时间未知｜不代表当前进展”语义警告。
 - 非空活跃节点正文不会再因sourceTurnId缺失、断裂或旧T映射异常被静默丢弃。T证明完整的节点先按时间排序，异常节点按创建时间稳定后置；UI显示数据完整性警告，时间线约束明确说明范围待修复。空正文仍不注入。
 - 主聊天请求把非空Archive作为独立`system`消息放在世界书/RAG之后、HEAD之前，不再与其他动态资料合并；固定顺序为世界书→RAG→Archive→HEAD。发送前重新读取失败会直接报错；若内存预算表明有Archive正文但编译结果为空，或最终消息列表缺少Archive标记，请求会在联网前被阻止。调试控制台直接显示最终Request JSON中Archive/HEAD各自是否已发送。
-- 独立Archive/HEAD在创建最终`ChatApiMessage`时会按当前玩家名与角色名渲染会话占位符，支持`$username`、`$botname`、`{{user}}`/`{{char}}`、`{user}`/`{char}`和`<USER>`/`<BOT>`；持久化记忆正文保持原样，System Prompt调试预览显示实际渲染结果。
+- 独立Archive/HEAD在创建最终`ChatApiMessage`时会按当前玩家名与角色卡`effectiveBotName`渲染会话占位符；Bot名称非空白时保留原始内容（含换行），否则回退角色卡名称。支持`$username`、`$botname`、`{{user}}`/`{{char}}`、`{user}`/`{char}`和`<USER>`/`<BOT>`；持久化记忆正文保持原样，System Prompt调试预览显示实际渲染结果。
 - Episode全局分组支持1–6轮、默认2；滑块位于全局设置并与上下文保留组数相邻。
 - Episode AI协议已改为把1–N轮原文直接压成一个`summary`，不再生成逐T `sourceCoverage`。新节点不含逐T摘要；程序使用有序sourceTurnId、来源哈希和单段正文计算结构覆盖哈希。旧coverage节点继续兼容，不重写。
 - Episode summary的Prompt目标为1T 50字、每增加1T加20字、默认2T 70字、6T 150字；程序硬上限为Prompt目标的2倍，即1T 100字至6T 300字，给AI字数估算保留有界容差。每次Prompt仍明确写入较短目标，并含错误逐T复述和正确跨轮融合示例。长期记忆AI输出校验统一最多5次，覆盖补录Episode、Archive压缩和最终HEAD重建。
@@ -73,7 +73,7 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 
 ## Untested
 
-- 真实用户旧会话尚未手动抓取最终API请求确认Archive正文、占位符替换与历史消息；纯策略和最终JSON序列化测试已覆盖正文保留、独立消息、Archive/HEAD占位符替换、HEAD-only拒绝及空历史过滤，模拟器为无旧数据冷启动烟测。
+- 真实用户旧会话尚未手动抓取最终API请求确认Archive正文、Bot名称覆盖、占位符替换与历史消息；纯策略和最终JSON序列化测试已覆盖正文保留、独立消息、Archive/HEAD多行Bot名称及兼容别名替换、HEAD-only拒绝和空历史过滤。本轮无连接设备，未做交互验收。
 - 最新直接多T单摘要、应用级补录runner及退出/重进后的流式进度恢复尚未经过用户真实模型手动验证。
 - 真实长聊下三层扩容询问、`compressible=false`链、Era平级压缩和多批补录仍缺少完整端到端证据。
 - 多节点AI重新生成及其真实并发流式表现尚待用户再次调用模型验证；自动测试已覆盖流稿、候选不自动保存、无关节点Checkpoint不失效、目标/依据变化仍拒绝。
@@ -116,7 +116,7 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 ## Verification Baseline
 
 - 2026-07-21补录页面生命周期修复：`:app:compileDebugKotlin`、`:app:compileDebugAndroidTestKotlin`、`ci.ps1 -SkipAssemble`及完整`ci.ps1`通过；新增instrumented场景在summary已可见后销毁页面观察者，应用级任务仍完成Episode、HEAD和持久状态。`adb devices -l`无设备，未执行连接测试或部署；Skill校验脚本因运行环境缺`PyYAML`未执行，frontmatter与结构人工检查通过。
-- 2026-07-20 Archive/HEAD占位符修复：定向`PlaceholderRendererTest`/`ChatRequestMemoryPolicyTest`、全量`app/.\gradlew.bat test`及`app/ci.ps1 -SkipAssemble`通过；最终请求JSON测试确认`$username`、`{user}`、`{char}`和`$botname`均已替换。`adb devices -l`无连接设备，未部署或调用真实模型。
+- 2026-07-27 Bot名称拆分：定向角色卡兼容、schema 7传输、Prompt普通/缓存/World Book outlet及`ChatRequestMemoryPolicyTest`通过；全量`app/.\gradlew.bat test`、`:app:compileDebugKotlin --rerun-tasks`和`app/ci.ps1 -SkipAssemble`通过。最终请求JSON测试确认Archive/HEAD使用多行`effectiveBotName`替换兼容别名；`adb devices -l`无连接设备，未部署或调用真实模型。
 - 2026-07-18 Archive重试UX切片：`:app:compileDebugKotlin --rerun-tasks`与`ci.ps1 -SkipAssemble`通过；新增Compose测试覆盖失败说明/按钮回调和点击后的即时运行反馈。`adb devices -l`无连接设备，未部署或调用真实模型。
 - 2026-07-18目标证据并发切片：`app/gradlew.bat test`、`app/ci.ps1 -SkipAssemble`、完整`app/ci.ps1`均通过；Debug APK成功生成。新增策略测试覆盖无关revision/节点/pending变更放行及目标source/节点/HEAD/Archive变更拒绝；真实仓库+服务instrumented测试源码编译通过。
 - 本切片`adb devices -l`无连接设备；尝试`emu.cmd`时本机Android SDK缺少`C:\Users\Administrator\AppData\Local\Android\Sdk\emulator\emulator.exe`，因此未运行instrumented测试、未部署APK、未调用真实模型。

@@ -76,7 +76,7 @@ class PromptAssembler {
         return renderLayer(
             raw = renderSections(sections),
             playerName = playerName,
-            botName = characterCard.name,
+            botName = characterCard.effectiveBotName,
             worldBookOutlets = worldBookOutlets
         )
     }
@@ -127,19 +127,19 @@ class PromptAssembler {
                 stableSystemPrompt = renderLayer(
                     stableRaw,
                     playerName,
-                    characterCard.name,
+                    characterCard.effectiveBotName,
                     worldBookOutlets
                 ),
                 dynamicSystemPrompt = renderLayer(
                     dynamicRaw,
                     playerName,
-                    characterCard.name,
+                    characterCard.effectiveBotName,
                     worldBookOutlets
                 ),
                 tailSystemPrompt = renderLayer(
                     tailRaw,
                     playerName,
-                    characterCard.name,
+                    characterCard.effectiveBotName,
                     worldBookOutlets
                 ),
                 stablePrefixCacheable = false
@@ -150,19 +150,19 @@ class PromptAssembler {
             stableSystemPrompt = renderLayer(
                 stableRaw,
                 playerName,
-                characterCard.name,
+                characterCard.effectiveBotName,
                 worldBookOutlets
             ),
             dynamicSystemPrompt = renderLayer(
                 dynamicRaw,
                 playerName,
-                characterCard.name,
+                characterCard.effectiveBotName,
                 worldBookOutlets
             ),
             tailSystemPrompt = renderLayer(
                 tailRaw,
                 playerName,
-                characterCard.name,
+                characterCard.effectiveBotName,
                 worldBookOutlets
             ),
             stablePrefixCacheable = true

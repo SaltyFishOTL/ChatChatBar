@@ -14,6 +14,7 @@ import kotlin.uuid.Uuid
 data class CharacterCard(
     val id: String,
     val name: String,
+    val botName: String = "",
     val avatar: String? = null,
     val characters: List<CharacterInfo> = emptyList(),
     val customDocuments: List<DocumentInfo> = emptyList(),
@@ -53,6 +54,9 @@ data class CharacterCard(
     val createdAt: Long,
     val updatedAt: Long
 ) {
+    val effectiveBotName: String
+        get() = botName.takeIf(String::isNotBlank) ?: name
+
     val isCommunityDownload: Boolean
         get() = !communityItemId.isNullOrBlank()
 

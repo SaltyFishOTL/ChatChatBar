@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 
 @Serializable
 data class CharacterCardPackage(
-    val schemaVersion: Int = 6,
+    val schemaVersion: Int = 7,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
@@ -18,6 +18,7 @@ data class CharacterCardPackage(
 @Serializable
 data class PackagedCharacterCard(
     val name: String,
+    val botName: String = "",
     val avatarResourceId: String? = null,
     val characters: List<PackagedCharacter> = emptyList(),
     val greeting: String = "",
@@ -75,7 +76,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion in 3..6) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..7) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     require(card.name.isNotBlank()) { "角色卡名称不能为空" }
     require(card.characters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
     require(documents.all { it.fileName.isNotBlank() && it.fileType.isNotBlank() }) { "文档名称和类型不能为空" }

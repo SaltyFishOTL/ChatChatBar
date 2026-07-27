@@ -83,7 +83,7 @@ fun HomeScreen(
     var showRagNotice by remember { mutableStateOf(false) }
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
-    val characterNamesById = remember(characters) { characters.associate { it.id to it.name } }
+    val characterBotNamesById = remember(characters) { characters.associate { it.id to it.effectiveBotName } }
     val characterCardsById = remember(characters) { characters.associateBy { it.id } }
 
     fun renderSessionText(session: ChatSession, text: String): String =
@@ -91,7 +91,7 @@ fun HomeScreen(
             text = text,
             playerName = session.playerName?.takeIf { it.isNotBlank() }
                 ?: playerSetting.playerName.takeIf { it.isNotBlank() },
-            botName = characterNamesById[session.characterCardId] ?: session.title
+            botName = characterBotNamesById[session.characterCardId] ?: session.title
         )
 
     CbScaffold(

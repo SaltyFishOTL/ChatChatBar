@@ -679,7 +679,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val playerName = currentSession.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
         return PlaceholderRenderContext(
             playerName = playerName,
-            botName = card?.name ?: currentSession.title
+            botName = card?.effectiveBotName ?: currentSession.title
         )
     }
 
@@ -1743,7 +1743,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .playerName
                 .takeIf { it.isNotBlank() }
             val playerName = session.playerName?.takeIf { it.isNotBlank() } ?: globalPlayerName
-            engine.buildWorldBookPrompt(allEntries, card.name, playerName)
+            engine.buildWorldBookPrompt(allEntries, card.effectiveBotName, playerName)
         }
 
         // Compute new timed states from activated entries
@@ -2058,7 +2058,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 ?: playerSettingObj.playerName
             val activePlayerNameOrNull = activePlayerName.takeIf { it.isNotBlank() }
             val renderSessionText: (String) -> String = { text ->
-                PlaceholderRenderer.render(text, activePlayerNameOrNull, charCard.name)
+                PlaceholderRenderer.render(text, activePlayerNameOrNull, charCard.effectiveBotName)
             }
 
             // 确定要使用的 LLM 模型
@@ -2155,7 +2155,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 )
             }
             val renderedContextMsgs = contextMsgs.map {
-                PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.name)
+                PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName)
             }
             val currentRetrievalUserContent = when {
                 persistUserMessage -> finalUserContent
@@ -2400,7 +2400,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         promptAssembler.renderFormatCardForUserMessage(
                             content = formatCardContent,
                             playerName = activePlayerNameOrNull,
-                            botName = charCard.name,
+                            botName = charCard.effectiveBotName,
                             worldBookOutlets = wbOutlets
                         )
                     }
@@ -2525,7 +2525,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     archive = memoryView?.archive,
                     headAndTimeline = memoryView?.headAndTimeline,
                     playerName = activePlayerNameOrNull,
-                    botName = charCard.name
+                    botName = charCard.effectiveBotName
                 ).forEach(apiMessages::add)
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))

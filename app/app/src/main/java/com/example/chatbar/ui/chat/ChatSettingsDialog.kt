@@ -211,7 +211,7 @@ fun ChatSettingsDialog(
     } ?: false
     val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
         ?: globalPlayerSetting.playerName.takeIf { it.isNotBlank() }
-    val renderBotName = characterCard?.name ?: session?.title ?: ""
+    val renderBotName = characterCard?.effectiveBotName ?: session?.title ?: ""
 
     fun renderSessionText(text: String): String =
         PlaceholderRenderer.render(text, renderPlayerName, renderBotName)

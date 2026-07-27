@@ -428,7 +428,7 @@ fun ChatScreen(
     val backgroundPath = session?.chatBackground ?: characterCard?.chatBackground
     val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
         ?: playerSetting.playerName.takeIf { it.isNotBlank() }
-    val renderBotName = characterCard?.name ?: session?.title ?: ""
+    val renderBotName = characterCard?.effectiveBotName ?: session?.title ?: ""
     val botAvatarPath = characterCard?.avatar
     val characterAvatars = remember(characterCard?.characters) {
         characterCard?.characters.orEmpty().map { character ->

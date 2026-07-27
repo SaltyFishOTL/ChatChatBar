@@ -93,7 +93,8 @@ class PromptAssemblerCharacterModeTest {
     @Test fun replacesPlayerAndCharacterNamePlaceholdersGlobally() {
         val prompt = assembler.assembleSystemPrompt(
             characterCard = card(
-                name = "林澈",
+                name = "卡片显示名",
+                botName = "林澈",
                 basicSetting = "${'$'}botname 正在等待 ${'$'}username。"
             ),
             playerName = "旅人",
@@ -102,6 +103,7 @@ class PromptAssemblerCharacterModeTest {
 
         assertTrue(prompt.contains("林澈 正在等待 旅人。"))
         assertTrue(prompt.contains("旅人 信任 林澈。"))
+        assertFalse(prompt.contains("卡片显示名"))
         assertFalse(prompt.contains("${'$'}username"))
         assertFalse(prompt.contains("${'$'}botname"))
     }
@@ -115,10 +117,29 @@ class PromptAssemblerCharacterModeTest {
         assertFalse(prompt.contains("${'$'}botname"))
     }
 
+    @Test fun explicitMultilineBotNameReplacesAllCharacterAliasesVerbatim() {
+        val botName = "林澈\n与同伴"
+        val prompt = assembler.assembleSystemPrompt(
+            card(
+                name = "卡片显示名",
+                botName = botName,
+                basicSetting = "${'$'}botname|{{char}}|{char}|<BOT>"
+            )
+        )
+
+        assertTrue(prompt.contains("$botName|$botName|$botName|$botName"))
+        assertFalse(prompt.contains("卡片显示名"))
+        assertFalse(prompt.contains("${'$'}botname"))
+        assertFalse(prompt.contains("{{char}}"))
+        assertFalse(prompt.contains("{char}"))
+        assertFalse(prompt.contains("<BOT>"))
+    }
+
     @Test fun replacesPlaceholdersInsideWorldBookOutlets() {
         val prompt = assembler.assembleSystemPrompt(
             characterCard = card(
-                name = "Bot",
+                name = "Display",
+                botName = "Bot",
                 basicSetting = "{{outlet::scene}}"
             ),
             playerName = "Alice",
@@ -132,18 +153,22 @@ class PromptAssemblerCharacterModeTest {
 
     @Test fun cacheLayersKeepMemoryDynamicAndPostHistoryAtTail() {
         val layers = assembler.assembleCachePromptLayers(
-            characterCard = card(basicSetting = "稳定角色设定").copy(postHistoryInstructions = "尾部规则"),
+            characterCard = card(
+                name = "卡片显示名",
+                botName = "Bot\nName",
+                basicSetting = "稳定角色设定：${'$'}botname"
+            ).copy(postHistoryInstructions = "尾部规则：{{char}}"),
             longTermMemory = "冻结前记忆",
             hasHistoryMessages = true,
             hasPreviousTurn = true
         )
 
         assertTrue(layers.stablePrefixCacheable)
-        assertTrue(layers.stableSystemPrompt.contains("稳定角色设定"))
+        assertTrue(layers.stableSystemPrompt.contains("稳定角色设定：Bot\nName"))
         assertFalse(layers.stableSystemPrompt.contains("【长期记忆】"))
         assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
         assertTrue(layers.dynamicSystemPrompt.contains("冻结前记忆"))
-        assertTrue(layers.tailSystemPrompt.contains("尾部规则"))
+        assertTrue(layers.tailSystemPrompt.contains("尾部规则：Bot\nName"))
         assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
     }
 
@@ -283,6 +308,7 @@ class PromptAssemblerCharacterModeTest {
 
     private fun card(
         name: String = "Card",
+        botName: String = "",
         editMode: CharacterEditMode = CharacterEditMode.STRUCTURED,
         basicSetting: String = "",
         freeformCharacterText: String = "",
@@ -290,6 +316,7 @@ class PromptAssemblerCharacterModeTest {
     ) = CharacterCard(
         id = "c1",
         name = name,
+        botName = botName,
         greeting = "Hello",
         editMode = editMode,
         basicSetting = basicSetting,

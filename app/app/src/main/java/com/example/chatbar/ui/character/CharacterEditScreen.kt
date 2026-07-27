@@ -420,10 +420,24 @@ fun CharacterEditScreen(
                 CbField(
                     "角色卡名称",
                     Modifier.weight(1f),
-                    description = "所有 Prompt 中的 ${'$'}botname 将替换为此名称。"
+                    description = "用于角色卡列表与管理显示；Bot 名称留空时也用于占位符替换。"
                 ) {
                     CbInput(viewModel.name, { viewModel.name = it }, placeholder = "例如：西幻冒险小队")
                 }
+            }
+            CbField(
+                "Bot 名称",
+                description = "留空时使用角色卡名称；填写后所有 ${'$'}botname 及兼容别名均替换为此内容。",
+                onFullscreenEdit = {
+                    fullscreenField = "Bot 名称" to viewModel.botName
+                    fullscreenOnChange = { viewModel.botName = it }
+                }
+            ) {
+                CbInput(
+                    viewModel.botName,
+                    { viewModel.botName = it },
+                    placeholder = "留空则使用角色卡名称"
+                )
             }
             CbField("起始台词", description = "创建新会话时由角色发送。", onFullscreenEdit = {
                 fullscreenField = "起始台词" to viewModel.greeting; fullscreenOnChange = { viewModel.greeting = it }
@@ -1201,6 +1215,7 @@ private fun SectionTitle(text: String) = CbText(text, color = ChatBarTheme.color
 private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = buildString {
     append(viewModel.draftReady).append('|')
     append(viewModel.name).append('|')
+    append(viewModel.botName).append('|')
     append(viewModel.greeting).append('|')
     append(viewModel.alternateGreetings.joinToString("\u001f")).append('|')
     append(viewModel.avatar.orEmpty()).append('|')

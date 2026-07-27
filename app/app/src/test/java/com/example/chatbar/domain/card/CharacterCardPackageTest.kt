@@ -21,6 +21,7 @@ class CharacterCardPackageTest {
         val packageData = CharacterCardPackage(
             card = PackagedCharacterCard(
                 name = "测试卡",
+                botName = "第一行\n第二行",
                 avatarResourceId = "avatar",
                 characters = listOf(PackagedCharacter(name = "角色"))
             ),
@@ -36,7 +37,22 @@ class CharacterCardPackageTest {
         assertFalse(encoded.contains("createdAt"))
         assertFalse(encoded.contains("updatedAt"))
         assertFalse(encoded.contains("pendingSpeakerRenameTasks"))
+        assertTrue(encoded.contains("\"schemaVersion\":7"))
         assertEquals(packageData, json.decodeFromString(CharacterCardPackage.serializer(), encoded))
+    }
+
+    @Test
+    fun legacyPackageSchemasDefaultBotNameToBlank() {
+        (3..6).forEach { schemaVersion ->
+            val packageData = json.decodeFromString(
+                CharacterCardPackage.serializer(),
+                """{"schemaVersion":$schemaVersion,"card":{"name":"旧角色卡"}}"""
+            )
+
+            packageData.validateForImport()
+
+            assertEquals("", packageData.card.botName)
+        }
     }
 
     @Test

@@ -12,17 +12,39 @@ class CharacterCardCompatibilityTest {
     }
 
     @Test
-    fun legacyJsonDefaultsPendingSpeakerRenamesToEmpty() {
+    fun legacyJsonDefaultsNewFieldsAndUsesCardNameAsBotName() {
         val card = json.decodeFromString(
             CharacterCard.serializer(),
             """{"id":"card","name":"旧卡","createdAt":1,"updatedAt":2}"""
         )
 
+        assertEquals("", card.botName)
+        assertEquals("旧卡", card.effectiveBotName)
         assertTrue(card.pendingSpeakerRenameTasks.isEmpty())
         assertTrue(
             !json.encodeToString(CharacterCard.serializer(), card)
                 .contains("pendingSpeakerRenameTasks")
         )
+    }
+
+    @Test
+    fun localJsonPersistsMultilineBotName() {
+        val card = CharacterCard(
+            id = "card",
+            name = "显示名称",
+            botName = "第一行\n第二行",
+            createdAt = 1,
+            updatedAt = 2
+        )
+
+        val restored = json.decodeFromString(
+            CharacterCard.serializer(),
+            json.encodeToString(CharacterCard.serializer(), card)
+        )
+
+        assertEquals("第一行\n第二行", restored.botName)
+        assertEquals("第一行\n第二行", restored.effectiveBotName)
+        assertEquals("显示名称", card.copy(botName = " \n ").effectiveBotName)
     }
 
     @Test
