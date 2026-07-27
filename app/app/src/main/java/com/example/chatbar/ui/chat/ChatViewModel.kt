@@ -110,6 +110,14 @@ internal fun appendCurrentUserAndRequirementsSystemMessages(
     )
 }
 
+internal fun buildOpeningSystemPrompt(
+    requirementsSystemPrompt: String,
+    stableSystemPrompt: String
+): String = listOf(
+    requirementsSystemPrompt,
+    stableSystemPrompt
+).filter(String::isNotBlank).joinToString("\n\n")
+
 enum class ImageGenerationPhase {
     QUEUED,
     DESIGNING,
@@ -2382,6 +2390,25 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     chatRepository.updateSession(updatedSession)
                     _session.value = updatedSession
                 }
+                val replyLength = currentSession.replyLength
+                    ?.takeIf { it.isNotBlank() }
+                    ?: "300字短篇"
+                val renderedFormatCardContent = activeFormatCard
+                    ?.content
+                    ?.takeIf(String::isNotBlank)
+                    ?.let { formatCardContent ->
+                        promptAssembler.renderFormatCardForUserMessage(
+                            content = formatCardContent,
+                            playerName = activePlayerNameOrNull,
+                            botName = charCard.name,
+                            worldBookOutlets = wbOutlets
+                        )
+                    }
+                val requirementsSystemPrompt =
+                    PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+                        formatCardContent = renderedFormatCardContent,
+                        replyLength = replyLength
+                    )
 
                 // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                 val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
@@ -2426,14 +2453,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val renderedMemoryArchive = memoryView?.archive?.let(renderSessionText)
                 val renderedMemoryHeadAndTimeline = memoryView?.headAndTimeline?.let(renderSessionText)
                 val promptLayers = assemblePromptLayers()
+                val openingSystemPrompt = buildOpeningSystemPrompt(
+                    requirementsSystemPrompt = requirementsSystemPrompt,
+                    stableSystemPrompt = promptLayers.stableSystemPrompt
+                )
                 val promptSystemDebug = listOf(
-                    promptLayers.stableSystemPrompt,
+                    openingSystemPrompt,
                     promptLayers.dynamicSystemPrompt,
                     renderedMemoryArchive.orEmpty(),
                     renderedMemoryHeadAndTimeline.orEmpty(),
                     promptLayers.tailSystemPrompt
                 ).filter(String::isNotBlank).joinToString("\n\n")
-                val promptCacheKey = promptLayers.stableSystemPrompt
+                val promptCacheKey = openingSystemPrompt
                     .takeIf { promptLayers.stablePrefixCacheable && it.isNotBlank() }
                     ?.let(PromptCacheKeyFactory::cacheKey)
 
@@ -2477,9 +2508,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 固定设定在最前，再放较早聊天记录。
-                promptLayers.stableSystemPrompt.takeIf(String::isNotBlank)?.let { stablePrompt ->
-                    apiMessages.add(ChatApiMessage.text("system", stablePrompt))
+                // 1. 本轮格式要求位于首条 System 开头，随后为固定设定和较早聊天记录。
+                openingSystemPrompt.takeIf(String::isNotBlank)?.let { openingPrompt ->
+                    apiMessages.add(ChatApiMessage.text("system", openingPrompt))
                 }
                 for (msg in promptMessageGroups.historyMessages) {
                     addContextMessage(
@@ -2499,9 +2530,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", tailPrompt))
                 }
-                val replyLength = currentSession.replyLength
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "300字短篇"
                 apiMessages.add(
                     ChatApiMessage.text(
                         role = "system",
@@ -2545,22 +2573,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
                 if (shouldAddUserPrompt && currentUserContent != null) {
-                    val renderedFormatCardContent = activeFormatCard
-                        ?.content
-                        ?.takeIf(String::isNotBlank)
-                        ?.let { formatCardContent ->
-                            promptAssembler.renderFormatCardForUserMessage(
-                                content = formatCardContent,
-                                playerName = activePlayerNameOrNull,
-                                botName = charCard.name,
-                                worldBookOutlets = wbOutlets
-                            )
-                        }
-                    val requirementsSystemPrompt =
-                        PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
-                            formatCardContent = renderedFormatCardContent,
-                            replyLength = replyLength
-                        )
                     val currentUserApiMessage = if (
                         currentUserImages.isNotEmpty() &&
                         modelConfig.isMultimodal

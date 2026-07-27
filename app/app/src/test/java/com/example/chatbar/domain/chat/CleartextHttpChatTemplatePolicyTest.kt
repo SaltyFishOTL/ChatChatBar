@@ -33,6 +33,25 @@ class CleartextHttpChatTemplatePolicyTest {
     }
 
     @Test
+    fun `cleartext http keeps merged opening requirements and stable prompt as system`() {
+        val requirements = "格式要求"
+        val source = listOf(
+            ChatApiMessage.text("system", "$requirements\n\n固定设定"),
+            ChatApiMessage.text("user", "当前用户消息"),
+            ChatApiMessage.text("system", requirements)
+        )
+
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = source,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+
+        assertEquals(listOf("system", "user", "assistant"), adapted.map { it.role })
+        assertEquals(source.map { it.content }, adapted.map { it.content })
+    }
+
+    @Test
     fun `https keeps original roles when cleartext mode is enabled`() {
         val serialized = serializedMessages(
             allowCleartextHttp = true,
