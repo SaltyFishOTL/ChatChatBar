@@ -33,6 +33,16 @@ data class NovelAiImageRegenerationDraft(
         return copy(characterPrompts = characterPrompts.filterIndexed { itemIndex, _ -> itemIndex != index })
     }
 
+    fun withSizePreset(preset: NovelAiImageSizePreset): NovelAiImageRegenerationDraft =
+        copy(
+            sizePreset = preset.name,
+            width = preset.width,
+            height = preset.height
+        )
+
+    fun imageSize(label: String = "重新生成尺寸"): NovelAiImageSize =
+        NovelAiImageSize(width = width, height = height, label = label)
+
     fun toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
         baseCaption = baseCaption,
         characterCaptions = characterPrompts.map {

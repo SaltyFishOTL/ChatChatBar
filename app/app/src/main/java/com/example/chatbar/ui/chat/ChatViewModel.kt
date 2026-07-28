@@ -1277,7 +1277,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             taskId = taskId,
             anchorMessageId = messageId,
             promptOverride = draft.toPromptPlan(),
-            imageSizeOverride = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸"),
+            imageSizeOverride = draft.imageSize(),
             batchSize = batchSize
         )
     }

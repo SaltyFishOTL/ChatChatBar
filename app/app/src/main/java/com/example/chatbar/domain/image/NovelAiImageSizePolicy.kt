@@ -50,6 +50,14 @@ object NovelAiImageSizePolicy {
         return parseUserRatio(setting) ?: designedPreset.imageSize
     }
 
+    fun resolve(
+        setting: String,
+        designedPreset: NovelAiImageSizePreset,
+        explicitPreset: NovelAiImageSizePreset?
+    ): NovelAiImageSize {
+        return explicitPreset?.imageSize ?: resolve(setting, designedPreset)
+    }
+
     fun validationError(input: String): String? {
         if (input.isBlank()) return null
         return if (parseUserRatio(input) == null) {

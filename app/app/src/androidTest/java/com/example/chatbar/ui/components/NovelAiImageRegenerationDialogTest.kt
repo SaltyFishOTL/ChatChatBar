@@ -110,6 +110,36 @@ class NovelAiImageRegenerationDialogTest {
         )
     }
 
+    @Test
+    fun imageRatioSelection_replacesOriginalDimensionsWithSelectedPreset() {
+        val initialDraft = regenerationDraft().copy(
+            sizePreset = "PORTRAIT",
+            width = 1344,
+            height = 768
+        )
+
+        composeTestRule.setContent {
+            var draft by remember { mutableStateOf(initialDraft) }
+            ChatBarTheme {
+                NovelAiImageRegenerationDialog(
+                    draft = draft,
+                    loading = false,
+                    onDraftChange = { draft = it },
+                    onDismiss = {},
+                    onRegenerate = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("原图尺寸（1344×768）").performClick()
+        composeTestRule.onNodeWithText("方图（1:1，1024×1024）").performClick()
+
+        composeTestRule
+            .onNodeWithText("当前生成尺寸 1024×1024；不修改时保留原图尺寸。")
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithText("方图（1:1，1024×1024）").assertIsDisplayed()
+    }
+
     private fun regenerationDraft() = NovelAiImageRegenerationDraft(
         baseCaption = "masterpiece, 1girl",
         characterPrompts = listOf(

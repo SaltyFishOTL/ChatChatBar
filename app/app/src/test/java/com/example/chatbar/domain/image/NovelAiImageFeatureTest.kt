@@ -467,6 +467,24 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
+    fun `explicit size preset overrides global image ratio`() {
+        val square = NovelAiImageSizePolicy.resolve(
+            setting = "16:9",
+            designedPreset = NovelAiImageSizePreset.PORTRAIT,
+            explicitPreset = NovelAiImageSizePreset.SQUARE
+        )
+        val automatic = NovelAiImageSizePolicy.resolve(
+            setting = "16:9",
+            designedPreset = NovelAiImageSizePreset.PORTRAIT,
+            explicitPreset = null
+        )
+
+        assertEquals(NovelAiImageSizePreset.SQUARE.imageSize, square)
+        assertEquals(1344, automatic.width)
+        assertEquals(768, automatic.height)
+    }
+
+    @Test
     fun `prompt stream reports accumulated text while ignoring reasoning`() = runTest {
         val updates = mutableListOf<String>()
 

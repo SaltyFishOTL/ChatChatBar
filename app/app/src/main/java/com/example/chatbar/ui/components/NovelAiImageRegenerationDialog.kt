@@ -18,6 +18,7 @@ import androidx.compose.ui.unit.dp
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -106,13 +107,28 @@ fun NovelAiImageRegenerationDialog(
                 draft?.let { current ->
                     CbText(
                         buildString {
-                            append("编辑本次使用的 NovelAI 提示词。尺寸保持 ${current.width}×${current.height}；每次使用新 seed。")
+                            append("编辑本次使用的 NovelAI 提示词。每次使用新 seed。")
                             if (batchSizeInput != null) {
                                 append("批量范围 1–$NOVEL_AI_MAX_BATCH_SIZE；多图会额外消耗 Anlas。")
                             }
                         },
                         color = ChatBarTheme.colors.mutedForeground
                     )
+                    CbField(
+                        label = "图片比例",
+                        description = "当前生成尺寸 ${current.width}×${current.height}；不修改时保留原图尺寸。"
+                    ) {
+                        NovelAiImageSizePresetSelect(
+                            value = NovelAiImageSizePreset.entries.firstOrNull { preset ->
+                                preset.width == current.width && preset.height == current.height
+                            },
+                            onValueChange = { preset ->
+                                preset?.let { onDraftChange(current.withSizePreset(it)) }
+                            },
+                            enabled = !submitting,
+                            placeholder = "原图尺寸（${current.width}×${current.height}）"
+                        )
+                    }
                     CbField(
                         label = "主提示词",
                         description = "场景、构图、画质和全局风格标签",

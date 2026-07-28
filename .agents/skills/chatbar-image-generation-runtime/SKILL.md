@@ -42,7 +42,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Prompt-tool saved results open through ImagePreviewDialog, reusing chat/Moments zoom, mosaic, gallery-save, and share actions; streaming-only frames stay non-actionable until a durable path exists.
 - Persist a chat batch as one message with parallel image and metadata lists. Keep a prompt-tool batch together for result display and pager navigation.
 - Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
-- Preserve original pixel dimensions and request a fresh seed for each regeneration.
+- Initialize regeneration with original pixel dimensions, allow explicit Portrait/Square/Horizontal override, and request a fresh seed.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
 - Keep shared dialog content scrollable and bottom actions visible.
 - While FullscreenTextEditor is active, stop composing CbDialog; its separate Android window otherwise covers the activity-hosted editor. Restore the dialog when fullscreen editing closes.

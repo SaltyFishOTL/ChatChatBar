@@ -74,6 +74,18 @@ class NovelAiImageRegenerationTest {
         assertTrue(initial.copy(negativePrompt = "").canRegenerate)
     }
 
+    @Test
+    fun withSizePreset_updatesPromptPresetAndExactGenerationSize() {
+        val resized = draft(characterPrompts = emptyList())
+            .withSizePreset(NovelAiImageSizePreset.HORIZONTAL)
+
+        assertEquals(NovelAiImageSizePreset.HORIZONTAL.name, resized.sizePreset)
+        assertEquals(1216, resized.width)
+        assertEquals(832, resized.height)
+        assertEquals(NovelAiImageSize(1216, 832, "重新生成尺寸"), resized.imageSize())
+        assertEquals(NovelAiImageSizePreset.HORIZONTAL, resized.toPromptPlan().sizePreset)
+    }
+
     private fun draft(
         characterPrompts: List<GeneratedImageCharacterPrompt>
     ) = NovelAiImageRegenerationDraft(

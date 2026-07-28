@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.emptyNovelAiImageRegenerationDraft
@@ -54,6 +55,7 @@ data class ImagePromptToolUiState(
     val reasoningStream: String = "",
     val resultStream: String = "",
     val promptDraft: NovelAiImageRegenerationDraft = emptyNovelAiImageRegenerationDraft(),
+    val imageSizePresetOverride: NovelAiImageSizePreset? = null,
     val promptRevision: Int = 0,
     val imagePreview: ByteArray? = null,
     val imagePaths: List<String> = emptyList(),
@@ -175,6 +177,21 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
+    fun updateImageSizePresetOverride(preset: NovelAiImageSizePreset?) {
+        if (_uiState.value.isBusy) return
+        completedImageCheckpoint = null
+        _uiState.update {
+            it.copy(
+                phase = if (it.promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
+                imageSizePresetOverride = preset,
+                imagePreview = null,
+                imagePaths = emptyList(),
+                imageProgress = 0f,
+                error = null
+            )
+        }
+    }
+
     fun importCharacterCardPrompts(cardId: String) {
         if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
@@ -282,7 +299,9 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update { it.copy(error = "批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间") }
             return
         }
-        val draft = _uiState.value.promptDraft
+        val snapshot = _uiState.value
+        val draft = snapshot.promptDraft
+        val imageSizePresetOverride = snapshot.imageSizePresetOverride
         if (!draft.canRegenerate) {
             _uiState.update { it.copy(error = "主提示词不能为空，已添加的角色提示词也必须填写") }
             return
@@ -301,11 +320,15 @@ class ImagePromptToolViewModel : ViewModel() {
             }
             val settings = settingsRepository.getAppSettings()
             val ratioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
-            if (ratioError != null) {
+            if (imageSizePresetOverride == null && ratioError != null) {
                 _uiState.update { it.copy(phase = ImagePromptToolPhase.FAILED, error = ratioError) }
                 return@launch
             }
-            val imageSize = NovelAiImageSizePolicy.resolve(settings.novelAiImageAspectRatio, plan.sizePreset)
+            val imageSize = NovelAiImageSizePolicy.resolve(
+                settings.novelAiImageAspectRatio,
+                plan.sizePreset,
+                imageSizePresetOverride
+            )
             val seed = imageService.newSeed()
             val resumeImages = completedImageCheckpoint
                 ?.takeIf { checkpoint ->

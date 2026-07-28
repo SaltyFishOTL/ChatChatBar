@@ -50,10 +50,12 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
 import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.components.NovelAiBatchSizeInput
+import com.example.chatbar.ui.components.NovelAiImageSizePresetSelect
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -152,9 +154,11 @@ fun ImagePromptToolScreen(
                         canGenerateImage = novelAiConfigured && state.promptDraft.canRegenerate && !state.isBusy,
                         imageGenerating = state.isGeneratingImage,
                         batchSizeInput = imageBatchSizeInput,
+                        imageSizePresetOverride = state.imageSizePresetOverride,
                         onExpandedChange = { promptExpanded = it },
                         onDraftChange = viewModel::updatePromptDraft,
                         onBatchSizeInputChange = { imageBatchSizeInput = it },
+                        onImageSizePresetChange = viewModel::updateImageSizePresetOverride,
                         onFullscreenEdit = { title, text, onChange ->
                             fullscreenField = title to text
                             fullscreenOnChange = onChange
@@ -414,9 +418,11 @@ private fun PromptEditorPanel(
     canGenerateImage: Boolean,
     imageGenerating: Boolean,
     batchSizeInput: String,
+    imageSizePresetOverride: NovelAiImageSizePreset?,
     onExpandedChange: (Boolean) -> Unit,
     onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
     onBatchSizeInputChange: (String) -> Unit,
+    onImageSizePresetChange: (NovelAiImageSizePreset?) -> Unit,
     onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
     onCopy: () -> Unit,
     onGenerateImage: () -> Unit
@@ -555,6 +561,17 @@ private fun PromptEditorPanel(
                             tint = ChatBarTheme.colors.destructive
                         )
                     }
+                }
+                CbField(
+                    label = "图片比例",
+                    description = "自动时优先使用全局图片比例；全局留空时采用提示词建议。"
+                ) {
+                    NovelAiImageSizePresetSelect(
+                        value = imageSizePresetOverride,
+                        onValueChange = onImageSizePresetChange,
+                        enabled = enabled,
+                        includeAutomatic = true
+                    )
                 }
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(8.dp),

@@ -12,7 +12,6 @@ import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
-import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPngMetadataReader
 import com.example.chatbar.domain.image.NovelAiPromptPlan
@@ -119,7 +118,7 @@ class MomentsViewModel : ViewModel() {
                 require(!source.isPlaceholder && source.imagePath == imagePath) { "原朋友圈图片已发生变化" }
                 val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
                 val prompt = draft.toPromptPlan()
-                val imageSize = NovelAiImageSize(draft.width, draft.height, "复用原图尺寸")
+                val imageSize = draft.imageSize()
                 val imageBytes = AiBackgroundWorkManager.run("moments_image_regenerate_$postId") {
                     GlobalImageGenerationConcurrencyGate.instance.run {
                         var finalImage: ByteArray? = null
