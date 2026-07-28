@@ -19,6 +19,7 @@ import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.chat.resolveFormatCardForRequest
@@ -528,8 +529,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         fishAudioCoordinator.dismiss(batchId)
     }
 
-    fun playVoice(voice: GeneratedVoiceMessage) {
-        fishAudioCoordinator.playSingle(voice)
+    fun playVoice(
+        voice: GeneratedVoiceMessage,
+        orderedVisibleVoices: List<GeneratedVoiceMessage>
+    ) {
+        fishAudioCoordinator.playFrom(voice, orderedVisibleVoices)
     }
 
     fun stopVoicePlayback() {
@@ -2852,16 +2856,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         val old = chatRepository.getMessage(alternativeTargetMessageId, generatedMessage.sessionId)
             ?: return chatRepository.addMessage(generatedMessage)
-        val existingAlternatives = old.alternatives.takeIf { it.isNotEmpty() }
-            ?: listOf(old.content)
-        val updatedAlternatives = (existingAlternatives + generatedMessage.content).takeLast(5)
-        val updated = old.copy(
-            content = updatedAlternatives.last(),
-            alternatives = updatedAlternatives,
-            currentAlternativeIndex = updatedAlternatives.lastIndex,
+        val updated = MessageAlternativeVersionPolicy.append(
+            message = old,
+            content = generatedMessage.content,
+            newVersionId = MessageAlternativeVersionPolicy.newVersionId(old)
+        ).copy(
             reasoningContent = generatedMessage.reasoningContent,
-            formatRepairNotice = null,
-            updatedAt = System.currentTimeMillis()
+            formatRepairNotice = null
         )
         chatRepository.updateMessage(updated)
         return updated
@@ -3002,15 +3003,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         deleteRemovedImages: Boolean,
         deleteMemoryWhenTextBlank: Boolean = false
     ) {
-        val updatedMessage = oldMessage.copy(
-            content = content,
+        val updatedMessage = MessageAlternativeVersionPolicy.collapseToEditedContent(
+            message = oldMessage,
+            content = content
+        ).copy(
             images = imagePaths,
             generatedImageMetadata = oldMessage.generatedImageMetadata
                 .filter { it.imagePath in imagePaths },
-            alternatives = emptyList(),
-            currentAlternativeIndex = 0,
-            formatRepairNotice = null,
-            updatedAt = System.currentTimeMillis()
+            formatRepairNotice = null
         )
 
         if (deleteRemovedImages) {
@@ -3113,10 +3113,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val nextIndex = (message.currentAlternativeIndex + direction)
                 .coerceIn(0, message.alternatives.lastIndex)
             if (nextIndex == message.currentAlternativeIndex) return@launch
-            val updated = message.copy(
-                content = message.alternatives[nextIndex],
-                currentAlternativeIndex = nextIndex,
-                updatedAt = System.currentTimeMillis()
+            val updated = MessageAlternativeVersionPolicy.select(
+                message = message,
+                alternativeIndex = nextIndex
             )
             _messages.value = _messages.value.map { if (it.id == messageId) updated else it }
             chatRepository.updateMessage(updated)

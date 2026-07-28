@@ -22,6 +22,8 @@ data class GeneratedVoiceMessage(
     val id: String,
     val sessionId: String,
     val messageId: String,
+    /** 所属消息版本；旧记录为空时由仓库按锚点与源文本懒迁移。 */
+    val messageVersionId: String? = null,
     val anchorId: String? = null,
     val sourceOrder: Long,
     val sourceSegmentKind: String,
@@ -47,6 +49,7 @@ data class GeneratedVoiceMessage(
         fun create(
             sessionId: String,
             messageId: String,
+            messageVersionId: String? = null,
             anchorId: String?,
             sourceOrder: Long,
             sourceSegmentKind: String,
@@ -67,6 +70,7 @@ data class GeneratedVoiceMessage(
                 id = UUID.randomUUID().toString(),
                 sessionId = sessionId,
                 messageId = messageId,
+                messageVersionId = messageVersionId,
                 anchorId = anchorId,
                 sourceOrder = sourceOrder,
                 sourceSegmentKind = sourceSegmentKind,
@@ -102,6 +106,8 @@ data class VoiceAnchor(
 @Serializable
 data class VoiceAnchorState(
     val messageId: String,
+    /** 锚点仅属于一个消息版本；旧状态为空时在首次读取时迁移。 */
+    val messageVersionId: String? = null,
     val sessionId: String = "",
     val displayContentSnapshot: String,
     val anchors: List<VoiceAnchor> = emptyList(),

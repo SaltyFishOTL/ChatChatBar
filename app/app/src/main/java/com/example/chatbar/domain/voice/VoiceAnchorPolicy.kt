@@ -74,11 +74,13 @@ object VoiceAnchorPolicy {
     fun initialState(
         messageId: String,
         content: String,
+        messageVersionId: String? = null,
         sessionId: String = "",
         includeNarration: Boolean = false
     ): VoiceAnchorState =
         VoiceAnchorState(
             messageId = messageId,
+            messageVersionId = messageVersionId,
             sessionId = sessionId,
             displayContentSnapshot = content,
             anchors = eligibleSegments(content, includeNarration).map(::newAnchor)
@@ -144,6 +146,7 @@ object VoiceAnchorPolicy {
         return VoiceAnchorReconciliation(
             state = VoiceAnchorState(
                 messageId = old.messageId,
+                messageVersionId = old.messageVersionId,
                 sessionId = old.sessionId,
                 displayContentSnapshot = newContent,
                 anchors = nextAnchors,

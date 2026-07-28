@@ -11,6 +11,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.data.security.FishAudioCredentialStore
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.model.EffectiveModelResolver
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
@@ -167,7 +168,7 @@ class FishAudioGenerationCoordinator(
     ): String = launchBatch(sessionId, messageId) { batchId, screenGeneration ->
         val context = loadContext(sessionId, messageId)
         registerAutoPlay(batchId, context, screenGeneration)
-        val existing = voiceRepository.listForMessage(messageId)
+        val existing = voiceRepository.listForCurrentVersion(context.message)
         val voicedAnchors = existing.mapNotNull(GeneratedVoiceMessage::anchorId).toSet()
         val targets = resolveTargets(context, narratorCharacterId)
             .filterNot { target ->
@@ -349,11 +350,15 @@ class FishAudioGenerationCoordinator(
         removeBatch(batchId)
     }
 
-    fun playSingle(voice: GeneratedVoiceMessage) {
+    fun playFrom(
+        voice: GeneratedVoiceMessage,
+        orderedVisibleVoices: List<GeneratedVoiceMessage>
+    ) {
         playback.stop()
+        val sequence = VoicePlaybackQueuePolicy.sequenceFrom(voice, orderedVisibleVoices)
         scope.launch {
             clearAutoPlay()
-            playback.playSingle(voice)
+            playback.playSequence(sequence)
         }
     }
 
@@ -690,6 +695,7 @@ class FishAudioGenerationCoordinator(
             val voice = GeneratedVoiceMessage.create(
                 sessionId = target.message.sessionId,
                 messageId = target.message.id,
+                messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(target.message),
                 anchorId = currentAnchorId,
                 sourceOrder = target.sourceOrder,
                 sourceSegmentKind = target.sourceKind,
@@ -723,7 +729,15 @@ class FishAudioGenerationCoordinator(
             target.message.id,
             target.message.sessionId
         ) ?: error("消息已删除")
-        val currentAnchors = voiceRepository.ensureAnchors(currentMessage)
+        val targetVersion = MessageAlternativeVersionPolicy.activeVersion(target.message)
+        val currentVersion = MessageAlternativeVersionPolicy.versions(currentMessage)
+            .firstOrNull { it.id == targetVersion.id }
+            ?: targetVersion
+        val currentAnchors = voiceRepository.ensureAnchorsForVersion(
+            message = currentMessage,
+            messageVersionId = currentVersion.id,
+            content = currentVersion.content
+        )
         currentAnchors.firstOrNull { it.anchor.id == target.anchorId }?.let { return it.anchor.id }
         return currentAnchors
             .filter { it.anchor.sourceOrder <= target.sourceOrder }
@@ -738,12 +752,20 @@ class FishAudioGenerationCoordinator(
         playAllMessageVoices: Boolean,
         generatedVoices: List<GeneratedVoiceMessage> = emptyList()
     ) {
-        val voices = if (playAllMessageVoices) {
-            chatRepository.getMessage(context.message.id, context.session.id)
-                ?.let { currentMessage ->
-                    voiceRepository.placementsForMessage(currentMessage).map { it.voice }
+        val currentMessage = chatRepository.getMessage(
+            context.message.id,
+            context.session.id
+        )
+        val generatedVersionId = MessageAlternativeVersionPolicy.activeVersionId(context.message)
+        val currentVersionStillVisible = currentMessage != null &&
+            MessageAlternativeVersionPolicy.activeVersionId(currentMessage) == generatedVersionId
+        val voices = if (!currentVersionStillVisible) {
+            emptyList()
+        } else if (playAllMessageVoices) {
+            currentMessage
+                .let { visibleMessage ->
+                    voiceRepository.placementsForMessage(visibleMessage).map { it.voice }
                 }
-                .orEmpty()
         } else {
             generatedVoices.sortedBy(GeneratedVoiceMessage::createdAt)
         }

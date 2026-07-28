@@ -2,8 +2,11 @@ package com.example.chatbar.ui.chat
 
 import com.example.chatbar.ui.kit.AppIcons
 
+import android.Manifest
 import android.net.Uri
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
@@ -74,6 +77,7 @@ import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
@@ -89,6 +93,7 @@ import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatScrollPositionPolicy
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
@@ -106,6 +111,7 @@ import com.example.chatbar.domain.chat.roleplayScreenshotBlockIds
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.voice.VoiceGenerationBatchState
 import com.example.chatbar.domain.voice.VoiceGenerationPhase
+import com.example.chatbar.domain.voice.saveGeneratedVoiceToDownloads
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
@@ -131,6 +137,11 @@ private val ChatContentMaxWidth = 840.dp
 private data class PendingVoiceGeneration(
     val messageId: String,
     val segmentIndex: Int? = null
+)
+
+private data class PendingVoiceDownload(
+    val voice: GeneratedVoiceMessage,
+    val chatName: String
 )
 
 internal fun canUseChatImageLongPress(
@@ -232,6 +243,7 @@ fun ChatScreen(
         mutableStateOf<PendingVoiceGeneration?>(null)
     }
     var voiceActionTarget by remember { mutableStateOf<GeneratedVoiceMessage?>(null) }
+    var pendingVoiceDownload by remember { mutableStateOf<PendingVoiceDownload?>(null) }
     var voiceTextConfirmationBatchId by remember(sessionId) {
         mutableStateOf<String?>(null)
     }
@@ -280,6 +292,31 @@ fun ChatScreen(
             pendingVoiceGeneration = PendingVoiceGeneration(messageId)
         } else {
             viewModel.generateVoiceForMessage(messageId)
+        }
+    }
+
+    fun downloadVoice(request: PendingVoiceDownload) {
+        scope.launch {
+            try {
+                val fileName = saveGeneratedVoiceToDownloads(
+                    context = context,
+                    voice = request.voice,
+                    chatName = request.chatName
+                )
+                Toast.makeText(
+                    context,
+                    "已下载到 Download/$fileName",
+                    Toast.LENGTH_LONG
+                ).show()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                Toast.makeText(
+                    context,
+                    "语音下载失败: ${error.message ?: "未知错误"}",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
         }
     }
     var memoryLimitDialogDismissed by remember(
@@ -401,6 +438,33 @@ fun ChatScreen(
     val editImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> editingImages.add(path) } }
     }
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val request = pendingVoiceDownload
+        pendingVoiceDownload = null
+        if (granted && request != null) {
+            downloadVoice(request)
+        } else if (request != null) {
+            Toast.makeText(context, "未授予存储权限，无法下载语音", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun requestVoiceDownload(voice: GeneratedVoiceMessage, chatName: String) {
+        val request = PendingVoiceDownload(voice, chatName)
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q ||
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.WRITE_EXTERNAL_STORAGE
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            downloadVoice(request)
+        } else {
+            pendingVoiceDownload = request
+            legacyStoragePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        }
+    }
 
     BackHandler(enabled = editingMessage != null) { editingMessage = null; editingImages.clear() }
     BackHandler(enabled = editingSegment != null) { editingSegment = null }
@@ -466,12 +530,24 @@ fun ChatScreen(
             message.images.map { path -> ImagePreviewItem(message.id, path) }
         }
     }
-    val selectableScreenshotIds = remember(messages, assistantSegmentedBubblesEnabled, voicePlacements) {
+    val activeVoicePlacements = remember(messages, voicePlacements) {
+        messages.associate { message ->
+            val versionId = MessageAlternativeVersionPolicy.activeVersionId(message)
+            message.id to voicePlacements[message.id].orEmpty().filter {
+                it.voice.messageVersionId == versionId
+            }
+        }
+    }
+    val selectableScreenshotIds = remember(
+        messages,
+        assistantSegmentedBubblesEnabled,
+        activeVoicePlacements
+    ) {
         messages.flatMap { message ->
             roleplayScreenshotBlockIds(
                 message,
                 assistantSegmentedBubblesEnabled,
-                voicePlacements[message.id].orEmpty().map { it.voice.id }
+                activeVoicePlacements[message.id].orEmpty().map { it.voice.id }
             )
         }.toSet()
     }
@@ -500,7 +576,7 @@ fun ChatScreen(
                 botAvatarPath = botAvatarPath,
                 characterAvatars = characterAvatars,
                 assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
-                voicePlacementsByMessage = voicePlacements,
+                voicePlacementsByMessage = activeVoicePlacements,
                 selectedBlockIds = ids,
                 expandedStatusBlockIds = expandedStatusBlockIds
             )
@@ -584,7 +660,7 @@ fun ChatScreen(
         val messageBlockIds = roleplayScreenshotBlockIds(
             message,
             assistantSegmentedBubblesEnabled,
-            voicePlacements[message.id].orEmpty().map { it.voice.id }
+            activeVoicePlacements[message.id].orEmpty().map { it.voice.id }
         )
             .filterTo(linkedSetOf()) { it in selectableScreenshotIds }
         if (messageBlockIds.isEmpty()) {
@@ -639,7 +715,7 @@ fun ChatScreen(
                         botAvatarPath = botAvatarPath,
                         characterAvatars = characterAvatars,
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
-                        voicePlacementsByMessage = voicePlacements,
+                        voicePlacementsByMessage = activeVoicePlacements,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         expandedStatusBlockIds = expandedStatusBlockIds
                     )
@@ -671,12 +747,12 @@ fun ChatScreen(
             }
         }
     }
-    LaunchedEffect(messages, assistantSegmentedBubblesEnabled, voicePlacements) {
+    LaunchedEffect(messages, assistantSegmentedBubblesEnabled, activeVoicePlacements) {
         val cleaned = cleanChatScreenshotSelection(
             selectedScreenshotBlockIds,
             messages,
             assistantSegmentedBubblesEnabled,
-            voicePlacements.mapValues { (_, placements) -> placements.map { it.voice.id } }
+            activeVoicePlacements.mapValues { (_, placements) -> placements.map { it.voice.id } }
         )
         if (cleaned != selectedScreenshotBlockIds) {
             selectedScreenshotBlockIds = cleaned
@@ -859,7 +935,7 @@ fun ChatScreen(
                         )
                     } ?: message
                     val selectableForScreenshot = message.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled)
-                    val messageVoices = voicePlacements[message.id].orEmpty()
+                    val messageVoices = activeVoicePlacements[message.id].orEmpty()
                     val messageBlockIds = remember(message, assistantSegmentedBubblesEnabled, messageVoices) {
                         roleplayScreenshotBlockIds(
                             message,
@@ -882,7 +958,16 @@ fun ChatScreen(
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         voicePlacements = messageVoices,
                         voicePlaybackState = voicePlaybackState,
-                        onVoiceClick = if (screenshotSelectionMode) null else viewModel::playVoice,
+                        onVoiceClick = if (screenshotSelectionMode) {
+                            null
+                        } else {
+                            { voice ->
+                                viewModel.playVoice(
+                                    voice = voice,
+                                    orderedVisibleVoices = messageVoices.map { it.voice }
+                                )
+                            }
+                        },
                         onVoiceStop = if (screenshotSelectionMode) null else viewModel::stopVoicePlayback,
                         onVoiceLongPress = if (screenshotSelectionMode) null else ({ voice ->
                             voiceActionTarget = voice
@@ -1740,11 +1825,21 @@ fun ChatScreen(
             }
             if (!fishAudioConfigured) {
                 CbText(
-                    "Fish Audio API Key 未配置；仍可播放或删除本地语音。",
+                    "Fish Audio API Key 未配置；仍可播放、下载或删除本地语音。",
                     color = ChatBarTheme.colors.destructive,
                     style = ChatBarTheme.typography.caption
                 )
             }
+            Spacer(Modifier.size(10.dp))
+            CbButton(
+                "下载语音",
+                {
+                    requestVoiceDownload(voice, renderedTitle)
+                    voiceActionTarget = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Secondary
+            )
             Spacer(Modifier.size(10.dp))
             CbButton(
                 "删除语音",

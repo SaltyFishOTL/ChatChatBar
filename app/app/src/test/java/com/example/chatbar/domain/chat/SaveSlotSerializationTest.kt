@@ -91,6 +91,7 @@ class SaveSlotSerializationTest {
         val voice = GeneratedVoiceMessage.create(
             sessionId = "session-1",
             messageId = "message-1",
+            messageVersionId = "version-1",
             anchorId = "anchor-1",
             sourceOrder = 10,
             sourceSegmentKind = "DIALOGUE",
@@ -157,6 +158,7 @@ class SaveSlotSerializationTest {
         )
 
         assertEquals(null, voice.synthesisText)
+        assertEquals(null, voice.messageVersionId)
         assertEquals("你好", voice.effectiveSynthesisText)
     }
 

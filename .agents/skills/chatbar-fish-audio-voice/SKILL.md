@@ -58,7 +58,8 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 
 ## Anchors, Files, and Lifecycle
 
-- Reconcile stable anchors after content edits, alternative switches, or segment deletion with character-offset mapping plus monotonic segment matching.
+- Give every assistant alternative a stable version ID. Store voice ownership and anchor state per message version; switching alternatives selects that version's voices without reconciling another version's anchors.
+- Reconcile stable anchors only after edits within the same message version or segment deletion, using character-offset mapping plus monotonic segment matching. Lazily infer legacy versionless voices from the old anchor snapshot and source text without deleting audio.
 - Preserve explicit target IDs for direct segment edits. Reattach a deleted target to the previous speakable segment, or make it a message-head orphan when none exists.
 - Order voices by source segment order, then creation time. Allow multiple voices per anchor.
 - Write downloads to `.part`, verify response length and parsable duration, then atomically replace the final MP3.
@@ -76,13 +77,14 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Preserve autoplay order by session timeline and visual voice order. Later messages must not steal playback when earlier batches are pending.
 - Discard autoplay intent when the originating ChatScreen is no longer resumed. Do not replay it on return.
 - Serialize every ExoPlayer call onto its application/main thread. Never call `stop`, media-item APIs, `prepare`, or `play` from the app IO scope.
-- Manual voice taps stop current playback and automatic queues, then restart only the selected voice from the beginning.
+- Manual voice taps stop current playback and automatic queues, then restart the selected voice and continue through later visible voices in the same message.
 
 ## UI and Tutorial
 
 - Keep voice progress cards visible near the composer rather than below a potentially long message.
 - Put QQ-style voice bars below their anchor; when segmented bubbles are off, list all voices below the whole text bubble.
 - Keep voice blocks independently selectable for long screenshots.
+- Voice long-press supports tagged-text editing, regeneration, download to the public Download directory, and deletion. Download names use the current rendered chat title plus the generation-time character snapshot and download time.
 - Document every voice long-press action in the advanced tutorial. Keep basic setup, binding, generation, confirmation, and playback instructions in the basic tutorial.
 
 ## Workflow

@@ -178,10 +178,9 @@ fun editRoleplayMessageSegment(
         return RoleplaySegmentEditOutcome(message = null, deleteMemoryForMessage = false)
     }
     return RoleplaySegmentEditOutcome(
-        message = message.copy(
+        message = MessageAlternativeVersionPolicy.collapseToEditedContent(
+            message = message,
             content = updatedContent,
-            alternatives = emptyList(),
-            currentAlternativeIndex = 0,
             updatedAt = updatedAt
         ),
         deleteMemoryForMessage = updatedContent.isBlank()

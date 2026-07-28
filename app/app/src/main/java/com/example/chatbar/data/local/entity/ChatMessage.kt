@@ -66,7 +66,11 @@ data class ChatMessage(
     val images: List<String> = emptyList(),           // 图片文件路径
     val generatedImageMetadata: List<GeneratedImageMetadata> = emptyList(),
     val alternatives: List<String> = emptyList(),      // 重新生成的替代回复
+    /** 与 alternatives 同序的稳定版本身份；旧数据由版本策略确定性补齐。 */
+    val alternativeVersionIds: List<String> = emptyList(),
     val currentAlternativeIndex: Int = 0,
+    /** 当前内容版本身份；无 alternatives 时仍保留，供派生资源绑定。 */
+    val currentAlternativeVersionId: String? = null,
     val reasoningContent: String? = null,              // 思维链内容
     val generatedFromMessageId: String? = null,
     val formatRepairNotice: MessageFormatRepairNotice? = null,

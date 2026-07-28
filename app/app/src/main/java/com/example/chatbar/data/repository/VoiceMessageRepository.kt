@@ -5,8 +5,12 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.VoiceAnchor
 import com.example.chatbar.data.local.entity.VoiceAnchorState
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.voice.CurrentVoiceSegment
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
+import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
+import java.nio.charset.StandardCharsets
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -24,21 +28,26 @@ data class VoiceMessagePlacement(
     val segmentIndex: Int?
 )
 
+private data class VoiceAnchorStateKey(
+    val messageId: String,
+    val messageVersionId: String?
+)
+
 class VoiceMessageRepository(
     private val storage: JsonFileStorage
 ) {
     private val mutex = Mutex()
     private val _voices = MutableStateFlow<List<GeneratedVoiceMessage>>(emptyList())
     val voices = _voices.asStateFlow()
-    private var anchorsByMessage = emptyMap<String, VoiceAnchorState>()
+    private var anchorsByVersion = emptyMap<VoiceAnchorStateKey, VoiceAnchorState>()
     private var initialized = false
 
     suspend fun initialize() {
         mutex.withLock {
             if (initialized) return@withLock
             _voices.value = storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer())
-            anchorsByMessage = storage.loadAll(ANCHOR_TYPE, VoiceAnchorState.serializer())
-                .associateBy(VoiceAnchorState::messageId)
+            anchorsByVersion = storage.loadAll(ANCHOR_TYPE, VoiceAnchorState.serializer())
+                .associateBy { VoiceAnchorStateKey(it.messageId, it.messageVersionId) }
             initialized = true
         }
     }
@@ -64,13 +73,40 @@ class VoiceMessageRepository(
         return _voices.value.filter { it.messageId == messageId }
     }
 
+    suspend fun listForCurrentVersion(message: ChatMessage): List<GeneratedVoiceMessage> {
+        ensureAnchors(message)
+        return VoiceMessageVersionPolicy.visibleVoices(message, _voices.value)
+    }
+
     suspend fun ensureAnchors(message: ChatMessage): List<VoiceSegmentAnchor> = mutex.withLock {
         ensureInitializedLocked()
-        val current = anchorsByMessage[message.id]
+        migrateLegacyVoiceVersionsLocked(message)
+        val version = MessageAlternativeVersionPolicy.activeVersion(message)
+        ensureVersionAnchorsLocked(message, version.id, version.content)
+    }
+
+    suspend fun ensureAnchorsForVersion(
+        message: ChatMessage,
+        messageVersionId: String,
+        content: String
+    ): List<VoiceSegmentAnchor> = mutex.withLock {
+        ensureInitializedLocked()
+        migrateLegacyVoiceVersionsLocked(message)
+        ensureVersionAnchorsLocked(message, messageVersionId, content)
+    }
+
+    private suspend fun ensureVersionAnchorsLocked(
+        message: ChatMessage,
+        messageVersionId: String,
+        content: String
+    ): List<VoiceSegmentAnchor> {
+        val key = VoiceAnchorStateKey(message.id, messageVersionId)
+        val current = anchorsByVersion[key]
         val reconciliation = if (current == null) {
             val state = VoiceAnchorPolicy.initialState(
                 messageId = message.id,
-                content = message.displayContent,
+                content = content,
+                messageVersionId = messageVersionId,
                 sessionId = message.sessionId,
                 includeNarration = true
             )
@@ -78,35 +114,37 @@ class VoiceMessageRepository(
         } else {
             VoiceAnchorPolicy.reconcile(
                 old = current,
-                newContent = message.displayContent,
+                newContent = content,
                 includeNarration = true
             )
         }
-        val state = reconciliation.state.copy(sessionId = message.sessionId)
+        val state = reconciliation.state.copy(
+            messageVersionId = messageVersionId,
+            sessionId = message.sessionId
+        )
         if (current != state) {
-            storage.saveEntity(ANCHOR_TYPE, message.id, state, VoiceAnchorState.serializer())
-            anchorsByMessage = anchorsByMessage + (message.id to state)
+            storage.saveEntity(
+                ANCHOR_TYPE,
+                anchorStorageId(key),
+                state,
+                VoiceAnchorState.serializer()
+            )
+            anchorsByVersion = anchorsByVersion + (key to state)
         }
         if (reconciliation.anchorReplacement.isNotEmpty()) {
-            val changed = _voices.value.map { voice ->
-                if (voice.messageId != message.id || voice.anchorId == null) {
-                    voice
-                } else {
-                    val replacement = reconciliation.anchorReplacement[voice.anchorId]
-                    if (replacement == voice.anchorId || !reconciliation.anchorReplacement.containsKey(voice.anchorId)) {
-                        voice
-                    } else {
-                        voice.copy(anchorId = replacement, updatedAt = System.currentTimeMillis())
-                    }
-                }
-            }
+            val changed = VoiceMessageVersionPolicy.applyAnchorReplacements(
+                voices = _voices.value,
+                messageId = message.id,
+                messageVersionId = messageVersionId,
+                replacements = reconciliation.anchorReplacement
+            )
             persistChangedVoicesLocked(_voices.value, changed)
         }
         val segments = VoiceAnchorPolicy.eligibleSegments(
-            message.displayContent,
+            content,
             includeNarration = true
         )
-        state.anchors.mapIndexedNotNull { index, anchor ->
+        return state.anchors.mapIndexedNotNull { index, anchor ->
             segments.getOrNull(index)?.let { VoiceSegmentAnchor(it, anchor) }
         }
     }
@@ -114,7 +152,7 @@ class VoiceMessageRepository(
     suspend fun placementsForMessage(message: ChatMessage): List<VoiceMessagePlacement> {
         val anchors = ensureAnchors(message)
         val indexByAnchor = anchors.associate { it.anchor.id to it.segment.segmentIndex }
-        return listForMessage(message.id)
+        return VoiceMessageVersionPolicy.visibleVoices(message, _voices.value)
             .map { voice -> VoiceMessagePlacement(voice, voice.anchorId?.let(indexByAnchor::get)) }
             .sortedWith(
                 compareBy<VoiceMessagePlacement> { it.segmentIndex ?: -1 }
@@ -143,8 +181,11 @@ class VoiceMessageRepository(
         ensureInitializedLocked()
         val removed = _voices.value.filter { it.messageId == messageId }
         removed.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
-        storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, messageId)
-        anchorsByMessage = anchorsByMessage - messageId
+        val anchorKeys = anchorsByVersion.keys.filter { it.messageId == messageId }
+        anchorKeys.map(::anchorStorageId).plus(messageId).distinct().forEach { storageId ->
+            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId)
+        }
+        anchorsByVersion = anchorsByVersion.filterKeys { it.messageId != messageId }
         _voices.value = _voices.value.filterNot { it.messageId == messageId }
         removed
     }
@@ -154,13 +195,17 @@ class VoiceMessageRepository(
         val removed = _voices.value.filter { it.sessionId == sessionId }
         val messageIds = buildSet {
             removed.mapTo(this, GeneratedVoiceMessage::messageId)
-            anchorsByMessage.values
+            anchorsByVersion.values
                 .filter { it.sessionId == sessionId }
                 .mapTo(this, VoiceAnchorState::messageId)
         }
         removed.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
-        messageIds.forEach { storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, it) }
-        anchorsByMessage = anchorsByMessage - messageIds
+        val anchorKeys = anchorsByVersion.keys.filter { it.messageId in messageIds }
+        val anchorStorageIds = anchorKeys.map(::anchorStorageId) + messageIds
+        anchorStorageIds.distinct().forEach { storageId ->
+            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId)
+        }
+        anchorsByVersion = anchorsByVersion.filterKeys { it.messageId !in messageIds }
         _voices.value = _voices.value.filterNot { it.sessionId == sessionId }
         removed
     }
@@ -189,22 +234,49 @@ class VoiceMessageRepository(
         voices: List<GeneratedVoiceMessage>,
         messages: List<ChatMessage>
     ) {
-        val anchorsByMessage = messages.associate { message ->
-            message.id to ensureAnchors(message)
+        val messagesById = messages.associateBy(ChatMessage::id)
+        val anchorStatesByMessageVersion =
+            mutableMapOf<Pair<String, String>, VoiceAnchorState>()
+        messages.forEach { message ->
+            MessageAlternativeVersionPolicy.versions(message).forEach { version ->
+                val anchors = ensureAnchorsForVersion(
+                    message = message,
+                    messageVersionId = version.id,
+                    content = version.content
+                )
+                anchorStatesByMessageVersion[message.id to version.id] = VoiceAnchorState(
+                    messageId = message.id,
+                    messageVersionId = version.id,
+                    sessionId = message.sessionId,
+                    displayContentSnapshot = version.content,
+                    anchors = anchors.map(VoiceSegmentAnchor::anchor)
+                )
+            }
         }
         val remapped = voices.map { voice ->
-            val candidates = anchorsByMessage[voice.messageId].orEmpty()
-                .filter { anchored ->
-                    anchored.segment.kind.name == voice.sourceSegmentKind
-                }
-            val match = candidates.firstOrNull { anchored ->
-                normalize(anchored.segment.spokenText) == normalize(voice.sourceText)
-            } ?: candidates.minByOrNull { anchored ->
-                kotlin.math.abs(anchored.anchor.sourceOrder - voice.sourceOrder)
+            val message = messagesById[voice.messageId]
+            val versionId = if (message == null) {
+                voice.messageVersionId
+            } else {
+                voice.messageVersionId
+                    ?.takeIf { id ->
+                        MessageAlternativeVersionPolicy.versions(message).any { it.id == id }
+                    }
+                    ?: VoiceMessageVersionPolicy.inferLegacyVersionId(
+                        message = message,
+                        voice = voice,
+                        legacyState = null
+                    )
+            }
+            val state = versionId?.let {
+                anchorStatesByMessageVersion[voice.messageId to it]
             }
             voice.copy(
                 sessionId = sessionId,
-                anchorId = match?.anchor?.id,
+                messageVersionId = versionId,
+                anchorId = state?.let {
+                    VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
+                } ?: voice.anchorId,
                 updatedAt = System.currentTimeMillis()
             )
         }
@@ -214,9 +286,84 @@ class VoiceMessageRepository(
     private suspend fun ensureInitializedLocked() {
         if (initialized) return
         _voices.value = storage.loadAll(VOICE_TYPE, GeneratedVoiceMessage.serializer())
-        anchorsByMessage = storage.loadAll(ANCHOR_TYPE, VoiceAnchorState.serializer())
-            .associateBy(VoiceAnchorState::messageId)
+        anchorsByVersion = storage.loadAll(ANCHOR_TYPE, VoiceAnchorState.serializer())
+            .associateBy { VoiceAnchorStateKey(it.messageId, it.messageVersionId) }
         initialized = true
+    }
+
+    private suspend fun migrateLegacyVoiceVersionsLocked(message: ChatMessage) {
+        val legacyKey = VoiceAnchorStateKey(message.id, null)
+        val legacyState = anchorsByVersion[legacyKey]
+        val legacyVoices = _voices.value.filter {
+            it.messageId == message.id && it.messageVersionId.isNullOrBlank()
+        }
+        if (legacyState == null && legacyVoices.isEmpty()) return
+
+        val versions = MessageAlternativeVersionPolicy.versions(message)
+        val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
+        val legacyStateVersionId = legacyState?.let { state ->
+            versions.firstOrNull { it.content == state.displayContentSnapshot }?.id
+                ?: activeVersionId
+        }
+        if (legacyState != null && legacyStateVersionId != null) {
+            val migratedKey = VoiceAnchorStateKey(message.id, legacyStateVersionId)
+            if (anchorsByVersion[migratedKey] == null) {
+                val migratedState = legacyState.copy(
+                    messageVersionId = legacyStateVersionId,
+                    sessionId = message.sessionId
+                )
+                storage.saveEntity(
+                    ANCHOR_TYPE,
+                    anchorStorageId(migratedKey),
+                    migratedState,
+                    VoiceAnchorState.serializer()
+                )
+                anchorsByVersion = anchorsByVersion + (migratedKey to migratedState)
+            }
+        }
+
+        val changed = _voices.value.map { voice ->
+            if (voice.messageId != message.id || !voice.messageVersionId.isNullOrBlank()) {
+                voice
+            } else {
+                val versionId = VoiceMessageVersionPolicy.inferLegacyVersionId(
+                    message = message,
+                    voice = voice,
+                    legacyState = legacyState
+                )
+                val version = versions.firstOrNull { it.id == versionId }
+                val key = VoiceAnchorStateKey(message.id, versionId)
+                var state = anchorsByVersion[key]
+                if (state == null && version != null) {
+                    state = VoiceAnchorPolicy.initialState(
+                        messageId = message.id,
+                        content = version.content,
+                        messageVersionId = versionId,
+                        sessionId = message.sessionId,
+                        includeNarration = true
+                    )
+                    storage.saveEntity(
+                        ANCHOR_TYPE,
+                        anchorStorageId(key),
+                        state,
+                        VoiceAnchorState.serializer()
+                    )
+                    anchorsByVersion = anchorsByVersion + (key to state)
+                }
+                voice.copy(
+                    messageVersionId = versionId,
+                    anchorId = state?.let {
+                        VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
+                    },
+                    updatedAt = System.currentTimeMillis()
+                )
+            }
+        }
+        persistChangedVoicesLocked(_voices.value, changed)
+        if (legacyState != null) {
+            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, anchorStorageId(legacyKey))
+            anchorsByVersion = anchorsByVersion - legacyKey
+        }
     }
 
     private suspend fun persistChangedVoicesLocked(
@@ -230,8 +377,12 @@ class VoiceMessageRepository(
         _voices.value = next
     }
 
-    private fun normalize(value: String): String =
-        value.replace(Regex("\\s+"), " ").trim()
+    private fun anchorStorageId(key: VoiceAnchorStateKey): String {
+        val versionId = key.messageVersionId ?: return key.messageId
+        return UUID.nameUUIDFromBytes(
+            "${key.messageId}\u0000$versionId".toByteArray(StandardCharsets.UTF_8)
+        ).toString()
+    }
 
     private companion object {
         const val VOICE_TYPE = "generated_voice_messages"

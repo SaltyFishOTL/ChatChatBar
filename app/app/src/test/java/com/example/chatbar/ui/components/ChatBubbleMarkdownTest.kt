@@ -522,7 +522,9 @@ class ChatBubbleMarkdownTest {
         val message = message(
             content = "原文",
             alternatives = listOf("前 [旧]() 后", "别的"),
-            currentAlternativeIndex = 0
+            alternativeVersionIds = listOf("v1", "v2"),
+            currentAlternativeIndex = 0,
+            currentAlternativeVersionId = "v1"
         )
         val segment = parseRoleplayTextSegments(message.displayContent).first { it.kind == RoleplaySegmentKind.DIALOGUE }
 
@@ -531,7 +533,9 @@ class ChatBubbleMarkdownTest {
 
         assertEquals("前 [新]() 后", updated.content)
         assertEquals(emptyList<String>(), updated.alternatives)
+        assertEquals(emptyList<String>(), updated.alternativeVersionIds)
         assertEquals(0, updated.currentAlternativeIndex)
+        assertEquals("v1", updated.currentAlternativeVersionId)
         assertEquals(9, updated.updatedAt)
         assertEquals(false, outcome.deleteMemoryForMessage)
     }
@@ -564,7 +568,9 @@ class ChatBubbleMarkdownTest {
         content: String,
         images: List<String> = emptyList(),
         alternatives: List<String> = emptyList(),
-        currentAlternativeIndex: Int = 0
+        alternativeVersionIds: List<String> = emptyList(),
+        currentAlternativeIndex: Int = 0,
+        currentAlternativeVersionId: String? = null
     ): ChatMessage = ChatMessage(
         id = "message",
         sessionId = "session",
@@ -572,7 +578,9 @@ class ChatBubbleMarkdownTest {
         content = content,
         images = images,
         alternatives = alternatives,
+        alternativeVersionIds = alternativeVersionIds,
         currentAlternativeIndex = currentAlternativeIndex,
+        currentAlternativeVersionId = currentAlternativeVersionId,
         createdAt = 1,
         updatedAt = 1
     )

@@ -121,6 +121,8 @@ class ChatMessageOrderingTest {
         assertNull(decoded.generatedFromMessageId)
         assertEquals(42 * MESSAGE_ORDER_STEP, decoded.orderKey)
         assertEquals(emptyList<GeneratedImageMetadata>(), decoded.generatedImageMetadata)
+        assertEquals(emptyList<String>(), decoded.alternativeVersionIds)
+        assertNull(decoded.currentAlternativeVersionId)
     }
 
     @Test
