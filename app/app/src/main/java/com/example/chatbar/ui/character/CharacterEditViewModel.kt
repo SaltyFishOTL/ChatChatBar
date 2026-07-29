@@ -210,7 +210,14 @@ data class CharacterRewriteUiState(
     val coverImage: CharacterCoverImageUiState = CharacterCoverImageUiState()
 )
 
-private const val MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS = 1_000_000
+internal const val CHARACTER_REFERENCE_DOCUMENT_WARNING_CHARS = 1_000_000
+internal const val MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS = 5_000_000
+
+internal fun requireSupportedCharacterReferenceDocumentLength(length: Int) {
+    require(length <= MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS) {
+        "参考文档超过 500 万字符限制"
+    }
+}
 
 private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 
@@ -2463,9 +2470,7 @@ class CharacterEditViewModel(
                         while (true) {
                             val read = reader.read(buffer)
                             if (read < 0) break
-                            require(output.length + read <= MAX_CHARACTER_REFERENCE_DOCUMENT_CHARS) {
-                                "参考文档超过 100 万字符限制"
-                            }
+                            requireSupportedCharacterReferenceDocumentLength(output.length + read)
                             output.append(buffer, 0, read)
                         }
                         output.toString().trimStart('\uFEFF')

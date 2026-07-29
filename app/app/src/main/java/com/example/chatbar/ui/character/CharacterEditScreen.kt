@@ -2038,9 +2038,16 @@ private fun ReferenceDocumentPickerPanel(
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
+                if (document.content.length > CHARACTER_REFERENCE_DOCUMENT_WARNING_CHARS) {
+                    CbText(
+                        "文档超过 100 万字符；生成时向量化可能耗时较长，并产生较多嵌入调用。",
+                        color = ChatBarTheme.colors.warning,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
             }
             CbText(
-                "支持 TXT、MD、JSON，最多 100 万字符；RAG 检索 Top 20 卡片后按资料流程清洗整理。",
+                "支持 TXT、MD、JSON，最多 500 万字符；RAG 检索 Top 20 卡片后按资料流程清洗整理。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
