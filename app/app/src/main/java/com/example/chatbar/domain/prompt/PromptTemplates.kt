@@ -163,9 +163,11 @@ object PromptTemplates {
     private const val CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE =
         "（【输出正文长度为[{{replyLength}}]的内容】）"
 
+    const val CHAT_MAX_TOKEN_TOLERANCE = 500
+
     fun currentTurnOutputRequirementsSystemPrompt(
         formatCardContent: String?,
-        replyLength: String
+        replyLength: Int
     ): String {
         val normalizedFormatCard = formatCardContent?.trim().orEmpty()
         val template = if (normalizedFormatCard.isBlank()) {
@@ -175,7 +177,7 @@ object PromptTemplates {
         }
         return template.replace(
             oldValue = "{{replyLength}}",
-            newValue = replyLength
+            newValue = replyLengthLabel(replyLength)
         ).replace(
             oldValue = "{{formatCardContent}}",
             newValue = normalizedFormatCard
@@ -238,15 +240,15 @@ object PromptTemplates {
         add("【待修复消息】\n$message")
     }.joinToString("\n\n")
 
-    fun replyLengthConstraint(replyLength: String): String {
-        return "请按照「${replyLength}」的长度要求构建正文进行回复。"
+    fun replyLengthConstraint(replyLength: Int): String {
+        return "请按照「${replyLengthLabel(replyLength)}」的长度要求构建正文进行回复。"
     }
 
-    fun replyLengthTailSystemPrompt(replyLength: String): String =
-        "严格按照格式要求，输出【" + replyLength + "】篇幅的回复。"
+    fun replyLengthTailSystemPrompt(replyLength: Int): String =
+        "严格按照格式要求，输出【" + replyLengthLabel(replyLength) + "】篇幅的回复。"
 
     fun replyTailSystemPrompt(
-        replyLength: String,
+        replyLength: Int,
         roleplaySpeakerFormatEnabled: Boolean,
         characterNames: List<String>
     ): String = buildList {
@@ -255,6 +257,8 @@ object PromptTemplates {
         }
         add(replyLengthTailSystemPrompt(replyLength))
     }.joinToString("\n\n")
+
+    private fun replyLengthLabel(replyLength: Int): String = "${replyLength}字"
 
     fun replyLanguageConstraint(replyLanguage: String): String {
         return "请使用「${replyLanguage}」进行回复。"

@@ -310,7 +310,13 @@ private data class CommonParamPreset(
 )
 
 private val commonParamPresets = listOf(
-    CommonParamPreset("max_tokens", "最大输出", "限制单次回复长度。", ParamValue.NumberValue(1500.0), "1500"),
+    CommonParamPreset(
+        "max_tokens",
+        "最大输出",
+        "主对话会动态覆盖；此值仅供未指定动态上限的调用使用。",
+        ParamValue.NumberValue(1500.0),
+        "1500"
+    ),
     CommonParamPreset("temperature", "随机性", "越高越发散，越低越稳定。", ParamValue.NumberValue(0.7), "0.7"),
     CommonParamPreset("enable_thinking", "启用思考", "为支持的模型开启思考模式。", ParamValue.BooleanValue(true), "true"),
     CommonParamPreset("thinking_budget", "思考预算", "限制思考 token 预算。", ParamValue.NumberValue(1024.0), "1024"),

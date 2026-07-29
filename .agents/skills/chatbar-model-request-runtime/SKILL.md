@@ -13,6 +13,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Chat model availability and send gating: ui/chat/ChatViewModel.kt
 - Shared HTTP client, proxy, cleartext policy, Authorization helper: domain/ProxyAwareClient.kt
 - Chat/text request body, SSE parsing, retries, thinking fields: domain/chat/StreamingChatService.kt
+- Main-chat dynamic output budget: domain/chat/ChatOutputTokenPolicy.kt
 - Cleartext HTTP strict-template role adaptation: domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Final serialized request diagnostics: utils/DebugLogManager.kt and ui/chat/DebugLogDialog.kt
 - Connection-test caller: ui/manage/ManageViewModel.kt
@@ -39,6 +40,7 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 - Map model/provider capabilities before adding request fields.
 - Do not blindly send max_tokens, max_completion_tokens, thinking_budget, reasoning_effort, and thinking controls together.
 - `ModelConfig.outputTokenParameter` selects exactly one output-token key. Auxiliary isolated tasks strip sampling, stop, penalties, token overrides, and thinking parameters before adding task-owned limits.
+- Main chat overrides static output-token fields with `replyLength + UTF-8 format-card estimate + thinking_budget + PromptTemplates tolerance`; explicit limits strip both custom output-token aliases before emitting the selected key.
 - Long-term memory sends no thinking budget. Explicit thinking-off and JSON Mode are capability-gated; unknown custom providers default to `max_tokens` without JSON Mode or provider-specific off controls.
 - When disableThinking is true, remove configured thinking/reasoning parameters and send the supported explicit off control.
 - Keep connection-test requests small and deterministic, but ensure reasoning-only models can still produce a usable probe result. Current test flow disables thinking.

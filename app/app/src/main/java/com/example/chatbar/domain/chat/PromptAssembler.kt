@@ -3,6 +3,7 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.data.local.entity.DEFAULT_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
@@ -50,7 +51,7 @@ class PromptAssembler {
         supplementarySetting: String? = null,
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
-        replyLength: String? = null,
+        replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS,
         replyLanguage: String? = null,
         longTermMemory: String? = null,
         memoryArchive: String? = null,
@@ -92,7 +93,7 @@ class PromptAssembler {
         supplementarySetting: String? = null,
         ragResults: List<RetrievedKnowledgeCard> = emptyList(),
         ragInjectionMode: String = "STANDARD",
-        replyLength: String? = null,
+        replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS,
         replyLanguage: String? = null,
         longTermMemory: String? = null,
         memoryArchive: String? = null,
@@ -188,7 +189,7 @@ class PromptAssembler {
         supplementarySetting: String?,
         ragResults: List<RetrievedKnowledgeCard>,
         ragInjectionMode: String,
-        replyLength: String?,
+        replyLength: Int,
         replyLanguage: String?,
         longTermMemory: String?,
         memoryArchive: String?,
@@ -274,19 +275,14 @@ class PromptAssembler {
             .joinToString("\n\n")
     }
 
-    private fun buildReplyConstraints(replyLength: String?, replyLanguage: String?): String {
+    private fun buildReplyConstraints(replyLength: Int, replyLanguage: String?): String {
         val constraints = buildString {
-            if (!replyLength.isNullOrBlank()) {
-                appendLine(PromptTemplates.replyLengthConstraint(replyLength))
-            }
+            appendLine(PromptTemplates.replyLengthConstraint(replyLength))
             if (!replyLanguage.isNullOrBlank()) {
                 appendLine(PromptTemplates.replyLanguageConstraint(replyLanguage))
             }
         }.trim()
-        val effectiveConstraints = constraints.ifBlank {
-            "请按照【300字短篇】的长度要求构建正文进行回复"
-        }
-        return "【字数长度要求仅影响输出正文部分，确保正文字数符合字数要求，状态栏等格式文本不计入字数】\n$effectiveConstraints"
+        return "【字数长度要求仅影响输出正文部分，确保正文字数符合字数要求，状态栏等格式文本不计入字数】\n$constraints"
     }
 
     private fun resolveSystemPrompt(characterCard: CharacterCard): String =

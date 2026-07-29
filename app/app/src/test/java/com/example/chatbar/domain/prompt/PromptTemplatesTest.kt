@@ -16,7 +16,7 @@ class PromptTemplatesTest {
 
     @Test
     fun replyLengthTailSystemPromptIncludesConfiguredLength() {
-        val prompt = PromptTemplates.replyLengthTailSystemPrompt("500字")
+        val prompt = PromptTemplates.replyLengthTailSystemPrompt(500)
 
         assertTrue(prompt.contains("500字"))
         assertFalse(prompt.contains("{{replyLength}}"))
@@ -26,11 +26,11 @@ class PromptTemplatesTest {
     fun currentTurnOutputRequirementsIncludeInputsInOrderAndResolvePlaceholders() {
         val systemPrompt = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
             formatCardContent = "格式正文",
-            replyLength = "500字中篇"
+            replyLength = 500
         )
 
         val formatIndex = systemPrompt.indexOf("格式正文")
-        val lengthIndex = systemPrompt.indexOf("500字中篇")
+        val lengthIndex = systemPrompt.indexOf("500字")
         assertTrue(formatIndex >= 0)
         assertTrue(lengthIndex > formatIndex)
         assertFalse(systemPrompt.contains("{{replyLength}}"))
@@ -41,10 +41,11 @@ class PromptTemplatesTest {
     fun currentTurnOutputRequirementsWithoutFormatCardStillResolveLength() {
         val systemPrompt = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
             formatCardContent = null,
-            replyLength = "300字短篇"
+            replyLength = 300
         )
 
-        assertTrue(systemPrompt.contains("300字短篇"))
+        assertTrue(systemPrompt.contains("[300字]"))
+        assertFalse(systemPrompt.contains("短篇"))
         assertFalse(systemPrompt.contains("{{"))
         assertFalse(systemPrompt.contains("null", ignoreCase = true))
     }

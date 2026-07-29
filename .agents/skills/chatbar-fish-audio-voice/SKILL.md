@@ -76,6 +76,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Use shared `AiBackgroundWorkManager` only while model/TTS network work is active. Do not hold a lease for user decisions.
 - Preserve autoplay order by session timeline and visual voice order. Later messages must not steal playback when earlier batches are pending.
 - Discard autoplay intent when the originating ChatScreen is no longer resumed. Do not replay it on return.
+- Stop active playback when the originating ChatScreen leaves composition. App pause or stop alone only drops autoplay eligibility.
 - Serialize every ExoPlayer call onto its application/main thread. Never call `stop`, media-item APIs, `prepare`, or `play` from the app IO scope.
 - Manual voice taps stop current playback and automatic queues, then restart the selected voice and continue through later visible voices in the same message.
 

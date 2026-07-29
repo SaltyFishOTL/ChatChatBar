@@ -184,7 +184,8 @@ class StreamingChatService(
         modelConfig: ModelConfig,
         systemPrompt: String = "",
         ragChunks: List<String> = emptyList(),
-        promptCacheKey: String? = null
+        promptCacheKey: String? = null,
+        maxTokens: Int
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
         var retryCount = 0
@@ -197,6 +198,7 @@ class StreamingChatService(
             messages = messages,
             modelConfig = modelConfig,
             stream = true,
+            maxTokens = maxTokens,
             promptCacheKey = promptCacheKey.takeIf { supportsOpenAiCacheInstrumentation },
             includeStreamUsage = supportsOpenAiCacheInstrumentation
         )
@@ -808,6 +810,7 @@ class StreamingChatService(
             for ((key, value) in modelConfig.customParams) {
                 if (disableThinking && key in THINKING_PARAMETER_KEYS) continue
                 if (isolatedTaskParameters && key in ISOLATED_TASK_PARAMETER_KEYS) continue
+                if (maxTokens != null && key in OUTPUT_TOKEN_PARAMETER_KEYS) continue
                 when (value) {
                     is ParamValue.NumberValue -> {
                         val d = value.value
@@ -963,7 +966,12 @@ private val THINKING_PARAMETER_KEYS = setOf(
     PARAM_REASONING_EFFORT
 )
 
-private val ISOLATED_TASK_PARAMETER_KEYS = THINKING_PARAMETER_KEYS + setOf(
+private val OUTPUT_TOKEN_PARAMETER_KEYS = setOf(
+    "max_tokens",
+    "max_completion_tokens"
+)
+
+private val ISOLATED_TASK_PARAMETER_KEYS = THINKING_PARAMETER_KEYS + OUTPUT_TOKEN_PARAMETER_KEYS + setOf(
     "temperature",
     "top_p",
     "top_k",
@@ -972,9 +980,7 @@ private val ISOLATED_TASK_PARAMETER_KEYS = THINKING_PARAMETER_KEYS + setOf(
     "presence_penalty",
     "frequency_penalty",
     "repetition_penalty",
-    "seed",
-    "max_tokens",
-    "max_completion_tokens"
+    "seed"
 )
 
 private fun ModelConfig.supportsOpenAiPromptCacheInstrumentation(): Boolean {

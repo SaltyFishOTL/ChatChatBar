@@ -16,6 +16,7 @@ import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
+import com.example.chatbar.domain.chat.ChatOutputTokenPolicy
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
@@ -2398,8 +2399,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     _session.value = updatedSession
                 }
                 val replyLength = currentSession.replyLength
-                    ?.takeIf { it.isNotBlank() }
-                    ?: "300字短篇"
+                val outputTokenBudget = ChatOutputTokenPolicy.resolve(
+                    replyLengthChars = replyLength,
+                    formatCardContent = activeFormatCard?.content,
+                    modelConfig = modelConfig
+                )
                 val renderedFormatCardContent = activeFormatCard
                     ?.content
                     ?.takeIf(String::isNotBlank)
@@ -2438,7 +2442,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
                         ragResults = ragResults,
                         ragInjectionMode = appSettings.ragInjectionMode,
-                        replyLength = currentSession.replyLength?.takeIf { it.isNotBlank() },
+                        replyLength = replyLength,
                         replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
                         memoryArchive = null,
                         memoryHeadAndTimeline = null,
@@ -2640,7 +2644,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     modelConfig = modelConfig,
                     systemPrompt = promptSystemDebug,
                     ragChunks = ragDebugLogs,
-                    promptCacheKey = promptCacheKey
+                    promptCacheKey = promptCacheKey,
+                    maxTokens = outputTokenBudget.maxTokens
                 ).collect { event ->
                     if (ChatBarApp.instance.streamingStopRequested.value) {
                         throw UserStoppedResponseGenerationException()
@@ -3287,7 +3292,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         modelId: String?,
         imageModelId: String?,
         formatCardId: String?,
-        replyLength: String?,
+        replyLength: Int,
         replyLanguage: String?,
         supplementarySetting: String?,
         playerName: String?,

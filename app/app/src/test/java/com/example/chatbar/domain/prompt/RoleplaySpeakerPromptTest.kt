@@ -31,7 +31,7 @@ class RoleplaySpeakerPromptTest {
     @Test
     fun replyTailSystemPrompt_mergesSpeakerProtocolBeforeLengthWhenEnabled() {
         val prompt = PromptTemplates.replyTailSystemPrompt(
-            replyLength = "500字",
+            replyLength = 500,
             roleplaySpeakerFormatEnabled = true,
             characterNames = listOf("爱音", "灯")
         )
@@ -43,7 +43,7 @@ class RoleplaySpeakerPromptTest {
     @Test
     fun replyTailSystemPrompt_omitsSpeakerProtocolWhenDisabled() {
         val prompt = PromptTemplates.replyTailSystemPrompt(
-            replyLength = "500字",
+            replyLength = 500,
             roleplaySpeakerFormatEnabled = false,
             characterNames = listOf("爱音", "灯")
         )

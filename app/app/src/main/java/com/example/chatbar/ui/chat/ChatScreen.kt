@@ -215,6 +215,7 @@ fun ChatScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.setVoiceScreenForeground(false)
+            viewModel.stopVoicePlayback()
         }
     }
 

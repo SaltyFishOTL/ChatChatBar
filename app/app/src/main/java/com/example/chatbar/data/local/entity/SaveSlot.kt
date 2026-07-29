@@ -20,7 +20,8 @@ data class SaveSlot(
     val modelId: String? = null,
     val imageModelId: String? = null,
     val formatCardId: String? = null,
-    val replyLength: String? = null,
+    @Serializable(with = ReplyLengthSerializer::class)
+    val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS,
     val replyLanguage: String? = null,
     val roleplayStyle: String? = null,
     val chatBackground: String? = null,
@@ -55,7 +56,7 @@ data class SaveSlot(
             messages: List<ChatMessage> = emptyList(),
             vectorChunks: List<VectorChunk> = emptyList()
         ): SaveSlot = SaveSlot(
-            schemaVersion = 5,
+            schemaVersion = 6,
             id = Uuid.random().toString(),
             sessionId = sessionId,
             name = name,

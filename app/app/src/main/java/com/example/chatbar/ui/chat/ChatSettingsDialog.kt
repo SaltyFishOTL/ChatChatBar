@@ -27,6 +27,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -42,6 +43,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
@@ -63,6 +65,9 @@ import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlotSummary
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.DEFAULT_REPLY_LENGTH_CHARS
+import com.example.chatbar.data.local.entity.MAX_REPLY_LENGTH_CHARS
+import com.example.chatbar.data.local.entity.MIN_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
@@ -124,7 +129,9 @@ fun ChatSettingsDialog(
     var modelId by remember { mutableStateOf(session?.modelId) }
     var imageModelId by remember { mutableStateOf(session?.imageModelId) }
     var formatId by remember { mutableStateOf(session?.formatCardId) }
-    var replyLength by remember { mutableStateOf(session?.replyLength ?: "") }
+    var replyLength by remember {
+        mutableStateOf((session?.replyLength ?: DEFAULT_REPLY_LENGTH_CHARS).toString())
+    }
     var replyLanguage by remember { mutableStateOf(session?.replyLanguage ?: "") }
     var supplementary by remember { mutableStateOf(session?.supplementarySetting ?: "") }
     var playerName by remember { mutableStateOf(session?.playerName ?: "") }
@@ -185,7 +192,8 @@ fun ChatSettingsDialog(
     }
     LaunchedEffect(session) {
         session?.let {
-            modelId = it.modelId; imageModelId = it.imageModelId; formatId = it.formatCardId; replyLength = it.replyLength ?: ""
+            modelId = it.modelId; imageModelId = it.imageModelId; formatId = it.formatCardId
+            replyLength = it.replyLength.toString()
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
@@ -197,11 +205,19 @@ fun ChatSettingsDialog(
         }
     }
 
+    val parsedReplyLength = replyLength.toIntOrNull()
+    val replyLengthError = when {
+        replyLength.isBlank() -> "请输入正文目标字数"
+        parsedReplyLength == null -> "正文目标字数必须是整数"
+        parsedReplyLength !in MIN_REPLY_LENGTH_CHARS..MAX_REPLY_LENGTH_CHARS ->
+            "请输入 $MIN_REPLY_LENGTH_CHARS–$MAX_REPLY_LENGTH_CHARS"
+        else -> null
+    }
     val settingsDirty = session?.let {
         modelId != it.modelId ||
             imageModelId != it.imageModelId ||
             formatId != it.formatCardId ||
-            replyLength.takeIf(String::isNotBlank) != it.replyLength ||
+            parsedReplyLength != it.replyLength ||
             replyLanguage.takeIf(String::isNotBlank) != it.replyLanguage ||
             supplementary.takeIf(String::isNotBlank) != it.supplementarySetting ||
             playerName.takeIf(String::isNotBlank) != it.playerName ||
@@ -251,7 +267,7 @@ fun ChatSettingsDialog(
                                 modelId = modelId,
                                 imageModelId = imageModelId,
                                 formatCardId = formatId,
-                                replyLength = replyLength.takeIf(String::isNotBlank),
+                                replyLength = parsedReplyLength ?: DEFAULT_REPLY_LENGTH_CHARS,
                                 replyLanguage = replyLanguage.takeIf(String::isNotBlank),
                                 supplementarySetting = supplementary.takeIf(String::isNotBlank),
                                 playerName = playerName.takeIf(String::isNotBlank),
@@ -264,7 +280,7 @@ fun ChatSettingsDialog(
                                 extraWorldBookIds = extraWorldBookIds
                             )
                             onDismiss()
-                        }, variant = ButtonVariant.Ghost)
+                        }, enabled = replyLengthError == null, variant = ButtonVariant.Ghost)
                     }
                 )
                 val tabs = buildList {
@@ -290,7 +306,10 @@ fun ChatSettingsDialog(
                             imageModelId, { imageModelId = it }, defaultImageModelId,
                             formatId, { formatId = it }, defaultFormatId, formats,
                             worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
-                            replyLength, { replyLength = it }, replyLanguage, { replyLanguage = it },
+                            replyLength,
+                            { value -> if (value.all(Char::isDigit)) replyLength = value },
+                            replyLengthError,
+                            replyLanguage, { replyLanguage = it },
                             supplementary, { supplementary = it },
                             playerName, { playerName = it }, playerSetting, { playerSetting = it },
                             background, { backgroundPicker.launch("image/*") }, { background = "" },
@@ -443,7 +462,11 @@ private fun SettingsContent(
     imageModelId: String?, onImageModel: (String?) -> Unit, defaultImageModelId: String?,
     formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
     worldBooks: List<WorldBook>, inheritedWorldBookIds: List<String>, extraWorldBookIds: List<String>, onExtraWorldBookIds: (List<String>) -> Unit,
-    length: String, onLength: (String) -> Unit, language: String, onLanguage: (String) -> Unit,
+    length: String,
+    onLength: (String) -> Unit,
+    lengthError: String?,
+    language: String,
+    onLanguage: (String) -> Unit,
     supplementary: String, onSupplementary: (String) -> Unit,
     playerName: String, onPlayerName: (String) -> Unit, playerSetting: String, onPlayerSetting: (String) -> Unit,
     background: String, onPickBackground: () -> Unit, onClearBackground: () -> Unit,
@@ -515,7 +538,20 @@ private fun SettingsContent(
         DefaultAwareSelect("格式卡", formatId, defaultFormatId, formats.map { IdOption(it.id, it.name) }, onFormat, noneLabel = "不设置")
         WorldBookSettings(worldBooks, inheritedWorldBookIds, extraWorldBookIds, onExtraWorldBookIds)
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            CbField("回复长度", Modifier.weight(1f)) { CbInput(length, onLength, placeholder = "50 字内 / 长篇") }
+            CbField(
+                label = "正文目标字数",
+                modifier = Modifier.weight(1f),
+                description = "范围 $MIN_REPLY_LENGTH_CHARS–$MAX_REPLY_LENGTH_CHARS",
+                error = lengthError
+            ) {
+                CbInput(
+                    value = length,
+                    onValueChange = onLength,
+                    placeholder = DEFAULT_REPLY_LENGTH_CHARS.toString(),
+                    isError = lengthError != null,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+                )
+            }
             CbField("回复语言", Modifier.weight(1f)) { CbInput(language, onLanguage, placeholder = "中文") }
         }
         CbField("临时补充设定", onFullscreenEdit = {

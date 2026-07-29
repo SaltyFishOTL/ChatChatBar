@@ -188,10 +188,11 @@ fun CbDirtySaveButton(
     dirty: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    enabled: Boolean = true,
     variant: ButtonVariant = ButtonVariant.Ghost
 ) {
     Box(modifier) {
-        CbButton("保存", onClick, variant = variant)
+        CbButton("保存", onClick, enabled = enabled, variant = variant)
         if (dirty) {
             Box(
                 Modifier

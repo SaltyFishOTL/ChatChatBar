@@ -31,7 +31,8 @@ data class ChatSession(
     val modelId: String? = null,
     val imageModelId: String? = null,
     val formatCardId: String? = null,
-    val replyLength: String? = null,         // 回复长度设定
+    @Serializable(with = ReplyLengthSerializer::class)
+    val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS, // 正文目标字数
     val replyLanguage: String? = null,       // 回复语言
     val roleplayStyle: String? = null,       // 会话扮演风格覆盖
     val supplementarySetting: String? = null, // 补充设定

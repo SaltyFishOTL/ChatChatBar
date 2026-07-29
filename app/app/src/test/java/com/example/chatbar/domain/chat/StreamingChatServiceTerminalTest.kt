@@ -26,7 +26,8 @@ class StreamingChatServiceTerminalTest {
                 service().streamChat(
                     sessionId = "finish-reason-test",
                     messages = listOf(ChatApiMessage.text("user", "hello")),
-                    modelConfig = model(server.baseUrl)
+                    modelConfig = model(server.baseUrl),
+                    maxTokens = 1_000
                 ).toList()
             }
 
@@ -49,7 +50,8 @@ class StreamingChatServiceTerminalTest {
                 service().streamChat(
                     sessionId = "usage-after-finish-test",
                     messages = listOf(ChatApiMessage.text("user", "hello")),
-                    modelConfig = model(server.baseUrl)
+                    modelConfig = model(server.baseUrl),
+                    maxTokens = 1_000
                 ).toList()
             }
 
@@ -74,7 +76,8 @@ class StreamingChatServiceTerminalTest {
                 service().streamChat(
                     sessionId = "buffer-test",
                     messages = listOf(ChatApiMessage.text("user", "hello")),
-                    modelConfig = model(server.baseUrl)
+                    modelConfig = model(server.baseUrl),
+                    maxTokens = 1_000
                 ).collect { event ->
                     events += event
                     delay(2)
@@ -98,7 +101,8 @@ class StreamingChatServiceTerminalTest {
                 service().streamChat(
                     sessionId = "abnormal-close-test",
                     messages = listOf(ChatApiMessage.text("user", "hello")),
-                    modelConfig = model(server.baseUrl)
+                    modelConfig = model(server.baseUrl),
+                    maxTokens = 1_000
                 ).toList()
             }
 
