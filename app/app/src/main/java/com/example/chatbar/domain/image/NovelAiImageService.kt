@@ -158,7 +158,7 @@ class NovelAiImageService(
         require(batchSize in 1..NOVEL_AI_MAX_BATCH_SIZE) {
             "NovelAI 批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间"
         }
-        val negative = deduplicateNegativePrompt(prompt.effectiveNegativePrompt)
+        val negative = prompt.effectiveNegativePrompt.trim()
         val characterCaptions = buildJsonArray {
             prompt.characterCaptions.forEach { caption ->
                 add(buildJsonObject {
@@ -205,8 +205,8 @@ class NovelAiImageService(
                 put("seed", seed)
                 put("extra_noise_seed", seed)
                 put("n_samples", batchSize)
-                put("ucPreset", 0)
-                put("qualityToggle", true)
+                put("ucPreset", 3)
+                put("qualityToggle", false)
                 put("negative_prompt", negative)
                 put("noise_schedule", "karras")
                 put("legacy", false)
@@ -275,13 +275,6 @@ class NovelAiImageService(
         fun randomSeed(): Int = kotlin.random.Random.nextInt(0, Int.MAX_VALUE)
         fun correlationId(): String = (1..6).map { ALPHANUMERIC.random() }.joinToString("")
         const val ALPHANUMERIC = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
-
-        fun deduplicateNegativePrompt(negative: String): String =
-            negative.split(',')
-                .map { it.trim().lowercase() }
-                .filter(String::isNotBlank)
-                .distinct()
-                .joinToString(", ")
 
         fun retryDelayMillis(failedAttempt: Int, retryAfterHeader: String?): Long {
             val retryAfterSeconds = retryAfterHeader

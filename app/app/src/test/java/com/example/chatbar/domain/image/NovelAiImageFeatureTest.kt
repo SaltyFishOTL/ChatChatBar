@@ -340,7 +340,9 @@ class NovelAiImageFeatureTest {
         assertEquals("28", parameters.getValue("steps").jsonPrimitive.content)
         assertEquals("8.0", parameters.getValue("scale").jsonPrimitive.content)
         assertEquals("1", parameters.getValue("n_samples").jsonPrimitive.content)
+        assertEquals("3", parameters.getValue("ucPreset").jsonPrimitive.content)
         assertEquals("msgpack", parameters.getValue("stream").jsonPrimitive.content)
+        assertEquals("false", parameters.getValue("qualityToggle").jsonPrimitive.content)
         assertEquals("scene", caption.getValue("base_caption").jsonPrimitive.content)
         assertEquals("42", parameters.getValue("seed").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("legacy").jsonPrimitive.content)
@@ -352,7 +354,7 @@ class NovelAiImageFeatureTest {
         val v4NegativePrompt = parameters.getValue("v4_negative_prompt").jsonObject
             .getValue("caption").jsonObject
             .getValue("base_caption").jsonPrimitive.content
-        assertTrue(negativePrompt.isNotBlank())
+        assertEquals(PromptTemplates.defaultCharacterNaiNegativePrompt(), negativePrompt)
         assertEquals(negativePrompt, v4NegativePrompt)
         val character = caption.getValue("char_captions").jsonArray.first().jsonObject
         val center = character.getValue("centers").jsonArray.first().jsonObject
@@ -393,12 +395,12 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
-    fun `request uses custom negative prompt for legacy and v4 captions`() {
+    fun `request sends only card negative text without NovelAI UC preset combination`() {
         val body = NovelAiImageService().buildRequestBody(
             NovelAiPromptPlan(
                 "scene",
                 emptyList(),
-                negativePrompt = "bad hands, bad hands, watermark"
+                negativePrompt = "Custom Negative Marker, Bad Hands"
             ),
             seed = 42
         )
@@ -407,8 +409,16 @@ class NovelAiImageFeatureTest {
         val v4NegativeCaption = parameters.getValue("v4_negative_prompt").jsonObject
             .getValue("caption").jsonObject
 
-        assertEquals("bad hands, watermark", parameters.getValue("negative_prompt").jsonPrimitive.content)
-        assertEquals("bad hands, watermark", v4NegativeCaption.getValue("base_caption").jsonPrimitive.content)
+        assertEquals("3", parameters.getValue("ucPreset").jsonPrimitive.content)
+        assertEquals(
+            "Custom Negative Marker, Bad Hands",
+            parameters.getValue("negative_prompt").jsonPrimitive.content
+        )
+        assertEquals(
+            "Custom Negative Marker, Bad Hands",
+            v4NegativeCaption.getValue("base_caption").jsonPrimitive.content
+        )
+        assertFalse(body.contains(PromptTemplates.defaultCharacterNaiNegativePrompt()))
     }
 
     @Test

@@ -33,6 +33,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Do not stack caller retries on top of service retries.
 - Preserve correlation IDs and concrete HTTP/stream parse errors.
 - Keep V4 coordinates disabled unless product behavior explicitly changes; stored centers remain compatibility metadata.
+- Keep NovelAI quality-tag injection disabled and use `ucPreset=3` (None) so NovelAI does not combine its UC preset with app text. Send exactly one negative source—`NovelAiPromptPlan.effectiveNegativePrompt`—identically through legacy and V4 fields.
 
 ## Metadata and Regeneration
 
