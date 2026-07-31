@@ -21,6 +21,9 @@ import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateManager
 import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.voice.*
+import com.example.chatbar.domain.voice.qq.QqVoiceGestureGatewayRegistry
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferCoordinator
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferNotificationManager
 import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.utils.diagnostics.CrashReportManager
 import com.example.chatbar.data.security.FishAudioCredentialStore
@@ -138,6 +141,10 @@ class ChatBarApp : Application() {
         private set
     lateinit var voicePlaybackController: VoicePlaybackController
         private set
+    lateinit var qqVoiceTransferCoordinator: QqVoiceTransferCoordinator
+        private set
+    lateinit var qqVoiceGestureGateway: QqVoiceGestureGatewayRegistry
+        private set
     lateinit var fishAudioGenerationCoordinator: FishAudioGenerationCoordinator
         private set
     lateinit var searchBackend: SearchBackend
@@ -198,6 +205,8 @@ class ChatBarApp : Application() {
         fishAudioService = FishAudioService(fishAudioStorage)
         fishAudioTagService = FishAudioTagService(streamingChatService)
         voicePlaybackController = VoicePlaybackController(this)
+        qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
+        qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
         novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
@@ -363,6 +372,7 @@ class ChatBarApp : Application() {
             fishAudioGenerationCoordinator
         )
         StreamingNotificationManager.init(this)
+        QqVoiceTransferNotificationManager.init(this)
         applicationScope.launch {
             deletionCoordinator.resumePending()
             CharacterSpeakerMigration(jsonFileStorage, characterRepository).run()

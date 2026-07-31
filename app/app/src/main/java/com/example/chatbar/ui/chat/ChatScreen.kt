@@ -112,6 +112,11 @@ import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.voice.VoiceGenerationBatchState
 import com.example.chatbar.domain.voice.VoiceGenerationPhase
 import com.example.chatbar.domain.voice.saveGeneratedVoiceToDownloads
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferFailureCode
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferPolicy
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferPreflight
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferRequest
+import com.example.chatbar.domain.voice.qq.QqVoiceTransferService
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
@@ -244,6 +249,7 @@ fun ChatScreen(
         mutableStateOf<PendingVoiceGeneration?>(null)
     }
     var voiceActionTarget by remember { mutableStateOf<GeneratedVoiceMessage?>(null) }
+    var qqVoiceTransferTarget by remember { mutableStateOf<GeneratedVoiceMessage?>(null) }
     var pendingVoiceDownload by remember { mutableStateOf<PendingVoiceDownload?>(null) }
     var voiceTextConfirmationBatchId by remember(sessionId) {
         mutableStateOf<String?>(null)
@@ -450,6 +456,15 @@ fun ChatScreen(
             Toast.makeText(context, "未授予存储权限，无法下载语音", Toast.LENGTH_SHORT).show()
         }
     }
+    val qqNotificationPermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        Toast.makeText(
+            context,
+            if (granted) "通知权限已允许，请再次点继续" else "通知权限被拒绝，QQ 语音发送已停止",
+            Toast.LENGTH_LONG
+        ).show()
+    }
 
     fun requestVoiceDownload(voice: GeneratedVoiceMessage, chatName: String) {
         val request = PendingVoiceDownload(voice, chatName)
@@ -467,8 +482,62 @@ fun ChatScreen(
         }
     }
 
+    fun startQqVoiceTransfer(voice: GeneratedVoiceMessage) {
+        val app = ChatBarApp.instance
+        if (QqVoiceTransferPolicy.isActive(app.qqVoiceTransferCoordinator.state.value)) {
+            Toast.makeText(context, "已有 QQ 语音发送任务", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val request = QqVoiceTransferRequest.from(voice)
+        val preflight = QqVoiceTransferPreflight(context, app.qqVoiceGestureGateway)
+        if (!preflight.isAccessibilityEnabled() || !app.qqVoiceGestureGateway.connected) {
+            context.startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            Toast.makeText(
+                context,
+                "请启用“ChatBar QQ 语音实验助手”，返回后再次点继续",
+                Toast.LENGTH_LONG
+            ).show()
+            return
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            qqNotificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            return
+        }
+        val failure = preflight.evaluate(request)
+        if (failure != null) {
+            if (failure.code == QqVoiceTransferFailureCode.NOTIFICATIONS_DISABLED) {
+                context.startActivity(
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(
+                        Settings.EXTRA_APP_PACKAGE,
+                        context.packageName
+                    )
+                )
+            }
+            Toast.makeText(context, failure.message, Toast.LENGTH_LONG).show()
+            return
+        }
+        val qqIntent = context.packageManager
+            .getLaunchIntentForPackage(QqVoiceTransferPolicy.QQ_PACKAGE)
+            ?.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        if (qqIntent == null) {
+            Toast.makeText(context, "无法打开标准手机 QQ", Toast.LENGTH_LONG).show()
+            return
+        }
+        viewModel.stopVoicePlayback()
+        QqVoiceTransferService.start(context, request)
+        context.startActivity(qqIntent)
+        qqVoiceTransferTarget = null
+    }
+
     BackHandler(enabled = editingMessage != null) { editingMessage = null; editingImages.clear() }
     BackHandler(enabled = editingSegment != null) { editingSegment = null }
+    BackHandler(enabled = qqVoiceTransferTarget != null) { qqVoiceTransferTarget = null }
     BackHandler(enabled = fullComposer) { fullComposer = false }
     BackHandler(enabled = screenshotPreviewPath != null) {
         screenshotPreviewPath = null
@@ -1826,11 +1895,21 @@ fun ChatScreen(
             }
             if (!fishAudioConfigured) {
                 CbText(
-                    "Fish Audio API Key 未配置；仍可播放、下载或删除本地语音。",
+                    "Fish Audio API Key 未配置；仍可播放、实验性发送到 QQ、下载或删除本地语音。",
                     color = ChatBarTheme.colors.destructive,
                     style = ChatBarTheme.typography.caption
                 )
             }
+            Spacer(Modifier.size(10.dp))
+            CbButton(
+                "发送为 QQ 语音（实验）",
+                {
+                    qqVoiceTransferTarget = voice
+                    voiceActionTarget = null
+                },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Outline
+            )
             Spacer(Modifier.size(10.dp))
             CbButton(
                 "下载语音",
@@ -1851,6 +1930,61 @@ fun ChatScreen(
                 modifier = Modifier.fillMaxWidth(),
                 variant = ButtonVariant.Destructive
             )
+        }
+    }
+    qqVoiceTransferTarget?.let { voice ->
+        val clipped = voice.durationMs > QqVoiceTransferPolicy.MAX_CLIP_DURATION_MS
+        CbDialog(
+            onDismissRequest = { qqVoiceTransferTarget = null },
+            title = "发送为 QQ 语音（实验）",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { qqVoiceTransferTarget = null },
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton("继续并打开 QQ", { startQqVoiceTransfer(voice) })
+            }
+        ) {
+            Column(
+                modifier = Modifier.verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbText(
+                    "这是扬声器外放、QQ 麦克风重录，不是文件分享。声音会被周围人听见，环境噪声和系统回声消除会影响音质。",
+                    color = ChatBarTheme.colors.mutedForeground
+                )
+                CbText(
+                    if (clipped) {
+                        "该语音超过 50 秒，只会发送前 50 秒，后续内容直接舍弃。"
+                    } else {
+                        "最多发送前 50 秒；本条语音将完整播放。"
+                    },
+                    color = if (clipped) {
+                        ChatBarTheme.colors.destructive
+                    } else {
+                        ChatBarTheme.colors.mutedForeground
+                    },
+                    style = ChatBarTheme.typography.caption
+                )
+                CbText(
+                    "继续后：① 在 QQ 选择聊天；② 切换到“按住说话”；③ 下拉通知栏，点“开始”。ChatBar 会倒计时 3 秒，再自动按住录音键、播放并松开。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbText(
+                    "开始前请断开耳机、蓝牙和 USB 音频设备，并确认媒体音量不为零。可在通知栏点“取消”。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbText(
+                    "需要敏感的无障碍权限。服务仅在标准 QQ 中查找固定录音按钮并执行按住手势，不读取或记录聊天文字、联系人、QQ 号。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
         }
     }
 }

@@ -18,6 +18,7 @@ Use `chatbar-model-request-runtime` for shared auxiliary-model resolution or SSE
 - Tagging and orchestration: `domain/voice/FishAudioTagService.kt`, `FishAudioGenerationCoordinator.kt`, `domain/prompt/PromptTemplates.kt`.
 - Anchors and persistence: `domain/voice/VoiceAnchorPolicy.kt`, `data/local/entity/FishAudioEntities.kt`, `data/repository/VoiceMessageRepository.kt`, `domain/voice/FishAudioStorage.kt`.
 - Playback: `domain/voice/VoicePlaybackController.kt`.
+- QQ voice experiment: `domain/voice/qq/`, `AndroidManifest.xml`, and `res/xml/qq_voice_accessibility_service.xml`.
 - Chat and character UI: `ui/chat/ChatScreen.kt`, `ChatViewModel.kt`, `ui/components/ChatBubble.kt`, `ui/character/CharacterEditScreen.kt`, `CharacterEditViewModel.kt`.
 - Save/restore and deletion: `data/local/entity/SaveSlot.kt`, `domain/deletion/DeletionCoordinator.kt`.
 - Tests: `domain/voice/FishAudioRequestFactoryTest.kt`, `FishAudioTagPolicyTest.kt`, `VoiceAnchorPolicyTest.kt`, `domain/card/CharacterFishAudioSerializationTest.kt`, and SaveSlot serialization tests.
@@ -85,7 +86,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Keep voice progress cards visible near the composer rather than below a potentially long message.
 - Put QQ-style voice bars below their anchor; when segmented bubbles are off, list all voices below the whole text bubble.
 - Keep voice blocks independently selectable for long screenshots.
-- Voice long-press supports tagged-text editing, regeneration, download to the public Download directory, and deletion. Download names use the current rendered chat title plus the generation-time character snapshot and download time.
+- Voice long-press supports tagged-text editing, regeneration, download to the public Download directory, deletion, and experimental standard-QQ native-voice sending. QQ sending uses a temporary state machine, exact `com.tencent.mobileqq:id/press_to_speak_iv` matching, notification-triggered accessibility hold, and dedicated media playback; it never mutates voice/message persistence. Require speaker output, nonzero media volume, user-selected chat and press-to-talk mode; clip at 50 seconds, never guess coordinates/text, and never claim delivery after releasing the button. Download names use the current rendered chat title plus the generation-time character snapshot and download time.
 - Document every voice long-press action in the advanced tutorial. Keep basic setup, binding, generation, confirmation, and playback instructions in the basic tutorial.
 
 ## Workflow

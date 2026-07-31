@@ -1,3 +1,5 @@
 <resources>
     <string name="app_name">ChatChatBar</string>
+    <string name="qq_voice_accessibility_service_label">ChatBar QQ 语音实验助手</string>
+    <string name="qq_voice_accessibility_service_description">仅在标准 QQ 前台查找录音按钮，并按住按钮完成语音外放重录。不读取或记录聊天文字、联系人或 QQ 号。</string>
 </resources>
