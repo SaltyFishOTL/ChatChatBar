@@ -2399,11 +2399,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     _session.value = updatedSession
                 }
                 val replyLength = currentSession.replyLength
-                val outputTokenBudget = ChatOutputTokenPolicy.resolve(
-                    replyLengthChars = replyLength,
-                    formatCardContent = activeFormatCard?.content,
-                    modelConfig = modelConfig
-                )
                 val renderedFormatCardContent = activeFormatCard
                     ?.content
                     ?.takeIf(String::isNotBlank)
@@ -2415,6 +2410,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             worldBookOutlets = wbOutlets
                         )
                     }
+                val outputTokenBudget = ChatOutputTokenPolicy.resolve(
+                    replyLengthChars = replyLength,
+                    formatCardContent = renderedFormatCardContent,
+                    modelConfig = modelConfig
+                )
                 // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                 val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
                     contextMsgs.lastOrNull { it.role == MessageRole.USER }

@@ -18,7 +18,8 @@ data class ChatOutputTokenBudget(
 )
 
 object ChatOutputTokenPolicy {
-    private const val UTF8_BYTES_PER_ESTIMATED_TOKEN = 3L
+    private const val UTF8_BYTES_PER_ESTIMATED_TOKEN = 2L
+    private const val DEFAULT_THINKING_BUDGET_TOKENS = 1024
 
     fun resolve(
         replyLengthChars: Int = DEFAULT_REPLY_LENGTH_CHARS,
@@ -64,7 +65,11 @@ object ChatOutputTokenPolicy {
 
         val value =
             (modelConfig.customParams["thinking_budget"] as? ParamValue.NumberValue)?.value
-                ?: return 0
+                ?: return if (effectiveThinkingEnabled == true) {
+                    DEFAULT_THINKING_BUDGET_TOKENS
+                } else {
+                    0
+                }
         if (!value.isFinite() || value <= 0.0) return 0
         return ceil(value)
             .coerceAtMost(Int.MAX_VALUE.toDouble())

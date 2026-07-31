@@ -9,9 +9,9 @@ import org.junit.Test
 class ChatOutputTokenPolicyTest {
     @Test
     fun utf8EstimatorCoversChineseAsciiMarkdownEmojiAndBlankContent() {
-        assertEquals(2, ChatOutputTokenPolicy.estimateFormatCardTokens("中文"))
+        assertEquals(3, ChatOutputTokenPolicy.estimateFormatCardTokens("中文"))
         assertEquals(2, ChatOutputTokenPolicy.estimateFormatCardTokens("abcd"))
-        assertEquals(2, ChatOutputTokenPolicy.estimateFormatCardTokens("# 😀"))
+        assertEquals(3, ChatOutputTokenPolicy.estimateFormatCardTokens("# 😀"))
         assertEquals(0, ChatOutputTokenPolicy.estimateFormatCardTokens(" \n "))
         assertEquals(0, ChatOutputTokenPolicy.estimateFormatCardTokens(null))
     }
@@ -30,10 +30,10 @@ class ChatOutputTokenPolicyTest {
         )
 
         assertEquals(300, budget.replyLengthTokens)
-        assertEquals(2, budget.formatCardTokens)
+        assertEquals(3, budget.formatCardTokens)
         assertEquals(1025, budget.thinkingBudgetTokens)
         assertEquals(500, budget.toleranceTokens)
-        assertEquals(1827, budget.maxTokens)
+        assertEquals(1828, budget.maxTokens)
     }
 
     @Test
@@ -65,6 +65,30 @@ class ChatOutputTokenPolicyTest {
     }
 
     @Test
+    fun enabledThinkingWithoutBudgetReservesDefaultTokens() {
+        val namedEnabled = ChatOutputTokenPolicy.resolve(
+            modelConfig = model(enableThinking = true),
+            formatCardContent = null
+        )
+        val customEnabled = ChatOutputTokenPolicy.resolve(
+            modelConfig = model(
+                customParams = mapOf(
+                    "enable_thinking" to ParamValue.BooleanValue(true)
+                )
+            ),
+            formatCardContent = null
+        )
+        val unspecified = ChatOutputTokenPolicy.resolve(
+            modelConfig = model(),
+            formatCardContent = null
+        )
+
+        assertEquals(1024, namedEnabled.thinkingBudgetTokens)
+        assertEquals(1024, customEnabled.thinkingBudgetTokens)
+        assertEquals(0, unspecified.thinkingBudgetTokens)
+    }
+
+    @Test
     fun ignoresOtherReasoningAliasesAndInvalidThinkingBudget() {
         val aliases = ChatOutputTokenPolicy.resolve(
             modelConfig = model(
@@ -89,7 +113,7 @@ class ChatOutputTokenPolicyTest {
     }
 
     @Test
-    fun staleSessionFormatFallbackFeedsRawDefaultCardIntoBudget() {
+    fun staleSessionFormatFallbackFeedsDefaultCardIntoBudget() {
         val defaultCard = FormatCard(
             id = "default",
             name = "默认格式",
@@ -108,7 +132,7 @@ class ChatOutputTokenPolicyTest {
             modelConfig = model()
         )
 
-        assertEquals(2, budget.formatCardTokens)
+        assertEquals(3, budget.formatCardTokens)
     }
 
     @Test
