@@ -51,6 +51,29 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun formatContinuityNoticeIsIncludedOnlyWhenRequestedWithFormatCard() {
+        val included = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = "格式正文",
+            replyLength = 300,
+            includeFormatHistoryContinuityNotice = true
+        )
+        val notRequested = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = "格式正文",
+            replyLength = 300,
+            includeFormatHistoryContinuityNotice = false
+        )
+        val noFormatCard = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = null,
+            replyLength = 300,
+            includeFormatHistoryContinuityNotice = true
+        )
+
+        assertTrue(included.contains(PromptTemplates.FORMAT_HISTORY_CONTINUITY_NOTICE))
+        assertFalse(notRequested.contains(PromptTemplates.FORMAT_HISTORY_CONTINUITY_NOTICE))
+        assertFalse(noFormatCard.contains(PromptTemplates.FORMAT_HISTORY_CONTINUITY_NOTICE))
+    }
+
+    @Test
     fun memoryPromptsKeepInputsAndRequiredJsonProtocolTokens() {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(

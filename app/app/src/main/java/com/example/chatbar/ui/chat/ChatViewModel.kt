@@ -16,6 +16,7 @@ import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
+import com.example.chatbar.domain.chat.ChatHistoryPromptZone
 import com.example.chatbar.domain.chat.ChatOutputTokenPolicy
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
@@ -28,7 +29,6 @@ import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.TimelineArchiveBoundaryPolicy
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
-import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
@@ -2415,12 +2415,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             worldBookOutlets = wbOutlets
                         )
                     }
-                val requirementsSystemPrompt =
-                    PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
-                        formatCardContent = renderedFormatCardContent,
-                        replyLength = replyLength
-                    )
-
                 // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                 val regenTargetUserMsg = if (alternativeTargetMessageId != null) {
                     contextMsgs.lastOrNull { it.role == MessageRole.USER }
@@ -2434,6 +2428,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     contextMessages = contextMsgs,
                     latestMessageId = latestMessageId
                 )
+                val requirementsSystemPrompt =
+                    PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+                        formatCardContent = renderedFormatCardContent,
+                        replyLength = replyLength,
+                        includeFormatHistoryContinuityNotice =
+                            ChatHistoryPromptPolicy.shouldIncludeFormatContinuityNotice(
+                                excludeAssistantStatusFromHistory =
+                                    appSettings.excludeAssistantStatusFromHistory,
+                                formatCardContent = renderedFormatCardContent,
+                                earlierHistoryMessages = promptMessageGroups.historyMessages
+                            )
+                    )
                 fun assemblePromptLayers() =
                     promptAssembler.assembleCachePromptLayers(
                         characterCard = charCard,
@@ -2483,14 +2489,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                 suspend fun addContextMessage(
                     msg: ChatMessage,
-                    stripAssistantStatus: Boolean = false
+                    zone: ChatHistoryPromptZone
                 ) {
                     val role = msg.role.name.lowercase()
-                    val sourceText = if (stripAssistantStatus && msg.role == MessageRole.ASSISTANT) {
-                        stripRoleplayStatusSegments(msg.displayContent)
-                    } else {
-                        msg.displayContent
-                    }
+                    val sourceText = ChatHistoryPromptPolicy.sourceText(
+                        message = msg,
+                        excludeAssistantStatusFromHistory =
+                            appSettings.excludeAssistantStatusFromHistory,
+                        zone = zone
+                    )
                     val renderedBody = renderSessionText(sourceText)
                     val hasSupportedImage = msg.images.isNotEmpty() &&
                         modelConfig.isMultimodal &&
@@ -2526,7 +2533,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 for (msg in promptMessageGroups.historyMessages) {
                     addContextMessage(
                         msg = msg,
-                        stripAssistantStatus = appSettings.excludeAssistantStatusFromHistory
+                        zone = ChatHistoryPromptZone.EARLIER_HISTORY
                     )
                 }
 
@@ -2554,7 +2561,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 for (msg in promptMessageGroups.previousTurnMessages) {
                     addContextMessage(
                         msg = msg,
-                        stripAssistantStatus = appSettings.excludeAssistantStatusFromHistory
+                        zone = ChatHistoryPromptZone.PREVIOUS_TURN
                     )
                 }
 

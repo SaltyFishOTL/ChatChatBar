@@ -2,9 +2,11 @@ package com.example.chatbar.ui.chat
 
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
+import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CurrentTurnMessageOrderTest {
@@ -69,5 +71,32 @@ class CurrentTurnMessageOrderTest {
         assertEquals(JsonPrimitive("格式要求\n\n主系统提示"), messages[0].content)
         assertEquals(JsonPrimitive("用户输入"), messages[1].content)
         assertEquals(JsonPrimitive("格式要求"), messages[2].content)
+    }
+
+    @Test
+    fun formatContinuityNoticeUsesSameRequirementsAtOpeningAndAfterCurrentUser() {
+        val requirements = PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+            formatCardContent = "格式正文",
+            replyLength = 300,
+            includeFormatHistoryContinuityNotice = true
+        )
+        val messages = mutableListOf(
+            ChatApiMessage.text(
+                role = "system",
+                content = buildOpeningSystemPrompt(
+                    requirementsSystemPrompt = requirements,
+                    stableSystemPrompt = "主系统提示"
+                )
+            )
+        )
+
+        appendCurrentUserAndRequirementsSystemMessages(
+            messages = messages,
+            userMessage = ChatApiMessage.text(role = "user", content = "用户输入"),
+            requirementsSystemPrompt = requirements
+        )
+
+        assertTrue(messages.first().content.toString().contains(PromptTemplates.FORMAT_HISTORY_CONTINUITY_NOTICE))
+        assertEquals(JsonPrimitive(requirements), messages.last().content)
     }
 }

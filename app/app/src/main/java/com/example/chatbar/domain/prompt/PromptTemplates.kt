@@ -20,7 +20,8 @@ import com.example.chatbar.data.local.entity.MessageRole
  * - 主系统提示词：`SYSTEM_PROMPT_TEMPLATE`
  * - 后置系统提示词：`POST_HISTORY_INSTRUCTIONS_TEMPLATE`
  * - 当前轮格式/长度：`CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE`、
- *   `CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE`、`currentTurnOutputRequirementsSystemPrompt`
+ *   `CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE`、`FORMAT_HISTORY_CONTINUITY_NOTICE`、
+ *   `currentTurnOutputRequirementsSystemPrompt`
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
  * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
@@ -163,11 +164,16 @@ object PromptTemplates {
     private const val CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE =
         "（【输出正文长度为[{{replyLength}}]的内容】）"
 
+    const val FORMAT_HISTORY_CONTINUITY_NOTICE =
+        "【格式连续性说明】较早聊天记录中的助手回复可能仅保留正文，不代表完整输出格式。" +
+            "以格式要求作为结构与格式严格遵守；本轮仍须以格式要求为准，逐区块完整输出，任何规定区块不得省略。"
+
     const val CHAT_MAX_TOKEN_TOLERANCE = 500
 
     fun currentTurnOutputRequirementsSystemPrompt(
         formatCardContent: String?,
-        replyLength: Int
+        replyLength: Int,
+        includeFormatHistoryContinuityNotice: Boolean = false
     ): String {
         val normalizedFormatCard = formatCardContent?.trim().orEmpty()
         val template = if (normalizedFormatCard.isBlank()) {
@@ -175,13 +181,19 @@ object PromptTemplates {
         } else {
             CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE.trimIndent()
         }
-        return template.replace(
+        val requirements = template.replace(
             oldValue = "{{replyLength}}",
             newValue = replyLengthLabel(replyLength)
         ).replace(
             oldValue = "{{formatCardContent}}",
             newValue = normalizedFormatCard
         )
+        return buildList {
+            add(requirements)
+            if (normalizedFormatCard.isNotBlank() && includeFormatHistoryContinuityNotice) {
+                add(FORMAT_HISTORY_CONTINUITY_NOTICE)
+            }
+        }.joinToString("\n\n")
     }
 
     fun roleplaySpeakerFormatSystemPrompt(characterNames: List<String>): String {
