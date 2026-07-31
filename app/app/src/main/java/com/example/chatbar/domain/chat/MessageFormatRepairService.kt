@@ -38,7 +38,7 @@ class MessageFormatRepairService(
 
         internal fun outputTokenLimit(content: String, modelLimit: Int?): Int {
             val contentCodePoints = content.codePointCount(0, content.length)
-            val requested = maxOf(1_024, contentCodePoints * 2)
+            val requested = maxOf(1_024, contentCodePoints * 4)
             return minOf(modelLimit ?: 8_192, requested)
         }
     }
