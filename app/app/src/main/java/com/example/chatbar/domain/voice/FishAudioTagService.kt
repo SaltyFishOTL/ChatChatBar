@@ -333,12 +333,11 @@ object FishAudioTagPolicy {
         }
 
     fun promptPolicy(fishModelId: String): String =
-        if (fishModelId == FishAudioTtsModels.S1) {
-            "S1 固定标签，只能从以下列表选择：${s1FixedTags.sorted().joinToString(",")}"
-        } else {
-            "S2 支持方括号内简短自然语言 cue；单个 cue 不超过 40 个字符，" +
-                "每句最多 3 个。优先使用官方示例：${s2RecommendedTags.joinToString(",")}"
-        }
+        PromptTemplates.fishAudioVoiceTagPolicy(
+            isS1 = fishModelId == FishAudioTtsModels.S1,
+            s1FixedTags = s1FixedTags.sorted(),
+            s2RecommendedTags = s2RecommendedTags
+        )
 
     fun validate(
         originalText: String,

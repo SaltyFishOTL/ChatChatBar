@@ -23,6 +23,31 @@ class VoiceAnchorPolicyTest {
     }
 
     @Test
+    fun `full width bubble borders are excluded from spoken text`() {
+        val segments = VoiceAnchorPolicy.eligibleSegments(
+            """
+            <n="林雾"/>［**第一句**］（轻声）
+            「*第二段内心*」
+            """.trimIndent()
+        )
+
+        assertEquals(listOf("第一句", "第二段内心"), segments.map { it.spokenText })
+    }
+
+    @Test
+    fun `prompt context removes bubble borders but keeps dialogue direction`() {
+        val context = VoiceAnchorPolicy.promptContextText(
+            """
+            旁白。
+            <n="林雾"/>[**第一句**](轻声)
+            『*第二段内心*』
+            """.trimIndent()
+        )
+
+        assertEquals("旁白。\n第一句\n轻声\n第二段内心", context)
+    }
+
+    @Test
     fun `audiobook anchors add narration without replacing existing dialogue anchor`() {
         val content = "夜色渐深。\n<n=\"林雾\"/>[回家吧]()"
         val old = VoiceAnchorPolicy.initialState("m1", content)

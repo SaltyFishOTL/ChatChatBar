@@ -52,10 +52,13 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Validate translation JSON IDs, duplicates, omissions, unknown IDs, unknown fields, and blank results. Never fall back to original text after translation failure.
 - Validate strict JSON IDs, duplicates, omissions, unknown IDs, tag syntax, and unchanged spoken text separately.
 - Use fixed parenthesized S1 tags and bracketed S2 cues.
+- Keep S1 fixed tags in official English. Make each S2 natural-language cue match the language of the synthesis text it controls.
+- Strip dialogue and thought bubble borders from target text and assistant-response context before auxiliary translation or tag calls; preserve dialogue direction as plain context.
 - Never send original text directly to Fish after tag failure.
 - When legal AI output changes spoken text, enter `AWAITING_TEXT_CONFIRMATION`; show original/proposed text and wait for explicit use/reject.
 - Release the foreground-work lease while awaiting user confirmation. Resume synthesis under a fresh lease after acceptance.
 - Treat long-press regeneration text as already user-confirmed, but still validate Fish tag syntax.
+- On regeneration, reuse only the confirmed synthesis/tagged text. Resolve the same character ID against the current card, then use its current voice binding and the current configured Fish model; fail visibly when unavailable and never fall back to the historical binding.
 
 ## Anchors, Files, and Lifecycle
 

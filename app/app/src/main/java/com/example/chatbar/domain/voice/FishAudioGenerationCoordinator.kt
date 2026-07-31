@@ -212,33 +212,44 @@ class FishAudioGenerationCoordinator(
         val job = scope.launch {
             try {
                 val existing = voiceRepository.get(voiceId) ?: error("语音消息不存在")
-                val sourceMessage = chatRepository.getMessage(
-                    existing.messageId,
-                    existing.sessionId
-                ) ?: error("消息不存在")
-                registerAutoPlay(
-                    batchId = batchId,
-                    sessionId = existing.sessionId,
-                    messageOrder = sourceMessage.orderKey,
-                    screenGeneration = screenGeneration
-                )
                 updateBatch(batchId) {
                     it.copy(sessionId = existing.sessionId, messageId = existing.messageId)
                 }
+                val context = loadContext(existing.sessionId, existing.messageId)
+                val currentCharacter = VoiceGenerationPolicy.resolveRegenerationCharacter(
+                    card = context.card,
+                    characterId = existing.characterId
+                ) ?: error("当前角色已不存在或未绑定 Fish Audio 音色")
+                val currentBinding = checkNotNull(currentCharacter.fishAudioVoice)
+                val settings = settingsRepository.getAppSettings()
+                val fishModelId = VoiceGenerationPolicy.resolveFishModelId(
+                    settings.fishAudioTtsModelId
+                )
+                registerAutoPlay(
+                    batchId = batchId,
+                    sessionId = existing.sessionId,
+                    messageOrder = context.message.orderKey,
+                    screenGeneration = screenGeneration
+                )
                 FishAudioTagPolicy.analyze(
                     originalText = existing.effectiveSynthesisText,
                     taggedText = editedTaggedText,
-                    mode = FishAudioTagPolicy.markerMode(existing.fishModelId)
+                    mode = FishAudioTagPolicy.markerMode(fishModelId)
                 ).getOrThrow()
                 val apiKey = credentials.load() ?: error("Fish Audio API Key 未配置")
-                updateBatch(batchId) { it.copy(phase = VoiceGenerationPhase.SYNTHESIZING) }
+                updateBatch(batchId) {
+                    it.copy(
+                        phase = VoiceGenerationPhase.SYNTHESIZING,
+                        taggingSkipped = true
+                    )
+                }
                 val artifactId = UUID.randomUUID().toString()
                 val audio = AiBackgroundWorkManager.run(existing.sessionId) {
                     ttsSlots.withPermit {
                         fishAudioService.synthesize(
                             apiKey = apiKey,
-                            modelId = existing.fishModelId,
-                            referenceId = existing.voice.referenceId,
+                            modelId = fishModelId,
+                            referenceId = currentBinding.referenceId,
                             text = editedTaggedText.trim(),
                             sessionId = existing.sessionId,
                             voiceId = artifactId
@@ -251,6 +262,10 @@ class FishAudioGenerationCoordinator(
                 }
                 val replacement = existing.copy(
                     taggedText = editedTaggedText.trim(),
+                    characterId = currentCharacter.id,
+                    characterName = currentCharacter.name,
+                    voice = currentBinding,
+                    fishModelId = fishModelId,
                     audioPath = audio.path,
                     durationMs = audio.durationMs,
                     byteLength = audio.byteLength,
@@ -416,9 +431,9 @@ class FishAudioGenerationCoordinator(
         playAllMessageVoices: Boolean
     ) {
         val settings = settingsRepository.getAppSettings()
-        val fishModelId = settings.fishAudioTtsModelId
-            .takeIf { it in FishAudioTtsModels.supported }
-            ?: FishAudioTtsModels.S2_1_PRO_FREE
+        val fishModelId = VoiceGenerationPolicy.resolveFishModelId(
+            settings.fishAudioTtsModelId
+        )
         val shouldGenerateTags =
             VoiceGenerationPolicy.shouldGenerateAiTags(context.audiobookEnabled)
         val targetLanguage = context.session.voiceLanguage?.trim().orEmpty()
@@ -426,6 +441,9 @@ class FishAudioGenerationCoordinator(
         val originalTextById = targets.associate { target ->
             target.targetId to target.segment.spokenText
         }
+        val assistantPromptContext = VoiceAnchorPolicy.promptContextText(
+            context.message.displayContent
+        )
         if (!shouldGenerateTags && !translationRequested) {
             updateBatch(batchId) {
                 it.copy(
@@ -472,7 +490,7 @@ class FishAudioGenerationCoordinator(
                     modelConfig = tagModel,
                     targetLanguage = targetLanguage,
                     previousUserMessage = context.previousUserMessage,
-                    assistantResponse = context.message.displayContent,
+                    assistantResponse = assistantPromptContext,
                     inputs = targets.map { it.toTagInput() },
                     onDelta = { delta ->
                         updateBatch(batchId) { state ->
@@ -532,7 +550,7 @@ class FishAudioGenerationCoordinator(
                 modelConfig = tagModel,
                 fishModelId = fishModelId,
                 previousUserMessage = context.previousUserMessage,
-                assistantResponse = context.message.displayContent,
+                assistantResponse = assistantPromptContext,
                 inputs = targets.mapNotNull { target ->
                     synthesisTextById[target.targetId]?.let { text ->
                         target.toTagInput(text)

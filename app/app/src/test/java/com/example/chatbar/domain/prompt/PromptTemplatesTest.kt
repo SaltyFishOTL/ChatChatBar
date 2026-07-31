@@ -165,4 +165,25 @@ class PromptTemplatesTest {
         assertTrue(segmentIndex > responseIndex)
         assertTrue(PromptTemplates.FISH_AUDIO_TRANSLATION_SYSTEM.contains("translatedText"))
     }
+
+    @Test
+    fun fishAudioTagPromptUsesSynthesisTextLanguageForNaturalCues() {
+        val policy = PromptTemplates.fishAudioVoiceTagPolicy(
+            isS1 = false,
+            s1FixedTags = emptyList(),
+            s2RecommendedTags = listOf("happy", "sad")
+        )
+        val prompt = PromptTemplates.fishAudioVoiceTagUserInput(
+            fishModelId = "s2",
+            markerMode = "方括号 [tag]",
+            tagPolicy = policy,
+            previousUserMessage = "上一条",
+            assistantResponse = "完整回复",
+            segmentsJson = """[{"id":"segment-1","text":"你好"}]"""
+        )
+
+        assertTrue(policy.contains("与其控制的 text 使用相同语言"))
+        assertTrue(prompt.contains("标签语言："))
+        assertTrue(prompt.contains("segment-1"))
+    }
 }

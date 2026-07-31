@@ -54,6 +54,15 @@ object VoiceAnchorPolicy {
                 }
             }
 
+    fun promptContextText(content: String): String =
+        com.example.chatbar.domain.chat.parseRoleplayTextSegments(content)
+            .mapNotNull { segment ->
+                val text = promptContextText(segment)
+                text.takeIf(String::isNotBlank)
+            }
+            .joinToString("\n")
+            .trim()
+
     fun wholeMessageSegment(content: String): CurrentVoiceSegment? {
         val spokenText = eligibleSegments(content, includeNarration = true)
             .joinToString("\n") { it.spokenText }
@@ -236,31 +245,72 @@ object VoiceAnchorPolicy {
     private fun spokenText(segment: RoleplayTextSegment): String {
         val trimmed = segment.displayText.trim()
         val spoken = when (segment.kind) {
-            RoleplaySegmentKind.DIALOGUE -> {
-                val closing = trimmed.indexOf(']')
-                if (trimmed.startsWith("[") && closing > 0) {
-                    trimmed.substring(1, closing)
-                } else {
-                    trimmed
-                }
-            }
+            RoleplaySegmentKind.DIALOGUE -> dialogueParts(trimmed).first
             RoleplaySegmentKind.THOUGHT ->
-                trimmed.removeSurrounding("『", "』").trim()
+                stripThoughtBubbleBorders(trimmed)
             RoleplaySegmentKind.NARRATION ->
                 stripRoleplaySpeakerMarkers(trimmed)
             RoleplaySegmentKind.STATUS -> ""
         }
-        return spoken
+        return cleanVoiceMarkup(spoken)
+    }
+
+    private fun promptContextText(segment: RoleplayTextSegment): String {
+        val trimmed = segment.displayText.trim()
+        val text = when (segment.kind) {
+            RoleplaySegmentKind.DIALOGUE -> {
+                val (spoken, direction) = dialogueParts(trimmed)
+                listOfNotNull(spoken, direction)
+                    .filter(String::isNotBlank)
+                    .joinToString("\n")
+            }
+            RoleplaySegmentKind.THOUGHT -> stripThoughtBubbleBorders(trimmed)
+            RoleplaySegmentKind.NARRATION -> stripRoleplaySpeakerMarkers(trimmed)
+            RoleplaySegmentKind.STATUS -> trimmed
+        }
+        return cleanVoiceMarkup(text)
+    }
+
+    private fun dialogueParts(value: String): Pair<String, String?> {
+        if (value.firstOrNull() != '[' && value.firstOrNull() != '［') {
+            return value to null
+        }
+        val closing = value.indexOfFirst { it == ']' || it == '］' }
+        if (closing <= 0) return value.drop(1) to null
+        val spoken = value.substring(1, closing)
+        val suffix = value.substring(closing + 1).trim()
+        if (suffix.length < 2) return spoken to null
+        val wrappedDirection =
+            (suffix.first() == '(' || suffix.first() == '（') &&
+                (suffix.last() == ')' || suffix.last() == '）')
+        val direction = if (wrappedDirection) suffix.drop(1).dropLast(1).trim() else suffix
+        return spoken to direction.takeIf(String::isNotBlank)
+    }
+
+    private fun stripThoughtBubbleBorders(value: String): String {
+        val hasOpening = value.firstOrNull()?.let { it in THOUGHT_OPENINGS } == true
+        val withoutOpening = if (hasOpening) value.drop(1) else value
+        val hasClosing = withoutOpening.lastOrNull()?.let { it in THOUGHT_CLOSINGS } == true
+        return if (hasClosing) {
+            withoutOpening.dropLast(1).trim()
+        } else {
+            withoutOpening.trim()
+        }
+    }
+
+    private fun cleanVoiceMarkup(value: String): String =
+        value
             .replace(Regex("!\\[([^]]*)]\\([^)]*\\)"), "$1")
             .replace(Regex("\\[([^]]+)]\\([^)]*\\)"), "$1")
             .replace(Regex("[*_~`]"), "")
             .trim()
-    }
 
     private fun normalize(value: String): String =
         value.replace(Regex("\\s+"), " ").trim()
 
     private const val GAP_COST = 3
+    private val THOUGHT_OPENINGS = setOf('『', '「', '｢')
+    private val THOUGHT_CLOSINGS = setOf('』', '」', '｣')
     const val WHOLE_MESSAGE_SEGMENT_INDEX = -1
 }
 

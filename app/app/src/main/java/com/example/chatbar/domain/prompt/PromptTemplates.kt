@@ -72,7 +72,7 @@ import com.example.chatbar.data.local.entity.MessageRole
  * - RAG 记忆使用说明：`RAG_CHAT_MEMORY_USAGE_NOTE`
  * - 检索规划：`RETRIEVAL_PLANNER_SYSTEM_PROMPT`、`retrievalPlannerUserInput`
  * - Fish Audio 翻译/标签：`FISH_AUDIO_TRANSLATION_SYSTEM`、`fishAudioTranslationUserInput`、
- *   `FISH_AUDIO_VOICE_TAG_SYSTEM`、`fishAudioVoiceTagUserInput`
+ *   `FISH_AUDIO_VOICE_TAG_SYSTEM`、`fishAudioVoiceTagPolicy`、`fishAudioVoiceTagUserInput`
  *
  * 维护规则：新增、删除、重命名、移动或改变提示词用途时，必须在同一改动中同步本目录；
  * 仅改正文但用途不变时也必须核对目录仍准确。模板常量与其构建函数保持相邻。
@@ -1216,7 +1216,7 @@ HEAD代表截至指定T的当前状态。
 
 输入约束：
 1. 每个输入 ID 必须且只能输出一次，顺序与输入一致。
-2. 输入中的“标签格式”和“标签策略”是强制规则。只能使用该格式与该策略允许的英文标签。
+2. 输入中的“标签格式”和“标签策略”是强制规则。S1 只能使用策略允许的英文固定标签；支持自然语言 cue 时，每个标签必须与其控制的 text 片段使用相同语言。下方英文标签列表只表示可选语义，不代表固定输出语言。
 3. 不得改写、增删、翻译口播文字；ttsText 只能在原文中插入允许标签。
 4. 每个输入仍对应一个 JSON segment。不要把局部表演片段拆成额外 JSON segment。
 
@@ -1274,11 +1274,12 @@ soft tone, whispering, in a hurry tone, shouting, screaming, emphasis
 laughing, chuckling, sighing, sobbing, crying loudly, gasping, groaning,
 moaning, panting, yawning, clear throat, break, long-break
 
-若标签策略允许简短自然语言 cue，可以使用受控列表外的英文标签，但必须：
-1. 描述能够直接听见的声音、情绪强度或说话方式。
-2. 简短、明确，并符合标签策略的长度限制。
-3. 不描述表情、镜头、肢体动作、环境、背景音乐或心理旁白。
-4. 不使用 feeling betrayed by the world、thinking about the past、
+若标签策略允许简短自然语言 cue，可以使用受控列表外的自然语言标签，但必须：
+1. 与其控制的 text 片段使用相同语言；同一段混用多种语言时，跟随紧邻口播片段的语言。
+2. 描述能够直接听见的声音、情绪强度或说话方式。
+3. 简短、明确，并符合标签策略的长度限制。
+4. 不描述表情、镜头、肢体动作、环境、背景音乐或心理旁白。
+5. 不使用 feeling betrayed by the world、thinking about the past、
 with complicated emotions 等无法可靠发声的抽象标签。
 
 角色一致性：
@@ -1297,25 +1298,25 @@ with complicated emotions 等无法可靠发声的抽象标签。
 输入：
 我就知道……等等，你刚才说谁来了？
 输出：
-我就知道……[surprised]等等，你刚才说谁来了？
+我就知道……[惊讶]等等，你刚才说谁来了？
 
 输入：
 这件事我可以答应，但最后一次，绝对是最后一次。
 输出：
-这件事我可以答应，但[emphasis]最后一次，绝对是最后一次。
+这件事我可以答应，但[强调]最后一次，绝对是最后一次。
 
 输入：
 你的大刀……砍得我好兴奋，还有的招式全部让我见识见识吧！
 输出：
-[excited]你的大刀……[moaning]砍得我好兴奋，还有的招式[emphasis]全部让我见识见识吧！
+[兴奋]你的大刀……[呻吟]砍得我好兴奋，还有的招式[强调]全部让我见识见识吧！
 
 输入：
 我本来有话想告诉你。算了。
 输出：
-我本来有话想告诉你。[break]算了。
+我本来有话想告诉你。[停顿]算了。
 
 错误：
-[excited][moaning][emphasis]你的大刀……砍得我好兴奋，还有的招式全部让我见识见识吧！
+[兴奋][呻吟][强调]你的大刀……砍得我好兴奋，还有的招式全部让我见识见识吧！
 错误原因：
 三个不同时刻发生的表演被提前堆到句首。
 
@@ -1324,9 +1325,22 @@ with complicated emotions 等无法可靠发声的抽象标签。
 2. 不得改变标点、换行、空格和用词。
 3. 每个标签是否确有必要，位置是否正是声音变化开始处。
 4. 是否存在互相冲突、重复或策略不允许的标签。
-5. 表演是否符合角色性格和当前场景。
-6. JSON 是否有效、单行、无额外文字。
+5. 自然语言 cue 是否与其控制的口播片段使用相同语言。
+6. 表演是否符合角色性格和当前场景。
+7. JSON 是否有效、单行、无额外文字。
 """
+
+    fun fishAudioVoiceTagPolicy(
+        isS1: Boolean,
+        s1FixedTags: List<String>,
+        s2RecommendedTags: List<String>
+    ): String = if (isS1) {
+        "S1 只能使用以下英文固定标签：${s1FixedTags.joinToString(",")}"
+    } else {
+        "S2 支持方括号内简短自然语言 cue；每个 cue 必须与其控制的 text 使用相同语言；" +
+            "单个 cue 不超过 40 个字符，每句最多 3 个。以下英文官方示例只作语义参考：" +
+            s2RecommendedTags.joinToString(",")
+    }
 
     fun fishAudioVoiceTagUserInput(
         fishModelId: String,
@@ -1339,6 +1353,7 @@ with complicated emotions 等无法可靠发声的抽象标签。
         appendLine("Fish 模型：$fishModelId")
         appendLine("标签格式：$markerMode")
         appendLine("标签策略：$tagPolicy")
+        appendLine("标签语言：S1 固定标签按策略保持英文；支持自然语言 cue 时，每个标签与其控制的 text 片段使用相同语言。")
         appendLine("上一条用户消息：")
         appendLine(previousUserMessage.ifBlank { "（无）" })
         appendLine("当前完整助手回复：")

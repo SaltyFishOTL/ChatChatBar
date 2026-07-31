@@ -112,6 +112,54 @@ class VoiceGenerationPolicyTest {
         assertSame(second, VoiceGenerationPolicy.resolveCharacter(card, dialogue, first.id))
     }
 
+    @Test
+    fun `regeneration resolves latest binding for original character identity`() {
+        val current = character("one", "甲").copy(
+            fishAudioVoice = FishAudioVoiceBinding(
+                referenceId = "voice-current",
+                title = "当前音色"
+            )
+        )
+
+        val resolved = VoiceGenerationPolicy.resolveRegenerationCharacter(
+            card = card(current),
+            characterId = "one"
+        )
+
+        assertSame(current, resolved)
+        assertEquals("voice-current", resolved?.fishAudioVoice?.referenceId)
+    }
+
+    @Test
+    fun `regeneration never falls back when current character binding is unavailable`() {
+        val unbound = character("one", "甲").copy(fishAudioVoice = null)
+
+        assertNull(
+            VoiceGenerationPolicy.resolveRegenerationCharacter(
+                card = card(unbound, character("two", "乙")),
+                characterId = "one"
+            )
+        )
+        assertNull(
+            VoiceGenerationPolicy.resolveRegenerationCharacter(
+                card = card(character("two", "乙")),
+                characterId = "one"
+            )
+        )
+    }
+
+    @Test
+    fun `voice generation uses current supported Fish model`() {
+        assertEquals(
+            FishAudioTtsModels.S1,
+            VoiceGenerationPolicy.resolveFishModelId(FishAudioTtsModels.S1)
+        )
+        assertEquals(
+            FishAudioTtsModels.S2_1_PRO_FREE,
+            VoiceGenerationPolicy.resolveFishModelId("stale-model")
+        )
+    }
+
     private fun narration() = CurrentVoiceSegment(
         segmentIndex = 0,
         kind = RoleplaySegmentKind.NARRATION,

@@ -57,6 +57,19 @@ object VoiceGenerationPolicy {
         return available.singleOrNull { it.id == narratorCharacterId }
     }
 
+    fun resolveRegenerationCharacter(
+        card: CharacterCard,
+        characterId: String
+    ): CharacterInfo? =
+        card.characters
+            .singleOrNull { it.id == characterId }
+            ?.takeIf { it.fishAudioVoice != null }
+
+    fun resolveFishModelId(configuredModelId: String): String =
+        configuredModelId
+            .takeIf { it in FishAudioTtsModels.supported }
+            ?: FishAudioTtsModels.S2_1_PRO_FREE
+
     fun requiresNarratorSelection(
         card: CharacterCard,
         segments: List<CurrentVoiceSegment>
