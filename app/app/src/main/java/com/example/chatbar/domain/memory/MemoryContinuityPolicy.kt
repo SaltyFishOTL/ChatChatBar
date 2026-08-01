@@ -43,7 +43,7 @@ object MemoryContinuityPolicy {
             return MemoryValidationResult.invalid("节点${root.id}来源不连续或跨越Gap")
         }
         if (root.coverageUnits.any { it.text.isBlank() }) {
-            return MemoryValidationResult.invalid("节点${root.id}正文单元为空")
+            return MemoryValidationResult.invalid("节点${root.id}覆盖证明为空")
         }
 
         if (root.tier == MemoryTier.EPISODE) {
@@ -99,7 +99,7 @@ object MemoryContinuityPolicy {
             return MemoryValidationResult.invalid("父节点未完整拼接全部child来源")
         }
         if (root.coverageUnits.map { it.sourceId } != root.childIds) {
-            return MemoryValidationResult.invalid("父节点未逐child覆盖")
+            return MemoryValidationResult.invalid("父节点child覆盖证明不完整")
         }
         if (root.coverageHash != MemoryHashes.parentCoverage(children, root.coverageUnits)) {
             return MemoryValidationResult.invalid("父节点coverageHash不匹配")

@@ -19,17 +19,10 @@ data class EpisodeResponse(
 )
 
 @Serializable
-data class ChildCoverageResponse(
-    val childId: String,
-    val text: String
-)
-
-@Serializable
 data class CompressionResponse(
     val compressible: Boolean,
     val consumedChildIds: List<String> = emptyList(),
-    val summary: String = "",
-    val childCoverage: List<ChildCoverageResponse> = emptyList()
+    val summary: String = ""
 )
 
 @Serializable
@@ -53,6 +46,59 @@ fun HeadResponse.hasContent(): Boolean = listOf(
 ).any { it.isNotBlank() }
 
 internal const val MEMORY_AI_MAX_ATTEMPTS = 5
+internal const val MEMORY_AI_MAX_TRANSPORT_ATTEMPTS = 3
+internal const val MEMORY_COMPRESSION_PLANNER_MAX_TOKENS = 128
+
+internal enum class MemoryAiTaskStage(val displayName: String) {
+    EPISODE("近期流程生成"),
+    COMPRESSION_PLANNING("压缩规划"),
+    COMPRESSION_SUMMARY("正式压缩"),
+    HEAD("HEAD生成")
+}
+
+internal enum class MemoryAiFailureKind {
+    OUTPUT,
+    TRANSPORT,
+    NON_RETRYABLE_REQUEST
+}
+
+internal class MemoryAiRetryException(
+    val taskStage: MemoryAiTaskStage,
+    val failureKind: MemoryAiFailureKind,
+    val attemptCount: Int,
+    val lastFailure: Throwable
+) : IllegalStateException(
+    when (failureKind) {
+        MemoryAiFailureKind.OUTPUT ->
+            "${taskStage.displayName}：输出连续${attemptCount}次失败；最后错误：${lastFailure.message ?: lastFailure::class.simpleName}"
+        MemoryAiFailureKind.TRANSPORT ->
+            "${taskStage.displayName}：请求连续${attemptCount}次失败；最后错误：${lastFailure.message ?: lastFailure::class.simpleName}"
+        MemoryAiFailureKind.NON_RETRYABLE_REQUEST ->
+            "${taskStage.displayName}：第${attemptCount}次请求失败且不可重试；错误：${lastFailure.message ?: lastFailure::class.simpleName}"
+    },
+    lastFailure
+)
+
+internal class MemoryOutputTokenBudget(
+    initial: Int,
+    modelMaxOutputTokens: Int?
+) {
+    private val cap = minOf(4096, modelMaxOutputTokens ?: 4096)
+    var current: Int = initial.coerceAtMost(cap)
+        private set
+
+    fun expandAfterTruncation() {
+        current = (current * 2).coerceAtMost(cap)
+    }
+}
+
+internal fun shouldDisableMemoryThinking(model: ModelConfig): Boolean =
+    model.supportsDisableThinking || model.baseUrl.contains("siliconflow", ignoreCase = true)
+
+internal fun ModelConfig.forMemoryCompressionPlanner(): ModelConfig = copy(
+    reasoningEffort = null,
+    enableThinking = null
+)
 
 internal interface MemoryAiClient {
     suspend fun episode(
@@ -85,6 +131,7 @@ internal interface MemoryAiClient {
 
 internal suspend fun <T> retryMemoryAiOutput(
     maxAttempts: Int,
+    taskStage: MemoryAiTaskStage,
     request: suspend (attempt: Int, lastError: Throwable?) -> T
 ): T {
     require(maxAttempts > 0) { "长期记忆AI最大尝试次数必须大于0" }
@@ -97,18 +144,39 @@ internal suspend fun <T> retryMemoryAiOutput(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             if (error is ModelRequestException) {
-                if (!error.isRetryable || ++transportAttempt >= 3) throw error
+                transportAttempt++
+                if (!error.isRetryable) {
+                    throw MemoryAiRetryException(
+                        taskStage = taskStage,
+                        failureKind = MemoryAiFailureKind.NON_RETRYABLE_REQUEST,
+                        attemptCount = transportAttempt,
+                        lastFailure = error
+                    )
+                }
+                if (transportAttempt >= MEMORY_AI_MAX_TRANSPORT_ATTEMPTS) {
+                    throw MemoryAiRetryException(
+                        taskStage = taskStage,
+                        failureKind = MemoryAiFailureKind.TRANSPORT,
+                        attemptCount = transportAttempt,
+                        lastFailure = error
+                    )
+                }
                 delay(error.retryAfterMillis ?: listOf(1_000L, 2_000L, 4_000L)[transportAttempt - 1])
                 continue
             }
             lastError = error
             validationAttempt++
+            if (validationAttempt >= maxAttempts) {
+                throw MemoryAiRetryException(
+                    taskStage = taskStage,
+                    failureKind = MemoryAiFailureKind.OUTPUT,
+                    attemptCount = validationAttempt,
+                    lastFailure = error
+                )
+            }
         }
     }
-    throw IllegalStateException(
-        "长期记忆AI输出连续${maxAttempts}次非法：${lastError?.message}",
-        lastError
-    )
+    error("长期记忆AI重试状态异常")
 }
 
 class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiClient {
@@ -121,6 +189,7 @@ class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiC
         onStreamingSummary: ((String) -> Unit)?,
         validate: (EpisodeResponse) -> Unit
     ): EpisodeResponse = requestJson(
+        taskStage = MemoryAiTaskStage.EPISODE,
         serializer = EpisodeResponse.serializer(),
         model = model,
         basePrompt = PromptTemplates.memoryEpisodePrompt(renderedTurns, summaryPromptMaxChars),
@@ -136,17 +205,27 @@ class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiC
         renderedChildren: String,
         onStreamingSummary: ((String) -> Unit)?,
         validate: (CompressionResponse) -> Unit
-    ): CompressionResponse = requestJson(
-        serializer = CompressionResponse.serializer(),
-        model = model,
-        basePrompt = PromptTemplates.memoryCompressionPrompt(
-            kind = kind.name,
+    ): CompressionResponse {
+        val compressionPlan = requestCompressionPlan(
+            model = model,
+            kind = kind,
             forcedConsumedChildIds = forcedConsumedChildIds,
-            children = renderedChildren
-        ),
-        onStreamingText = onStreamingSummary,
-        validate = validate
-    )
+            renderedChildren = renderedChildren
+        )
+        return requestJson(
+            taskStage = MemoryAiTaskStage.COMPRESSION_SUMMARY,
+            serializer = CompressionResponse.serializer(),
+            model = model,
+            basePrompt = PromptTemplates.memoryCompressionPrompt(
+                kind = kind.name,
+                forcedConsumedChildIds = forcedConsumedChildIds,
+                compressionPlan = compressionPlan,
+                children = renderedChildren
+            ),
+            onStreamingText = onStreamingSummary,
+            validate = validate
+        )
+    }
 
     override suspend fun head(
         model: ModelConfig,
@@ -157,6 +236,7 @@ class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiC
         sourceTurns: String,
         validate: (HeadResponse) -> Unit
     ): HeadResponse = requestJson(
+        taskStage = MemoryAiTaskStage.HEAD,
         serializer = HeadResponse.serializer(),
         model = model,
         basePrompt = PromptTemplates.memoryHeadPrompt(
@@ -169,77 +249,91 @@ class MemoryAiGateway(private val chatService: StreamingChatService) : MemoryAiC
         validate = validate
     )
 
+    private suspend fun requestCompressionPlan(
+        model: ModelConfig,
+        kind: MemoryCompressionKind,
+        forcedConsumedChildIds: List<String>,
+        renderedChildren: String
+    ): String = retryMemoryAiOutput(
+        maxAttempts = MEMORY_AI_MAX_ATTEMPTS,
+        taskStage = MemoryAiTaskStage.COMPRESSION_PLANNING
+    ) { _, _ ->
+        val plannerModel = model.forMemoryCompressionPlanner()
+        chatService.completeText(
+            messages = listOf(
+                ChatApiMessage.text(
+                    "user",
+                    PromptTemplates.memoryCompressionPlannerPrompt(
+                        kind = kind.name,
+                        forcedConsumedChildIds = forcedConsumedChildIds,
+                        children = renderedChildren
+                    )
+                )
+            ),
+            modelConfig = plannerModel,
+            maxTokens = MEMORY_COMPRESSION_PLANNER_MAX_TOKENS,
+            disableThinking = shouldDisableMemoryThinking(plannerModel),
+            isolatedTaskParameters = true,
+            responseFormatJson = false
+        ).trim()
+    }
+
     private suspend fun <T> requestJson(
+        taskStage: MemoryAiTaskStage,
         serializer: KSerializer<T>,
         model: ModelConfig,
         basePrompt: String,
         maxTokens: Int = 1800,
         onStreamingText: ((String) -> Unit)? = null,
         validate: (T) -> Unit
-    ): T = retryMemoryAiOutput(MEMORY_AI_MAX_ATTEMPTS) { attempt, lastError ->
-        var requestMaxTokens = maxTokens
-        var truncationRetried = false
-        val correction = if (attempt == 0) {
-            ""
-        } else {
-            PromptTemplates.memoryJsonCorrectionPrompt(lastError?.message.orEmpty())
-        }
-        onStreamingText?.invoke("")
-        val messages = listOf(ChatApiMessage.text("user", basePrompt + correction))
-        val raw = try {
-            if (onStreamingText == null) chatService.completeText(
-                messages = messages,
-                modelConfig = model,
-                maxTokens = requestMaxTokens,
-                disableThinking = model.supportsDisableThinking || model.baseUrl.contains("siliconflow", ignoreCase = true),
-                isolatedTaskParameters = true,
-                responseFormatJson = model.supportsJsonMode
-            ) else {
-            val streamed = StringBuilder()
-            chatService.completeTextStreaming(
-                messages = messages,
-                modelConfig = model,
-                maxTokens = requestMaxTokens,
-                disableThinking = model.supportsDisableThinking || model.baseUrl.contains("siliconflow", ignoreCase = true),
-                isolatedTaskParameters = true,
-                responseFormatJson = model.supportsJsonMode,
-                onDelta = { chunk ->
-                    streamed.append(chunk)
-                    extractStreamingJsonString(streamed.toString(), "summary")
-                        ?.let(onStreamingText)
-                }
-            )
-            }
-        } catch (error: ModelResponseTruncatedException) {
-            val cap = minOf(4096, model.maxOutputTokens ?: 4096)
-            if (truncationRetried || requestMaxTokens >= cap) throw error
-            truncationRetried = true
-            requestMaxTokens = (requestMaxTokens * 2).coerceAtMost(cap)
-            if (onStreamingText == null) {
-                chatService.completeText(
-                    messages = messages,
-                    modelConfig = model,
-                    maxTokens = requestMaxTokens,
-                    disableThinking = model.supportsDisableThinking || model.baseUrl.contains("siliconflow", true),
-                    isolatedTaskParameters = true,
-                    responseFormatJson = model.supportsJsonMode
-                )
+    ): T {
+        val tokenBudget = MemoryOutputTokenBudget(maxTokens, model.maxOutputTokens)
+        return retryMemoryAiOutput(
+            maxAttempts = MEMORY_AI_MAX_ATTEMPTS,
+            taskStage = taskStage
+        ) { attempt, lastError ->
+            val correction = if (attempt == 0) {
+                ""
             } else {
-                chatService.completeTextStreaming(
-                    messages = messages,
-                    modelConfig = model,
-                    maxTokens = requestMaxTokens,
-                    disableThinking = model.supportsDisableThinking || model.baseUrl.contains("siliconflow", true),
-                    isolatedTaskParameters = true,
-                    responseFormatJson = model.supportsJsonMode,
-                    onDelta = onStreamingText
-                )
+                PromptTemplates.memoryJsonCorrectionPrompt(lastError?.message.orEmpty())
             }
+            onStreamingText?.invoke("")
+            val messages = listOf(ChatApiMessage.text("user", basePrompt + correction))
+            val raw = try {
+                if (onStreamingText == null) {
+                    chatService.completeText(
+                        messages = messages,
+                        modelConfig = model,
+                        maxTokens = tokenBudget.current,
+                        disableThinking = shouldDisableMemoryThinking(model),
+                        isolatedTaskParameters = true,
+                        responseFormatJson = model.supportsJsonMode
+                    )
+                } else {
+                    val streamed = StringBuilder()
+                    chatService.completeTextStreaming(
+                        messages = messages,
+                        modelConfig = model,
+                        maxTokens = tokenBudget.current,
+                        disableThinking = shouldDisableMemoryThinking(model),
+                        isolatedTaskParameters = true,
+                        responseFormatJson = model.supportsJsonMode,
+                        onDelta = { chunk ->
+                            streamed.append(chunk)
+                            extractStreamingJsonString(streamed.toString(), "summary")
+                                ?.let(onStreamingText)
+                        }
+                    )
+                }
+            } catch (error: ModelResponseTruncatedException) {
+                tokenBudget.expandAfterTruncation()
+                throw error
+            }
+            val candidate = extractFirstJsonObject(raw) ?: error("AI未返回JSON对象")
+            val decoded = json.decodeFromString(serializer, candidate)
+            validate(decoded)
+            decoded
         }
-        val candidate = extractFirstJsonObject(raw) ?: error("AI未返回JSON对象")
-        val decoded = json.decodeFromString(serializer, candidate)
-        validate(decoded)
-        decoded
     }
 }
 

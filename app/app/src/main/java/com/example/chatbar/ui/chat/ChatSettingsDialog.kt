@@ -73,6 +73,7 @@ import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
+import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -335,6 +336,8 @@ fun ChatSettingsDialog(
                             onIncreaseLimit = viewModel::increaseMemoryLimit,
                             onRetryMaintenance = viewModel::retryMemoryMaintenance,
                             onRetryHead = viewModel::retryMemoryHead,
+                            onFullRegeneration = viewModel::fullyRegenerateLongTermMemory,
+                            onHeadRegeneration = viewModel::regenerateHeadFromCurrentMemory,
                             onRestoreVersion = viewModel::restoreMemoryVersion,
                             onLoadMoreHistory = viewModel::loadMoreMemoryHistory,
                             onResolveDecision = viewModel::resolveMemoryCompressionDecision
@@ -629,6 +632,219 @@ private fun WorldBookSettings(
 }
 
 @Composable
+internal fun MemoryManualRegenerationActions(
+    blocked: Boolean,
+    activeTask: MemoryManualMaintenanceKind?,
+    fullRegenerationPending: Boolean,
+    maintenanceAttention: Boolean = false,
+    onRefresh: () -> Unit = {},
+    onOpenMaintenance: () -> Unit = {},
+    onFullRegeneration: () -> Unit,
+    onHeadRegeneration: () -> Unit
+) {
+    var confirmation by remember { mutableStateOf<MemoryManualMaintenanceKind?>(null) }
+    val enabled = !blocked && activeTask == null && !fullRegenerationPending
+
+    Row(
+        horizontalArrangement = Arrangement.spacedBy(0.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbIconButton(
+            AppIcons.Tune,
+            "查看长期记忆维护状态",
+            onOpenMaintenance,
+            modifier = Modifier.padding(4.dp),
+            dirty = maintenanceAttention
+        )
+        CbIconButton(
+            AppIcons.DeleteSweep,
+            "完全重新生成长期记忆",
+            { confirmation = MemoryManualMaintenanceKind.FULL_REGENERATION },
+            modifier = Modifier.padding(4.dp),
+            enabled = enabled,
+            tint = ChatBarTheme.colors.destructive
+        )
+        CbIconButton(
+            AppIcons.Restore,
+            "根据现有长期记忆重新生成 HEAD",
+            { confirmation = MemoryManualMaintenanceKind.HEAD_REGENERATION },
+            modifier = Modifier.padding(4.dp),
+            enabled = enabled,
+            tint = ChatBarTheme.colors.mutedForeground
+        )
+        CbIconButton(
+            AppIcons.Refresh,
+            "刷新长期记忆页面",
+            onRefresh,
+            modifier = Modifier.padding(4.dp),
+            tint = ChatBarTheme.colors.mutedForeground
+        )
+    }
+
+    when (confirmation) {
+        MemoryManualMaintenanceKind.FULL_REGENERATION -> CbDialog(
+            onDismissRequest = { confirmation = null },
+            title = "完全重新生成长期记忆？",
+            dismiss = {
+                CbButton("取消", { confirmation = null }, variant = ButtonVariant.Outline)
+            },
+            confirm = {
+                CbButton(
+                    "确认完全重建",
+                    {
+                        confirmation = null
+                        onFullRegeneration()
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            }
+        ) {
+            CbText(
+                "将删除并替换当前 Archive、HEAD、各级历史版本和手动记忆编辑，然后把仍可归档的原始聊天交给一键补录流程重新生成。聊天原文与长期记忆字数上限保留。页面会显示处理轮数、当前阶段和流式摘要，可在当前步骤后暂停。期间暂时无法聊天，并可能消耗大量 Token。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+        MemoryManualMaintenanceKind.HEAD_REGENERATION -> CbDialog(
+            onDismissRequest = { confirmation = null },
+            title = "重新生成 HEAD？",
+            dismiss = {
+                CbButton("取消", { confirmation = null }, variant = ButtonVariant.Outline)
+            },
+            confirm = {
+                CbButton("确认重新生成", {
+                    confirmation = null
+                    onHeadRegeneration()
+                })
+            }
+        ) {
+            CbText(
+                "将保留现有 Archive，根据当前长期记忆与最新稳定剧情重新生成并替换 HEAD。此操作会调用模型，可能消耗较多 Token；如果生成失败，旧 HEAD 会保留。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+        null -> Unit
+    }
+}
+
+@Composable
+private fun MemoryMaintenanceDialog(
+    session: ChatSession?,
+    state: LongTermMemoryUiState,
+    onDismiss: () -> Unit,
+    onRequestSourceRepair: () -> Unit,
+    onPauseSourceRepair: () -> Unit,
+    onRequestBackfill: () -> Unit,
+    onPauseBackfill: () -> Unit,
+    onIncreaseLimit: () -> Unit,
+    onRetryMaintenance: () -> Unit,
+    onRetryHead: () -> Unit,
+    onResolveDecision: (Boolean) -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "长期记忆维护",
+        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .heightIn(max = 520.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CbText(
+                "Archive ${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
+                    "HEAD ${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            if (state.manualMaintenance == MemoryManualMaintenanceKind.HEAD_REGENERATION) {
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                    Row(
+                        Modifier.padding(10.dp),
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CbSpinner(Modifier.size(20.dp))
+                        CbText("正在根据现有长期记忆重新生成 HEAD")
+                    }
+                }
+            }
+            state.memoryState?.pendingDecision?.let { pending ->
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                    Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CbText(
+                            "长期记忆上限选择待处理：${pending.tier.memoryDisplayName()}",
+                            style = ChatBarTheme.typography.label
+                        )
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            CbButton("增加 2000 字", { onResolveDecision(true) })
+                            CbButton(
+                                "保持上限并压缩",
+                                { onResolveDecision(false) },
+                                variant = ButtonVariant.Outline
+                            )
+                        }
+                    }
+                }
+            }
+            session?.memoryArchiveError?.let {
+                CbText("Archive：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+            }
+            session?.memoryHeadError?.let {
+                CbText("HEAD：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+            }
+            state.error?.let {
+                CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+            }
+            MemoryArchiveMaintenanceAction(
+                status = session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE,
+                retryRunning = state.archiveMaintenanceRunning,
+                onRetry = onRetryMaintenance
+            )
+            if (session?.memoryHeadStatus == MemoryUpdateStatus.ERROR) {
+                CbButton(
+                    "重试 HEAD 更新",
+                    onRetryHead,
+                    variant = ButtonVariant.Outline,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            MemorySourceRepairAction(
+                state = state,
+                onStart = onRequestSourceRepair,
+                onPause = onPauseSourceRepair
+            )
+            MemoryBackfillAction(
+                state = state,
+                onStart = onRequestBackfill,
+                onPause = onPauseBackfill
+            )
+            if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
+                (session?.memoryLimitChars ?: 2000) < 20000
+            ) {
+                CbButton(
+                    "增加 2000 字",
+                    onIncreaseLimit,
+                    variant = ButtonVariant.Outline,
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+            if (state.trailingPendingSourceTurns > 0) {
+                CbText(
+                    "近期记忆等待凑满 ${state.episodeTargetSourceTurns} 轮（已有 ${state.trailingPendingSourceTurns} 轮）",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            state.warnings.forEach {
+                CbText("⚠ $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
+        }
+    }
+}
+
+@Composable
 private fun LongTermMemoryContent(
     session: ChatSession?,
     state: LongTermMemoryUiState,
@@ -645,6 +861,8 @@ private fun LongTermMemoryContent(
     onIncreaseLimit: () -> Unit,
     onRetryMaintenance: () -> Unit,
     onRetryHead: () -> Unit,
+    onFullRegeneration: () -> Unit,
+    onHeadRegeneration: () -> Unit,
     onRestoreVersion: (String) -> Unit,
     onLoadMoreHistory: (MemoryTier) -> Unit,
     onResolveDecision: (Boolean) -> Unit
@@ -653,6 +871,7 @@ private fun LongTermMemoryContent(
     var tierSection by remember { mutableIntStateOf(0) }
     var showBackfillConfirm by remember { mutableStateOf(false) }
     var showSourceRepairConfirm by remember { mutableStateOf(false) }
+    var showMaintenance by remember { mutableStateOf(false) }
     if (showBackfillConfirm) {
         val estimate = state.backfillEstimate
         CbDialog(
@@ -664,6 +883,7 @@ private fun LongTermMemoryContent(
             confirm = {
                 CbButton("开始补录", {
                     showBackfillConfirm = false
+                    showMaintenance = true
                     onRebuildFromOriginal()
                 })
             }
@@ -698,6 +918,7 @@ private fun LongTermMemoryContent(
             confirm = {
                 CbButton("开始修复", {
                     showSourceRepairConfirm = false
+                    showMaintenance = true
                     onRepairChangedSources()
                 })
             }
@@ -714,110 +935,89 @@ private fun LongTermMemoryContent(
             )
         }
     }
+    val archiveBusy = state.archiveMaintenanceRunning ||
+        session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING
+    val manualMaintenanceBlocked = state.loading ||
+        archiveBusy ||
+        state.backfillProgress != null ||
+        state.sourceRepairProgress != null ||
+        state.memoryState?.backfill?.status == MemoryBackfillStatus.RUNNING ||
+        state.memoryState?.sourceRepair?.status == MemorySourceRepairStatus.RUNNING ||
+        session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING ||
+        session?.memoryHeadStatus == MemoryUpdateStatus.UPDATING
+    val maintenanceAttention = state.manualMaintenance != null ||
+        state.memoryState?.fullRegenerationPending == true ||
+        state.backfillProgress != null ||
+        state.sourceRepairProgress != null ||
+        state.needsSourceRepair() ||
+        (state.backfillEstimate?.missingSourceTurns ?: 0) > 0 ||
+        state.headBackfillRequired ||
+        state.memoryState?.pendingDecision != null ||
+        session?.memoryArchiveError != null ||
+        session?.memoryHeadError != null ||
+        state.error != null ||
+        state.warnings.isNotEmpty()
+    if (showMaintenance) {
+        MemoryMaintenanceDialog(
+            session = session,
+            state = state,
+            onDismiss = { showMaintenance = false },
+            onRequestSourceRepair = {
+                showMaintenance = false
+                showSourceRepairConfirm = true
+            },
+            onPauseSourceRepair = onPauseSourceRepair,
+            onRequestBackfill = {
+                showMaintenance = false
+                showBackfillConfirm = true
+            },
+            onPauseBackfill = onPauseBackfill,
+            onIncreaseLimit = onIncreaseLimit,
+            onRetryMaintenance = onRetryMaintenance,
+            onRetryHead = onRetryHead,
+            onResolveDecision = onResolveDecision
+        )
+    }
     Column(
         Modifier
             .fillMaxSize()
             .windowInsetsPadding(WindowInsets.navigationBars)
             .windowInsetsPadding(WindowInsets.ime)
             .padding(16.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
+        verticalArrangement = Arrangement.spacedBy(8.dp)
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 CbText(
-                    "长期记忆 ${state.usedArchiveChars}/${session?.memoryLimitChars ?: 2000} 字（最高 20000）",
+                    "长期记忆",
                     style = ChatBarTheme.typography.label
                 )
                 CbText(
-                    "历史归档（Archive）：${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
-                        "当前摘要（HEAD）：${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
-                )
-                CbText(
-                    "Archive 保存较早剧情摘要；HEAD 保存最近场景和人物状态。两者会在后台自动维护。",
+                    "${state.usedArchiveChars}/${session?.memoryLimitChars ?: 2000} 字 · " +
+                        "Archive ${(session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()} · " +
+                        "HEAD ${(session?.memoryHeadStatus ?: MemoryUpdateStatus.IDLE).memoryDisplayName()}",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
             }
-            CbIconButton(
-                AppIcons.Refresh,
-                "刷新长期记忆页面",
-                onRefresh,
-                tint = ChatBarTheme.colors.mutedForeground
-            )
-        }
-        val archiveBusy = state.archiveMaintenanceRunning ||
-            session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING
-        session?.memoryArchiveError?.let {
-            CbText("Archive：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-        }
-        session?.memoryHeadError?.let {
-            CbText("HEAD：$it", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-        }
-        state.error?.let {
-            CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-        }
-        if (state.trailingPendingSourceTurns > 0) {
-            CbText(
-                "近期记忆等待凑满 ${state.episodeTargetSourceTurns} 轮（已有 ${state.trailingPendingSourceTurns} 轮）",
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
-            )
-        }
-        if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
-            (session?.memoryLimitChars ?: 2000) < 20000
-        ) {
-            CbButton(
-                "增加 2000 字",
-                onIncreaseLimit,
-                variant = ButtonVariant.Outline,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        MemoryArchiveMaintenanceAction(
-            status = session?.memoryArchiveStatus ?: MemoryUpdateStatus.IDLE,
-            retryRunning = state.archiveMaintenanceRunning,
-            onRetry = onRetryMaintenance
-        )
-        if (session?.memoryHeadStatus == MemoryUpdateStatus.ERROR) {
-            CbButton(
-                "重试 HEAD 更新",
-                onRetryHead,
-                variant = ButtonVariant.Outline,
-                modifier = Modifier.fillMaxWidth()
-            )
-        }
-        state.warnings.forEach {
-            CbText("⚠ $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-        }
-        MemorySourceRepairAction(
-            state = state,
-            onStart = { showSourceRepairConfirm = true },
-            onPause = onPauseSourceRepair
-        )
-        MemoryBackfillAction(
-            state = state,
-            onStart = { showBackfillConfirm = true },
-            onPause = onPauseBackfill
-        )
-        state.memoryState?.pendingDecision?.let { pending ->
-            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
-                Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CbText(
-                        "长期记忆上限选择待处理：${pending.tier.memoryDisplayName()}",
-                        style = ChatBarTheme.typography.label
-                    )
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        CbButton("增加 2000 字", { onResolveDecision(true) })
-                        CbButton(
-                            "保持上限并压缩",
-                            { onResolveDecision(false) },
-                            variant = ButtonVariant.Outline
-                        )
-                    }
+            MemoryManualRegenerationActions(
+                blocked = manualMaintenanceBlocked,
+                activeTask = state.manualMaintenance,
+                fullRegenerationPending = state.memoryState?.fullRegenerationPending == true,
+                maintenanceAttention = maintenanceAttention,
+                onRefresh = onRefresh,
+                onOpenMaintenance = { showMaintenance = true },
+                onFullRegeneration = {
+                    showMaintenance = true
+                    page = 0
+                    onFullRegeneration()
+                },
+                onHeadRegeneration = {
+                    showMaintenance = true
+                    page = 0
+                    onHeadRegeneration()
                 }
-            }
+            )
         }
         CbTabs(listOf("当前状态", "近期流程", "事件总结", "故事进程", "注入预览"), page, { page = it })
         Box(Modifier.weight(1f).fillMaxWidth()) {
@@ -1059,25 +1259,34 @@ internal fun MemoryBackfillAction(
 ) {
     if (state.needsSourceRepair()) return
     val backfill = state.memoryState?.backfill
+    val fullRegeneration = state.manualMaintenance == MemoryManualMaintenanceKind.FULL_REGENERATION ||
+        state.memoryState?.fullRegenerationPending == true
+    val blockedByDecision = state.memoryState?.pendingDecision != null
     val missingCount = state.backfillEstimate?.missingSourceTurns ?: 0
-    val needsBackfill = missingCount > 0 || state.headBackfillRequired
-    if (backfill?.status == MemoryBackfillStatus.RUNNING) {
-        val runtime = state.backfillProgress
-        val completedTurns = runtime?.completedSourceTurns ?: backfill.completedSourceTurnIds.size
+    val needsBackfill = missingCount > 0 || state.headBackfillRequired || fullRegeneration
+    val runtime = state.backfillProgress
+    if (runtime != null || backfill?.status == MemoryBackfillStatus.RUNNING) {
+        val waitingForArchive = runtime?.phase == MemoryBackfillPhase.WAITING_FOR_ARCHIVE
+        val completedTurns = runtime?.completedSourceTurns
+            ?: backfill?.completedSourceTurnIds?.size
+            ?: 0
         val totalTurns = runtime?.totalSourceTurns
-            ?: (backfill.completedSourceTurnIds.size + backfill.pendingSourceTurnIds.size)
+            ?: ((backfill?.completedSourceTurnIds?.size ?: 0) +
+                (backfill?.pendingSourceTurnIds?.size ?: 0))
         val fraction = if (totalTurns == 0) {
             if (runtime?.phase == MemoryBackfillPhase.UPDATING_HEAD) 1f else 0f
         } else {
             runtime?.fraction ?: (completedTurns.toFloat() / totalTurns).coerceIn(0f, 1f)
         }
         val phaseText = when (runtime?.phase) {
-            MemoryBackfillPhase.PREPARING -> "正在准备下一条近期流程"
-            MemoryBackfillPhase.GENERATING_EPISODE -> "正在生成${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
+            MemoryBackfillPhase.WAITING_FOR_ARCHIVE -> if (fullRegeneration) "完整重建已排队" else "补录已排队"
+            MemoryBackfillPhase.PREPARING -> if (fullRegeneration) "正在准备完整重建" else "正在准备下一条近期流程"
+            MemoryBackfillPhase.GENERATING_EPISODE ->
+                "正在${if (fullRegeneration) "重建" else "生成"}${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
             MemoryBackfillPhase.CHECKING_SPACE -> "正在检查长期记忆空间"
-            MemoryBackfillPhase.SAVING_EPISODE -> "正在保存近期流程"
-            MemoryBackfillPhase.UPDATING_HEAD -> "正在生成当前状态"
-            null -> "正在准备补录"
+            MemoryBackfillPhase.SAVING_EPISODE -> if (fullRegeneration) "正在保存重建结果" else "正在保存近期流程"
+            MemoryBackfillPhase.UPDATING_HEAD -> if (fullRegeneration) "正在重建当前状态" else "正在生成当前状态"
+            null -> if (fullRegeneration) "正在准备完整重建" else "正在准备补录"
         }
         CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
             Column(
@@ -1100,14 +1309,17 @@ internal fun MemoryBackfillAction(
                     )
                 }
                 CbText(
-                    if (totalTurns == 0) {
+                    if (waitingForArchive) {
+                        "历史归档当前步骤完成后开始；聊天仍可使用"
+                    } else if (totalTurns == 0) {
                         if (runtime?.phase == MemoryBackfillPhase.PREPARING) {
                             "正在读取待补录范围"
                         } else {
                             "近期流程无需补录"
                         }
                     } else {
-                        "已处理 $completedTurns/$totalTurns 轮 · 已生成 ${runtime?.completedEpisodes ?: backfill.completedEpisodeCount} 条近期流程"
+                        "已${if (fullRegeneration) "重建" else "处理"} $completedTurns/$totalTurns 轮 · " +
+                            "已生成 ${runtime?.completedEpisodes ?: backfill?.completedEpisodeCount ?: 0} 条近期流程"
                     },
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
@@ -1122,13 +1334,19 @@ internal fun MemoryBackfillAction(
                         )
                     }
                 }
-                CbText("补录期间聊天暂时不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-                CbButton(
-                    "完成当前步骤后暂停",
-                    onPause,
-                    variant = ButtonVariant.Outline,
-                    modifier = Modifier.fillMaxWidth()
-                )
+                if (!waitingForArchive) {
+                    CbText(
+                        "${if (fullRegeneration) "完整重建" else "补录"}期间聊天暂时不可用。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton(
+                        "完成当前步骤后暂停",
+                        onPause,
+                        variant = ButtonVariant.Outline,
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
             }
         }
     } else if (backfill?.status == MemoryBackfillStatus.ERROR) {
@@ -1138,12 +1356,12 @@ internal fun MemoryBackfillAction(
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 CbText(
-                    "补录失败：${backfill.error ?: "未知错误"}",
+                    "${if (fullRegeneration) "完整重建" else "补录"}失败：${backfill.error ?: "未知错误"}",
                     color = ChatBarTheme.colors.destructive
                 )
-                if (needsBackfill) {
+                if (needsBackfill && !blockedByDecision) {
                     CbButton(
-                        "重试补录",
+                        if (fullRegeneration) "继续完整重建" else "重试补录",
                         onStart,
                         modifier = Modifier.fillMaxWidth(),
                         variant = ButtonVariant.Outline
@@ -1151,9 +1369,9 @@ internal fun MemoryBackfillAction(
                 }
             }
         }
-    } else if (needsBackfill) {
+    } else if (needsBackfill && !blockedByDecision) {
         CbButton(
-            "一键补录长期记忆",
+            if (fullRegeneration) "继续完整重建" else "一键补录长期记忆",
             onStart,
             modifier = Modifier.fillMaxWidth()
         )
@@ -1191,7 +1409,7 @@ internal fun MemoryTierCurrent(
                 CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
                     Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                         CbText(
-                            "来源已变化${labels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "：") ?: ""}。旧正文已停止注入，等待页面顶部整体修复。",
+                            "来源已变化${labels.takeIf { it.isNotEmpty() }?.joinToString(prefix = "：") ?: ""}。旧正文已停止注入，请从维护菜单整体修复。",
                             color = ChatBarTheme.colors.mutedForeground,
                             style = ChatBarTheme.typography.caption
                         )
@@ -1222,7 +1440,7 @@ internal fun MemoryHeadPage(
                 if (state.headInitializationPending) {
                     "当前状态将在第三轮对话开始时生成。"
                 } else {
-                    "当前状态尚未生成，请使用页面顶部的一键补录。"
+                    "当前状态尚未生成，请打开右上角维护菜单后补录。"
                 },
                 modifier = Modifier.padding(12.dp),
                 color = ChatBarTheme.colors.mutedForeground
@@ -1250,7 +1468,7 @@ internal fun MemoryHeadPage(
             CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
                 Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     CbText(
-                        "HEAD来源已变化。旧状态已停止注入，等待页面顶部整体修复；也可手工修改后保存。",
+                        "HEAD来源已变化。旧状态已停止注入，请从维护菜单整体修复；也可手工修改后保存。",
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
                     )

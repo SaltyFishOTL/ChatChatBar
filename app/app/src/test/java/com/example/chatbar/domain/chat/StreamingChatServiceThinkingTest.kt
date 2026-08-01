@@ -3,6 +3,9 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.OutputTokenParameter
 import com.example.chatbar.data.local.entity.ParamValue
+import com.example.chatbar.domain.memory.MEMORY_COMPRESSION_PLANNER_MAX_TOKENS
+import com.example.chatbar.domain.memory.forMemoryCompressionPlanner
+import com.example.chatbar.domain.memory.shouldDisableMemoryThinking
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.jsonObject
@@ -13,6 +16,71 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingChatServiceThinkingTest {
+    @Test
+    fun `memory compression planner uses isolated 128 token non json request`() {
+        val model = ModelConfig(
+            id = "model",
+            displayName = "Model",
+            baseUrl = "https://example.com/v1",
+            apiKey = "key",
+            modelName = "model-name",
+            customParams = mapOf(
+                "temperature" to ParamValue.NumberValue(0.8),
+                "thinking_budget" to ParamValue.NumberValue(512.0)
+            ),
+            supportsDisableThinking = true,
+            createdAt = 0
+        )
+
+        val body = Json.parseToJsonElement(
+            StreamingChatService().buildRequestBody(
+                messages = listOf(ChatApiMessage.text("user", "plan")),
+                modelConfig = model,
+                stream = false,
+                maxTokens = MEMORY_COMPRESSION_PLANNER_MAX_TOKENS,
+                disableThinking = shouldDisableMemoryThinking(model),
+                isolatedTaskParameters = true,
+                responseFormatJson = false
+            )
+        ).jsonObject
+
+        assertEquals("128", body.getValue("max_tokens").jsonPrimitive.content)
+        assertEquals(false, body.getValue("enable_thinking").jsonPrimitive.boolean)
+        assertFalse(body.containsKey("temperature"))
+        assertFalse(body.containsKey("thinking_budget"))
+        assertFalse(body.containsKey("response_format"))
+    }
+
+    @Test
+    fun `memory compression planner never inherits configured thinking`() {
+        val model = ModelConfig(
+            id = "model",
+            displayName = "Model",
+            baseUrl = "https://example.com/v1",
+            apiKey = "key",
+            modelName = "model-name",
+            reasoningEffort = "high",
+            enableThinking = true,
+            supportsDisableThinking = false,
+            createdAt = 0
+        ).forMemoryCompressionPlanner()
+
+        val body = Json.parseToJsonElement(
+            StreamingChatService().buildRequestBody(
+                messages = listOf(ChatApiMessage.text("user", "plan")),
+                modelConfig = model,
+                stream = false,
+                maxTokens = MEMORY_COMPRESSION_PLANNER_MAX_TOKENS,
+                disableThinking = shouldDisableMemoryThinking(model),
+                isolatedTaskParameters = true,
+                responseFormatJson = false
+            )
+        ).jsonObject
+
+        assertFalse(body.containsKey("enable_thinking"))
+        assertFalse(body.containsKey("reasoning_effort"))
+    }
+
     @Test
     fun `disable thinking removes reasoning parameters and forces false`() {
         val model = ModelConfig(

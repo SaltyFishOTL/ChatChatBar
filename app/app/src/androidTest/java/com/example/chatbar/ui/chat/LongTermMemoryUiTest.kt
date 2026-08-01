@@ -2,9 +2,13 @@ package com.example.chatbar.ui.chat
 
 import androidx.activity.ComponentActivity
 import androidx.compose.foundation.layout.Column
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
@@ -29,6 +33,7 @@ import com.example.chatbar.domain.memory.MemoryHashes
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
+import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -41,6 +46,88 @@ import org.junit.Test
 class LongTermMemoryUiTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    @Test
+    fun compressionDecisionButtonInvokesChoiceAndDialogCanCloseImmediately() {
+        var visible by mutableStateOf(true)
+        var compressed = false
+        composeTestRule.setContent {
+            ChatBarTheme {
+                if (visible) {
+                    MemoryLimitDecisionDialog(
+                        currentLimitChars = 2000,
+                        onDismiss = { visible = false },
+                        onIncrease = { visible = false },
+                        onCompress = {
+                            compressed = true
+                            visible = false
+                        }
+                    )
+                }
+            }
+        }
+
+        composeTestRule.onNodeWithText("保持上限并压缩").performClick()
+
+        composeTestRule.runOnIdle { assertTrue(compressed) }
+        assertTrue(
+            composeTestRule.onAllNodesWithText("长期记忆已达本会话上限")
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun fullRegenerationRequiresTokenWarningConfirmation() {
+        var confirmed = false
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryManualRegenerationActions(
+                    blocked = false,
+                    activeTask = null,
+                    fullRegenerationPending = false,
+                    onFullRegeneration = { confirmed = true },
+                    onHeadRegeneration = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithContentDescription("查看长期记忆维护状态").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("刷新长期记忆页面").assertIsDisplayed()
+        assertTrue(
+            composeTestRule.onAllNodesWithText("完全重新生成长期记忆")
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+        composeTestRule.onNodeWithContentDescription("完全重新生成长期记忆").performClick()
+        composeTestRule.onNodeWithText("完全重新生成长期记忆？").assertIsDisplayed()
+        composeTestRule.onNodeWithText("消耗大量 Token", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("确认完全重建").performClick()
+        composeTestRule.runOnIdle { assertTrue(confirmed) }
+    }
+
+    @Test
+    fun headRegenerationKeepsArchiveAndRequiresTokenWarningConfirmation() {
+        var confirmed = false
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryManualRegenerationActions(
+                    blocked = false,
+                    activeTask = null,
+                    fullRegenerationPending = false,
+                    onFullRegeneration = {},
+                    onHeadRegeneration = { confirmed = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithContentDescription("根据现有长期记忆重新生成 HEAD").performClick()
+        composeTestRule.onNodeWithText("重新生成 HEAD？").assertIsDisplayed()
+        composeTestRule.onNodeWithText("保留现有 Archive", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("消耗较多 Token", substring = true).assertIsDisplayed()
+        composeTestRule.onNodeWithText("确认重新生成").performClick()
+        composeTestRule.runOnIdle { assertTrue(confirmed) }
+    }
 
     @Test
     fun tierPageShowsOneFormalBodyWithoutInternalCoverageProof() {
@@ -179,15 +266,45 @@ class LongTermMemoryUiTest {
     }
 
     @Test
-    fun queuedApplicationBackfillShowsRangeLoadingFeedback() {
+    fun fullRegenerationReusesBackfillProgressPresentation() {
         val state = uiState(
             episode(),
             memoryState = memoryState().copy(
+                fullRegenerationPending = true,
                 backfill = MemoryBackfillState(status = MemoryBackfillStatus.RUNNING)
             )
         ).copy(
+            manualMaintenance = MemoryManualMaintenanceKind.FULL_REGENERATION,
             backfillProgress = MemoryBackfillProgress(
-                phase = MemoryBackfillPhase.PREPARING,
+                phase = MemoryBackfillPhase.GENERATING_EPISODE,
+                totalSourceTurns = 2,
+                completedSourceTurns = 1,
+                completedEpisodes = 1,
+                currentRangeLabel = "T1-T1",
+                streamingSummary = "正在重建的近期流程"
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryBackfillAction(state, onStart = {}, onPause = {})
+            }
+        }
+
+        composeTestRule.onNodeWithText("正在重建 T1-T1").assertIsDisplayed()
+        composeTestRule.onNodeWithText("已重建 1/2 轮 · 已生成 1 条近期流程").assertIsDisplayed()
+        composeTestRule.onNodeWithText("正在重建的近期流程").assertIsDisplayed()
+    }
+
+    @Test
+    fun queuedBackfillDoesNotPretendToBeRunningOrBlockChat() {
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                backfill = MemoryBackfillState(status = MemoryBackfillStatus.IDLE)
+            )
+        ).copy(
+            backfillProgress = MemoryBackfillProgress(
+                phase = MemoryBackfillPhase.WAITING_FOR_ARCHIVE,
                 totalSourceTurns = 0,
                 completedSourceTurns = 0,
                 completedEpisodes = 0
@@ -199,8 +316,10 @@ class LongTermMemoryUiTest {
             }
         }
 
-        composeTestRule.onNodeWithText("正在准备下一条近期流程").assertIsDisplayed()
-        composeTestRule.onNodeWithText("正在读取待补录范围").assertIsDisplayed()
+        composeTestRule.onNodeWithText("补录已排队").assertIsDisplayed()
+        composeTestRule.onNodeWithText("历史归档当前步骤完成后开始；聊天仍可使用").assertIsDisplayed()
+        assertTrue(composeTestRule.onAllNodesWithText("补录期间聊天暂时不可用。").fetchSemanticsNodes().isEmpty())
+        assertTrue(composeTestRule.onAllNodesWithText("完成当前步骤后暂停").fetchSemanticsNodes().isEmpty())
     }
 
     @Test

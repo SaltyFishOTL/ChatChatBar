@@ -6,6 +6,7 @@ import com.example.chatbar.data.local.entity.MemoryBackfillStatus
 import com.example.chatbar.data.local.entity.MemoryGap
 import com.example.chatbar.data.local.entity.MemoryGapReason
 import com.example.chatbar.data.local.entity.MemoryNode
+import com.example.chatbar.data.local.entity.MemorySessionState
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
 import com.example.chatbar.data.local.entity.MessageRole
@@ -203,6 +204,67 @@ class MemoryBackfillPolicyTest {
 
         assertEquals(emptyList<MemoryGap>(), recovered.gaps)
         assertEquals(sourceIds(2..7), recovered.normalPendingSourceTurnIds)
+    }
+
+    @Test
+    fun internalHoleMovesFromNormalPendingToDurableGapWithoutCancellingLiveBackfill() {
+        val reconciled = MemoryBackfillPolicy.reconcileToCurrentArchive(
+            gaps = emptyList(),
+            backfill = MemoryBackfillState(
+                status = MemoryBackfillStatus.RUNNING,
+                pendingSourceTurnIds = listOf("s1")
+            ),
+            timeline = timeline(0..5),
+            availableSourceTurnIds = sourceIds(0..5).toSet(),
+            archivedSourceTurnIds = sourceIds(0..5).toSet(),
+            coveredSourceTurnIds = setOf("s0", "s2"),
+            normalPendingSourceTurnIds = setOf("s1", "s3", "s4", "s5")
+        )
+
+        assertEquals(listOf("s1"), reconciled.gaps.single().sourceTurnIds)
+        assertEquals(listOf("s3", "s4", "s5"), reconciled.normalPendingSourceTurnIds)
+        assertEquals(MemoryBackfillStatus.RUNNING, reconciled.backfill.status)
+        assertEquals(listOf("s1"), reconciled.backfill.pendingSourceTurnIds)
+        assertEquals(
+            listOf("s3", "s4"),
+            MemoryEpisodeBatchPolicy.nextBatch(
+                pendingSourceTurnIds = reconciled.normalPendingSourceTurnIds,
+                state = MemorySessionState(
+                    sessionId = "session",
+                    timeline = timeline(0..5),
+                    gaps = reconciled.gaps
+                ),
+                activeNodes = listOf(node("episode-0", listOf("s0")), node("episode-2", listOf("s2"))),
+                targetSourceTurns = 2,
+                mode = MemoryEpisodeBatchMode.NORMAL
+            )
+        )
+    }
+
+    @Test
+    fun internalHolePromotionIsIdempotent() {
+        val first = MemoryBackfillPolicy.reconcileToCurrentArchive(
+            gaps = emptyList(),
+            backfill = MemoryBackfillState(),
+            timeline = timeline(0..2),
+            availableSourceTurnIds = sourceIds(0..2).toSet(),
+            archivedSourceTurnIds = emptySet(),
+            coveredSourceTurnIds = setOf("s0", "s2"),
+            normalPendingSourceTurnIds = setOf("s1")
+        )
+        val second = MemoryBackfillPolicy.reconcileToCurrentArchive(
+            gaps = first.gaps,
+            backfill = first.backfill,
+            timeline = timeline(0..2),
+            availableSourceTurnIds = sourceIds(0..2).toSet(),
+            archivedSourceTurnIds = emptySet(),
+            coveredSourceTurnIds = setOf("s0", "s2"),
+            normalPendingSourceTurnIds = first.normalPendingSourceTurnIds.toSet()
+        )
+
+        assertEquals(listOf("s1"), first.gaps.single().sourceTurnIds)
+        assertEquals(emptyList<String>(), first.normalPendingSourceTurnIds)
+        assertEquals(first.gaps, second.gaps)
     }
 
     @Test

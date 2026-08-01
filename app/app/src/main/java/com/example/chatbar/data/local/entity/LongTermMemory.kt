@@ -279,6 +279,8 @@ data class MemorySessionState(
     val headFailure: MemoryFailureInfo? = null,
     /** UI消费后删除；SaveSlot不携带。 */
     val pendingCompressionEvents: List<MemoryCompressionEvent> = emptyList(),
+    /** 用户确认完全重建后置true；Archive与最终HEAD全部完成后清除。 */
+    val fullRegenerationPending: Boolean = false,
     val memoryWasEnabled: Boolean = true,
     /** 禁用瞬间最后一个稳定source turn；重新启用时据此生成禁用期Gap。 */
     val disabledAfterSourceOrder: Long? = null,
@@ -367,6 +369,7 @@ data class MemorySessionSnapshot(
     val eraCompressionPromptDeclined: Boolean = false,
     val eraCompressionsSincePrompt: Int = 0,
     val pendingDecision: PendingMemoryDecision? = null,
+    val fullRegenerationPending: Boolean = false,
     val memoryWasEnabled: Boolean = true,
     val disabledAfterSourceOrder: Long? = null,
     val recordingStartsAfterSourceOrder: Long? = null,

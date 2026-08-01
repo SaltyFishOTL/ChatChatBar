@@ -30,7 +30,7 @@ class MemoryCompressionPolicyTest {
     }
 
     @Test
-    fun `without staged same tier newest lower node remains active`() {
+    fun `without staged same tier four nodes consume three and retain newest`() {
         val nodes = (0..3).map { node("e$it", MemoryTier.EPISODE, it) }
 
         val candidate = MemoryCompressionPolicy.oldestContinuousLowerCandidate(
@@ -40,7 +40,8 @@ class MemoryCompressionPolicyTest {
             gaps = emptyList()
         )
 
-        assertNull(candidate)
+        assertEquals(4, candidate?.candidates?.size)
+        assertEquals(3, candidate?.maxConsume)
     }
 
     @Test
@@ -63,14 +64,14 @@ class MemoryCompressionPolicyTest {
     }
 
     @Test
-    fun `era forced prefix consumes longest equally fresh prefix up to ten`() {
+    fun `era forced prefix consumes longest equally fresh prefix up to five`() {
         val candidate = MemoryCompressionCandidate(
-            candidates = (0..11).map { node("era$it", MemoryTier.ERA, it) },
-            minConsume = 3,
-            maxConsume = 10
+            candidates = (0..6).map { node("era$it", MemoryTier.ERA, it) },
+            minConsume = 2,
+            maxConsume = 5
         )
 
-        assertEquals(10, MemoryCompressionPolicy.forcedEraPrefix(candidate).size)
+        assertEquals(5, MemoryCompressionPolicy.forcedEraPrefix(candidate).size)
     }
 
     @Test
@@ -79,7 +80,7 @@ class MemoryCompressionPolicyTest {
             candidates = (0..4).map { t ->
                 node("era$t", MemoryTier.ERA, t, level = if (t < 4) 0 else 1)
             },
-            minConsume = 3,
+            minConsume = 2,
             maxConsume = 5
         )
 
@@ -87,7 +88,50 @@ class MemoryCompressionPolicyTest {
     }
 
     @Test
-    fun lowerTierSendsAtMostTwentyFiveConsumesFourToTwentyAndKeepsLatest() {
+    fun `era forced prefix extends across wear boundary to permit minimum summary`() {
+        val candidate = MemoryCompressionCandidate(
+            candidates = listOf(
+                node("era0", MemoryTier.ERA, 0, level = 0).copy(content = "a".repeat(20)),
+                node("era1", MemoryTier.ERA, 1, level = 0).copy(content = "b".repeat(20)),
+                node("era2", MemoryTier.ERA, 2, level = 1).copy(content = "c".repeat(11))
+            ),
+            minConsume = 2,
+            maxConsume = 3
+        )
+
+        assertEquals(3, MemoryCompressionPolicy.forcedEraPrefix(candidate).size)
+    }
+
+    @Test
+    fun `era candidate source must be longer than minimum summary`() {
+        val exactlyMinimum = listOf(
+            node("era0", MemoryTier.ERA, 0).copy(content = "a".repeat(25)),
+            node("era1", MemoryTier.ERA, 1).copy(content = "b".repeat(25))
+        )
+        val longerThanMinimum = listOf(
+            exactlyMinimum.first(),
+            exactlyMinimum.last().copy(content = "b".repeat(26))
+        )
+
+        assertNull(
+            MemoryCompressionPolicy.eraCandidate(
+                exactlyMinimum,
+                timeline(0..1),
+                emptyList()
+            )
+        )
+        assertEquals(
+            2,
+            MemoryCompressionPolicy.eraCandidate(
+                longerThanMinimum,
+                timeline(0..1),
+                emptyList()
+            )?.candidates?.size
+        )
+    }
+
+    @Test
+    fun lowerTierConsumesThreeToTenAndKeepsFiveBoundaryReferences() {
         val episodes = (0..25).map { node("e$it", MemoryTier.EPISODE, it) }
 
         val candidate = MemoryCompressionPolicy.oldestContinuousLowerCandidate(
@@ -97,43 +141,55 @@ class MemoryCompressionPolicyTest {
             emptyList()
         )!!
 
-        assertEquals(25, candidate.candidates.size)
-        assertEquals(4, candidate.minConsume)
-        assertEquals(20, candidate.maxConsume)
+        assertEquals(15, candidate.candidates.size)
+        assertEquals(3, candidate.minConsume)
+        assertEquals(10, candidate.maxConsume)
         assertFalse("e25" in candidate.candidates.map { it.id })
         assertTrue(
             MemoryCompressionPolicy.validateConsumedPrefix(
                 candidate,
-                candidate.candidates.take(4).map { it.id }
+                candidate.candidates.take(3).map { it.id }
+            ).valid
+        )
+        assertTrue(
+            MemoryCompressionPolicy.validateConsumedPrefix(
+                candidate,
+                candidate.candidates.take(10).map { it.id }
             ).valid
         )
         assertFalse(
             MemoryCompressionPolicy.validateConsumedPrefix(
                 candidate,
-                listOf("e0", "e1", "e3", "e4")
+                candidate.candidates.take(11).map { it.id }
+            ).valid
+        )
+        assertFalse(
+            MemoryCompressionPolicy.validateConsumedPrefix(
+                candidate,
+                listOf("e0", "e1", "e3")
             ).valid
         )
     }
 
     @Test
-    fun fourLowerNodesCannotCompressBecauseNewestMustRemain() {
+    fun threeLowerNodesCannotCompressBecauseNewestMustRemain() {
+        val three = (0..2).map { node("e$it", MemoryTier.EPISODE, it) }
         val four = (0..3).map { node("e$it", MemoryTier.EPISODE, it) }
-        val five = (0..4).map { node("e$it", MemoryTier.EPISODE, it) }
 
         assertNull(
             MemoryCompressionPolicy.oldestContinuousLowerCandidate(
-                four,
+                three,
                 MemoryTier.EPISODE,
-                timeline(0..4),
+                timeline(0..3),
                 emptyList()
             )
         )
         assertEquals(
-            4,
+            3,
             MemoryCompressionPolicy.oldestContinuousLowerCandidate(
-                five,
+                four,
                 MemoryTier.EPISODE,
-                timeline(0..4),
+                timeline(0..3),
                 emptyList()
             )!!.maxConsume
         )
@@ -156,12 +212,12 @@ class MemoryCompressionPolicyTest {
         )!!
 
         assertEquals("fresh-1", candidate.candidates.first().id)
-        assertEquals(3, candidate.minConsume)
+        assertEquals(2, candidate.minConsume)
         assertEquals(4, candidate.maxConsume)
     }
 
     @Test
-    fun gapSplitsCompressionCandidates() {
+    fun gapSplitsCompressionCandidatesWithoutCrossingIt() {
         val episodes = (0..8).map { node("e$it", MemoryTier.EPISODE, it) }
         val gap = MemoryGap("gap", listOf("s4"), reason = MemoryGapReason.DISABLED)
 
@@ -172,7 +228,30 @@ class MemoryCompressionPolicyTest {
             listOf(gap)
         )
 
-        assertNull(candidate)
+        assertEquals(listOf("e0", "e1", "e2", "e3"), candidate?.candidates?.map { it.id })
+        assertEquals(3, candidate?.maxConsume)
+    }
+
+    @Test
+    fun compressionSummaryMustStayWithinFiftyToFourHundredCharacters() {
+        assertFalse(MemoryCompressionPolicy.validateSummary("短".repeat(49)).valid)
+        assertTrue(MemoryCompressionPolicy.validateSummary("中".repeat(50)).valid)
+        assertTrue(MemoryCompressionPolicy.validateSummary("长".repeat(400)).valid)
+        assertFalse(MemoryCompressionPolicy.validateSummary("超".repeat(401)).valid)
+    }
+
+    @Test
+    fun parentCoverageUsesProgramOwnedChildHashesInsteadOfSummaryText() {
+        val children = listOf(
+            node("e1", MemoryTier.EPISODE, 1).copy(content = "正文一", coverageHash = "hash-1"),
+            node("e2", MemoryTier.EPISODE, 2).copy(content = "正文二", coverageHash = "hash-2")
+        )
+
+        val units = MemoryHashes.parentCoverageUnits(children)
+
+        assertEquals(listOf("e1", "e2"), units.map { it.sourceId })
+        assertEquals(listOf("hash-1", "hash-2"), units.map { it.text })
+        assertFalse(units.any { it.text.contains("正文") })
     }
 
     private fun node(id: String, tier: MemoryTier, t: Int, level: Int = 0) = MemoryNode(
@@ -180,7 +259,8 @@ class MemoryCompressionPolicyTest {
         sessionId = "session",
         tier = tier,
         sourceTurnIds = listOf("s$t"),
-        compressionLevel = level
+        compressionLevel = level,
+        content = "x".repeat(120)
     )
 
     private fun timeline(range: IntRange) = range.map { t ->

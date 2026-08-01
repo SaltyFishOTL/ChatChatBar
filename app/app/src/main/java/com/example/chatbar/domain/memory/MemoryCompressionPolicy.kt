@@ -12,12 +12,19 @@ data class MemoryCompressionCandidate(
 )
 
 object MemoryCompressionPolicy {
-    const val LOWER_MIN_CONSUME = 4
-    const val LOWER_MAX_CONSUME = 20
-    const val LOWER_MAX_CANDIDATES = 25
-    const val ERA_MIN_CONSUME = 3
-    const val ERA_MAX_CONSUME = 10
-    const val ERA_MAX_CANDIDATES = 15
+    const val LOWER_MIN_CONSUME = 3
+    const val LOWER_MAX_CONSUME = 10
+    const val LOWER_REFERENCE_CANDIDATES = 5
+    const val LOWER_MAX_CANDIDATES = LOWER_MAX_CONSUME + LOWER_REFERENCE_CANDIDATES
+    const val ERA_MIN_CONSUME = 2
+    const val ERA_MAX_CONSUME = 5
+    const val ERA_MAX_CANDIDATES = ERA_MAX_CONSUME
+    const val SUMMARY_MIN_CHARS = 50
+    const val SUMMARY_MAX_CHARS = 400
+
+    /** 旧节点可能由旧版4–20/3–10协议生成；仅重建兼容，不用于新压缩。 */
+    const val LEGACY_LOWER_MAX_CONSUME = 20
+    const val LEGACY_ERA_MAX_CONSUME = 10
 
     fun oldestContinuousLowerCandidate(
         nodes: List<MemoryNode>,
@@ -49,15 +56,22 @@ object MemoryCompressionPolicy {
         )
     }
 
-    /** Era由程序指定3–10条；尽量一次消费同等最低磨损级别连续前缀。 */
+    /** Era由程序指定2–5条；尽量一次消费同等最低磨损级别连续前缀。 */
     fun forcedEraPrefix(candidate: MemoryCompressionCandidate): List<MemoryNode> {
         if (candidate.candidates.size < ERA_MIN_CONSUME) return emptyList()
         val baselineLevel = candidate.candidates.take(ERA_MIN_CONSUME)
             .maxOf { it.compressionLevel }
         val sameWearPrefix = candidate.candidates.takeWhile { it.compressionLevel <= baselineLevel }
-        return sameWearPrefix.take(candidate.maxConsume)
+        val preferred = sameWearPrefix.take(candidate.maxConsume)
             .takeIf { it.size >= candidate.minConsume }
             ?: candidate.candidates.take(candidate.minConsume)
+        val available = candidate.candidates.take(candidate.maxConsume)
+        var chars = 0
+        val minimumCompressibleCount = available.indexOfFirst { node ->
+            chars += node.body.length
+            chars > SUMMARY_MIN_CHARS
+        }.let { index -> if (index < 0) return emptyList() else index + 1 }
+        return available.take(maxOf(preferred.size, minimumCompressibleCount))
     }
 
     fun eraCandidate(
@@ -73,7 +87,10 @@ object MemoryCompressionPolicy {
             timeline
         )
         val segments = continuousSegments(sorted, timeline, gaps)
-            .filter { it.size >= ERA_MIN_CONSUME }
+            .filter { segment ->
+                segment.size >= ERA_MIN_CONSUME &&
+                    segment.take(ERA_MAX_CONSUME).sumOf { it.body.length } > SUMMARY_MIN_CHARS
+            }
         if (segments.isEmpty()) return null
 
         val fresh = segments.firstNotNullOfOrNull { segment ->
@@ -118,6 +135,16 @@ object MemoryCompressionPolicy {
         }
         if (candidate.candidates.take(consumedIds.size).map { it.id } != consumedIds) {
             return MemoryValidationResult.invalid("只能消费候选最老连续前缀")
+        }
+        return MemoryValidationResult.Valid
+    }
+
+    fun validateSummary(summary: String): MemoryValidationResult {
+        val length = summary.trim().length
+        if (length !in SUMMARY_MIN_CHARS..SUMMARY_MAX_CHARS) {
+            return MemoryValidationResult.invalid(
+                "压缩summary必须为${SUMMARY_MIN_CHARS}至${SUMMARY_MAX_CHARS}字，当前${length}字"
+            )
         }
         return MemoryValidationResult.Valid
     }

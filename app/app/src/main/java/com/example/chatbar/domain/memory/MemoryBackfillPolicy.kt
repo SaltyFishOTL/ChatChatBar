@@ -41,6 +41,21 @@ object MemoryBackfillPolicy {
         discoverUntrackedArchived: Boolean = false
     ): MemoryBackfillBoundary {
         val existingGapIds = gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
+        val latestCoveredT = timeline
+            .filter { it.sourceTurnId in coveredSourceTurnIds }
+            .maxOfOrNull { it.displayT }
+        val internalMissingEntries = timeline.asSequence()
+            .filterNot { it.tombstone }
+            .filter { entry ->
+                recordingStartsAfterSourceOrder == null ||
+                    entry.sourceOrder > recordingStartsAfterSourceOrder
+            }
+            .filter { it.sourceTurnId in availableSourceTurnIds }
+            .filterNot { it.sourceTurnId in existingGapIds }
+            .filterNot { it.sourceTurnId in coveredSourceTurnIds }
+            .filter { entry -> latestCoveredT != null && entry.displayT < latestCoveredT }
+            .sortedBy { it.sourceOrder }
+            .toList()
         val untracked = if (discoverUntrackedArchived) {
             timeline.asSequence()
                 .filterNot { it.tombstone }
@@ -57,19 +72,22 @@ object MemoryBackfillPolicy {
         } else {
             emptyList()
         }
-        val coveredDisplayTs = timeline
-            .filter { it.sourceTurnId in coveredSourceTurnIds }
-            .mapTo(mutableSetOf()) { it.displayT }
         val recoveredEntries = untracked.filter { entry ->
-            entry.sourceTurnId in archivedSourceTurnIds && coveredDisplayTs.any { it > entry.displayT }
+            entry.sourceTurnId in archivedSourceTurnIds &&
+                latestCoveredT != null && entry.displayT < latestCoveredT
         }
+        val durableGapEntries = (internalMissingEntries + recoveredEntries)
+            .distinctBy { it.sourceTurnId }
+            .sortedBy { it.sourceOrder }
+        val discoveredGapIds = durableGapEntries.mapTo(mutableSetOf()) { it.sourceTurnId }
         val normalPending = (normalPendingSourceTurnIds + untracked.asSequence()
             .filter { it.sourceTurnId in archivedSourceTurnIds }
             .filterNot { it in recoveredEntries }
             .map { it.sourceTurnId })
             .distinct()
+            .filterNot { it in discoveredGapIds }
             .sortedBy { sourceId -> timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder }
-        val recoveredGaps = recoveredEntries.toContiguousGaps()
+        val recoveredGaps = durableGapEntries.toContiguousGaps()
         val nextGaps = gaps + recoveredGaps
         val retainedGapIds = nextGaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
         val pending = backfill.pendingSourceTurnIds.filter { sourceTurnId ->

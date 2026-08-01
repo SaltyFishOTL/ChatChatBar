@@ -1,10 +1,10 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-07-27
+Last updated: 2026-08-02
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `8ab3ba70 Release 1.3.0`
-Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页面退出后模型调用、Episode提交与HEAD收尾继续，重进页面重新订阅进度或读取持久结果。全量本地CI通过，设备与真实模型退出/重进流程仍待验证。
+Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指南（maxTokens 128、无程序字数校验），压缩AI再生成Prompt目标60–300字、程序容错50–400字的朴素因果/状态总结。AI不再逐child生成coverage正文；消费窗口为Episode→Arc与Arc→Era 3–10、Era→Era 2–5，低层级仍额外提供最多5个末尾child作为边界参考，覆盖证明由程序根据child hash生成。自动测试与设备状态见Verification Baseline。
 
 ## Completed
 
@@ -22,7 +22,8 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 - 独立Archive/HEAD在创建最终`ChatApiMessage`时会按当前玩家名与角色卡`effectiveBotName`渲染会话占位符；Bot名称非空白时保留原始内容（含换行），否则回退角色卡名称。支持`$username`、`$botname`、`{{user}}`/`{{char}}`、`{user}`/`{char}`和`<USER>`/`<BOT>`；持久化记忆正文保持原样，System Prompt调试预览显示实际渲染结果。
 - Episode全局分组支持1–6轮、默认2；滑块位于全局设置并与上下文保留组数相邻。
 - Episode AI协议已改为把1–N轮原文直接压成一个`summary`，不再生成逐T `sourceCoverage`。新节点不含逐T摘要；程序使用有序sourceTurnId、来源哈希和单段正文计算结构覆盖哈希。旧coverage节点继续兼容，不重写。
-- Episode summary的Prompt目标为1T 50字、每增加1T加20字、默认2T 70字、6T 150字；程序硬上限为Prompt目标的2倍，即1T 100字至6T 300字，给AI字数估算保留有界容差。每次Prompt仍明确写入较短目标，并含错误逐T复述和正确跨轮融合示例。长期记忆AI输出校验统一最多5次，覆盖补录Episode、Archive压缩和最终HEAD重建。
+- Episode summary的Prompt目标为1T 50字、每增加1T加20字、默认2T 70字、6T 150字；程序硬上限为Prompt目标的2倍，即1T 100字至6T 300字，给AI字数估算保留有界容差。每次Prompt仍明确写入较短目标，并含错误逐T复述和正确跨轮融合示例。长期记忆所有AI阶段的截断、空输出、解析和校验错误统一最多5次输出尝试，覆盖压缩规划、补录Episode、正式Archive压缩和最终HEAD重建；瞬时网络/408/425/429/5xx独立最多3次，鉴权、不可重试HTTP和取消立即停止。
+- Arc/Era压缩协议已从逐child保留正文改为两阶段筛选：规划AI读取同一候选集，只输出一句50字内取舍指南，`maxTokens=128`，清除继承的思考配置并仅向支持的模型发送关闭思考参数，不做程序字数校验、不持久化、不作为事实证据；规划与正式压缩各自最多5次输出尝试。压缩AI读取指南与原child，Prompt目标60–300字，程序接受50–400字且要求短于被消费正文；JSON阶段截断后按当前Token上限倍增并跨尝试保留，最高受4096和模型配置约束。最终错误明确显示压缩规划/正式压缩/Episode/HEAD及失败次数。提示词要求朴素客观、围绕主因果线和关键状态变化，禁止逐child复述、机械时间连接和华丽场景描写。Episode→Arc与Arc→Era新建时消费最老连续3–10个child，输入最多15个，第11–15个只作为末尾边界参考；Era→Era消费2–5个。AI只返回`consumedChildIds + summary`；`coverageUnits`由程序按child coverage hash生成。旧4–20/3–10父节点仍可读取、编辑、修复和重建，但新压缩不再产生该规模。
 - 上下文与RAG已改为按完整`sourceTurnId`分组：同轮追加AI回复/图片不拆成多个上下文组或RAG块。
 - 用户手动中断聊天生成时，非空助手流稿会作为普通助手消息落盘，继承当前用户轮的`sourceTurnId/sourceTurnOrder`并触发`REPLY_PERSISTED`维护；空正文不保存，也不触发完整回复专属的自动格式修复或朋友圈生成。
 - 主聊天请求不再给历史、上一轮、重试输入或当前输入追加`[Txx]`；模型只看到原始角色与正文顺序。T继续作为内部记忆排序/UI元数据。AI生成图片留下的空助手记录、被“排除状态栏”清空的助手记录和其他空助手记录直接省略；流式完成但无正文时明确失败，不再持久化空助手回复。
@@ -32,6 +33,9 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 - 一键补录已区分本进程活跃runner与重启遗留`RUNNING`：内部读取不再暂停自己的任务；孤儿任务在重启后转`PAUSED`。
 - 补录失败会显示具体原因和“重试补录”；成功批次设计为立即持久化并只移除对应Gap来源。
 - 手动补录由应用级协调器持有并按会话去重，页面仅订阅处理轮数、已生成Episode数、当前阶段/T范围和流式summary；离开页面不取消已开始的模型调用，流文本仍只存在运行时，不写入SaveSlot或会话JSON。
+- 被后续活跃记忆包围的未覆盖source turn会在任何加载/刷新中自动提升为持久Gap，并从普通Episode pending移除。实时backfill内部重载继续保留该Gap来源，避免模型已生成summary后因pending被清空而静默`Aborted`。批次选择另有独立兜底：旧的不足N轮/不连续segment保留待补录，但会跳过并处理后面首个满足精确N轮的连续segment，不再形成全局队头阻塞。
+- 自动Archive历史追赶改为每次全局runner lease最多提交一个Episode；后面仍有精确批次时释放锁后再排下一次。失败重试的15/60/300秒退避也在锁外等待，避免一个旧会话长期独占维护runner。
+- 一键补录若撞上正在执行的Archive原子步骤，先显示运行时`WAITING_FOR_ARCHIVE`：“补录已排队，当前步骤完成后开始”；此时不伪造持久`RUNNING`、不显示暂停按钮、不锁聊天。取得runner锁后才进入`PREPARING/RUNNING`。
 - HEAD改为三模式：第三轮开始前以开场白+第一轮初始化；普通更新只读上一HEAD+下一基线组；补录以Archive+倒数第二个稳定组重建。最新完整轮始终留在Prompt底部热区。
 - 发送前HEAD准备与RAG并行等待；发送后仍后台滚动。空HEAD不注入；历史空HEAD、落后HEAD或跨Gap更新会提示一键补录。
 - 补录状态在进入聊天时即从持久层加载；补录与HEAD重建完成前输入框、全屏编辑和发送均锁定。
@@ -42,23 +46,34 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 - 修复按受影响活跃根节点分批提交。Episode从当前原始来源重生成；整轮删除会切开连续区间，不生成跨缺口节点。Arc/Era仅在原子节点一一对应且连续时重建，否则提升安全子节点前沿。全部Archive根修复后才重建或清空HEAD。
 - 修复状态写入会话和SaveSlot：固定待修复根、已完成数、HEAD标记、暂停/错误均可恢复；流式文本只存运行时。进程重启后的孤儿`RUNNING`转`PAUSED`，已提交根不回滚。
 - 仅AI生成节点参与自动修复。来源过期的用户手工节点要求用户在编辑器显式复核并保存，避免覆盖人工语义。
+- 长期记忆固定区现只保留单行容量/Archive/HEAD状态、维护/完整重建/HEAD重建/刷新四个可访问图标和层级Tab。错误、警告、扩容、来源修复、一键补录、压缩选择及全部运行进度移入可滚动“长期记忆维护”弹窗；任一详情或编辑页不再被维护卡片挤掉高度，维护图标用状态点提示待处理事项。
+- 完整重建确认后先校验模型/鉴权/后台网络保护，再删除Archive、HEAD、各层历史版本、旧Gap与手工记忆编辑；保留聊天原文、会话字数上限和其他设置。随后把所有当前可归档原文登记为新Gap，直接复用一键补录的Episode批次、流稿、轮数/阶段进度、暂停、错误续跑、压缩选择和最终HEAD流程。
+- `fullRegenerationPending`随状态与SaveSlot持久化；页面销毁或进程重启后可通过普通补录runner从剩余Gap继续，成功批次不回滚。末尾不足全局Episode目标的来源转回普通pending等待未来凑批，不生成违规单轮Episode，也不永久卡住完整重建。
+- HEAD单独重建保留Archive和旧HEAD，读取当前可注入Archive与最新稳定剧情基线。Gap、被安全排除的stale根、Archive扩容/压缩选择不再阻塞该显式动作；证据变化会拒绝提交，失败保留旧HEAD并显示HEAD错误。
 
 ## In Progress
 
-- 补录生命周期修复代码、instrumented回归、Skill更新和全量CI已完成。待设备数据保留部署及真实旧会话“summary出现后退出再进入”验证。
+- 无代码进行中。两个最终确认路径故意未在用户真实会话执行；等待用户按需验收。
 
 ## Tried And Failed
 
+- 旧长期记忆页把说明、两个全宽重建按钮、错误、警告、扩容、Archive重试、来源修复、补录和压缩选择全部固定堆在层级Tab上方；状态一多就把下面的HEAD、节点正文和编辑器压到零高度。现固定区只保留一行状态、四个图标和Tab，所有条件维护内容进入带状态点的可滚动维护弹窗。
+- 旧完整重建另建`runFullRegeneration`逐Episode Archive循环，只暴露“正在完全重新生成”任务类型，未复用补录的阶段、轮数、T范围、流稿、暂停和错误状态。现预检与清空后生成新Gap，直接进入`startBackfill`；压缩选择续跑会先等待完整重建runner退出，末尾不足N轮转普通pending后正常收尾。
 - 旧实现把进入直接上下文的Gap来源永久删除，导致上下文恢复后待补录提示消失。已改为持久Gap + 动态eligibility。
 - 旧实现每次读取状态都把`RUNNING`改成`PAUSED`，导致补录AI调用后、首个Episode提交前静默退出。已用进程内活跃runner登记修复。
 - 修复活跃runner后，手动补录启动点仍在`ChatViewModel.viewModelScope`；用户看到完整流式summary后退出页面会取消协程，使代码到不了Episode提交，重进后同一Gap再次提示。现补录任务和进度源均迁到应用级协调器，ViewModel仅观察。
 - 旧刷新仅重读已有状态，且Gap修复版本完成后会提前返回；上下文缩小时新滑出窗口的未覆盖轮次不会被扫描。已新增显式条件同步刷新并移除错误短路。
 - 旧实现先要求AI生成逐T `sourceCoverage`，再生成整体summary；即使隐藏coverage，模型输出和持久化仍近似随T线性增长。已改为直接多T单摘要，覆盖证明由程序生成。
+- 旧Arc/Era压缩要求`childCoverage`逐child非空且“不得抛弃任何被消费child”，程序还用这些逐项文本判断压缩量，模型因此只能把Episode/Arc依次改写并拼成流水账。删除`childCoverage`后，单阶段150–600字Prompt仍易逐条复述且文风华丽。现增加独立短规划请求先决定主线与删减项，再由压缩请求输出60–300字目标的朴素总结；程序仅按50–400字容错、连续来源和实际缩短校验。
+- 新增压缩规划后最初误设`maxAttempts=1`，导致规划阶段Token截断、空输出或普通输出错误第一次即终止，正式压缩的5次重试根本不会开始；旧JSON截断重试还在每轮外层尝试中重置Token上限。现所有AI阶段统一5次输出尝试，JSON截断扩容跨尝试保留，并把瞬时传输3次与输出5次分开计数；最终错误携带阶段和次数。
+- 旧状态可能出现“活跃记忆已覆盖T47以后、T46未覆盖但不在`state.gaps`”的隐式内部缺口。自动维护把T46混入普通pending首位，精确2轮批次因T46与后续来源不连续而永远停在T52；手动补录虽能用隐式覆盖检测选出T46，但AI生成后的`loadLocked`只按显式Gap保留backfill pending，于是把T46删除、状态改为`IDLE`，提交走静默`Aborted`。现加载时无条件把受后续活跃记忆包围的未覆盖来源提升为durable Gap，并从普通pending剥离。
+- 修复T46队头阻塞后的首次真实旧会话追赶并非死锁，但自动Archive在一个全局runner lease内串行生成/压缩全部历史批次，再让一键补录排队；页面约10分钟只显示同一加载文案，ViewModel还把排队补录伪装成`RUNNING`并锁聊天。设备现场最终从1830/2000收敛到1286/2000、T46告警消失，证明任务能完成。现改为一Episode一lease、锁外退避及`WAITING_FOR_ARCHIVE`真实排队态。
 - 旧RAG按相邻消息对分块，遗漏序章和同轮追加回复。已改为完整source turn分块。
 - 旧revision用“删旧ID，再把新ID追加末尾”重建编辑后的中间节点，导致底层分页乱序；UI又在展示前排序，因此肉眼正常但完整性检查持续报警。已改为位置敏感快照 + 加载期隐藏修复revision，未通过关闭告警掩盖问题。
 - 旧节点重新生成共用整会话Archive锁，并绑定全局`state.revision`；多个任务实际串行，保存任一候选都会误杀其他未变节点。已移除整会话锁和全局revision守卫，改为节点及其证据级校验。
 - 旧自动Episode、手动补录、压缩和HEAD部分路径仍绑定整会话`state.revision`。聊天新增、无关HEAD滚动或其他节点提交都会提升revision，导致正确AI结果被当作竞态丢弃；两个回复后的Archive/HEAD后台任务也会互相误杀。现统一改为操作证据集合校验并重载rebase；全局revision仅保留为单调持久化版本号。
 - 旧Archive失败按钮使用未解释的“重试 Archive 维护”，且ViewModel只在整个任务结束后刷新；等待同会话Archive锁或模型期间页面持续显示旧错误，看似点击无效。现以独立运行时状态即时反馈，不伪造不可计算的百分比。
+- 旧扩容/压缩选择在页面`viewModelScope`内先解析模型，再直接执行完整Archive或补录模型流程；只有全部完成才刷新UI。因此完整重建弹出“近期流程准备压缩为事件总结”后，点击按钮仍保留菜单，看似完全无响应，离页还会取消后续付费任务。现选择先原子落盘并即时从UI移除，模型续跑交给应用级协调器；协调器等待产生选择的旧runner退出，并保证连续多层选择不会被旧续跑去重吞掉。
 - 旧Archive注入先要求每个活跃节点都能从当前timeline推导完整T范围；旧迁移数据只要有一个sourceTurnId缺失，整段非空正文就被静默过滤。已把正文与T证明解耦：正文始终保留，异常范围单独告警并使用稳定排序。
 - 旧发送链把Archive、RAG、世界书、HEAD拼成同一动态字符串，且发送前重新读取记忆时会吞掉异常；最终消息列表没有Archive存在性断言，预览正确不能证明实际请求正确。已改为Archive独立消息、读取异常显式失败、正文预算与编译结果交叉校验、最终列表硬断言和Request JSON实际发送指示。
 - v1.2.6紧急修复先把独立Archive放在世界书/RAG之前，虽保证正文实际发送，但不符合动态资料语义顺序。现已统一主聊天与通用PromptAssembler为世界书→RAG→Archive→HEAD，并用最终序列化JSON验证位置。
@@ -74,8 +89,8 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 ## Untested
 
 - 真实用户旧会话尚未手动抓取最终API请求确认Archive正文、Bot名称覆盖、占位符替换与历史消息；纯策略和最终JSON序列化测试已覆盖正文保留、独立消息、Archive/HEAD多行Bot名称及兼容别名替换、HEAD-only拒绝和空历史过滤。本轮无连接设备，未做交互验收。
-- 最新直接多T单摘要、应用级补录runner及退出/重进后的流式进度恢复尚未经过用户真实模型手动验证。
-- 真实长聊下三层扩容询问、`compressible=false`链、Era平级压缩和多批补录仍缺少完整端到端证据。
+- T46隐式内部缺口提升、应用级补录runner及后续Archive追赶已由用户真实旧会话完成：T46告警消失，Archive从1830/2000经生成/压缩收敛到1286/2000。新有界runner与排队UI尚待部署后复核。
+- 真实长聊下新3–10/2–5消费窗口、低层级额外5个末尾参考、两阶段规划与60–300字筛选质量、三层扩容询问、`compressible=false`链、Era平级压缩和多批补录仍缺少完整端到端证据。
 - 多节点AI重新生成及其真实并发流式表现尚待用户再次调用模型验证；自动测试已覆盖流稿、候选不自动保存、无关节点Checkpoint不失效、目标/依据变化仍拒绝。
 - 旧SaveSlot、补录暂停后继续仍需真实数据手动回归。
 - 自动Episode/HEAD与用户继续聊天并发、手动多批补录期间继续聊天、压缩期间编辑无关节点，纯策略测试已通过；真实服务instrumented测试已编译但因当前无设备且SDK缺`emulator.exe`未执行，仍待真实长聊和真实模型手动回归。
@@ -92,14 +107,15 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 
 ## Recommended Next Steps
 
-1. 在存在旧Episode/Arc/Era的真实会话打开完整预览并抓取一次API请求，确认Archive含全部非空正文，所有user/assistant聊天消息都没有程序追加的`[T数字]`前缀。
-2. 选中一条明显错误的Episode/Arc/Era，点击“AI重新生成此节点”；先核对候选，确认错误正文没有影响结果，再决定是否保存Checkpoint。
-3. 在有Episode/Arc/Era的测试会话修改一条历史消息；打开长期记忆页，确认出现修复警告，旧受影响根/HEAD不再进入完整预览。点击修复，观察阶段、流式摘要和逐根完成数。
-4. 删除一个位于压缩节点中间的完整source turn；确认修复不会生成跨删除缺口的Episode/Arc/Era，且暂停/继续或失败重试不会丢失已完成根。
-5. 把全局上下文保留组数从较大值降到最低，再打开长期记忆页或点击刷新；确认新滑出窗口的T范围立即显示“一键补录长期记忆”。
-6. 再把上下文扩大并刷新，确认相应范围只暂时隐藏；缩小后刷新应重新出现，且不产生重复Gap。
-7. 点击“一键补录长期记忆”，等summary出现后立即退出聊天；稍后重进，确认任务未被取消、Episode已持久化且同一Gap不再提示。
-8. 若失败，记录页面展示的完整失败原因；不要重建RAG或清数据。
+1. 部署后打开长期记忆各层“当前/编辑/历史”，确认固定顶部仅一行状态与四个图标，正文和编辑区始终获得剩余高度；点击滑杆图标确认错误、补录、修复、选择和进度都在可滚动维护弹窗内。
+2. 在可消耗额度的测试会话确认完整重建；核对清空后维护弹窗显示与一键补录相同的准备/生成T范围/检查空间/保存/HEAD阶段、轮数、Episode数与流稿，暂停和继续不再次清空已完成结果。
+3. 在存在旧Episode/Arc/Era的真实会话打开完整预览并抓取一次API请求，确认Archive含全部非空正文，所有user/assistant聊天消息都没有程序追加的`[T数字]`前缀。
+4. 选中一条明显错误的Episode/Arc/Era，点击“AI重新生成此节点”；先核对候选，确认错误正文没有影响结果，再决定是否保存Checkpoint。
+5. 在有Episode/Arc/Era的测试会话修改一条历史消息；打开长期记忆页，确认出现修复警告，旧受影响根/HEAD不再进入完整预览。点击修复，观察阶段、流式摘要和逐根完成数。
+6. 删除一个位于压缩节点中间的完整source turn；确认修复不会生成跨删除缺口的Episode/Arc/Era，且暂停/继续或失败重试不会丢失已完成根。
+7. 把全局上下文保留组数从较大值降到最低，再打开长期记忆页或点击刷新；确认新滑出窗口的T范围立即显示“一键补录长期记忆”。
+8. 再把上下文扩大并刷新，确认相应范围只暂时隐藏；缩小后刷新应重新出现，且不产生重复Gap。
+9. 若失败，记录页面展示的完整失败原因；不要重建RAG或清数据。
 
 ## Architecture Notes
 
@@ -115,6 +131,11 @@ Status: 补录任务已从页面`viewModelScope`迁到应用级协调器；页�
 
 ## Verification Baseline
 
+- 2026-08-02 Arc/Era两阶段筛选式压缩与AI重试修复：定向`MemoryCompressionPolicyTest`、`PromptTemplatesTest`、`StreamingChatServiceThinkingTest`、`MemoryAiRetryTest`、`MemoryAiFailurePolicyTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过，Android测试源码编译成功。策略覆盖50/400程序边界及Era最低可压缩输入；Prompt覆盖60–300目标、禁止逐child/华丽描写、50字内无思维过程规划；请求体覆盖规划`maxTokens=128`、隔离角色扮演参数、不继承思考配置、关闭受支持模型思考且不请求JSON。重试覆盖规划/正式压缩/Episode/HEAD输出错误5次、可恢复传输错误3次、HTTP 400立即停止、截断Token上限1800→3600→4096跨尝试保留，以及失败阶段/尝试次数持久化。早先实体机`49075ec2`已通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `11693`；重试修复后`adb devices -l`无连接设备，未重新部署。未触发真实压缩或模型调用，两阶段摘要质量仍待真实长聊验收。
+- 2026-08-02长期记忆紧凑UI与重建复用补录：强制`:app:compileDebugKotlin --rerun-tasks`、定向`MemoryRegenerationPolicyTest`、全量`gradlew test`及`ci.ps1 -SkipAssemble`通过，Android测试源码编译通过。纯策略覆盖重建Gap初始化、时间线断裂分组、末尾不足N轮转普通pending和暂停保留；instrumented源码覆盖清空后直接进入真实`startBackfill`并完成HEAD/flag；Compose源码覆盖图标二次确认及完整重建复用补录进度文案。`adb devices -l`无连接设备，未部署、未调用真实模型。
+- 2026-08-02压缩选择无响应修复：`:app:compileDebugKotlin`、定向`MemoryCompressionDecisionPolicyTest`、全量`gradlew test`及`ci.ps1 -SkipAssemble`通过，Android测试源码编译通过。新增纯策略覆盖立即清空选择、拒绝标记、完整重建pending保留、补录续跑归属和最高上限错误；真实仓库服务测试确认选择提交与状态恢复发生在任何模型调用前；Compose测试覆盖“保持上限并压缩”回调及菜单立即关闭。`adb devices -l`无连接设备，未部署、未点击真实选择、未调用模型；真实长会话菜单交互待用户验收。
+- 2026-08-01手动完整/HEAD重建：`:app:compileDebugKotlin`、全量`gradlew test`及`ci.ps1 -SkipAssemble`通过，Android测试源码包含两个确认弹窗、Token警告和确认回调场景并成功编译。物理设备`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装，进程PID `17561`。未打开真实长聊、未点击任一最终确认、未调用模型，避免自动维护或重建消耗API额度。
+- 2026-08-01隐式内部Gap修复：定向`MemoryBackfillPolicyTest`、`MemoryEpisodeBatchPolicyTest`与全量`gradlew test`通过，`ci.ps1 -SkipAssemble`通过并编译Android测试源码。回归覆盖隐式单轮缺口转durable Gap、从普通pending剥离、实时backfill在内部重载后保持`RUNNING`与目标来源、后续普通2轮批次继续、旧不足1/2轮segment不阻塞后续精确2/3轮segment，以及重复加载幂等。补录提交若异常变`IDLE`会显示具体错误，不再静默停止。物理设备`49075ec2`以`redeploy.bat --no-pause`完成release保数据安装和启动；真实T46模型补录待用户验收。
 - 2026-07-21补录页面生命周期修复：`:app:compileDebugKotlin`、`:app:compileDebugAndroidTestKotlin`、`ci.ps1 -SkipAssemble`及完整`ci.ps1`通过；新增instrumented场景在summary已可见后销毁页面观察者，应用级任务仍完成Episode、HEAD和持久状态。`adb devices -l`无设备，未执行连接测试或部署；Skill校验脚本因运行环境缺`PyYAML`未执行，frontmatter与结构人工检查通过。
 - 2026-07-27 Bot名称拆分：定向角色卡兼容、schema 7传输、Prompt普通/缓存/World Book outlet及`ChatRequestMemoryPolicyTest`通过；全量`app/.\gradlew.bat test`、`:app:compileDebugKotlin --rerun-tasks`和`app/ci.ps1 -SkipAssemble`通过。最终请求JSON测试确认Archive/HEAD使用多行`effectiveBotName`替换兼容别名；`adb devices -l`无连接设备，未部署或调用真实模型。
 - 2026-07-18 Archive重试UX切片：`:app:compileDebugKotlin --rerun-tasks`与`ci.ps1 -SkipAssemble`通过；新增Compose测试覆盖失败说明/按钮回调和点击后的即时运行反馈。`adb devices -l`无连接设备，未部署或调用真实模型。

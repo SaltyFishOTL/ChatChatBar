@@ -8,11 +8,14 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MemoryBackfillStatus
 import com.example.chatbar.data.local.entity.MemoryCompressionKind
+import com.example.chatbar.data.local.entity.MemoryDecisionTier
 import com.example.chatbar.data.local.entity.MemoryGap
 import com.example.chatbar.data.local.entity.MemoryGapReason
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
+import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PendingMemoryDecision
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.SettingsRepository
@@ -31,12 +34,121 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
 @RunWith(AndroidJUnit4::class)
 class LongTermMemoryScopedCommitTest {
+    @Test
+    fun fullRegenerationResetFeedsExistingBackfillFlow() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val storage = JsonFileStorage(context)
+        val chatRepository = ChatRepository(storage)
+        val memoryRepository = MemoryRepository(storage)
+        val settingsRepository = SettingsRepository(storage)
+        val originalSettings = settingsRepository.getAppSettings()
+        val session = ChatSession.create(
+            characterCardId = "test-character",
+            title = "full-regeneration-backfill-${UUID.randomUUID()}"
+        ).copy(longTermMemoryEnabled = true)
+        val ai = PausingMemoryAiClient()
+        val service = LongTermMemoryService(
+            chatRepository = chatRepository,
+            memoryRepository = memoryRepository,
+            settingsRepository = settingsRepository,
+            ai = ai,
+            contextWindowManager = ContextWindowManager()
+        )
+
+        try {
+            settingsRepository.saveAppSettings(
+                originalSettings.copy(
+                    defaultContextWindowSize = 1,
+                    episodeMaxSourceTurns = 1
+                )
+            )
+            chatRepository.createSession(session)
+            chatRepository.replaceMessagesForSession(session.id, stableTurns(session.id))
+            service.ensureMigrated(session.id)
+
+            service.resetForFullRegeneration(session.id)
+            val reset = requireNotNull(memoryRepository.getState(session.id))
+            assertTrue(reset.fullRegenerationPending)
+            assertEquals(listOf("s0"), reset.gaps.single().sourceTurnIds)
+
+            ai.releaseEpisode.complete(Unit)
+            service.startBackfill(session.id, model())
+            service.markFullRegenerationCompleteAfterBackfill(session.id)
+
+            val completed = requireNotNull(memoryRepository.getState(session.id))
+            assertFalse(completed.fullRegenerationPending)
+            assertEquals(MemoryBackfillStatus.IDLE, completed.backfill.status)
+            assertTrue(completed.gaps.isEmpty())
+            assertEquals(listOf("s0"), service.activeNodes(session.id).single().sourceTurnIds)
+        } finally {
+            settingsRepository.saveAppSettings(originalSettings)
+            memoryRepository.deleteForSession(session.id)
+            chatRepository.deleteSession(session.id)
+        }
+    }
+
+    @Test
+    fun compressionChoiceCommitsBeforeAnyContinuationModelCall() = runBlocking {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val storage = JsonFileStorage(context)
+        val chatRepository = ChatRepository(storage)
+        val memoryRepository = MemoryRepository(storage)
+        val settingsRepository = SettingsRepository(storage)
+        val session = ChatSession.create(
+            characterCardId = "test-character",
+            title = "compression-choice-${UUID.randomUUID()}"
+        ).copy(
+            longTermMemoryEnabled = true,
+            memoryArchiveStatus = MemoryUpdateStatus.LIMIT_DECISION_REQUIRED,
+            memoryUpdateStatus = MemoryUpdateStatus.LIMIT_DECISION_REQUIRED
+        )
+        val ai = PausingMemoryAiClient()
+        val service = LongTermMemoryService(
+            chatRepository = chatRepository,
+            memoryRepository = memoryRepository,
+            settingsRepository = settingsRepository,
+            ai = ai,
+            contextWindowManager = ContextWindowManager()
+        )
+
+        try {
+            chatRepository.createSession(session)
+            service.ensureMigrated(session.id)
+            val initialState = requireNotNull(memoryRepository.getState(session.id))
+            memoryRepository.saveState(
+                initialState.copy(
+                    pendingDecision = PendingMemoryDecision(MemoryDecisionTier.EPISODE),
+                    fullRegenerationPending = true
+                )
+            )
+
+            val continuation = service.resolveCompressionDecision(
+                sessionId = session.id,
+                expand = false
+            )
+
+            val persistedState = requireNotNull(memoryRepository.getState(session.id))
+            val persistedSession = requireNotNull(chatRepository.getSession(session.id))
+            assertEquals(MemoryCompressionDecisionContinuation.ARCHIVE, continuation)
+            assertEquals(null, persistedState.pendingDecision)
+            assertTrue(persistedState.episodeCompressionPromptDeclined)
+            assertTrue(persistedState.fullRegenerationPending)
+            assertEquals(MemoryUpdateStatus.IDLE, persistedSession.memoryArchiveStatus)
+            assertEquals(MemoryUpdateStatus.IDLE, persistedSession.memoryUpdateStatus)
+            assertFalse(ai.episodeStarted.isCompleted)
+        } finally {
+            memoryRepository.deleteForSession(session.id)
+            chatRepository.deleteSession(session.id)
+        }
+    }
+
     @Test
     fun applicationOwnedBackfillCommitsAfterPageObserverIsCancelled() = runBlocking {
         val context = ApplicationProvider.getApplicationContext<Context>()

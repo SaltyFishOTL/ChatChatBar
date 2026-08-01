@@ -26,6 +26,8 @@ class MemorySourceRepairSerializationTest {
         assertEquals(MemorySourceRepairStatus.IDLE, state.sourceRepair.status)
         assertEquals(MemorySourceRepairStatus.IDLE, snapshot.sourceRepair.status)
         assertTrue(state.sourceRepair.pendingRootNodeIds.isEmpty())
+        assertTrue(!state.fullRegenerationPending)
+        assertTrue(!snapshot.fullRegenerationPending)
     }
 
     @Test
@@ -48,5 +50,20 @@ class MemorySourceRepairSerializationTest {
         )
 
         assertEquals(state.sourceRepair, decoded.sourceRepair)
+    }
+
+    @Test
+    fun fullRegenerationPendingRoundTrips() {
+        val state = MemorySessionState(
+            sessionId = "session",
+            fullRegenerationPending = true
+        )
+
+        val decoded = json.decodeFromString(
+            MemorySessionState.serializer(),
+            json.encodeToString(MemorySessionState.serializer(), state)
+        )
+
+        assertTrue(decoded.fullRegenerationPending)
     }
 }

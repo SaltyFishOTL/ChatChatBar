@@ -237,6 +237,7 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         eraCompressionPromptDeclined = eraCompressionPromptDeclined,
         eraCompressionsSincePrompt = eraCompressionsSincePrompt,
         pendingDecision = pendingDecision,
+        fullRegenerationPending = fullRegenerationPending,
         memoryWasEnabled = memoryWasEnabled,
         disabledAfterSourceOrder = disabledAfterSourceOrder,
         recordingStartsAfterSourceOrder = recordingStartsAfterSourceOrder,

@@ -25,9 +25,10 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 3. Define semantic tokens and component variants centrally. Never embed page-specific colors or duplicate component styling.
 4. Build primitives from Compose Foundation/UI/runtime. Material icons may remain temporarily; Material 3 components, theme, defaults, and color scheme may not enter new code.
 5. Compose screen from explicit anatomy: header, content groups, items/fields, actions, overlays. Keep state ownership unchanged.
-6. Preserve enabled, pressed, focused, selected, invalid, loading, destructive, and disabled states.
-7. Compile after each migrated component or screen. Search for remaining Material 3 imports after each migration batch.
-8. Remove Material 3 dependency only after imports and fully qualified usages reach zero.
+6. Budget compact-height space before styling. Bound fixed chrome, reserve flexible height for primary detail/editor content, and move conditional maintenance/status clusters into a bounded scrollable dialog or sheet.
+7. Preserve enabled, pressed, focused, selected, invalid, loading, destructive, and disabled states.
+8. Compile after each migrated component or screen. Search for remaining Material 3 imports after each migration batch.
+9. Remove Material 3 dependency only after imports and fully qualified usages reach zero.
 
 ## Fullscreen and IME Insets
 
@@ -47,6 +48,7 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 - Use one radius scale, spacing scale, control-height scale, and typography scale.
 - Use visible focus treatment for keyboard/D-pad navigation.
 - Use Android minimum touch target of 48dp even when visual control is smaller.
+- Icon-only fixed actions require an unambiguous standard icon, `contentDescription`, enabled/loading semantics, and a 48dp touch target. Keep text when icon meaning is unclear.
 - Use dialogs for focused decisions; sheets for mobile action lists and dense settings.
 - Use `Field` anatomy for forms: label, control, description, error.
 
@@ -67,6 +69,7 @@ A screen is migrated only when:
 
 - No `androidx.compose.material3` import or qualified use remains.
 - Existing user actions and state transitions remain available.
+- Primary detail/editor content retains usable height when every conditional warning, error, progress, or maintenance state is present.
 - UI uses semantic tokens and UI Kit components.
 - Loading, empty, error, disabled, and destructive states remain represented.
 - Kotlin compile passes.

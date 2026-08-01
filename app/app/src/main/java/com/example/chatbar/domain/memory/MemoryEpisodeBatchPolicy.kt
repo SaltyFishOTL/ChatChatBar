@@ -22,41 +22,53 @@ object MemoryEpisodeBatchPolicy {
         val byId = state.timeline.associateBy { it.sourceTurnId }
         val sorted = pendingSourceTurnIds.distinct().sortedBy { byId[it]?.sourceOrder ?: Long.MAX_VALUE }
         if (sorted.isEmpty()) return emptyList()
-        val segment = mutableListOf<String>()
+        val segments = mutableListOf<MutableList<String>>()
+        var segment = mutableListOf<String>()
+        fun flushSegment() {
+            if (segment.isNotEmpty()) segments.add(segment)
+            segment = mutableListOf()
+        }
         for (sourceId in sorted) {
-            val entry = byId[sourceId] ?: break
-            if (entry.tombstone) break
+            val entry = byId[sourceId]
+            if (entry == null || entry.tombstone) {
+                flushSegment()
+                continue
+            }
             val previous = segment.lastOrNull()
-            if (previous != null && byId[previous]?.displayT?.plus(1) != entry.displayT) break
+            if (previous != null && byId[previous]?.displayT?.plus(1) != entry.displayT) {
+                flushSegment()
+            }
             segment += sourceId
         }
-        if (segment.size >= target) return segment.take(target)
-        if (mode != MemoryEpisodeBatchMode.HISTORICAL_BACKFILL || segment.size != 1) {
-            return emptyList()
-        }
-        val sourceId = segment.single()
-        val entry = byId[sourceId] ?: return emptyList()
-        val explicitGap = state.gaps.firstOrNull { sourceId in it.sourceTurnIds }
-        if (explicitGap?.reason in setOf(
-                MemoryGapReason.DISABLED,
-                MemoryGapReason.DELETED_SOURCE,
-                MemoryGapReason.DECLINED_BACKFILL
-            )
-        ) {
-            return emptyList()
-        }
+        flushSegment()
         val covered = activeNodes.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
-        val left = state.timeline.firstOrNull { it.displayT == entry.displayT - 1 }
-        val right = state.timeline.firstOrNull { it.displayT == entry.displayT + 1 }
-        return if (
-            left != null && right != null &&
-            !left.tombstone && !right.tombstone &&
-            left.sourceTurnId in covered && right.sourceTurnId in covered
-        ) {
-            listOf(sourceId)
-        } else {
-            emptyList()
+        for (candidate in segments) {
+            if (candidate.size >= target) return candidate.take(target)
+            if (mode != MemoryEpisodeBatchMode.HISTORICAL_BACKFILL || candidate.size != 1) {
+                continue
+            }
+            val sourceId = candidate.single()
+            val entry = byId[sourceId] ?: continue
+            val explicitGap = state.gaps.firstOrNull { sourceId in it.sourceTurnIds }
+            if (explicitGap?.reason in setOf(
+                    MemoryGapReason.DISABLED,
+                    MemoryGapReason.DELETED_SOURCE,
+                    MemoryGapReason.DECLINED_BACKFILL
+                )
+            ) {
+                continue
+            }
+            val left = state.timeline.firstOrNull { it.displayT == entry.displayT - 1 }
+            val right = state.timeline.firstOrNull { it.displayT == entry.displayT + 1 }
+            if (
+                left != null && right != null &&
+                !left.tombstone && !right.tombstone &&
+                left.sourceTurnId in covered && right.sourceTurnId in covered
+            ) {
+                return listOf(sourceId)
+            }
         }
+        return emptyList()
     }
 
     fun completeBatchCount(sourceTurnCount: Int, targetSourceTurns: Int): Int =

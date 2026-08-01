@@ -74,6 +74,11 @@ data class MemoryBackfillEstimate(
     val sourceCharacters: Int = 0
 )
 
+data class MemoryArchiveUpdateResult(
+    val committedEpisodes: Int = 0,
+    val hasMoreReadyBatches: Boolean = false
+)
+
 private data class LoadedMemory(
     val session: ChatSession,
     val messages: List<ChatMessage>,
@@ -245,6 +250,53 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    suspend fun setHeadWaitingForNetwork(sessionId: String, message: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val failure = MemoryFailureInfo(
+            area = MemoryFailureArea.HEAD,
+            stage = MemoryFailureStage.NETWORK,
+            category = MemoryFailureCategory.NETWORK,
+            message = message,
+            automaticallyRetryable = true
+        )
+        val next = loaded.state.copy(
+            headFailure = failure,
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(
+            loaded.copy(state = next),
+            headStatus = MemoryUpdateStatus.WAITING_FOR_NETWORK,
+            headError = message
+        )
+    }
+
+    suspend fun setHeadPreflightError(sessionId: String, message: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val failure = MemoryFailureInfo(
+            area = MemoryFailureArea.HEAD,
+            stage = MemoryFailureStage.PREFLIGHT,
+            category = if (message.contains("鉴权")) {
+                MemoryFailureCategory.AUTH
+            } else {
+                MemoryFailureCategory.UNKNOWN
+            },
+            message = message
+        )
+        val next = loaded.state.copy(
+            headFailure = failure,
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(
+            loaded.copy(state = next),
+            headStatus = MemoryUpdateStatus.ERROR,
+            headError = message
+        )
+    }
+
     suspend fun maintainHeadAutomatically(sessionId: String, modelConfig: ModelConfig) {
         val shouldBackfill = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)
@@ -260,6 +312,23 @@ class LongTermMemoryService internal constructor(
             )
         }
         if (shouldBackfill) backfillHead(sessionId, modelConfig) else prepareHeadBeforePrompt(sessionId, modelConfig)
+    }
+
+    suspend fun regenerateHeadFromArchive(sessionId: String, modelConfig: ModelConfig) {
+        stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            check(loaded.session.longTermMemoryEnabled) { "长期记忆未启用" }
+            check(loaded.state.backfill.status != MemoryBackfillStatus.RUNNING) {
+                "长期记忆正在补录"
+            }
+            check(loaded.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
+                "长期记忆正在修复历史来源"
+            }
+            check(MemoryHeadUpdatePolicy.backfill(stableSourceTurnIds(loaded.messages)) != null) {
+                "稳定剧情轮不足，无法重新生成HEAD"
+            }
+        }
+        updateHead(sessionId, modelConfig, HeadUpdateRequest.BACKFILL)
     }
 
     suspend fun reachableNodes(sessionId: String): List<MemoryNode> = stateLock(sessionId) {
@@ -279,8 +348,10 @@ class LongTermMemoryService internal constructor(
     suspend fun updateArchiveAfterReply(
         sessionId: String,
         modelConfig: ModelConfig,
-        contextWindowSize: Int? = null
-    ) = archiveLock(sessionId) {
+        contextWindowSize: Int? = null,
+        maxEpisodeBatches: Int = Int.MAX_VALUE
+    ): MemoryArchiveUpdateResult = archiveLock(sessionId) {
+        require(maxEpisodeBatches > 0) { "单次归档维护的Episode批次数必须大于0" }
         val initial = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)
             if (!loaded.session.longTermMemoryEnabled ||
@@ -294,7 +365,7 @@ class LongTermMemoryService internal constructor(
             }
             setArchiveStatusLocked(loaded.session, MemoryUpdateStatus.UPDATING, null)
             loaded
-        } ?: return@archiveLock
+        } ?: return@archiveLock MemoryArchiveUpdateResult()
 
         try {
             val initialState = initial.state
@@ -343,7 +414,9 @@ class LongTermMemoryService internal constructor(
                 }
             }
 
-            while (true) {
+            var committedEpisodes = 0
+            var allowFollowUp = true
+            while (committedEpisodes < maxEpisodeBatches) {
                 val latest = stateLock(sessionId) { loadLocked(sessionId) }
                 val state = latest.state
                 if (!latest.session.longTermMemoryEnabled || state.pendingDecision != null) break
@@ -387,13 +460,19 @@ class LongTermMemoryService internal constructor(
                     label = "Episode"
                 )
                 when (commit) {
-                    EpisodeCommitResult.Aborted -> break
-                    is EpisodeCommitResult.DecisionRequired -> break
-                    is EpisodeCommitResult.Committed -> Unit
+                    EpisodeCommitResult.Aborted -> {
+                        allowFollowUp = false
+                        break
+                    }
+                    is EpisodeCommitResult.DecisionRequired -> {
+                        allowFollowUp = false
+                        break
+                    }
+                    is EpisodeCommitResult.Committed -> committedEpisodes++
                 }
             }
 
-            stateLock(sessionId) {
+            val hasMoreReadyBatches = stateLock(sessionId) {
                 val loaded = loadLocked(sessionId)
                 val status = if (loaded.state.pendingDecision != null) {
                     MemoryUpdateStatus.LIMIT_DECISION_REQUIRED
@@ -408,7 +487,19 @@ class LongTermMemoryService internal constructor(
                     ).also { memoryRepository.saveState(it) }
                 } else loaded.state
                 compileAndCacheLocked(loaded.copy(state = cleared), archiveStatus = status, archiveError = null)
+                allowFollowUp && status == MemoryUpdateStatus.IDLE &&
+                    MemoryEpisodeBatchPolicy.nextBatch(
+                        pendingSourceTurnIds = cleared.pendingSourceTurnIds,
+                        state = cleared,
+                        activeNodes = cleared.activeNodeIds.mapNotNull(loaded.nodes::get),
+                        targetSourceTurns = maxTurns,
+                        mode = MemoryEpisodeBatchMode.NORMAL
+                    ).isNotEmpty()
             }
+            MemoryArchiveUpdateResult(
+                committedEpisodes = committedEpisodes,
+                hasMoreReadyBatches = hasMoreReadyBatches
+            )
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             stateLock(sessionId) {
@@ -427,6 +518,7 @@ class LongTermMemoryService internal constructor(
                     if (session.longTermMemoryEnabled) error.message ?: error::class.simpleName else null
                 )
             }
+            MemoryArchiveUpdateResult()
         }
     }
 
@@ -805,16 +897,8 @@ class LongTermMemoryService internal constructor(
                 ) { output ->
                     check(output.compressible) { "重新生成不得返回不可压缩" }
                     validateCompressionResponse(output, candidate)
-                    val coverageChars = output.childCoverage.sumOf { it.text.trim().length } +
-                        (output.childCoverage.size - 1).coerceAtLeast(0)
-                    check(coverageChars < children.sumOf { it.body.length }) {
-                        "重新生成的child覆盖没有形成压缩"
-                    }
                     check(output.summary.trim().length < children.sumOf { it.body.length }) {
                         "重新生成的正文没有形成压缩"
-                    }
-                    check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(output.summary)) {
-                        "重新生成正文包含无T限定的现在/目前/仍然"
                     }
                 }.summary
             }
@@ -889,48 +973,34 @@ class LongTermMemoryService internal constructor(
 
     suspend fun resolveCompressionDecision(
         sessionId: String,
-        expand: Boolean,
-        modelConfig: ModelConfig,
-        contextWindowSize: Int? = null
-    ) {
-        val resumeBackfill = stateLock(sessionId) {
-            val loaded = loadLocked(sessionId)
-            loaded.state.pendingDecision != null &&
-                loaded.state.backfill.status == MemoryBackfillStatus.PAUSED &&
-                loaded.state.backfill.pendingSourceTurnIds.isNotEmpty()
-        }
-        if (expand) {
-            increaseLimit(sessionId)
-            if (resumeBackfill) startBackfill(sessionId, modelConfig)
-            return
-        }
-        stateLock(sessionId) {
-            val loaded = loadLocked(sessionId)
-            val decision = loaded.state.pendingDecision ?: return@stateLock
-            val next = when (decision.tier) {
-                MemoryDecisionTier.EPISODE -> loaded.state.copy(
-                    episodeCompressionPromptDeclined = true
-                )
-                MemoryDecisionTier.ARC -> loaded.state.copy(
-                    arcCompressionPromptDeclined = true
-                )
-                MemoryDecisionTier.ERA -> loaded.state.copy(
-                    eraCompressionPromptDeclined = true,
-                    eraCompressionsSincePrompt = 0
-                )
-            }.copy(
-                pendingDecision = null,
-                revision = loaded.state.revision + 1,
-                updatedAt = System.currentTimeMillis()
-            )
-            memoryRepository.saveState(next)
+        expand: Boolean
+    ): MemoryCompressionDecisionContinuation? = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val resolution = MemoryCompressionDecisionPolicy.resolve(
+            current = loaded.state,
+            expand = expand,
+            canExpand = MemoryBudgetPolicy.canIncrease(loaded.session.memoryLimitChars)
+        ) ?: run {
             setArchiveStatusLocked(loaded.session, MemoryUpdateStatus.IDLE, null)
+            return@stateLock null
         }
-        if (resumeBackfill) {
-            startBackfill(sessionId, modelConfig)
+        val updatedSession = if (expand) {
+            loaded.session.copy(
+                memoryLimitChars = MemoryBudgetPolicy.increase(loaded.session.memoryLimitChars)
+            )
         } else {
-            updateArchiveAfterReply(sessionId, modelConfig, contextWindowSize)
+            loaded.session
         }
+        memoryRepository.saveState(resolution.state)
+        if (updatedSession != loaded.session) {
+            chatRepository.updateSession(updatedSession)
+        }
+        compileAndCacheLocked(
+            loaded.copy(session = updatedSession, state = resolution.state),
+            archiveStatus = MemoryUpdateStatus.IDLE,
+            archiveError = null
+        )
+        resolution.continuation
     }
 
     suspend fun consumeCompressionEvents(sessionId: String): List<MemoryCompressionEvent> =
@@ -1231,14 +1301,15 @@ class LongTermMemoryService internal constructor(
                 appSettings.defaultContextWindowSize.coerceAtLeast(1)
             )
             val stableIds = stableSourceTurnIds(loaded.messages)
-            val headBackfillRequired = MemoryHeadUpdatePolicy.requiresBackfill(
-                hasHeadContent = loaded.state.head.render().isNotBlank(),
-                throughSourceTurnId = loaded.state.head.throughSourceTurnId,
-                stableSourceTurnIds = stableIds,
-                hasHistoricalMemory = loaded.state.activeNodeIds.isNotEmpty() ||
-                    loaded.state.legacyReferenceNodeIds.isNotEmpty() ||
-                    loaded.state.gaps.isNotEmpty()
-            )
+            val headBackfillRequired = loaded.state.fullRegenerationPending ||
+                MemoryHeadUpdatePolicy.requiresBackfill(
+                    hasHeadContent = loaded.state.head.render().isNotBlank(),
+                    throughSourceTurnId = loaded.state.head.throughSourceTurnId,
+                    stableSourceTurnIds = stableIds,
+                    hasHistoricalMemory = loaded.state.activeNodeIds.isNotEmpty() ||
+                        loaded.state.legacyReferenceNodeIds.isNotEmpty() ||
+                        loaded.state.gaps.isNotEmpty()
+                )
             if (missing.isEmpty() && !headBackfillRequired) return@stateLock null
             val n = appSettings.episodeMaxSourceTurns.coerceIn(1, 6)
             val finalTimeline = sourceTimeline(loaded.messages, loaded.session)
@@ -1346,7 +1417,14 @@ class LongTermMemoryService internal constructor(
                     model = modelConfig,
                     label = "补录Episode",
                     canContinue = {
-                        it.state.backfill.status == MemoryBackfillStatus.RUNNING
+                        when (it.state.backfill.status) {
+                            MemoryBackfillStatus.RUNNING -> true
+                            MemoryBackfillStatus.PAUSED,
+                            MemoryBackfillStatus.ERROR -> false
+                            MemoryBackfillStatus.IDLE -> error(
+                                "补录Episode提交前任务状态意外结束，待处理来源仍未保存"
+                            )
+                        }
                     }
                 )
                 when (commit) {
@@ -1385,10 +1463,20 @@ class LongTermMemoryService internal constructor(
             }
             val completed = stateLock(sessionId) {
                 val current = loadLocked(sessionId)
-                if (current.state.backfill.pendingSourceTurnIds.isEmpty()) {
-                    val next = current.state.copy(
+                val remaining = current.state.backfill.pendingSourceTurnIds
+                val deferredState = if (current.session.longTermMemoryEnabled) {
+                    MemoryRegenerationPolicy.deferIncompleteBackfillTail(current.state)
+                } else {
+                    null
+                }
+                if (remaining.isEmpty() || deferredState != null) {
+                    val baseState = deferredState ?: current.state
+                    val next = baseState.copy(
                         legacyReferenceNodeIds = emptyList(),
-                        backfill = current.state.backfill.copy(updatedAt = System.currentTimeMillis()),
+                        backfill = baseState.backfill.copy(
+                            pendingSourceTurnIds = emptyList(),
+                            updatedAt = System.currentTimeMillis()
+                        ),
                         revision = current.state.revision + 1,
                         updatedAt = System.currentTimeMillis()
                     )
@@ -1605,6 +1693,7 @@ class LongTermMemoryService internal constructor(
             eraCompressionPromptDeclined = importedState.eraCompressionPromptDeclined,
             eraCompressionsSincePrompt = importedState.eraCompressionsSincePrompt,
             pendingDecision = importedState.pendingDecision,
+            fullRegenerationPending = importedState.fullRegenerationPending,
             memoryWasEnabled = importedState.memoryWasEnabled,
             disabledAfterSourceOrder = importedState.disabledAfterSourceOrder,
             recordingStartsAfterSourceOrder = importedState.recordingStartsAfterSourceOrder,
@@ -1730,6 +1819,59 @@ class LongTermMemoryService internal constructor(
                 longTermMemorySchemaVersion = CURRENT_LONG_TERM_MEMORY_SCHEMA_VERSION
             )
         )
+    }
+
+    suspend fun resetForFullRegeneration(sessionId: String) = archiveLock(sessionId) {
+        stateLock(sessionId) {
+            val loaded = loadLocked(sessionId)
+            check(loaded.session.longTermMemoryEnabled) { "长期记忆未启用" }
+            val timeline = sourceTimeline(loaded.messages, loaded.session)
+            val backfillSourceTurnIds = completeArchivedSourceTurnIds(
+                loaded.messages,
+                currentContextWindowSize()
+            )
+            val reset = MemoryRegenerationPolicy.resetForFullRegeneration(
+                current = loaded.state,
+                timeline = timeline,
+                backfillSourceTurnIds = backfillSourceTurnIds,
+                memoryEnabled = true
+            )
+            memoryRepository.deleteForSession(sessionId)
+            memoryRepository.saveState(reset)
+            chatRepository.updateSession(
+                loaded.session.copy(
+                    longTermMemory = "",
+                    longTermMemoryUpdatedThroughMessageId = null,
+                    memoryStateRevision = reset.revision,
+                    memoryHeadCommitId = null,
+                    memoryUpdateStatus = MemoryUpdateStatus.IDLE,
+                    memoryUpdateError = null,
+                    memoryArchiveStatus = MemoryUpdateStatus.IDLE,
+                    memoryArchiveError = null,
+                    memoryHeadStatus = MemoryUpdateStatus.IDLE,
+                    memoryHeadError = null,
+                    longTermMemorySchemaVersion = CURRENT_LONG_TERM_MEMORY_SCHEMA_VERSION
+                )
+            )
+        }
+    }
+
+    suspend fun markFullRegenerationCompleteAfterBackfill(sessionId: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        if (!loaded.state.fullRegenerationPending) return@stateLock
+        if (loaded.state.backfill.status != MemoryBackfillStatus.IDLE ||
+            loaded.state.backfill.pendingSourceTurnIds.isNotEmpty() ||
+            loaded.session.memoryHeadStatus != MemoryUpdateStatus.IDLE
+        ) {
+            return@stateLock
+        }
+        val next = loaded.state.copy(
+            fullRegenerationPending = false,
+            revision = loaded.state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(loaded.copy(state = next))
     }
 
     // ===== 预算与压缩 =====
@@ -1970,15 +2112,15 @@ class LongTermMemoryService internal constructor(
             renderedChildren = renderChildren(candidate.candidates, state.timeline)
         ) { output ->
             if (!output.compressible) {
-                check(output.consumedChildIds.isEmpty() && output.childCoverage.isEmpty() && output.summary.isBlank()) {
+                check(output.consumedChildIds.isEmpty() && output.summary.isBlank()) {
                     "compressible=false时不得携带压缩内容"
                 }
             } else {
                 validateCompressionResponse(output, candidate)
                 val consumed = candidate.candidates.take(output.consumedChildIds.size)
-                val outputChars = output.childCoverage.sumOf { it.text.trim().length } +
-                    (output.childCoverage.size - 1).coerceAtLeast(0)
-                check(outputChars < consumed.sumOf { it.body.length }) { "压缩后正文没有缩短" }
+                check(output.summary.trim().length < consumed.sumOf { it.body.length }) {
+                    "压缩后正文没有缩短"
+                }
             }
         }
         if (!response.compressible) return CompressionAttempt.NOT_COMPRESSIBLE to state
@@ -2023,9 +2165,9 @@ class LongTermMemoryService internal constructor(
                 candidate.copy(maxConsume = forced.size, minConsume = forced.size)
             )
             val consumed = candidate.candidates.take(forced.size)
-            val outputChars = output.childCoverage.sumOf { it.text.trim().length } +
-                (output.childCoverage.size - 1).coerceAtLeast(0)
-            check(outputChars < consumed.sumOf { it.body.length }) { "Era压缩后正文没有缩短" }
+            check(output.summary.trim().length < consumed.sumOf { it.body.length }) {
+                "Era压缩后正文没有缩短"
+            }
         }
         val consumed = candidate.candidates.take(forced.size)
         val parent = createParentNode(sessionId, MemoryTier.ERA, consumed, response)
@@ -2967,27 +3109,7 @@ class LongTermMemoryService internal constructor(
     }
 
     private fun failureInfo(area: MemoryFailureArea, error: Throwable): MemoryFailureInfo {
-        val modelError = error as? com.example.chatbar.domain.chat.ModelRequestException
-        val category = when {
-            error is com.example.chatbar.domain.chat.ModelResponseTruncatedException -> MemoryFailureCategory.TRUNCATED
-            modelError?.isAuthenticationFailure == true -> MemoryFailureCategory.AUTH
-            modelError?.httpStatus != null -> MemoryFailureCategory.HTTP
-            modelError != null -> MemoryFailureCategory.NETWORK
-            error is kotlinx.serialization.SerializationException -> MemoryFailureCategory.JSON
-            error is IllegalStateException -> MemoryFailureCategory.BUSINESS
-            else -> MemoryFailureCategory.UNKNOWN
-        }
-        return MemoryFailureInfo(
-            area = area,
-            stage = if (category == MemoryFailureCategory.JSON || category == MemoryFailureCategory.BUSINESS) {
-                MemoryFailureStage.VALIDATION
-            } else MemoryFailureStage.REQUEST,
-            category = category,
-            message = error.message ?: error::class.simpleName.orEmpty(),
-            automaticallyRetryable = modelError?.isRetryable == true,
-            httpStatus = modelError?.httpStatus,
-            traceId = modelError?.traceId
-        )
+        return memoryFailureInfo(area, error)
     }
 
     private fun validateEpisodeResponse(response: EpisodeResponse, sourceTurnCount: Int) {
@@ -3009,15 +3131,12 @@ class LongTermMemoryService internal constructor(
     ) {
         val prefix = MemoryCompressionPolicy.validateConsumedPrefix(candidate, response.consumedChildIds)
         check(prefix.valid) { prefix.error.orEmpty() }
-        check(response.summary.isNotBlank()) { "压缩summary为空" }
-        check(response.childCoverage.map { it.childId } == response.consumedChildIds) {
-            "压缩未逐child同序覆盖"
-        }
-        check(response.childCoverage.all { it.text.isNotBlank() }) { "childCoverage为空" }
-        response.childCoverage.forEach { unit ->
-            check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(unit.text)) {
-                "压缩正文包含无T限定的现在/目前/仍然"
-            }
+        val summary = response.summary.trim()
+        check(summary.isNotBlank()) { "压缩summary为空" }
+        val summaryLength = MemoryCompressionPolicy.validateSummary(summary)
+        check(summaryLength.valid) { summaryLength.error.orEmpty() }
+        check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(summary)) {
+            "压缩summary包含无T限定的现在/目前/仍然"
         }
     }
 
@@ -3111,13 +3230,7 @@ class LongTermMemoryService internal constructor(
                         check(output.compressible) { "来源修复不得返回不可压缩" }
                         validateCompressionResponse(output, candidate)
                         val childChars = rebuildable.sumOf { it.body.length }
-                        val coverageChars = output.childCoverage.sumOf { it.text.trim().length } +
-                            (output.childCoverage.size - 1).coerceAtLeast(0)
-                        check(coverageChars < childChars) { "来源修复child覆盖没有形成压缩" }
                         check(output.summary.trim().length < childChars) { "来源修复正文没有形成压缩" }
-                        check(MemorySummaryPolicy.hasOnlyQualifiedStateWords(output.summary)) {
-                            "来源修复正文包含无T限定的现在/目前/仍然"
-                        }
                     }
                     val parent = createParentNode(sessionId, node.tier, rebuildable, response)
                     MemorySourceRepairNodeResult(
@@ -3293,7 +3406,7 @@ class LongTermMemoryService internal constructor(
         children: List<MemoryNode>,
         response: CompressionResponse
     ): MemoryNode {
-        val units = response.childCoverage.map { MemoryCoverageUnit(it.childId, it.text.trim()) }
+        val units = MemoryHashes.parentCoverageUnits(children)
         return MemoryNode(
             id = MemoryNode.newId(),
             sessionId = sessionId,

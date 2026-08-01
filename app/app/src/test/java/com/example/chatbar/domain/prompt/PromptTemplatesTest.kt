@@ -78,6 +78,7 @@ class PromptTemplatesTest {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(
             kind = "EPISODE_TO_ARC",
+            compressionPlan = "保留信任破裂及其后果",
             children = "children"
         )
 
@@ -86,7 +87,58 @@ class PromptTemplatesTest {
         assertTrue(episode.contains("\"summary\""))
         assertFalse(episode.contains("sourceCoverage"))
         assertTrue(compression.contains("children"))
-        assertTrue(compression.contains("childCoverage"))
+        assertTrue(compression.contains("consumedChildIds"))
+        assertTrue(compression.contains("60 至 300"))
+        assertTrue(compression.contains("保留信任破裂及其后果"))
+        assertTrue(compression.contains("禁止逐 child 复述"))
+        assertTrue(compression.contains("禁止华丽修辞"))
+        assertFalse(compression.contains("childCoverage"))
+    }
+
+    @Test
+    fun memoryCompressionPlannerRequestsShortSelectionWithoutReasoning() {
+        val planner = PromptTemplates.memoryCompressionPlannerPrompt(
+            kind = "EPISODE_TO_ARC",
+            children = "children"
+        )
+
+        assertTrue(planner.contains("children"))
+        assertTrue(planner.contains("50 字以内"))
+        assertTrue(planner.contains("禁止逐 child 列举"))
+        assertTrue(planner.contains("禁止解释理由、分析步骤、候选比较或思考过程"))
+    }
+
+    @Test
+    fun memoryCompressionPromptsExposeNewConsumptionBounds() {
+        val episodeToArc = PromptTemplates.memoryCompressionPrompt(
+            "EPISODE_TO_ARC",
+            compressionPlan = "保留主因果线",
+            children = "children"
+        )
+        val arcToEra = PromptTemplates.memoryCompressionPrompt(
+            "ARC_TO_ERA",
+            compressionPlan = "保留主因果线",
+            children = "children"
+        )
+        val eraToEra = PromptTemplates.memoryCompressionPrompt(
+            kind = "ERA_TO_ERA",
+            forcedConsumedChildIds = listOf("era-1", "era-2"),
+            compressionPlan = "保留主因果线",
+            children = "children"
+        )
+
+        assertTrue(episodeToArc.contains("3 至 10"))
+        assertTrue(episodeToArc.contains("第 11 至 15 个"))
+        assertTrue(episodeToArc.contains("60 至 300"))
+        assertTrue(arcToEra.contains("3 至 10"))
+        assertTrue(arcToEra.contains("第 11 至 15 个"))
+        assertTrue(arcToEra.contains("60 至 300"))
+        assertTrue(eraToEra.contains("2 至 5"))
+        assertTrue(eraToEra.contains("60 至 300"))
+        assertTrue(eraToEra.contains("era-1,era-2"))
+        assertFalse(episodeToArc.contains("childCoverage"))
+        assertFalse(arcToEra.contains("childCoverage"))
+        assertFalse(eraToEra.contains("childCoverage"))
     }
 
     @Test

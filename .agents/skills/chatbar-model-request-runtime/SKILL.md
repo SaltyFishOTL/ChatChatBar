@@ -1,6 +1,6 @@
 ---
 name: chatbar-model-request-runtime
-description: Maintain and diagnose ChatBar model resolution, OpenAI-compatible request construction, provider-specific parameters, API authentication, cleartext local-model policy, thinking/reasoning controls, streaming transport, connection tests, and response parsing. Use for model fallback bugs, HTTP 400 compatibility errors, empty responses, SSE stalls, stuck stop controls, user-cancellation persistence, timeout or stream-reset failures, auth differences, and auxiliary-model request issues.
+description: Maintain and diagnose ChatBar model resolution, OpenAI-compatible request construction, provider-specific parameters, API authentication, cleartext local-model policy, thinking/reasoning controls, streaming transport, retry classification, output truncation, connection tests, and response parsing. Use for model fallback bugs, HTTP 400 compatibility errors, empty or truncated responses, unexpected one-shot failure, excessive retries, SSE stalls, stuck stop controls, user-cancellation persistence, timeout or stream-reset failures, auth differences, and auxiliary-model request issues.
 ---
 
 # ChatBar Model Request Runtime
@@ -47,6 +47,9 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 - For opted-in `http://` model requests, preserve the first system role and serialize later system roles as assistant without moving or merging messages. Do not apply this adaptation to HTTPS or when cleartext access is disabled.
 - Treat Debug Request JSON as the final `buildRequestBody` output after cleartext role adaptation, not the logical `ChatApiMessage` list assembled by the caller.
 - Treat strict JSON or protocol parsing as a separate failure layer from HTTP transport. Preserve raw diagnostic evidence within privacy limits.
+- Use `ModelRequestException` as shared request-failure evidence: missing HTTP status, 408/425/429, and 5xx are retryable; 401/403 identify authentication failure; other HTTP statuses are terminal. Preserve status, trace ID, `Retry-After`, and root cause when wrapping it.
+- Assign retry ownership before adding loops. Shared request code performs one request and reports a typed result; a feature task may own bounded transport retries and separate output/parse/validation attempts. Never count a retryable request failure against an output-quality budget, and never stack caller retries over hidden shared retries.
+- Keep mutable truncation budgets outside per-attempt request lambdas. Grow once after a truncation, carry the result into the next output attempt, cap it by task and model limits, and make exactly one model request per output attempt. Cancellation bypasses retry and wrapping.
 - Keep Fish voice-tag calls on the shared streaming text service with thinking disabled. Keep strict ID/tag/text validation and confirmation policy in chatbar-fish-audio-voice rather than weakening shared stream parsing.
 - Verify current provider behavior against official provider documentation when compatibility may have changed.
 
@@ -68,8 +71,9 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 2. Capture final endpoint, headers presence, request keys, stream/non-stream mode, and parser contract.
 3. Compare working chat and failing auxiliary request bodies field by field.
 4. Reproduce with request-builder tests before changing transport.
-5. Fix the shared lowest owner when all callers should inherit behavior.
-6. Keep feature-specific parsing and fallback decisions in feature owners.
+5. Trace retry counters, mutable token budget, and exception wrapping across every layer before deciding retry owner.
+6. Fix the shared lowest owner when all callers should inherit behavior.
+7. Keep feature-specific parsing, retry budgets, and fallback decisions in feature owners.
 
 ## Regression Matrix
 
@@ -81,6 +85,7 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 - Chat streaming, auxiliary text streaming, and connection test.
 - Cleartext HTTP enabled, HTTPS with cleartext enabled, and HTTP with cleartext disabled role serialization.
 - HTTP error, empty content, reasoning-only content, malformed JSON, timeout, peer reset, user cancellation before content, cancellation after partial content, and cancellation during final persistence.
+- Exact request counts for retryable and non-retryable failures; output failures must not consume transport budget. Verify `Retry-After`, cancellation passthrough, monotonically growing truncation budget, task/model caps, and final stage/attempt diagnostics.
 
 ## Stop Conditions
 

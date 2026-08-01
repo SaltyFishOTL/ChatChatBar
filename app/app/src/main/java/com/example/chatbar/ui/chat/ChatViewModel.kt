@@ -42,11 +42,13 @@ import com.example.chatbar.domain.image.toGeneratedImageMetadata
 import com.example.chatbar.domain.image.toRegenerationDraft
 import com.example.chatbar.domain.memory.MemoryPromptView
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
+import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryEpisodeBatchPolicy
 import com.example.chatbar.domain.memory.MemoryMaintenanceTrigger
+import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.model.isModelAuthenticationConfigured
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
@@ -174,6 +176,7 @@ data class LongTermMemoryUiState(
     val headBackfillRequired: Boolean = false,
     val warnings: List<String> = emptyList(),
     val archiveMaintenanceRunning: Boolean = false,
+    val manualMaintenance: MemoryManualMaintenanceKind? = null,
     val episodeTargetSourceTurns: Int = 2,
     val trailingPendingSourceTurns: Int = 0,
     val loading: Boolean = false,
@@ -342,6 +345,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     @Volatile
     private var memoryArchiveMaintenanceRunning = false
     @Volatile
+    private var memoryCompressionDecisionResolving = false
+    @Volatile
+    private var memoryManualMaintenance: MemoryManualMaintenanceKind? = null
+    @Volatile
     private var memoryBackfillProgress: MemoryBackfillProgress? = null
     @Volatile
     private var memorySourceRepairProgress: MemorySourceRepairProgress? = null
@@ -369,6 +376,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     init {
         observeMemoryBackfillProgress()
+        observeMemoryManualMaintenance()
         loadSessionData()
         refreshConfigurations()
         observeSessionChanges()
@@ -1065,6 +1073,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
     }
 
+    fun fullyRegenerateLongTermMemory() {
+        if (!longTermMemoryAutoMaintenanceCoordinator.enqueueFullRegeneration(sessionId)) {
+            _longTermMemoryUiState.update { current ->
+                current.copy(error = "已有长期记忆补录或重建任务，请等待当前任务结束")
+            }
+        }
+    }
+
+    fun regenerateHeadFromCurrentMemory() {
+        if (!longTermMemoryAutoMaintenanceCoordinator.enqueueHeadRegeneration(sessionId)) {
+            _longTermMemoryUiState.update { current ->
+                current.copy(error = "已有长期记忆补录或重建任务，请等待当前任务结束")
+            }
+        }
+    }
+
     fun drainMemoryCompressionEvents() {
         viewModelScope.launch {
             longTermMemoryService.consumeCompressionEvents(sessionId).forEach { event ->
@@ -1129,18 +1153,30 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun resolveMemoryCompressionDecision(expand: Boolean) {
+        if (memoryCompressionDecisionResolving) return
+        memoryCompressionDecisionResolving = true
+        _longTermMemoryUiState.update { current ->
+            current.copy(
+                memoryState = current.memoryState?.copy(pendingDecision = null),
+                error = null
+            )
+        }
         viewModelScope.launch {
-            val error = runCatching {
-                val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.resolveCompressionDecision(
-                    sessionId = sessionId,
-                    expand = expand,
-                    modelConfig = model,
-                    contextWindowSize = _contextWindowSize.value
-                )
-            }.exceptionOrNull()
-            refreshMemoryAfterAction(error)
+            try {
+                val result = runCatching {
+                    longTermMemoryService.resolveCompressionDecision(
+                        sessionId = sessionId,
+                        expand = expand
+                    )
+                }
+                result.getOrNull()?.let { continuation ->
+                    longTermMemoryAutoMaintenanceCoordinator
+                        .enqueueCompressionDecisionContinuation(sessionId, continuation)
+                }
+                refreshMemoryAfterAction(result.exceptionOrNull())
+            } finally {
+                memoryCompressionDecisionResolving = false
+            }
         }
     }
 
@@ -1149,12 +1185,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun launchMemoryBackfill() {
         val currentState = _longTermMemoryUiState.value
         _longTermMemoryUiState.value = currentState.copy(
-            memoryState = currentState.memoryState?.copy(
-                backfill = currentState.memoryState.backfill.copy(
-                    status = MemoryBackfillStatus.RUNNING,
-                    error = null
-                )
-            ),
             error = null
         )
         longTermMemoryAutoMaintenanceCoordinator.enqueueBackfill(sessionId)
@@ -1171,17 +1201,40 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     _longTermMemoryUiState.update { current ->
                         current.copy(
                             backfillProgress = progress,
-                            memoryState = current.memoryState?.copy(
-                                backfill = current.memoryState.backfill.copy(
-                                    status = MemoryBackfillStatus.RUNNING,
-                                    error = null
+                            memoryState = if (progress.phase == MemoryBackfillPhase.WAITING_FOR_ARCHIVE) {
+                                current.memoryState
+                            } else {
+                                current.memoryState?.copy(
+                                    backfill = current.memoryState.backfill.copy(
+                                        status = MemoryBackfillStatus.RUNNING,
+                                        error = null
+                                    )
                                 )
-                            )
+                            }
                         )
                     }
                 } else if (observedRunningTask) {
                     observedRunningTask = false
                     memoryBackfillProgress = null
+                    refreshMemoryAfterAction(null)
+                }
+            }
+        }
+    }
+
+    private fun observeMemoryManualMaintenance() {
+        viewModelScope.launch {
+            var observedTask = false
+            longTermMemoryAutoMaintenanceCoordinator.manualMaintenance.collect { tasks ->
+                val task = tasks[sessionId]
+                memoryManualMaintenance = task
+                if (task != null) {
+                    observedTask = true
+                    _longTermMemoryUiState.update { current ->
+                        current.copy(manualMaintenance = task, error = null)
+                    }
+                } else if (observedTask) {
+                    observedTask = false
                     refreshMemoryAfterAction(null)
                 }
             }
@@ -1231,7 +1284,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
             }
-        val displayedState = if (memoryBackfillProgress == null) state else {
+        val displayedState = if (
+            memoryBackfillProgress == null ||
+            memoryBackfillProgress?.phase == MemoryBackfillPhase.WAITING_FOR_ARCHIVE
+        ) state else {
             state.copy(
                 backfill = state.backfill.copy(
                     status = MemoryBackfillStatus.RUNNING,
@@ -1256,6 +1312,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             headBackfillRequired = view.headBackfillRequired,
             warnings = view.warnings.map { it.message },
             archiveMaintenanceRunning = memoryArchiveMaintenanceRunning,
+            manualMaintenance = memoryManualMaintenance,
             episodeTargetSourceTurns = episodeTarget,
             trailingPendingSourceTurns = MemoryEpisodeBatchPolicy.trailingWaitCount(
                 state.pendingSourceTurnIds.size,

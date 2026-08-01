@@ -63,6 +63,12 @@ object MemoryHashes {
         }
     )
 
+    /** Parent ancestry proof is program-owned; AI summary never supplies per-child text. */
+    fun parentCoverageUnits(children: List<MemoryNode>): List<MemoryCoverageUnit> = children.map { child ->
+        require(child.coverageHash.isNotBlank()) { "child ${child.id}缺少coverageHash" }
+        MemoryCoverageUnit(child.id, child.coverageHash)
+    }
+
     fun leafCoverage(turns: List<MemoryTurnSource>): String = sha256(
         turns.joinToString("\n") { "${it.timelineTurn}:${it.sourceHash}" }
     )

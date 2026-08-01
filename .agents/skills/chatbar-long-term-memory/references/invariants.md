@@ -2,7 +2,7 @@
 
 - Episode目标轮数是固定批次，不是上限。尾部不足目标数属于普通pending；只有两侧活跃记忆包围的历史内部单轮余数可例外提交。
 - 来源语义一致性使用`sourceFingerprints`：保留source/message身份、角色、显示正文、图片及相对消息顺序；排除`updatedAt`与数值`orderKey`。
-- 自动Archive与HEAD由应用级协调器串行维护；新任务仅属于当前会话，已开始的模型调用不因页面销毁或切换会话取消。
+- 自动Archive与HEAD由应用级协调器串行维护；新任务仅属于当前会话，已开始的模型调用不因页面销毁或切换会话取消。历史追赶每次runner lease最多提交一个Episode，批次间释放全局锁；模型失败的延迟重试也必须在锁外等待。
 
 ## Identity and Timeline
 
@@ -35,6 +35,7 @@
 - When context expands, hide newly direct turns from eligibility without deleting them from durable gaps. When context shrinks, expose them again.
 - Remove a gap source only after successful Episode commit, explicit supported product action, or permanent clear boundary.
 - Keep ordinary Episode pending separate from backfill pending. Raw pending text belongs to chat/context storage, not memory budget or Archive.
+- Promote every uncovered source turn bounded by later active memory into a durable Gap, even when legacy state left it in ordinary pending. Remove that internal hole from ordinary pending so it cannot block newer exact-size Episode batches; internal reloads must retain live backfill work for the promoted Gap. As a second boundary, batch selection skips any older undersized/discontinuous pending segment and uses the earliest later segment that reaches the exact target, while preserving skipped work.
 - Honor `recordingStartsAfterSourceOrder`; permanent clear must not resurrect older turns.
 
 ## Source Mutation Repair
@@ -50,6 +51,9 @@
 ## HEAD and Archive
 
 - Update HEAD independently from Archive. Failure in one does not roll back the other.
+- Manual HEAD regeneration reads the currently injectable Archive plus latest stable baseline and replaces HEAD only after a valid commit. Existing Gap, stale excluded roots, and Archive budget decisions do not block this explicit HEAD-only action; concurrent Archive/HEAD evidence changes reject the result, and failure preserves the old HEAD.
+- Full regeneration is an explicit destructive derived-data operation. Validate model/auth/network protection before reset; then delete current Archive nodes, HEAD, tier revisions, gaps, pending work, and manual memory edits while preserving raw chat, per-session character limit, and other session settings. Clear the permanent-clear watermark so every still-existing eligible raw source may participate again.
+- Persist `fullRegenerationPending` with the reset state. Seed every currently archivable raw source as a fresh durable Gap, then reuse the application-owned manual backfill engine, progress stream, pause/error handling, compression decisions, and final `BACKFILL` HEAD step. A final segment below the exact Episode target returns to ordinary pending instead of creating an illegal singleton or blocking completion. Clear the flag only after backfill reaches `IDLE` and the HEAD step has no error; errors keep completed Archive work and allow explicit retry without another reset.
 - Make HEAD describe current state through its stable source turn, not historical plot summary.
 - HEAD has three explicit modes: `INITIALIZE` uses opening + first complete round when third user round starts; `BACKFILL` uses compiled Archive + penultimate stable baseline group; `UPDATE` uses previous HEAD + exactly next baseline group.
 - Keep latest complete group raw at prompt tail. HEAD target is always immediately before that hot group; never summarize hot group into HEAD early.
@@ -62,17 +66,23 @@
 
 ## Compression and Coverage
 
+- Treat a compression-limit choice as an immediate persisted state transition, not a model task. Clear `pendingDecision`, restore Archive status to `IDLE`, and refresh/hide the choice before scheduling any continuation. Preserve unfinished full regeneration or backfill ownership; run the continuation in the application coordinator after the task that raised the choice has unwound. Never deduplicate a later valid tier choice against an older continuation.
 - Treat `MemoryNode.content`/`body` as the single formal node text used by UI, injection, budget, diff, editing, and later compression. Keep `coverageUnits` internal and never render them as duplicate user-facing text.
 - Episode normally covers exactly N continuous source turns with one direct aggregate paragraph. Preserve existing singleton Episodes. During historical backfill only, a final one-turn remainder may commit when active memory directly bounds it on both sides and its Gap is not disabled, deleted, or declined. New Episodes contain no per-source summary text; ordered source IDs, semantic fingerprints, and structural coverage hash are program-owned evidence.
 - Set Episode summary prompt targets from source-turn count: 1T=50 characters, +20 per additional T, up to 6T=150. Include the exact target in every Episode prompt, but reject only above twice that target (1T=100 through 6T=300) so AI character-count error has bounded tolerance.
 - Let programs choose ordered candidates and calculate ranges. AI may only consume a legal continuous prefix.
-- Preserve every child's identity and coverage. Compression changes active frontier, not immutable source nodes.
-- Require exact program-owned source coverage, child coverage, hashes, legal counts, correct order, and actual text reduction before commit.
+- New Episode→Arc and Arc→Era compressions consume 3–10 children; new Era→Era compressions consume 2–5. Keep legacy 4–20/3–10 parents readable and regenerable without allowing new nodes to use the old limits.
+- Lower-tier candidate input contains at most 15 children. Positions 11–15 are trailing boundary references only and must never be consumed.
+- Before each Arc/Era compression request, ask the same model for one plain-text editorial selection plan over the exact candidate children and forced IDs. Prompt target is at most 50 characters and `maxTokens=128`; clear inherited thinking settings, send disable-thinking only where supported, and do not program-validate plan length. Keep plan runtime-only, never expose reasoning, persist it, or treat it as source evidence.
+- Give every memory AI stage, including compression planning, five output attempts for truncation, empty output, parse, and validation failure. Retry transient transport/408/425/429/5xx separately at most three requests without consuming output attempts. Stop cancellation, authentication, and non-retryable HTTP failures immediately. For JSON stages, retain and grow the output-token limit across truncation attempts up to the bounded cap. Final errors must identify the AI stage and exhausted attempt count; persist that count in `MemoryFailureInfo`.
+- Preserve every child's identity and ancestry while allowing low-value child details to disappear from the formal summary. Feed the plan to a second request whose prompt targets one plain 60–300-character summary; AI returns only ordered `consumedChildIds` plus summary and never generates per-child coverage prose. Build ordered parent `coverageUnits` from immutable child coverage hashes in program code.
+- Require exact program-owned source/child coverage, hashes, legal counts, correct order, a 50–400-character summary, and actual formal-text reduction before commit.
 - Never cross Gap, overlap, manual inconsistency, or unverifiable Legacy Reference boundaries.
 - Prefer Era windows with no prior compression; otherwise choose lowest `compressionLevel`, then earliest window.
 
 ## History, Failure, and Migration
 
+- Keep the memory detail viewport independent from maintenance density. Fixed refresh/full-regeneration/HEAD-regeneration actions belong in one compact accessible icon toolbar; conditional errors, repair, backfill, decisions, and progress belong in a bounded on-demand maintenance surface, never in the fixed column above tier tabs.
 - Keep Episode, Arc, and Era page histories independent; HEAD has no user-visible history.
 - Persist each active page in ascending derived-T order. Positional replacement/reorder revisions must store an exact node-ID snapshot when add/remove delta cannot reproduce order; load may repair only complete, T-verifiable pages.
 - Create visible checkpoints for compression, user edits, and restore. Do not create visible Episode history for pure append.
@@ -83,6 +93,7 @@
 - Bind every AI task to exact evidence it read, never session-wide revision. Episode guards semantic source fingerprints, target pending membership, and competing coverage; compression guards every immutable candidate shown to model; HEAD guards its own version, exact input fingerprints, and rendered Archive for `BACKFILL`. Unrelated chat append, metadata-only save, HEAD update, node edit, checkpoint, or memory addition must not invalidate task.
 - Persist each successful backfill Episode immediately. Failure must retain remaining gaps and completed nodes.
 - Keep streamed backfill summaries and current phase as runtime UI state; persist committed Episode count and source progress, not partial model output.
+- A requested manual backfill remains runtime-only `WAITING_FOR_ARCHIVE` until it acquires the coordinator lock. Do not mark persisted/displayed backfill `RUNNING` or block chat while it is only queued; switch to `PREPARING` after lock acquisition.
 - Persist each successful source-mutation root repair immediately. Failure must retain remaining roots and already committed replacements.
 - Pause orphaned persisted backfill or source-repair `RUNNING` after process restart; never pause a runner active in current process.
 - Load old JSON through defaults. Make repairs idempotent. Preserve unverifiable old memory as time-unknown Legacy Reference.

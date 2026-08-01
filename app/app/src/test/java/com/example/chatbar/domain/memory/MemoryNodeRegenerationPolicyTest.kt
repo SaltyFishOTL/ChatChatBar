@@ -62,6 +62,43 @@ class MemoryNodeRegenerationPolicyTest {
     }
 
     @Test
+    fun `regeneration keeps legacy parent child counts repairable`() {
+        val legacyArcChildren = (1..20).map { index ->
+            node("e$index", MemoryTier.EPISODE, listOf("s$index"))
+        }
+        val legacyArc = node(
+            id = "legacy-arc",
+            tier = MemoryTier.ARC,
+            sourceTurnIds = legacyArcChildren.flatMap { it.sourceTurnIds },
+            childIds = legacyArcChildren.map { it.id }
+        )
+        val legacyEraChildren = (1..10).map { index ->
+            node("era$index", MemoryTier.ERA, listOf("u$index"))
+        }
+        val legacyEra = node(
+            id = "legacy-era",
+            tier = MemoryTier.ERA,
+            sourceTurnIds = legacyEraChildren.flatMap { it.sourceTurnIds },
+            childIds = legacyEraChildren.map { it.id }
+        )
+
+        assertEquals(
+            20,
+            MemoryNodeRegenerationPolicy.plan(
+                legacyArc,
+                (legacyArcChildren + legacyArc).associateBy { it.id }
+            ).children.size
+        )
+        assertEquals(
+            10,
+            MemoryNodeRegenerationPolicy.plan(
+                legacyEra,
+                (legacyEraChildren + legacyEra).associateBy { it.id }
+            ).children.size
+        )
+    }
+
+    @Test
     fun `regeneration rejects child coverage mismatch`() {
         val children = (1..4).map { index ->
             node("e$index", MemoryTier.EPISODE, listOf("s$index"))

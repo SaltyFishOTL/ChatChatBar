@@ -64,11 +64,12 @@ import com.example.chatbar.data.local.entity.MessageRole
  * - 对话场景输入：`novelAiImagePromptAssistantScene`、`novelAiImagePromptConversation`
  *
  * ### 5. 长期记忆、RAG 与语音标签
- * - 记忆分层 system：`MEMORY_EPISODE_SYSTEM`、`MEMORY_ARC_COMPRESSION_SYSTEM`、
- *   `MEMORY_ERA_COMPRESSION_SYSTEM`、`MEMORY_ERA_RECOMPRESSION_SYSTEM`、`MEMORY_HEAD_SYSTEM`
+ * - 记忆分层 system：`MEMORY_EPISODE_SYSTEM`、`MEMORY_COMPRESSION_PLANNER_SYSTEM`、
+ *   `MEMORY_ARC_COMPRESSION_SYSTEM`、`MEMORY_ERA_COMPRESSION_SYSTEM`、
+ *   `MEMORY_ERA_RECOMPRESSION_SYSTEM`、`MEMORY_HEAD_SYSTEM`
  * - 记忆时间线约束：`MEMORY_TIMELINE_CONTRACT`
- * - 记忆任务输入/纠错：`memoryEpisodePrompt`、`memoryCompressionPrompt`、
- *   `memoryHeadPrompt`、`memoryJsonCorrectionPrompt`
+ * - 记忆任务输入/纠错：`memoryEpisodePrompt`、`memoryCompressionPlannerPrompt`、
+ *   `memoryCompressionPrompt`、`memoryHeadPrompt`、`memoryJsonCorrectionPrompt`
  * - RAG 记忆使用说明：`RAG_CHAT_MEMORY_USAGE_NOTE`
  * - 检索规划：`RETRIEVAL_PLANNER_SYSTEM_PROMPT`、`retrievalPlannerUserInput`
  * - Fish Audio 翻译/标签：`FISH_AUDIO_TRANSLATION_SYSTEM`、`fishAudioTranslationUserInput`、
@@ -1091,34 +1092,47 @@ summary 不得引入来源之外的信息，且不得超过程序给出的字数
 {"summary":"……"}
 """
 
+    const val MEMORY_COMPRESSION_PLANNER_SYSTEM = """
+你是长期记忆压缩编辑。阅读连续 child，只为下一位压缩 AI 写一条取舍指令，不生成最终 summary。
+指出应围绕的主因果线、必须保留的关键转折或长期影响。普通压缩只规划最老连续 3 至 10 个 child；第 11 至 15 个只用于判断边界。若程序指定必须消费，则只围绕指定 child 规划。
+禁止逐 child 列举，禁止复述过程，禁止解释理由、分析步骤、候选比较或思考过程，禁止文学化描写，禁止输出 child ID 或 T。
+只输出一句 50 字以内的纯文本，不要标题、列表、JSON 或前后缀。
+"""
+
     const val MEMORY_ARC_COMPRESSION_SYSTEM = """
 你负责判断程序给出的连续 Episode 是否足以构成一个完整 Arc（事件总结），并在可行时压缩最老连续前缀。
-输入包含 4 至 25 个 Episode。只能消费最老连续的 4 至 20 个；第 21 至 25 个只能帮助判断事件收尾，不得被消费。不得跳选、漏掉、重复、重排或伪造 child ID/T。
-如果现有 Episode 输入不足20个，且尚不足以构成完整事件，返回 compressible=false。否则逐 child 保留事件存在性、人物互动结果、关系变化、承诺、目标、伏笔与世界状态；只允许模糊细节，不得抛弃任何被消费 Episode。
-childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+普通输入最多包含 15 个 Episode。普通新建只能消费最老连续前缀中的 3 至 10 个 Episode；第 11 至 15 个是额外提供的末尾参考，只帮助判断事件收尾，不得消费。若下方给出“程序指定必须消费”，则必须完全按指定列表输出，数量覆盖普通限制，用于兼容既有节点重建或修复。不得跳选、漏掉、重复、重排或伪造 child ID/T。
+summary 目标 60 至 300 字，写成一个紧凑段落。使用朴素、客观、信息密度高的档案摘要语言，不追求文采、气氛或画面感。
+围绕压缩规划选出一条主因果线，只保留 1 至 3 个会改变后续理解的关键转折、关系或目标变化、不可逆后果、重要发现或强伏笔。Arc 可保留最有故事潜力的具体细节，但必须用事实短句表达。
+禁止逐 child 复述、平均分配篇幅、按原顺序逐项改写，禁止用“随后、接着、之后”机械串联。禁止华丽修辞、氛围渲染、场景铺陈、感官或动作细描、内心独白、对话复刻、形容词堆砌。日常过程、重复表达、无后续影响的动作和弱信息必须省略；被消费不代表必须在 summary 出现。
+没有“程序指定必须消费”且现有前缀不足以形成有意义事件，或无法写出明显短于来源正文的摘要时，返回 compressible=false。禁止在 summary 中复述 child ID、Episode 标签或 T 编号，禁止引入来源外信息，禁止使用无时间限定的“现在、目前、仍然”。
 只输出 JSON，不要 Markdown、分析或额外字段：
-{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+{"compressible":true,"consumedChildIds":["id"],"summary":"60至300字事件总结"}
 不可压缩时必须输出：
-{"compressible":false,"consumedChildIds":[],"summary":"","childCoverage":[]}
+{"compressible":false,"consumedChildIds":[],"summary":""}
 """
 
     const val MEMORY_ERA_COMPRESSION_SYSTEM = """
 你负责判断程序给出的连续 Arc 是否足以构成一段完整故事线，并在可行时压缩成一个 Era（故事进程）。
-输入包含 4 至 25 个 Arc。只能消费最老连续的 4 至 20 个；第 21 至 25 个只能帮助判断故事线收尾，不得被消费。不得跳选、漏掉、重复、重排或伪造 child ID/T。
-如果现有 Arc 尚不足以构成完整故事线，返回 compressible=false。否则逐 child 保留故事线、关键事件、人物互动结果、关系变化、承诺、目标、伏笔与世界状态；只允许模糊细节，不得抛弃任何被消费 Arc。
-childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+普通输入最多包含 15 个 Arc。普通新建只能消费最老连续前缀中的 3 至 10 个 Arc；第 11 至 15 个是额外提供的末尾参考，只帮助判断故事线收尾，不得消费。若下方给出“程序指定必须消费”，则必须完全按指定列表输出，数量覆盖普通限制，用于兼容既有节点重建或修复。不得跳选、漏掉、重复、重排或伪造 child ID/T。
+summary 目标 60 至 300 字，写成一个紧凑段落。使用朴素、客观、信息密度高的阶段摘要语言，不追求文采、气氛或画面感。
+围绕压缩规划提炼一条核心因果链，只保留 1 至 3 个定义该阶段的关键转折、不可逆后果、关系或立场变化、核心目标变化、世界状态改变，以及仍会影响后续的重大风险。具体场景只在不可替代时保留，并改写为事实结论。
+禁止逐 child 复述、平均分配篇幅、按原顺序逐项改写，禁止用“随后、接着、之后”机械串联。禁止华丽修辞、氛围渲染、场景铺陈、感官或动作细描、内心独白、对话复刻、形容词堆砌。次要事件、重复冲突、日常过程和已失去后续意义的细节必须省略；被消费不代表必须在 summary 出现。
+没有“程序指定必须消费”且现有前缀不足以形成有意义故事阶段，或无法写出明显短于来源正文的摘要时，返回 compressible=false。禁止在 summary 中复述 child ID、Arc 标签或 T 编号，禁止引入来源外信息，禁止使用无时间限定的“现在、目前、仍然”。
 只输出 JSON，不要 Markdown、分析或额外字段：
-{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+{"compressible":true,"consumedChildIds":["id"],"summary":"60至300字故事进程"}
 不可压缩时必须输出：
-{"compressible":false,"consumedChildIds":[],"summary":"","childCoverage":[]}
+{"compressible":false,"consumedChildIds":[],"summary":""}
 """
 
     const val MEMORY_ERA_RECOMPRESSION_SYSTEM = """
-你负责把程序指定的 3 至 10 个连续 Era 进一步压缩为一个同层 Era。程序已完成候选选择；不得返回 false，不得改变消费数量，不得跳选、漏掉、重复、重排或伪造 child ID/T。
-逐 child 保留每段故事线、关键结果、人物关系变化、承诺、目标、伏笔与世界状态。压缩只能降低细节精度，不能删除任何一段故事进程。
-childCoverage 必须与 consumedChildIds 同序，每个 child 恰好出现一次。禁止使用无时间限定的“现在、目前、仍然”；状态必须写明“截至 Txx”。
+你负责把程序指定的 2 至 5 个连续 Era 进一步压缩为一个同层 Era。程序已完成候选选择；若指定列表来自既有节点重建或修复，数量可以超过普通限制。不得返回 false，不得改变程序指定列表，不得跳选、漏掉、重复、重排或伪造 child ID/T。
+summary 目标 60 至 300 字，写成一个紧凑段落。使用朴素、客观、信息密度高的总览语言，不追求文采、气氛或画面感。
+围绕压缩规划提炼一条跨阶段核心因果链，只保留 1 至 3 个决定整体走向的事件地标、不可逆后果、关键关系或立场变化、长期目标、世界格局改变，以及仍有后续价值的重大风险。
+禁止逐 child 复述、平均分配篇幅、按原顺序逐项改写，禁止用“随后、接着、之后”机械串联。禁止华丽修辞、氛围渲染、场景铺陈、感官或动作细描、内心独白、对话复刻、形容词堆砌。被后续覆盖、重复、弱影响或已失去故事价值的阶段细节必须省略；被消费不代表必须在 summary 出现。
+禁止在 summary 中复述 child ID、Era 标签或 T 编号，禁止引入来源外信息，禁止使用无时间限定的“现在、目前、仍然”。
 只输出 JSON，不要 Markdown、分析或额外字段：
-{"compressible":true,"consumedChildIds":["id"],"summary":"……","childCoverage":[{"childId":"id","text":"……"}]}
+{"compressible":true,"consumedChildIds":["id"],"summary":"60至300字故事总览"}
 """
 
     const val MEMORY_HEAD_SYSTEM = """
@@ -1372,9 +1386,24 @@ with complicated emotions 等无法可靠发声的抽象标签。
         appendLine(turns)
     }
 
+    fun memoryCompressionPlannerPrompt(
+        kind: String,
+        forcedConsumedChildIds: List<String> = emptyList(),
+        children: String
+    ): String = buildString {
+        appendLine(MEMORY_COMPRESSION_PLANNER_SYSTEM.trim())
+        appendLine("压缩层级：$kind")
+        if (forcedConsumedChildIds.isNotEmpty()) {
+            appendLine("程序指定必须消费：${forcedConsumedChildIds.joinToString(",")}")
+        }
+        appendLine("连续 child：")
+        appendLine(children)
+    }
+
     fun memoryCompressionPrompt(
         kind: String,
         forcedConsumedChildIds: List<String> = emptyList(),
+        compressionPlan: String,
         children: String
     ): String = buildString {
         val system = when (kind) {
@@ -1385,8 +1414,11 @@ with complicated emotions 等无法可靠发声的抽象标签。
         }
         appendLine(system.trim())
         if (forcedConsumedChildIds.isNotEmpty()) {
-            appendLine("程序指定必须消费：${forcedConsumedChildIds.joinToString(",")}")
+            appendLine("程序指定必须消费：${forcedConsumedChildIds.joinToString(",")}；必须原序完整写入 consumedChildIds。")
         }
+        appendLine("压缩规划（只用于取舍，不是来源事实，不能照抄）：")
+        appendLine(compressionPlan)
+        appendLine("规划与 child 冲突时以 child 为准；summary 只能保留能由 child 验证的信息。")
         appendLine("连续 child（只能消费其最老连续前缀）：")
         appendLine(children)
     }

@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.memory
 
 enum class MemoryBackfillPhase {
+    WAITING_FOR_ARCHIVE,
     PREPARING,
     GENERATING_EPISODE,
     CHECKING_SPACE,

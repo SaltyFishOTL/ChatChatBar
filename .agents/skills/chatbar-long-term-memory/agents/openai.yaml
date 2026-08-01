@@ -1,4 +1,4 @@
 interface:
   display_name: "ChatBar Long-Term Memory"
-  short_description: "Maintain memory tiers, backfill, source repair, and injection"
+  short_description: "Maintain memory backfill, regeneration, repair, and injection"
   default_prompt: "Use $chatbar-long-term-memory to diagnose and safely update ChatBar long-term memory."

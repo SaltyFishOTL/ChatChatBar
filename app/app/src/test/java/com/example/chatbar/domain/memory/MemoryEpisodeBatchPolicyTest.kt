@@ -18,6 +18,17 @@ class MemoryEpisodeBatchPolicyTest {
         assertEquals(1, MemoryEpisodeBatchPolicy.trailingWaitCount(3, 2))
     }
 
+    @Test fun `incomplete older segment never blocks later exact batch`() {
+        assertEquals(
+            listOf("s2", "s3"),
+            batch(listOf("s0", "s2", "s3", "s4"), 2)
+        )
+        assertEquals(
+            listOf("s3", "s4", "s5"),
+            batch(listOf("s0", "s1", "s3", "s4", "s5"), 3)
+        )
+    }
+
     @Test fun `internal odd hole becomes full batch then bounded singleton`() {
         val nodes = listOf(node("left", listOf("s0")), node("right", listOf("s4")))
         val state = MemorySessionState(sessionId = "session", timeline = timeline)
