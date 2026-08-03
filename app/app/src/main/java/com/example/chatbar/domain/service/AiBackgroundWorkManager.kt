@@ -7,6 +7,7 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.Looper
 import android.util.Log
 import com.example.chatbar.ChatBarApp
@@ -115,7 +116,8 @@ object AiBackgroundWorkManager {
             }
         }
 
-        init {
+        /** Registers network monitoring; runs on the IPC thread, outside the shared lock. */
+        fun register() {
             if (!hasRequiredNetwork()) {
                 protection.fail("未检测到可用网络，未发送模型请求")
             } else {
@@ -177,6 +179,9 @@ object AiBackgroundWorkManager {
     private var currentLease: ForegroundLease? = null
     private val releasingLeases = mutableMapOf<Long, ForegroundLease>()
 
+    private val ipcThread = HandlerThread("ChatBarAiBackgroundIpc").apply { start() }
+    private val ipcHandler = Handler(ipcThread.looper)
+
     fun start(sessionId: String = "") {
         acquireForegroundLease(sessionId)
     }
@@ -184,36 +189,44 @@ object AiBackgroundWorkManager {
     private fun acquireForegroundLease(
         sessionId: String,
         requireValidatedInternet: Boolean = true
-    ): ForegroundLease = synchronized(lock) {
+    ): ForegroundLease {
         val context = ChatBarApp.instance
-        val lease = if (activeCount == 0) {
-            val protection = ProtectionSignal()
-            ForegroundLease(
-                generation = ++nextGeneration,
-                ready = CompletableDeferred(),
-                protection = protection,
-                networkGuard = NetworkGuard(context, protection, requireValidatedInternet)
-            ).also { currentLease = it }
-        } else {
-            checkNotNull(currentLease)
+        val lease: ForegroundLease
+        val firstLease: Boolean
+        synchronized(lock) {
+            lease = if (activeCount == 0) {
+                val protection = ProtectionSignal()
+                ForegroundLease(
+                    generation = ++nextGeneration,
+                    ready = CompletableDeferred(),
+                    protection = protection,
+                    networkGuard = NetworkGuard(context, protection, requireValidatedInternet)
+                ).also { currentLease = it }
+            } else {
+                checkNotNull(currentLease)
+            }
+            activeCount += 1
+            firstLease = activeCount == 1
         }
-        activeCount += 1
 
-        if (activeCount == 1) {
-            try {
-                context.startForegroundService(Intent(context, StreamingForegroundService::class.java).apply {
-                    putExtra("sessionId", sessionId)
-                    putExtra(EXTRA_WORK_GENERATION, lease.generation)
-                })
-            } catch (error: Exception) {
-                lease.ready.completeExceptionally(
-                    IllegalStateException("无法启动后台生成前台服务", error)
-                )
+        if (firstLease) {
+            ipcHandler.post {
+                lease.networkGuard.register()
+                try {
+                    context.startForegroundService(Intent(context, StreamingForegroundService::class.java).apply {
+                        putExtra("sessionId", sessionId)
+                        putExtra(EXTRA_WORK_GENERATION, lease.generation)
+                    })
+                } catch (error: Exception) {
+                    lease.ready.completeExceptionally(
+                        IllegalStateException("无法启动后台生成前台服务", error)
+                    )
+                }
             }
         } else {
-            StreamingNotificationManager.show(context, sessionId)
+            ipcHandler.post { StreamingNotificationManager.show(context, sessionId) }
         }
-        lease
+        return lease
     }
 
     internal fun foregroundServiceReady(generation: Long) {
@@ -278,7 +291,7 @@ object AiBackgroundWorkManager {
     }
 
     fun finish() {
-        synchronized(lock) {
+        val lease: ForegroundLease = synchronized(lock) {
             if (activeCount <= 0) {
                 Log.w(TAG, "Ignoring unmatched background-work finish")
                 return
@@ -286,26 +299,27 @@ object AiBackgroundWorkManager {
             activeCount -= 1
             if (activeCount > 0) return
 
-            val finishedLease = currentLease
-            finishedLease?.networkGuard?.close()
+            val finished = currentLease
             currentLease = null
-            if (finishedLease == null) {
+            if (finished == null) {
                 cancelForegroundNotificationIfIdle()
                 return
             }
-            releasingLeases[finishedLease.generation] = finishedLease
-            releaseForegroundServiceWhenReady(
-                ready = finishedLease.ready,
-                stopStartedService = {
-                    removeReleasingLease(finishedLease.generation)
-                    stopForegroundServiceIfIdle()
-                },
-                clearFailedStartNotification = {
-                    removeReleasingLease(finishedLease.generation)
-                    cancelForegroundNotificationIfIdle()
-                }
-            )
+            releasingLeases[finished.generation] = finished
+            finished
         }
+        ipcHandler.post { lease.networkGuard.close() }
+        releaseForegroundServiceWhenReady(
+            ready = lease.ready,
+            stopStartedService = {
+                removeReleasingLease(lease.generation)
+                stopForegroundServiceIfIdle()
+            },
+            clearFailedStartNotification = {
+                removeReleasingLease(lease.generation)
+                cancelForegroundNotificationIfIdle()
+            }
+        )
     }
 
     private fun leaseForGeneration(generation: Long): ForegroundLease? =
@@ -319,8 +333,11 @@ object AiBackgroundWorkManager {
     }
 
     private fun stopForegroundServiceIfIdle() {
-        synchronized(lock) {
-            if (activeCount > 0) return
+        val shouldStop = synchronized(lock) { activeCount <= 0 }
+        if (!shouldStop) return
+        ipcHandler.post {
+            val stillIdle = synchronized(lock) { activeCount <= 0 }
+            if (!stillIdle) return@post
             try {
                 ChatBarApp.instance.stopService(
                     Intent(ChatBarApp.instance, StreamingForegroundService::class.java)
@@ -332,8 +349,11 @@ object AiBackgroundWorkManager {
     }
 
     private fun cancelForegroundNotificationIfIdle() {
-        synchronized(lock) {
-            if (activeCount > 0) return
+        val shouldCancel = synchronized(lock) { activeCount <= 0 }
+        if (!shouldCancel) return
+        ipcHandler.post {
+            val stillIdle = synchronized(lock) { activeCount <= 0 }
+            if (!stillIdle) return@post
             try {
                 StreamingNotificationManager.cancel(ChatBarApp.instance)
             } catch (_: Exception) {

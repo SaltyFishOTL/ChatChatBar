@@ -37,6 +37,7 @@ Use chatbar-model-request-runtime for HTTP/SSE behavior, chatbar-image-generatio
 - On synchronous start failure, complete readiness exceptionally and clear stale notification state; do not stop a service that never promoted.
 - Handle notification `ACTION_STOP` only after foreground promotion, then signal shared cancellation and stop the service.
 - Release wake/Wi-Fi locks in `onDestroy()` and propagate unexpected service loss for the active generation.
+- All Binder/IPC (service start/stop, notification `notify`/`cancel`, network-callback registration) must run on the single `ChatBarAiBackgroundIpc` HandlerThread, never inside the shared `lock` — lock-holder Binder calls have caused main-thread ANRs on slow system servers.
 
 ## Network and Cancellation Rules
 
