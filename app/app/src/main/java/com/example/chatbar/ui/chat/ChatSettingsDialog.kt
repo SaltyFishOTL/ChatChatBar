@@ -66,6 +66,7 @@ import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlotSummary
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.DEFAULT_REPLY_LENGTH_CHARS
+import com.example.chatbar.data.local.entity.DEFAULT_MEMORY_LIMIT_CHARS
 import com.example.chatbar.data.local.entity.MAX_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.MIN_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.VectorChunk
@@ -73,6 +74,7 @@ import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
+import com.example.chatbar.domain.memory.MemoryBudgetPolicy
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
@@ -333,6 +335,7 @@ fun ChatSettingsDialog(
                             onPauseSourceRepair = viewModel::pauseChangedMemorySourceRepair,
                             onRebuildFromOriginal = viewModel::rebuildMemoryFromOriginal,
                             onPauseBackfill = viewModel::pauseMemoryUpdates,
+                            onAbortFullRegeneration = viewModel::abortFullRegeneration,
                             onIncreaseLimit = viewModel::increaseMemoryLimit,
                             onRetryMaintenance = viewModel::retryMemoryMaintenance,
                             onRetryHead = viewModel::retryMemoryHead,
@@ -735,6 +738,7 @@ private fun MemoryMaintenanceDialog(
     onPauseSourceRepair: () -> Unit,
     onRequestBackfill: () -> Unit,
     onPauseBackfill: () -> Unit,
+    onAbortBackfill: () -> Unit,
     onIncreaseLimit: () -> Unit,
     onRetryMaintenance: () -> Unit,
     onRetryHead: () -> Unit,
@@ -818,18 +822,13 @@ private fun MemoryMaintenanceDialog(
             MemoryBackfillAction(
                 state = state,
                 onStart = onRequestBackfill,
-                onPause = onPauseBackfill
+                onPause = onPauseBackfill,
+                onAbort = onAbortBackfill
             )
-            if (state.usedArchiveChars > (session?.memoryLimitChars ?: 2000) &&
-                (session?.memoryLimitChars ?: 2000) < 20000
-            ) {
-                CbButton(
-                    "增加 2000 字",
-                    onIncreaseLimit,
-                    variant = ButtonVariant.Outline,
-                    modifier = Modifier.fillMaxWidth()
-                )
-            }
+            MemoryLimitAction(
+                currentLimitChars = session?.memoryLimitChars ?: DEFAULT_MEMORY_LIMIT_CHARS,
+                onIncrease = onIncreaseLimit
+            )
             if (state.trailingPendingSourceTurns > 0) {
                 CbText(
                     "近期记忆等待凑满 ${state.episodeTargetSourceTurns} 轮（已有 ${state.trailingPendingSourceTurns} 轮）",
@@ -841,6 +840,21 @@ private fun MemoryMaintenanceDialog(
                 CbText("⚠ $it", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             }
         }
+    }
+}
+
+@Composable
+internal fun MemoryLimitAction(
+    currentLimitChars: Int,
+    onIncrease: () -> Unit
+) {
+    if (MemoryBudgetPolicy.canIncrease(currentLimitChars)) {
+        CbButton(
+            "增加 2000 字",
+            onIncrease,
+            variant = ButtonVariant.Outline,
+            modifier = Modifier.fillMaxWidth()
+        )
     }
 }
 
@@ -858,6 +872,7 @@ private fun LongTermMemoryContent(
     onPauseSourceRepair: () -> Unit,
     onRebuildFromOriginal: () -> Unit,
     onPauseBackfill: () -> Unit,
+    onAbortFullRegeneration: () -> Unit,
     onIncreaseLimit: () -> Unit,
     onRetryMaintenance: () -> Unit,
     onRetryHead: () -> Unit,
@@ -972,6 +987,7 @@ private fun LongTermMemoryContent(
                 showBackfillConfirm = true
             },
             onPauseBackfill = onPauseBackfill,
+            onAbortBackfill = onAbortFullRegeneration,
             onIncreaseLimit = onIncreaseLimit,
             onRetryMaintenance = onRetryMaintenance,
             onRetryHead = onRetryHead,
@@ -1255,7 +1271,8 @@ internal fun MemorySourceRepairAction(
 internal fun MemoryBackfillAction(
     state: LongTermMemoryUiState,
     onStart: () -> Unit,
-    onPause: () -> Unit
+    onPause: () -> Unit,
+    onAbort: () -> Unit
 ) {
     if (state.needsSourceRepair()) return
     val backfill = state.memoryState?.backfill
@@ -1366,6 +1383,14 @@ internal fun MemoryBackfillAction(
                         modifier = Modifier.fillMaxWidth(),
                         variant = ButtonVariant.Outline
                     )
+                    if (fullRegeneration) {
+                        CbButton(
+                            "停止完整重建并保留已完成部分",
+                            onAbort,
+                            modifier = Modifier.fillMaxWidth(),
+                            variant = ButtonVariant.Ghost
+                        )
+                    }
                 }
             }
         }
@@ -1375,6 +1400,14 @@ internal fun MemoryBackfillAction(
             onStart,
             modifier = Modifier.fillMaxWidth()
         )
+        if (fullRegeneration) {
+            CbButton(
+                "停止完整重建并保留已完成部分",
+                onAbort,
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Ghost
+            )
+        }
     }
 }
 

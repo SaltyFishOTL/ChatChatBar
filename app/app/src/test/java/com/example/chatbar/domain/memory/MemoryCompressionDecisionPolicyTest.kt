@@ -74,6 +74,27 @@ class MemoryCompressionDecisionPolicyTest {
     }
 
     @Test
+    fun expansionChoiceResetsPreviousCompressionDeclines() {
+        val current = MemorySessionState(
+            sessionId = "session",
+            pendingDecision = PendingMemoryDecision(MemoryDecisionTier.EPISODE),
+            episodeCompressionPromptDeclined = true,
+            arcCompressionPromptDeclined = true,
+            eraCompressionPromptDeclined = true
+        )
+
+        val resolution = MemoryCompressionDecisionPolicy.resolve(
+            current = current,
+            expand = true,
+            canExpand = true
+        )!!
+
+        assertFalse(resolution.state.episodeCompressionPromptDeclined)
+        assertFalse(resolution.state.arcCompressionPromptDeclined)
+        assertFalse(resolution.state.eraCompressionPromptDeclined)
+    }
+
+    @Test
     fun expansionAtMaximumKeepsDecisionByFailingExplicitly() {
         val current = MemorySessionState(
             sessionId = "session",

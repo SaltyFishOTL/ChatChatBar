@@ -3,6 +3,7 @@ package com.example.chatbar.domain.memory
 import android.content.Context
 import android.net.ConnectivityManager
 import android.net.Network
+import com.example.chatbar.data.local.entity.MemoryBackfillStatus
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.SettingsRepository
@@ -345,7 +346,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     private suspend fun maintainPass(sessionId: String): MaintenancePassResult {
         val currentState = memoryService.currentState(sessionId)
         if (currentState?.fullRegenerationPending == true) {
-            if (currentState.pendingDecision == null) enqueueBackfill(sessionId)
+            if (currentState.pendingDecision == null &&
+                currentState.backfill.status == MemoryBackfillStatus.IDLE
+            ) {
+                enqueueBackfill(sessionId)
+            }
             return MaintenancePassResult()
         }
         val session = chatRepository.getSession(sessionId) ?: return MaintenancePassResult()

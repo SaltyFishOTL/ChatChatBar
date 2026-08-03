@@ -21,7 +21,11 @@ object MemoryCompressionDecisionPolicy {
         val decision = current.pendingDecision ?: return null
         check(!expand || canExpand) { "长期记忆已达到最高上限，请选择保持上限并压缩" }
         val chosen = if (expand) {
-            current
+            current.copy(
+                episodeCompressionPromptDeclined = false,
+                arcCompressionPromptDeclined = false,
+                eraCompressionPromptDeclined = false
+            )
         } else {
             when (decision.tier) {
                 MemoryDecisionTier.EPISODE -> current.copy(

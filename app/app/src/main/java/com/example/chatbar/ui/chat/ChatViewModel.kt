@@ -1113,6 +1113,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
+    fun abortFullRegeneration() {
+        viewModelScope.launch {
+            runCatching { longTermMemoryService.abortFullRegeneration(sessionId) }
+                .onFailure { error ->
+                    _longTermMemoryUiState.update { current ->
+                        current.copy(error = error.message)
+                    }
+                }
+            _session.value = chatRepository.getSession(sessionId)
+            refreshLongTermMemory()
+        }
+    }
+
     fun repairChangedMemorySources() {
         val currentState = _longTermMemoryUiState.value
         _longTermMemoryUiState.value = currentState.copy(

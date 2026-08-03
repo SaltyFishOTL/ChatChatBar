@@ -10,6 +10,7 @@ import com.example.chatbar.data.local.entity.MemorySessionState
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryTimelineEntry
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -131,5 +132,68 @@ class MemoryRegenerationPolicyTest {
         )
 
         assertNull(MemoryRegenerationPolicy.deferIncompleteBackfillTail(current))
+    }
+
+    @Test
+    fun abortingFullRegenerationKeepsRecordedMemoryAndRemainingGaps() {
+        val current = MemorySessionState(
+            sessionId = "session",
+            episodePage = MemoryPageState(MemoryTier.EPISODE, listOf("episode")),
+            arcPage = MemoryPageState(MemoryTier.ARC, listOf("arc")),
+            head = MemoryHead(throughSourceTurnId = "s2", location = "partial"),
+            gaps = listOf(
+                MemoryGap(
+                    id = "gap",
+                    sourceTurnIds = listOf("s3", "s4"),
+                    reason = MemoryGapReason.LEGACY_UNKNOWN
+                )
+            ),
+            pendingSourceTurnIds = listOf("s4"),
+            backfill = MemoryBackfillState(
+                status = MemoryBackfillStatus.ERROR,
+                pendingSourceTurnIds = listOf("s3", "s4"),
+                completedSourceTurnIds = listOf("s0", "s1"),
+                completedEpisodeCount = 1,
+                error = "正式压缩：输出连续5次失败"
+            ),
+            fullRegenerationPending = true,
+            revision = 41,
+            createdAt = 10,
+            updatedAt = 20
+        )
+
+        val aborted = MemoryRegenerationPolicy.abortFullRegeneration(current, now = 99)
+
+        assertFalse(aborted.fullRegenerationPending)
+        assertEquals(listOf("episode"), aborted.episodePage.activeNodeIds)
+        assertEquals(listOf("arc"), aborted.arcPage.activeNodeIds)
+        assertEquals("partial", aborted.head.location)
+        assertEquals(current.gaps, aborted.gaps)
+        assertEquals(listOf("s4"), aborted.pendingSourceTurnIds)
+        assertEquals(MemoryBackfillStatus.IDLE, aborted.backfill.status)
+        assertTrue(aborted.backfill.pendingSourceTurnIds.isEmpty())
+        assertNull(aborted.backfill.error)
+        assertEquals(42L, aborted.revision)
+        assertEquals(99L, aborted.updatedAt)
+    }
+
+    @Test
+    fun abortWithoutPendingFullRegenerationStillResetsBackfillToIdle() {
+        val current = MemorySessionState(
+            sessionId = "session",
+            backfill = MemoryBackfillState(
+                status = MemoryBackfillStatus.ERROR,
+                pendingSourceTurnIds = listOf("s0"),
+                error = "模型调用失败"
+            ),
+            revision = 5
+        )
+
+        val aborted = MemoryRegenerationPolicy.abortFullRegeneration(current, now = 7)
+
+        assertEquals(MemoryBackfillStatus.IDLE, aborted.backfill.status)
+        assertTrue(aborted.backfill.pendingSourceTurnIds.isEmpty())
+        assertNull(aborted.backfill.error)
+        assertEquals(6L, aborted.revision)
     }
 }

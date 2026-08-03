@@ -127,13 +127,13 @@ class PromptTemplatesTest {
             children = "children"
         )
 
-        assertTrue(episodeToArc.contains("3 至 10"))
-        assertTrue(episodeToArc.contains("第 11 至 15 个"))
+        assertTrue(episodeToArc.contains("最少3条，最多10条"))
+        assertTrue(episodeToArc.contains("第 11 至 15 条"))
         assertTrue(episodeToArc.contains("60 至 300"))
-        assertTrue(arcToEra.contains("3 至 10"))
-        assertTrue(arcToEra.contains("第 11 至 15 个"))
+        assertTrue(arcToEra.contains("最少3条，最多10条"))
+        assertTrue(arcToEra.contains("第 11 至 15 条"))
         assertTrue(arcToEra.contains("60 至 300"))
-        assertTrue(eraToEra.contains("2 至 5"))
+        assertTrue(eraToEra.contains("最少2条，最多5条"))
         assertTrue(eraToEra.contains("60 至 300"))
         assertTrue(eraToEra.contains("era-1,era-2"))
         assertFalse(episodeToArc.contains("childCoverage"))

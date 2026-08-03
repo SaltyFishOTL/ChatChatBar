@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.MemoryBackfillState
 import com.example.chatbar.data.local.entity.MemoryGap
 import com.example.chatbar.data.local.entity.MemoryGapReason
 import com.example.chatbar.data.local.entity.MemoryBackfillStatus
@@ -32,6 +33,21 @@ object MemoryRegenerationPolicy {
             backfill = current.backfill.copy(pendingSourceTurnIds = emptyList())
         )
     }
+
+    /** 放弃完整重建：清除重建标志，保留已录入节点与历史；剩余来源继续留在Gap中等待普通补录。 */
+    fun abortFullRegeneration(
+        current: MemorySessionState,
+        now: Long = System.currentTimeMillis()
+    ): MemorySessionState = current.copy(
+        fullRegenerationPending = false,
+        backfill = MemoryBackfillState(
+            status = MemoryBackfillStatus.IDLE,
+            pendingSourceTurnIds = emptyList(),
+            updatedAt = now
+        ),
+        revision = current.revision + 1,
+        updatedAt = now
+    )
 
     fun resetForFullRegeneration(
         current: MemorySessionState,

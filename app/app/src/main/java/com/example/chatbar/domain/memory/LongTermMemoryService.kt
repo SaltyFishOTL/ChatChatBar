@@ -963,6 +963,9 @@ class LongTermMemoryService internal constructor(
         )
         val nextState = loaded.state.copy(
             pendingDecision = null,
+            episodeCompressionPromptDeclined = false,
+            arcCompressionPromptDeclined = false,
+            eraCompressionPromptDeclined = false,
             revision = loaded.state.revision + 1,
             updatedAt = System.currentTimeMillis()
         )
@@ -1565,6 +1568,18 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    /** 放弃完整重建：保留已录入部分，剩余来源留在Gap等待普通补录；运行中必须先在当前步骤后暂停。 */
+    suspend fun abortFullRegeneration(sessionId: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        if (!loaded.state.fullRegenerationPending) return@stateLock
+        check(loaded.state.backfill.status != MemoryBackfillStatus.RUNNING) {
+            "完整重建正在运行，请先完成当前步骤后暂停再停止"
+        }
+        val next = MemoryRegenerationPolicy.abortFullRegeneration(loaded.state)
+        memoryRepository.saveState(next)
+        compileAndCacheLocked(loaded.copy(state = next))
+    }
+
     suspend fun setBackfillPreflightError(sessionId: String, message: String) = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
         val next = loaded.state.copy(
@@ -2109,7 +2124,11 @@ class LongTermMemoryService internal constructor(
             model = model,
             kind = kind,
             forcedConsumedChildIds = emptyList(),
-            renderedChildren = renderChildren(candidate.candidates, state.timeline)
+            renderedChildren = renderChildren(
+                candidate.candidates,
+                state.timeline,
+                markReferenceFromIndex = MemoryCompressionPolicy.LOWER_MAX_CONSUME
+            )
         ) { output ->
             if (!output.compressible) {
                 check(output.consumedChildIds.isEmpty() && output.summary.isBlank()) {
@@ -3517,11 +3536,17 @@ class LongTermMemoryService internal constructor(
 
     private fun renderChildren(
         children: List<MemoryNode>,
-        timeline: List<MemoryTimelineEntry>
-    ): String = children.joinToString("\n\n") { child ->
+        timeline: List<MemoryTimelineEntry>,
+        markReferenceFromIndex: Int? = null
+    ): String = children.mapIndexed { index, child ->
         val range = MemoryTimelinePolicy.range(child, timeline)
-        "[childId=${child.id}｜${child.tier.displayName()}｜T${range?.startT ?: "?"}-T${range?.endT ?: "?"}]\n${child.body}"
-    }
+        val referenceTag = if (markReferenceFromIndex != null && index >= markReferenceFromIndex) {
+            "｜末尾参考，不可消费"
+        } else {
+            ""
+        }
+        "[childId=${child.id}｜${child.tier.displayName()}｜T${range?.startT ?: "?"}-T${range?.endT ?: "?"}$referenceTag]\n${child.body}"
+    }.joinToString("\n\n")
 
     private fun backfillableSourceTurnIds(
         loaded: LoadedMemory,

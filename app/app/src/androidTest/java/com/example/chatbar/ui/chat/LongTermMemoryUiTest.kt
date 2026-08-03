@@ -169,7 +169,8 @@ class LongTermMemoryUiTest {
                 MemoryBackfillAction(
                     state = state,
                     onStart = { started = true },
-                    onPause = {}
+                    onPause = {},
+                    onAbort = {}
                 )
             }
         }
@@ -185,7 +186,8 @@ class LongTermMemoryUiTest {
                 MemoryBackfillAction(
                     state = uiState(episode()),
                     onStart = {},
-                    onPause = {}
+                    onPause = {},
+                    onAbort = {}
                 )
             }
         }
@@ -220,7 +222,8 @@ class LongTermMemoryUiTest {
                 MemoryBackfillAction(
                     state = state,
                     onStart = { retried = true },
-                    onPause = {}
+                    onPause = {},
+                    onAbort = {}
                 )
             }
         }
@@ -230,6 +233,49 @@ class LongTermMemoryUiTest {
         ).assertIsDisplayed()
         composeTestRule.onNodeWithText("重试补录").performClick()
         composeTestRule.runOnIdle { assertTrue(retried) }
+        assertTrue(
+            composeTestRule.onAllNodesWithText("停止完整重建并保留已完成部分")
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
+    }
+
+    @Test
+    fun failedFullRegenerationOffersAbortKeepingPartialResults() {
+        var aborted = false
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                fullRegenerationPending = true,
+                backfill = MemoryBackfillState(
+                    status = MemoryBackfillStatus.ERROR,
+                    error = "正式压缩：输出连续5次失败；最后错误：只能消费候选最老连续前缀"
+                )
+            )
+        ).copy(
+            backfillEstimate = MemoryBackfillEstimate(
+                missingSourceTurns = 1,
+                episodeCallsMin = 1,
+                episodeCallsMax = 1
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryBackfillAction(
+                    state = state,
+                    onStart = {},
+                    onPause = {},
+                    onAbort = { aborted = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText(
+            "完整重建失败：正式压缩：输出连续5次失败；最后错误：只能消费候选最老连续前缀"
+        ).assertIsDisplayed()
+        composeTestRule.onNodeWithText("继续完整重建").assertIsDisplayed()
+        composeTestRule.onNodeWithText("停止完整重建并保留已完成部分").performClick()
+        composeTestRule.runOnIdle { assertTrue(aborted) }
     }
 
     @Test
@@ -256,7 +302,7 @@ class LongTermMemoryUiTest {
         )
         composeTestRule.setContent {
             ChatBarTheme {
-                MemoryBackfillAction(state, onStart = {}, onPause = {})
+                MemoryBackfillAction(state, onStart = {}, onPause = {}, onAbort = {})
             }
         }
 
@@ -286,7 +332,7 @@ class LongTermMemoryUiTest {
         )
         composeTestRule.setContent {
             ChatBarTheme {
-                MemoryBackfillAction(state, onStart = {}, onPause = {})
+                MemoryBackfillAction(state, onStart = {}, onPause = {}, onAbort = {})
             }
         }
 
@@ -312,7 +358,7 @@ class LongTermMemoryUiTest {
         )
         composeTestRule.setContent {
             ChatBarTheme {
-                MemoryBackfillAction(state, onStart = {}, onPause = {})
+                MemoryBackfillAction(state, onStart = {}, onPause = {}, onAbort = {})
             }
         }
 
@@ -381,7 +427,7 @@ class LongTermMemoryUiTest {
             ChatBarTheme {
                 Column {
                     MemorySourceRepairAction(state, onStart = { started = true }, onPause = {})
-                    MemoryBackfillAction(state, onStart = {}, onPause = {})
+                    MemoryBackfillAction(state, onStart = {}, onPause = {}, onAbort = {})
                 }
             }
         }
@@ -553,6 +599,40 @@ class LongTermMemoryUiTest {
         composeTestRule.runOnIdle { assertTrue(increased) }
         composeTestRule.onNodeWithText("保持上限并压缩").performClick()
         composeTestRule.runOnIdle { assertTrue(compressed) }
+    }
+
+    @Test
+    fun manualLimitExpansionAvailableEvenBelowUsageLimit() {
+        var increased = false
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryLimitAction(
+                    currentLimitChars = 2000,
+                    onIncrease = { increased = true }
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithText("增加 2000 字").performClick()
+        composeTestRule.runOnIdle { assertTrue(increased) }
+    }
+
+    @Test
+    fun manualLimitExpansionHiddenAtMaximumLimit() {
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryLimitAction(
+                    currentLimitChars = 20000,
+                    onIncrease = {}
+                )
+            }
+        }
+
+        assertTrue(
+            composeTestRule.onAllNodesWithText("增加 2000 字")
+                .fetchSemanticsNodes()
+                .isEmpty()
+        )
     }
 
     private fun uiState(
