@@ -1840,7 +1840,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (_isArchived.value || !_isModelUsable.value || _isResponding.value) return false
         if (blockChatDuringMemoryWork()) return false
         val isBlank = content.isBlank() && imagePaths.isEmpty()
-        val effectiveContent = if (isBlank) "continue" else content
+        val effectiveContent = if (isBlank) PromptTemplates.continueGenerationUserPrompt() else content
         if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
         sendMessageInternal(content = effectiveContent, imagePaths = imagePaths, persistUserMessage = !isBlank)
         return true

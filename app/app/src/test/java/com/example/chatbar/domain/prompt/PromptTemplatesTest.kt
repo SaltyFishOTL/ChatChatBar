@@ -74,6 +74,17 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun continueGenerationUserPromptIsRenderableAndNotBareContinue() {
+        val prompt = PromptTemplates.continueGenerationUserPrompt()
+
+        assertTrue(prompt.isNotBlank())
+        assertTrue(prompt.contains("\$username"))
+        assertFalse(prompt.contains("{{"))
+        assertFalse(prompt.startsWith("\n"))
+        assertFalse(prompt.endsWith("\n"))
+    }
+
+    @Test
     fun memoryPromptsKeepInputsAndRequiredJsonProtocolTokens() {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(

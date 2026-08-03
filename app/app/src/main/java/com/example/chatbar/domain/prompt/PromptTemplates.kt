@@ -23,6 +23,7 @@ import com.example.chatbar.data.local.entity.MessageRole
  *   `CURRENT_TURN_LENGTH_REQUIREMENT_SYSTEM_PROMPT_TEMPLATE`、`FORMAT_HISTORY_CONTINUITY_NOTICE`、
  *   `currentTurnOutputRequirementsSystemPrompt`
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
+ * - 空消息继续生成：`CONTINUE_GENERATION_USER_PROMPT`、`continueGenerationUserPrompt`
  * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
@@ -276,6 +277,18 @@ object PromptTemplates {
     fun replyLanguageConstraint(replyLanguage: String): String {
         return "请使用「${replyLanguage}」进行回复。"
     }
+
+    const val CONTINUE_GENERATION_USER_PROMPT = """
+【继续生成】
+${'$'}username没有输入新内容，仅要求你继续生成。请严格遵守以下要求：
+
+1. 从你上一条回复的结尾处无缝衔接，延续当前场景、动作、对白与情绪，直接向前推进剧情；不得重新开始，不得另起话题，不得切换场景，不得对已有内容作总结、复述或评价。
+2. 始终保持角色扮演：你只能以你扮演的角色视角继续，严禁替${'$'}username行动、说话、思考或作决定，严禁代替${'$'}username发言或扮演${'$'}username，${'$'}username的一切言行都留给${'$'}username自己决定。
+3. 严格遵守格式要求：下一段内容除了没有用户的新行动外，整体要求与普通信息无差异。确保严格按照格式要求输出，且绝对避免将格式要求输出两边！
+4. 继续内容必须与当前剧情脉络、角色人设、口吻与节奏保持一致，并照常遵循格式、字数与语言要求。
+"""
+
+    fun continueGenerationUserPrompt(): String = CONTINUE_GENERATION_USER_PROMPT.trimIndent().trim()
 
     // endregion
 

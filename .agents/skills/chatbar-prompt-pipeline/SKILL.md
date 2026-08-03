@@ -70,6 +70,7 @@ Do not move behavior between these owners without tracing every caller and test.
 
 - No history, one incomplete turn, and multiple complete turns.
 - Opening assistant, consecutive users, unanswered user, and regeneration.
+- Empty-message continue: blank user input is replaced by `PromptTemplates.continueGenerationUserPrompt()` as the current user message and is not persisted; the format-requirements system message still follows it.
 - Empty versus populated World Book, RAG, Archive, HEAD, and post-history sections.
 - Stable outlet present versus absent.
 - Document-only, memory-only, and mixed RAG cards.
