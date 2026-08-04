@@ -67,6 +67,8 @@ Before fixing a bug, reconstruct why the current design exists from its call sit
 
 Before changing an area covered by a project skill under `.agents/skills`, read the relevant `SKILL.md`. After any change, update related skills in the same turn only when the change makes their existing content stale, incomplete, or misleading. Keep skills compact: replace stale facts, avoid logs, and do not add generic knowledge that Codex should already know.
 
+Before every commit the user requests, review the pending changes for skill relevance: update any `SKILL.md` whose content the change makes stale, incomplete, or misleading, and consider creating a new compact skill when a stable new area is introduced. Do this review before staging and include skill edits in the same commit.
+
 Skills must not repeat global rules already present in this AGENTS.md, including prompt ownership, fallback policy, shell safety, coding style, verification defaults, or device install safety. Put only feature-specific file maps, workflows, exceptions, and project facts in skills. If a skill needs to reference a globally governed area, name the feature-specific entry point without restating the global rule.
 
 ## Advanced Tutorial Maintenance

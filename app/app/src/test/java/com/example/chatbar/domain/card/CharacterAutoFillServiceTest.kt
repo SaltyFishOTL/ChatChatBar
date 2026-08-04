@@ -76,6 +76,17 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
+    fun `parser accepts draft with unescaped inner quotes`() {
+        val raw = """{"name":"雨巷事务所","basicSetting":"常自称"侦探"的年轻人。","greeting":"欢迎光临。","characters":[{"name":"林雾","profile":"被称为"雾之侦探"","imagePrompt":"1girl, black hair"}]}"""
+
+        val draft = CharacterAutoFillService.parseDraft(raw)
+
+        assertEquals("雨巷事务所", draft?.name)
+        assertEquals("常自称\"侦探\"的年轻人。", draft?.basicSetting)
+        assertEquals("被称为\"雾之侦探\"", draft?.characters?.single()?.profile)
+    }
+
+    @Test
     fun `system prompt does not mention fields outside auto fill surface`() {
         val prompt = PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT
 

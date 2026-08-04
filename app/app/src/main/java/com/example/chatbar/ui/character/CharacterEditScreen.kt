@@ -16,6 +16,7 @@ import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.rememberTransformableState
 import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -64,9 +65,11 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
@@ -2147,10 +2150,31 @@ private object ResearchBriefVisible {
 }
 
 @Composable
+private fun rememberCopyHandler(): (String) -> Unit {
+    val context = LocalContext.current
+    val clipboardManager = LocalClipboardManager.current
+    return remember(context, clipboardManager) {
+        { text ->
+            clipboardManager.setText(AnnotatedString(text))
+            Toast.makeText(context, "已复制", Toast.LENGTH_SHORT).show()
+        }
+    }
+}
+
+@Composable
 private fun DebugTextBlock(title: String, text: String) {
     if (text.isBlank()) return
+    val copy = rememberCopyHandler()
+    val interactionSource = remember { MutableInteractionSource() }
     CbSurface(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = { copy(text) }
+            ),
         color = ChatBarTheme.colors.muted,
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
@@ -2209,8 +2233,17 @@ private fun AutoFillRawStreamPreview(rawText: String) {
         rawText.takeLast(LIVE_STREAM_PREVIEW_MAX_CHARS)
     }
     val omittedChars = rawText.length - previewText.length
+    val copy = rememberCopyHandler()
+    val interactionSource = remember { MutableInteractionSource() }
     CbSurface(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = { copy(rawText) }
+            ),
         color = ChatBarTheme.colors.muted,
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
@@ -2367,8 +2400,17 @@ private fun PreviewPatchInline(label: String, value: String?) {
 @Composable
 private fun PreviewField(label: String, value: String) {
     if (value.isBlank()) return
+    val copy = rememberCopyHandler()
+    val interactionSource = remember { MutableInteractionSource() }
     CbSurface(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = { copy(value) }
+            ),
         color = ChatBarTheme.colors.muted,
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
@@ -2382,7 +2424,19 @@ private fun PreviewField(label: String, value: String) {
 @Composable
 private fun CharacterPreviewField(label: String, value: String) {
     if (value.isBlank()) return
-    Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+    val copy = rememberCopyHandler()
+    val interactionSource = remember { MutableInteractionSource() }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = { copy(value) }
+            ),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
         CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
         CbText(value)
     }
@@ -3465,11 +3519,20 @@ private fun RewriteDiffValue(
     accentColor: Color,
     emptyText: String
 ) {
+    val copy = rememberCopyHandler()
+    val interactionSource = remember { MutableInteractionSource() }
+    val copyText = fragments.joinToString("") { it.text }
     Column(
         Modifier
             .fillMaxWidth()
             .background(ChatBarTheme.colors.surfaceSubtle, RoundedCornerShape(8.dp))
             .border(BorderStroke(1.dp, accentColor.copy(alpha = 0.28f)), RoundedCornerShape(8.dp))
+            .combinedClickable(
+                interactionSource = interactionSource,
+                indication = null,
+                onClick = {},
+                onLongClick = { copy(copyText) }
+            )
             .padding(8.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp)
     ) {

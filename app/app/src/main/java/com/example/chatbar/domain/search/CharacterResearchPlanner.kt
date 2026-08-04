@@ -3,11 +3,13 @@ package com.example.chatbar.domain.search
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.card.extractJsonObjectCandidates
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -19,6 +21,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlin.math.max
 
+@OptIn(ExperimentalSerializationApi::class)
 class CharacterResearchPlanner(
     private val chatService: StreamingChatService,
     private val json: Json = Json {
@@ -26,6 +29,7 @@ class CharacterResearchPlanner(
         isLenient = true
         coerceInputValues = true
         encodeDefaults = true
+        allowTrailingComma = true
     }
 ) : CharacterResearchPlanProvider {
     override suspend fun plan(

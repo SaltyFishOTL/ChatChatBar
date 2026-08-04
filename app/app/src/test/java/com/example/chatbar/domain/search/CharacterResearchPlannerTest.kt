@@ -112,6 +112,17 @@ class CharacterResearchPlannerTest {
     }
 
     @Test
+    fun `parsePlan accepts query with unescaped inner quotes`() {
+        val raw = """{"needSearch":true,"reason":"Need facts","queries":[{"query":"作品名"角色名"","priority":1}]}"""
+
+        val plan = planner.parsePlan(raw, maxQueries = 2)
+
+        requireNotNull(plan)
+        assertTrue(plan.needSearch)
+        assertEquals(listOf("作品名\"角色名\""), plan.queries.map { it.query })
+    }
+
+    @Test
     fun `parsePlan accepts string query array`() {
         val raw = """
             {

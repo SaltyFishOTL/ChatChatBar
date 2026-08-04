@@ -9,6 +9,7 @@ import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
@@ -90,11 +91,13 @@ class CharacterAppearanceImageService(
     }
 
     companion object {
+        @OptIn(ExperimentalSerializationApi::class)
         private val defaultJson = Json {
             ignoreUnknownKeys = true
             isLenient = true
             coerceInputValues = true
             encodeDefaults = true
+            allowTrailingComma = true
         }
 
         fun parseDraft(

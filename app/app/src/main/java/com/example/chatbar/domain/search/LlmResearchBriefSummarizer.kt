@@ -2,14 +2,17 @@ package com.example.chatbar.domain.search
 
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.card.extractJsonObjectCandidates
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 
+@OptIn(ExperimentalSerializationApi::class)
 class LlmResearchBriefSummarizer(
     private val chatService: StreamingChatService,
     private val json: Json = Json {
@@ -17,6 +20,7 @@ class LlmResearchBriefSummarizer(
         isLenient = true
         coerceInputValues = true
         encodeDefaults = true
+        allowTrailingComma = true
     }
 ) : ResearchBriefSummarizer {
     override suspend fun summarize(
@@ -60,26 +64,48 @@ class LlmResearchBriefSummarizer(
                     }
                 }
             )
-            val draft = parseSummary(rawResponse) ?: return@runCatching ResearchBriefResult(
-                failureReason = "summary JSON parse failed",
-                rawResponsePreview = rawResponse.take(1200)
-            )
-            ResearchBriefResult(
-                brief = ResearchBrief(
-                    reason = plan.reason,
-                    queries = plan.queries.map { it.query },
-                    facts = draft.facts.cleanList(12, 320),
-                    notes = draft.notes.cleanList(8, 320),
-                    sources = sources
-                ),
-                rawResponsePreview = rawResponse.take(1200)
-            )
+            val draft = parseSummary(rawResponse)
+            if (draft == null) {
+                ResearchBriefResult(
+                    failureReason = "summary JSON parse failed",
+                    rawResponsePreview = rawResponse.take(1200),
+                    brief = rawOutputFallbackBrief(rawResponse, plan, sources)
+                )
+            } else {
+                ResearchBriefResult(
+                    brief = ResearchBrief(
+                        reason = plan.reason,
+                        queries = plan.queries.map { it.query },
+                        facts = draft.facts.cleanList(12, 320),
+                        notes = draft.notes.cleanList(8, 320),
+                        sources = sources
+                    ),
+                    rawResponsePreview = rawResponse.take(1200)
+                )
+            }
         }.getOrElse { error ->
             ResearchBriefResult(
                 failureReason = error.message ?: error::class.java.simpleName,
-                rawResponsePreview = rawResponse.take(1200)
+                rawResponsePreview = rawResponse.take(1200),
+                brief = rawOutputFallbackBrief(rawResponse, plan, sources)
             )
         }
+    }
+
+    internal fun rawOutputFallbackBrief(
+        rawResponse: String,
+        plan: CharacterResearchPlan,
+        sources: List<ResearchSource>
+    ): ResearchBrief? {
+        val rawText = ResearchCleaner.sanitizeText(rawResponse)
+        if (rawText.isBlank()) return null
+        return ResearchBrief(
+            reason = plan.reason,
+            queries = plan.queries.map { it.query },
+            facts = listOf(rawText),
+            notes = listOf(PromptTemplates.CHARACTER_RESEARCH_BRIEF_RAW_FALLBACK_NOTE),
+            sources = sources
+        )
     }
 
     fun parseSummary(raw: String): ResearchBriefDraft? {

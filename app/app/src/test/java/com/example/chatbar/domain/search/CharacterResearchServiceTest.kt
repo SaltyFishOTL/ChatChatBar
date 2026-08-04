@@ -204,6 +204,34 @@ class CharacterResearchServiceTest {
     }
 
     @Test
+    fun `research uses summarizer raw fallback brief and keeps failure visible`() = runTest {
+        val service = service(
+            settings = AppSettings(webSearchEnabled = true),
+            summarizer = FakeSummarizer(
+                brief = ResearchBrief(facts = listOf("AI 原文内容"), sources = emptyList()),
+                failureReason = "summary JSON parse failed",
+                rawResponsePreview = "AI 原文内容"
+            )
+        )
+        val snapshots = mutableListOf<ResearchDebugSnapshot>()
+
+        val brief = service.research(
+            userInput = "request",
+            currentCard = card(),
+            modelConfig = model(),
+            onDebug = { snapshots += it }
+        )
+
+        requireNotNull(brief)
+        assertEquals(listOf("AI 原文内容"), brief.facts)
+        val finalSnapshot = snapshots.last()
+        assertEquals("summary JSON parse failed", finalSnapshot.briefFailureReason)
+        assertEquals("AI 原文内容", finalSnapshot.briefRawResponsePreview)
+        assertTrue(finalSnapshot.brief?.sources?.isEmpty() == true)
+        assertTrue(finalSnapshot.sources.isEmpty())
+    }
+
+    @Test
     fun `research relays visible planner and summary output`() = runTest {
         val service = service(settings = AppSettings(webSearchEnabled = true))
         val outputs = mutableListOf<String>()
@@ -790,6 +818,7 @@ class CharacterResearchServiceTest {
     private class FakeSummarizer(
         private val returnNull: Boolean = false,
         private val failureReason: String = "",
+        private val rawResponsePreview: String = "successful summary",
         private val brief: ResearchBrief = ResearchBrief(
             facts = listOf("compressed fact"),
             sources = emptyList()
@@ -817,7 +846,8 @@ class CharacterResearchServiceTest {
             } else {
                 ResearchBriefResult(
                     brief = brief.copy(sources = sources),
-                    rawResponsePreview = "successful summary"
+                    failureReason = failureReason,
+                    rawResponsePreview = rawResponsePreview
                 )
             }
         }

@@ -44,6 +44,7 @@ import com.example.chatbar.data.local.entity.MessageRole
  *   `characterResearchPlannerSystemPrompt`、`characterResearchPlannerUserPrompt`
  * - 角色研究摘要：`CHARACTER_RESEARCH_BRIEF_SYSTEM_PROMPT`、
  *   `CHARACTER_RESEARCH_BRIEF_USER_PROMPT`、`CHARACTER_RESEARCH_BRIEF_SOURCE_TEMPLATE`、
+ *   `CHARACTER_RESEARCH_BRIEF_RAW_FALLBACK_NOTE`、
  *   `characterResearchBriefSystemPrompt`、`characterResearchBriefUserPrompt`、
  *   `characterResearchBriefSource`
  *
@@ -565,6 +566,9 @@ dark penis
   "notes": ["角色卡使用提示、消歧、资料缺口或不要过度发挥的边界 - 此为非必要项。用户需求为绝对第一位，不要因为用户提出的设定与原设定不符就拒绝迎合，而是想办法圆上"]
 }
 """
+
+    const val CHARACTER_RESEARCH_BRIEF_RAW_FALLBACK_NOTE =
+        "资料整理 AI 的输出未按 JSON 结构化，以下内容为 AI 原文全文（信息未压缩、未拆分），请直接参考原文内容。"
 
     const val CHARACTER_RESEARCH_BRIEF_USER_PROMPT = """
 角色卡需求：

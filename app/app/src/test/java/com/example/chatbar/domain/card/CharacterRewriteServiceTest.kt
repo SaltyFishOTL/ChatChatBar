@@ -61,6 +61,16 @@ class CharacterRewriteServiceTest {
     }
 
     @Test
+    fun `parser accepts rewrite json with unescaped inner quotes`() {
+        val raw = """{"name":"更冷淡","characters":[{"id":"c1","profile":"称呼仁菜为"NI~NA"","background":""}]}"""
+
+        val draft = CharacterRewriteService.parseDraft(raw)
+
+        assertEquals("更冷淡", draft?.name)
+        assertEquals("称呼仁菜为\"NI~NA\"", draft?.characters?.single()?.profile)
+    }
+
+    @Test
     fun `structured payload does not expose freeform or excluded fields`() {
         val current = card(
             editMode = CharacterEditMode.STRUCTURED,

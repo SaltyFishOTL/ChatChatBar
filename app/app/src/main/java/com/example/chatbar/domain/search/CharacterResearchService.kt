@@ -286,6 +286,9 @@ class CharacterResearchService(
             ?.takeIf { it.hasSummaryText() }
             ?.copy(sources = emptyList())
         val brief = if (summarizedBrief != null) {
+            if (summaryResult.failureReason.isNotBlank()) {
+                onStatus("AI 资料整理未成功结构化，直接采用 AI 原文作为整理结果")
+            }
             summarizedBrief
         } else {
             if (summaryResult.failureReason.isNotBlank()) {
@@ -308,12 +311,10 @@ class CharacterResearchService(
                     plan = plan,
                     sources = if (summarizedBrief != null) emptyList() else sources,
                     brief = brief,
-                    briefFailureReason = summaryResult.failureReason.takeIf {
-                        summarizedBrief == null
-                    }.orEmpty(),
-                    briefRawResponsePreview = summaryResult.rawResponsePreview.takeIf {
-                        summarizedBrief == null
-                    }.orEmpty()
+                    briefFailureReason = summaryResult.failureReason,
+                    briefRawResponsePreview = summaryResult.rawResponsePreview
+                        .takeIf { summaryResult.failureReason.isNotBlank() }
+                        .orEmpty()
                 )
             )
             onStatus("外部资料已整理，开始生成")
