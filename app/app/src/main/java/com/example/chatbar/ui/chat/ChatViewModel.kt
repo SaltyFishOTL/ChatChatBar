@@ -3817,7 +3817,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private fun validateSaveSlotImport(slot: SaveSlot) {
-        require(slot.schemaVersion in 1..5) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
+        require(slot.schemaVersion in 1..6) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
         require(slot.name.isNotBlank()) { "存档名称不能为空" }
         require(slot.messages.all { it.id.isNotBlank() }) { "存档包含空消息 ID" }
         require(slot.messages.map { it.id }.distinct().size == slot.messages.size) { "存档包含重复消息 ID" }
