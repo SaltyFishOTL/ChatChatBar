@@ -20,6 +20,7 @@ import com.example.chatbar.domain.search.hasManualUrlSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -74,11 +75,13 @@ class CharacterAutoFillService(
     private val chatService: StreamingChatService,
     private val researchService: CharacterResearchService? = null,
     private val imageUnderstandingService: ImageUnderstandingService? = null,
+    @OptIn(ExperimentalSerializationApi::class)
     private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
         coerceInputValues = true
         encodeDefaults = true
+        allowTrailingComma = true
     }
 ) {
     private val promptJson = Json {
@@ -335,11 +338,13 @@ class CharacterAutoFillService(
     }
 
     companion object {
+        @OptIn(ExperimentalSerializationApi::class)
         private val defaultJson = Json {
             ignoreUnknownKeys = true
             isLenient = true
             coerceInputValues = true
             encodeDefaults = true
+            allowTrailingComma = true
         }
         private val defaultPromptJson = Json {
             ignoreUnknownKeys = true

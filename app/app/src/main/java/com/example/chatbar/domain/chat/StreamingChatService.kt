@@ -16,6 +16,7 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
@@ -414,10 +415,25 @@ class StreamingChatService(
             .build()
         val listener = object : EventSourceListener() {
             private val closed = AtomicBoolean(false)
+            private var receivedAnyContent = false
+            private var receivedAnyReasoning = false
+            private val rawChunks = StringBuilder()
 
             private fun complete(eventSource: EventSource) {
                 if (!closed.compareAndSet(false, true)) return
-                trySend(StreamEvent.Done)
+                if (!receivedAnyContent) {
+                    trySend(
+                        StreamEvent.Error(
+                            buildString {
+                                append("流式文本补全结束，但未收到任何文本内容")
+                                if (receivedAnyReasoning) append("（仅收到思维链）")
+                                append("。原始SSE：").append(rawChunks.take(1500))
+                            }
+                        )
+                    )
+                } else {
+                    trySend(StreamEvent.Done)
+                }
                 close()
                 eventSource.cancel()
             }
@@ -434,9 +450,24 @@ class StreamingChatService(
                     complete(eventSource)
                     return
                 }
-                val delta = parseDelta(data)
-                delta.reasoningContent?.let { trySend(StreamEvent.ReasoningDelta(it)) }
-                delta.content?.let { trySend(StreamEvent.Delta(it)) }
+                rawChunks.append(data).append("\n")
+                if (rawChunks.length > 1500) {
+                    rawChunks.delete(0, rawChunks.length - 1500)
+                }
+                val delta = try {
+                    parseDelta(data)
+                } catch (e: Exception) {
+                    fail(eventSource, "解析 SSE 数据失败: ${e.message}。原始数据: ${data.take(500)}")
+                    return
+                }
+                delta.reasoningContent?.takeIf(String::isNotBlank)?.let {
+                    receivedAnyReasoning = true
+                    trySend(StreamEvent.ReasoningDelta(it))
+                }
+                delta.content?.takeIf(String::isNotBlank)?.let {
+                    receivedAnyContent = true
+                    trySend(StreamEvent.Delta(it))
+                }
                 if (delta.finishReason != null) complete(eventSource)
             }
 
@@ -717,7 +748,15 @@ class StreamingChatService(
                         eventSource.cancel()
                         return
                     }
-                    val delta = parseDelta(data)
+                    val delta = try {
+                        parseDelta(data)
+                    } catch (e: Exception) {
+                        resumeFailureIfActive(
+                            RuntimeException("流式文本补全响应解析失败: ${e.message}")
+                        )
+                        eventSource.cancel()
+                        return
+                    }
                     if (delta.finishReason != null) finishReason = delta.finishReason
                     delta.reasoningContent?.takeIf(String::isNotBlank)?.let(onReasoningDelta)
                     delta.content?.takeIf(String::isNotBlank)?.let { chunk ->
@@ -864,21 +903,49 @@ class StreamingChatService(
         val finishReason: String? = null
     )
 
-    /** 从 SSE data 行解析增量文本和思维链 */
+    /** 从 SSE data 行解析增量文本和思维链；解析失败或遇到服务端错误体时抛出异常，由调用方转成显式错误。 */
     private fun parseDelta(data: String): DeltaResult {
-        return try {
-            val obj = json.decodeFromString<JsonObject>(data)
-            val delta = obj["choices"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("delta")?.jsonObject
-            val content = delta?.get("content")?.jsonPrimitive?.contentOrNull
-            val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
-                ?: delta?.get("reasoning")?.jsonPrimitive?.contentOrNull
-            val finishReason = obj["choices"]?.jsonArray?.firstOrNull()
-                ?.jsonObject?.get("finish_reason")?.jsonPrimitive?.contentOrNull
-            DeltaResult(content, reasoning, finishReason)
-        } catch (_: Exception) {
-            DeltaResult(null, null)
+        val obj = try {
+            json.decodeFromString<JsonObject>(data)
+        } catch (e: Exception) {
+            throw IllegalArgumentException("无效的 SSE 数据: ${e.message}", e)
         }
+        obj["error"]?.let { errorElement ->
+            val errorText = when (errorElement) {
+                is JsonObject -> buildString {
+                    append(errorElement["message"]?.jsonPrimitive?.contentOrNull ?: "未知错误")
+                    errorElement["code"]?.jsonPrimitive?.contentOrNull
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { append(" (code=$it)") }
+                }
+                else -> errorElement.jsonPrimitive.contentOrNull ?: "未知错误"
+            }
+            throw IllegalArgumentException("服务端返回错误: $errorText")
+        }
+        val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+        val delta = choice?.get("delta")?.jsonObject
+        val content = delta?.get("content")?.let(::deltaContentText)
+        val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
+            ?: delta?.get("reasoning")?.jsonPrimitive?.contentOrNull
+            ?: delta?.get("thinking")?.jsonPrimitive?.contentOrNull
+        val finishReason = choice?.get("finish_reason")?.jsonPrimitive?.contentOrNull
+            ?.takeIf(String::isNotBlank)
+        return DeltaResult(content, reasoning, finishReason)
+    }
+
+    /** 容忍 content 为字符串或文本分段数组（如 [{"type":"text","text":"..."}]）的增量。 */
+    private fun deltaContentText(content: JsonElement): String? = when (content) {
+        is JsonPrimitive -> content.contentOrNull
+        is JsonArray -> content.joinToString("") { part ->
+            when (part) {
+                is JsonObject -> part["text"]?.jsonPrimitive?.contentOrNull
+                    ?: part["content"]?.jsonPrimitive?.contentOrNull
+                    ?: ""
+                is JsonPrimitive -> part.contentOrNull ?: ""
+                else -> ""
+            }
+        }.takeIf(String::isNotBlank)
+        else -> null
     }
 
     /** 从非流式响应解析完整回复内容 */

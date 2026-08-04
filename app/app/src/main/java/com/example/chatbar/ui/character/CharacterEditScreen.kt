@@ -1756,11 +1756,9 @@ private fun CharacterAutoFillDialog(
                     CbText(state.statusText.ifBlank { "正在生成角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
             }
-            state.visibleOutputs.asReversed().forEach { output ->
-                DebugTextBlock(output.title, output.text)
-            }
-            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
-                ResearchDebugPanel(debug)
+            state.draft?.let { draft ->
+                AutoFillDraftPreview(draft)
+                CbDivider()
             }
             if (state.streamingText.isNotBlank() && state.draft == null) {
                 AutoFillRawStreamPreview(state.streamingText)
@@ -1783,9 +1781,12 @@ private fun CharacterAutoFillDialog(
                 title = "封面候选",
                 onCancel = onCancelCover
             )
-            state.draft?.let { draft ->
+            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
                 CbDivider()
-                AutoFillDraftPreview(draft)
+                ResearchDebugPanel(debug)
+            }
+            state.visibleOutputs.asReversed().forEach { output ->
+                DebugTextBlock(output.title, output.text)
             }
         }
     }
@@ -1977,11 +1978,9 @@ private fun CharacterRewriteDialog(
                     CbText(state.statusText.ifBlank { "正在改写角色卡候选" }, color = ChatBarTheme.colors.mutedForeground)
                 }
             }
-            state.visibleOutputs.asReversed().forEach { output ->
-                DebugTextBlock(output.title, output.text)
-            }
-            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
-                ResearchDebugPanel(debug)
+            state.draft?.let {
+                RewriteDiffPreview(state.diff)
+                CbDivider()
             }
             if (state.streamingText.isNotBlank() && state.draft == null) {
                 AutoFillRawStreamPreview(state.streamingText)
@@ -2004,9 +2003,12 @@ private fun CharacterRewriteDialog(
                 title = "封面候选",
                 onCancel = onCancelCover
             )
-            state.draft?.let {
+            state.researchDebug?.takeIf(ResearchDebugSnapshot::hasContent)?.let { debug ->
                 CbDivider()
-                RewriteDiffPreview(state.diff)
+                ResearchDebugPanel(debug)
+            }
+            state.visibleOutputs.asReversed().forEach { output ->
+                DebugTextBlock(output.title, output.text)
             }
         }
     }

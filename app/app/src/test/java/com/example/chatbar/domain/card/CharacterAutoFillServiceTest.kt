@@ -64,6 +64,18 @@ class CharacterAutoFillServiceTest {
     }
 
     @Test
+    fun `parser tolerates trailing commas in object and array`() {
+        val raw = """{"name":"雨巷事务所","greeting":"门铃响了。","characters":[{"name":"林雾","profile":"调查员",},],}"""
+
+        val draft = CharacterAutoFillService.parseDraft(raw)
+
+        assertEquals("雨巷事务所", draft?.name)
+        assertEquals("门铃响了。", draft?.greeting)
+        assertEquals("林雾", draft?.characters?.single()?.name)
+        assertEquals("调查员", draft?.characters?.single()?.profile)
+    }
+
+    @Test
     fun `system prompt does not mention fields outside auto fill surface`() {
         val prompt = PromptTemplates.CHARACTER_AUTO_FILL_SYSTEM_PROMPT
 

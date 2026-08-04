@@ -32,6 +32,14 @@ class CharacterResearchService(
         onVisibleOutput: (String, String, String) -> Unit = { _, _, _ -> },
         onStatus: (String) -> Unit = {}
     ): ResearchBrief? = withContext(Dispatchers.IO) {
+        runCatching {
+            android.util.Log.d(
+                "CharacterEditResume",
+                "research entry: mode=${researchOptions.mode.name} " +
+                    "resumeFrom=${resumeFrom != null} plan=${resumeFrom?.plan != null} " +
+                    "sources=${resumeFrom?.sources?.size} brief=${resumeFrom?.brief?.hasContent()}"
+            )
+        }
         val encyclopediaEnabled = researchOptions.mode.usesEncyclopediaSearch()
         val manualUrls = if (researchOptions.mode.usesManualUrls()) {
             val validation = validateManualResearchUrls(researchOptions.urls)

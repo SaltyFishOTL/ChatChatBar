@@ -18,6 +18,7 @@ import com.example.chatbar.domain.search.hasManualUrlSource
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -63,11 +64,13 @@ class CharacterRewriteService(
     private val modelResolver: EffectiveModelResolver,
     private val chatService: StreamingChatService,
     private val researchService: CharacterResearchService? = null,
+    @OptIn(ExperimentalSerializationApi::class)
     private val json: Json = Json {
         ignoreUnknownKeys = true
         isLenient = true
-        coerceInputValues = false
+        coerceInputValues = true
         encodeDefaults = false
+        allowTrailingComma = true
     }
 ) {
     suspend fun rewriteStreaming(
@@ -225,11 +228,13 @@ class CharacterRewriteService(
     ): CharacterCard = CharacterRewriteService.mergeInto(current, draft, idFactory)
 
     companion object {
+        @OptIn(ExperimentalSerializationApi::class)
         private val defaultJson = Json {
             ignoreUnknownKeys = true
             isLenient = true
-            coerceInputValues = false
+            coerceInputValues = true
             encodeDefaults = false
+            allowTrailingComma = true
         }
 
         fun parseDraft(raw: String, json: Json = defaultJson): CharacterRewriteDraft? {
@@ -281,26 +286,21 @@ class CharacterRewriteService(
             return when (current.editMode) {
                 CharacterEditMode.STRUCTURED -> {
                     val deletedIds = normalized.deleteCharacterIds.map(String::trim).filter(String::isNotBlank).toSet()
-                    val patchesById = normalized.characters
-                        .map(CharacterRewriteCharacterDraft::normalized)
-                        .filter { !it.id.isNullOrBlank() }
-                        .associateBy { it.id!!.trim() }
-                    val currentIds = current.characters.map { it.id }.toSet()
+                    val (patchesById, additions) = resolveRewriteCharacterTargets(
+                        current = current.characters,
+                        deletedIds = deletedIds,
+                        drafts = normalized.characters
+                    )
                     val kept = current.characters
                         .filterNot { it.id in deletedIds }
                         .map { it.toFullRewriteDraft(patchesById[it.id]) }
-                    val additions = normalized.characters
-                        .map(CharacterRewriteCharacterDraft::normalized)
-                        .filter(CharacterRewriteCharacterDraft::hasVisibleContent)
-                        .filter { it.id.isNullOrBlank() || it.id !in currentIds }
-                        .map(CharacterRewriteCharacterDraft::toFullNewCharacterDraft)
                     CharacterRewriteDraft(
                         name = normalized.name.patch(current.name),
                         greeting = normalized.greeting.patch(current.greeting),
                         basicSetting = normalized.basicSetting.patch(current.basicSetting),
                         defaultImagePrompt = normalized.defaultImagePrompt.patch(current.defaultImagePrompt),
                         deleteCharacterIds = normalized.deleteCharacterIds,
-                        characters = kept + additions
+                        characters = kept + additions.map(CharacterRewriteCharacterDraft::toFullNewCharacterDraft)
                     )
                 }
                 CharacterEditMode.FREEFORM -> CharacterRewriteDraft(
@@ -491,19 +491,11 @@ private fun mergeStructuredCharacters(
     idFactory: () -> String
 ): List<CharacterInfo> {
     val deletedIds = draft.deleteCharacterIds.map(String::trim).filter(String::isNotBlank).toSet()
-    val patchesById = draft.characters
-        .map(CharacterRewriteCharacterDraft::normalized)
-        .filter { !it.id.isNullOrBlank() }
-        .associateBy { it.id!!.trim() }
+    val (patchesById, additions) = resolveRewriteCharacterTargets(current, deletedIds, draft.characters)
     val kept = current
         .filterNot { it.id in deletedIds }
         .map { existing -> patchesById[existing.id]?.let(existing::rewriteWith) ?: existing }
         .toMutableList()
-    val currentIds = current.map { it.id }.toSet()
-    val additions = draft.characters
-        .map(CharacterRewriteCharacterDraft::normalized)
-        .filter(CharacterRewriteCharacterDraft::hasVisibleContent)
-        .filter { it.id.isNullOrBlank() || it.id !in currentIds }
     additions.forEach { addition ->
         kept += CharacterInfo(
             id = idFactory(),
@@ -520,6 +512,52 @@ private fun mergeStructuredCharacters(
         )
     }
     return kept
+}
+
+/**
+ * 把 AI 输出的人物候选解析成补丁与新增：
+ * 带 id 且匹配现有角色的条目按 id 打补丁；id 缺失或未知的条目先按名称匹配现有角色打补丁，
+ * 无法匹配且含有可见内容时视为新增；同一角色被重复输出时保留第一次命中，避免重复人物。
+ */
+private fun resolveRewriteCharacterTargets(
+    current: List<CharacterInfo>,
+    deletedIds: Set<String>,
+    drafts: List<CharacterRewriteCharacterDraft>
+): Pair<Map<String, CharacterRewriteCharacterDraft>, List<CharacterRewriteCharacterDraft>> {
+    val normalized = drafts.map(CharacterRewriteCharacterDraft::normalized)
+    val currentIds = current.map { it.id }.toSet()
+    val namesToCharacters = current
+        .filterNot { it.id in deletedIds }
+        .filter { it.name.isNotBlank() }
+        .groupBy { it.name.trim().lowercase() }
+    val claimed = mutableSetOf<String>()
+    val patches = mutableMapOf<String, CharacterRewriteCharacterDraft>()
+    val additions = mutableListOf<CharacterRewriteCharacterDraft>()
+
+    fun claim(id: String, draft: CharacterRewriteCharacterDraft) {
+        if (claimed.add(id)) {
+            patches[id] = draft
+        }
+    }
+
+    for (draft in normalized) {
+        val id = draft.id?.trim()
+        if (!id.isNullOrBlank() && id in currentIds && id !in deletedIds) {
+            claim(id, draft)
+            continue
+        }
+        val nameKey = draft.name?.trim()?.lowercase()?.takeIf(String::isNotBlank)
+        val nameMatches = nameKey?.let { key -> namesToCharacters[key] }
+        if (nameMatches != null && nameMatches.isNotEmpty()) {
+            val nameMatch = nameMatches.firstOrNull { it.id !in claimed }
+            if (nameMatch != null) {
+                claim(nameMatch.id, draft)
+            }
+            continue
+        }
+        if (draft.hasVisibleContent()) additions += draft
+    }
+    return patches to additions
 }
 
 private fun CharacterInfo.rewriteWith(draft: CharacterRewriteCharacterDraft): CharacterInfo =

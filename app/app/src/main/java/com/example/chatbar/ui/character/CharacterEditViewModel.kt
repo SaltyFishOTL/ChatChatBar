@@ -738,15 +738,60 @@ class CharacterEditViewModel(
         }
         val selectedModelId = selectedModel?.id
         val currentCard = buildCurrentCard(markDirty = false)
+        val cardContentHash = currentCard.copy(id = "", createdAt = 0L, updatedAt = 0L).hashCode()
         val sourceSignature =
-            "$userInput\n$selectedModelId\n${sourceImagePath.orEmpty()}\n" +
+            "$userInput\n${sourceImagePath.orEmpty()}\n" +
                 "${referenceDocument?.fileName.orEmpty()}\n${referenceDocument?.content?.hashCode()}\n" +
                 "${normalizedResearchOptions.sourceSignaturePart()}\n" +
-                currentCard.hashCode()
+                cardContentHash
         val previousState = _autoFillState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
         }?.let { if (reusePrepared) it.copy(rawFinalText = "") else it }
+        val resumeNotice = when {
+            resumeCheckpoint != null && reusePrepared ->
+                "断点续传：沿用已完成的分析与资料，仅重新生成最终结果"
+            resumeCheckpoint != null ->
+                "断点续传：沿用已完成的分析与资料，跳过搜索与清洗"
+            previousState.checkpoint == null ->
+                "无可用断点，从头执行完整流程"
+            previousState.sourceSignature != sourceSignature ->
+                "输入或角色卡内容已变化，断点失效，从头执行"
+            else ->
+                "上一次已成功完成，本次为全新生成"
+        }
+        android.util.Log.d(
+            "CharacterEditResume",
+            "autofill sigMatches=${previousState.sourceSignature == sourceSignature} " +
+                "prevHasCheckpoint=${previousState.checkpoint != null} " +
+                "prevHasError=${previousState.error != null} reusePrepared=$reusePrepared " +
+                "resume=${resumeCheckpoint != null}"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "autofill PREV_SIG=[${previousState.sourceSignature}]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "autofill NEW_SIG=[$sourceSignature]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "autofill parts: userInput=[$userInput] modelId=[$selectedModelId] " +
+                "imagePath=[${sourceImagePath.orEmpty()}] docName=[${referenceDocument?.fileName.orEmpty()}] " +
+                "docHash=[${referenceDocument?.content?.hashCode()}] " +
+                "options=[${normalizedResearchOptions.sourceSignaturePart()}] " +
+                "cardHash=[${currentCard.copy(createdAt = 0L, updatedAt = 0L).hashCode()}]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "autofill resumeDetail: prevError=[${previousState.error?.take(80)}] " +
+                "resumeCheckpoint=${resumeCheckpoint != null} " +
+                "researchPlan=${resumeCheckpoint?.research?.plan != null} " +
+                "researchSources=${resumeCheckpoint?.research?.sources?.size} " +
+                "researchBrief=${resumeCheckpoint?.research?.brief?.hasContent()} " +
+                "rawLen=${resumeCheckpoint?.rawFinalText?.length}"
+        )
         autoFillGenerationToken += 1
         autoFillJob?.cancel()
         deleteAutoFillCandidateImage(_autoFillState.value.coverImage.path)
@@ -757,7 +802,7 @@ class CharacterEditViewModel(
         _autoFillState.value = CharacterAutoFillUiState(
             isGenerating = true,
             statusText = statusText,
-            progressLines = listOf(statusText),
+            progressLines = listOf(statusText) + listOf(resumeNotice),
             modelId = selectedModelId,
             sourceSignature = sourceSignature,
             checkpoint = resumeCheckpoint,
@@ -767,7 +812,7 @@ class CharacterEditViewModel(
         autoFillJob = viewModelScope.launch {
             var latestRawText = ""
             var currentStatusText = statusText
-            var progressLines = listOf(statusText)
+            var progressLines = listOf(statusText) + listOf(resumeNotice)
             var latestResearchDebug: ResearchDebugSnapshot? = previousState.researchDebug.takeIf { resumeCheckpoint != null }
             var latestVisibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
             var latestCheckpoint = resumeCheckpoint
@@ -1639,14 +1684,59 @@ class CharacterEditViewModel(
         }
         val currentCard = buildCurrentCard(markDirty = false)
         val selectedModelId = selectedModel?.id
+        val cardContentHash = currentCard.copy(id = "", createdAt = 0L, updatedAt = 0L).hashCode()
         val sourceSignature =
-            "$userInput\n$selectedModelId\n${referenceDocument?.fileName.orEmpty()}\n" +
+            "$userInput\n${referenceDocument?.fileName.orEmpty()}\n" +
                 "${referenceDocument?.content?.hashCode()}\n${normalizedResearchOptions.sourceSignaturePart()}\n" +
-                currentCard.hashCode()
+                cardContentHash
         val previousState = _rewriteState.value
         val resumeCheckpoint = previousState.checkpoint.takeIf {
             previousState.sourceSignature == sourceSignature && (reusePrepared || previousState.error != null)
         }?.let { if (reusePrepared) it.copy(rawFinalText = "") else it }
+        val resumeNotice = when {
+            resumeCheckpoint != null && reusePrepared ->
+                "断点续传：沿用已完成的分析与资料，仅重新生成最终结果"
+            resumeCheckpoint != null ->
+                "断点续传：沿用已完成的分析与资料，跳过搜索与清洗"
+            previousState.checkpoint == null ->
+                "无可用断点，从头执行完整流程"
+            previousState.sourceSignature != sourceSignature ->
+                "输入或角色卡内容已变化，断点失效，从头执行"
+            else ->
+                "上一次已成功完成，本次为全新生成"
+        }
+        android.util.Log.d(
+            "CharacterEditResume",
+            "rewrite sigMatches=${previousState.sourceSignature == sourceSignature} " +
+                "prevHasCheckpoint=${previousState.checkpoint != null} " +
+                "prevHasError=${previousState.error != null} reusePrepared=$reusePrepared " +
+                "resume=${resumeCheckpoint != null}"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "rewrite PREV_SIG=[${previousState.sourceSignature}]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "rewrite NEW_SIG=[$sourceSignature]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "rewrite parts: userInput=[$userInput] modelId=[$selectedModelId] " +
+                "docName=[${referenceDocument?.fileName.orEmpty()}] " +
+                "docHash=[${referenceDocument?.content?.hashCode()}] " +
+                "options=[${normalizedResearchOptions.sourceSignaturePart()}] " +
+                "cardHash=[${currentCard.copy(createdAt = 0L, updatedAt = 0L).hashCode()}]"
+        )
+        android.util.Log.d(
+            "CharacterEditResume",
+            "rewrite resumeDetail: prevError=[${previousState.error?.take(80)}] " +
+                "resumeCheckpoint=${resumeCheckpoint != null} " +
+                "researchPlan=${resumeCheckpoint?.research?.plan != null} " +
+                "researchSources=${resumeCheckpoint?.research?.sources?.size} " +
+                "researchBrief=${resumeCheckpoint?.research?.brief?.hasContent()} " +
+                "rawLen=${resumeCheckpoint?.rawFinalText?.length}"
+        )
         rewriteJob?.cancel()
         rewriteGenerationToken += 1
         val generationToken = rewriteGenerationToken
@@ -1656,7 +1746,7 @@ class CharacterEditViewModel(
         _rewriteState.value = CharacterRewriteUiState(
             isGenerating = true,
             statusText = statusText,
-            progressLines = listOf(statusText),
+            progressLines = listOf(statusText) + listOf(resumeNotice),
             sourceSignature = sourceSignature,
             checkpoint = resumeCheckpoint,
             researchDebug = previousState.researchDebug.takeIf { resumeCheckpoint != null },
@@ -1665,7 +1755,7 @@ class CharacterEditViewModel(
         rewriteJob = viewModelScope.launch {
             var latestRawText = ""
             var currentStatusText = statusText
-            var progressLines = listOf(statusText)
+            var progressLines = listOf(statusText) + listOf(resumeNotice)
             var latestResearchDebug: ResearchDebugSnapshot? = previousState.researchDebug.takeIf { resumeCheckpoint != null }
             var latestVisibleOutputs = previousState.visibleOutputs.takeIf { resumeCheckpoint != null }.orEmpty()
             var latestCheckpoint = resumeCheckpoint

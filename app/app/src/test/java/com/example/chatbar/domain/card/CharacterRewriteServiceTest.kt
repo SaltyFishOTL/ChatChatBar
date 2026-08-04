@@ -335,6 +335,77 @@ class CharacterRewriteServiceTest {
     }
 
     @Test
+    fun `parse tolerates null list fields and trailing commas`() {
+        val raw = """{"name":"新名","greeting":"你好", "characters":null,"deleteCharacterIds":null,}"""
+
+        val draft = CharacterRewriteService.parseDraft(raw)
+
+        assertEquals("新名", draft?.name)
+        assertEquals("你好", draft?.greeting)
+        assertTrue(draft?.characters.isNullOrEmpty())
+        assertTrue(draft?.deleteCharacterIds.isNullOrEmpty())
+    }
+
+    @Test
+    fun `merge patches existing character by name when ai omits id`() {
+        val current = card(
+            characters = listOf(CharacterInfo(id = "c1", name = "林雾", profile = "旧简介"))
+        )
+        val draft = CharacterRewriteDraft(
+            characters = listOf(CharacterRewriteCharacterDraft(name = "林雾", profile = "新简介"))
+        )
+        var nextId = 0
+
+        val merged = CharacterRewriteService.mergeInto(current, draft) { "new-${++nextId}" }
+
+        assertEquals(listOf("c1"), merged.characters.map { it.id })
+        assertEquals("新简介", merged.characters.single().profile)
+    }
+
+    @Test
+    fun `merge applies forgot id full candidate without duplicating`() {
+        val current = card(
+            characters = listOf(
+                CharacterInfo(id = "c1", name = "林雾", profile = "旧一"),
+                CharacterInfo(id = "c2", name = "沈澜", profile = "旧二")
+            )
+        )
+        val draft = CharacterRewriteDraft(
+            characters = listOf(
+                CharacterRewriteCharacterDraft(name = "林雾", profile = "新一", appearance = "银发"),
+                CharacterRewriteCharacterDraft(name = "沈澜", profile = "新二")
+            )
+        )
+        var nextId = 0
+
+        val merged = CharacterRewriteService.mergeInto(current, draft) { "new-${++nextId}" }
+
+        assertEquals(listOf("c1", "c2"), merged.characters.map { it.id })
+        assertEquals("新一", merged.characters.first().profile)
+        assertEquals("银发", merged.characters.first().appearance)
+        assertEquals("新二", merged.characters.last().profile)
+    }
+
+    @Test
+    fun `merge drops redundant id-less duplicate of already patched character`() {
+        val current = card(
+            characters = listOf(CharacterInfo(id = "c1", name = "林雾", profile = "旧"))
+        )
+        val draft = CharacterRewriteDraft(
+            characters = listOf(
+                CharacterRewriteCharacterDraft(id = "c1", profile = "按id改"),
+                CharacterRewriteCharacterDraft(name = "林雾", profile = "按名改")
+            )
+        )
+        var nextId = 0
+
+        val merged = CharacterRewriteService.mergeInto(current, draft) { "new-${++nextId}" }
+
+        assertEquals(listOf("c1"), merged.characters.map { it.id })
+        assertEquals("按id改", merged.characters.single().profile)
+    }
+
+    @Test
     fun `freeform rewrite only changes freeform and card fields`() {
         val originalCharacters = listOf(CharacterInfo(id = "c1", name = "结构化人物", profile = "保留"))
         val current = card(
