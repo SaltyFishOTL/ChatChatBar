@@ -375,7 +375,7 @@ fun ChatSettingsDialog(
                                 slotName = ""; slotDescription = ""
                                 archiveStatus = "存档已创建。"
                             },
-                            onImport = { importSaveSlot.launch(arrayOf("application/json", "text/*", "*/*")) },
+                            onImport = { importSaveSlot.launch(arrayOf("*/*")) },
                             onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
                             onDelete = { deleteSlot = it },
                             onExport = { slot ->

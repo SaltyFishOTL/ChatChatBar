@@ -1,6 +1,7 @@
 package com.example.chatbar.ui.manage
 
 import com.example.chatbar.ui.kit.AppIcons
+import com.example.chatbar.ui.manage.ManageViewModel.SharedImportDecodeResult
 
 import android.content.Intent
 import android.graphics.BitmapFactory
@@ -241,14 +242,44 @@ fun ManageScreen(
         val importEvent = sharedImportEvent ?: return@LaunchedEffect
         if (!onSharedImportClaimed(importEvent.id)) return@LaunchedEffect
         try {
-            val data = viewModel.decodeCharacterImport(importEvent.value, context)
-            val conflict = viewModel.findCharacterImportConflict(data)
-            if (conflict == null) {
-                viewModel.importCharacterAsNew(data)
-                message = "角色卡已导入，文档 RAG 待重建。"
-            } else {
-                pendingCharacterImport = data to conflict
-                tab = 0
+            when (val result = viewModel.decodeSharedImport(importEvent.value, context)) {
+                is SharedImportDecodeResult.Character -> {
+                    val data = result.request
+                    val conflict = viewModel.findCharacterImportConflict(data)
+                    if (conflict == null) {
+                        viewModel.importCharacterAsNew(data)
+                        message = "角色卡已导入，文档 RAG 待重建。"
+                    } else {
+                        pendingCharacterImport = data to conflict
+                        tab = 0
+                    }
+                }
+                is SharedImportDecodeResult.Format -> {
+                    val conflict = viewModel.findFormatNameConflict(result.data.name)
+                    if (conflict == null) {
+                        viewModel.importFormatAsNew(result.data)
+                        message = "格式卡已导入。"
+                    } else {
+                        pendingFormatImport = result.data to conflict
+                        tab = 1
+                    }
+                }
+                is SharedImportDecodeResult.WorldBook -> {
+                    val conflict = viewModel.findWorldBookNameConflict(result.data.book.name)
+                    if (conflict == null) {
+                        viewModel.importWorldBookAsNew(result.data)
+                        message = "世界书已导入。"
+                    } else {
+                        pendingWorldBookImport = result.data to conflict
+                        tab = 2
+                    }
+                }
+                is SharedImportDecodeResult.ModelTemplate -> {
+                    viewModel.importModelTemplateJson(result.rawJson)
+                    viewModel.refreshAll()
+                    message = "模型模板已导入，请编辑并填写 API Key。"
+                    tab = 3
+                }
             }
         } catch (cancelled: CancellationException) {
             throw cancelled
@@ -372,10 +403,10 @@ fun ManageScreen(
                 actions = {
                     CbIconButton(AppIcons.HelpOutline, "教程", { showTutorialMenu = true })
                     if (tab == 4) CbDirtySaveButton(settingsDirty, { settingsSaveRequest++ })
-                    if (tab == 0) CbIconButton(AppIcons.Import, "导入角色卡", { importCharacter.launch(arrayOf("application/json", "image/png", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 1) CbIconButton(AppIcons.Import, "导入格式卡", { importFormat.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 2) CbIconButton(AppIcons.Import, "导入世界书", { importWorldBook.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
-                    if (tab == 3) CbIconButton(AppIcons.Import, "导入模型模板", { importModel.launch(arrayOf("application/json", "text/*", "*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 0) CbIconButton(AppIcons.Import, "导入角色卡", { importCharacter.launch(arrayOf("*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 1) CbIconButton(AppIcons.Import, "导入格式卡", { importFormat.launch(arrayOf("*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 2) CbIconButton(AppIcons.Import, "导入世界书", { importWorldBook.launch(arrayOf("*/*")) }, tint = ChatBarTheme.colors.primary)
+                    if (tab == 3) CbIconButton(AppIcons.Import, "导入模型模板", { importModel.launch(arrayOf("*/*")) }, tint = ChatBarTheme.colors.primary)
                 }
             )
         },

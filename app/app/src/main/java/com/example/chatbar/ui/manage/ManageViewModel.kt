@@ -21,6 +21,8 @@ import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
 import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
+import com.example.chatbar.domain.card.SharedImportClassifier
+import com.example.chatbar.domain.card.SharedImportType
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.moment.MomentAlarmScheduler
@@ -309,6 +311,39 @@ class ManageViewModel : ViewModel() {
         val st = com.example.chatbar.domain.card.SillyTavernCardParser.parseUri(context, uri)
         val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
         return com.example.chatbar.domain.card.CharacterCardImportRequest(packageData)
+    }
+
+    sealed interface SharedImportDecodeResult {
+        data class Character(val request: com.example.chatbar.domain.card.CharacterCardImportRequest) : SharedImportDecodeResult
+        data class Format(val data: com.example.chatbar.domain.card.FormatCardPackage) : SharedImportDecodeResult
+        data class WorldBook(val data: com.example.chatbar.domain.card.WorldBookPackage) : SharedImportDecodeResult
+        data class ModelTemplate(val rawJson: String) : SharedImportDecodeResult
+    }
+
+    /**
+     * 共享导入自动识别类型：PNG 角色卡、ChatBar 角色/格式/世界书/模型模板 JSON、SillyTavern 卡。
+     */
+    suspend fun decodeSharedImport(uri: android.net.Uri, context: Context): SharedImportDecodeResult {
+        val bytes = runCatching {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        }.getOrNull() ?: error("文件为空")
+        characterTransfers.decodePng(bytes)?.let {
+            return SharedImportDecodeResult.Character(com.example.chatbar.domain.card.CharacterCardImportRequest(it))
+        }
+        val text = bytes.toString(Charsets.UTF_8)
+        when (SharedImportClassifier.classify(text)) {
+            SharedImportType.WorldBook -> {
+                val fallbackName = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "导入世界书"
+                return SharedImportDecodeResult.WorldBook(decodeWorldBookImport(text, fallbackName))
+            }
+            SharedImportType.Character -> return SharedImportDecodeResult.Character(decodeCharacterImport(text))
+            SharedImportType.Format -> return SharedImportDecodeResult.Format(decodeFormatImport(text))
+            SharedImportType.ModelTemplate -> return SharedImportDecodeResult.ModelTemplate(text)
+            SharedImportType.Unknown -> Unit
+        }
+        val st = com.example.chatbar.domain.card.SillyTavernCardParser.parseUri(context, uri)
+        val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
+        return SharedImportDecodeResult.Character(com.example.chatbar.domain.card.CharacterCardImportRequest(packageData))
     }
     suspend fun findCharacterImportConflict(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard? {
         val all = characterRepository.getAll()

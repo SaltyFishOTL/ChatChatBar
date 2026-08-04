@@ -203,7 +203,29 @@ class MainActivity : ComponentActivity() {
                 return
             }
         }
+        if (intent.action == Intent.ACTION_VIEW) {
+            val uri = intent.data
+            if (uri != null && isImportableFileUri(uri)) {
+                CrashReportManager.recordBreadcrumb("action", "receive_view_file")
+                sharedImportEvents.publish(uri)
+                return
+            }
+        }
         currentIntentHandled = true
+    }
+
+    private fun isImportableFileUri(uri: Uri): Boolean {
+        val type = runCatching { contentResolver.getType(uri) }
+            .getOrNull()
+            ?.substringBefore(';')
+            ?.trim()
+            ?.lowercase()
+        if (type == null) return true
+        return type == "image/png" ||
+            type == "application/json" ||
+            type == "text/json" ||
+            type == "text/plain" ||
+            type == "application/octet-stream"
     }
 
     private fun completeSharedImport(id: Long): Boolean {
