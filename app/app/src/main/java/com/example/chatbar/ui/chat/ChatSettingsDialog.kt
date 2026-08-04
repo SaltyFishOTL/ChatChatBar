@@ -599,6 +599,7 @@ private fun WorldBookSettings(
     onSelectedIds: (List<String>) -> Unit
 ) {
     val inherited = inheritedIds.mapNotNull { id -> worldBooks.firstOrNull { it.id == id } }
+    val selectableBooks = worldBooks.filterNot { book -> book.id in inheritedIds }
     CbField(
         "世界书",
         description = "角色绑定世界书会自动继承；这里可为当前会话额外启用世界书。"
@@ -611,11 +612,14 @@ private fun WorldBookSettings(
             )
             Spacer(Modifier.height(8.dp))
         }
-        if (worldBooks.isEmpty()) {
-            CbText("暂无世界书", color = ChatBarTheme.colors.mutedForeground)
+        if (selectableBooks.isEmpty()) {
+            CbText(
+                if (worldBooks.isEmpty()) "暂无世界书" else "所有世界书均已由角色继承",
+                color = ChatBarTheme.colors.mutedForeground
+            )
         } else {
             Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                worldBooks.forEach { book ->
+                selectableBooks.forEach { book ->
                     val selected = book.id in selectedIds
                     CbChoiceChip(
                         text = book.name,
