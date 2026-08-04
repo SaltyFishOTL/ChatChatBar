@@ -504,6 +504,7 @@ class CharacterEditViewModel(
             _indexingStatus.value = "下载角色卡只读，请复制后编辑"
             return
         }
+        if (_isSaving.value) return
         if (validateForSave().isNotEmpty()) return
         _isSaving.value = true
 
@@ -540,7 +541,13 @@ class CharacterEditViewModel(
                     card
                 }
             }
-            val materializedCard = draftAssetService.materializeCharacterAssets(rawCard)
+            val materializedCard = try {
+                draftAssetService.materializeCharacterAssets(rawCard)
+            } catch (error: Throwable) {
+                _indexingStatus.value = "角色卡保存失败：${error.message ?: "草稿资源读取失败"}"
+                _isSaving.value = false
+                return@launch
+            }
             val speakerRenames = buildSpeakerRenames(oldCard, materializedCard)
             val speakerRenameTask = speakerTagHistoryService.createTask(
                 characterCardId = materializedCard.id,
@@ -572,6 +579,15 @@ class CharacterEditViewModel(
             }
             val effectiveCard = characterRepository.getById(card.id) ?: card
             _characterCard.value = effectiveCard
+            // Keep editable state in sync with the persisted card: state vars still
+            // reference draft-asset paths, but the draft session dir is deleted below,
+            // so a later save would fail to materialize those files.
+            avatar = effectiveCard.avatar
+            chatBackground = effectiveCard.chatBackground
+            charactersList.clear()
+            charactersList.addAll(effectiveCard.characters)
+            documentsList.clear()
+            documentsList.addAll(effectiveCard.customDocuments)
             cleanupAfterCharacterSave(oldCard, effectiveCard)
             draftJob?.cancelAndJoin()
             draftJob = null
