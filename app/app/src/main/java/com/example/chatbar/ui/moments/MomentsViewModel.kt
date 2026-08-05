@@ -40,6 +40,22 @@ data class MomentRetryUiState(
     val errorMessage: String? = null
 )
 
+enum class MomentOnDemandImagePhase {
+    IDLE,
+    DESIGNING,
+    GENERATING,
+    SAVING,
+    DONE,
+    FAILED
+}
+
+data class MomentOnDemandImageUiState(
+    val phase: MomentOnDemandImagePhase = MomentOnDemandImagePhase.IDLE,
+    val designStream: String = "",
+    val progress: Float = 0f,
+    val errorMessage: String? = null
+)
+
 class MomentsViewModel : ViewModel() {
     private val repository = ChatBarApp.instance.momentRepository
     private val characterRepository = ChatBarApp.instance.characterRepository
@@ -51,11 +67,14 @@ class MomentsViewModel : ViewModel() {
     private val imageService = ChatBarApp.instance.novelAiImageService
     private val imageStorage = ChatBarApp.instance.novelAiImageStorage
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
+    private val promptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val _retryStates = MutableStateFlow<Map<String, MomentRetryUiState>>(emptyMap())
+    private val _onDemandImage = MutableStateFlow<MomentOnDemandImageUiState>(MomentOnDemandImageUiState())
 
     val posts: StateFlow<List<MomentPost>> = repository.posts
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
     val retryStates: StateFlow<Map<String, MomentRetryUiState>> = _retryStates.asStateFlow()
+    val onDemandImage: StateFlow<MomentOnDemandImageUiState> = _onDemandImage.asStateFlow()
 
     init {
         refresh()
@@ -176,6 +195,118 @@ class MomentsViewModel : ViewModel() {
         }
     }
 
+    fun generateImageForPost(postId: String) {
+        if (_onDemandImage.value.phase == MomentOnDemandImagePhase.DESIGNING ||
+            _onDemandImage.value.phase == MomentOnDemandImagePhase.GENERATING ||
+            _onDemandImage.value.phase == MomentOnDemandImagePhase.SAVING
+        ) {
+            return
+        }
+        _onDemandImage.value = MomentOnDemandImageUiState(phase = MomentOnDemandImagePhase.DESIGNING)
+        viewModelScope.launch {
+            val outcome = runCatching {
+                repository.initialize()
+                characterRepository.initialize()
+                settingsRepository.initialize()
+                val post = repository.getPost(postId) ?: error("朋友圈不存在")
+                require(!post.isPlaceholder) { "占位朋友圈无法按需生成" }
+                val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
+                val settings = settingsRepository.getAppSettings()
+                val imageModel = modelResolver.defaultImageModel(settings) ?: error("未配置默认生图模型")
+                require(imageModel.hasConfiguredAuthentication(settings)) { "默认生图模型/API Key 未配置" }
+                val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
+                val imageBrief = post.imageBrief.trim()
+                require(imageBrief.isNotBlank()) { "该朋友圈不含可复用的图片设计信息" }
+                val plan = AiBackgroundWorkManager.run("moments_image_design_$postId") {
+                    var designed: NovelAiPromptPlan? = null
+                    var streamError: String? = null
+                    promptDesigner.designForMoment(
+                        card = card,
+                        momentImageBrief = imageBrief,
+                        model = imageModel,
+                        finalPromptRequirement = settings.imagePromptToolPreference,
+                        onDelta = { text ->
+                            _onDemandImage.value = _onDemandImage.value.copy(
+                                phase = MomentOnDemandImagePhase.DESIGNING,
+                                designStream = text
+                            )
+                        }
+                    ).also { designed = it }
+                    streamError?.let { error(it) }
+                    designed ?: error("朋友圈图片提示词生成失败")
+                }
+                _onDemandImage.value = _onDemandImage.value.copy(
+                    phase = MomentOnDemandImagePhase.GENERATING,
+                    designStream = _onDemandImage.value.designStream.ifBlank { plan.baseCaption },
+                    progress = 0f
+                )
+                val imageSize = NovelAiImageSizePreset.SQUARE.imageSize
+                val imageBytes = AiBackgroundWorkManager.run("moments_image_generate_$postId") {
+                    GlobalImageGenerationConcurrencyGate.instance.run {
+                        var finalImage: ByteArray? = null
+                        var streamError: String? = null
+                        imageService.generate(
+                            token = token,
+                            prompt = plan,
+                            seed = imageService.newSeed(),
+                            imageSize = imageSize
+                        ).collect { event ->
+                            when (event) {
+                                is NovelAiImageEvent.Final -> finalImage = event.image
+                                is NovelAiImageEvent.Error -> streamError = event.message
+                                is NovelAiImageEvent.Intermediate -> {
+                                    _onDemandImage.value = _onDemandImage.value.copy(
+                                        phase = MomentOnDemandImagePhase.GENERATING,
+                                        progress = event.progress
+                                    )
+                                }
+                            }
+                        }
+                        streamError?.let { error(it) }
+                        finalImage ?: error("NovelAI 未返回最终图片")
+                    }
+                }
+                _onDemandImage.value = _onDemandImage.value.copy(
+                    phase = MomentOnDemandImagePhase.SAVING,
+                    progress = 1f
+                )
+                val newImagePath = withContext(Dispatchers.IO) {
+                    imageStorage.save("moments_${card.id}", imageBytes)
+                }
+                try {
+                    val current = repository.getPost(postId) ?: error("朋友圈不存在")
+                    require(!current.isPlaceholder) { "占位朋友圈无法按需生成" }
+                    repository.updatePost(
+                        current.copy(
+                            imagePath = newImagePath,
+                            imagePrompt = plan.baseCaption,
+                            generatedImageMetadata = plan.toGeneratedImageMetadata(newImagePath, imageSize),
+                            imageBrief = imageBrief
+                        )
+                    )
+                } catch (error: Throwable) {
+                    withContext(Dispatchers.IO) {
+                        runCatching { imageStorage.deleteIfOwned(newImagePath) }
+                            .onFailure { cleanupError ->
+                                Log.w(TAG, "Failed to delete unused on-demand image: $newImagePath", cleanupError)
+                            }
+                    }
+                    throw error
+                }
+            }
+            val error = outcome.exceptionOrNull()
+            if (error is CancellationException) throw error
+            if (error == null) {
+                _onDemandImage.value = MomentOnDemandImageUiState(phase = MomentOnDemandImagePhase.DONE)
+            } else {
+                _onDemandImage.value = MomentOnDemandImageUiState(
+                    phase = MomentOnDemandImagePhase.FAILED,
+                    errorMessage = error.message ?: error.javaClass.simpleName
+                )
+            }
+        }
+    }
+
     private suspend fun legacyRegenerationDraft(
         post: MomentPost,
         imagePath: String
@@ -238,6 +369,7 @@ class MomentsViewModel : ViewModel() {
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         allowCleartextModelApi = settings.allowCleartextModelApi,
+                        autoGenerateImages = settings.momentsImagesEnabled,
                         resumeFrom = generationService.decodeCheckpoint(placeholder.generationCheckpoint),
                         onCheckpoint = { checkpoint ->
                             repository.getPost(id)?.takeIf { it.isPlaceholder }?.let { current ->

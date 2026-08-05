@@ -1486,6 +1486,7 @@ private fun SettingsTab(
     var themeColorHistory by remember { mutableStateOf(settings.themeColorHistory) }
     var themeColorPickerInitial by remember { mutableStateOf<ThemeColorHsv?>(null) }
     var momentsEnabled by remember { mutableStateOf(settings.momentsEnabled) }
+    var momentsImagesEnabled by remember { mutableStateOf(settings.momentsImagesEnabled) }
     val initialMomentDelayRange = MomentPolicy.normalizedDelayHours(
         settings.momentsMinDelayHours,
         settings.momentsMaxDelayHours
@@ -1549,6 +1550,7 @@ private fun SettingsTab(
         settings.docRagSimilarityThreshold,
         settings.ragInjectionMode,
         settings.momentsEnabled,
+        settings.momentsImagesEnabled,
         settings.momentsMinDelayHours,
         settings.momentsMaxDelayHours,
         settings.momentsBackgroundGuideDismissed,
@@ -1576,6 +1578,7 @@ private fun SettingsTab(
         voiceTagModelId = settings.voiceTagModelId
         audiobookModeEnabled = settings.audiobookModeEnabled
         momentsEnabled = settings.momentsEnabled
+        momentsImagesEnabled = settings.momentsImagesEnabled
         val momentDelayRange = MomentPolicy.normalizedDelayHours(
             settings.momentsMinDelayHours,
             settings.momentsMaxDelayHours
@@ -1628,6 +1631,7 @@ private fun SettingsTab(
         voiceTagModelId = voiceTagModelId,
         audiobookModeEnabled = audiobookModeEnabled,
         momentsEnabled = momentsEnabled,
+        momentsImagesEnabled = momentsImagesEnabled,
         momentsMinDelayHours = draftMomentDelayRange.minHours,
         momentsMaxDelayHours = draftMomentDelayRange.maxHours,
         momentsBackgroundGuideDismissed = momentsBackgroundGuideDismissed,
@@ -1855,6 +1859,19 @@ private fun SettingsTab(
         }
         if (momentsEnabled) {
             SettingsSection("朋友圈设置") {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Column(Modifier.weight(1f)) {
+                        CbText("自动生成图片", style = ChatBarTheme.typography.label)
+                        CbText(
+                            "默认开启。关闭后不再自动生图，朋友圈显示深色【点击查看私密图片】，可点击按需配图。",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                    CbSwitch(momentsImagesEnabled, { enabled ->
+                        momentsImagesEnabled = enabled
+                    })
+                }
                 CbText(
                     "当前排程：${formatMomentFrequency(draftMomentDelayRange.minHours, draftMomentDelayRange.maxHours)}尝试一次。",
                     color = ChatBarTheme.colors.mutedForeground,

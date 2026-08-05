@@ -174,6 +174,7 @@ class MomentScheduler(
                     scheduledAt = task.scheduledAt,
                     finalPromptRequirement = settings.imagePromptToolPreference,
                     allowCleartextModelApi = settings.allowCleartextModelApi,
+                    autoGenerateImages = settings.momentsImagesEnabled,
                     onCheckpoint = { generationCheckpoint = it }
                 )
             }

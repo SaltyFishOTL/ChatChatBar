@@ -13,7 +13,7 @@ import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageService
 import com.example.chatbar.domain.image.NovelAiImageSize
-import com.example.chatbar.domain.image.NovelAiImageSizePolicy
+import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
@@ -102,6 +102,7 @@ class MomentGenerationService(
         scheduledAt: Long,
         finalPromptRequirement: String = "",
         allowCleartextModelApi: Boolean = false,
+        autoGenerateImages: Boolean = true,
         resumeFrom: MomentGenerationCheckpoint? = null,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {}
     ): MomentGenerationResult = generateInternal(
@@ -114,6 +115,7 @@ class MomentGenerationService(
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
         allowCleartextModelApi = allowCleartextModelApi,
+        autoGenerateImages = autoGenerateImages,
         resumeFrom = resumeFrom,
         onCheckpoint = onCheckpoint,
         streamText = true,
@@ -130,6 +132,7 @@ class MomentGenerationService(
         scheduledAt: Long,
         finalPromptRequirement: String = "",
         allowCleartextModelApi: Boolean = false,
+        autoGenerateImages: Boolean = true,
         resumeFrom: MomentGenerationCheckpoint? = null,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit = {},
         onProgress: (MomentGenerationProgress) -> Unit
@@ -143,6 +146,7 @@ class MomentGenerationService(
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
         allowCleartextModelApi = allowCleartextModelApi,
+        autoGenerateImages = autoGenerateImages,
         resumeFrom = resumeFrom,
         onCheckpoint = onCheckpoint,
         streamText = true,
@@ -159,6 +163,7 @@ class MomentGenerationService(
         scheduledAt: Long,
         finalPromptRequirement: String,
         allowCleartextModelApi: Boolean,
+        autoGenerateImages: Boolean,
         resumeFrom: MomentGenerationCheckpoint?,
         onCheckpoint: suspend (MomentGenerationCheckpoint) -> Unit,
         streamText: Boolean,
@@ -169,6 +174,12 @@ class MomentGenerationService(
             .takeLast(3)
         if (contextMessages.isEmpty()) return MomentGenerationResult.Skipped("没有可用于朋友圈生成的交流内容")
         val promptSession = session.copy(longTermMemory = compiledMemoryProvider(session))
+        val token = novelAiCredentials.load()
+        val imageCapable = autoGenerateImages &&
+            token != null &&
+            imageModel != null &&
+            imageModel.hasConfiguredAuthentication(allowCleartextModelApi)
+        val textOnlyPost = !imageCapable
 
         var checkpoint = resumeFrom ?: MomentGenerationCheckpoint()
         val decision = checkpoint.decision ?: run {
@@ -183,7 +194,7 @@ class MomentGenerationService(
         }
         val draft = checkpoint.draft ?: run {
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.WRITING, "正在生成朋友圈文案"))
-            designMoment(card, promptSession, contextMessages, latestPost, model, streamText, onProgress).also {
+            designMoment(card, promptSession, contextMessages, latestPost, model, textOnlyPost, streamText, onProgress).also {
                 checkpoint = checkpoint.copy(draft = it)
                 onCheckpoint(checkpoint)
             }
@@ -191,11 +202,11 @@ class MomentGenerationService(
         if (!draft.shouldPost) {
             return MomentGenerationResult.Skipped(draft.reason.ifBlank { "AI 判断当前没有足够推进" })
         }
-        val text = draft.text.compactMomentText()
+        val maxTextLength = if (textOnlyPost) TEXT_ONLY_MOMENT_MAX_LENGTH else IMAGE_MOMENT_MAX_LENGTH
+        val text = draft.text.compactMomentText(maxTextLength)
         if (text.isBlank()) error("AI 未生成朋友圈文案")
         val normalizedDraft = draft.copy(text = text)
-        val token = novelAiCredentials.load()
-        if (token == null) {
+        if (textOnlyPost) {
             val post = createPost(
                 card,
                 session,
@@ -205,11 +216,8 @@ class MomentGenerationService(
                 imageSize = null,
                 scheduledAt = scheduledAt
             )
-            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成无图朋友圈", progress = 1f))
+            onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DONE, "已生成纯文字朋友圈", progress = 1f))
             return MomentGenerationResult.Posted(post)
-        }
-        require(imageModel != null && imageModel.hasConfiguredAuthentication(allowCleartextModelApi)) {
-            "默认生图模型/API Key 未配置"
         }
         val prompt = checkpoint.imagePrompt ?: run {
             onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.DESIGNING_IMAGE, "正在设计图片提示词"))
@@ -223,7 +231,7 @@ class MomentGenerationService(
                 onCheckpoint(checkpoint)
             }
         }
-        val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
+        val imageSize = NovelAiImageSizePreset.SQUARE.imageSize
         val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
         val imagePath = imageStorage.save("moments_${card.id}", bytes)
@@ -303,7 +311,7 @@ class MomentGenerationService(
             }
 
             val draft = designMomentDebug(card, promptSession, contextMessages, latestPost, model, exchanges)
-            val text = draft.text.compactMomentText()
+            val text = draft.text.compactMomentText(IMAGE_MOMENT_MAX_LENGTH)
             require(text.isNotBlank()) { "AI 未生成朋友圈文案" }
             val normalizedDraft = draft.copy(text = text)
             val token = novelAiCredentials.load()
@@ -341,7 +349,7 @@ class MomentGenerationService(
                 )
             }
             val prompt = promptDebug.plan
-            val imageSize = NovelAiImageSizePolicy.resolve("", prompt.sizePreset)
+            val imageSize = NovelAiImageSizePreset.SQUARE.imageSize
             val seed = imageService.newSeed()
             val imageInput = imageService.buildRequestBody(prompt, seed, imageSize)
             var finalImage: ByteArray? = null
@@ -440,10 +448,15 @@ class MomentGenerationService(
         messages: List<ChatMessage>,
         latestPost: MomentPost?,
         model: ModelConfig,
+        textOnlyPost: Boolean,
         streamText: Boolean = false,
         onProgress: (MomentGenerationProgress) -> Unit = {}
     ): MomentDraft {
-        val systemPrompt = PromptTemplates.momentGenerationSystemPrompt()
+        val systemPrompt = if (textOnlyPost) {
+            PromptTemplates.momentGenerationTextSystemPrompt()
+        } else {
+            PromptTemplates.momentGenerationSystemPrompt()
+        }
         val userPrompt = PromptTemplates.momentGenerationUserPrompt(card, session, messages, latestPost)
         val raw = completeMomentText(
             systemPrompt = systemPrompt,
@@ -604,6 +617,8 @@ class MomentGenerationService(
     private companion object {
         const val IMAGE_GENERATION_ATTEMPTS = 2
         const val IMAGE_RETRY_DELAY_MS = 1500L
+        const val IMAGE_MOMENT_MAX_LENGTH = 60
+        const val TEXT_ONLY_MOMENT_MAX_LENGTH = 120
     }
 
     fun encodeCheckpoint(checkpoint: MomentGenerationCheckpoint): String =
@@ -615,10 +630,10 @@ class MomentGenerationService(
         }
 }
 
-private fun String.compactMomentText(): String =
+private fun String.compactMomentText(maxLength: Int): String =
     replace(Regex("\\s+"), " ")
         .trim()
-        .take(60)
+        .take(maxLength)
 
 internal fun String.isTransientMomentImageFailure(): Boolean {
     val text = lowercase()

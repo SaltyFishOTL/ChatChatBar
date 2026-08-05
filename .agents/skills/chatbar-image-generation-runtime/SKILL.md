@@ -56,6 +56,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Never delete unrelated or user-owned files.
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
+- Moments on-demand generation (text-only post → generate image) reuses `NovelAiPromptDesigner.designForMoment` for the prompt plan and `NovelAiImageService.generate` for bytes; both stream live (design text via `onDelta`, image progress via `Intermediate`). Persist the new path+metadata and only then remove any replaced file; never reach image state if the post becomes a placeholder. Run inside `AiBackgroundWorkManager` + `GlobalImageGenerationConcurrencyGate`.
 - Keep text generation and independent image tasks from blocking each other unless they mutate the same owned image slot.
 - Use `chatbar-background-work-runtime` when changing shared protection, notification, network-loss, or foreground-service lifecycle behavior.
 

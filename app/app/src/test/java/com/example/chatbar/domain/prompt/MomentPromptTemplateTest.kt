@@ -155,4 +155,30 @@ class MomentPromptTemplateTest {
         assertFalse(prompt.contains("最近 3 条完整聊天消息"))
         assertFalse(prompt.contains("近期对话"))
     }
+
+    @Test
+    fun momentGenerationTextSystemPrompt_emitsHiddenImageBriefAndForcesTextRecap() {
+        val system = PromptTemplates.momentGenerationTextSystemPrompt()
+        val user = PromptTemplates.momentGenerationUserPrompt(
+            card = CharacterCard(id = "card", name = "林澄", createdAt = 1L, updatedAt = 1L),
+            session = ChatSession(id = "session", characterCardId = "card", title = "后台", createdAt = 1L, updatedAt = 1L),
+            messages = emptyList(),
+            latestPost = null
+        )
+
+        assertTrue(system.contains("imageBrief"))
+        assertTrue(system.contains("内部隐藏字段"))
+        assertTrue(system.contains("纯文字朋友圈"))
+        assertTrue(system.contains("\"imageBrief\""))
+        assertTrue(system.contains("由用户决定是否配图"))
+        assertTrue(user.contains("角色卡设定摘要"))
+        assertFalse(user.contains("图片设计"))
+    }
+
+    @Test
+    fun momentGenerationTextSystemPrompt_stillReturnsStableJsonShape() {
+        val system = PromptTemplates.momentGenerationTextSystemPrompt()
+        assertTrue(system.contains("{\"senderName\"") || system.contains("senderName"))
+        assertTrue(system.contains("{\"senderName\":\"name\",\"text\":\"...\",\"imageBrief\":\"...\""))
+    }
 }

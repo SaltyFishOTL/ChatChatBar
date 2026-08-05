@@ -71,6 +71,7 @@ fun MomentsScreen(
 ) {
     val posts by viewModel.posts.collectAsState()
     val retryStates by viewModel.retryStates.collectAsState()
+    val onDemandImage by viewModel.onDemandImage.collectAsState()
     val context = LocalContext.current
     val expandedImage = remember { mutableStateOf<Pair<MomentPost, String>?>(null) }
     var pendingDeletePostId by remember { mutableStateOf<String?>(null) }
@@ -122,13 +123,15 @@ fun MomentsScreen(
                         MomentPostRow(
                             post = post,
                             retryState = retryStates[post.id],
+                            onDemandImage = onDemandImage,
                             onToggleLike = { viewModel.toggleLike(post.id) },
                             onDelete = { pendingDeletePostId = post.id },
                             onRetry = { viewModel.retryPlaceholder(post.id) },
                             onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path },
                             onRegenerateImage = { imagePost, path ->
                                 imageRegenerationTarget = imagePost.id to path
-                            }
+                            },
+                            onGenerateImage = { viewModel.generateImageForPost(post.id) }
                         )
                         CbDivider(color = ChatBarTheme.colors.border)
                     }
@@ -209,11 +212,13 @@ fun MomentsScreen(
 private fun MomentPostRow(
     post: MomentPost,
     retryState: MomentRetryUiState?,
+    onDemandImage: MomentOnDemandImageUiState,
     onToggleLike: () -> Unit,
     onDelete: () -> Unit,
     onRetry: () -> Unit,
     onOpenImage: (MomentPost, String) -> Unit,
-    onRegenerateImage: (MomentPost, String) -> Unit
+    onRegenerateImage: (MomentPost, String) -> Unit,
+    onGenerateImage: () -> Unit
 ) {
     val colors = ChatBarTheme.colors
     val textColor = colors.foreground
@@ -280,7 +285,7 @@ private fun MomentPostRow(
                             .clickable { onOpenImage(post, path) },
                         contentScale = ContentScale.Crop
                     )
-                }
+                } ?: MomentOnDemandImageBlock(post, onDemandImage, onGenerateImage)
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -329,6 +334,98 @@ private fun MomentPostRow(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun MomentOnDemandImageBlock(
+    post: MomentPost,
+    state: MomentOnDemandImageUiState,
+    onGenerate: () -> Unit
+) {
+    val colors = ChatBarTheme.colors
+    val busy = state.phase == MomentOnDemandImagePhase.DESIGNING ||
+        state.phase == MomentOnDemandImagePhase.GENERATING ||
+        state.phase == MomentOnDemandImagePhase.SAVING
+    Column(
+        modifier = Modifier.fillMaxWidth(0.74f),
+        verticalArrangement = Arrangement.spacedBy(7.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(4.dp))
+                .background(colors.surfaceSubtle.copy(alpha = 0.9f))
+                .clickable(enabled = !busy, onClick = onGenerate),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.padding(horizontal = 12.dp)
+            ) {
+                CbIcon(AppIcons.Lock, null, Modifier.size(26.dp), colors.mutedForeground)
+                CbText(
+                    if (busy) when (state.phase) {
+                        MomentOnDemandImagePhase.DESIGNING -> "正在设计图片"
+                        MomentOnDemandImagePhase.GENERATING -> "正在生成图片"
+                        else -> "正在保存图片"
+                    } else "未生成图片",
+                    color = colors.mutedForeground,
+                    style = ChatBarTheme.typography.label
+                )
+                CbText(
+                    "点击查看私密图片",
+                    color = colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+        }
+        if (busy || state.phase == MomentOnDemandImagePhase.FAILED) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 44.dp, max = 112.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(colors.surface)
+                    .padding(8.dp)
+            ) {
+                if (state.errorMessage != null) {
+                    CbText(
+                        state.errorMessage,
+                        color = colors.destructive,
+                        style = ChatBarTheme.typography.caption
+                    )
+                } else if (state.phase == MomentOnDemandImagePhase.GENERATING) {
+                    CbColumnProgress(state.progress)
+                } else {
+                    CbText(
+                        compactRetryStream(state.designStream),
+                        color = colors.foreground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+        } else if (state.phase == MomentOnDemandImagePhase.DONE) {
+            CbText(
+                "图片已生成",
+                color = colors.primary,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+    }
+}
+
+@Composable
+private fun CbColumnProgress(progress: Float) {
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+        CbText(
+            "图片生成 ${(progress.coerceIn(0f, 1f) * 100).toInt()}%",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        CbProgress(progress)
     }
 }
 

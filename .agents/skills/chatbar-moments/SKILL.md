@@ -22,6 +22,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 ## Product Rules
 
 - Global `momentsEnabled` defaults false. When off, hide root 朋友圈 Tab and do not generate.
+- Global `momentsImagesEnabled` defaults true (auto image generation). When off, or when NovelAI Token/image model is unavailable, posts are text-only and generated with the pure-text prompt.
 - Character `momentsEnabled` defaults true. Existing persisted characters with explicit false stay disabled.
 - AI judges only current timing/progress suitability. Do not judge whether character owns a phone or can post.
 - Active gate: session has user/AI exchange within 48 hours.
@@ -60,6 +61,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Use current default chat model and params for 朋友圈 AI. Do not set `thinkingBudget` to 0.
 - Debug generation must expose full AI inputs and outputs.
 - Moment copy: 0-60 Chinese characters, short, private, suggestive, like an accidental life fragment. Do not recap chat logs.
+- Text-only posts (image gen off or no token) use `PromptTemplates.momentGenerationTextSystemPrompt` and allow up to ~120 Chinese characters; `MomentGenerationService` picks the prompt and the `compactMomentText` cap (`IMAGE_MOMENT_MAX_LENGTH=60` / `TEXT_ONLY_MOMENT_MAX_LENGTH=120`) based on an internal `textOnlyPost` flag. The pure-text prompt still emits a hidden `imageBrief` so on-demand image design can reuse `designForMoment`.
 
 ## Image Rules
 
@@ -71,7 +73,9 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Text/image generation failure should create a visible placeholder moment with failure reason and retry action; do not hide primary failure with a success-looking fallback.
 - Failed placeholders persist completed generation checkpoints. Retry resumes after completed judge, draft, and NovelAI Prompt-design phases instead of repeating them.
 - Generated images persist full `GeneratedImageMetadata`. Regeneration reuses `NovelAiImageRegenerationDialog`, exposes editable main/character/negative prompts, preserves original dimensions, and always requests a new seed.
+- Moment image generation forces SQUARE (`NovelAiImageSizePreset.SQUARE.imageSize`) in both the scheduler/generation path (`MomentGenerationService`), the debug path, and the on-demand path (`MomentsViewModel`); do not use the AI-chosen `sizePreset` or the user NovelAI ratio setting for moment images.
 - Legacy moment images load regeneration data from persisted metadata, then PNG metadata, then `imagePrompt` plus decoded image dimensions.
+- On-demand image generation for a text-only post reuses `novelAiPromptDesigner.designForMoment(card, post.imageBrief, ...)` then `novelAiImageService.generate(...)`, persists the new path+metadata before replacing/creating, and streams design text + image progress live. Do not change the post text/content.
 
 ## UI Rules
 
@@ -81,6 +85,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - No comment input, no comment list, no reply-to-chat, no long-term-memory entry.
 - Like toggles local state. Public moment display count changes with local like; private moment base remains 0 and may show only local-liked state if product explicitly asks.
 - Placeholder failed moments show retry action and stream retry progress; they should not look like successful posts.
+- A non-placeholder post whose `imagePath` is blank shows a dark `未生成图片` placeholder (lock icon + 点击查看私密图片) instead of an empty gap; tapping it triggers on-demand generation that streams design text and image progress inline. Old posts with real images are not blanked and still open through the shared preview dialog.
 - Bottom 朋友圈 and chat tabs show red dot when unread items exist.
 - Deletion stays unobtrusive; tapping the delete icon opens a destructive confirmation dialog.
 - Moment image interactions should reuse shared chat image preview module where possible: open large image, zoom, save/share, set as card avatar/background.

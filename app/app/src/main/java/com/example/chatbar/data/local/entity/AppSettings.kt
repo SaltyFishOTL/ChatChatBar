@@ -51,6 +51,7 @@ data class AppSettings(
     val voiceTagModelId: String? = null,
     val audiobookModeEnabled: Boolean = false,
     val momentsEnabled: Boolean = false,
+    val momentsImagesEnabled: Boolean = true,
     val momentsMinDelayHours: Int = 2,
     val momentsMaxDelayHours: Int = 13,
     val momentsBackgroundGuideDismissed: Boolean = false,
