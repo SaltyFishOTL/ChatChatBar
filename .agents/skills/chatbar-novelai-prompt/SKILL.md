@@ -50,7 +50,7 @@ Keep backend limits, scheduling rules, UI state, storage details, and business p
 
 For 朋友圈 image generation, keep using shared `NOVELAI_IMAGE_PROMPT_SYSTEM`. Add only small modifiers such as target photo style or suitable composition. Do not create separate moment-specific NAI prompt template.
 
-The 朋友圈文案 generation system prompt has an image version `MOMENT_GENERATION_SYSTEM_PROMPT` and a text-only version `MOMENT_GENERATION_TEXT_SYSTEM_PROMPT` (`momentGenerationTextSystemPrompt`). The text-only version writes a longer (~120 char), more scenic `text` but keeps a hidden `imageBrief` field so `designForMoment` can still build the NAI prompt later on demand. Do not drop the hidden `imageBrief` from the text-only JSON schema.
+The 朋友圈文案 generation system prompt has an image version `MOMENT_GENERATION_SYSTEM_PROMPT` and a text-only version `MOMENT_GENERATION_TEXT_SYSTEM_PROMPT` (`momentGenerationTextSystemPrompt`). The text-only version writes a slightly longer (~40-90 char), more scenic `text` but keeps a hidden `imageBrief` field so `designForMoment` can still build the NAI prompt later on demand. Do not drop the hidden `imageBrief` from the text-only JSON schema.
 
 ## Verification
 

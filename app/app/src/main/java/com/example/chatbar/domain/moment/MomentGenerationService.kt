@@ -618,7 +618,7 @@ class MomentGenerationService(
         const val IMAGE_GENERATION_ATTEMPTS = 2
         const val IMAGE_RETRY_DELAY_MS = 1500L
         const val IMAGE_MOMENT_MAX_LENGTH = 60
-        const val TEXT_ONLY_MOMENT_MAX_LENGTH = 120
+        const val TEXT_ONLY_MOMENT_MAX_LENGTH = 150
     }
 
     fun encodeCheckpoint(checkpoint: MomentGenerationCheckpoint): String =

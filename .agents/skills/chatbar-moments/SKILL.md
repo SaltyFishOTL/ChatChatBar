@@ -61,7 +61,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Use current default chat model and params for 朋友圈 AI. Do not set `thinkingBudget` to 0.
 - Debug generation must expose full AI inputs and outputs.
 - Moment copy: 0-60 Chinese characters, short, private, suggestive, like an accidental life fragment. Do not recap chat logs.
-- Text-only posts (image gen off or no token) use `PromptTemplates.momentGenerationTextSystemPrompt` and allow up to ~120 Chinese characters; `MomentGenerationService` picks the prompt and the `compactMomentText` cap (`IMAGE_MOMENT_MAX_LENGTH=60` / `TEXT_ONLY_MOMENT_MAX_LENGTH=120`) based on an internal `textOnlyPost` flag. The pure-text prompt still emits a hidden `imageBrief` so on-demand image design can reuse `designForMoment`.
+- Text-only posts (image gen off or no token) use `PromptTemplates.momentGenerationTextSystemPrompt` and target ~40-90 Chinese characters; `MomentGenerationService` picks the prompt and the `compactMomentText` hard cap (`IMAGE_MOMENT_MAX_LENGTH=60` / `TEXT_ONLY_MOMENT_MAX_LENGTH=150`) based on an internal `textOnlyPost` flag. Keep the hard cap well above the prompt's requested range so it only catches AI that does not follow instructions; never tune the hard cap to the target range (that would clip normal output). The pure-text prompt still emits a hidden `imageBrief` so on-demand image design can reuse `designForMoment`.
 
 ## Image Rules
 

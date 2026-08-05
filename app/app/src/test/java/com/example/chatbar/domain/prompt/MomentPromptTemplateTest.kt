@@ -170,6 +170,7 @@ class MomentPromptTemplateTest {
         assertTrue(system.contains("内部隐藏字段"))
         assertTrue(system.contains("纯文字朋友圈"))
         assertTrue(system.contains("\"imageBrief\""))
+        assertTrue(system.contains("40-90 字"))
         assertTrue(system.contains("由用户决定是否配图"))
         assertTrue(user.contains("角色卡设定摘要"))
         assertFalse(user.contains("图片设计"))
