@@ -18,7 +18,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 ## Feature Rows
 
 - App wiring and navigation: app/app/src/main/java/com/example/chatbar/ChatBarApp.kt, Navigation.kt, NavigationKeys.kt.
-- Character card edit UI: ui/character/CharacterEditScreen.kt, CharacterEditViewModel.kt.
+- Character card edit UI: ui/character/CharacterEditScreen.kt, CharacterEditViewModel.kt. Renaming a card name also rewrites bound session titles via `ChatRepository.rewriteSessionTitlesForCharacterCard`.
 - Character-card AI auto-fill, rewrite, image-to-appearance fill, diff, apply, cover, or per-character avatar: use chatbar-character-card-ai.
 - Chat prompt composition, stable/dynamic/tail cache layers, history roles, previous-turn hot zone, World Book/RAG/Archive/HEAD order, or prompt-delivery diagnosis: use chatbar-prompt-pipeline.
 - Any model-facing prompt text, template, or builder change in PromptTemplates.kt: use chatbar-prompt-pipeline and maintain its file-header AI prompt directory.

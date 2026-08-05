@@ -577,6 +577,17 @@ class CharacterEditViewModel(
                     break
                 }
             }
+            oldCard?.name?.let { oldName ->
+                if (oldName.trim() != card.name.trim() && oldName.trim().isNotEmpty() && card.name.trim().isNotEmpty()) {
+                    runCatching {
+                        ChatBarApp.instance.chatRepository.rewriteSessionTitlesForCharacterCard(
+                            characterCardId = card.id,
+                            oldName = oldName,
+                            newName = card.name
+                        )
+                    }
+                }
+            }
             val effectiveCard = characterRepository.getById(card.id) ?: card
             _characterCard.value = effectiveCard
             // Keep editable state in sync with the persisted card: state vars still

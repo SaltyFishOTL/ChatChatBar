@@ -431,6 +431,30 @@ class ChatRepository(private val storage: JsonFileStorage) {
         return updatedCount
     }
 
+    /**
+     * 角色卡改名后同步会话显示名称：把绑定该卡的所有会话标题中出现的旧名改写为新名。
+     * 这样首页会话列表与聊天页标题展示的角色卡名字能与角色卡保持一致。
+     */
+    suspend fun rewriteSessionTitlesForCharacterCard(
+        characterCardId: String,
+        oldName: String,
+        newName: String
+    ): Int {
+        val from = oldName.trim()
+        val to = newName.trim()
+        if (from.isEmpty() || to.isEmpty() || from == to) return 0
+        initialize()
+        var updatedCount = 0
+        _sessions.value.filter { it.characterCardId == characterCardId }.forEach { session ->
+            val title = session.title.replace(from, to)
+            if (title != session.title) {
+                updatedCount++
+                updateSession(session.copy(title = title))
+            }
+        }
+        return updatedCount
+    }
+
     /** 搜索会话 */
     suspend fun searchSessions(query: String): List<ChatSession> {
         return getAllSessions().filter { session ->
