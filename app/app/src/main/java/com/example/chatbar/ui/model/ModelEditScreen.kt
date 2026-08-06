@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelTemplate
 import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -128,6 +129,18 @@ fun ModelEditScreen(
             CbField("模型标识") {
                 CbInput(viewModel.modelName, { viewModel.modelName = it }, placeholder = "gpt-4o-mini")
             }
+            CbField(
+                label = "格式提示词位置",
+                description = "控制每轮格式与长度要求放在请求开头、末尾或两端。"
+            ) {
+                CbSelect(
+                    value = viewModel.formatPromptPosition,
+                    options = FormatPromptPosition.entries.toList(),
+                    optionLabel = ::formatPromptPositionLabel,
+                    onValueChange = { viewModel.formatPromptPosition = it },
+                    placeholder = "选择格式提示词位置"
+                )
+            }
 
             CbDivider()
             SectionTitle("多模态")
@@ -183,6 +196,12 @@ fun ModelEditScreen(
 @Composable
 private fun SectionTitle(text: String) {
     CbText(text, color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+}
+
+private fun formatPromptPositionLabel(position: FormatPromptPosition): String = when (position) {
+    FormatPromptPosition.START -> "格式放在开头"
+    FormatPromptPosition.END -> "格式放在结尾"
+    FormatPromptPosition.BOTH -> "格式放在开头和结尾"
 }
 
 @Composable

@@ -1,5 +1,6 @@
 package com.example.chatbar.ui.chat
 
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -10,6 +11,55 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CurrentTurnMessageOrderTest {
+    @Test
+    fun startPositionAddsRequirementsOnlyToOpeningSystemMessage() {
+        val messages = mutableListOf(
+            ChatApiMessage.text(
+                role = "system",
+                content = buildOpeningSystemPrompt(
+                    requirementsSystemPrompt = "格式要求",
+                    stableSystemPrompt = "主系统提示",
+                    formatPromptPosition = FormatPromptPosition.START
+                )
+            )
+        )
+
+        appendCurrentUserAndRequirementsSystemMessages(
+            messages = messages,
+            userMessage = ChatApiMessage.text(role = "user", content = "用户输入"),
+            requirementsSystemPrompt = "格式要求",
+            formatPromptPosition = FormatPromptPosition.START
+        )
+
+        assertEquals(listOf("system", "user"), messages.map { it.role })
+        assertEquals(JsonPrimitive("格式要求\n\n主系统提示"), messages[0].content)
+    }
+
+    @Test
+    fun endPositionAddsRequirementsOnlyAfterCurrentUserMessage() {
+        val messages = mutableListOf(
+            ChatApiMessage.text(
+                role = "system",
+                content = buildOpeningSystemPrompt(
+                    requirementsSystemPrompt = "格式要求",
+                    stableSystemPrompt = "主系统提示",
+                    formatPromptPosition = FormatPromptPosition.END
+                )
+            )
+        )
+
+        appendCurrentUserAndRequirementsSystemMessages(
+            messages = messages,
+            userMessage = ChatApiMessage.text(role = "user", content = "用户输入"),
+            requirementsSystemPrompt = "格式要求",
+            formatPromptPosition = FormatPromptPosition.END
+        )
+
+        assertEquals(listOf("system", "user", "system"), messages.map { it.role })
+        assertEquals(JsonPrimitive("主系统提示"), messages[0].content)
+        assertEquals(JsonPrimitive("格式要求"), messages[2].content)
+    }
+
     @Test
     fun requirementsSystemPromptIsPlacedAtStartOfOpeningSystemMessage() {
         val openingSystemPrompt = buildOpeningSystemPrompt(

@@ -102,23 +102,27 @@ private const val CHAT_VIEW_MODEL_TAG = "ChatViewModel"
 internal fun appendCurrentUserAndRequirementsSystemMessages(
     messages: MutableList<ChatApiMessage>,
     userMessage: ChatApiMessage,
-    requirementsSystemPrompt: String
+    requirementsSystemPrompt: String,
+    formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
 ) {
     require(userMessage.role == "user")
     messages.add(userMessage)
-    messages.add(
-        ChatApiMessage.text(
-            role = "system",
-            content = requirementsSystemPrompt
+    if (formatPromptPosition.includesEnd && requirementsSystemPrompt.isNotBlank()) {
+        messages.add(
+            ChatApiMessage.text(
+                role = "system",
+                content = requirementsSystemPrompt
+            )
         )
-    )
+    }
 }
 
 internal fun buildOpeningSystemPrompt(
     requirementsSystemPrompt: String,
-    stableSystemPrompt: String
+    stableSystemPrompt: String,
+    formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
 ): String = listOf(
-    requirementsSystemPrompt,
+    requirementsSystemPrompt.takeIf { formatPromptPosition.includesStart }.orEmpty(),
     stableSystemPrompt
 ).filter(String::isNotBlank).joinToString("\n\n")
 
@@ -2542,7 +2546,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val promptLayers = assemblePromptLayers()
                 val openingSystemPrompt = buildOpeningSystemPrompt(
                     requirementsSystemPrompt = requirementsSystemPrompt,
-                    stableSystemPrompt = promptLayers.stableSystemPrompt
+                    stableSystemPrompt = promptLayers.stableSystemPrompt,
+                    formatPromptPosition = modelConfig.formatPromptPosition
                 )
                 val promptSystemDebug = listOf(
                     openingSystemPrompt,
@@ -2596,7 +2601,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 本轮格式要求位于首条 System 开头，随后为固定设定和较早聊天记录。
+                // 1. 按模型配置决定首条 System 是否包含本轮格式要求，随后为固定设定和较早聊天记录。
                 openingSystemPrompt.takeIf(String::isNotBlank)?.let { openingPrompt ->
                     apiMessages.add(ChatApiMessage.text("system", openingPrompt))
                 }
@@ -2635,7 +2640,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 3. 本次用户输入，随后追加本轮格式要求 System 消息
+                // 3. 本次用户输入；按模型配置决定其后是否追加本轮格式要求 System 消息。
                 val currentUserContent: String?
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
@@ -2686,7 +2691,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         appendCurrentUserAndRequirementsSystemMessages(
                             messages = apiMessages,
                             userMessage = userMessage,
-                            requirementsSystemPrompt = requirementsSystemPrompt
+                            requirementsSystemPrompt = requirementsSystemPrompt,
+                            formatPromptPosition = modelConfig.formatPromptPosition
                         )
                     }
                 }

@@ -13,6 +13,7 @@ Treat the serialized API message list as source of truth. Constant declaration o
 - Section collection, layer rendering, RAG cards, outlets: app/app/src/main/java/com/example/chatbar/domain/chat/PromptAssembler.kt
 - History and previous-turn grouping: app/app/src/main/java/com/example/chatbar/domain/chat/ContextWindowManager.kt
 - Final role/message insertion and request launch: app/app/src/main/java/com/example/chatbar/ui/chat/ChatViewModel.kt
+- Per-model format prompt placement: app/app/src/main/java/com/example/chatbar/data/local/entity/ModelConfig.kt
 - Cleartext HTTP final role adaptation: app/app/src/main/java/com/example/chatbar/domain/chat/CleartextHttpChatTemplatePolicy.kt
 - Request diagnostics: app/app/src/main/java/com/example/chatbar/utils/DebugLogManager.kt and ui/chat/DebugLogDialog.kt
 - Core tests: PromptAssemblerCharacterModeTest.kt, ContextWindowManagerTest.kt, CurrentTurnMessageOrderTest.kt, RoleplaySpeakerPromptTest.kt, PromptTemplatesTest.kt, and CleartextHttpPolicyTest.kt
@@ -40,10 +41,10 @@ Do not move behavior between these owners without tracing every caller and test.
 - Insert cacheable earlier history after the stable layer.
 - Move a complete adjacent USER + ASSISTANT previous turn into the tail hot zone when available. Earlier assistant history may omit status and option blocks when configured, but every assistant message in the previous turn must retain its full content. Preserve opening assistants, consecutive users, unanswered users, and other abnormal messages in original order.
 - Resolve the active format card by available entities: use an available session override first, then an available global default; a stale session ID must not suppress the default card.
-- Build the complete current-turn requirements text once through `PromptTemplates`, using the rendered active format card and required integer session reply length (default 300), rendered as `N字`. When configured status exclusion affects earlier assistant history and an active format card exists, include the format-continuity notice in that same text. Prepend the exact requirements to the first logical `system` message before the stable prompt, then append the current user input unchanged and repeat the same text in a logical `system` message immediately after it. Keep the requirements out of PromptAssembler stable/dynamic/tail layers, persistence, history, and memory source text.
-- Derive the prompt cache key from the exact first-system content after the opening requirements are prepended; format-card or reply-length changes must produce a different key.
+- Build the complete current-turn requirements text once through `PromptTemplates`, using the rendered active format card and required integer session reply length (default 300), rendered as `N字`. When configured status exclusion affects earlier assistant history and an active format card exists, include the format-continuity notice in that same text. Place that exact text according to the resolved chat model's `formatPromptPosition`: prepend it to the first logical `system` message for `START`, add it as a logical `system` message immediately after the unchanged current user input for `END`, or do both for `BOTH`. Missing persisted values default to `BOTH`. Keep the requirements out of PromptAssembler stable/dynamic/tail layers, persistence, history, and memory source text.
+- Derive the prompt cache key from exact first-system content. Format-card or reply-length changes affect the key when placement includes `START`; `END` keeps those dynamic requirements outside the cached opening prefix.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
-- Cleartext HTTP adaptation changes later system roles to assistant in serialized and debug JSON but never moves or merges their content; HTTPS keeps the post-user requirements role as system.
+- Cleartext HTTP adaptation changes later system roles to assistant in serialized and debug JSON but never moves or merges their content; HTTPS keeps a configured post-user requirements message as system.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.
 - Keep cache keys aligned with exact sent stable content, including conditional history headings.
@@ -69,8 +70,9 @@ Do not move behavior between these owners without tracing every caller and test.
 ## Regression Matrix
 
 - No history, one incomplete turn, and multiple complete turns.
+- Format prompt placement at `START`, `END`, and `BOTH`, including old model data defaulting to `BOTH`.
 - Opening assistant, consecutive users, unanswered user, and regeneration.
-- Empty-message continue: blank user input is replaced by `PromptTemplates.continueGenerationUserPrompt()` as the current user message and is not persisted; the format-requirements system message still follows it.
+- Empty-message continue: blank user input is replaced by `PromptTemplates.continueGenerationUserPrompt()` as the current user message and is not persisted; format-requirement placement still follows the resolved model configuration.
 - Empty versus populated World Book, RAG, Archive, HEAD, and post-history sections.
 - Stable outlet present versus absent.
 - Document-only, memory-only, and mixed RAG cards.

@@ -2,6 +2,7 @@ package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.EmbeddingConfig
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetChatModel
@@ -166,6 +167,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         reasoningEffort = reasoningEffort,
         enableThinking = enableThinking,
         maxOutputTokens = maxOutputTokens,
+        formatPromptPosition = existing?.formatPromptPosition ?: FormatPromptPosition.BOTH,
         sourcePresetKey = modelKey,
         sourcePresetVersion = catalogVersion,
         createdAt = existing?.createdAt ?: 0L
@@ -211,6 +213,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         reasoningEffort = reasoningEffort,
         enableThinking = enableThinking,
         maxOutputTokens = maxOutputTokens,
+        formatPromptPosition = existing?.formatPromptPosition ?: FormatPromptPosition.BOTH,
         sourcePresetKey = modelKey,
         sourcePresetVersion = catalogVersion,
         createdAt = existing?.createdAt ?: 0L

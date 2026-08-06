@@ -7,6 +7,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelTemplate
 import com.example.chatbar.data.local.entity.ParamValue
@@ -35,6 +36,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
     var templateType by mutableStateOf(ModelTemplate.OPENAI)
     var isMultimodal by mutableStateOf(false)
     var visionModelId by mutableStateOf<String?>(null)
+    var formatPromptPosition by mutableStateOf(FormatPromptPosition.BOTH)
     val customParamsMap = mutableStateMapOf<String, ParamValue>()
 
     init {
@@ -58,6 +60,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                     templateType = config.templateType
                     isMultimodal = config.isMultimodal
                     visionModelId = config.visionModelId
+                    formatPromptPosition = config.formatPromptPosition
                     customParamsMap.putAll(config.customParams)
                 }
             } else {
@@ -114,6 +117,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 templateType = templateType,
                 isMultimodal = isMultimodal,
                 visionModelId = visionModelId.takeIf { !isMultimodal },
+                formatPromptPosition = formatPromptPosition,
                 customParams = customParamsMap.toMap()
             ) ?: ModelConfig(
                 id = modelId ?: java.util.UUID.randomUUID().toString(),
@@ -124,6 +128,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 templateType = templateType,
                 isMultimodal = isMultimodal,
                 visionModelId = visionModelId.takeIf { !isMultimodal },
+                formatPromptPosition = formatPromptPosition,
                 customParams = customParamsMap.toMap(),
                 createdAt = now
             )

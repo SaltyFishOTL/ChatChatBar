@@ -2,6 +2,7 @@ package com.example.chatbar.domain.model
 
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PresetChatModel
@@ -209,8 +210,20 @@ class ModelConfigurationTest {
         )
 
         assertTrue(model.selectableForChat)
+        assertEquals(FormatPromptPosition.BOTH, model.formatPromptPosition)
         assertEquals(null, model.sourcePresetKey)
         assertEquals(null, model.sourcePresetVersion)
+    }
+
+    @Test fun modelFormatPromptPositionRoundTrips() {
+        val original = model(apiKey = "key").copy(
+            formatPromptPosition = FormatPromptPosition.END
+        )
+
+        val encoded = json.encodeToString(ModelConfig.serializer(), original)
+        val decoded = json.decodeFromString(ModelConfig.serializer(), encoded)
+
+        assertEquals(FormatPromptPosition.END, decoded.formatPromptPosition)
     }
 
     @Test fun chatModelKeyKeepsConfigurationUsableWhenSupportModelsMissing() {

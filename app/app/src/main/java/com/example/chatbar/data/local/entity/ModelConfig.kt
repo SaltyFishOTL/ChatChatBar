@@ -24,6 +24,19 @@ enum class OutputTokenParameter {
     MAX_COMPLETION_TOKENS
 }
 
+@Serializable
+enum class FormatPromptPosition {
+    START,
+    END,
+    BOTH;
+
+    val includesStart: Boolean
+        get() = this == START || this == BOTH
+
+    val includesEnd: Boolean
+        get() = this == END || this == BOTH
+}
+
 /**
  * 自定义参数值 - 支持多种类型
  */
@@ -61,6 +74,7 @@ data class ModelConfig(
     val enableThinking: Boolean? = null,
     val maxOutputTokens: Int? = null,
     val outputTokenParameter: OutputTokenParameter = OutputTokenParameter.MAX_TOKENS,
+    val formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH,
     val supportsJsonMode: Boolean = false,
     val supportsDisableThinking: Boolean = false,
     val sourcePresetKey: String? = null,

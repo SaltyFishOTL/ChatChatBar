@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.EmbeddingConfig
+import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBook
@@ -61,7 +62,8 @@ private data class ExportedModelTemplate(
     val customParams: Map<String, ParamValue>,
     val reasoningEffort: String? = null,
     val enableThinking: Boolean? = null,
-    val maxOutputTokens: Int? = null
+    val maxOutputTokens: Int? = null,
+    val formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
 )
 
 private val characterImportProbeJson = Json {
@@ -651,7 +653,8 @@ class ManageViewModel : ViewModel() {
                 customParams = model.customParams,
                 reasoningEffort = model.reasoningEffort,
                 enableThinking = model.enableThinking,
-                maxOutputTokens = model.maxOutputTokens
+                maxOutputTokens = model.maxOutputTokens,
+                formatPromptPosition = model.formatPromptPosition
             )
         )
     }
@@ -672,6 +675,7 @@ class ManageViewModel : ViewModel() {
             reasoningEffort = template.reasoningEffort,
             enableThinking = template.enableThinking,
             maxOutputTokens = template.maxOutputTokens,
+            formatPromptPosition = template.formatPromptPosition,
             createdAt = System.currentTimeMillis()
         )
         modelRepository.saveModel(model)
