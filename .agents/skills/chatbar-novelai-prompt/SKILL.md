@@ -11,6 +11,8 @@ Use before editing NovelAI-related prompt flow:
 
 - `app/app/src/main/java/com/example/chatbar/domain/prompt/PromptTemplates.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiPromptDesigner.kt`
+- `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiStyleCatalog.kt`
+- `app/app/src/main/assets/presets/image_styles/default-image-styles.json`
 - code that converts image intent into NovelAI tags
 - code that adds prompt text for NovelAI image generation
 
@@ -28,9 +30,11 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Prompt-tool reference-image reverse design appends `PromptTemplates.novelAiImagePromptReferenceImageUser()` and still uses the shared system prompt. Keep `referenceImageProvided` independent from direct image payloads so vision-model description fallback retains this instruction.
 - `ImagePromptToolViewModel` sends the source image directly when the selected design model is multimodal; otherwise `ImageUnderstandingService` produces a description for the same shared NovelAI prompt flow.
 - Character-card cover image user prompt lives in `PromptTemplates.novelAiImagePromptCharacterCard(...)`; `NovelAiPromptDesigner` should call it instead of embedding cover prompt text.
+- Character-card built-in style presets use `presets/image_styles/default-image-styles.json` as sole catalog source. `NovelAiStyleCatalogService` validates entries and preview availability; previews belong under `presets/image_styles/previews/`. Character editor one-click fill replaces only `CharacterCard.defaultImagePrompt`, persists no style key, and leaves negative prompt plus generation flow unchanged.
 - Default negative tags live in `PromptTemplates.DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`; card-level `CharacterCard.defaultImageNegativePrompt` flows into `NovelAiPromptPlan.negativePrompt`, with the template used only when that value is blank. `NovelAiImageService` disables quality-tag injection, uses `ucPreset=3` (None), and sends that one effective negative text identically through legacy and V4 fields without combining another preset.
 - Multi-character designer output contains character `caption` only; do not request per-character centers. `NovelAiImageService` keeps V4 `use_coords=false` so NovelAI chooses placement.
-- Character avatar generation goes through `NovelAiPromptDesigner` shared NovelAI flow: card style is passed as `Preset style prompt`, current person tags as `Character preset prompts`, and the avatar user task asks the AI to keep them in `baseCaption` and `characters[].caption` unless they explicitly conflict. Add global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`, then append the fixed tags to the final plan. Freeform source is page-local manual positive Prompt. Output size is always `1024x1024`.
+- Card-backed prompt design never sends `CharacterCard.defaultImagePrompt` to the AI. The card-specific system instruction forbids style output; `NovelAiPromptDesigner.convert` prepends the untouched card style to the normalized AI-designed scene in final `baseCaption`.
+- Character avatar generation goes through `NovelAiPromptDesigner` shared NovelAI flow: only current person tags are passed as `Character preset prompts`; the card style is prepended after AI design. Add global image Prompt preference plus `PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`, then append the fixed tags to the final plan. Freeform source is page-local manual positive Prompt. Output size is always `1024x1024`.
 - Do not add feature-specific NovelAI system prompt constants.
 - Do not add full feature-specific NAI templates such as `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE`.
 - If feature needs extra visual guidance, add a small `PromptTemplates` helper that supplies only modifiers: target style, composition preference, mood, brief image intent.

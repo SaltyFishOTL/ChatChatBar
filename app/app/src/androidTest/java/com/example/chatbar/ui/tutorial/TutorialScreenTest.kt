@@ -50,4 +50,22 @@ class TutorialScreenTest {
         composeTestRule.onNodeWithText("会话列表的长按操作").assertIsDisplayed()
         composeTestRule.onNodeWithText("置顶与删除").assertIsDisplayed()
     }
+
+    @Test
+    fun advancedTutorial_documentsMomentTextLongPressActions() {
+        composeTestRule.setContent {
+            ChatBarTheme {
+                TutorialScreen(onExit = {}, advanced = true)
+            }
+        }
+
+        repeat(5) {
+            composeTestRule.onNodeWithText("下一步").performClick()
+        }
+
+        composeTestRule.onNodeWithText("朋友圈与社区").assertIsDisplayed()
+        composeTestRule.onNodeWithText(
+            "长按动态文字，选择“编辑文字”可修改并保存正文，选择“复制文字”可复制完整正文。"
+        ).assertIsDisplayed()
+    }
 }

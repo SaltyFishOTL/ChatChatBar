@@ -60,6 +60,21 @@ class MomentRepository(private val storage: JsonFileStorage) {
         updatePost(post.copy(userLiked = !post.userLiked))
     }
 
+    suspend fun updatePostText(postId: String, text: String): MomentPost? {
+        val post = getPost(postId) ?: return null
+        require(!post.isPlaceholder) { "生成失败占位朋友圈不可编辑" }
+        val normalizedText = text.trim()
+        require(normalizedText.isNotEmpty()) { "朋友圈文字不能为空" }
+        if (normalizedText == post.text) return post
+
+        val updated = post.copy(
+            text = normalizedText,
+            updatedAt = System.currentTimeMillis()
+        )
+        savePost(updated)
+        return updated
+    }
+
     suspend fun deletePost(postId: String): MomentPost? {
         val post = getPost(postId) ?: return null
         storage.deleteEntity<MomentPost>(POST_TYPE, postId)

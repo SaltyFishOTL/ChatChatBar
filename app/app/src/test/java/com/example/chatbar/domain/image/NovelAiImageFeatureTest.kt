@@ -46,7 +46,6 @@ class NovelAiImageFeatureTest {
             playerName = "林远",
             imageContentHint = "低角度，强调窗光。",
             finalPromptRequirement = "保持 tags 简洁。",
-            cardDefaultImagePrompt = "anime screencap",
             characterImagePrompts = listOf("林雾" to "1girl, silver hair"),
             structured = true
         )
@@ -58,7 +57,8 @@ class NovelAiImageFeatureTest {
         assertEquals("\$username站在雨夜窗边。", request[0].content.jsonPrimitive.content)
         assertTrue(request[1].content.jsonPrimitive.content.contains("低角度，强调窗光。"))
         assertEquals(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.trim(), request[2].content.jsonPrimitive.content)
-        assertTrue(request[3].content.jsonPrimitive.content.contains("anime screencap"))
+        assertTrue(request[3].content.jsonPrimitive.content.contains("不要在 `baseCaption`"))
+        assertFalse(request.joinToString { it.content.toString() }.contains("anime screencap"))
         assertTrue(request[4].content.jsonPrimitive.content.contains("林雾: 1girl, silver hair"))
         assertTrue(request[5].content.jsonPrimitive.content.contains("保持 tags 简洁。"))
     }
@@ -70,7 +70,6 @@ class NovelAiImageFeatureTest {
             playerName = "林远",
             imageContentHint = "",
             finalPromptRequirement = "",
-            cardDefaultImagePrompt = "anime screencap",
             characterImagePrompts = emptyList(),
             structured = false
         )
@@ -94,10 +93,10 @@ class NovelAiImageFeatureTest {
         }
         val card = CharacterCard(
             id = "card", name = "Card", characters = characters, greeting = "hello",
-            defaultImagePrompt = "default-style", createdAt = 1, updatedAt = 1
+            defaultImagePrompt = "1.35::artist:subtle_style::, {{fine texture}}", createdAt = 1, updatedAt = 1
         )
         val designed = DesignedImagePrompt(
-            baseCaption = "default-style, 2girls, night street",
+            baseCaption = "2girls, night street",
             sizePreset = "HORIZONTAL",
             characters = (1..7).map { DesignedCharacterPrompt("fixed-$it, adjust-$it") } +
                 DesignedCharacterPrompt("ignored")
@@ -105,7 +104,10 @@ class NovelAiImageFeatureTest {
 
         val result = NovelAiPromptDesigner.convert(card, designed)
 
-        assertEquals("default-style, 2girls, night street", result.baseCaption)
+        assertEquals(
+            "1.35::artist:subtle_style::, {{fine texture}}, 2girls, night street",
+            result.baseCaption
+        )
         assertEquals(6, result.characterCaptions.size)
         assertEquals(NovelAiImageSizePreset.HORIZONTAL, result.sizePreset)
         assertEquals("fixed-1, adjust-1", result.characterCaptions.first().prompt)
@@ -242,20 +244,18 @@ class NovelAiImageFeatureTest {
     fun `character avatar design uses shared prompt system and avatar task`() {
         val prompt = NovelAiPromptDesigner.characterAvatarDesignDebugInput(
             characterName = "林雾",
-            stylePrompt = "very aesthetic, anime screencap",
             characterPrompt = "1girl, silver hair, blue-gray eyes",
             finalPromptRequirement = "solo, portrait"
         )
 
         assertTrue(prompt.contains("[system]"))
-        assertTrue(prompt.contains("Preset style prompt (include verbatim in baseCaption):"))
-        assertTrue(prompt.contains("very aesthetic, anime screencap"))
+        assertTrue(prompt.contains("不要在 `baseCaption`"))
+        assertFalse(prompt.contains("very aesthetic, anime screencap"))
         assertTrue(prompt.contains("Character preset prompts (include verbatim at start of each character's caption):"))
         assertTrue(prompt.contains("- 林雾: 1girl, silver hair, blue-gray eyes"))
         assertTrue(prompt.contains("1girl, silver hair, blue-gray eyes"))
         assertTrue(prompt.contains("[user]"))
         assertTrue(prompt.contains("角色专属头像"))
-        assertTrue(prompt.contains("完整 Preset style prompt 到 `baseCaption`"))
         assertTrue(prompt.contains("完整 Character preset prompt 到 `characters[].caption`"))
         assertTrue(prompt.contains("明确冲突"))
         assertTrue(prompt.contains("solo, portrait"))

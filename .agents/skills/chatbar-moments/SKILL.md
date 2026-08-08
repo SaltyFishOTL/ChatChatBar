@@ -88,6 +88,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - A non-placeholder post whose `imagePath` is blank shows a dark `未生成图片` placeholder (lock icon + 点击查看私密图片) instead of an empty gap; tapping it triggers on-demand generation that streams design text and image progress inline. Old posts with real images are not blanked and still open through the shared preview dialog.
 - Bottom 朋友圈 and chat tabs show red dot when unread items exist.
 - Deletion stays unobtrusive; tapping the delete icon opens a destructive confirmation dialog.
+- Long-pressing non-placeholder post text opens edit/copy actions. Editing updates only text and timestamp; keep post identity, image metadata, likes, visibility, and generation history.
 - Moment image interactions should reuse shared chat image preview module where possible: open large image, zoom, save/share, set as card avatar/background.
 
 ## Persistence

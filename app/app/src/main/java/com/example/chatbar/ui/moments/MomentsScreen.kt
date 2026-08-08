@@ -3,6 +3,7 @@ package com.example.chatbar.ui.moments
 import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -33,7 +34,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -58,6 +61,7 @@ import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
 import java.text.SimpleDateFormat
 import java.util.Date
@@ -73,8 +77,11 @@ fun MomentsScreen(
     val retryStates by viewModel.retryStates.collectAsState()
     val onDemandImage by viewModel.onDemandImage.collectAsState()
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val expandedImage = remember { mutableStateOf<Pair<MomentPost, String>?>(null) }
     var pendingDeletePostId by remember { mutableStateOf<String?>(null) }
+    var textActionTarget by remember { mutableStateOf<MomentPost?>(null) }
+    var textEditTarget by remember { mutableStateOf<MomentPost?>(null) }
     var imageRegenerationTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var imageRegenerationDraft by remember { mutableStateOf<NovelAiImageRegenerationDraft?>(null) }
     var imageRegenerationLoading by remember { mutableStateOf(false) }
@@ -125,6 +132,7 @@ fun MomentsScreen(
                             retryState = retryStates[post.id],
                             onDemandImage = onDemandImage,
                             onToggleLike = { viewModel.toggleLike(post.id) },
+                            onLongPressText = { textActionTarget = post },
                             onDelete = { pendingDeletePostId = post.id },
                             onRetry = { viewModel.retryPlaceholder(post.id) },
                             onOpenImage = { imagePost, path -> expandedImage.value = imagePost to path },
@@ -178,6 +186,58 @@ fun MomentsScreen(
             }
         )
     }
+    textActionTarget?.let { post ->
+        CbDialog(
+            onDismissRequest = { textActionTarget = null },
+            title = "朋友圈操作"
+        ) {
+            Column(
+                modifier = Modifier.fillMaxWidth(),
+                verticalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbButton(
+                    text = "编辑文字",
+                    onClick = {
+                        textActionTarget = null
+                        textEditTarget = post
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Secondary
+                )
+                CbButton(
+                    text = "复制文字",
+                    onClick = {
+                        clipboard.setText(AnnotatedString(post.text))
+                        Toast.makeText(context, "已复制朋友圈文字", Toast.LENGTH_SHORT).show()
+                        textActionTarget = null
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Outline
+                )
+            }
+        }
+    }
+    textEditTarget?.let { post ->
+        FullscreenTextEditor(
+            title = "编辑朋友圈文字",
+            text = post.text,
+            onTextChange = {},
+            visible = true,
+            onDismiss = { textEditTarget = null },
+            placeholder = "输入朋友圈文字…",
+            onConfirm = { editedText ->
+                textEditTarget = null
+                viewModel.updatePostText(post.id, editedText) { errorMessage ->
+                    Toast.makeText(
+                        context,
+                        errorMessage ?: "朋友圈文字已更新",
+                        Toast.LENGTH_SHORT
+                    ).show()
+                }
+            },
+            canConfirm = { it.isNotBlank() }
+        )
+    }
     pendingDeletePostId?.let { postId ->
         CbDialog(
             onDismissRequest = { pendingDeletePostId = null },
@@ -214,6 +274,7 @@ private fun MomentPostRow(
     retryState: MomentRetryUiState?,
     onDemandImage: MomentOnDemandImageUiState,
     onToggleLike: () -> Unit,
+    onLongPressText: () -> Unit,
     onDelete: () -> Unit,
     onRetry: () -> Unit,
     onOpenImage: (MomentPost, String) -> Unit,
@@ -270,7 +331,14 @@ private fun MomentPostRow(
                     CbText(
                         post.text,
                         color = textColor,
-                        style = ChatBarTheme.typography.body
+                        style = ChatBarTheme.typography.body,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .combinedClickable(
+                                onClick = {},
+                                onLongClickLabel = "编辑或复制朋友圈文字",
+                                onLongClick = onLongPressText
+                            )
                     )
                 }
                 post.imagePath?.takeIf(String::isNotBlank)?.let { path ->

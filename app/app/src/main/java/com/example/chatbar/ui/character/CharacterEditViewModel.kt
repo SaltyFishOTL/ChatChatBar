@@ -51,6 +51,9 @@ import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
+import com.example.chatbar.domain.image.NovelAiStylePreset
+import com.example.chatbar.domain.image.NovelAiStylePromptFillState
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -245,6 +248,7 @@ class CharacterEditViewModel(
     private val novelAiPromptDesigner = ChatBarApp.instance.novelAiPromptDesigner
     private val novelAiImageService = ChatBarApp.instance.novelAiImageService
     private val novelAiImageStorage = ChatBarApp.instance.novelAiImageStorage
+    private val novelAiStyleCatalogService = ChatBarApp.instance.novelAiStyleCatalogService
     private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
     private val fishAudioService = ChatBarApp.instance.fishAudioService
     private val voicePlayback = ChatBarApp.instance.voicePlaybackController
@@ -307,6 +311,12 @@ class CharacterEditViewModel(
     private val _autoFillModels = MutableStateFlow<List<ModelConfig>>(emptyList())
     val autoFillModels: StateFlow<List<ModelConfig>> = _autoFillModels.asStateFlow()
 
+    private val _novelAiStyleCatalog = MutableStateFlow(
+        NovelAiStyleCatalogLoadResult(isLoading = true)
+    )
+    val novelAiStyleCatalog: StateFlow<NovelAiStyleCatalogLoadResult> =
+        _novelAiStyleCatalog.asStateFlow()
+
     private val _autoFillDefaultModelId = MutableStateFlow<String?>(null)
     val autoFillDefaultModelId: StateFlow<String?> = _autoFillDefaultModelId.asStateFlow()
 
@@ -334,7 +344,11 @@ class CharacterEditViewModel(
     var editMode by mutableStateOf(CharacterEditMode.STRUCTURED)
     var basicSetting by mutableStateOf("")
     var freeformCharacterText by mutableStateOf("")
-    var defaultImagePrompt by mutableStateOf("")
+    private var defaultImagePromptFillState by mutableStateOf(NovelAiStylePromptFillState())
+    val defaultImagePrompt: String
+        get() = defaultImagePromptFillState.value
+    val defaultImagePromptUndo
+        get() = defaultImagePromptFillState.undo
     var defaultImageNegativePrompt by mutableStateOf(PromptTemplates.defaultCharacterNaiNegativePrompt())
     var systemPrompt by mutableStateOf("")
     var postHistoryInstructions by mutableStateOf("")
@@ -369,6 +383,25 @@ class CharacterEditViewModel(
     init {
         loadCharacterCard()
         refreshAutoFillModels()
+        loadNovelAiStyleCatalog()
+    }
+
+    private fun loadNovelAiStyleCatalog() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _novelAiStyleCatalog.value = novelAiStyleCatalogService.load()
+        }
+    }
+
+    fun updateDefaultImagePrompt(value: String) {
+        defaultImagePromptFillState = defaultImagePromptFillState.edit(value)
+    }
+
+    fun applyNovelAiStylePreset(preset: NovelAiStylePreset) {
+        defaultImagePromptFillState = defaultImagePromptFillState.apply(preset)
+    }
+
+    fun undoNovelAiStylePreset() {
+        defaultImagePromptFillState = defaultImagePromptFillState.undoLastFill()
     }
 
     private fun refreshAutoFillModels() {
@@ -999,7 +1032,7 @@ class CharacterEditViewModel(
         name = merged.name
         greeting = merged.greeting
         basicSetting = merged.basicSetting
-        defaultImagePrompt = merged.defaultImagePrompt
+        updateDefaultImagePrompt(merged.defaultImagePrompt)
         defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
             merged.defaultImageNegativePrompt
         )
@@ -1259,7 +1292,6 @@ class CharacterEditViewModel(
                         .joinToString("\n")
                     val designerInputPrompt = NovelAiPromptDesigner.characterAvatarDesignDebugInput(
                         characterName = promptInput.imageDescription,
-                        stylePrompt = promptInput.stylePrompt,
                         characterPrompt = promptInput.characterPrompt,
                         finalPromptRequirement = finalPromptRequirement
                     )
@@ -1912,7 +1944,7 @@ class CharacterEditViewModel(
         name = merged.name
         greeting = merged.greeting
         basicSetting = merged.basicSetting
-        defaultImagePrompt = merged.defaultImagePrompt
+        updateDefaultImagePrompt(merged.defaultImagePrompt)
         defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
             merged.defaultImageNegativePrompt
         )
@@ -2316,7 +2348,7 @@ class CharacterEditViewModel(
         editMode = card.editMode
         basicSetting = card.basicSetting
         freeformCharacterText = card.freeformCharacterText
-        defaultImagePrompt = card.defaultImagePrompt
+        updateDefaultImagePrompt(card.defaultImagePrompt)
         defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(
             card.defaultImageNegativePrompt
         )

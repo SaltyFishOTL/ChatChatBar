@@ -344,6 +344,7 @@ private val advancedTutorialPages = listOf(
             TutorialSection(
                 title = "朋友圈",
                 steps = listOf(
+                    "长按动态文字，选择“编辑文字”可修改并保存正文，选择“复制文字”可复制完整正文。",
                     "点击每条动态右下角的淡色删除图标，再在确认窗口中选择“删除”。",
                     "点击动态图片进入预览，可将图片设为对应角色卡头像或背景。"
                 )

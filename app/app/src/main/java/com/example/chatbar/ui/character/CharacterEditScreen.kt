@@ -25,9 +25,11 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -39,6 +41,11 @@ import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -69,10 +76,16 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.testTag
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.selected
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.SpanStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -93,6 +106,8 @@ import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageCropOffset
 import com.example.chatbar.domain.image.ImageCropSize
+import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
+import com.example.chatbar.domain.image.NovelAiStylePreset
 import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
 import com.example.chatbar.domain.image.imageCropFractionRect
@@ -109,6 +124,7 @@ import com.example.chatbar.domain.voice.FishAudioModelSort
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
+import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
@@ -184,6 +200,7 @@ fun CharacterEditScreen(
     val fishAudioConfigured by viewModel.fishAudioConfigured.collectAsState()
     val voicePickerState by viewModel.voicePickerState.collectAsState()
     val autoFillModels by viewModel.autoFillModels.collectAsState()
+    val novelAiStyleCatalog by viewModel.novelAiStyleCatalog.collectAsState()
     val autoFillDefaultModelId by viewModel.autoFillDefaultModelId.collectAsState()
     val autoFillResearchSourceMode by viewModel.autoFillResearchSourceMode.collectAsState()
     val rewriteResearchSourceMode by viewModel.rewriteResearchSourceMode.collectAsState()
@@ -488,16 +505,43 @@ fun CharacterEditScreen(
                 "NovelAI 默认风格提示词",
                 description = "英文标签或自然语言。会固定加入每次生图的基础 Prompt；自由模式可在此直接写角色提示词。",
                 onFullscreenEdit = {
-                    fullscreenField = "NovelAI 默认风格提示词" to viewModel.defaultImagePrompt; fullscreenOnChange = { viewModel.defaultImagePrompt = it }
+                    fullscreenField = "NovelAI 默认风格提示词" to viewModel.defaultImagePrompt
+                    fullscreenOnChange = viewModel::updateDefaultImagePrompt
                 }
             ) {
-                CbInput(
-                    viewModel.defaultImagePrompt,
-                    { viewModel.defaultImagePrompt = it },
-                    placeholder = "例如：anime screencap, cinematic lighting, detailed background",
-                    singleLine = false,
-                    minLines = 3
-                )
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    NovelAiStylePresetGallery(
+                        catalog = novelAiStyleCatalog,
+                        currentPrompt = viewModel.defaultImagePrompt,
+                        onApply = viewModel::applyNovelAiStylePreset
+                    )
+                    viewModel.defaultImagePromptUndo?.let { undo ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CbText(
+                                "已填充 ${undo.displayName}",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                            CbButton(
+                                "撤销",
+                                viewModel::undoNovelAiStylePreset,
+                                variant = ButtonVariant.Ghost,
+                                size = ButtonSize.Sm
+                            )
+                        }
+                    }
+                    CbInput(
+                        viewModel.defaultImagePrompt,
+                        viewModel::updateDefaultImagePrompt,
+                        placeholder = "例如：anime screencap, cinematic lighting, detailed background",
+                        singleLine = false,
+                        minLines = 3
+                    )
+                }
             }
             CbField(
                 "NovelAI 默认负面提示词",
@@ -1214,6 +1258,223 @@ fun CharacterEditScreen(
 
 @Composable
 private fun SectionTitle(text: String) = CbText(text, color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+
+@Composable
+internal fun NovelAiStylePresetGallery(
+    catalog: NovelAiStyleCatalogLoadResult,
+    currentPrompt: String,
+    onApply: (NovelAiStylePreset) -> Unit
+) {
+    var showAllStyles by remember { mutableStateOf(false) }
+    when {
+        catalog.isLoading -> CbText(
+            "正在加载内置画风…",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+
+        catalog.fatalError != null -> CbText(
+            catalog.fatalError,
+            color = ChatBarTheme.colors.destructive,
+            style = ChatBarTheme.typography.caption
+        )
+
+        else -> Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            if (catalog.styles.isEmpty()) {
+                CbText(
+                    if (catalog.errors.isEmpty()) "未配置内置画风" else "没有可用的内置画风",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            } else {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    CbText(
+                        "内置画风 · ${catalog.styles.size} 项",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                    CbButton(
+                        "查看全部（${catalog.styles.size}）",
+                        { showAllStyles = true },
+                        modifier = Modifier.heightIn(min = 48.dp),
+                        variant = ButtonVariant.Outline,
+                        size = ButtonSize.Sm
+                    )
+                }
+                LazyRow(
+                    modifier = Modifier.fillMaxWidth(),
+                    contentPadding = PaddingValues(horizontal = 1.dp),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    items(catalog.styles, key = NovelAiStylePreset::styleKey) { style ->
+                        NovelAiStylePresetCard(
+                            style = style,
+                            isSelected = currentPrompt == style.prompt,
+                            onClick = { onApply(style) },
+                            modifier = Modifier.width(132.dp)
+                        )
+                    }
+                }
+            }
+            if (catalog.errors.isNotEmpty()) {
+                CbText(
+                    catalog.errors.joinToString(separator = "\n"),
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+        }
+    }
+
+    if (showAllStyles && catalog.styles.isNotEmpty()) {
+        NovelAiStylePresetGalleryDialog(
+            styles = catalog.styles,
+            currentPrompt = currentPrompt,
+            onApply = { style ->
+                onApply(style)
+                showAllStyles = false
+            },
+            onDismiss = { showAllStyles = false }
+        )
+    }
+}
+
+@Composable
+private fun NovelAiStylePresetGalleryDialog(
+    styles: List<NovelAiStylePreset>,
+    currentPrompt: String,
+    onApply: (NovelAiStylePreset) -> Unit,
+    onDismiss: () -> Unit
+) {
+    Dialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false
+        )
+    ) {
+        CbSurface(
+            modifier = Modifier.fillMaxSize(),
+            color = ChatBarTheme.colors.background,
+            shape = RoundedCornerShape(0.dp)
+        ) {
+            Column(Modifier.fillMaxSize()) {
+                CbTopBar(
+                    title = "全部内置画风",
+                    navigation = {
+                        CbIconButton(
+                            AppIcons.Close,
+                            "关闭全部画风",
+                            onDismiss,
+                            modifier = Modifier.size(48.dp)
+                        )
+                    },
+                    actions = {
+                        CbText(
+                            "${styles.size} 项",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                )
+                LazyVerticalGrid(
+                    columns = GridCells.Adaptive(minSize = 148.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f)
+                        .windowInsetsPadding(WindowInsets.navigationBars),
+                    contentPadding = PaddingValues(16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
+                    gridItems(styles, key = NovelAiStylePreset::styleKey) { style ->
+                        NovelAiStylePresetCard(
+                            style = style,
+                            isSelected = currentPrompt == style.prompt,
+                            onClick = { onApply(style) },
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NovelAiStylePresetCard(
+    style: NovelAiStylePreset,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    CbSurface(
+        modifier = modifier
+            .clickable(role = Role.Button, onClick = onClick)
+            .semantics(mergeDescendants = true) {
+                contentDescription = "填充画风：${style.displayName}"
+                selected = isSelected
+            },
+        border = BorderStroke(
+            if (isSelected) 2.dp else 1.dp,
+            if (isSelected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border
+        )
+    ) {
+        Column(Modifier.fillMaxWidth()) {
+            if (style.previewAvailable) {
+                AsyncImage(
+                    model = "file:///android_asset/${style.previewAssetPath}",
+                    contentDescription = null,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .testTag("novel-ai-style-preview:${style.styleKey}"),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f)
+                        .testTag("novel-ai-style-preview:${style.styleKey}")
+                        .background(ChatBarTheme.colors.muted),
+                    contentAlignment = Alignment.Center
+                ) {
+                    CbText(
+                        "例图缺失",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(76.dp)
+                    .padding(10.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
+            ) {
+                CbText(
+                    style.displayName,
+                    style = ChatBarTheme.typography.label,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                CbText(
+                    style.description,
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+    }
+}
 
 private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = buildString {
     append(viewModel.draftReady).append('|')

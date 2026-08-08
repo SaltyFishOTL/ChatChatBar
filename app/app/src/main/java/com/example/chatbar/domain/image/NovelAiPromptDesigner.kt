@@ -100,7 +100,6 @@ class NovelAiPromptDesigner(
             playerName = playerName,
             imageContentHint = imageContentHint,
             finalPromptRequirement = finalPromptRequirement,
-            cardDefaultImagePrompt = card.defaultImagePrompt,
             characterImagePrompts = characterPrompts,
             structured = structured
         )
@@ -136,7 +135,6 @@ class NovelAiPromptDesigner(
             emptyList()
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
-            cardDefaultImagePrompt = card.defaultImagePrompt,
             characterImagePrompts = characterPrompts,
             structured = structured
         )
@@ -173,7 +171,6 @@ class NovelAiPromptDesigner(
             emptyList()
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
-            cardDefaultImagePrompt = card.defaultImagePrompt,
             characterImagePrompts = characterPrompts,
             structured = structured
         )
@@ -210,7 +207,6 @@ class NovelAiPromptDesigner(
             emptyList()
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
-            cardDefaultImagePrompt = card.defaultImagePrompt,
             characterImagePrompts = characterPrompts,
             structured = structured
         )
@@ -256,7 +252,6 @@ class NovelAiPromptDesigner(
         val raw = streamCompletion(
             messages = characterAvatarDesignMessages(
                 characterName = characterName,
-                stylePrompt = stylePrompt,
                 characterPrompt = characterPrompt,
                 finalPromptRequirement = finalPromptRequirement
             ),
@@ -265,7 +260,7 @@ class NovelAiPromptDesigner(
             onReasoningDelta = onReasoningDelta
         )
         val designed = parseOrRepair(raw, model, onContentDelta, onReasoningDelta)
-        return convert(designed)
+        return convert(designed, stylePrompt = stylePrompt)
     }
 
     suspend fun designForPromptTool(
@@ -445,13 +440,21 @@ class NovelAiPromptDesigner(
         }
 
         internal fun convert(card: CharacterCard, designed: DesignedImagePrompt): NovelAiPromptPlan =
-            convert(designed, card.defaultImageNegativePrompt)
+            convert(
+                designed = designed,
+                negativePrompt = card.defaultImageNegativePrompt,
+                stylePrompt = card.defaultImagePrompt
+            )
 
         internal fun convert(
             designed: DesignedImagePrompt,
-            negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt()
+            negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt(),
+            stylePrompt: String = ""
         ): NovelAiPromptPlan {
-            val normalizedBase = normalizeRelationTags(designed.effectiveBaseCaption)
+            val normalizedBase = prependStylePrompt(
+                stylePrompt = stylePrompt,
+                baseCaption = normalizeRelationTags(designed.effectiveBaseCaption)
+            )
             val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
             val effectiveNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
             val characters = designed.characters.take(NOVEL_AI_MAX_CHARACTER_PROMPTS)
@@ -499,12 +502,22 @@ class NovelAiPromptDesigner(
         internal fun baseCharacterName(fullName: String): String =
             fullName.split(Regex("""[/;；]""")).first().trim()
 
+        internal fun prependStylePrompt(stylePrompt: String, baseCaption: String): String {
+            val style = stylePrompt.trim()
+            val scene = baseCaption.trim()
+            return when {
+                style.isBlank() -> scene
+                scene.isBlank() -> style
+                style.endsWith(',') -> "$style $scene"
+                else -> "$style, $scene"
+            }
+        }
+
         internal fun conversationDesignMessages(
             messages: List<ChatMessage>,
             playerName: String?,
             imageContentHint: String,
             finalPromptRequirement: String,
-            cardDefaultImagePrompt: String,
             characterImagePrompts: List<Pair<String, String>>,
             structured: Boolean
         ): List<ChatApiMessage> {
@@ -522,7 +535,7 @@ class NovelAiPromptDesigner(
                 ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptCoreSystem()),
                 ChatApiMessage.text(
                     "system",
-                    PromptTemplates.novelAiImagePromptDefaultStyleSystem(cardDefaultImagePrompt)
+                    PromptTemplates.novelAiImagePromptStyleExclusionSystem()
                 ),
                 ChatApiMessage.text(
                     "system",
@@ -540,7 +553,6 @@ class NovelAiPromptDesigner(
 
         internal fun characterAvatarDesignMessages(
             characterName: String,
-            stylePrompt: String,
             characterPrompt: String,
             finalPromptRequirement: String
         ): List<ChatApiMessage> {
@@ -554,7 +566,6 @@ class NovelAiPromptDesigner(
                 ChatApiMessage.text(
                     "system",
                     PromptTemplates.novelAiImagePromptSystem(
-                        cardDefaultImagePrompt = stylePrompt,
                         characterImagePrompts = characterPrompts,
                         structured = characterPrompts.isNotEmpty()
                     )
@@ -571,14 +582,12 @@ class NovelAiPromptDesigner(
 
         internal fun characterAvatarDesignDebugInput(
             characterName: String,
-            stylePrompt: String,
             characterPrompt: String,
             finalPromptRequirement: String
         ): String =
             debugMessages(
                 characterAvatarDesignMessages(
                     characterName = characterName,
-                    stylePrompt = stylePrompt,
                     characterPrompt = characterPrompt,
                     finalPromptRequirement = finalPromptRequirement
                 )

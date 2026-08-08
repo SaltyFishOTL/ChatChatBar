@@ -93,6 +93,22 @@ class MomentsViewModel : ViewModel() {
         }
     }
 
+    fun updatePostText(
+        postId: String,
+        text: String,
+        onResult: (String?) -> Unit
+    ) {
+        viewModelScope.launch {
+            val outcome = runCatching {
+                repository.initialize()
+                repository.updatePostText(postId, text) ?: error("朋友圈不存在")
+            }
+            val error = outcome.exceptionOrNull()
+            if (error is CancellationException) throw error
+            onResult(error?.message ?: error?.javaClass?.simpleName)
+        }
+    }
+
     fun deletePost(id: String) {
         viewModelScope.launch {
             val deleted = repository.deletePost(id) ?: return@launch

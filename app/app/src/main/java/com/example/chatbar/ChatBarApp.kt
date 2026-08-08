@@ -121,6 +121,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var presetModelCatalogService: PresetModelCatalogService
         private set
+    lateinit var novelAiStyleCatalogService: NovelAiStyleCatalogService
+        private set
     lateinit var effectiveModelResolver: EffectiveModelResolver
         private set
     lateinit var novelAiCredentialStore: NovelAiCredentialStore
@@ -255,6 +257,7 @@ class ChatBarApp : Application() {
 
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
+        novelAiStyleCatalogService = NovelAiStyleCatalogService(this, transferJson)
         effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
         fishAudioGenerationCoordinator = FishAudioGenerationCoordinator(
             scope = applicationScope,
