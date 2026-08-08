@@ -281,7 +281,9 @@ fun ChatScreen(
     var screenshotGenerating by remember(sessionId) { mutableStateOf(false) }
     var screenshotPreviewPath by remember(sessionId) { mutableStateOf<String?>(null) }
     var screenshotPreviewName by remember(sessionId) { mutableStateOf<String?>(null) }
-    var expandedStatusBlockIds by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
+    var statusBlockExpansionOverrides by remember(sessionId) {
+        mutableStateOf<Map<String, Boolean>>(emptyMap())
+    }
     var imagePromptTargetId by remember(sessionId) { mutableStateOf<String?>(null) }
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
@@ -648,7 +650,7 @@ fun ChatScreen(
                 assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                 voicePlacementsByMessage = activeVoicePlacements,
                 selectedBlockIds = ids,
-                expandedStatusBlockIds = expandedStatusBlockIds
+                statusBlockExpansionOverrides = statusBlockExpansionOverrides
             )
         )
     }
@@ -787,7 +789,7 @@ fun ChatScreen(
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         voicePlacementsByMessage = activeVoicePlacements,
                         selectedBlockIds = selectedScreenshotBlockIds,
-                        expandedStatusBlockIds = expandedStatusBlockIds
+                        statusBlockExpansionOverrides = statusBlockExpansionOverrides
                     )
                 )
                 screenshotPreviewPath = file.absolutePath
@@ -841,7 +843,7 @@ fun ChatScreen(
         botAvatarPath,
         characterAvatars,
         assistantSegmentedBubblesEnabled,
-        expandedStatusBlockIds
+        statusBlockExpansionOverrides
     ) {
         if (!screenshotSelectionMode || selectedScreenshotBlockIds.isEmpty()) {
             screenshotHeightPx = 0
@@ -1091,13 +1093,10 @@ fun ChatScreen(
                         }) else null,
                         selectedBlockIds = selectedScreenshotBlockIds,
                         onToggleBlockSelected = if (selectableForScreenshot) ({ blockId -> toggleScreenshotSelection(blockId) }) else null,
-                        expandedStatusBlockIds = expandedStatusBlockIds,
+                        statusBlockExpansionOverrides = statusBlockExpansionOverrides,
                         onStatusExpandedChange = { blockId, expanded ->
-                            expandedStatusBlockIds = if (expanded) {
-                                expandedStatusBlockIds + blockId
-                            } else {
-                                expandedStatusBlockIds - blockId
-                            }
+                            statusBlockExpansionOverrides =
+                                statusBlockExpansionOverrides + (blockId to expanded)
                         },
                         showActions = !screenshotSelectionMode
                     )

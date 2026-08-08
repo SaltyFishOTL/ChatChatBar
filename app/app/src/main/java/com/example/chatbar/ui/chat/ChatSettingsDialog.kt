@@ -78,6 +78,7 @@ import com.example.chatbar.domain.memory.MemoryBudgetPolicy
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.ui.components.CreateOpenableDocument
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
@@ -159,7 +160,7 @@ fun ChatSettingsDialog(
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> background = path } }
     }
-    val exportSaveSlot = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportSaveSlot = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
         val slotId = exportSlotId.also { exportSlotId = null }
         if (uri != null && slotId != null) {
             scope.launch {

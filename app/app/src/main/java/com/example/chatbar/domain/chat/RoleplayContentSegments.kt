@@ -17,7 +17,8 @@ data class RoleplayTextSegment(
     val displayText: String,
     val start: Int,
     val endExclusive: Int,
-    val speakerName: String? = null
+    val speakerName: String? = null,
+    val statusDefaultExpanded: Boolean = false
 )
 
 data class RoleplaySegmentEditOutcome(
@@ -305,7 +306,15 @@ private fun splitDashFenceSegments(
             val bodyEnd = offset + fence.range.first
             val blockStart = offset + matches[index - 1].range.first
             val blockEnd = offset + fence.range.last + 1
-            addStatusSegment(segments, visible, blockStart, blockEnd, bodyStart, bodyEnd)
+            addStatusSegment(
+                segments = segments,
+                visible = visible,
+                blockStart = blockStart,
+                blockEnd = blockEnd,
+                bodyStart = bodyStart,
+                bodyEnd = bodyEnd,
+                defaultExpanded = true
+            )
             cursor = fence.range.last + 1
         }
         index++
@@ -313,7 +322,15 @@ private fun splitDashFenceSegments(
     if (cursor < text.length) {
         if (matches.size % 2 == 1) {
             val blockStart = offset + matches.last().range.first
-            addStatusSegment(segments, visible, blockStart, offset + text.length, offset + cursor, offset + text.length)
+            addStatusSegment(
+                segments = segments,
+                visible = visible,
+                blockStart = blockStart,
+                blockEnd = offset + text.length,
+                bodyStart = offset + cursor,
+                bodyEnd = offset + text.length,
+                defaultExpanded = true
+            )
         } else {
             addTextSegment(segments, visible, RoleplaySegmentKind.NARRATION, offset + cursor, offset + text.length)
         }
@@ -560,7 +577,8 @@ private fun addStatusSegment(
     blockStart: Int,
     blockEnd: Int,
     bodyStart: Int,
-    bodyEnd: Int
+    bodyEnd: Int,
+    defaultExpanded: Boolean = false
 ) {
     if (blockEnd <= blockStart) return
     val rawStart = visible.rawIndexes.getOrNull(blockStart) ?: return
@@ -573,7 +591,8 @@ private fun addStatusSegment(
         rawText = rawText,
         displayText = body,
         start = rawStart,
-        endExclusive = rawEnd
+        endExclusive = rawEnd,
+        statusDefaultExpanded = defaultExpanded
     )
 }
 

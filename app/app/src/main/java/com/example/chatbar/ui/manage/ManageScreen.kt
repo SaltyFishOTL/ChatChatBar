@@ -121,6 +121,7 @@ import com.example.chatbar.domain.update.AppUpdateInstallResult
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.components.CrashReportDeleteConfirmationDialog
+import com.example.chatbar.ui.components.CreateOpenableDocument
 import com.example.chatbar.ui.components.RagConfigurationNoticeDialog
 import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -290,7 +291,7 @@ fun ManageScreen(
         }
     }
 
-    val exportCharacter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("image/png")) { uri ->
+    val exportCharacter = rememberLauncherForActivityResult(CreateOpenableDocument("image/png")) { uri ->
         val id = exportCharacterId.also { exportCharacterId = null }
         if (uri != null && id != null) scope.launch {
             runCatching {
@@ -312,7 +313,7 @@ fun ManageScreen(
             }.onFailure { message = "导入失败：${it.message}" }
         }
     }
-    val exportFormat = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportFormat = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
         val id = exportFormatId.also { exportFormatId = null }
         if (uri != null && id != null) scope.launch {
             runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportFormatCardJson(id).toByteArray()) } }
@@ -329,7 +330,7 @@ fun ManageScreen(
             }.onFailure { message = "导入失败：${it.message}" }
         }
     }
-    val exportWorldBook = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportWorldBook = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
         val id = exportWorldBookId.also { exportWorldBookId = null }
         if (uri != null && id != null) scope.launch {
             runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportWorldBookJson(id).toByteArray()) } }
@@ -337,7 +338,7 @@ fun ManageScreen(
                 .onFailure { message = "导出失败：${it.message}" }
         }
     }
-    val exportWorldBookAsSt = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportWorldBookAsSt = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
         val id = exportWorldBookAsStId.also { exportWorldBookAsStId = null }
         if (uri != null && id != null) scope.launch {
             runCatching { context.contentResolver.openOutputStream(uri)?.use { it.write(viewModel.exportWorldBookSillyTavernJson(id).toByteArray()) } }
@@ -356,7 +357,7 @@ fun ManageScreen(
             }.onFailure { message = "导入失败：${it.message}" }
         }
     }
-    val exportModel = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+    val exportModel = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
         val id = exportModelId.also { exportModelId = null }
         if (uri != null && id != null) scope.launch {
             runCatching {

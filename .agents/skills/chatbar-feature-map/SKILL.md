@@ -42,7 +42,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Emulator/device/build verification: use chatbar-emulator-test.
 - Crash diagnostics and report sharing: domain/diagnostics/CrashDiagnosticReport.kt, utils/diagnostics/CrashReportManager.kt and SystemExitInfoReader.kt, ui/components/CrashReportDialog.kt, ChatBarApp.kt, MainActivity.kt, Navigation.kt, ManageScreen.kt.
 - App update checks, release APK download, system installer handoff, or release publishing: use chatbar-app-update.
-- Import/export/card packages: domain/card/CardTransferModels.kt, CharacterCardTransferService.kt, CharacterCardPngRenderer.kt, SillyTavernCardParser.kt, SillyTavernCardMapper.kt; PNG export UI in ManageScreen.kt.
+- Import/export/card packages: domain/card/CardTransferModels.kt, CharacterCardTransferService.kt, CharacterCardPngRenderer.kt, SillyTavernCardParser.kt, SillyTavernCardMapper.kt; SAF export contract in ui/components/CreateOpenableDocument.kt; export UI in ManageScreen.kt.
 - Persistence/entities: data/local/entity/, data/local/JsonFileStorage.kt, related repository under data/repository/.
 - World books: data/local/entity/WorldBook*.kt, CharacterEditScreen.kt, CharacterEditViewModel.kt.
 - Tutorial/help: ui/tutorial/TutorialScreen.kt.

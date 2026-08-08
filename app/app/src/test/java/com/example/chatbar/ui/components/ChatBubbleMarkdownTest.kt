@@ -185,6 +185,22 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayStatusSegments_defaultExpansionFollowsFenceType() {
+        val marker = "\u0060\u0060\u0060"
+        val content = "$marker\n代码围栏\n$marker\n---\n横线围栏\n---"
+
+        val statuses = parseRoleplayTextSegments(content)
+            .filter { segment -> segment.kind == RoleplaySegmentKind.STATUS }
+
+        assertEquals(2, statuses.size)
+        assertEquals(false, statuses[0].statusDefaultExpanded)
+        assertEquals(true, statuses[1].statusDefaultExpanded)
+        val legacyStatuses = parseRoleplayContent(content)
+            .filterIsInstance<RoleplayContentSegment.Status>()
+        assertEquals(listOf(false, true), legacyStatuses.map { it.defaultExpanded })
+    }
+
+    @Test
     fun roleplaySpeakerMarkers_renameOnlyMatchingTags() {
         val content = "<n=\" Alice \"/>[A]() <n=\"Bob\"/>[B]()"
 

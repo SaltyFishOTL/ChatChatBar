@@ -52,7 +52,7 @@ data class ChatLongScreenshotRequest(
     val assistantSegmentedBubblesEnabled: Boolean = true,
     val voicePlacementsByMessage: Map<String, List<VoiceMessagePlacement>> = emptyMap(),
     val selectedBlockIds: Set<String> = emptySet(),
-    val expandedStatusBlockIds: Set<String> = emptySet()
+    val statusBlockExpansionOverrides: Map<String, Boolean> = emptyMap()
 )
 
 const val CHAT_LONG_SCREENSHOT_SELECTION_HEIGHT_LIMIT_PX = 32_000
@@ -172,7 +172,7 @@ private fun ChatLongScreenshotContent(request: ChatLongScreenshotRequest) {
                     showActions = false,
                     showMessageMeta = request.selectedBlockIds.isEmpty(),
                     blockFilterIds = request.selectedBlockIds.ifEmpty { null },
-                    expandedStatusBlockIds = request.expandedStatusBlockIds,
+                    statusBlockExpansionOverrides = request.statusBlockExpansionOverrides,
                     exportMode = true
                 )
             }

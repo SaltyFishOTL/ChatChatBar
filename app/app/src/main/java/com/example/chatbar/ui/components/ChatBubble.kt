@@ -181,7 +181,10 @@ internal fun roleplaySpeakerHeaderIndexes(
 
 internal sealed interface RoleplayContentSegment {
     data class Markdown(val text: String) : RoleplayContentSegment
-    data class Status(val text: String) : RoleplayContentSegment
+    data class Status(
+        val text: String,
+        val defaultExpanded: Boolean
+    ) : RoleplayContentSegment
 }
 
 private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
@@ -225,7 +228,7 @@ fun ChatBubble(
     onToggleBlockSelected: ((String) -> Unit)? = null,
     blockFilterIds: Set<String>? = null,
     showMessageMeta: Boolean = true,
-    expandedStatusBlockIds: Set<String> = emptySet(),
+    statusBlockExpansionOverrides: Map<String, Boolean> = emptyMap(),
     onStatusExpandedChange: ((String, Boolean) -> Unit)? = null
 ) {
     if (message.role == MessageRole.ASSISTANT && assistantSegmentedBubblesEnabled) {
@@ -261,7 +264,7 @@ fun ChatBubble(
             onToggleBlockSelected = onToggleBlockSelected,
             blockFilterIds = blockFilterIds,
             showMessageMeta = showMessageMeta,
-            expandedStatusBlockIds = expandedStatusBlockIds,
+            statusBlockExpansionOverrides = statusBlockExpansionOverrides,
             onStatusExpandedChange = onStatusExpandedChange
         )
     } else {
@@ -332,7 +335,7 @@ private fun SegmentedAssistantBubble(
     onToggleBlockSelected: ((String) -> Unit)?,
     blockFilterIds: Set<String>?,
     showMessageMeta: Boolean,
-    expandedStatusBlockIds: Set<String>,
+    statusBlockExpansionOverrides: Map<String, Boolean>,
     onStatusExpandedChange: ((String, Boolean) -> Unit)?
 ) {
     val rawContent = message.displayContent
@@ -479,7 +482,8 @@ private fun SegmentedAssistantBubble(
                         onVoiceStop = onVoiceStop,
                         onVoiceLongPress = onVoiceLongPress,
                         selectedBlockIds = selectedBlockIds,
-                        expanded = blockId in expandedStatusBlockIds,
+                        expanded = statusBlockExpansionOverrides[blockId]
+                            ?: segment.statusDefaultExpanded,
                         onExpandedChange = onStatusExpandedChange?.let { callback ->
                             { expanded -> callback(blockId, expanded) }
                         }
@@ -988,8 +992,13 @@ private fun LegacyChatBubble(
                                         )
 
                                         is RoleplayContentSegment.Status -> {
-                                            var expanded by remember(message.id, index) {
-                                                mutableStateOf(false)
+                                            var expanded by remember(
+                                                message.id,
+                                                message.currentAlternativeIndex,
+                                                index,
+                                                segment.defaultExpanded
+                                            ) {
+                                                mutableStateOf(segment.defaultExpanded)
                                             }
                                             RoleplayStatusPanel(
                                                 text = segment.text,
@@ -1586,7 +1595,10 @@ internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment>
     if (parsed.isEmpty()) return emptyList()
     return parsed.map { segment ->
         when (segment.kind) {
-            RoleplaySegmentKind.STATUS -> RoleplayContentSegment.Status(segment.displayText)
+            RoleplaySegmentKind.STATUS -> RoleplayContentSegment.Status(
+                text = segment.displayText,
+                defaultExpanded = segment.statusDefaultExpanded
+            )
             RoleplaySegmentKind.NARRATION,
             RoleplaySegmentKind.DIALOGUE,
             RoleplaySegmentKind.THOUGHT -> RoleplayContentSegment.Markdown(segment.rawText)
