@@ -92,6 +92,15 @@ internal fun CharacterCardPackage.validateForImport() {
     require(missing.isEmpty()) { "缺少图片资源：${missing.joinToString()}" }
 }
 
+internal fun CharacterCardPackage.withoutEmptyCharacterPlaceholders(): CharacterCardPackage {
+    val filteredCharacters = card.characters.filterNot(CharacterPlaceholderPolicy::isEmpty)
+    return if (filteredCharacters.size == card.characters.size) {
+        this
+    } else {
+        copy(card = card.copy(characters = filteredCharacters))
+    }
+}
+
 @Serializable
 data class FormatCardPackage(
     val schemaVersion: Int = 1,

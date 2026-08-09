@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.card
 
+import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.PresetManifest
 import com.example.chatbar.data.local.entity.PresetType
 import java.io.File
@@ -78,6 +79,43 @@ class CharacterCardPackageTest {
 
         assertTrue(error is IllegalArgumentException)
         assertTrue(error?.message.orEmpty().contains("schemaVersion"))
+    }
+
+    @Test
+    fun legacyEmptyCharacterPlaceholderIsRemovedBeforeValidation() {
+        val packageData = CharacterCardPackage(
+            card = PackagedCharacterCard(
+                name = "自由模式角色卡",
+                editMode = CharacterEditMode.FREEFORM,
+                freeformCharacterText = "完整人物设定",
+                characters = listOf(
+                    PackagedCharacter(name = ""),
+                    PackagedCharacter(name = "有效人物")
+                )
+            )
+        )
+
+        val normalized = packageData.withoutEmptyCharacterPlaceholders()
+        normalized.validateForImport()
+
+        assertEquals(listOf("有效人物"), normalized.card.characters.map(PackagedCharacter::name))
+    }
+
+    @Test
+    fun unnamedCharacterWithContentIsPreservedAndRejected() {
+        val packageData = CharacterCardPackage(
+            card = PackagedCharacterCard(
+                name = "测试卡",
+                characters = listOf(PackagedCharacter(name = "", profile = "不能丢失的设定"))
+            )
+        )
+
+        val normalized = packageData.withoutEmptyCharacterPlaceholders()
+        val error = runCatching { normalized.validateForImport() }.exceptionOrNull()
+
+        assertEquals(1, normalized.card.characters.size)
+        assertTrue(error is IllegalArgumentException)
+        assertTrue(error?.message.orEmpty().contains("人物名称不能为空"))
     }
 
     @Test

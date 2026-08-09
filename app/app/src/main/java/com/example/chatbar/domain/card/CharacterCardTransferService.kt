@@ -42,7 +42,9 @@ class CharacterCardTransferService(
     }
 
     fun decode(rawJson: String): CharacterCardPackage =
-        json.decodeFromString(CharacterCardPackage.serializer(), rawJson).also(CharacterCardPackage::validateForImport)
+        json.decodeFromString(CharacterCardPackage.serializer(), rawJson)
+            .withoutEmptyCharacterPlaceholders()
+            .also(CharacterCardPackage::validateForImport)
 
     fun decodePng(pngBytes: ByteArray): CharacterCardPackage? {
         val payload = PngTextChunks.extractTextChunk(pngBytes, PngTextChunks.CHATBAR_CHARACTER_KEYWORD) ?: return null
@@ -66,11 +68,12 @@ class CharacterCardTransferService(
         presetKey: String? = null,
         presetVersion: Int? = null
     ): CharacterCard = withContext(Dispatchers.IO) {
-        packageData.validateForImport()
+        val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
+        normalizedPackage.validateForImport()
         val uniqueName = if (repository.getAll().any { NamePolicy.isSame(it.name, requestedName) }) {
             NamePolicy.nextCopyName(requestedName, repository.getAll().map { it.name })
         } else NamePolicy.normalize(requestedName)
-        saveNew(materialize(packageData, UUID.randomUUID().toString(), uniqueName, presetKey, presetVersion))
+        saveNew(materialize(normalizedPackage, UUID.randomUUID().toString(), uniqueName, presetKey, presetVersion))
     }
 
     suspend fun overwrite(
@@ -79,10 +82,11 @@ class CharacterCardTransferService(
         presetKey: String? = null,
         presetVersion: Int? = null
     ): CharacterCard = withContext(Dispatchers.IO) {
-        packageData.validateForImport()
+        val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
+        normalizedPackage.validateForImport()
         val existing = repository.getById(existingId) ?: error("待覆盖角色卡不存在")
         val replacement = materialize(
-            packageData = packageData,
+            packageData = normalizedPackage,
             id = existing.id,
             name = existing.name,
             presetKey = presetKey,
@@ -106,6 +110,8 @@ class CharacterCardTransferService(
     }
 
     private suspend fun packageCard(card: CharacterCard): CharacterCardPackage {
+        val exportableCharacters = card.characters.filterNot(CharacterPlaceholderPolicy::isEmpty)
+        require(exportableCharacters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
         val documents = card.customDocuments.map { doc ->
             val file = requireResourceFile(doc.filePath, "参考文档 ${doc.fileName}")
             PackagedDocument(doc.fileName, doc.fileType, file.readText())
@@ -123,7 +129,7 @@ class CharacterCardTransferService(
             resourceIdsByPath[path] = resourceId
             return resourceId
         }
-        val packagedCharacters = card.characters.mapIndexed { index, character ->
+        val packagedCharacters = exportableCharacters.mapIndexed { index, character ->
             PackagedCharacter(
                 name = character.name,
                 profile = character.profile,

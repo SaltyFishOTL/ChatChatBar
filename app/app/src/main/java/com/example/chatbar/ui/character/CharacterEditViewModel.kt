@@ -34,6 +34,7 @@ import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
+import com.example.chatbar.domain.card.CharacterPlaceholderPolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
 import com.example.chatbar.domain.card.CharacterAutoFillGenerationCheckpoint
@@ -483,8 +484,6 @@ class CharacterEditViewModel(
                     pendingDeletedAssets.addAll(newDraft.pendingDeletedAssets)
                     pendingDeletedDocumentIds.addAll(newDraft.pendingDeletedDocumentIds)
                     refreshChangeState()
-                } else {
-                    charactersList.add(CharacterInfo.create(""))
                 }
             }
             draftReady = true
@@ -661,7 +660,9 @@ class CharacterEditViewModel(
         val errors = mutableListOf<String>()
         if (name.isBlank()) errors += "角色卡名称不能为空。"
         if (greeting.isBlank()) errors += "开场白不能为空。"
-        val duplicateNames = CharacterSpeakerNamePolicy.duplicateNames(charactersList.toList())
+        val meaningfulCharacters = charactersList.filterNot(CharacterPlaceholderPolicy::isEmpty)
+        if (meaningfulCharacters.any { it.name.isBlank() }) errors += "人物名称不能为空。"
+        val duplicateNames = CharacterSpeakerNamePolicy.duplicateNames(meaningfulCharacters)
         if (duplicateNames.isNotEmpty()) {
             errors += "人物名称不能重复：${duplicateNames.distinct().joinToString("、")}"
         }
@@ -2358,7 +2359,7 @@ class CharacterEditViewModel(
         creatorNotes = card.creatorNotes
         momentsEnabled = card.momentsEnabled
         charactersList.clear()
-        charactersList.addAll(card.characters)
+        charactersList.addAll(card.characters.filterNot(CharacterPlaceholderPolicy::isEmpty))
         documentsList.clear()
         documentsList.addAll(card.customDocuments)
         selectedWorldBookIds.clear()
@@ -2444,17 +2445,14 @@ class CharacterEditViewModel(
             creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
             documentsList.isNotEmpty() || charactersList.any { it.hasEditorContent() }
 
-    private fun CharacterInfo.hasEditorContent(): Boolean =
-        name.isNotBlank() || profile.isNotBlank() || appearance.isNotBlank() || appearanceImage != null ||
-            clothing.isNotBlank() || abilities.isNotBlank() || habits.isNotBlank() || background.isNotBlank() ||
-            relationships.isNotBlank() || speakingStyle.isNotBlank() || imagePrompt.isNotBlank()
+    private fun CharacterInfo.hasEditorContent(): Boolean = !CharacterPlaceholderPolicy.isEmpty(this)
 
     private fun buildCurrentCard(markDirty: Boolean): CharacterCard {
         val now = System.currentTimeMillis()
         val base = _characterCard.value
-        val normalizedCharacters = charactersList.map { character ->
-            character.copy(name = NamePolicy.normalize(character.name))
-        }
+        val normalizedCharacters = charactersList
+            .filterNot(CharacterPlaceholderPolicy::isEmpty)
+            .map { character -> character.copy(name = NamePolicy.normalize(character.name)) }
         val dirtyStatus = if (markDirty) RagIndexStatus.NOT_INDEXED.name else base?.ragIndexStatus ?: RagIndexStatus.NOT_INDEXED.name
         val dirtyMessage = if (markDirty) "RAG 索引待重建" else base?.ragIndexMessage
         return base?.copy(
