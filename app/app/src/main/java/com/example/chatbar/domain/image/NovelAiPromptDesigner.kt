@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
+import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.utils.DebugLogManager
 import kotlinx.coroutines.flow.Flow
@@ -74,6 +75,7 @@ data class NovelAiPromptDebugResult(
 
 class NovelAiPromptDesigner(
     private val chatService: StreamingChatService,
+    private val tagResearchService: NovelAiTagResearchService,
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
 ) {
     suspend fun design(
@@ -103,21 +105,38 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val raw = streamCompletion(
-            messages = requestMessages,
+        val progress = NovelAiPromptProgress(onDelta)
+        val research = tagResearchService.research(
+            taskInput = PromptTemplates.novelAiImagePromptConversation(
+                messages = context,
+                playerName = playerName,
+                imageContentHint = imageContentHint,
+                finalPromptRequirement = finalPromptRequirement
+            ),
+            characterPrompts = characterPrompts,
+            imageBase64s = emptyList(),
             model = model,
-            onDelta = onDelta
+            onProgress = progress::updatePrelude
+        )
+        val finalRequestMessages = withTagSearchEvidence(requestMessages, research.evidence)
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = finalRequestMessages,
+            model = model,
+            onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
         )
         sessionId?.let { sid ->
             DebugLogManager.recordCompleted(
                 sessionId = sid,
                 modelName = model.modelName,
                 apiUrl = "${model.baseUrl.trimEnd('/')}/chat/completions",
-                requestBodyJson = buildDesignRequestJson(requestMessages),
+                requestBodyJson = buildDesignRequestJson(finalRequestMessages),
                 rawAiOutput = raw
             )
         }
-        val designed = parseOrRepair(raw, model, onDelta)
+        val designed = parseOrRepair(raw, model) { text ->
+            progress.updateStage(PROMPT_REPAIR_STAGE, text)
+        }
         return convert(card, designed)
     }
 
@@ -138,21 +157,31 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val raw = streamCompletion(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text(
-                    "user",
-                    PromptTemplates.novelAiImagePromptCharacterCard(
-                        card = card,
-                        finalPromptRequirement = finalPromptRequirement
-                    )
-                )
-            ),
-            model = model,
-            onDelta = onDelta
+        val userPrompt = PromptTemplates.novelAiImagePromptCharacterCard(
+            card = card,
+            finalPromptRequirement = finalPromptRequirement
         )
-        val designed = parseOrRepair(raw, model, onDelta)
+        val requestMessages = listOf(
+            ChatApiMessage.text("system", systemPrompt),
+            ChatApiMessage.text("user", userPrompt)
+        )
+        val progress = NovelAiPromptProgress(onDelta)
+        val research = tagResearchService.research(
+            taskInput = userPrompt,
+            characterPrompts = characterPrompts,
+            imageBase64s = emptyList(),
+            model = model,
+            onProgress = progress::updatePrelude
+        )
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            model = model,
+            onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
+        )
+        val designed = parseOrRepair(raw, model) { text ->
+            progress.updateStage(PROMPT_REPAIR_STAGE, text)
+        }
         return convert(card, designed)
     }
 
@@ -174,21 +203,31 @@ class NovelAiPromptDesigner(
             characterImagePrompts = characterPrompts,
             structured = structured
         )
-        val raw = streamCompletion(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text(
-                    "user",
-                    PromptTemplates.novelAiImagePromptMoment(
-                        momentImageBrief = momentImageBrief,
-                        finalPromptRequirement = finalPromptRequirement
-                    )
-                )
-            ),
-            model = model,
-            onDelta = onDelta
+        val userPrompt = PromptTemplates.novelAiImagePromptMoment(
+            momentImageBrief = momentImageBrief,
+            finalPromptRequirement = finalPromptRequirement
         )
-        val designed = parseOrRepair(raw, model, onDelta)
+        val requestMessages = listOf(
+            ChatApiMessage.text("system", systemPrompt),
+            ChatApiMessage.text("user", userPrompt)
+        )
+        val progress = NovelAiPromptProgress(onDelta)
+        val research = tagResearchService.research(
+            taskInput = userPrompt,
+            characterPrompts = characterPrompts,
+            imageBase64s = emptyList(),
+            model = model,
+            onProgress = progress::updatePrelude
+        )
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            model = model,
+            onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
+        )
+        val designed = parseOrRepair(raw, model) { text ->
+            progress.updateStage(PROMPT_REPAIR_STAGE, text)
+        }
         return convert(card, designed)
     }
 
@@ -214,21 +253,38 @@ class NovelAiPromptDesigner(
             momentImageBrief = momentImageBrief,
             finalPromptRequirement = finalPromptRequirement
         )
-        val exchanges = mutableListOf<NovelAiPromptDebugExchange>()
-        val raw = streamCompletion(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                ChatApiMessage.text("user", userPrompt)
-            ),
+        val requestMessages = listOf(
+            ChatApiMessage.text("system", systemPrompt),
+            ChatApiMessage.text("user", userPrompt)
+        )
+        val progress = NovelAiPromptProgress(onDelta)
+        val research = tagResearchService.research(
+            taskInput = userPrompt,
+            characterPrompts = characterPrompts,
+            imageBase64s = emptyList(),
             model = model,
-            onDelta = onDelta
+            onProgress = progress::updatePrelude
+        )
+        val finalRequestMessages = withTagSearchEvidence(requestMessages, research.evidence)
+        val exchanges = mutableListOf<NovelAiPromptDebugExchange>()
+        exchanges += tagResearchDebugExchanges(research)
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = finalRequestMessages,
+            model = model,
+            onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
         )
         exchanges += NovelAiPromptDebugExchange(
             title = "NovelAI Prompt 设计",
-            input = debugMessages(systemPrompt, userPrompt),
+            input = debugMessages(finalRequestMessages),
             output = raw
         )
-        val designed = parseOrRepairDebug(raw, model, onDelta, exchanges)
+        val designed = parseOrRepairDebug(
+            raw = raw,
+            model = model,
+            onDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
+            exchanges = exchanges
+        )
         return NovelAiPromptDebugResult(
             plan = convert(card, designed),
             exchanges = exchanges
@@ -249,17 +305,40 @@ class NovelAiPromptDesigner(
                 stylePrompt.isNotBlank() ||
                 characterPrompt.isNotBlank()
         ) { "没有可用于头像生图的提示词" }
-        val raw = streamCompletion(
-            messages = characterAvatarDesignMessages(
-                characterName = characterName,
-                characterPrompt = characterPrompt,
+        val promptName = baseCharacterName(characterName).ifBlank { "角色" }
+        val characterPrompts = characterPrompt.trim()
+            .takeIf(String::isNotBlank)
+            ?.let { listOf(promptName to it) }
+            ?: emptyList()
+        val requestMessages = characterAvatarDesignMessages(
+            characterName = characterName,
+            characterPrompt = characterPrompt,
+            finalPromptRequirement = finalPromptRequirement
+        )
+        val progress = NovelAiPromptProgress(onContentDelta)
+        val research = tagResearchService.research(
+            taskInput = PromptTemplates.novelAiImagePromptCharacterAvatar(
+                characterName = promptName,
                 finalPromptRequirement = finalPromptRequirement
             ),
+            characterPrompts = characterPrompts,
+            imageBase64s = emptyList(),
             model = model,
-            onContentDelta = onContentDelta,
+            onProgress = progress::updatePrelude
+        )
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            model = model,
+            onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
             onReasoningDelta = onReasoningDelta
         )
-        val designed = parseOrRepair(raw, model, onContentDelta, onReasoningDelta)
+        val designed = parseOrRepair(
+            raw = raw,
+            model = model,
+            onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
+            onReasoningDelta = onReasoningDelta
+        )
         return convert(designed, stylePrompt = stylePrompt)
     }
 
@@ -305,16 +384,31 @@ class NovelAiPromptDesigner(
         } else {
             ChatApiMessage.withImages("user", userPrompt, sourceImages)
         }
-        val raw = streamCompletion(
-            messages = listOf(
-                ChatApiMessage.text("system", systemPrompt),
-                userMessage
-            ),
+        val requestMessages = listOf(
+            ChatApiMessage.text("system", systemPrompt),
+            userMessage
+        )
+        val progress = NovelAiPromptProgress(onContentDelta)
+        val research = tagResearchService.research(
+            taskInput = userPrompt,
+            characterPrompts = emptyList(),
+            imageBase64s = sourceImages,
             model = model,
-            onContentDelta = onContentDelta,
+            onProgress = progress::updatePrelude
+        )
+        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
+        val raw = streamCompletion(
+            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            model = model,
+            onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
             onReasoningDelta = onReasoningDelta
         )
-        val designed = parseOrRepair(raw, model, onContentDelta, onReasoningDelta)
+        val designed = parseOrRepair(
+            raw = raw,
+            model = model,
+            onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
+            onReasoningDelta = onReasoningDelta
+        )
         return convert(designed)
     }
 
@@ -324,6 +418,7 @@ class NovelAiPromptDesigner(
         onDelta: (String) -> Unit
     ): DesignedImagePrompt {
         parse(raw)?.let { return it }
+        onDelta(WAITING_FOR_AI_TEXT)
         val repaired = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text(
@@ -345,6 +440,7 @@ class NovelAiPromptDesigner(
         onReasoningDelta: (String) -> Unit
     ): DesignedImagePrompt {
         parse(raw)?.let { return it }
+        onContentDelta(WAITING_FOR_AI_TEXT)
         val repaired = streamCompletion(
             messages = listOf(
                 ChatApiMessage.text(
@@ -367,6 +463,7 @@ class NovelAiPromptDesigner(
         exchanges: MutableList<NovelAiPromptDebugExchange>
     ): DesignedImagePrompt {
         parse(raw)?.let { return it }
+        onDelta(WAITING_FOR_AI_TEXT)
         val systemPrompt = PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
         val repaired = streamCompletion(
             messages = listOf(
@@ -593,6 +690,88 @@ class NovelAiPromptDesigner(
                 )
             )
 
+        internal fun withTagSearchEvidence(
+            messages: List<ChatApiMessage>,
+            evidence: List<NovelAiTagSearchEvidence>
+        ): List<ChatApiMessage> {
+            if (evidence.isEmpty()) return messages
+            val finalUserIndex = messages.indexOfLast { it.role == "user" }
+            require(finalUserIndex >= 0) { "NovelAI Prompt 设计消息缺少最终 user 消息" }
+            return messages.toMutableList().apply {
+                add(
+                    finalUserIndex,
+                    ChatApiMessage.text(
+                        "system",
+                        PromptTemplates.novelAiTagSearchEvidenceSystem(evidence)
+                    )
+                )
+            }
+        }
+
+        internal fun tagResearchDebugExchanges(
+            research: NovelAiTagResearchResult
+        ): List<NovelAiPromptDebugExchange> {
+            val planningOutput = research.decisionResults
+                .mapIndexed { index, result ->
+                    buildString {
+                        appendLine("[批量规划 ${index + 1}]")
+                        append(result.rawResponse.trim())
+                        if (result.failureReason.isNotBlank()) {
+                            if (isNotEmpty()) appendLine()
+                            append("失败：${result.failureReason}")
+                        }
+                    }.trim()
+                }
+                .joinToString("\n\n")
+                .ifBlank { "无搜索决策输出" }
+            val searchInput = research.queryResults
+                .joinToString("\n") { result ->
+                    if (result.query == result.effectiveQuery) {
+                        "- q=${result.query}"
+                    } else {
+                        "- query=${result.query} → q=${result.effectiveQuery}"
+                    }
+                }
+                .ifBlank { "AI 未调用 TagSuggest" }
+            val searchOutput = research.queryResults
+                .joinToString("\n\n") { result ->
+                    buildString {
+                        append("[${result.query}] ")
+                        when {
+                            result.failureReason.isNotBlank() -> append("失败：${result.failureReason}")
+                            result.candidates.isEmpty() -> append("无可用候选")
+                            else -> {
+                                append("${result.candidates.size} 个候选")
+                                if (result.fromCache) append("（缓存）")
+                                result.candidates.forEach { candidate ->
+                                    appendLine()
+                                    append("- ${candidate.name}")
+                                    candidate.translatedName.takeIf(String::isNotBlank)
+                                        ?.let { append("｜$it") }
+                                    append("｜${candidate.category.label}｜count=${candidate.count}")
+                                }
+                            }
+                        }
+                    }
+                }
+                .ifBlank { "未执行 TagSuggest 搜索" }
+            return listOf(
+                NovelAiPromptDebugExchange(
+                    title = "Danbooru Tag 批量搜索规划",
+                    input = debugMessages(
+                        PromptTemplates.novelAiTagSearchPlannerSystem(),
+                        research.plannerRequestText
+                    ),
+                    output = planningOutput
+                ),
+                NovelAiPromptDebugExchange(
+                    title = "TagSuggest 批量搜索",
+                    input = searchInput,
+                    output = searchOutput
+                )
+            )
+        }
+
         private fun buildDesignRequestJson(messages: List<ChatApiMessage>): String =
             buildJsonObject {
                 put("messages", kotlinx.serialization.json.buildJsonArray {
@@ -635,6 +814,43 @@ class NovelAiPromptDesigner(
     }
 }
 
+internal class NovelAiPromptProgress(
+    private val onProgress: (String) -> Unit
+) {
+    private var prelude = ""
+    private val completedStages = mutableListOf<String>()
+    private var activeTitle = ""
+    private var activeText = ""
+
+    fun updatePrelude(text: String) {
+        prelude = text.trimEnd()
+        emit()
+    }
+
+    fun updateStage(title: String, text: String) {
+        if (activeTitle.isNotBlank() && activeTitle != title) commitActive()
+        activeTitle = title
+        activeText = text.trimEnd()
+        emit()
+    }
+
+    private fun emit() {
+        onProgress(
+            buildList {
+                prelude.takeIf(String::isNotBlank)?.let(::add)
+                addAll(completedStages)
+                if (activeTitle.isNotBlank()) add("【$activeTitle】\n$activeText")
+            }.joinToString("\n\n")
+        )
+    }
+
+    private fun commitActive() {
+        completedStages += "【$activeTitle】\n$activeText"
+        activeTitle = ""
+        activeText = ""
+    }
+}
+
 internal fun CharacterCard.hasImageDesignSource(): Boolean =
     name.isNotBlank() ||
         basicSetting.isNotBlank() ||
@@ -674,3 +890,7 @@ internal suspend fun collectPromptText(
     return content.toString().takeIf(String::isNotBlank)
         ?: error("对话 AI 流式生图 Prompt 返回空内容")
 }
+
+private const val PROMPT_DESIGN_STAGE = "最终 Prompt 设计"
+private const val PROMPT_REPAIR_STAGE = "JSON 修复"
+private const val WAITING_FOR_AI_TEXT = "等待 AI 输出…"

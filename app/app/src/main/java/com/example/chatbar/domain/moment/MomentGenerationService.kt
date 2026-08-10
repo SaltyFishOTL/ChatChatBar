@@ -225,7 +225,15 @@ class MomentGenerationService(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,
                 model = imageModel,
-                finalPromptRequirement = finalPromptRequirement
+                finalPromptRequirement = finalPromptRequirement,
+                onDelta = { transcript ->
+                    onProgress(
+                        MomentGenerationProgress(
+                            MomentGenerationProgressPhase.DESIGNING_IMAGE,
+                            transcript
+                        )
+                    )
+                }
             ).also {
                 checkpoint = checkpoint.copy(imagePrompt = it)
                 onCheckpoint(checkpoint)

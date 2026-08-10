@@ -6,7 +6,9 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.chat.CleartextHttpChatTemplatePolicy
+import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
+import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.nio.ByteBuffer
 import kotlinx.coroutines.flow.flowOf
@@ -18,6 +20,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertSame
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.msgpack.core.MessagePack
@@ -84,6 +87,79 @@ class NovelAiImageFeatureTest {
             listOf("assistant", "user", "system", "assistant", "assistant", "user"),
             adapted.map { it.role }
         )
+    }
+
+    @Test
+    fun `tag evidence is inserted immediately before final user and keeps cleartext user tail`() {
+        val request = NovelAiPromptDesigner.conversationDesignMessages(
+            messages = listOf(message("1", MessageRole.ASSISTANT, "林远站在雨夜窗边。")),
+            playerName = "林远",
+            imageContentHint = "",
+            finalPromptRequirement = "",
+            characterImagePrompts = emptyList(),
+            structured = false
+        )
+
+        val withEvidence = NovelAiPromptDesigner.withTagSearchEvidence(
+            request,
+            listOf(
+                NovelAiTagSearchEvidence(
+                    query = "俯视构图",
+                    name = "from_above",
+                    translatedName = "俯视",
+                    count = 1234,
+                    category = "general"
+                )
+            )
+        )
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = withEvidence,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+
+        assertEquals(
+            listOf("assistant", "user", "system", "system", "system", "system", "user"),
+            withEvidence.map { it.role }
+        )
+        assertTrue(withEvidence[5].content.jsonPrimitive.content.contains("from_above"))
+        assertEquals("user", adapted.last().role)
+    }
+
+    @Test
+    fun `empty tag evidence preserves original message chain instance`() {
+        val request = listOf(
+            ChatApiMessage.text("system", "rules"),
+            ChatApiMessage.text("user", "scene")
+        )
+
+        val result = NovelAiPromptDesigner.withTagSearchEvidence(request, emptyList())
+
+        assertSame(request, result)
+    }
+
+    @Test
+    fun `reference image remains in final user message after tag evidence insertion`() {
+        val request = listOf(
+            ChatApiMessage.text("system", "rules"),
+            ChatApiMessage.withImage("user", "inspect image", "base64-data")
+        )
+
+        val result = NovelAiPromptDesigner.withTagSearchEvidence(
+            request,
+            listOf(
+                NovelAiTagSearchEvidence(
+                    query = "character",
+                    name = "hatsune_miku",
+                    translatedName = "初音未来",
+                    count = 1,
+                    category = "character"
+                )
+            )
+        )
+
+        assertEquals(listOf("system", "system", "user"), result.map { it.role })
+        assertEquals("image_url", result.last().content.jsonArray[1].jsonObject["type"]?.jsonPrimitive?.content)
     }
 
     @Test

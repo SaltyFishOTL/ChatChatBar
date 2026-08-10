@@ -8,6 +8,14 @@ import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
 
+data class NovelAiTagSearchEvidence(
+    val query: String,
+    val name: String,
+    val translatedName: String,
+    val count: Long,
+    val category: String
+)
+
 /**
  * AI 提示词集中入口。
  *
@@ -58,6 +66,9 @@ import com.example.chatbar.data.local.entity.MessageRole
  *   `novelAiImagePromptCharacterCard`
  *
  * ### 4. NovelAI 图片提示词生成
+ * - Danbooru Tag 批量搜索规划/证据：`NOVELAI_TAG_SEARCH_PLANNER_SYSTEM`、
+ *   `novelAiTagSearchPlannerSystem`、`novelAiTagSearchPlannerUser`、
+ *   `novelAiTagSearchEvidenceSystem`
  * - 核心/修复 system：`NOVELAI_IMAGE_PROMPT_SYSTEM`、`NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM`
  * - system 组合入口：`novelAiImagePromptSystem`、`novelAiImagePromptCoreSystem`
  * - 参考图/画风排除/角色预设：`novelAiImagePromptReferenceImageUser`、
@@ -895,6 +906,66 @@ dark penis
 
     // region NovelAI 图片提示词生成
 
+    const val NOVELAI_TAG_SEARCH_PLANNER_SYSTEM = """
+你负责在正式设计 NovelAI 图片 Prompt 前，一次性规划全部 Danbooru tag 模糊搜索词。程序会并发查询 TagSuggest，再把真实候选、category 和 count 交给最终 Prompt 设计模型。不要直接生成图片 Prompt，也不要等待搜索结果后再规划。
+
+规划方式：
+1. 从可见画面中挑选仍需发现标准 tag 的不同概念，最多 6 个。
+2. 每个 query 优先使用 2-4 个汉字的简短中文核心词，例如 `俯视`、`双马尾`、`袜`、`教室`。TagSuggest 会匹配 tag 中文名并返回英文 `name`。
+3. 对空结果风险较高的重要概念，可同时规划一个更短的中文近义词；不要机械翻译或重复。
+4. 不要拿猜测出的英文 tag 做“正确性验证”。仅当概念没有可用中文名时才用英文；英文多词必须用下划线连接。
+
+可搜索：陌生 IP 角色/作品、构图、镜头、视角、动作、服装、道具、场景等可见概念。
+每个 query 只能包含一个概念，不要逗号分隔。queries 内不得重复。
+
+只输出以下两种 JSON 之一，不要输出 purpose、reason、Markdown、分析或额外字段：
+{"action":"search","queries":["俯视","撑伞","双马尾"]}
+{"action":"finish"}
+"""
+
+    fun novelAiTagSearchPlannerSystem(): String = NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.trim()
+
+    fun novelAiTagSearchPlannerUser(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>
+    ): String = buildString {
+        appendLine("请基于以下 NovelAI 图片设计任务，一次性规划全部中文模糊搜索词或直接结束：")
+        appendLine()
+        appendLine("任务输入：")
+        appendLine(taskInput.trim())
+        if (characterPrompts.isNotEmpty()) {
+            appendLine()
+            appendLine("已有角色 Prompt（准确 tag 不要重复搜索；陌生角色只用中文名或短名称做模糊搜索）：")
+            characterPrompts.forEach { (name, prompt) ->
+                appendLine("- ${name.trim()}: ${prompt.trim().ifBlank { "(none)" }}")
+            }
+        }
+    }.trim()
+
+    fun novelAiTagSearchEvidenceSystem(
+        evidence: List<NovelAiTagSearchEvidence>
+    ): String = buildString {
+        appendLine("以下是程序在正式设计前检索到的 Danbooru tag 候选，仅作为可选证据：")
+        appendLine("按搜索意图、tag 分类和可见画面语义选择；count 只表示使用量，不能代替语义判断。")
+        appendLine("不要因为候选存在或 count 较高就强行使用，不要输出无关 tag，不要把候选解释给用户。")
+        appendLine("不得从候选中采用 artist 或 meta tag；最终输出仍须严格遵守 NOVELAI_IMAGE_PROMPT_SYSTEM 的 JSON 契约。")
+        evidence.groupBy { it.query }.forEach { (query, candidates) ->
+            appendLine()
+            append("查询：").appendLine(query.asPromptData())
+            candidates.forEach { candidate ->
+                append("- name=`").append(candidate.name.asPromptData()).append("`")
+                candidate.translatedName.takeIf(String::isNotBlank)?.let {
+                    append("; 中文=").append(it.asPromptData())
+                }
+                append("; category=").append(candidate.category.asPromptData())
+                append("; count=").appendLine(candidate.count)
+            }
+        }
+    }.trim()
+
+    private fun String.asPromptData(): String =
+        replace(Regex("\\s+"), " ").replace("`", "\\`").trim()
+
     const val NOVELAI_IMAGE_PROMPT_SYSTEM = """
 #################################################################
 INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
@@ -922,7 +993,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
 除了给定 tags 外，不要使用质量 tags（`masterpiece`, `best quality`）。
 不要 negative tags。
 末尾保留逗号。
-总token<=500，单角色<=100，角色部分尽量简洁。
+总token<=250，单角色<=50，角色部分尽量简洁。
 
 权重：`y::tag::`
 Boost `y>1`：视觉焦点，强化对比。
@@ -989,7 +1060,7 @@ Size preset：
 `PORTRAIT` = 垂直单角色肖像、近景、上半身、竖构图。
 `SQUARE` = 居中/平衡肖像、物体焦点、紧凑群像、中性构图。
 `HORIZONTAL` = 宽场景、两人以上、环境焦点、动作铺开。
-输出 JSON only（总 token <=500，角色部分尽量简洁，每个角色<=100。）：
+输出 JSON only（总 token <=250，角色部分尽量简洁，每个角色<=50。）：
 ```json
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
 ```

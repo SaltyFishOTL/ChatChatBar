@@ -209,7 +209,13 @@ class ChatBarApp : Application() {
         voicePlaybackController = VoicePlaybackController(this)
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
-        novelAiPromptDesigner = NovelAiPromptDesigner(streamingChatService)
+        novelAiPromptDesigner = NovelAiPromptDesigner(
+            chatService = streamingChatService,
+            tagResearchService = NovelAiTagResearchService(
+                planner = LlmNovelAiTagSearchPlanner(streamingChatService),
+                searchClient = TagSuggestClient()
+            )
+        )
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)
         searchBackend = MediaWikiSearchBackend()

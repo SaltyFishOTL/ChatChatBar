@@ -11,6 +11,7 @@ Use before editing NovelAI-related prompt flow:
 
 - `app/app/src/main/java/com/example/chatbar/domain/prompt/PromptTemplates.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiPromptDesigner.kt`
+- `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiTagResearchService.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiStyleCatalog.kt`
 - `app/app/src/main/assets/presets/image_styles/default-image-styles.json`
 - code that converts image intent into NovelAI tags
@@ -39,14 +40,24 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Do not add full feature-specific NAI templates such as `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE`.
 - If feature needs extra visual guidance, add a small `PromptTemplates` helper that supplies only modifiers: target style, composition preference, mood, brief image intent.
 
+## Danbooru Tag Research
+
+- Every AI-backed `NovelAiPromptDesigner.design*` flow first runs `NovelAiTagResearchService`: same design model plans up to six short Chinese fuzzy queries in one call, then all TagSuggest lookups run concurrently and their candidates/counts become optional evidence. Do not use repeated AI calls or English-tag validation.
+- Planner protocol contains only `action` and optional `queries`; do not add `purpose` or `reason`. TagSuggest normalizes unavoidable English spaces to Danbooru underscores before HTTP lookup.
+- Prompt-tool reference images enter both planning and final design requests. TagSuggest receives only planner queries.
+- Planning/search failure leaves final design message chain unchanged. Combined content progress records planning, each lookup, final design, and JSON repair; cancellation stops before final design.
+- Manual Prompt generation, generation from an existing Prompt, and image regeneration bypass research because they do not invoke AI Prompt design.
+- TagSuggest candidates are process-memory cached only. Do not add credentials, settings, or persisted fields for this flow.
+
 ## Prompt Shape
 
 Preferred flow:
 
 1. Feature code or feature AI produces short image intent.
-2. `NovelAiPromptDesigner` sends shared NovelAI system prompt.
-3. User prompt asks for NAI tags using minimal modifiers.
-4. Output stays tag-focused and avoids app implementation context.
+2. `NovelAiPromptDesigner` obtains one batch search plan and concurrently retrieves every TagSuggest result.
+3. `NovelAiPromptDesigner` sends shared NovelAI system prompt plus optional evidence.
+4. Final user prompt asks for NAI tags using minimal modifiers.
+5. Output stays tag-focused and avoids app implementation context.
 
 Keep backend limits, scheduling rules, UI state, storage details, and business policy out of NovelAI prompt text unless directly needed for visual result.
 
