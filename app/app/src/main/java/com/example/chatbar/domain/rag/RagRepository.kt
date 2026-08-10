@@ -97,13 +97,13 @@ class RagRepository(private val storage: JsonFileStorage) {
         sessionId: String,
         sourceTurnId: String?,
         messageIds: Set<String>,
-        keepChunkId: String?
+        keepChunkIds: Set<String>
     ): Int {
         val idsToDelete = automaticChatMemoryChunkIdsToReplace(
             chunks = getAllChunksForSession(sessionId),
             sourceTurnId = sourceTurnId,
             messageIds = messageIds,
-            keepChunkId = keepChunkId
+            keepChunkIds = keepChunkIds
         )
         idsToDelete.forEach { id -> storage.deleteEntityUncached(ENTITY_TYPE, id) }
         return idsToDelete.size
@@ -202,7 +202,7 @@ internal fun automaticChatMemoryChunkIdsToReplace(
     chunks: List<VectorChunk>,
     sourceTurnId: String?,
     messageIds: Set<String>,
-    keepChunkId: String?
+    keepChunkIds: Set<String>
 ): Set<String> = chunks.asSequence()
     .filter(ChatMemoryIndexPolicy::isAutomaticChunk)
     .filter { chunk ->
@@ -212,7 +212,7 @@ internal fun automaticChatMemoryChunkIdsToReplace(
         sameTurn || overlapsMessages
     }
     .map { it.id }
-    .filterNot { it == keepChunkId }
+    .filterNot { it in keepChunkIds }
     .toSet()
 
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =

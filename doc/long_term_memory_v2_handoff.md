@@ -26,7 +26,8 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 - Arc/Era压缩协议已从逐child保留正文改为两阶段筛选：规划AI读取同一候选集，只输出一句50字内取舍指南，`maxTokens=128`，清除继承的思考配置并仅向支持的模型发送关闭思考参数，不做程序字数校验、不持久化、不作为事实证据；规划与正式压缩各自最多5次输出尝试。压缩AI读取指南与原child，Prompt目标60–300字，程序接受50–400字且要求短于被消费正文；JSON阶段截断后按当前Token上限倍增并跨尝试保留，最高受4096和模型配置约束。最终错误明确显示压缩规划/正式压缩/Episode/HEAD及失败次数。提示词要求朴素客观、围绕主因果线和关键状态变化，禁止逐child复述、机械时间连接和华丽场景描写。Episode→Arc与Arc→Era新建时消费最老连续3–10个child，输入最多15个，第11–15个只作为末尾边界参考；Era→Era消费2–5个。AI只返回`consumedChildIds + summary`；`coverageUnits`由程序按child coverage hash生成。旧4–20/3–10父节点仍可读取、编辑、修复和重建，但新压缩不再产生该规模。
 - 实体机完整重建曾高频复现“正式压缩：输出连续5次失败；最后错误：只能消费候选最老连续前缀”。根因是压缩提示词把任务描述为“判断是否构成完整Arc/故事线”，模型为找语义完整窗口而跳过最老child换窗口、或把第11–15个末尾参考也写入`consumedChildIds`，与程序“只能消费候选最老连续前缀”的位置性校验冲突，且重试回传的错误文本未说明如何修正。2026-08-03强化提示词：消费规则改为“最少3条，最多10条”（消除“第3至第10条”歧义），明确consumedChildIds必须从第1条开始原序连续、第11–15条任何情况不得消费、不能在“最老前缀”固定窗口外换窗口（不足以成事件时返回`compressible=false`）、程序会逐条比对。规划提示词同步改为“最少3个，最多10个”，Era重压缩改为“最少2条，最多5条”。配套渲染改动：`renderChildren`新增`markReferenceFromIndex`，普通压缩路径把第10条之后的候选在child标题中标为“末尾参考，不可消费”（修复/重建强制消费路径不标记）。`PromptTemplatesTest`按新协议token更新断言；真实模型上的复发率仍需长聊验收。
 - 长期记忆字数上限的“增加 2000 字”按钮原只在Archive已超限时显示；用户误选“保持上限并压缩”后用量低于上限，按钮消失且declined标志残留，之后超限只会静默压缩，无法再手动扩大。2026-08-03修复：维护弹窗改为只要`memoryLimitChars < 20000`就显示“增加 2000 字”（抽出内部`MemoryLimitAction`组件）；手动`increaseLimit`与决策弹窗选择扩容都会重置三层`*CompressionPromptDeclined`标志，用户后续再次超限可重新被询问。新增`MemoryCompressionDecisionPolicyTest`扩容重置decline测试与`LongTermMemoryUiTest`手动扩容按钮可用性/上限隐藏测试；`ci.ps1 -SkipAssemble`通过。已通过`redeploy.bat --no-pause`在实体机`49075ec2`完成release保数据安装并启动（PID 20836）。
-- 上下文与RAG已改为按完整`sourceTurnId`分组：同轮追加AI回复/图片不拆成多个上下文组或RAG块。
+- 上下文与RAG按完整`sourceTurnId`共享身份边界：同轮追加AI回复/图片不拆成多个上下文组或新T身份；RAG仅可在同一身份内对超长正文分片。
+- RAG完整轮正文超过600字时改为多卡片索引：每片从第300字起优先寻找第400字内的换行分段，其次寻找中英文句号，均无则在第350字切分；尾片保留剩余正文。所有分片继续共享原`sourceTurnId`、消息集合与T边界，仅用稳定`chunkIndex`区分；自动索引内容版本升至6，旧自动块可通过现有重建入口升级，手动块不受影响。
 - 全局上下文保留组数现支持0；0不保留普通历史组，但仍保留Prompt末尾的完整上一轮和当前开放轮，所有更早完整轮进入归档边界。文档/记忆RAG召回数也分别支持0；某类为0时在仓库查询前禁用该来源，两类均为0时跳过整段RAG检索。
 - 用户手动中断聊天生成时，非空助手流稿会作为普通助手消息落盘，继承当前用户轮的`sourceTurnId/sourceTurnOrder`并触发`REPLY_PERSISTED`维护；空正文不保存，也不触发完整回复专属的自动格式修复或朋友圈生成。
 - 主聊天请求不再给历史、上一轮、重试输入或当前输入追加`[Txx]`；模型只看到原始角色与正文顺序。T继续作为内部记忆排序/UI元数据。AI生成图片留下的空助手记录、被“排除状态栏”清空的助手记录和其他空助手记录直接省略；流式完成但无正文时明确失败，不再持久化空助手回复。
@@ -92,6 +93,7 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 
 ## Untested
 
+- 真实旧会话尚未手动执行RAG自动块重建来观察超长T轮次的多卡片结果；纯策略与身份测试已覆盖拆分优先级、边界、稳定分片ID和同轮旧块清理。本轮未调用真实向量API。
 - 真实用户旧会话尚未手动抓取最终API请求确认Archive正文、Bot名称覆盖、占位符替换与历史消息；纯策略和最终JSON序列化测试已覆盖正文保留、独立消息、Archive/HEAD多行Bot名称及兼容别名替换、HEAD-only拒绝和空历史过滤。本轮无连接设备，未做交互验收。
 - T46隐式内部缺口提升、应用级补录runner及后续Archive追赶已由用户真实旧会话完成：T46告警消失，Archive从1830/2000经生成/压缩收敛到1286/2000。新有界runner与排队UI尚待部署后复核。
 - 真实长聊下新3–10/2–5消费窗口、低层级额外5个末尾参考、两阶段规划与60–300字筛选质量、三层扩容询问、`compressible=false`链、Era平级压缩和多批补录仍缺少完整端到端证据。
@@ -135,6 +137,7 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 
 ## Verification Baseline
 
+- 2026-08-11 RAG超长完整轮分片：定向`ChatMemoryIndexPolicyTest`/`ChatMemoryIdentityTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过；覆盖600字不拆、300–400字窗口内分段优先、句号次选、300字边界、无标点350字硬切、分片ID及同轮多块替换。实体机`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `4503`，`MainActivity`为resumed且持有窗口焦点。未执行真实RAG重建、未调用向量API。
 - 2026-08-11零上下文/分来源零召回：`:app:compileDebugKotlin --rerun-tasks`、定向`ContextWindowManagerTest`/`RagSourcePlanTest`与`ci.ps1 -SkipAssemble`通过。测试覆盖0窗口仅保留上一轮并归档全部更早组，以及文档0、记忆0、两者0和0上下文召回边界。`adb devices -l`无连接设备，未部署。
 - 2026-08-02 Arc/Era两阶段筛选式压缩与AI重试修复：定向`MemoryCompressionPolicyTest`、`PromptTemplatesTest`、`StreamingChatServiceThinkingTest`、`MemoryAiRetryTest`、`MemoryAiFailurePolicyTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过，Android测试源码编译成功。策略覆盖50/400程序边界及Era最低可压缩输入；Prompt覆盖60–300目标、禁止逐child/华丽描写、50字内无思维过程规划；请求体覆盖规划`maxTokens=128`、隔离角色扮演参数、不继承思考配置、关闭受支持模型思考且不请求JSON。重试覆盖规划/正式压缩/Episode/HEAD输出错误5次、可恢复传输错误3次、HTTP 400立即停止、截断Token上限1800→3600→4096跨尝试保留，以及失败阶段/尝试次数持久化。早先实体机`49075ec2`已通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `11693`；重试修复后`adb devices -l`无连接设备，未重新部署。未触发真实压缩或模型调用，两阶段摘要质量仍待真实长聊验收。
 - 2026-08-02长期记忆紧凑UI与重建复用补录：强制`:app:compileDebugKotlin --rerun-tasks`、定向`MemoryRegenerationPolicyTest`、全量`gradlew test`及`ci.ps1 -SkipAssemble`通过，Android测试源码编译通过。纯策略覆盖重建Gap初始化、时间线断裂分组、末尾不足N轮转普通pending和暂停保留；instrumented源码覆盖清空后直接进入真实`startBackfill`并完成HEAD/flag；Compose源码覆盖图标二次确认及完整重建复用补录进度文案。`adb devices -l`无连接设备，未部署、未调用真实模型。

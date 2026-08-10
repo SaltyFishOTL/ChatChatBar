@@ -136,11 +136,55 @@ class ChatMemoryIndexPolicyTest {
     }
 
     @Test
+    fun longTurnContent_isNotSplitUntilItExceedsSixHundredCharacters() {
+        val content = "甲".repeat(600)
+
+        assertEquals(listOf(content), ChatMemoryIndexPolicy.splitLongTurnContent(content))
+    }
+
+    @Test
+    fun longTurnContent_prefersParagraphBoundaryBetweenThreeAndFourHundredCharacters() {
+        val content = "甲".repeat(310) + "。" + "乙".repeat(8) + "\n" + "丙".repeat(500)
+
+        val chunks = ChatMemoryIndexPolicy.splitLongTurnContent(content)
+
+        assertEquals("甲".repeat(310) + "。" + "乙".repeat(8), chunks.first())
+        assertTrue(chunks[1].startsWith("丙"))
+    }
+
+    @Test
+    fun longTurnContent_usesSentenceBoundaryWhenNoParagraphExistsInSearchRange() {
+        val content = "甲".repeat(329) + "。" + "乙".repeat(500)
+
+        val chunks = ChatMemoryIndexPolicy.splitLongTurnContent(content)
+
+        assertEquals("甲".repeat(329) + "。", chunks.first())
+        assertTrue(chunks[1].startsWith("乙"))
+    }
+
+    @Test
+    fun longTurnContent_acceptsSentenceBoundaryAtExactlyThreeHundredCharacters() {
+        val content = "甲".repeat(299) + "。" + "乙".repeat(401)
+
+        val chunks = ChatMemoryIndexPolicy.splitLongTurnContent(content)
+
+        assertEquals(300, chunks.first().length)
+        assertTrue(chunks.first().endsWith("。"))
+    }
+
+    @Test
+    fun longTurnContent_fallsBackToThreeHundredFiftyCharacters() {
+        val chunks = ChatMemoryIndexPolicy.splitLongTurnContent("甲".repeat(750))
+
+        assertEquals(listOf(350, 400), chunks.map(String::length))
+    }
+
+    @Test
     fun rebuildPolicy_marksPairAndOldTurnChunksButNeverManualChunks() {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("message_pair", "4")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("memory_node", "1")))
-        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "4")))
-        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "5")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "5")))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }
 

@@ -18,6 +18,10 @@ class ChatMemoryIdentityTest {
             chatMemoryChunkId("session-1", "turn-1") ==
                 chatMemoryChunkId("session-1", "turn-2")
         )
+        assertFalse(
+            chatMemoryChunkId("session-1", "turn-1", 0) ==
+                chatMemoryChunkId("session-1", "turn-1", 1)
+        )
     }
 
     @Test
@@ -53,12 +57,17 @@ class ChatMemoryIdentityTest {
             id = "manual",
             metadata = newTurn.metadata + ("indexMode" to "manual")
         )
+        val newTurnPart = newTurn.copy(
+            id = "new-turn-part",
+            content = "new part",
+            metadata = newTurn.metadata + ("chunkIndex" to "1")
+        )
 
         val removed = automaticChatMemoryChunkIdsToReplace(
-            chunks = listOf(oldPair, newTurn, manual),
+            chunks = listOf(oldPair, newTurn, newTurnPart, manual),
             sourceTurnId = "turn-1",
             messageIds = setOf("user", "assistant", "append"),
-            keepChunkId = "new-turn"
+            keepChunkIds = setOf("new-turn", "new-turn-part")
         )
 
         assertEquals(setOf("old-pair"), removed)

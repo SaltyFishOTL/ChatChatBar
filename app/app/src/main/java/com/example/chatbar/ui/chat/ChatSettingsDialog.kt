@@ -1855,7 +1855,7 @@ private fun RagMemoryContent(
                     horizontalArrangement = Arrangement.spacedBy(12.dp)
                 ) {
                     CbText(
-                        "发现 $legacyCount 个旧版自动块。重建会按完整T轮次重新索引已滑出上下文的原始对话，并补上旧版遗漏的T；手动块不受影响。",
+                        "发现 $legacyCount 个旧版自动块。重建会按完整T轮次边界重新索引已滑出上下文的原始对话，超过600字的轮次会拆成300–400字左右的卡片，并补上旧版遗漏的T；手动块不受影响。",
                         modifier = Modifier.weight(1f),
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption

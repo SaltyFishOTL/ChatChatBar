@@ -20,7 +20,12 @@ data class ChatMemoryTurn(
 
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
-    const val CONTENT_VERSION = "5"
+    const val CONTENT_VERSION = "6"
+
+    private const val LONG_TURN_SPLIT_THRESHOLD = 600
+    private const val SPLIT_SEARCH_START = 300
+    private const val SPLIT_SEARCH_END = 400
+    private const val FALLBACK_SPLIT_OFFSET = 350
 
     private val automaticIndexModes = setOf(
         "single_message_contextual",
@@ -35,7 +40,7 @@ object ChatMemoryIndexPolicy {
         "ok", "okay", "yes", "no"
     )
 
-    /** 一个稳定source turn对应一个原始对话检索单元；SYSTEM永不进入RAG正文。 */
+    /** 一个稳定source turn对应一个原始对话身份单元；SYSTEM永不进入RAG正文。 */
     fun buildTurns(messages: List<ChatMessage>): List<ChatMemoryTurn> =
         ChatContextGroupPolicy.groups(messages).mapNotNull { group ->
             val storyMessages = group.messages.filter { it.role != MessageRole.SYSTEM }
@@ -70,6 +75,9 @@ object ChatMemoryIndexPolicy {
         }
     }.joinToString("\n\n")
 
+    fun contentsForIndex(turn: ChatMemoryTurn): List<String> =
+        splitLongTurnContent(contentForIndex(turn))
+
     fun shouldIndex(turn: ChatMemoryTurn): Boolean = turn.messages.any { message ->
         when (message.role) {
             MessageRole.USER -> hasInformation(message.displayContent)
@@ -96,5 +104,37 @@ object ChatMemoryIndexPolicy {
             .lowercase()
             .replace(Regex("[\\s\\p{P}\\p{S}]+"), "")
         return compact.length >= 4 && compact !in lowInformationReplies
+    }
+
+    internal fun splitLongTurnContent(content: String): List<String> {
+        if (content.length <= LONG_TURN_SPLIT_THRESHOLD) return listOf(content)
+
+        val chunks = mutableListOf<String>()
+        var chunkStart = 0
+        while (content.length - chunkStart > SPLIT_SEARCH_END) {
+            val searchStart = chunkStart + SPLIT_SEARCH_START - 1
+            val searchEndExclusive = (chunkStart + SPLIT_SEARCH_END).coerceAtMost(content.length)
+            val paragraphEnd = (searchStart until searchEndExclusive)
+                .firstOrNull { index -> content[index] == '\n' || content[index] == '\r' }
+                ?.let { it + 1 }
+            val sentenceEnd = (searchStart until searchEndExclusive)
+                .firstOrNull { index -> content[index] == '。' || content[index] == '.' }
+                ?.let { it + 1 }
+            val chunkEnd = paragraphEnd
+                ?: sentenceEnd
+                ?: (chunkStart + FALLBACK_SPLIT_OFFSET).coerceAtMost(content.length)
+
+            content.substring(chunkStart, chunkEnd)
+                .trim()
+                .takeIf(String::isNotEmpty)
+                ?.let(chunks::add)
+            chunkStart = chunkEnd
+        }
+
+        content.substring(chunkStart)
+            .trim()
+            .takeIf(String::isNotEmpty)
+            ?.let(chunks::add)
+        return chunks
     }
 }

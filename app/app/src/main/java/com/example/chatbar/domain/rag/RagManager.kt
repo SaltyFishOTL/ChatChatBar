@@ -85,45 +85,48 @@ class RagManager(
         sessionId: String,
         embeddingConfig: EmbeddingConfig
     ) {
-        val chunkId = chatMemoryChunkId(sessionId, turn.identityKey)
         if (!ChatMemoryIndexPolicy.shouldIndex(turn)) {
             ragRepository.deleteSupersededAutomaticChatMemory(
                 sessionId = sessionId,
                 sourceTurnId = turn.sourceTurnId,
                 messageIds = turn.messageIds,
-                keepChunkId = null
+                keepChunkIds = emptySet()
             )
             return
         }
-        val memoryText = ChatMemoryIndexPolicy.contentForIndex(turn)
-
-        val embedding = embeddingService.getEmbedding(memoryText, embeddingConfig)
-        val chunk = VectorChunk(
-            id = chunkId,
-            sourceType = ChunkSourceType.CHAT_MEMORY,
-            sourceId = sessionId,
-            content = memoryText,
-            embedding = embedding,
-            messageId = turn.anchorMessage.id,
-            metadata = buildMap {
-                put("sessionId", sessionId)
-                put("messageIds", turn.messageIds.joinToString(","))
-                put("messageTime", turn.anchorMessage.createdAt.toString())
-                put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
-                put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
-                put("embeddingKey", embeddingKey(embeddingConfig))
-                put("sourceHash", hashContent(memoryText))
-                turn.sourceTurnId?.let { put("sourceTurnId", it) }
-                turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
-            },
-            createdAt = System.currentTimeMillis()
-        )
-        ragRepository.saveChunks(listOf(chunk))
+        val memoryTexts = ChatMemoryIndexPolicy.contentsForIndex(turn)
+        val embeddings = embeddingService.getEmbeddings(memoryTexts, embeddingConfig)
+        val now = System.currentTimeMillis()
+        val chunks = memoryTexts.mapIndexed { index, memoryText ->
+            VectorChunk(
+                id = chatMemoryChunkId(sessionId, turn.identityKey, index),
+                sourceType = ChunkSourceType.CHAT_MEMORY,
+                sourceId = sessionId,
+                content = memoryText,
+                embedding = embeddings[index],
+                messageId = turn.anchorMessage.id,
+                metadata = buildMap {
+                    put("sessionId", sessionId)
+                    put("messageIds", turn.messageIds.joinToString(","))
+                    put("messageTime", turn.anchorMessage.createdAt.toString())
+                    put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
+                    put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
+                    put("chunkIndex", index.toString())
+                    put("chunkCount", memoryTexts.size.toString())
+                    put("embeddingKey", embeddingKey(embeddingConfig))
+                    put("sourceHash", hashContent(memoryText))
+                    turn.sourceTurnId?.let { put("sourceTurnId", it) }
+                    turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
+                },
+                createdAt = now
+            )
+        }
+        ragRepository.saveChunks(chunks)
         ragRepository.deleteSupersededAutomaticChatMemory(
             sessionId = sessionId,
             sourceTurnId = turn.sourceTurnId,
             messageIds = turn.messageIds,
-            keepChunkId = chunk.id
+            keepChunkIds = chunks.mapTo(mutableSetOf()) { it.id }
         )
     }
 
@@ -172,8 +175,14 @@ class RagManager(
     }
 }
 
-internal fun chatMemoryChunkId(sessionId: String, turnIdentity: String): String {
+internal fun chatMemoryChunkId(
+    sessionId: String,
+    turnIdentity: String,
+    chunkIndex: Int = 0
+): String {
+    require(chunkIndex >= 0) { "chunkIndex must be non-negative" }
+    val chunkIdentity = if (chunkIndex == 0) turnIdentity else "$turnIdentity|chunk:$chunkIndex"
     val digest = MessageDigest.getInstance("SHA-256")
-        .digest("$sessionId|$turnIdentity".toByteArray(Charsets.UTF_8))
+        .digest("$sessionId|$chunkIdentity".toByteArray(Charsets.UTF_8))
     return "chat-memory-" + digest.joinToString("") { "%02x".format(it) }
 }

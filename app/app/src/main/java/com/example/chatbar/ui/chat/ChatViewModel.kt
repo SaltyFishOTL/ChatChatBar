@@ -912,15 +912,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 repository.deleteObsoleteAutomaticChatMemory(
                     sessionId = sessionId,
-                    keepChunkIds = turnsToRebuild.mapTo(mutableSetOf()) { turn ->
-                        chatMemoryChunkId(sessionId, turn.identityKey)
+                    keepChunkIds = turnsToRebuild.flatMapTo(mutableSetOf()) { turn ->
+                        ChatMemoryIndexPolicy.contentsForIndex(turn).indices.map { chunkIndex ->
+                            chatMemoryChunkId(sessionId, turn.identityKey, chunkIndex)
+                        }
                     }
                 )
                 loadRagMemoryChunks()
                 _ragMemoryStatus.value = if (turnsToRebuild.isEmpty()) {
                     "当前没有已滑出上下文、需要建立索引的T轮次。"
                 } else {
-                    "RAG索引已按完整T轮次重建。"
+                    "RAG索引已按完整T轮次边界重建，超长轮次已自动分片。"
                 }
             }
             true
@@ -3160,7 +3162,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 sessionId = sessionId,
                 sourceTurnId = turn.sourceTurnId,
                 messageIds = turn.messageIds,
-                keepChunkId = null
+                keepChunkIds = emptySet()
             )
             return
         }
@@ -3179,7 +3181,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     sessionId = sessionId,
                     sourceTurnId = turn.sourceTurnId,
                     messageIds = turn.messageIds,
-                    keepChunkId = null
+                    keepChunkIds = emptySet()
                 )
             }
         } else {
@@ -3187,7 +3189,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 sessionId = sessionId,
                 sourceTurnId = turn.sourceTurnId,
                 messageIds = turn.messageIds,
-                keepChunkId = null
+                keepChunkIds = emptySet()
             )
         }
     }
@@ -3208,7 +3210,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 sessionId = sessionId,
                 sourceTurnId = sourceTurnId,
                 messageIds = setOf(deletedMessage.id),
-                keepChunkId = null
+                keepChunkIds = emptySet()
             )
         }
     }
@@ -3264,12 +3266,25 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             activeMessageIds = activeIds
         )
             .filter { turn ->
-                val existing = currentAutomaticChunks[chatMemoryChunkId(sessionId, turn.identityKey)]
-                existing == null ||
-                    existing.messageIds() != turn.messageIds ||
-                    existing.metadata["sourceHash"] != ragManager.hashContent(
-                        ChatMemoryIndexPolicy.contentForIndex(turn)
-                    )
+                val expectedContentsById = ChatMemoryIndexPolicy.contentsForIndex(turn)
+                    .mapIndexed { chunkIndex, content ->
+                        chatMemoryChunkId(sessionId, turn.identityKey, chunkIndex) to content
+                    }
+                    .toMap()
+                val currentTurnChunkIds = currentAutomaticChunks.values
+                    .filter { chunk ->
+                        val sameTurn = turn.sourceTurnId != null &&
+                            chunk.metadata["sourceTurnId"] == turn.sourceTurnId
+                        sameTurn || chunk.messageIds().any { it in turn.messageIds }
+                    }
+                    .mapTo(mutableSetOf()) { it.id }
+                currentTurnChunkIds != expectedContentsById.keys ||
+                    expectedContentsById.any { (chunkId, content) ->
+                        val existing = currentAutomaticChunks[chunkId]
+                        existing == null ||
+                            existing.messageIds() != turn.messageIds ||
+                            existing.metadata["sourceHash"] != ragManager.hashContent(content)
+                    }
             }
             .takeLast(2)
         for (turn in turnsToIndex) {

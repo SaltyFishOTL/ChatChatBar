@@ -11,6 +11,7 @@
 - Derive display `T` from the current memory timeline. AI never owns T numbering.
 - Exclude the newest unstable source turn from long-term-memory generation.
 - Treat source-turn grouping as shared boundary logic. Direct context, Episode pending, and RAG may store different data but must agree on turn identity.
+- RAG may split one source turn whose normalized index text exceeds 600 characters into multiple 300–400-character target chunks. Every fragment keeps the same source-turn/message identity and differs only by stable chunk index; fragments never become new timeline turns.
 - Allow the global retained-context count to be zero. Zero retains no counted history groups, while the complete previous turn and current open turn remain in the prompt hot zone; every older counted group is outside direct context.
 - Configure exact Episode target globally with legacy field `episodeMaxSourceTurns` in range 1–6, default 2. Capture it once when backfill starts; setting changes affect later runs only.
 
