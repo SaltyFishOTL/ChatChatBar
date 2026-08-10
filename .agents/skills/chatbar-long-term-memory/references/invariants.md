@@ -11,6 +11,7 @@
 - Derive display `T` from the current memory timeline. AI never owns T numbering.
 - Exclude the newest unstable source turn from long-term-memory generation.
 - Treat source-turn grouping as shared boundary logic. Direct context, Episode pending, and RAG may store different data but must agree on turn identity.
+- Allow the global retained-context count to be zero. Zero retains no counted history groups, while the complete previous turn and current open turn remain in the prompt hot zone; every older counted group is outside direct context.
 - Configure exact Episode target globally with legacy field `episodeMaxSourceTurns` in range 1–6, default 2. Capture it once when backfill starts; setting changes affect later runs only.
 
 ## Injection Ownership
@@ -26,6 +27,7 @@
 - Keep HEAD after RAG and treat larger T as later narrative state.
 - Never prepend derived `[Txx]` markers to roleplay chat messages. Keep display T as internal memory metadata; preserve ordinary message order for model chronology. After assistant status exclusion, omit blank assistant text and unsupported assistant image records; a supported user image may be sent without synthetic text.
 - Keep RAG data independent: do not index or query long-term-memory nodes and do not limit RAG by memory-node T ranges.
+- Treat document and chat-memory recall counts independently. A zero count disables that source before repository retrieval and ranking; if both counts are zero, skip the complete RAG retrieval path.
 
 ## Gap and Backfill
 

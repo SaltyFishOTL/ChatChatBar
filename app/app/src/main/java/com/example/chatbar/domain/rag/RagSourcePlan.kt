@@ -12,10 +12,13 @@ data class RagSourcePlan(
             documentCount: Int,
             indexedDocumentCount: Int,
             messageGroupCount: Int,
-            contextWindowSize: Int
+            contextWindowSize: Int,
+            documentRecallCount: Int,
+            memoryRecallCount: Int
         ): RagSourcePlan = RagSourcePlan(
-            includeDocuments = documentCount > 0 && indexedDocumentCount > 0,
-            includeMemory = messageGroupCount > contextWindowSize.coerceAtLeast(1)
+            includeDocuments = documentRecallCount > 0 && documentCount > 0 && indexedDocumentCount > 0,
+            includeMemory = memoryRecallCount > 0 &&
+                messageGroupCount > contextWindowSize.coerceAtLeast(0)
         )
     }
 }

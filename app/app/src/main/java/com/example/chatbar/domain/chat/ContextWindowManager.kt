@@ -131,7 +131,7 @@ object ChatContextGroupPolicy {
     fun recentMessages(messages: List<ChatMessage>, groupLimit: Int): List<ChatMessage> {
         val partition = partition(messages)
         return buildList {
-            partition.countedGroups.takeLast(groupLimit.coerceAtLeast(1)).forEach { addAll(it.messages) }
+            partition.countedGroups.takeLast(groupLimit.coerceAtLeast(0)).forEach { addAll(it.messages) }
             partition.previousGroup?.let { addAll(it.messages) }
             partition.currentGroup?.let { addAll(it.messages) }
         }
@@ -139,7 +139,7 @@ object ChatContextGroupPolicy {
 
     fun archivedMessages(messages: List<ChatMessage>, groupLimit: Int): List<ChatMessage> =
         partition(messages).countedGroups
-            .dropLast(groupLimit.coerceAtLeast(1))
+            .dropLast(groupLimit.coerceAtLeast(0))
             .flatMap(ChatContextGroup::messages)
 
     fun count(messages: List<ChatMessage>): Int = partition(messages).countedGroups.size
@@ -229,7 +229,7 @@ class ContextWindowManager {
         allMessages: List<ChatMessage>,
         windowSize: Int
     ): Boolean {
-        return ChatContextGroupPolicy.count(allMessages) > windowSize.coerceAtLeast(1)
+        return ChatContextGroupPolicy.count(allMessages) > windowSize.coerceAtLeast(0)
     }
 
     fun messageGroupCount(messages: List<ChatMessage>): Int =

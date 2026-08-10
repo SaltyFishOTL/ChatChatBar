@@ -622,7 +622,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             _draftLoaded.value = true
             val settings = settingsRepository.getAppSettings()
-            _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
+            _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(0)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
             _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
             updateEffectiveAudiobookMode(settings)
@@ -962,7 +962,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _longTermMemoryUiState.value = _longTermMemoryUiState.value.copy(loading = true, error = null)
             runCatching {
                 val settings = settingsRepository.getAppSettings()
-                _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(1)
+                _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(0)
                 longTermMemoryService.refreshForCurrentConditions(sessionId)
                 loadLongTermMemoryUiState()
             }
@@ -1768,13 +1768,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun effectiveContextWindowSize(): Int {
         val settings = settingsRepository.getAppSettings()
-        val size = settings.defaultContextWindowSize.coerceAtLeast(1)
+        val size = settings.defaultContextWindowSize.coerceAtLeast(0)
         _contextWindowSize.value = size
         return size
     }
 
     private fun effectiveContextWindowSize(session: ChatSession?, settings: AppSettings): Int {
-        val size = settings.defaultContextWindowSize.coerceAtLeast(1)
+        val size = settings.defaultContextWindowSize.coerceAtLeast(0)
         _contextWindowSize.value = size
         return size
     }
@@ -2260,7 +2260,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 documentCount = charCard.customDocuments.size,
                 indexedDocumentCount = indexedDocumentCount,
                 messageGroupCount = contextWindowManager.messageGroupCount(allMsgs),
-                contextWindowSize = effectiveContextWindowSize
+                contextWindowSize = effectiveContextWindowSize,
+                documentRecallCount = appSettings.docRagTopK,
+                memoryRecallCount = appSettings.memoryRagTopK
             )
             val headPreparation = if (currentSession.longTermMemoryEnabled && persistUserMessage) {
                 async {
@@ -2277,9 +2279,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ragDebugLogs.add("RAG 检索跳过：RAG 注入强度为关闭。")
                     emptyList()
                 } else if (!ragSourcePlan.shouldRetrieve) {
-                    ragDebugLogs.add("RAG 检索跳过：无已索引文档，且没有消息滑出保留上下文窗口。")
+                    val reason = if (appSettings.docRagTopK <= 0 && appSettings.memoryRagTopK <= 0) {
+                        "文档与记忆召回数量均为 0"
+                    } else {
+                        "没有启用且可召回的已索引文档或上下文外消息"
+                    }
+                    ragDebugLogs.add("RAG 检索跳过：$reason。")
                     emptyList()
                 } else if (embeddingConfig != null) {
+                    if (appSettings.docRagTopK <= 0) {
+                        ragDebugLogs.add("知识库文档召回跳过：文档召回数量为 0。")
+                    }
+                    if (appSettings.memoryRagTopK <= 0) {
+                        ragDebugLogs.add("对话记忆召回跳过：记忆召回数量为 0。")
+                    }
                     if (ragSourcePlan.includeDocuments && charCard.ragIndexStatus != "COMPLETE") {
                         ragDebugLogs.add("角色卡 RAG 索引未完成：${charCard.ragIndexStatus} ${charCard.ragIndexDone}/${charCard.ragIndexTotal}。${charCard.ragIndexMessage.orEmpty()}")
                     }
@@ -2367,19 +2380,27 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             ragDebugLogs.add("RAG retrieval credentials: last_assistant=${retrievalCredentialMsgs.size}, current_user=1.")
                             ragDebugLogs.add("查询文本 Embedding 计算完成。维度: ${queryEmbedding.size}")
                             
-                            val rankedDocChunks = rankChunksByMultiRoute(
-                                chunks = docChunks,
-                                queryEmbedding = queryEmbedding,
-                                ragQuery = ragQuery,
-                                routeLimit = routeCandidateLimit(appSettings.docRagTopK, docChunks.size)
-                            )
+                            val rankedDocChunks = if (ragSourcePlan.includeDocuments) {
+                                rankChunksByMultiRoute(
+                                    chunks = docChunks,
+                                    queryEmbedding = queryEmbedding,
+                                    ragQuery = ragQuery,
+                                    routeLimit = routeCandidateLimit(appSettings.docRagTopK, docChunks.size)
+                                )
+                            } else {
+                                emptyList()
+                            }
 
-                            val rankedMemChunks = rankChunksByMultiRoute(
-                                chunks = searchableMemChunks,
-                                queryEmbedding = queryEmbedding,
-                                ragQuery = ragQuery,
-                                routeLimit = routeCandidateLimit(appSettings.memoryRagTopK, searchableMemChunks.size)
-                            )
+                            val rankedMemChunks = if (ragSourcePlan.includeMemory) {
+                                rankChunksByMultiRoute(
+                                    chunks = searchableMemChunks,
+                                    queryEmbedding = queryEmbedding,
+                                    ragQuery = ragQuery,
+                                    routeLimit = routeCandidateLimit(appSettings.memoryRagTopK, searchableMemChunks.size)
+                                )
+                            } else {
+                                emptyList()
+                            }
 
                             val mismatchedSourceLabelCount = docChunks.count { it.hasMismatchedSourceLabel() }
                             if (mismatchedSourceLabelCount > 0) {
@@ -2434,8 +2455,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 )
                             }
                             
-                            ragDebugLogs.add("知识库文档召回完成。阈值: ${appSettings.docRagSimilarityThreshold}, Top-K: ${appSettings.docRagTopK}。召回块数: ${topDocChunks.size}")
-                            ragDebugLogs.add("对话记忆召回完成。阈值: ${appSettings.memoryRagSimilarityThreshold}, Top-K: ${appSettings.memoryRagTopK}。召回块数: ${topMemChunks.size}")
+                            if (ragSourcePlan.includeDocuments) {
+                                ragDebugLogs.add("知识库文档召回完成。阈值: ${appSettings.docRagSimilarityThreshold}, Top-K: ${appSettings.docRagTopK}。召回块数: ${topDocChunks.size}")
+                            }
+                            if (ragSourcePlan.includeMemory) {
+                                ragDebugLogs.add("对话记忆召回完成。阈值: ${appSettings.memoryRagSimilarityThreshold}, Top-K: ${appSettings.memoryRagTopK}。召回块数: ${topMemChunks.size}")
+                            }
                             
                             val finalCards = (topDocChunks.map { it.chunk } +
                                 topMemChunks.map { it.chunk })

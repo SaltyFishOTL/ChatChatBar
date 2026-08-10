@@ -376,7 +376,7 @@ class LongTermMemoryService internal constructor(
             val archivedSourceIds = completeArchivedSourceTurnIds(
                 messages = messages,
                 windowSize = contextWindowSize
-                    ?: appSettings.defaultContextWindowSize.coerceAtLeast(1)
+                    ?: appSettings.defaultContextWindowSize.coerceAtLeast(0)
             ).filter { sourceId ->
                 val watermark = initialState.recordingStartsAfterSourceOrder
                 watermark == null || sourceOrder(sourceId, messages, session) > watermark
@@ -1079,7 +1079,7 @@ class LongTermMemoryService internal constructor(
         val appSettings = settingsRepository.getAppSettings()
         val available = backfillableSourceTurnIds(
             loaded,
-            appSettings.defaultContextWindowSize.coerceAtLeast(1)
+            appSettings.defaultContextWindowSize.coerceAtLeast(0)
         )
         val n = appSettings.episodeMaxSourceTurns.coerceIn(1, 6)
         val episodeMax = available.size
@@ -1301,7 +1301,7 @@ class LongTermMemoryService internal constructor(
             val appSettings = settingsRepository.getAppSettings()
             val missing = backfillableSourceTurnIds(
                 loaded,
-                appSettings.defaultContextWindowSize.coerceAtLeast(1)
+                appSettings.defaultContextWindowSize.coerceAtLeast(0)
             )
             val stableIds = stableSourceTurnIds(loaded.messages)
             val headBackfillRequired = loaded.state.fullRegenerationPending ||
@@ -3623,7 +3623,7 @@ class LongTermMemoryService internal constructor(
     }
 
     private suspend fun currentContextWindowSize(): Int =
-        settingsRepository.getAppSettings().defaultContextWindowSize.coerceAtLeast(1)
+        settingsRepository.getAppSettings().defaultContextWindowSize.coerceAtLeast(0)
 
     private fun displayTRanges(
         sourceTurnIds: List<String>,

@@ -369,7 +369,7 @@ class LongTermMemoryAutoMaintenanceCoordinator(
                 hasMoreArchiveBatches = memoryService.updateArchiveAfterReply(
                     sessionId = sessionId,
                     modelConfig = model,
-                    contextWindowSize = settings.defaultContextWindowSize.coerceAtLeast(1),
+                    contextWindowSize = settings.defaultContextWindowSize.coerceAtLeast(0),
                     maxEpisodeBatches = MAX_ARCHIVE_EPISODES_PER_PASS
                 ).hasMoreReadyBatches
                 memoryService.maintainHeadAutomatically(sessionId, model)

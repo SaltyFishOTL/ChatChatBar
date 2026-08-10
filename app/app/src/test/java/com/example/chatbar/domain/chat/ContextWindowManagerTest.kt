@@ -29,6 +29,18 @@ class ContextWindowManagerTest {
     }
 
     @Test
+    fun zeroWindow_keepsOnlyPreviousTurnAndArchivesAllOlderGroups() {
+        val messages = conversationGroups(3)
+
+        val recent = manager.getRecentMessages(messages, windowSize = 0)
+        val archived = manager.getMessagesToArchive(messages, windowSize = 0)
+
+        assertEquals(listOf("u2", "a2"), recent.map { it.content })
+        assertEquals(listOf("u0", "a0", "u1", "a1"), archived.map { it.content })
+        assertTrue(manager.shouldRefreshSystemPrompt(messages, windowSize = 0))
+    }
+
+    @Test
     fun shouldRefreshSystemPrompt_onlyWhenMessageGroupCountExceedsWindow() {
         assertFalse(manager.shouldRefreshSystemPrompt(conversationGroups(2), windowSize = 2))
         assertTrue(manager.shouldRefreshSystemPrompt(conversationGroups(4), windowSize = 2))

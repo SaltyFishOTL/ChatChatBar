@@ -1496,7 +1496,7 @@ private fun SettingsTab(
     var momentsMaxDelayHours by remember { mutableFloatStateOf(initialMomentDelayRange.maxHours.toFloat()) }
     var momentsBackgroundGuideDismissed by remember { mutableStateOf(settings.momentsBackgroundGuideDismissed) }
     var momentsAutoStartConfirmed by remember { mutableStateOf(settings.momentsAutoStartConfirmed) }
-    var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(5, 50).toFloat()) }
+    var contextSize by remember { mutableFloatStateOf(settings.defaultContextWindowSize.coerceIn(0, 50).toFloat()) }
     var customContextSize by remember { mutableStateOf(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "") }
     var episodeMaxSourceTurns by remember {
         mutableFloatStateOf(settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat())
@@ -1507,9 +1507,9 @@ private fun SettingsTab(
     var bubbleFontScale by remember { mutableFloatStateOf(settings.chatBubbleFontScale) }
     var chatBackgroundImageOpacity by remember { mutableFloatStateOf(settings.chatBackgroundImageOpacity) }
     var assistantSegmentedBubblesEnabled by remember { mutableStateOf(settings.assistantSegmentedBubblesEnabled) }
-    var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.toFloat()) }
+    var memoryTopK by remember { mutableFloatStateOf(settings.memoryRagTopK.coerceIn(0, 15).toFloat()) }
     var memoryThreshold by remember { mutableFloatStateOf(settings.memoryRagSimilarityThreshold) }
-    var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.toFloat()) }
+    var docTopK by remember { mutableFloatStateOf(settings.docRagTopK.coerceIn(0, 15).toFloat()) }
     var docThreshold by remember { mutableFloatStateOf(settings.docRagSimilarityThreshold) }
     var ragMode by remember { mutableFloatStateOf(settings.ragInjectionMode.toModeIndex().toFloat()) }
     val context = LocalContext.current
@@ -1588,10 +1588,12 @@ private fun SettingsTab(
         momentsMaxDelayHours = momentDelayRange.maxHours.toFloat()
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
-        contextSize = settings.defaultContextWindowSize.toFloat(); memoryTopK = settings.memoryRagTopK.toFloat()
+        contextSize = settings.defaultContextWindowSize.coerceIn(0, 50).toFloat()
+        memoryTopK = settings.memoryRagTopK.coerceIn(0, 15).toFloat()
         episodeMaxSourceTurns = settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat()
         excludeAssistantStatusFromHistory = settings.excludeAssistantStatusFromHistory
-        memoryThreshold = settings.memoryRagSimilarityThreshold; docTopK = settings.docRagTopK.toFloat()
+        memoryThreshold = settings.memoryRagSimilarityThreshold
+        docTopK = settings.docRagTopK.coerceIn(0, 15).toFloat()
         docThreshold = settings.docRagSimilarityThreshold; ragMode = settings.ragInjectionMode.toModeIndex().toFloat(); bubbleFontScale = settings.chatBubbleFontScale
         chatBackgroundImageOpacity = settings.chatBackgroundImageOpacity
         assistantSegmentedBubblesEnabled = settings.assistantSegmentedBubblesEnabled
@@ -1618,12 +1620,12 @@ private fun SettingsTab(
         allowCleartextModelApi = allowCleartextModelApi,
         defaultEmbeddingId = null,
         defaultFormatCardId = formatId,
-        memoryRagTopK = memoryTopK.toInt(),
+        memoryRagTopK = memoryTopK.roundToInt().coerceIn(0, 15),
         memoryRagSimilarityThreshold = memoryThreshold,
-        docRagTopK = docTopK.toInt(),
+        docRagTopK = docTopK.roundToInt().coerceIn(0, 15),
         docRagSimilarityThreshold = docThreshold,
         ragInjectionMode = ragMode.roundToInt().modeValue(),
-        defaultContextWindowSize = draftContextWindowSize,
+        defaultContextWindowSize = draftContextWindowSize.coerceAtLeast(0),
         episodeMaxSourceTurns = episodeMaxSourceTurns.roundToInt().coerceIn(1, 6),
         excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
         webSearchMaxResultsPerQuery = 1,
@@ -1758,7 +1760,7 @@ private fun SettingsTab(
                     onCheckedChange = { automaticFormatCheckEnabled = it }
                 )
             }
-            SliderField("保留上下文消息：${contextSize.toInt()} 组", contextSize, 5f..50f, 45) { contextSize = it }
+            SliderField("保留上下文消息：${contextSize.toInt()} 组", contextSize, 0f..50f, 49) { contextSize = it }
             if (contextSize.toInt() >= 50) {
                 CbField("自定义上下文上限") {
                     CbInput(customContextSize, { newValue ->
@@ -1794,9 +1796,9 @@ private fun SettingsTab(
         }
         SettingsSection("RAG 检索") {
             SliderField("注入强度：${ragMode.roundToInt().modeLabel()}", ragMode, 0f..3f, 2) { ragMode = it }
-            SliderField("文档召回数量：${docTopK.toInt()}", docTopK, 1f..15f, 13) { docTopK = it }
+            SliderField("文档召回数量：${docTopK.toInt()}", docTopK, 0f..15f, 14) { docTopK = it }
             SliderField("文档相似度：${"%.2f".format(docThreshold)}", docThreshold, 0.3f..0.95f) { docThreshold = it }
-            SliderField("记忆召回数量：${memoryTopK.toInt()}", memoryTopK, 1f..15f, 13) { memoryTopK = it }
+            SliderField("记忆召回数量：${memoryTopK.toInt()}", memoryTopK, 0f..15f, 14) { memoryTopK = it }
             SliderField("记忆相似度：${"%.2f".format(memoryThreshold)}", memoryThreshold, 0.3f..0.95f) { memoryThreshold = it }
         }
         SettingsSection("外观") {
