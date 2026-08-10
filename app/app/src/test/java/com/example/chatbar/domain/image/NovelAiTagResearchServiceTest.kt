@@ -30,11 +30,11 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class NovelAiTagResearchServiceTest {
     @Test
-    fun `planner parses deduplicated batch queries capped at six without purpose`() {
+    fun `planner parses scene draft and deduplicated queries capped at six`() {
         val decision = planner().parseDecision(
             """
             ```json
-            {"action":"search","queries":["俯视","撑伞","俯视","双马尾","教室","夜景","初音未来","额外词"],"purpose":"unused"}
+            {"sceneDescription":"$DEFAULT_SCENE_DESCRIPTION","queries":["俯视","撑伞","俯视","双马尾","教室","夜景","初音未来","额外词"]}
             ```
             """.trimIndent()
         )
@@ -44,19 +44,88 @@ class NovelAiTagResearchServiceTest {
             decision?.queries
         )
         assertEquals("search", decision?.action)
-        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("不要输出 purpose"))
-        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("一次性规划"))
+        assertTrue(decision?.sceneDescription.orEmpty().contains("雨夜窄巷"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("禁止生成 Danbooru tag"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("sceneDescription"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("每名可见人物"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("完整姓名"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("动作发起方"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("服装细节"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("林知夏"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("周景珩"))
+        assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("40-80"))
+        assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("120-200"))
+        assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("180-320"))
+        assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("\"queries\":[\"林知夏\""))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("不得搜索已有角色"))
+
+        val request = PromptTemplates.novelAiTagSearchPlannerUser(
+            taskInput = "任务",
+            characterPrompts = listOf("初音未来" to "hatsune_miku, aqua_hair, twintails")
+        )
+        assertTrue(request.contains("不按字数判断"))
+        assertTrue(request.contains("初音未来: hatsune_miku, aqua_hair, twintails"))
+        assertTrue(request.contains("不要重复查询其中已有的角色名或 Tag"))
     }
 
     @Test
-    fun `planner parses finish and legacy single query`() {
+    fun `planner infers finish or search from scene draft and queries`() {
         val planner = planner()
 
-        val finish = planner.parseDecision("""{"action":"finish"}""")
-        val legacy = planner.parseDecision("""{"needSearch":true,"query":"俯视"}""")
+        val finish = planner.parseDecision(
+            """{"sceneDescription":"$SINGLE_SCENE_DESCRIPTION","queries":[]}"""
+        )
+        val flexible = planner.parseDecision(
+            """{"scene_description":"$ROOFTOP_SCENE_DESCRIPTION","keywords":["低角度"]}"""
+        )
 
-        assertEquals(NovelAiTagSearchDecision("finish"), finish)
-        assertEquals(NovelAiTagSearchDecision("search", listOf("俯视")), legacy)
+        assertEquals("finish", finish?.action)
+        assertTrue(finish?.queries.orEmpty().isEmpty())
+        assertEquals("search", flexible?.action)
+        assertEquals(listOf("低角度"), flexible?.queries)
+    }
+
+    @Test
+    fun `planner accepts concise nonblank scene draft`() {
+        val decision = planner().parseDecision(
+            """{"sceneDescription":"两人在雨夜街道共撑伞。","queries":["撑伞"]}"""
+        )
+
+        assertEquals("两人在雨夜街道共撑伞。", decision?.sceneDescription)
+        assertEquals(listOf("撑伞"), decision?.queries)
+    }
+
+    @Test
+    fun `planner removes queries already covered by character prompts`() {
+        val decision = planner().parseDecision(
+            raw = """{"sceneDescription":"初音未来站在舞台中央挥手。","queries":["初音未来","hatsune miku","twintails","低角度"]}""",
+            characterPrompts = listOf(
+                "初音未来" to "hatsune_miku, aqua_hair, {twintails:1.2}"
+            )
+        )
+
+        assertEquals(listOf("低角度"), decision?.queries)
+        assertEquals("search", decision?.action)
+    }
+
+    @Test
+    fun `planner streaming progress keeps reasoning and output visible`() {
+        val updates = mutableListOf<String>()
+        val progress = NovelAiTagPlannerStreamingProgress(updates::add)
+
+        progress.appendReasoning("先分析人物关系。")
+        progress.appendReasoning("再确定镜头。")
+        progress.appendContent("{\"sceneDescription\":")
+        progress.appendContent("\"雨夜街道\",\"queries\":[]}")
+
+        val latest = updates.last()
+        assertTrue(latest.contains("【思考】\n先分析人物关系。再确定镜头。"))
+        assertTrue(
+            latest.contains(
+                "【输出】\n{\"sceneDescription\":\"雨夜街道\",\"queries\":[]}"
+            )
+        )
+        assertTrue(latest.indexOf("【思考】") < latest.indexOf("【输出】"))
     }
 
     @Test
@@ -171,7 +240,8 @@ class NovelAiTagResearchServiceTest {
         assertEquals(3, maxActive.get())
         assertEquals(listOf("俯视", "撑伞", "双马尾"), result.queryResults.map { it.query })
         assertEquals(listOf("tag_俯视", "tag_撑伞", "tag_双马尾"), result.evidence.map { it.name })
-        assertTrue(result.transcript.contains("AI 批量搜索规划"))
+        assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
+        assertTrue(result.transcript.contains("AI 图片画面设计"))
         assertTrue(result.transcript.contains("TagSuggest 批量搜索"))
     }
 
@@ -222,6 +292,130 @@ class NovelAiTagResearchServiceTest {
     }
 
     @Test
+    fun `same planner queries drive local codex retrieval with diversity key`() = runTest {
+        val planner = StaticPlanner(listOf("夜市", "礼服"))
+        var received: Triple<List<String>, String, String>? = null
+        val codexSearcher = NovelAiCodexSearcher { queries, taskInput, diversityKey ->
+            received = Triple(queries, taskInput, diversityKey)
+            NovelAiCodexSearchResult(
+                matches = listOf(
+                    NovelAiCodexMatch(
+                        entry = NovelAiCodexEntry(
+                            id = "scene",
+                            kind = NovelAiCodexKind.COMPOSITION,
+                            title = "灯笼夜市",
+                            prompt = "night market, red lanterns"
+                        ),
+                        score = 1.0,
+                        matchedQueries = listOf("夜市")
+                    )
+                )
+            )
+        }
+
+        val result = NovelAiTagResearchService(
+            planner = planner,
+            searchClient = LambdaClient { outcome(it) },
+            codexSearcher = codexSearcher
+        ).research(
+            taskInput = "角色在夜市穿礼服",
+            characterPrompts = emptyList(),
+            imageBase64s = emptyList(),
+            model = model(),
+            diversityKey = "moment:card"
+        )
+
+        assertEquals(Triple(listOf("夜市", "礼服"), DEFAULT_SCENE_DESCRIPTION, "moment:card"), received)
+        assertEquals("scene", result.codexEvidence.single().id)
+        assertTrue(result.transcript.contains("本地 NovelAI 法典召回"))
+    }
+
+    @Test
+    fun `planner may run beyond old twenty second timeout`() = runTest {
+        val progress = mutableListOf<String>()
+        val planner = object : NovelAiTagSearchPlanner {
+            override suspend fun decide(
+                taskInput: String,
+                characterPrompts: List<Pair<String, String>>,
+                imageBase64s: List<String>,
+                model: ModelConfig,
+                onRawText: (String) -> Unit
+            ): NovelAiTagSearchDecisionResult {
+                onRawText("【思考】\n正在规划空间关系")
+                delay(20_001L)
+                onRawText("【思考】\n空间关系完成\n\n【输出】\n$DEFAULT_SCENE_DESCRIPTION")
+                return NovelAiTagSearchDecisionResult(
+                    decision = NovelAiTagSearchDecision(
+                        action = "finish",
+                        sceneDescription = DEFAULT_SCENE_DESCRIPTION
+                    ),
+                    requestText = taskInput,
+                    reasoningResponse = "空间关系完成",
+                    rawResponse = "{\"sceneDescription\":\"$DEFAULT_SCENE_DESCRIPTION\",\"queries\":[]}"
+                )
+            }
+        }
+
+        val result = NovelAiTagResearchService(
+            planner = planner,
+            searchClient = LambdaClient { outcome(it) }
+        ).research(
+            taskInput = "角色站在雨夜街道",
+            characterPrompts = emptyList(),
+            imageBase64s = emptyList(),
+            model = model(),
+            diversityKey = "chat:test",
+            onProgress = progress::add
+        )
+
+        assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
+        assertTrue(progress.any { it.contains("正在规划空间关系") })
+        assertTrue(result.transcript.contains("【思考】"))
+        assertFalse(result.transcript.contains("最长 20 秒"))
+    }
+
+    @Test
+    fun `user cancellation stops active planner without fallback work`() = runTest {
+        var plannerCancelled = false
+        var searchCalls = 0
+        var codexCalls = 0
+        val planner = object : NovelAiTagSearchPlanner {
+            override suspend fun decide(
+                taskInput: String,
+                characterPrompts: List<Pair<String, String>>,
+                imageBase64s: List<String>,
+                model: ModelConfig,
+                onRawText: (String) -> Unit
+            ): NovelAiTagSearchDecisionResult = try {
+                onRawText("【思考】\n持续规划中")
+                awaitCancellation()
+            } finally {
+                plannerCancelled = true
+            }
+        }
+        val job = launch {
+            NovelAiTagResearchService(
+                planner = planner,
+                searchClient = LambdaClient {
+                    searchCalls += 1
+                    outcome(it)
+                },
+                codexSearcher = NovelAiCodexSearcher { _, _, _ ->
+                    codexCalls += 1
+                    NovelAiCodexSearchResult()
+                }
+            ).research("scene", emptyList(), emptyList(), model())
+        }
+
+        runCurrent()
+        job.cancelAndJoin()
+
+        assertTrue(plannerCancelled)
+        assertEquals(0, searchCalls)
+        assertEquals(0, codexCalls)
+    }
+
+    @Test
     fun `one timed out query does not cancel other concurrent searches`() = runTest {
         val planner = StaticPlanner(listOf("慢请求", "俯视"))
         val client = LambdaClient { query ->
@@ -269,15 +463,23 @@ class NovelAiTagResearchServiceTest {
     }
 
     @Test
-    fun `finish decision skips all searches`() = runTest {
+    fun `empty query plan skips TagSuggest but still recalls codex from scene draft`() = runTest {
         val planner = StaticPlanner(emptyList(), finish = true)
         var searchCalls = 0
+        var codexScene = ""
         val client = LambdaClient {
             searchCalls += 1
             outcome(it)
         }
 
-        val result = NovelAiTagResearchService(planner, client).research(
+        val result = NovelAiTagResearchService(
+            planner = planner,
+            searchClient = client,
+            codexSearcher = NovelAiCodexSearcher { _, sceneDescription, _ ->
+                codexScene = sceneDescription
+                NovelAiCodexSearchResult()
+            }
+        ).research(
             "scene",
             emptyList(),
             emptyList(),
@@ -286,7 +488,9 @@ class NovelAiTagResearchServiceTest {
 
         assertTrue(result.evidence.isEmpty())
         assertEquals(0, searchCalls)
-        assertTrue(result.transcript.contains("无需搜索"))
+        assertEquals(DEFAULT_SCENE_DESCRIPTION, codexScene)
+        assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
+        assertTrue(result.transcript.contains("无需 TagSuggest"))
     }
 
     @Test
@@ -294,12 +498,17 @@ class NovelAiTagResearchServiceTest {
         val updates = mutableListOf<String>()
         val progress = NovelAiPromptProgress(updates::add)
 
-        progress.updatePrelude("【AI 批量搜索规划】\nqueries\n\n【TagSuggest 批量搜索】\nfound")
+        progress.updatePrelude(
+            "【AI 图片画面设计】\nscene + queries\n\n" +
+                "【本地 NovelAI 法典召回】\nreferences\n\n" +
+                "【TagSuggest 批量搜索】\nfound"
+        )
         progress.updateStage("最终 Prompt 设计", "{bad")
         progress.updateStage("JSON 修复", "{good}")
 
         val final = updates.last()
-        assertTrue(final.indexOf("AI 批量搜索规划") < final.indexOf("TagSuggest 批量搜索"))
+        assertTrue(final.indexOf("AI 图片画面设计") < final.indexOf("本地 NovelAI 法典召回"))
+        assertTrue(final.indexOf("本地 NovelAI 法典召回") < final.indexOf("TagSuggest 批量搜索"))
         assertTrue(final.indexOf("TagSuggest 批量搜索") < final.indexOf("最终 Prompt 设计"))
         assertTrue(final.indexOf("最终 Prompt 设计") < final.indexOf("JSON 修复"))
     }
@@ -308,6 +517,7 @@ class NovelAiTagResearchServiceTest {
     fun `moment debug exchanges include batch planning and TagSuggest results`() {
         val research = NovelAiTagResearchResult(
             decisionResults = listOf(decisionResult(listOf("俯视", "撑伞"))),
+            sceneDescription = DEFAULT_SCENE_DESCRIPTION,
             queryResults = listOf(
                 NovelAiTagQueryResult(
                     query = "俯视",
@@ -318,9 +528,12 @@ class NovelAiTagResearchServiceTest {
 
         val exchanges = NovelAiPromptDesigner.tagResearchDebugExchanges(research)
 
-        assertEquals(listOf("Danbooru Tag 批量搜索规划", "TagSuggest 批量搜索"), exchanges.map { it.title })
-        assertTrue(exchanges[0].output.contains("[批量规划 1]"))
-        assertTrue(exchanges[1].output.contains("from_above"))
+        assertEquals(
+            listOf("自然语言画面设计与检索规划", "本地 NovelAI 法典模糊召回", "TagSuggest 批量搜索"),
+            exchanges.map { it.title }
+        )
+        assertTrue(exchanges[0].output.contains("[画面设计 1]"))
+        assertTrue(exchanges[2].output.contains("from_above"))
     }
 
     private fun planner() = LlmNovelAiTagSearchPlanner(StreamingChatService { false })
@@ -341,9 +554,12 @@ class NovelAiTagResearchServiceTest {
             calls += 1
             val result = if (finish) {
                 NovelAiTagSearchDecisionResult(
-                    decision = NovelAiTagSearchDecision("finish"),
+                    decision = NovelAiTagSearchDecision(
+                        action = "finish",
+                        sceneDescription = DEFAULT_SCENE_DESCRIPTION
+                    ),
                     requestText = taskInput,
-                    rawResponse = "{\"action\":\"finish\"}"
+                    rawResponse = "{\"sceneDescription\":\"$DEFAULT_SCENE_DESCRIPTION\",\"queries\":[]}"
                 )
             } else {
                 decisionResult(queries, taskInput)
@@ -362,10 +578,23 @@ class NovelAiTagResearchServiceTest {
     private companion object {
         fun decisionResult(queries: List<String>, requestText: String = "scene") =
             NovelAiTagSearchDecisionResult(
-                decision = NovelAiTagSearchDecision("search", queries),
+                decision = NovelAiTagSearchDecision(
+                    action = "search",
+                    queries = queries,
+                    sceneDescription = DEFAULT_SCENE_DESCRIPTION
+                ),
                 requestText = requestText,
-                rawResponse = "{\"action\":\"search\",\"queries\":[${queries.joinToString(",") { "\"$it\"" }}]}"
+                rawResponse = "{\"sceneDescription\":\"$DEFAULT_SCENE_DESCRIPTION\",\"queries\":[${queries.joinToString(",") { "\"$it\"" }}]}"
             )
+
+        const val DEFAULT_SCENE_DESCRIPTION =
+            "雨夜窄巷中，林知夏位于左前景，右手举黑色长柄伞，左手攥住周景珩的外套前襟，穿米白衬衫、深蓝百褶裙、黑色及膝袜和棕色短靴。周景珩位于右侧稍后方，身体前倾替林知夏挡风，左手扶住她的腰，穿敞开的深灰长外套、黑色高领毛衣、长裤和皮鞋。两人肩臂相贴且四肢无遮挡冲突；中景、略低机位、侧前方视角聚焦对视与手部接触，前景雨丝清晰，背景灯笼在湿石板路上形成倒影。"
+
+        const val SINGLE_SCENE_DESCRIPTION =
+            "沈月白独自坐在画面中央靠窗的木椅上，身体朝左，双腿并拢，左手托住摊开的书，右手捻起书页，低头阅读。沈月白穿浅蓝针织开衫、白色衬衫、深灰及膝裙、黑色短袜和棕色皮鞋，衣物完整平整。场景为午后书房，中近景、平视侧前方机位，窗帘过滤的阳光落在她的脸、书页和木桌上，背景书架轻微虚化。"
+
+        const val ROOFTOP_SCENE_DESCRIPTION =
+            "顾临川站在画面右侧高楼天台边缘，身体朝向左前方城市，左脚踏在矮墙内侧，右手按住被风扬起的黑色长外套下摆，左手扶着护栏，侧脸望向远处灯火。顾临川穿黑色高领毛衣、深灰长裤和系带短靴，外套敞开但衣物完整。场景为深夜天台，中远景、低机位仰拍，护栏形成前景引导线，人物轮廓被城市霓虹勾亮，背景楼群形成清晰纵深。"
 
         fun outcome(query: String, vararg candidates: NovelAiTagCandidate) =
             NovelAiTagSearchOutcome(query.normalizeTagSuggestQuery(), candidates.toList())

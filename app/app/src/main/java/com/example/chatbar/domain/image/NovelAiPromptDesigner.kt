@@ -9,6 +9,7 @@ import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
+import com.example.chatbar.domain.prompt.NovelAiCodexEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.utils.DebugLogManager
 import kotlinx.coroutines.flow.Flow
@@ -18,6 +19,9 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
+
+internal const val NOVEL_AI_SCENE_PLANNING_THINKING_BUDGET = 256
+internal const val NOVEL_AI_PROMPT_DESIGN_THINKING_BUDGET = 512
 
 @Serializable
 data class DesignedImagePrompt(
@@ -76,6 +80,7 @@ data class NovelAiPromptDebugResult(
 class NovelAiPromptDesigner(
     private val chatService: StreamingChatService,
     private val tagResearchService: NovelAiTagResearchService,
+    private val promptPostProcessor: NovelAiPromptPostProcessor = NovelAiPromptPostProcessor.disabled(),
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
 ) {
     suspend fun design(
@@ -116,9 +121,15 @@ class NovelAiPromptDesigner(
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
+            diversityKey = "chat:${sessionId ?: card.id}",
             onProgress = progress::updatePrelude
         )
-        val finalRequestMessages = withTagSearchEvidence(requestMessages, research.evidence)
+        val finalRequestMessages = withResearchEvidence(
+            requestMessages,
+            research.evidence,
+            research.codexEvidence,
+            research.sceneDescription
+        )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
             messages = finalRequestMessages,
@@ -137,7 +148,7 @@ class NovelAiPromptDesigner(
         val designed = parseOrRepair(raw, model) { text ->
             progress.updateStage(PROMPT_REPAIR_STAGE, text)
         }
-        return convert(card, designed)
+        return convert(card, promptPostProcessor.process(designed).prompt)
     }
 
     suspend fun designForCharacterCard(
@@ -171,18 +182,24 @@ class NovelAiPromptDesigner(
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
+            diversityKey = "card:${card.id}",
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
-            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            messages = withResearchEvidence(
+                requestMessages,
+                research.evidence,
+                research.codexEvidence,
+                research.sceneDescription
+            ),
             model = model,
             onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
         )
         val designed = parseOrRepair(raw, model) { text ->
             progress.updateStage(PROMPT_REPAIR_STAGE, text)
         }
-        return convert(card, designed)
+        return convert(card, promptPostProcessor.process(designed).prompt)
     }
 
     suspend fun designForMoment(
@@ -217,18 +234,24 @@ class NovelAiPromptDesigner(
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
+            diversityKey = "moment:${card.id}",
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
-            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            messages = withResearchEvidence(
+                requestMessages,
+                research.evidence,
+                research.codexEvidence,
+                research.sceneDescription
+            ),
             model = model,
             onDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) }
         )
         val designed = parseOrRepair(raw, model) { text ->
             progress.updateStage(PROMPT_REPAIR_STAGE, text)
         }
-        return convert(card, designed)
+        return convert(card, promptPostProcessor.process(designed).prompt)
     }
 
     suspend fun designForMomentDebug(
@@ -263,9 +286,15 @@ class NovelAiPromptDesigner(
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
+            diversityKey = "moment:${card.id}",
             onProgress = progress::updatePrelude
         )
-        val finalRequestMessages = withTagSearchEvidence(requestMessages, research.evidence)
+        val finalRequestMessages = withResearchEvidence(
+            requestMessages,
+            research.evidence,
+            research.codexEvidence,
+            research.sceneDescription
+        )
         val exchanges = mutableListOf<NovelAiPromptDebugExchange>()
         exchanges += tagResearchDebugExchanges(research)
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
@@ -285,8 +314,10 @@ class NovelAiPromptDesigner(
             onDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
             exchanges = exchanges
         )
+        val processed = promptPostProcessor.process(designed)
+        exchanges += postProcessDebugExchange(processed)
         return NovelAiPromptDebugResult(
-            plan = convert(card, designed),
+            plan = convert(card, processed.prompt),
             exchanges = exchanges
         )
     }
@@ -324,11 +355,17 @@ class NovelAiPromptDesigner(
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
+            diversityKey = "avatar:${characterName.trim()}",
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
-            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            messages = withResearchEvidence(
+                requestMessages,
+                research.evidence,
+                research.codexEvidence,
+                research.sceneDescription
+            ),
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
             onReasoningDelta = onReasoningDelta
@@ -339,7 +376,7 @@ class NovelAiPromptDesigner(
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
             onReasoningDelta = onReasoningDelta
         )
-        return convert(designed, stylePrompt = stylePrompt)
+        return convert(promptPostProcessor.process(designed).prompt, stylePrompt = stylePrompt)
     }
 
     suspend fun designForPromptTool(
@@ -394,11 +431,17 @@ class NovelAiPromptDesigner(
             characterPrompts = emptyList(),
             imageBase64s = sourceImages,
             model = model,
+            diversityKey = PROMPT_TOOL_SESSION_ID,
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
-            messages = withTagSearchEvidence(requestMessages, research.evidence),
+            messages = withResearchEvidence(
+                requestMessages,
+                research.evidence,
+                research.codexEvidence,
+                research.sceneDescription
+            ),
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
             onReasoningDelta = onReasoningDelta
@@ -409,7 +452,7 @@ class NovelAiPromptDesigner(
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
             onReasoningDelta = onReasoningDelta
         )
-        return convert(designed)
+        return convert(promptPostProcessor.process(designed).prompt)
     }
 
     private suspend fun parseOrRepair(
@@ -489,7 +532,8 @@ class NovelAiPromptDesigner(
         return collectPromptText(
             events = chatService.streamText(
                 messages = messages,
-                modelConfig = model
+                modelConfig = model,
+                thinkingBudget = NOVEL_AI_PROMPT_DESIGN_THINKING_BUDGET
             ),
             onDelta = onDelta
         )
@@ -504,7 +548,8 @@ class NovelAiPromptDesigner(
         return collectPromptText(
             events = chatService.streamText(
                 messages = messages,
-                modelConfig = model
+                modelConfig = model,
+                thinkingBudget = NOVEL_AI_PROMPT_DESIGN_THINKING_BUDGET
             ),
             onDelta = onContentDelta,
             onReasoningDelta = onReasoningDelta
@@ -693,20 +738,67 @@ class NovelAiPromptDesigner(
         internal fun withTagSearchEvidence(
             messages: List<ChatApiMessage>,
             evidence: List<NovelAiTagSearchEvidence>
+        ): List<ChatApiMessage> = withResearchEvidence(messages, evidence, emptyList(), "")
+
+        internal fun withResearchEvidence(
+            messages: List<ChatApiMessage>,
+            tagEvidence: List<NovelAiTagSearchEvidence>,
+            codexEvidence: List<NovelAiCodexEvidence>,
+            sceneDescription: String
         ): List<ChatApiMessage> {
-            if (evidence.isEmpty()) return messages
+            if (tagEvidence.isEmpty() && codexEvidence.isEmpty() && sceneDescription.isBlank()) return messages
             val finalUserIndex = messages.indexOfLast { it.role == "user" }
             require(finalUserIndex >= 0) { "NovelAI Prompt 设计消息缺少最终 user 消息" }
             return messages.toMutableList().apply {
-                add(
-                    finalUserIndex,
-                    ChatApiMessage.text(
-                        "system",
-                        PromptTemplates.novelAiTagSearchEvidenceSystem(evidence)
+                var insertionIndex = finalUserIndex
+                if (sceneDescription.isNotBlank()) {
+                    add(
+                        insertionIndex++,
+                        ChatApiMessage.text(
+                            "system",
+                            PromptTemplates.novelAiSceneDescriptionSystem(sceneDescription)
+                        )
                     )
-                )
+                }
+                if (codexEvidence.isNotEmpty()) {
+                    add(
+                        insertionIndex++,
+                        ChatApiMessage.text(
+                            "system",
+                            PromptTemplates.novelAiCodexEvidenceSystem(codexEvidence)
+                        )
+                    )
+                }
+                if (tagEvidence.isNotEmpty()) {
+                    add(
+                        insertionIndex,
+                        ChatApiMessage.text(
+                            "system",
+                            PromptTemplates.novelAiTagSearchEvidenceSystem(tagEvidence)
+                        )
+                    )
+                }
             }
         }
+
+        internal fun postProcessDebugExchange(
+            result: NovelAiPromptPostProcessResult
+        ): NovelAiPromptDebugExchange = NovelAiPromptDebugExchange(
+            title = "NovelAI Prompt 工程化后处理",
+            input = "按 TagCanonicalizer → SyntaxNormalizer → PromptLinter 处理 AI 输出；锁定画风和负面提示词不进入此步骤。",
+            output = buildString {
+                if (result.rewrites.isEmpty()) appendLine("无自动改写")
+                result.rewrites.forEach { rewrite ->
+                    appendLine("- ${rewrite.location}: ${rewrite.before} → ${rewrite.after}")
+                }
+                if (result.issues.isNotEmpty()) {
+                    appendLine("警告：")
+                    result.issues.forEach { issue ->
+                        appendLine("- ${issue.location}: ${issue.message}")
+                    }
+                }
+            }.trim()
+        )
 
         internal fun tagResearchDebugExchanges(
             research: NovelAiTagResearchResult
@@ -714,8 +806,8 @@ class NovelAiPromptDesigner(
             val planningOutput = research.decisionResults
                 .mapIndexed { index, result ->
                     buildString {
-                        appendLine("[批量规划 ${index + 1}]")
-                        append(result.rawResponse.trim())
+                        appendLine("[画面设计 ${index + 1}]")
+                        append(result.displayResponse().trim())
                         if (result.failureReason.isNotBlank()) {
                             if (isNotEmpty()) appendLine()
                             append("失败：${result.failureReason}")
@@ -723,7 +815,7 @@ class NovelAiPromptDesigner(
                     }.trim()
                 }
                 .joinToString("\n\n")
-                .ifBlank { "无搜索决策输出" }
+                .ifBlank { "无画面设计输出" }
             val searchInput = research.queryResults
                 .joinToString("\n") { result ->
                     if (result.query == result.effectiveQuery) {
@@ -755,14 +847,36 @@ class NovelAiPromptDesigner(
                     }
                 }
                 .ifBlank { "未执行 TagSuggest 搜索" }
+            val codexInput = buildString {
+                appendLine("画面草案：${research.sceneDescription.ifBlank { "(none)" }}")
+                val queries = research.decisionResults.firstOrNull()?.decision?.queries.orEmpty()
+                append("检索词：")
+                append(queries.joinToString("、").ifBlank { "(none)" })
+            }
+            val codexOutput = when {
+                research.codexSearchResult.failureReason.isNotBlank() ->
+                    "失败：${research.codexSearchResult.failureReason}"
+                research.codexSearchResult.matches.isEmpty() -> "无可用参考"
+                else -> research.codexSearchResult.matches.joinToString("\n\n") { match ->
+                    buildString {
+                        appendLine("[${match.entry.kind}] ${match.entry.title}｜${match.entry.category}")
+                        append(match.entry.prompt)
+                    }
+                }
+            }
             return listOf(
                 NovelAiPromptDebugExchange(
-                    title = "Danbooru Tag 批量搜索规划",
+                    title = "自然语言画面设计与检索规划",
                     input = debugMessages(
                         PromptTemplates.novelAiTagSearchPlannerSystem(),
                         research.plannerRequestText
                     ),
                     output = planningOutput
+                ),
+                NovelAiPromptDebugExchange(
+                    title = "本地 NovelAI 法典模糊召回",
+                    input = codexInput,
+                    output = codexOutput
                 ),
                 NovelAiPromptDebugExchange(
                     title = "TagSuggest 批量搜索",

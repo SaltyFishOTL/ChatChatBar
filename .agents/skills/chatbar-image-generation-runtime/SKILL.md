@@ -28,6 +28,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Keep NovelAiImageService.generate as shared NovelAI HTTP owner for chat, character images, prompt tool, and Moments.
 - Pass batch size through `n_samples`; current Normal-area presets allow 1–4 images per request. Keep single-image callers on the default value of 1.
 - Emit intermediate, final, and error events consistently; cancel active OkHttp call when Flow closes.
+- Treat `retry` stream frames as transient server control signals: keep reading the same stream instead of failing or starting another HTTP attempt.
 - Treat a batch as successful only after the stream returns exactly the requested number of final frames. Surface partial or extra results as failure instead of silently accepting them.
 - Retry HTTP 429 at the shared service only. Current contract is three total attempts, Retry-After capped at 30 seconds, otherwise 1-second then 2-second delay.
 - Do not stack caller retries on top of service retries.

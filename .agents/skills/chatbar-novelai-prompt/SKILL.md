@@ -12,7 +12,10 @@ Use before editing NovelAI-related prompt flow:
 - `app/app/src/main/java/com/example/chatbar/domain/prompt/PromptTemplates.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiPromptDesigner.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiTagResearchService.kt`
+- `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiCodexCatalog.kt`
 - `app/app/src/main/java/com/example/chatbar/domain/image/NovelAiStyleCatalog.kt`
+- `app/app/src/main/assets/presets/novelai/nai-codex-v1.json`
+- `tools/import_nai_codex.py`
 - `app/app/src/main/assets/presets/image_styles/default-image-styles.json`
 - code that converts image intent into NovelAI tags
 - code that adds prompt text for NovelAI image generation
@@ -42,10 +45,11 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 
 ## Danbooru Tag Research
 
-- Every AI-backed `NovelAiPromptDesigner.design*` flow first runs `NovelAiTagResearchService`: same design model plans up to six short Chinese fuzzy queries in one call, then all TagSuggest lookups run concurrently and their candidates/counts become optional evidence. Do not use repeated AI calls or English-tag validation.
-- Planner protocol contains only `action` and optional `queries`; do not add `purpose` or `reason`. TagSuggest normalizes unavoidable English spaces to Danbooru underscores before HTTP lookup.
-- Prompt-tool reference images enter both planning and final design requests. TagSuggest receives only planner queries.
-- Planning/search failure leaves final design message chain unchanged. Combined content progress records planning, each lookup, final design, and JSON repair; cancellation stops before final design.
+- Every AI-backed `NovelAiPromptDesigner.design*` flow first runs `NovelAiTagResearchService`: the same design model produces one detailed natural-language `sceneDescription` plus up to six short Chinese fuzzy `queries` in one call. The scene must identify each visible person, individual action and clothing state, spatial relationship, environment, composition, camera, and visible atmosphere before any tag design.
+- NovelAI task calls override only the selected model's `thinking_budget`: scene planning uses 256, while final Prompt design and JSON repair use 512. Keep the stored model configuration unchanged.
+- Planner output contains only `sceneDescription` and `queries`; do not add `action`, `purpose`, or `reason`. TagSuggest receives only the planned queries and normalizes unavoidable English spaces to Danbooru underscores before HTTP lookup.
+- Local codex compiler preserves each selected source file's complete `###` section as one reference block. Retrieval uses only Chinese text extracted from the whole section, scored by corpus-weighted Chinese two/three-character overlap against both detailed scene and queries; English prompt tags and rewrite aliases never affect local recall. Select the five most relevant blocks, randomize only their delivery order, and never penalize recently used blocks. Send each selected original section intact as optional final-design evidence. All TagSuggest lookups run concurrently.
+- Prompt-tool reference images enter both planning and final design requests. Planning failure uses the original task text for local codex recall, exposes the failure in progress, skips TagSuggest, and continues final design; cancellation still stops before final design.
 - Manual Prompt generation, generation from an existing Prompt, and image regeneration bypass research because they do not invoke AI Prompt design.
 - TagSuggest candidates are process-memory cached only. Do not add credentials, settings, or persisted fields for this flow.
 
@@ -54,10 +58,10 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 Preferred flow:
 
 1. Feature code or feature AI produces short image intent.
-2. `NovelAiPromptDesigner` obtains one batch search plan and concurrently retrieves every TagSuggest result.
-3. `NovelAiPromptDesigner` sends shared NovelAI system prompt plus optional evidence.
-4. Final user prompt asks for NAI tags using minimal modifiers.
-5. Output stays tag-focused and avoids app implementation context.
+2. `NovelAiPromptDesigner` obtains one detailed natural-language scene plus a batch query plan.
+3. The scene plus queries recall local codex templates while queries concurrently retrieve TagSuggest results.
+4. `NovelAiPromptDesigner` sends the scene, optional codex/tag evidence, shared NovelAI system prompt, character presets, and the original final user request in preserved role order.
+5. Deterministic processing runs `TagCanonicalizer`, `SyntaxNormalizer`, and `PromptLinter`; card-backed flows then prepend the locked card style and produce `NovelAiPromptPlan`.
 
 Keep backend limits, scheduling rules, UI state, storage details, and business policy out of NovelAI prompt text unless directly needed for visual result.
 

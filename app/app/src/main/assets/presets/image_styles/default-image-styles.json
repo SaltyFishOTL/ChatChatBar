@@ -4,71 +4,71 @@
     {
       "styleKey": "delicate_lucid",
       "displayName": "精细莹润",
-      "description": "清透、温润且极其唯美的精致二次元质感，由P站 只是一只企鹅 提供",
+      "description": "由P站 只是一只企鹅 提供",
       "prompt": "very aesthetic, absurdres, {realistic background},year2024,ai-generated,delicate lines,very aesthetic, best quality, amazing quality, absurdres, highly finished, ultra-detailed, Adding contrast to the shadows in illustration,best quality, intricate, overall detail,{{{{{by houkisei,by ask (askzy),by kanzarin,by modare,by kurono mitsuki}}}}},, ::glistening skin::,",
       "previewImage": "精细莹润.png"
     },
     {
       "styleKey": "luminous_stroke",
       "displayName": "透光厚涂",
-      "description": "精致的厚涂画风，人体效果很好，由P站 duxingz 提供",
+      "description": "由P站 duxingz 提供",
       "prompt": "-2::flat_color::, -2::artist collaboration::, 0.95::feipin_zhanshi(year 2025)::, 1.2::sincos(year 2025)::, 0.25::katsura harufumi::, 0.6::healthyman::, 0.7::lunch_(shin_new)::,\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, -2::sweat::,",
       "previewImage": "透光厚涂.png"
     },
     {
       "styleKey": "luminous_moist",
       "displayName": "莹润光影",
-      "description": "高完成度的数字厚涂技法，极度强调真实肌肤的纹理细节与水润透光感",
+      "description": "高完成度的数字厚涂",
       "prompt": "artists: by nixeu, 0.6::by masaki (ekakiningen)::, 0.6::by alex ross, anato finnstark::, 1.34::by vitaminechan::, 1.34::by mochirong::, by dishwasher1910, ::by hero neisan::, 1.34:: by meion::, :: chochomi::, 1.34::nyantcha, by akita hika (data from year 2024)::. rating: general, 1.7:: photorealistic::, 1.5::expert shading, fully rendered, highly finished, anatomical shading::, 1.5::real skin emphasis, highres textured skin, highly detailed skin, highres textured body, highly detailed body, high-res face, highly detailed face::, 0.8::moist skin::,",
       "previewImage": "莹润光影.png"
     },
     {
       "styleKey": "boldline_glazed",
       "displayName": "重线油润",
-      "description": "高光泽度的水润肌肤晕染与饱满的亮面涂装，油腻师姐味儿",
+      "description": "油腻师姐熟味儿",
       "prompt": "{{{masterpiece}}}, {{{best quality}}}, {{ultra-detailed}}, {{an extremely delicate and beautiful}},{{{{{{thick outline}}}}}}, color,{{{{{black outline}}}}},1.5::,illustration,very aesthetic, best quality, absurdres,green eyes, best quality, amazing quality, very aesthetic, absurdres ::,,2::,blue gk art style, very aesthetic, masterpiece, no text::,",
       "previewImage": "重线油润.png"
     },
     {
       "styleKey": "soft_3d",
       "displayName": "柔光3D",
-      "description": "细腻写实材质、电影级柔和光影与通透肌肤质感",
+      "description": "柔和光影与通透肌肤",
       "prompt": "3::nikke official art::, ono no imoko, ruanjia, nixeu, 0.7::wlop, fugtrup::, dohna dohna issho ni warui koto o shiyou, 0.7::dikko, cle masahiro, null (nyanpyoun)::, kanzarin, mochirong, quasarcake, 0.7::yd (orange maru)::, xiujia yihuizi, akita hika, sakimichan,\n4::nose::, 4::photorealistic, hyperrealistic::, -3::shiny skin::, 3::no lineart::, -10::outline, 2D, simple illustration, realistic face::, -2::cel shading::, -6::saturated::,\n10::3D::, 5::blender (medium)::, 2::photo (medium):: 1.5::raytracing, smooth shading, soft focus::, 10::intricate detailed::,\n-4::artist collaboration::, year2025, 1.5::masterpiece, best quality, very aesthetic, absurdres::, 2::subsurface scattering, super fine illustration::,\n0.4::chiaroscuro, fine fabric emphasis::, blurry background ,sweat,steaming body,",
       "previewImage": "柔光3D.png"
     },
     {
       "styleKey": "anime-cel",
       "displayName": "平涂漫画",
-      "description": "较为简洁、平涂的画风，线条锐利、颜色统一，但很有张力",
+      "description": "简洁、平涂的画风",
       "prompt": "loliconder, hidebou, furau, wagashi_(dagashiya), photorealistic, photo like theme, aqua thema, no text, best quality, very aesthetic, absurdres",
       "previewImage": "平涂漫画.png"
     },
     {
       "styleKey": "soft_lucid_celstyle",
       "displayName": "日系柔光",
-      "description": "温润通透的肤色晕染与带有果冻感/光泽感的头发高光",
+      "description": "温润通透的肤色晕染",
       "prompt": "masterpiece,best_quality,highres,1.5::aoi_tiduru::,bluefield, wantan meo, dorontabi， artist:lunch (shin new),ohisashiburi,wakura (gcdan),mochirong,artist:nia_(nia4294),artist:ishikei,karochii, year 2025, blurry background ",
       "previewImage": "日系柔光.png"
     },
     {
       "styleKey": "muted_melancholy_cel",
       "displayName": "盐系平涂",
-      "description": "极简锐利的线条与低饱和度的“莫兰迪”色系，结合干净利落的平涂阴影",
+      "description": "干净利落的透光感",
       "prompt": "masterpiece, best quality, amazing quality,\nblender (medium),\n1.2::healthyman,kanimura_ebio:: ,0.9::wagashi_(dagashiya),henriiku (ahemaru):: ,healthyman ,0.7::hirune_(imomonono),ask_(askzy):: ,0.65::omone_hokoma_agm, quetzalli::,1.3::binggong_asylum ,ie_(raarami),almondman :: ,-2::artist collaboration::, year 2025, year 2024,colored, newest,",
       "previewImage": "盐系平涂.png"
     },
     {
       "styleKey": "hard_stroke",
       "displayName": "硬笔刷手绘",
-      "description": "不油的略微粗线条手绘风格，带点水彩质感",
-      "prompt": "1.5::artist:yamamoto souichirou::,  1.::artist:channel (caststation)::, 0.7::artist:ciloranko::, 1.4::artist:gogalking::,  year 2025, year 2024, best quality, amazing quality, very aesthetic, incredibly absurdres, absurdres, highres, no text, 2::jaggy lines::, -3::artist collaboration::, -1::censored, blurry::, blurry background, even shadows, -1::shiny skin::",
+      "description": "不油的略微粗线条手绘风格",
+      "prompt": "1.5::artist:yamamoto souichirou::,  1.::artist:channel (caststation)::, 0.7::artist:ciloranko::, 1.4::artist:gogalking::, year 2025, year 2024, best quality, amazing quality, very aesthetic, incredibly absurdres, absurdres, highres, no text, 2::jaggy lines::, -3::artist collaboration::, -1::censored, blurry::, blurry background, even shadows, -1::shiny skin::",
       "previewImage": "硬笔刷手绘.png"
     },
     {
       "styleKey": "mygo_anime",
       "displayName": "MYGO动画",
       "description": "模仿MYGO原作动画的风格",
-      "prompt": "best quality, amazing quality, anime screenshot, very aesthetic, atmospheric perspective,masterpiece, amazing quality, very aesthetic, best quality, perfect anatomy, absurdres, game cg, 1girls, bang dream! it's mygo!!!!!, (detailed hair: 1.2), (hyper detailed skin: 1.0), (glistening skin: 1.0), very aesthetic, masterpiece, no text",
+      "prompt": "1.6::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, hyper detailed skin, glistening skin,\n 0.6::no_lineart::, 0.2::artist:rei_(sanbonzakura)::,\n\n-5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::,\n-1::\"3d\"::,\n\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, year 2025,",
       "previewImage": "MYGO动画.png"
     }
   ]

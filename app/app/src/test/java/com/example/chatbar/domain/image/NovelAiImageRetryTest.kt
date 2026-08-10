@@ -18,6 +18,27 @@ import org.msgpack.core.MessagePack
 
 class NovelAiImageRetryTest {
     @Test
+    fun `stream retry control frame is ignored until final image`() = runTest {
+        val expectedImage = byteArrayOf(2, 4, 6, 8)
+        val client = OkHttpClient.Builder()
+            .addInterceptor { chain ->
+                response(chain.request(), 200, retryFrame() + finalFrame(expectedImage))
+            }
+            .build()
+
+        val events = try {
+            NovelAiImageService(client)
+                .generate("token", NovelAiPromptPlan("scene", emptyList()), seed = 42)
+                .toList()
+        } finally {
+            client.closeTestResources()
+        }
+
+        val final = events.single() as NovelAiImageEvent.Final
+        assertArrayEquals(expectedImage, final.image)
+    }
+
+    @Test
     fun `429 retries until third attempt succeeds`() = runTest {
         val attempts = AtomicInteger()
         val expectedImage = byteArrayOf(1, 3, 5, 7)
@@ -90,6 +111,19 @@ class NovelAiImageRetryTest {
         packer.packString("image")
         packer.packBinaryHeader(image.size)
         packer.writePayload(image)
+        packer.close()
+        val payload = packer.toByteArray()
+        return ByteBuffer.allocate(4 + payload.size)
+            .putInt(payload.size)
+            .put(payload)
+            .array()
+    }
+
+    private fun retryFrame(): ByteArray {
+        val packer = MessagePack.newDefaultBufferPacker()
+        packer.packMapHeader(1)
+        packer.packString("event_type")
+        packer.packString("retry")
         packer.close()
         val payload = packer.toByteArray()
         return ByteBuffer.allocate(4 + payload.size)

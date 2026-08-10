@@ -118,12 +118,14 @@ class NovelAiImageService(
                                 val count = stream.read(buffer)
                                 if (count < 0) break
                                 decoder.feed(buffer.copyOf(count)).forEach { frame ->
-                                    when (val event = decodeFrame(frame)) {
-                                        is NovelAiImageEvent.Intermediate -> trySend(event)
-                                        is NovelAiImageEvent.Final -> trySend(event)
-                                        is NovelAiImageEvent.Error -> trySend(
-                                            NovelAiImageEvent.Error("${event.message} [request: $correlationId]")
-                                        )
+                                    decodeFrame(frame)?.let { event ->
+                                        when (event) {
+                                            is NovelAiImageEvent.Intermediate -> trySend(event)
+                                            is NovelAiImageEvent.Final -> trySend(event)
+                                            is NovelAiImageEvent.Error -> trySend(
+                                                NovelAiImageEvent.Error("${event.message} [request: $correlationId]")
+                                            )
+                                        }
                                     }
                                 }
                             }
@@ -235,7 +237,7 @@ class NovelAiImageService(
         })
     }
 
-    internal fun decodeFrame(frame: ByteArray): NovelAiImageEvent {
+    internal fun decodeFrame(frame: ByteArray): NovelAiImageEvent? {
         val unpacker = MessagePack.newDefaultUnpacker(frame)
         val map = unpacker.unpackValue().asMapValue().map()
         unpacker.close()
@@ -256,6 +258,7 @@ class NovelAiImageService(
                 val msg = value("message")?.asStringValue()?.asString()
                 NovelAiImageEvent.Error("NovelAI 服务端报错: ${msg ?: "未知错误"}")
             }
+            "retry" -> null
             else -> error("未知 NovelAI 流事件: ${value("event_type")?.asStringValue()?.asString() ?: "null"}")
         }
     }

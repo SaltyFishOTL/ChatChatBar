@@ -15,6 +15,32 @@ import org.junit.Test
 
 class StreamingChatServiceStreamTextTest {
     @Test
+    fun `streaming completion exposes reasoning and content callbacks`() = runBlocking {
+        val payloads = listOf(
+            """{"choices":[{"delta":{"reasoning_content":"分析人物关系"},"finish_reason":null}]}""",
+            """{"choices":[{"delta":{"content":"{\"sceneDescription\":"},"finish_reason":null}]}""",
+            """{"choices":[{"delta":{"content":"\"雨夜\",\"queries\":[]}"},"finish_reason":"stop"}]}"""
+        )
+
+        StreamTextTestServer(payloads).use { server ->
+            val reasoning = StringBuilder()
+            val content = StringBuilder()
+            val result = withTimeout(5_000) {
+                service().completeTextStreaming(
+                    messages = listOf(ChatApiMessage.text("user", "plan")),
+                    modelConfig = model(server.baseUrl),
+                    onDelta = content::append,
+                    onReasoningDelta = reasoning::append
+                )
+            }
+
+            assertEquals("分析人物关系", reasoning.toString())
+            assertEquals("{\"sceneDescription\":\"雨夜\",\"queries\":[]}", content.toString())
+            assertEquals(content.toString(), result)
+        }
+    }
+
+    @Test
     fun `malformed sse chunk surfaces explicit error with raw data`() = runBlocking {
         val payloads = listOf("这不是合法JSON{{{")
 

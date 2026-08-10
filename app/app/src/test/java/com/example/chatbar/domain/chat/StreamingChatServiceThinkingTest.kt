@@ -3,6 +3,8 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.OutputTokenParameter
 import com.example.chatbar.data.local.entity.ParamValue
+import com.example.chatbar.domain.image.NOVEL_AI_PROMPT_DESIGN_THINKING_BUDGET
+import com.example.chatbar.domain.image.NOVEL_AI_SCENE_PLANNING_THINKING_BUDGET
 import com.example.chatbar.domain.memory.MEMORY_COMPRESSION_PLANNER_MAX_TOKENS
 import com.example.chatbar.domain.memory.forMemoryCompressionPlanner
 import com.example.chatbar.domain.memory.shouldDisableMemoryThinking
@@ -16,6 +18,45 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class StreamingChatServiceThinkingTest {
+    @Test
+    fun `NovelAI task budgets override selected model configured budget`() {
+        val model = ModelConfig(
+            id = "model",
+            displayName = "Model",
+            baseUrl = "https://example.com/v1",
+            apiKey = "key",
+            modelName = "model-name",
+            customParams = mapOf(
+                "enable_thinking" to ParamValue.BooleanValue(true),
+                "thinking_budget" to ParamValue.NumberValue(1_024.0)
+            ),
+            createdAt = 0
+        )
+        val service = StreamingChatService()
+
+        val planningBody = Json.parseToJsonElement(
+            service.buildRequestBody(
+                messages = listOf(ChatApiMessage.text("user", "scene")),
+                modelConfig = model,
+                stream = true,
+                thinkingBudget = NOVEL_AI_SCENE_PLANNING_THINKING_BUDGET
+            )
+        ).jsonObject
+        val designBody = Json.parseToJsonElement(
+            service.buildRequestBody(
+                messages = listOf(ChatApiMessage.text("user", "prompt")),
+                modelConfig = model,
+                stream = true,
+                thinkingBudget = NOVEL_AI_PROMPT_DESIGN_THINKING_BUDGET
+            )
+        ).jsonObject
+
+        assertEquals("256", planningBody.getValue("thinking_budget").jsonPrimitive.content)
+        assertEquals("512", designBody.getValue("thinking_budget").jsonPrimitive.content)
+        assertEquals(true, planningBody.getValue("enable_thinking").jsonPrimitive.boolean)
+        assertEquals(true, designBody.getValue("enable_thinking").jsonPrimitive.boolean)
+    }
+
     @Test
     fun `memory compression planner uses isolated 128 token non json request`() {
         val model = ModelConfig(

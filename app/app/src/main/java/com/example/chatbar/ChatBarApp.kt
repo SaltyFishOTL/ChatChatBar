@@ -209,12 +209,26 @@ class ChatBarApp : Application() {
         voicePlaybackController = VoicePlaybackController(this)
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
+        val novelAiCodexJson = Json {
+            ignoreUnknownKeys = true
+            isLenient = true
+            coerceInputValues = true
+        }
+        val novelAiCodexLoad = NovelAiCodexCatalogService(this, novelAiCodexJson).load()
+        novelAiCodexLoad.fatalError?.let { Log.e("ChatBarApp", it) }
+        novelAiCodexLoad.errors.forEach { Log.w("ChatBarApp", it) }
+        val novelAiCodexSearchEngine = NovelAiCodexSearchEngine(
+            catalog = novelAiCodexLoad.catalog,
+            unavailableReason = novelAiCodexLoad.fatalError.orEmpty()
+        )
         novelAiPromptDesigner = NovelAiPromptDesigner(
             chatService = streamingChatService,
             tagResearchService = NovelAiTagResearchService(
                 planner = LlmNovelAiTagSearchPlanner(streamingChatService),
-                searchClient = TagSuggestClient()
-            )
+                searchClient = TagSuggestClient(),
+                codexSearcher = novelAiCodexSearchEngine
+            ),
+            promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules)
         )
         novelAiImageService = NovelAiImageService()
         novelAiImageStorage = NovelAiImageStorage(this)

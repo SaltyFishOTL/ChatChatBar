@@ -9,6 +9,7 @@ import com.example.chatbar.domain.chat.CleartextHttpChatTemplatePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
+import com.example.chatbar.domain.prompt.NovelAiCodexEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.nio.ByteBuffer
 import kotlinx.coroutines.flow.flowOf
@@ -136,6 +137,56 @@ class NovelAiImageFeatureTest {
         val result = NovelAiPromptDesigner.withTagSearchEvidence(request, emptyList())
 
         assertSame(request, result)
+    }
+
+    @Test
+    fun `scene draft codex and tag evidence keep semantic order before final user`() {
+        val request = listOf(
+            ChatApiMessage.text("system", "rules"),
+            ChatApiMessage.text("user", "scene")
+        )
+
+        val result = NovelAiPromptDesigner.withResearchEvidence(
+            messages = request,
+            tagEvidence = listOf(
+                NovelAiTagSearchEvidence(
+                    query = "夜市",
+                    name = "night_market",
+                    translatedName = "夜市",
+                    count = 20,
+                    category = "general"
+                )
+            ),
+            codexEvidence = listOf(
+                NovelAiCodexEvidence(
+                    id = "composition-1",
+                    kind = "COMPOSITION",
+                    title = "灯笼夜市",
+                    category = "夜景",
+                    prompt = "### 灯笼夜市\n适合雨夜街道与纵深构图。\n```\nnight market, red lanterns, from above\n```",
+                    matchedQueries = listOf("夜市", "灯笼")
+                )
+            ),
+            sceneDescription = "雨夜灯笼街中，两人共撑一把伞缓慢前行，侧后方镜头映出湿润石板路。"
+        )
+
+        assertEquals(listOf("system", "system", "system", "system", "user"), result.map { it.role })
+        assertTrue(result[1].content.jsonPrimitive.content.contains("主要内容蓝图"))
+        assertTrue(result[2].content.jsonPrimitive.content.contains("night market, red lanterns"))
+        assertTrue(result[2].content.jsonPrimitive.content.contains("适合雨夜街道与纵深构图。\n```"))
+        assertTrue(result[2].content.jsonPrimitive.content.contains("Skill 原文块"))
+        assertTrue(result[2].content.jsonPrimitive.content.contains("不要采用其中的画师"))
+        assertTrue(result[3].content.jsonPrimitive.content.contains("night_market"))
+
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = result,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+        assertEquals(listOf("system", "assistant", "assistant", "assistant", "user"), adapted.map { it.role })
+        assertTrue(adapted[1].content.jsonPrimitive.content.contains("主要内容蓝图"))
+        assertTrue(adapted[2].content.jsonPrimitive.content.contains("night market"))
+        assertTrue(adapted[3].content.jsonPrimitive.content.contains("night_market"))
     }
 
     @Test
