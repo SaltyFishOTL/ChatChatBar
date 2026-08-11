@@ -159,6 +159,9 @@ dependencies {
 
   // Image loading
   implementation(libs.coil.compose)
+  implementation(libs.coil.gif)
+  implementation(libs.glide.core)
+  implementation(libs.glide.gifencoder)
 
   // DataStore for settings
   implementation(libs.datastore.preferences)

@@ -65,6 +65,7 @@ import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarShape
@@ -77,9 +78,11 @@ import java.io.File
 fun ImagePromptToolScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
-    viewModel: ImagePromptToolViewModel = viewModel()
+    viewModel: ImagePromptToolViewModel = viewModel(),
+    processingViewModel: ImageProcessingViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsState()
+    val processingState by processingViewModel.uiState.collectAsState()
     val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
@@ -90,6 +93,7 @@ fun ImagePromptToolScreen(
     var promptExpanded by remember { mutableStateOf(false) }
     var imageBatchSizeInput by remember { mutableStateOf("1") }
     var expandedImageIndex by remember { mutableStateOf<Int?>(null) }
+    var selectedPage by remember { mutableStateOf(0) }
     val referenceImagePicker = rememberLauncherForActivityResult(
         ActivityResultContracts.PickVisualMedia()
     ) { uri: Uri? ->
@@ -103,26 +107,38 @@ fun ImagePromptToolScreen(
     Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
         Column(Modifier.fillMaxSize()) {
             CbTopBar(
-                title = "跑图工具",
+                title = "生图工具",
                 navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
                 actions = {
-                    if (state.isBusy) {
+                    if (selectedPage == 0 && state.isBusy) {
                         CbButton(
                             "停止",
                             viewModel::cancelActiveTask,
                             variant = ButtonVariant.Outline
                         )
+                    } else if (selectedPage == 1 && processingState.isBusy) {
+                        CbButton(
+                            "停止",
+                            processingViewModel::cancelActiveTask,
+                            variant = ButtonVariant.Outline
+                        )
                     }
                 }
             )
-            LazyColumn(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .navigationBarsPadding()
-                    .imePadding(),
-                contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
+            CbTabs(
+                items = listOf("提示词生图", "图像处理"),
+                selectedIndex = selectedPage,
+                onSelected = { selectedPage = it }
+            )
+            if (selectedPage == 0) {
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .navigationBarsPadding()
+                        .imePadding(),
+                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp)
+                ) {
                 item {
                     PromptInputPanel(
                         state = state,
@@ -221,29 +237,39 @@ fun ImagePromptToolScreen(
                         ErrorPanel(error, viewModel::dismissError)
                     }
                 }
+                }
+            } else {
+                ImageProcessingPage(
+                    state = processingState,
+                    onSelectImage = processingViewModel::selectImage,
+                    onProcess = processingViewModel::process,
+                    onDismissError = processingViewModel::dismissError
+                )
             }
         }
-        fullscreenField?.let { (title, text) ->
-            FullscreenTextEditor(
-                title = title,
-                text = text,
-                onTextChange = { newValue ->
-                    fullscreenOnChange?.invoke(newValue)
-                    fullscreenField = title to newValue
-                },
-                visible = true,
-                onDismiss = {
-                    fullscreenField = null
-                    fullscreenOnChange = null
-                }
-            )
-        }
-        expandedImageIndex?.let { initialIndex ->
-            ImagePreviewDialog(
-                items = state.imagePaths.map { path -> ImagePreviewItem(messageId = "", path = path) },
-                initialIndex = initialIndex,
-                onDismiss = { expandedImageIndex = null }
-            )
+        if (selectedPage == 0) {
+            fullscreenField?.let { (title, text) ->
+                FullscreenTextEditor(
+                    title = title,
+                    text = text,
+                    onTextChange = { newValue ->
+                        fullscreenOnChange?.invoke(newValue)
+                        fullscreenField = title to newValue
+                    },
+                    visible = true,
+                    onDismiss = {
+                        fullscreenField = null
+                        fullscreenOnChange = null
+                    }
+                )
+            }
+            expandedImageIndex?.let { initialIndex ->
+                ImagePreviewDialog(
+                    items = state.imagePaths.map { path -> ImagePreviewItem(messageId = "", path = path) },
+                    initialIndex = initialIndex,
+                    onDismiss = { expandedImageIndex = null }
+                )
+            }
         }
     }
 }

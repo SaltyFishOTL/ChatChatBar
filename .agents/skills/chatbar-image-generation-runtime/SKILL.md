@@ -16,6 +16,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Shared editor: ui/components/NovelAiImageRegenerationDialog.kt
 - Shared image viewer/actions: ui/components/ImagePreviewDialog.kt and ImageMosaicEditor.kt
 - Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
+- Prompt-tool image processing: ui/imageprompt/ImageProcessingPage.kt, ImageProcessingViewModel.kt, domain/image/ImageProcessingService.kt, and FullImageAdversarialPatch.kt
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
 - Shared foreground/background protection: use `chatbar-background-work-runtime`
@@ -56,6 +57,10 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - If any image in a batch fails to save or the owning repository update fails, delete only newly saved files from that attempt; do not persist a partial batch.
 - Never delete unrelated or user-owned files.
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
+- Keep image-processing imports and results in the owned `filesDir/images/image-processing` work area. Static output is PNG; GIF output preserves animation by processing every frame. Share/save through shared image actions, and clean only stale work files.
+- Full-image patch apply/restore must share one deterministic transform. Restore is exact only before channel clipping, compression, resizing, or later edits.
+- The full-image patch is a four-layer multi-scale chroma transform (3×3 block shift, 8×8 DCT-aligned DC bias, low-frequency sine waves whose phase shifts per frame index, Bayer ordered-dither jitter). Keep every layer deterministic from position and frame index so restore stays an exact inverse before lossy steps.
+- GIF output re-encodes each frame with `AnimatedGifEncoder` quality 3 (lower value = denser NeuQuant sampling = finer palette), keeping per-channel perturbation amplitude (~±20 RMS) well above palette quantization noise; this SNR margin is what preserves the patch through 256-color quantization. Do not add pixel-domain residual feedback loops (encode→decode→diffuse): nearest-color mapping is locally optimal, so residual feedback is absorbed at snap time and changes nothing.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
 - Moments on-demand generation (text-only post → generate image) reuses `NovelAiPromptDesigner.designForMoment` for the prompt plan and `NovelAiImageService.generate` for bytes; both stream live (design text via `onDelta`, image progress via `Intermediate`). Persist the new path+metadata and only then remove any replaced file; never reach image state if the post becomes a placeholder. Run inside `AiBackgroundWorkManager` + `GlobalImageGenerationConcurrencyGate`.
 - Keep text generation and independent image tasks from blocking each other unless they mutate the same owned image slot.
@@ -77,6 +82,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - New image and legacy image metadata loading.
 - Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.
 - Prompt-tool blank manual draft, AI-plan materialization, manual generation, reference-image replacement, and vision fallback.
+- Image-processing apply/restore status visibility, automatic result reveal, static-image round trip, layered patch inverse exactness and per-frame variation, GIF frame count/timing/loop/transparency, patch amplitude vs palette quantization noise margin, direct share, and gallery save.
 - Fullscreen prompt editor hides the dialog window, then restores it on close without losing the draft.
 - Save failure, repository failure, and old-file cleanup failure.
 - Concurrent text generation and image generation; two unrelated image tasks.

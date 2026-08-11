@@ -57,7 +57,7 @@ class NovelAiTagResearchServiceTest {
         assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("120-200"))
         assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("180-320"))
         assertFalse(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("\"queries\":[\"林知夏\""))
-        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("不得搜索已有角色"))
+        assertTrue(PromptTemplates.NOVELAI_TAG_SEARCH_PLANNER_SYSTEM.contains("不得搜索已提供了Prompt的角色"))
 
         val request = PromptTemplates.novelAiTagSearchPlannerUser(
             taskInput = "任务",

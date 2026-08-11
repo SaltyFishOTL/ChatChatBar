@@ -45,6 +45,8 @@ import com.example.chatbar.ui.kit.CbSlider
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.data.local.ImageMaskPreferences
+import com.example.chatbar.domain.image.FullImagePatchOperation
+import com.example.chatbar.domain.image.transformFullImageAdversarialPatch
 import java.io.File
 import kotlin.math.ceil
 import kotlin.math.floor
@@ -133,7 +135,7 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         {
                             undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
                             if (undoStack.size > 10) undoStack.removeFirst().recycle()
-                            applyFullImageAdversarialPatch(bitmap)
+                            transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Apply)
                             revision++
                         },
                         Modifier.weight(1f),
@@ -152,7 +154,7 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                     )
                 }
                 CbText(
-                    "实验性中等强度色度扰动：兼顾人眼可读性与干扰强度，可能被压缩或缩放削弱，不保证对所有模型有效。",
+                    "实验性多尺度色度扰动：3px/8px 块色偏、低频色波与有序抖动叠加，兼顾人眼可读性与干扰强度；可能被压缩或缩放削弱，不保证对所有模型有效。",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.label
                 )
@@ -226,25 +228,6 @@ private fun applyBrush(bitmap: Bitmap, point: Offset, radius: Float, type: MaskB
     }
 }
 
-private fun applyFullImageAdversarialPatch(bitmap: Bitmap) {
-    val pixels = IntArray(bitmap.width * bitmap.height)
-    bitmap.getPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-    for (y in 0 until bitmap.height) for (x in 0 until bitmap.width) {
-        val index = y * bitmap.width + x
-        val color = pixels[index]
-        val hash = (x / 3) * 73856093 xor (y / 3) * 19349663
-        val delta = ADVERSARIAL_CHROMA_DELTAS[Math.floorMod(hash, ADVERSARIAL_CHROMA_DELTAS.size)]
-        val red = ((color shr 16) and 0xff) + delta[0]
-        val green = ((color shr 8) and 0xff) + delta[1]
-        val blue = (color and 0xff) + delta[2]
-        pixels[index] = (color and -0x1000000) or
-            (red.coerceIn(0, 255) shl 16) or
-            (green.coerceIn(0, 255) shl 8) or
-            blue.coerceIn(0, 255)
-    }
-    bitmap.setPixels(pixels, 0, bitmap.width, 0, 0, bitmap.width, bitmap.height)
-}
-
 private fun rotateBitmap90(bitmap: Bitmap): Bitmap = Bitmap.createBitmap(
     bitmap,
     0,
@@ -254,15 +237,6 @@ private fun rotateBitmap90(bitmap: Bitmap): Bitmap = Bitmap.createBitmap(
     Matrix().apply { postRotate(90f) },
     true
 ).copy(Bitmap.Config.ARGB_8888, true)
-
-private val ADVERSARIAL_CHROMA_DELTAS = arrayOf(
-    intArrayOf(24, -12, -12),
-    intArrayOf(-24, 12, 12),
-    intArrayOf(-12, 24, -12),
-    intArrayOf(12, -24, 12),
-    intArrayOf(-12, -12, 24),
-    intArrayOf(12, 12, -24)
-)
 
 private fun applyBrushStroke(bitmap: Bitmap, from: Offset, to: Offset, radius: Float, type: MaskBrushType) {
     if (from == Offset.Unspecified || to == Offset.Unspecified) return

@@ -111,7 +111,7 @@ fun HomeScreen(
                 actions = {
                     CbIconButton(
                         AppIcons.Image,
-                        "跑图工具",
+                        "生图工具",
                         { onNavigate(ImagePromptToolRoute) },
                         tint = ChatBarTheme.colors.mutedForeground
                     )
