@@ -85,6 +85,19 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun userToolSuffixBuildersKeepRequiredProtocolTextAndBraces() {
+        assertTrue(PromptTemplates.randomNumberUserToolSuffix(listOf(7)).contains("下一轮使用随机数：7"))
+        assertTrue(
+            PromptTemplates.randomNumberUserToolSuffix(listOf(7, 9))
+                .contains("下一轮按顺序使用随机数：7；9；")
+        )
+        assertTrue(
+            PromptTemplates.appendUserToolSuffixBlock("消息", listOf("尾缀")) ==
+                "消息\n{\n尾缀\n}"
+        )
+    }
+
+    @Test
     fun memoryPromptsKeepInputsAndRequiredJsonProtocolTokens() {
         val episode = PromptTemplates.memoryEpisodePrompt("turns", 70)
         val compression = PromptTemplates.memoryCompressionPrompt(

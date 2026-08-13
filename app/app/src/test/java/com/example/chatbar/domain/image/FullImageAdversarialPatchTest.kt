@@ -18,7 +18,7 @@ class FullImageAdversarialPatchTest {
         )
 
         assertEquals(0x7f, pixels.single() ushr 24)
-        assertEquals(0x7f9d6d6d.toInt(), pixels.single())
+        assertEquals(0x7fad6565.toInt(), pixels.single())
     }
 
     @Test
@@ -57,7 +57,7 @@ class FullImageAdversarialPatchTest {
             operation = FullImagePatchOperation.Restore
         )
 
-        assertEquals(0xffe21313.toInt(), pixels.single())
+        assertEquals(0xffd21b1b.toInt(), pixels.single())
     }
 
     @Test

@@ -13,9 +13,12 @@ import com.example.chatbar.domain.service.AiBackgroundWorkManager
 import com.example.chatbar.domain.service.BackgroundGenerationProtectionException
 import java.net.URI
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicReference
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -59,6 +62,7 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     private val backfillCompletions = ConcurrentHashMap<String, CompletableDeferred<Unit>>()
     private val manualMaintenanceCompletions =
         ConcurrentHashMap<String, CompletableDeferred<Unit>>()
+    private val sessionJobs = SessionScopedJobRegistry(scope)
     private val _backfillProgress =
         MutableStateFlow<Map<String, MemoryBackfillProgress>>(emptyMap())
     val backfillProgress: StateFlow<Map<String, MemoryBackfillProgress>> =
@@ -67,21 +71,29 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         MutableStateFlow<Map<String, MemoryManualMaintenanceKind>>(emptyMap())
     val manualMaintenance: StateFlow<Map<String, MemoryManualMaintenanceKind>> =
         _manualMaintenance.asStateFlow()
-    @Volatile private var currentSessionId: String? = null
+    private val currentSessionId = AtomicReference<String?>(null)
 
     init {
         runCatching {
             connectivity?.registerDefaultNetworkCallback(object : ConnectivityManager.NetworkCallback() {
                 override fun onAvailable(network: Network) {
-                    currentSessionId?.let { enqueue(it, MemoryMaintenanceTrigger.NETWORK_RESTORED) }
+                    currentSessionId.get()?.let { enqueue(it, MemoryMaintenanceTrigger.NETWORK_RESTORED) }
                 }
             })
         }
     }
 
     fun activateSession(sessionId: String) {
-        currentSessionId = sessionId
+        currentSessionId.set(sessionId)
         enqueue(sessionId, MemoryMaintenanceTrigger.SESSION_LOADED)
+    }
+
+    /** Explicit session deletion cancels application-owned memory work before data removal. */
+    suspend fun cancelAndJoinForSession(sessionId: String) {
+        currentSessionId.compareAndSet(sessionId, null)
+        sessionJobs.cancelAndJoin(sessionId)
+        _backfillProgress.update { it - sessionId }
+        _manualMaintenance.update { it - sessionId }
     }
 
     fun enqueue(
@@ -89,29 +101,34 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         trigger: MemoryMaintenanceTrigger,
         manual: Boolean = trigger == MemoryMaintenanceTrigger.MANUAL
     ) {
-        if (!manual && currentSessionId != sessionId) return
+        if (!manual && currentSessionId.get() != sessionId) return
         if (scheduledManualMaintenance.containsKey(sessionId)) return
         if (!scheduled.add(sessionId)) return
         val completion = CompletableDeferred<Unit>()
         maintenanceCompletions[sessionId] = completion
-        scope.launch {
-            try {
-                runMaintenanceLoop(sessionId, manual)
-            } finally {
-                scheduled.remove(sessionId)
-                maintenanceCompletions.remove(sessionId, completion)
-                completion.complete(Unit)
-            }
+        val cleanup = {
+            scheduled.remove(sessionId)
+            maintenanceCompletions.remove(sessionId, completion)
+            completion.complete(Unit)
+            Unit
+        }
+        val job = sessionJobs.launch(sessionId) {
+            runMaintenanceLoop(sessionId, manual)
+        }
+        if (job == null) {
+            cleanup()
+        } else {
+            job.invokeOnCompletion { cleanup() }
         }
     }
 
     private suspend fun runMaintenanceLoop(sessionId: String, manual: Boolean) {
         var retryAttempt = 0
         while (true) {
-            if (!manual && currentSessionId != sessionId) break
+            if (!manual && currentSessionId.get() != sessionId) break
             if (scheduledManualMaintenance.containsKey(sessionId)) break
             val result = runnerMutex.withLock {
-                if (!manual && currentSessionId != sessionId) {
+                if (!manual && currentSessionId.get() != sessionId) {
                     MaintenancePassResult()
                 } else {
                     maintainPass(sessionId)
@@ -145,25 +162,30 @@ class LongTermMemoryAutoMaintenanceCoordinator(
                 completedEpisodes = 0
             ))
         }
-        scope.launch {
-            try {
-                runnerMutex.withLock {
-                    _backfillProgress.update { progress ->
-                        progress + (sessionId to MemoryBackfillProgress(
-                            phase = MemoryBackfillPhase.PREPARING,
-                            totalSourceTurns = 0,
-                            completedSourceTurns = 0,
-                            completedEpisodes = 0
-                        ))
-                    }
-                    runBackfill(sessionId)
+        val cleanup = {
+            _backfillProgress.update { it - sessionId }
+            scheduledBackfills.remove(sessionId)
+            backfillCompletions.remove(sessionId, completion)
+            completion.complete(Unit)
+            Unit
+        }
+        val job = sessionJobs.launch(sessionId) {
+            runnerMutex.withLock {
+                _backfillProgress.update { progress ->
+                    progress + (sessionId to MemoryBackfillProgress(
+                        phase = MemoryBackfillPhase.PREPARING,
+                        totalSourceTurns = 0,
+                        completedSourceTurns = 0,
+                        completedEpisodes = 0
+                    ))
                 }
-            } finally {
-                _backfillProgress.update { it - sessionId }
-                scheduledBackfills.remove(sessionId)
-                backfillCompletions.remove(sessionId, completion)
-                completion.complete(Unit)
+                runBackfill(sessionId)
             }
+        }
+        if (job == null) {
+            cleanup()
+        } else {
+            job.invokeOnCompletion { cleanup() }
         }
     }
 
@@ -171,7 +193,7 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         sessionId: String,
         continuation: MemoryCompressionDecisionContinuation
     ) {
-        scope.launch {
+        sessionJobs.launch(sessionId) {
             when (continuation) {
                 MemoryCompressionDecisionContinuation.ARCHIVE -> {
                     manualMaintenanceCompletions[sessionId]?.await()
@@ -202,21 +224,26 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         val completion = CompletableDeferred<Unit>()
         manualMaintenanceCompletions[sessionId] = completion
         _manualMaintenance.update { it + (sessionId to kind) }
-        scope.launch {
-            try {
-                when (kind) {
-                    MemoryManualMaintenanceKind.FULL_REGENERATION ->
-                        runFullRegeneration(sessionId)
-                    MemoryManualMaintenanceKind.HEAD_REGENERATION ->
-                        runnerMutex.withLock { runHeadRegeneration(sessionId) }
-                }
-            } finally {
-                scheduledManualMaintenance.remove(sessionId, kind)
-                _manualMaintenance.update { it - sessionId }
-                manualMaintenanceCompletions.remove(sessionId, completion)
-                completion.complete(Unit)
+        val cleanup = {
+            scheduledManualMaintenance.remove(sessionId, kind)
+            _manualMaintenance.update { it - sessionId }
+            manualMaintenanceCompletions.remove(sessionId, completion)
+            completion.complete(Unit)
+            Unit
+        }
+        val job = sessionJobs.launch(sessionId) {
+            when (kind) {
+                MemoryManualMaintenanceKind.FULL_REGENERATION ->
+                    runFullRegeneration(sessionId)
+                MemoryManualMaintenanceKind.HEAD_REGENERATION ->
+                    runnerMutex.withLock { runHeadRegeneration(sessionId) }
             }
         }
+        if (job == null) {
+            cleanup()
+            return false
+        }
+        job.invokeOnCompletion { cleanup() }
         return true
     }
 
@@ -335,6 +362,8 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             }
         } catch (error: BackgroundGenerationProtectionException) {
             memoryService.setHeadWaitingForNetwork(sessionId, error.message ?: "等待网络")
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             memoryService.setHeadPreflightError(
                 sessionId,
@@ -376,6 +405,8 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             }
         } catch (error: BackgroundGenerationProtectionException) {
             memoryService.setWaitingForNetwork(sessionId, error.message ?: "等待网络")
+        } catch (error: CancellationException) {
+            throw error
         } catch (error: Throwable) {
             memoryService.setMaintenancePreflightError(
                 sessionId,
@@ -399,5 +430,44 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         val host = uri.host.orEmpty().lowercase()
         return host == "localhost" || host == "127.0.0.1" || host == "10.0.2.2" ||
             host.startsWith("192.168.") || host.startsWith("10.") || host.endsWith(".local")
+    }
+}
+
+internal class SessionScopedJobRegistry(
+    private val scope: CoroutineScope
+) {
+    private val lock = Any()
+    private val deletingSessionIds = mutableSetOf<String>()
+    private val jobsBySessionId = mutableMapOf<String, MutableSet<Job>>()
+
+    fun launch(
+        sessionId: String,
+        block: suspend CoroutineScope.() -> Unit
+    ): Job? {
+        val job = synchronized(lock) {
+            if (sessionId in deletingSessionIds) return null
+            scope.launch(start = CoroutineStart.LAZY, block = block).also { job ->
+                jobsBySessionId.getOrPut(sessionId) { mutableSetOf() }.add(job)
+            }
+        }
+        job.invokeOnCompletion {
+            synchronized(lock) {
+                jobsBySessionId[sessionId]?.let { jobs ->
+                    jobs.remove(job)
+                    if (jobs.isEmpty()) jobsBySessionId.remove(sessionId)
+                }
+            }
+        }
+        job.start()
+        return job
+    }
+
+    suspend fun cancelAndJoin(sessionId: String) {
+        val jobs = synchronized(lock) {
+            deletingSessionIds.add(sessionId)
+            jobsBySessionId[sessionId]?.toList().orEmpty()
+        }
+        jobs.forEach(Job::cancel)
+        jobs.forEach { it.join() }
     }
 }

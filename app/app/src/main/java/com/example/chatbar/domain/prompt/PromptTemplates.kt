@@ -41,6 +41,7 @@ data class NovelAiCodexEvidence(
  *   `currentTurnOutputRequirementsSystemPrompt`
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
  * - 空消息继续生成：`CONTINUE_GENERATION_USER_PROMPT`、`continueGenerationUserPrompt`
+ * - 用户工具请求尾缀：`randomNumberUserToolSuffix`、`appendUserToolSuffixBlock`
  * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
@@ -71,7 +72,7 @@ data class NovelAiCodexEvidence(
  * - 动态正文生成：`MOMENT_GENERATION_SYSTEM_PROMPT`、
  *   `MOMENT_GENERATION_TEXT_SYSTEM_PROMPT`、`MOMENT_GENERATION_USER_PROMPT_TEMPLATE`、
  *   `momentGenerationSystemPrompt`、`momentGenerationTextSystemPrompt`、`momentGenerationUserPrompt`
- * - NovelAI 场景任务输入：`novelAiImagePromptMoment`、`novelAiImagePromptCharacterAvatar`、
+ * - NovelAI 场景任务输入：`novelAiImagePromptMoment`、
  *   `novelAiImagePromptCharacterCard`
  *
  * ### 4. NovelAI 图片提示词生成
@@ -314,16 +315,35 @@ ${'$'}username没有输入新内容，仅要求你继续生成。请严格遵守
 
     fun continueGenerationUserPrompt(): String = CONTINUE_GENERATION_USER_PROMPT.trimIndent().trim()
 
+    fun randomNumberUserToolSuffix(values: List<Int>): String {
+        require(values.isNotEmpty())
+        return if (values.size == 1) {
+            "下一轮使用随机数：${values.single()}"
+        } else {
+            "下一轮按顺序使用随机数：${values.joinToString(separator = "；", postfix = "；")}" 
+        }
+    }
+
+    fun appendUserToolSuffixBlock(userContent: String, fragments: List<String>): String {
+        if (fragments.isEmpty()) return userContent
+        return buildString {
+            append(userContent)
+            if (userContent.isNotEmpty()) append('\n')
+            append("{\n")
+            append(fragments.joinToString("\n"))
+            append("\n}")
+        }
+    }
+
     // endregion
 
     // region 角色卡、图片理解与角色头像
 
-    const val CHARACTER_AVATAR_NAI_COMPOSITION_TAGS =
-        "solo, portrait, upper body, looking at viewer, centered"
+    const val CHARACTER_AVATAR_NAI_COMPOSITION_TAGS = "portrait, upper body"
 
     fun novelAiCharacterAvatarPositivePrompt(vararg sources: String): String =
         (sources.asList() + CHARACTER_AVATAR_NAI_COMPOSITION_TAGS)
-            .map(String::trim)
+            .map { it.trim().trim(',').trim() }
             .filter(String::isNotEmpty)
             .joinToString(", ")
 
@@ -770,16 +790,6 @@ high contrast, overexposure, toon, oekaki, chibi, old,
         appendLine("目标风格：照片感二次元图、私密生活切片、手机随手拍。")
         appendLine("适合构图：自拍、低角度、镜面、抓拍、偷拍、手持感。")
         appendLine("图片设计：${momentImageBrief.trim()}")
-        appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
-    }.trim()
-
-    fun novelAiImagePromptCharacterAvatar(
-        characterName: String,
-        finalPromptRequirement: String = ""
-    ): String = buildString {
-        appendLine("根据当前人物信息生成角色专属头像 NAI Prompt。")
-        appendLine("本任务必须保留当前人物的完整 Character preset prompt 到 `characters[].caption`；只有与本次头像画面明确冲突时才可删改。")
-        appendLine("人物：${characterName.trim().ifBlank { "(未命名)" }}")
         appendNovelAiImageManualRequirements(finalPromptRequirement = finalPromptRequirement)
     }.trim()
 

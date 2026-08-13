@@ -41,15 +41,19 @@ internal fun transformFullImageAdversarialPatchPixels(
 ) {
     require(width >= 0 && height >= 0 && pixels.size >= width * height)
     val direction = if (operation == FullImagePatchOperation.Apply) 1 else -1
+
+    // 第零层：全局色偏，逐帧变化，破坏整图色彩统计且抗一切重编码
+    val globalCast = CAST_DELTAS[Math.floorMod(frameIndex * 31, CAST_DELTAS.size)]
+
     for (y in 0 until height) {
         val absoluteY = y + yOffset
         for (x in 0 until width) {
             val index = y * width + x
             val color = pixels[index]
             if (color ushr 24 == 0) continue
-            var deltaRed = 0
-            var deltaGreen = 0
-            var deltaBlue = 0
+            var deltaRed = globalCast[0]
+            var deltaGreen = globalCast[1]
+            var deltaBlue = globalCast[2]
 
             // 第一层：3×3 块色度偏移，破坏像素级局部结构
             val chroma = CHROMA_DELTAS[
@@ -73,9 +77,10 @@ internal fun transformFullImageAdversarialPatchPixels(
             deltaGreen += dc[1]
             deltaBlue += dc[2]
 
-            // 第三层：低频平滑色波，抗缩放，且随帧号移动相位
-            val waveA = SINE_A[(x * 3 + absoluteY * 2 + frameIndex * 5) and (SINE_A.size - 1)]
-            val waveB = SINE_B[(x * 2 - absoluteY * 3 + frameIndex * 9) and (SINE_B.size - 1)]
+            // 第三层：三个低频平滑色波（64/96/128 像素周期），抗缩放，且随帧号移动相位
+            val waveA = SINE_A[(x * 3 + absoluteY * 2 + frameIndex * 13) and (SINE_A.size - 1)]
+            val waveB = SINE_B[(x * 2 - absoluteY * 3 + frameIndex * 27) and (SINE_B.size - 1)]
+            val waveC = SINE_C[(x * 5 + absoluteY * 7 + frameIndex * 41) and (SINE_C.size - 1)]
             val waveAmp = DC_DELTAS[
                 Math.floorMod(
                     (x / 16) * 12289 xor ((absoluteY + frameIndex * 31) / 16) * 27061,
@@ -88,9 +93,15 @@ internal fun transformFullImageAdversarialPatchPixels(
                     DC_DELTAS.size
                 )
             ]
-            deltaRed += (waveAmp[0] * waveA + waveBmp[0] * waveB) / SINE_SCALE
-            deltaGreen += (waveAmp[1] * waveA + waveBmp[1] * waveB) / SINE_SCALE
-            deltaBlue += (waveAmp[2] * waveA + waveBmp[2] * waveB) / SINE_SCALE
+            val waveCmp = DC_DELTAS[
+                Math.floorMod(
+                    (x / 32) * 12289 xor ((absoluteY - frameIndex * 43) / 32) * 40503,
+                    DC_DELTAS.size
+                )
+            ]
+            deltaRed += (waveAmp[0] * waveA + waveBmp[0] * waveB + waveCmp[0] * waveC) / SINE_SCALE
+            deltaGreen += (waveAmp[1] * waveA + waveBmp[1] * waveB + waveCmp[1] * waveC) / SINE_SCALE
+            deltaBlue += (waveAmp[2] * waveA + waveBmp[2] * waveB + waveCmp[2] * waveC) / SINE_SCALE
 
             // 第四层：Bayer 有序抖动，打散 GIF 调色板色带
             val jitter = (BAYER_4[(absoluteY and 3) * 4 + (x and 3)] - 7) / 2
@@ -114,22 +125,31 @@ private const val DC_BLOCK_SIZE = 8
 private const val SINE_SCALE = 10
 private const val MAX_TILE_PIXELS = 512 * 1024
 
+private val CAST_DELTAS = arrayOf(
+    intArrayOf(6, -3, -3),
+    intArrayOf(-6, 3, 3),
+    intArrayOf(-3, 6, -3),
+    intArrayOf(3, -6, 3),
+    intArrayOf(-3, -3, 6),
+    intArrayOf(3, 3, -6)
+)
+
 private val CHROMA_DELTAS = arrayOf(
-    intArrayOf(24, -12, -12),
-    intArrayOf(-24, 12, 12),
-    intArrayOf(-12, 24, -12),
-    intArrayOf(12, -24, 12),
-    intArrayOf(-12, -12, 24),
-    intArrayOf(12, 12, -24)
+    intArrayOf(28, -14, -14),
+    intArrayOf(-28, 14, 14),
+    intArrayOf(-14, 28, -14),
+    intArrayOf(14, -28, 14),
+    intArrayOf(-14, -14, 28),
+    intArrayOf(14, 14, -28)
 )
 
 private val DC_DELTAS = arrayOf(
-    intArrayOf(8, -4, -4),
-    intArrayOf(-8, 4, 4),
-    intArrayOf(-4, 8, -4),
-    intArrayOf(4, -8, 4),
-    intArrayOf(-4, -4, 8),
-    intArrayOf(4, 4, -8)
+    intArrayOf(14, -7, -7),
+    intArrayOf(-14, 7, 7),
+    intArrayOf(-7, 14, -7),
+    intArrayOf(7, -14, 7),
+    intArrayOf(-7, -7, 14),
+    intArrayOf(7, 7, -14)
 )
 
 private val SINE_A = IntArray(64) { index ->
@@ -138,6 +158,10 @@ private val SINE_A = IntArray(64) { index ->
 
 private val SINE_B = IntArray(128) { index ->
     Math.round(Math.sin(2 * Math.PI * index / 128) * 6).toInt()
+}
+
+private val SINE_C = IntArray(96) { index ->
+    Math.round(Math.sin(2 * Math.PI * index / 96) * 6).toInt()
 }
 
 private val BAYER_4 = intArrayOf(

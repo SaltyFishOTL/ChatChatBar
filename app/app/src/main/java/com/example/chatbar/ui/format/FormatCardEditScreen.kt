@@ -2,8 +2,8 @@ package com.example.chatbar.ui.format
 
 import com.example.chatbar.ui.kit.AppIcons
 
-import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -13,6 +13,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
@@ -22,11 +23,14 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
+import com.example.chatbar.data.local.entity.FormatCardUserToolType
 import com.example.chatbar.ui.kit.ButtonVariant
+import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbCard
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbField
@@ -55,8 +59,8 @@ fun FormatCardEditScreen(
 ) {
     var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
     var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
-    val context = LocalContext.current
     var showExitDialog by remember { mutableStateOf(false) }
+    var showToolPicker by remember { mutableStateOf(false) }
 
     fun requestExit() {
         if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
@@ -80,7 +84,7 @@ fun FormatCardEditScreen(
                         imageVector = AppIcons.Save,
                         contentDescription = "保存",
                         onClick = { viewModel.saveFormatCard(onBack) },
-                        enabled = viewModel.name.isNotBlank() && viewModel.content.isNotBlank(),
+                        enabled = viewModel.canSave,
                         tint = ChatBarTheme.colors.primary,
                         dirty = viewModel.hasLocalChanges
                     )
@@ -127,6 +131,65 @@ fun FormatCardEditScreen(
                     singleLine = false,
                     minLines = 6
                 )
+            }
+
+            CbDivider()
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(Modifier.weight(1f)) {
+                    CbText("用户工具箱", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+                    Spacer(Modifier.height(4.dp))
+                    CbText(
+                        "按列表顺序追加到本轮请求末尾；不显示或保存到聊天记录。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                CbButton(
+                    text = "添加工具",
+                    onClick = { showToolPicker = true },
+                    variant = ButtonVariant.Outline,
+                    size = ButtonSize.Sm
+                )
+            }
+
+            if (viewModel.userTools.isEmpty()) {
+                CbCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    elevation = 0.dp,
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+                    color = ChatBarTheme.colors.muted.copy(alpha = 0.45f)
+                ) {
+                    CbText(
+                        "尚未添加工具。发送行为保持不变。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            } else {
+                viewModel.userTools.forEachIndexed { index, tool ->
+                    UserToolCard(
+                        index = index,
+                        count = viewModel.userTools.size,
+                        tool = tool,
+                        validation = viewModel.userToolValidation(index),
+                        onUpdate = { transform -> viewModel.updateUserTool(index, transform) },
+                        onMoveUp = { viewModel.moveUserTool(index, -1) },
+                        onMoveDown = { viewModel.moveUserTool(index, 1) },
+                        onDelete = { viewModel.deleteUserTool(index) },
+                        onFullscreenTextEdit = {
+                            fullscreenField = "强提示词尾缀" to tool.text
+                            fullscreenOnChange = { value ->
+                                viewModel.updateUserTool(index) { it.copy(text = value) }
+                            }
+                        }
+                    )
+                }
             }
 
             CbDivider()
@@ -220,6 +283,178 @@ fun FormatCardEditScreen(
             }
         }
     }
+
+    if (showToolPicker) {
+        CbDialog(
+            onDismissRequest = { showToolPicker = false },
+            title = "添加用户工具",
+            dismiss = {
+                CbButton("取消", { showToolPicker = false }, variant = ButtonVariant.Ghost)
+            }
+        ) {
+            ToolPickerOption(
+                title = "随机数生成器",
+                description = "每次请求从闭区间生成一个整数；相邻随机数工具会合并成一行。",
+                onClick = {
+                    viewModel.addUserTool(FormatCardUserToolType.RANDOM_NUMBER)
+                    showToolPicker = false
+                }
+            )
+            Spacer(Modifier.height(12.dp))
+            ToolPickerOption(
+                title = "强提示词尾缀",
+                description = "将填写文字原样放进本轮用户消息末尾的工具块。",
+                onClick = {
+                    viewModel.addUserTool(FormatCardUserToolType.STRONG_PROMPT_SUFFIX)
+                    showToolPicker = false
+                }
+            )
+        }
+    }
+}
+
+@Composable
+private fun UserToolCard(
+    index: Int,
+    count: Int,
+    tool: FormatCardUserToolConfig,
+    validation: com.example.chatbar.domain.card.FormatCardUserToolValidation,
+    onUpdate: ((FormatCardUserToolConfig) -> FormatCardUserToolConfig) -> Unit,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit,
+    onDelete: () -> Unit,
+    onFullscreenTextEdit: () -> Unit
+) {
+    val invalid = !validation.isValid
+    CbCard(
+        modifier = Modifier.fillMaxWidth(),
+        elevation = 0.dp,
+        border = BorderStroke(
+            1.dp,
+            if (invalid) ChatBarTheme.colors.destructive else ChatBarTheme.colors.border
+        )
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.Top
+        ) {
+            Column(Modifier.weight(1f)) {
+                CbText(
+                    when (tool.type) {
+                        FormatCardUserToolType.RANDOM_NUMBER -> "随机数生成器"
+                        FormatCardUserToolType.STRONG_PROMPT_SUFFIX -> "强提示词尾缀"
+                    },
+                    style = ChatBarTheme.typography.label
+                )
+                Spacer(Modifier.height(4.dp))
+                CbText(
+                    when (tool.type) {
+                        FormatCardUserToolType.RANDOM_NUMBER -> "在配置的闭区间内生成随机整数。"
+                        FormatCardUserToolType.STRONG_PROMPT_SUFFIX -> "将此文字原样追加给 AI。"
+                    },
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbText(
+                "${index + 1}/$count",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.End,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CbIconButton(
+                AppIcons.ExpandLess,
+                "上移第 ${index + 1} 个工具",
+                onMoveUp,
+                enabled = index > 0
+            )
+            CbIconButton(
+                AppIcons.ExpandMore,
+                "下移第 ${index + 1} 个工具",
+                onMoveDown,
+                enabled = index < count - 1
+            )
+            CbIconButton(
+                AppIcons.Delete,
+                "删除第 ${index + 1} 个工具",
+                onDelete,
+                tint = ChatBarTheme.colors.destructive
+            )
+        }
+
+        Spacer(Modifier.height(8.dp))
+        when (tool.type) {
+            FormatCardUserToolType.RANDOM_NUMBER -> Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                CbField(
+                    label = "最小值",
+                    modifier = Modifier.weight(1f),
+                    error = validation.minimumError
+                ) {
+                    CbInput(
+                        value = tool.minimum,
+                        onValueChange = { value -> onUpdate { it.copy(minimum = value) } },
+                        placeholder = "1"
+                    )
+                }
+                CbField(
+                    label = "最大值",
+                    modifier = Modifier.weight(1f),
+                    error = validation.maximumError
+                ) {
+                    CbInput(
+                        value = tool.maximum,
+                        onValueChange = { value -> onUpdate { it.copy(maximum = value) } },
+                        placeholder = "100"
+                    )
+                }
+            }
+
+            FormatCardUserToolType.STRONG_PROMPT_SUFFIX -> CbField(
+                label = "尾缀文字",
+                description = "保留原始换行与空格，不替换角色占位符。",
+                error = validation.textError,
+                onFullscreenEdit = onFullscreenTextEdit
+            ) {
+                CbInput(
+                    value = tool.text,
+                    onValueChange = { value -> onUpdate { it.copy(text = value) } },
+                    placeholder = "输入需要强化的要求",
+                    singleLine = false,
+                    minLines = 3
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ToolPickerOption(
+    title: String,
+    description: String,
+    onClick: () -> Unit
+) {
+    CbButton(
+        text = title,
+        onClick = onClick,
+        modifier = Modifier.fillMaxWidth(),
+        variant = ButtonVariant.Outline
+    )
+    Spacer(Modifier.height(4.dp))
+    CbText(
+        description,
+        color = ChatBarTheme.colors.mutedForeground,
+        style = ChatBarTheme.typography.caption
+    )
 }
 
 private fun formatDraftSavedAt(timeMs: Long): String =

@@ -1,6 +1,8 @@
 package com.example.chatbar.ui.chat
 
 import com.example.chatbar.data.local.entity.FormatPromptPosition
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
+import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.PromptCacheKeyFactory
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -148,5 +150,31 @@ class CurrentTurnMessageOrderTest {
 
         assertTrue(messages.first().content.toString().contains(PromptTemplates.FORMAT_HISTORY_CONTINUITY_NOTICE))
         assertEquals(JsonPrimitive(requirements), messages.last().content)
+    }
+
+    @Test
+    fun requestOnlyUserToolSuffixStaysBeforeEndRequirementsMessage() {
+        val persistedUserContent = "用户原文"
+        val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
+            userContent = persistedUserContent,
+            tools = listOf(FormatCardUserToolConfig.randomNumber()),
+            nextIntInclusive = { _, _ -> 42 }
+        )
+        val messages = mutableListOf<ChatApiMessage>()
+
+        appendCurrentUserAndRequirementsSystemMessages(
+            messages = messages,
+            userMessage = ChatApiMessage.text("user", requestUserContent),
+            requirementsSystemPrompt = "格式要求",
+            formatPromptPosition = FormatPromptPosition.END
+        )
+
+        assertEquals("用户原文", persistedUserContent)
+        assertEquals(listOf("user", "system"), messages.map { it.role })
+        assertEquals(
+            JsonPrimitive("用户原文\n{\n下一轮使用随机数：42\n}"),
+            messages[0].content
+        )
+        assertEquals(JsonPrimitive("格式要求"), messages[1].content)
     }
 }

@@ -1,13 +1,14 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-08-11
+Last updated: 2026-08-13
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `8ab3ba70 Release 1.3.0`
-Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指南（maxTokens 128、无程序字数校验），压缩AI再生成Prompt目标60–300字、程序容错50–400字的朴素因果/状态总结。AI不再逐child生成coverage正文；消费窗口为Episode→Arc与Arc→Era 3–10、Era→Era 2–5，低层级仍额外提供最多5个末尾child作为边界参考，覆盖证明由程序根据child hash生成。自动测试与设备状态见Verification Baseline。
+Status: 已修复删除会话与应用级长期记忆维护竞态：删除先阻止新任务、取消并等待该会话全部维护任务，再移除持久数据；页面销毁和普通切换会话仍不取消已开始的付费任务。自动测试与设备状态见Verification Baseline。
 
 ## Completed
 
+- 2026-08-13崩溃报告显示自动维护捕获上游“会话不存在”后又调用`setMaintenancePreflightError`，第二次`loadLocked`抛出未捕获`IllegalStateException`。根因是会话删除先移除记录，但应用级自动维护、补录、完整/HEAD重建或压缩续跑仍可能存活。现协调器按会话登记所有Job；显式删除原子阻止新Job、取消并join现有Job，等待共享`AiBackgroundWorkManager.run`的`finally`释放前台保护lease后才删除会话；取消不再被普通错误catch转写为预检失败。协调器完成回调独立于协程主体执行，覆盖lazy Job未进入主体即被取消的窗口。删除同时先停止语音生成，持久化pending deletion仍保留失败恢复语义。
 - 已实现HEAD、Episode、Arc、Era结构，连续source turn覆盖、派生显示T、预算压缩、独立分页历史、SaveSlot v4、编辑/恢复和完整注入预览。
 - 自动Episode、手动补录、当前锚点、Archive压缩与HEAD不再把整份`MemorySessionState.revision`当作AI任务冲突锁。Episode只关联其source hash、目标pending成员和同源覆盖；压缩只关联模型实际读取的全部候选节点；HEAD只关联自身版本、输入source，`BACKFILL`额外关联实际发送的Archive文本。提交前在状态锁内重载并基于当前状态重放，因此无关聊天新增、其他节点编辑/新增、HEAD或分页变更不会误杀任务，也不会被旧快照覆盖。
 - Archive失败操作已改为“历史归档”中文说明卡：解释会扫描未归档旧对话、生成Episode并按需压缩且不修改聊天原文。点击重试会在等待Archive锁/模型前立即显示转圈和耗时说明、暂时隐藏旧错误并阻止重复点击；任务完成后再以持久化结果刷新页面。
@@ -93,6 +94,7 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 
 ## Untested
 
+- 尚未在会真实调用模型的测试会话中，一边执行长期记忆自动维护/补录/重建一边删除会话；自动测试已覆盖活跃Job取消并等待、删除后拒绝新Job、其他会话Job不受影响。未为该破坏性复现额外消耗API额度或删除用户现有会话。
 - 真实旧会话尚未手动执行RAG自动块重建来观察超长T轮次的多卡片结果；纯策略与身份测试已覆盖拆分优先级、边界、稳定分片ID和同轮旧块清理。本轮未调用真实向量API。
 - 真实用户旧会话尚未手动抓取最终API请求确认Archive正文、Bot名称覆盖、占位符替换与历史消息；纯策略和最终JSON序列化测试已覆盖正文保留、独立消息、Archive/HEAD多行Bot名称及兼容别名替换、HEAD-only拒绝和空历史过滤。本轮无连接设备，未做交互验收。
 - T46隐式内部缺口提升、应用级补录runner及后续Archive追赶已由用户真实旧会话完成：T46告警消失，Archive从1830/2000经生成/压缩收敛到1286/2000。新有界runner与排队UI尚待部署后复核。
@@ -122,6 +124,7 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 7. 把全局上下文保留组数从较大值降到最低，再打开长期记忆页或点击刷新；确认新滑出窗口的T范围立即显示“一键补录长期记忆”。
 8. 再把上下文扩大并刷新，确认相应范围只暂时隐藏；缩小后刷新应重新出现，且不产生重复Gap。
 9. 若失败，记录页面展示的完整失败原因；不要重建RAG或清数据。
+10. 在专用测试会话触发慢速长期记忆维护后，从首页删除该会话；确认删除完成、后台通知消失、应用继续存活，且会话不会被后台错误回写恢复。
 
 ## Architecture Notes
 
@@ -133,10 +136,12 @@ Status: Arc/Era压缩采用两阶段筛选：规划AI先输出50字内取舍指�
 - 所有直接提交AI任务都必须绑定其实际输入证据并在提交锁内重载rebase：Episode=目标source/pending/覆盖，压缩=全部模型候选节点，HEAD=HEAD版本+输入source，回填HEAD再加Archive文本。全局revision不是冲突键。
 - HEAD、Archive、RAG独立失败和持久化；主聊天不等待后台记忆任务。
 - 自动Archive→HEAD及手动Gap补录由应用级协调器持有；聊天页面只能订阅运行时进度，不能拥有或取消付费模型任务。
+- 页面销毁/切换会话不取消已开始任务；显式删除会话必须先阻止该会话新任务并cancel-and-join所有协调器Job，再删除主记录与派生数据，避免错误回写复活会话。
 - 来源变更检测与修复分离：检测只刷新过期状态和安全注入；用户按钮才启动AI。修复必须沿不可变节点依赖向上重算，不能通过改哈希认可旧正文。
 
 ## Verification Baseline
 
+- 2026-08-13删除会话与长期记忆维护竞态修复：定向`SessionScopedJobRegistryTest`、`:app:compileDebugKotlin`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过；覆盖删除时取消并join活跃Job、删除后拒绝新Job、其他会话Job继续运行。首次CI因沙箱禁止下载固定Gradle 9.1失败，授权网络后同一命令通过。实体机`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装并启动，PID `22590`，`MainActivity`为`topResumedActivity`，启动后`AndroidRuntime`无错误。未执行会消耗模型额度并删除会话的真实竞态复现。
 - 2026-08-11 RAG超长完整轮分片：定向`ChatMemoryIndexPolicyTest`/`ChatMemoryIdentityTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过；覆盖600字不拆、300–400字窗口内分段优先、句号次选、300字边界、无标点350字硬切、分片ID及同轮多块替换。实体机`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `4503`，`MainActivity`为resumed且持有窗口焦点。未执行真实RAG重建、未调用向量API。
 - 2026-08-11零上下文/分来源零召回：`:app:compileDebugKotlin --rerun-tasks`、定向`ContextWindowManagerTest`/`RagSourcePlanTest`与`ci.ps1 -SkipAssemble`通过。测试覆盖0窗口仅保留上一轮并归档全部更早组，以及文档0、记忆0、两者0和0上下文召回边界。`adb devices -l`无连接设备，未部署。
 - 2026-08-02 Arc/Era两阶段筛选式压缩与AI重试修复：定向`MemoryCompressionPolicyTest`、`PromptTemplatesTest`、`StreamingChatServiceThinkingTest`、`MemoryAiRetryTest`、`MemoryAiFailurePolicyTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过，Android测试源码编译成功。策略覆盖50/400程序边界及Era最低可压缩输入；Prompt覆盖60–300目标、禁止逐child/华丽描写、50字内无思维过程规划；请求体覆盖规划`maxTokens=128`、隔离角色扮演参数、不继承思考配置、关闭受支持模型思考且不请求JSON。重试覆盖规划/正式压缩/Episode/HEAD输出错误5次、可恢复传输错误3次、HTTP 400立即停止、截断Token上限1800→3600→4096跨尝试保留，以及失败阶段/尝试次数持久化。早先实体机`49075ec2`已通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `11693`；重试修复后`adb devices -l`无连接设备，未重新部署。未触发真实压缩或模型调用，两阶段摘要质量仍待真实长聊验收。

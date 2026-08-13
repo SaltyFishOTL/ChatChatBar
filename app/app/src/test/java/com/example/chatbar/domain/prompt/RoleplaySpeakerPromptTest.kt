@@ -56,7 +56,7 @@ class RoleplaySpeakerPromptTest {
     @Test
     fun avatarCompositionTags_remainApprovedValue() {
         assertEquals(
-            "solo, portrait, upper body, looking at viewer, centered",
+            "portrait, upper body",
             PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
         )
     }
@@ -64,12 +64,12 @@ class RoleplaySpeakerPromptTest {
     @Test
     fun avatarPositivePrompt_usesOnlyProvidedSourcesAndApprovedComposition() {
         assertEquals(
-            "style tags, character tags, solo, portrait, upper body, looking at viewer, centered",
+            "style tags, character tags, portrait, upper body",
             PromptTemplates.novelAiCharacterAvatarPositivePrompt(" style tags ", "character tags")
         )
         assertEquals(
-            "manual full prompt, solo, portrait, upper body, looking at viewer, centered",
-            PromptTemplates.novelAiCharacterAvatarPositivePrompt("manual full prompt")
+            "manual full prompt, portrait, upper body",
+            PromptTemplates.novelAiCharacterAvatarPositivePrompt("manual full prompt,")
         )
     }
 }

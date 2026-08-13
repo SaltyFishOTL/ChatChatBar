@@ -392,7 +392,8 @@ class ChatBarApp : Application() {
             voiceMessageRepository,
             fishAudioStorage,
             voicePlaybackController,
-            fishAudioGenerationCoordinator
+            fishAudioGenerationCoordinator,
+            longTermMemoryAutoMaintenanceCoordinator
         )
         StreamingNotificationManager.init(this)
         QqVoiceTransferNotificationManager.init(this)

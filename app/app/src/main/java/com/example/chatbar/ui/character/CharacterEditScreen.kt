@@ -2938,9 +2938,6 @@ private fun CharacterAvatarEditor(
 @Composable
 private fun CharacterAvatarPromptDebug(state: CharacterAvatarImageUiState) {
     val blocks = listOf(
-        "输入给提示词设计 AI 的内容" to state.promptInputText,
-        "提示词设计 AI 思考" to state.promptDesignReasoningText,
-        "提示词设计 AI 原始输出" to state.promptDesignOutputText,
         "最终送入 NovelAI 的正向 Prompt" to state.promptText
     ).filter { (_, text) -> text.isNotBlank() }
     if (blocks.isEmpty()) return

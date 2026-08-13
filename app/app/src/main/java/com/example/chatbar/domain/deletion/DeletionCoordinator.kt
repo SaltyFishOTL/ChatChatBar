@@ -12,6 +12,7 @@ import com.example.chatbar.data.repository.SaveSlotRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.image.NovelAiImageStorage
+import com.example.chatbar.domain.memory.LongTermMemoryAutoMaintenanceCoordinator
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.FishAudioGenerationCoordinator
 import com.example.chatbar.domain.voice.VoicePlaybackController
@@ -33,7 +34,8 @@ class DeletionCoordinator(
     private val voiceRepository: VoiceMessageRepository,
     private val voiceStorage: FishAudioStorage,
     private val voicePlayback: VoicePlaybackController,
-    private val voiceGeneration: FishAudioGenerationCoordinator
+    private val voiceGeneration: FishAudioGenerationCoordinator,
+    private val memoryMaintenance: LongTermMemoryAutoMaintenanceCoordinator
 ) {
     private val cleanupMutex = Mutex()
 
@@ -47,6 +49,8 @@ class DeletionCoordinator(
     suspend fun deleteSession(id: String) {
         if (chatRepository.getSession(id) == null) return
         enqueue(PendingDeletion.forSession(id))
+        memoryMaintenance.cancelAndJoinForSession(id)
+        voiceGeneration.cancelAndJoinForSession(id)
         chatRepository.deleteSessionRecord(id)
         drainPending()
     }
@@ -85,6 +89,7 @@ class DeletionCoordinator(
             }
 
             PendingDeletionType.SESSION -> {
+                memoryMaintenance.cancelAndJoinForSession(task.ownerId)
                 voiceGeneration.cancelAndJoinForSession(task.ownerId)
                 chatRepository.deleteSessionRecord(task.ownerId)
                 chatRepository.deleteMessagesForSession(task.ownerId)

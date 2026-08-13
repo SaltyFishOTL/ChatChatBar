@@ -34,7 +34,7 @@
     {
       "presetKey": "thinkchain-format",
       "type": "FORMAT",
-      "version": 1,
+      "version": 2,
       "file": "presets/formats/thinkchain-format.json",
       "displayName": "通用思考"
     },

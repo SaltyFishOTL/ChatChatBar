@@ -322,63 +322,6 @@ class NovelAiPromptDesigner(
         )
     }
 
-    suspend fun designForCharacterAvatar(
-        characterName: String,
-        stylePrompt: String,
-        characterPrompt: String,
-        finalPromptRequirement: String = "",
-        model: ModelConfig,
-        onContentDelta: (String) -> Unit = {},
-        onReasoningDelta: (String) -> Unit = {}
-    ): NovelAiPromptPlan {
-        require(
-            characterName.isNotBlank() ||
-                stylePrompt.isNotBlank() ||
-                characterPrompt.isNotBlank()
-        ) { "没有可用于头像生图的提示词" }
-        val promptName = baseCharacterName(characterName).ifBlank { "角色" }
-        val characterPrompts = characterPrompt.trim()
-            .takeIf(String::isNotBlank)
-            ?.let { listOf(promptName to it) }
-            ?: emptyList()
-        val requestMessages = characterAvatarDesignMessages(
-            characterName = characterName,
-            characterPrompt = characterPrompt,
-            finalPromptRequirement = finalPromptRequirement
-        )
-        val progress = NovelAiPromptProgress(onContentDelta)
-        val research = tagResearchService.research(
-            taskInput = PromptTemplates.novelAiImagePromptCharacterAvatar(
-                characterName = promptName,
-                finalPromptRequirement = finalPromptRequirement
-            ),
-            characterPrompts = characterPrompts,
-            imageBase64s = emptyList(),
-            model = model,
-            diversityKey = "avatar:${characterName.trim()}",
-            onProgress = progress::updatePrelude
-        )
-        progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
-        val raw = streamCompletion(
-            messages = withResearchEvidence(
-                requestMessages,
-                research.evidence,
-                research.codexEvidence,
-                research.sceneDescription
-            ),
-            model = model,
-            onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
-            onReasoningDelta = onReasoningDelta
-        )
-        val designed = parseOrRepair(
-            raw = raw,
-            model = model,
-            onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
-            onReasoningDelta = onReasoningDelta
-        )
-        return convert(promptPostProcessor.process(designed).prompt, stylePrompt = stylePrompt)
-    }
-
     suspend fun designForPromptTool(
         imageDescription: String,
         stylePrompt: String,
@@ -692,48 +635,6 @@ class NovelAiPromptDesigner(
                 )
             )
         }
-
-        internal fun characterAvatarDesignMessages(
-            characterName: String,
-            characterPrompt: String,
-            finalPromptRequirement: String
-        ): List<ChatApiMessage> {
-            val promptName = baseCharacterName(characterName)
-                .ifBlank { "角色" }
-            val characterPrompts = characterPrompt.trim()
-                .takeIf(String::isNotBlank)
-                ?.let { listOf(promptName to it) }
-                ?: emptyList()
-            return listOf(
-                ChatApiMessage.text(
-                    "system",
-                    PromptTemplates.novelAiImagePromptSystem(
-                        characterImagePrompts = characterPrompts,
-                        structured = characterPrompts.isNotEmpty()
-                    )
-                ),
-                ChatApiMessage.text(
-                    "user",
-                    PromptTemplates.novelAiImagePromptCharacterAvatar(
-                        characterName = promptName,
-                        finalPromptRequirement = finalPromptRequirement
-                    )
-                )
-            )
-        }
-
-        internal fun characterAvatarDesignDebugInput(
-            characterName: String,
-            characterPrompt: String,
-            finalPromptRequirement: String
-        ): String =
-            debugMessages(
-                characterAvatarDesignMessages(
-                    characterName = characterName,
-                    characterPrompt = characterPrompt,
-                    finalPromptRequirement = finalPromptRequirement
-                )
-            )
 
         internal fun withTagSearchEvidence(
             messages: List<ChatApiMessage>,

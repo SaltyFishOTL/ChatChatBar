@@ -202,9 +202,7 @@ object CommunityPackagePolicy {
 
             CommunityItemType.FORMAT -> {
                 val data = json.decodeFromString(FormatCardPackage.serializer(), rawJson)
-                require(data.schemaVersion == 1) { "不支持的格式卡 schemaVersion：${data.schemaVersion}" }
-                require(data.name.isNotBlank()) { "格式卡名称不能为空" }
-                require(data.content.isNotBlank()) { "格式卡内容不能为空" }
+                data.validateForImport()
             }
 
             CommunityItemType.WORLD_BOOK -> {

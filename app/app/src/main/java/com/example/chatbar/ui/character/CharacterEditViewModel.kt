@@ -44,13 +44,12 @@ import com.example.chatbar.domain.card.CharacterRewriteDraft
 import com.example.chatbar.domain.card.CharacterRewriteGenerationCheckpoint
 import com.example.chatbar.domain.card.StructuredCharacterFreeformConverter
 import com.example.chatbar.domain.draft.CharacterOpenModalState
+import com.example.chatbar.domain.image.CharacterAvatarImagePolicy
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
-import com.example.chatbar.domain.image.NovelAiImageSizePreset
-import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
 import com.example.chatbar.domain.image.NovelAiStylePreset
@@ -119,9 +118,6 @@ data class CharacterAvatarImageUiState(
     val preview: ByteArray? = null,
     val progress: Float = 0f,
     val path: String? = null,
-    val promptInputText: String = "",
-    val promptDesignReasoningText: String = "",
-    val promptDesignOutputText: String = "",
     val promptText: String = "",
     val sourceSignature: String = "",
     val promptPlan: NovelAiPromptPlan? = null,
@@ -226,7 +222,6 @@ internal fun requireSupportedCharacterReferenceDocumentLength(length: Int) {
 private enum class CoverImageTarget { Current, AutoFill, Rewrite }
 
 private data class CharacterAvatarPromptInput(
-    val imageDescription: String,
     val stylePrompt: String,
     val characterPrompt: String
 )
@@ -1173,7 +1168,6 @@ class CharacterEditViewModel(
                 return
             }
             CharacterAvatarPromptInput(
-                imageDescription = character.name.trim(),
                 stylePrompt = "",
                 characterPrompt = manualPrompt
             )
@@ -1188,7 +1182,6 @@ class CharacterEditViewModel(
                 return
             }
             CharacterAvatarPromptInput(
-                imageDescription = character.name.trim(),
                 stylePrompt = defaultImagePrompt,
                 characterPrompt = characterPrompt
             )
@@ -1246,7 +1239,13 @@ class CharacterEditViewModel(
     }
 
     private fun startCharacterAvatarGeneration(characterId: String, promptInput: CharacterAvatarPromptInput) {
-        val signature = "$characterId\n${promptInput.imageDescription}\n${promptInput.stylePrompt}\n${promptInput.characterPrompt}"
+        val plan = CharacterAvatarImagePolicy.promptPlan(
+            stylePrompt = promptInput.stylePrompt,
+            characterPrompt = promptInput.characterPrompt,
+            negativePrompt = defaultImageNegativePrompt
+        )
+        val imageSize = CharacterAvatarImagePolicy.imageSize
+        val signature = "$characterId\n${plan.baseCaption}\n${plan.effectiveNegativePrompt}\n${imageSize.width}x${imageSize.height}"
         val resumeState = _avatarImageState.value.takeIf {
             it.error != null && it.characterId == characterId && it.sourceSignature == signature
         }
@@ -1257,90 +1256,35 @@ class CharacterEditViewModel(
             characterId = characterId,
             isGenerating = true,
             sourceSignature = signature,
-            promptInputText = resumeState?.promptInputText.orEmpty(),
-            promptDesignReasoningText = resumeState?.promptDesignReasoningText.orEmpty(),
-            promptDesignOutputText = resumeState?.promptDesignOutputText.orEmpty(),
-            promptText = resumeState?.promptText.orEmpty(),
-            promptPlan = resumeState?.promptPlan,
+            promptText = plan.debugPromptText(),
+            promptPlan = plan,
             completedImage = resumeState?.completedImage,
-            statusText = "正在设计头像 Prompt"
+            statusText = if (resumeState?.completedImage != null) {
+                "正在重新保存头像候选"
+            } else {
+                "正在调用 NovelAI 生成头像"
+            }
         )
         avatarImageJob = viewModelScope.launch {
             try {
                 val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
-                val settings = settingsRepository.getAppSettings()
-                val model = modelResolver.defaultImageModel(settings)
-                    ?.takeIf { it.hasConfiguredAuthentication(settings) }
-                if (token == null || model == null) {
-                    val missing = mutableListOf<String>()
-                    if (token == null) missing += "NovelAI Token"
-                    if (model == null) missing += "默认生图模型/API Key"
+                if (token == null) {
                     _avatarImageState.value = _avatarImageState.value.copy(
                         isGenerating = false,
-                        error = "缺少${missing.joinToString("、")}，未生成头像",
+                        error = "缺少 NovelAI Token，未生成头像",
                         statusText = "头像未生成"
                     )
                     return@launch
                 }
                 val card = buildCurrentCard(markDirty = false)
                 AiBackgroundWorkManager.run(card.id) {
-                    val finalPromptRequirement = listOf(
-                        settings.imagePromptToolPreference,
-                        PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
-                    )
-                        .map(String::trim)
-                        .filter(String::isNotEmpty)
-                        .joinToString("\n")
-                    val designerInputPrompt = NovelAiPromptDesigner.characterAvatarDesignDebugInput(
-                        characterName = promptInput.imageDescription,
-                        characterPrompt = promptInput.characterPrompt,
-                        finalPromptRequirement = finalPromptRequirement
-                    )
-                    _avatarImageState.value = _avatarImageState.value.copy(
-                        promptInputText = designerInputPrompt,
-                        statusText = "正在设计头像 Prompt"
-                    )
-                    val designedPlan = resumeState?.promptPlan ?: novelAiPromptDesigner.designForCharacterAvatar(
-                        characterName = promptInput.imageDescription,
-                        stylePrompt = promptInput.stylePrompt,
-                        characterPrompt = promptInput.characterPrompt,
-                        finalPromptRequirement = finalPromptRequirement,
-                        model = model,
-                        onContentDelta = { promptDraft ->
-                            if (generationToken == avatarImageGenerationToken) {
-                                _avatarImageState.value = _avatarImageState.value.copy(
-                                    promptDesignOutputText = promptDraft,
-                                    statusText = "正在设计头像 Prompt"
-                                )
-                            }
-                        },
-                        onReasoningDelta = { reasoning ->
-                            if (generationToken == avatarImageGenerationToken) {
-                                _avatarImageState.value = _avatarImageState.value.copy(
-                                    promptDesignReasoningText = reasoning,
-                                    statusText = "正在设计头像 Prompt"
-                                )
-                            }
-                        }
-                    )
-                    if (generationToken != avatarImageGenerationToken) return@run
-                    val plan = if (resumeState?.promptPlan != null) {
-                        designedPlan
-                    } else {
-                        designedPlan.asCharacterAvatarPlan(defaultImageNegativePrompt)
-                    }
-                    _avatarImageState.value = _avatarImageState.value.copy(
-                        promptText = plan.debugPromptText(),
-                        promptPlan = plan,
-                        statusText = if (resumeState?.promptPlan != null) "沿用已完成的头像 Prompt" else "正在调用 NovelAI 生成头像"
-                    )
                     val seed = novelAiImageService.newSeed()
                     var finalImage: ByteArray? = resumeState?.completedImage
                     if (finalImage == null) novelAiImageService.generate(
                         token = token,
                         prompt = plan,
                         seed = seed,
-                        imageSize = NovelAiImageSizePreset.SQUARE.imageSize
+                        imageSize = imageSize
                     ).collect { event ->
                         if (generationToken != avatarImageGenerationToken) return@collect
                         when (event) {
@@ -2911,16 +2855,6 @@ private fun ImageCropFractionRect.toBitmapRect(width: Int, height: Int): Rect {
     return Rect(l, t, r, b)
 }
 
-private fun NovelAiPromptPlan.asCharacterAvatarPlan(negativePrompt: String): NovelAiPromptPlan =
-    copy(
-        baseCaption = appendNovelAiPromptTags(
-            baseCaption,
-            PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
-        ),
-        sizePreset = NovelAiImageSizePreset.SQUARE,
-        negativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
-    )
-
 private fun NovelAiPromptPlan.debugPromptText(): String = buildString {
     appendLine(baseCaption)
     characterCaptions.forEachIndexed { index, caption ->
@@ -2928,20 +2862,6 @@ private fun NovelAiPromptPlan.debugPromptText(): String = buildString {
         appendLine("Character ${index + 1}: ${caption.prompt}")
     }
 }.trim()
-
-private fun appendNovelAiPromptTags(prompt: String, tags: String): String {
-    val existing = prompt.split(',')
-        .map { it.trim().lowercase() }
-        .filter(String::isNotBlank)
-        .toSet()
-    val missing = tags.split(',')
-        .map(String::trim)
-        .filter(String::isNotBlank)
-        .filter { it.lowercase() !in existing }
-    return (listOf(prompt.trim()) + missing)
-        .filter(String::isNotBlank)
-        .joinToString(", ")
-}
 
 private fun List<String>.appendProgressLine(line: String): List<String> {
     val normalized = line.replace(Regex("\\s+"), " ").trim()

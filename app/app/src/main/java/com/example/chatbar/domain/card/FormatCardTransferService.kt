@@ -11,10 +11,22 @@ class FormatCardTransferService(
 ) {
     suspend fun exportJson(id: String): String {
         val card = repository.getById(id) ?: error("格式卡不存在")
-        return json.encodeToString(FormatCardPackage.serializer(), FormatCardPackage(name = card.name, content = card.content, sourcePresetKey = card.sourcePresetKey, sourcePresetVersion = card.sourcePresetVersion))
+        return json.encodeToString(
+            FormatCardPackage.serializer(),
+            FormatCardPackage(
+                name = card.name,
+                content = card.content,
+                userTools = card.userTools,
+                sourcePresetKey = card.sourcePresetKey,
+                sourcePresetVersion = card.sourcePresetVersion
+            )
+        )
     }
 
-    fun decode(rawJson: String): FormatCardPackage = json.decodeFromString(FormatCardPackage.serializer(), rawJson)
+    fun decode(rawJson: String): FormatCardPackage =
+        json.decodeFromString(FormatCardPackage.serializer(), rawJson).also {
+            it.validateForImport()
+        }
 
     suspend fun duplicate(id: String): FormatCard {
         val source = repository.getById(id) ?: error("格式卡不存在")
@@ -31,6 +43,7 @@ class FormatCardTransferService(
     }
 
     suspend fun importNew(packageData: FormatCardPackage, presetKey: String? = null, presetVersion: Int? = null): FormatCard {
+        packageData.validateForImport()
         val all = repository.getAll()
         val name = if (all.any { NamePolicy.isSame(it.name, packageData.name) }) {
             NamePolicy.nextCopyName(packageData.name, all.map { it.name })
@@ -39,6 +52,7 @@ class FormatCardTransferService(
             id = UUID.randomUUID().toString(),
             name = name,
             content = packageData.content,
+            userTools = packageData.userTools,
             isDefault = false,
             sourcePresetKey = presetKey ?: packageData.sourcePresetKey,
             sourcePresetVersion = presetVersion ?: packageData.sourcePresetVersion,
@@ -47,10 +61,12 @@ class FormatCardTransferService(
     }
 
     suspend fun overwrite(existingId: String, packageData: FormatCardPackage, presetKey: String? = null, presetVersion: Int? = null): FormatCard {
+        packageData.validateForImport()
         val existing = repository.getById(existingId) ?: error("待覆盖格式卡不存在")
         return existing.copy(
             name = NamePolicy.normalize(existing.name),
             content = packageData.content,
+            userTools = packageData.userTools,
             sourcePresetKey = presetKey ?: packageData.sourcePresetKey,
             sourcePresetVersion = presetVersion ?: packageData.sourcePresetVersion
         ).also { repository.save(it) }

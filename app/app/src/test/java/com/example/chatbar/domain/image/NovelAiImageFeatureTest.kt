@@ -368,27 +368,6 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
-    fun `character avatar design uses shared prompt system and avatar task`() {
-        val prompt = NovelAiPromptDesigner.characterAvatarDesignDebugInput(
-            characterName = "林雾",
-            characterPrompt = "1girl, silver hair, blue-gray eyes",
-            finalPromptRequirement = "solo, portrait"
-        )
-
-        assertTrue(prompt.contains("[system]"))
-        assertTrue(prompt.contains("不要在 `baseCaption`"))
-        assertFalse(prompt.contains("very aesthetic, anime screencap"))
-        assertTrue(prompt.contains("Character preset prompts (include verbatim at start of each character's caption):"))
-        assertTrue(prompt.contains("- 林雾: 1girl, silver hair, blue-gray eyes"))
-        assertTrue(prompt.contains("1girl, silver hair, blue-gray eyes"))
-        assertTrue(prompt.contains("[user]"))
-        assertTrue(prompt.contains("角色专属头像"))
-        assertTrue(prompt.contains("完整 Character preset prompt 到 `characters[].caption`"))
-        assertTrue(prompt.contains("明确冲突"))
-        assertTrue(prompt.contains("solo, portrait"))
-    }
-
-    @Test
     fun `moment and cover prompts include final prompt requirement`() {
         val requirement = "最终 tags 必须保持简洁。"
         val momentPrompt = PromptTemplates.novelAiImagePromptMoment(

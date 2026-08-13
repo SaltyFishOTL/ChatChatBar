@@ -13,6 +13,7 @@ import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.card.CharacterCardImageTarget
 import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
+import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
@@ -2135,6 +2136,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             _characterCard.value = charCard
             val appSettings = settingsRepository.getAppSettings()
+            val activeFormatCard = resolveFormatCardForRequest(
+                sessionFormatCardId = currentSession.formatCardId,
+                defaultFormatCardId = appSettings.defaultFormatCardId,
+                availableCards = formatCardRepository.getAll()
+            )
+            FormatCardUserToolPolicy.firstValidationError(activeFormatCard?.userTools.orEmpty())
+                ?.let { error ->
+                    addSystemMessage("用户工具配置无效：$error")
+                    _isResponding.value = false
+                    return@launch
+                }
             val playerSettingObj = settingsRepository.getPlayerSetting()
             val activePlayerSetting = currentSession.playerSetting?.takeIf { it.isNotBlank() }
                 ?: playerSettingObj.globalPersona
@@ -2487,12 +2499,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
 
                 // 5. 组装 System Prompt
-                val activeFormatCard = resolveFormatCardForRequest(
-                    sessionFormatCardId = currentSession.formatCardId,
-                    defaultFormatCardId = appSettings.defaultFormatCardId,
-                    availableCards = formatCardRepository.getAll()
-                )
-
                 val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(charCard, currentSession, allMsgs, currentSession.timedWorldInfo)
                 if (wbTimed != currentSession.timedWorldInfo) {
                     val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
@@ -2693,6 +2699,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
                 if (shouldAddUserPrompt && currentUserContent != null) {
+                    val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
+                        userContent = currentUserContent,
+                        tools = activeFormatCard?.userTools.orEmpty()
+                    )
                     val currentUserApiMessage = if (
                         currentUserImages.isNotEmpty() &&
                         modelConfig.isMultimodal
@@ -2701,16 +2711,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             val base64 = encodeImageToBase64(currentUserImages.first())
                             ChatApiMessage.withImage(
                                 role = "user",
-                                text = currentUserContent,
+                                text = requestUserContent,
                                 imageBase64 = base64
                             )
                         } catch (e: Exception) {
-                            currentUserContent
+                            requestUserContent
                                 .takeIf(String::isNotBlank)
                                 ?.let { ChatApiMessage.text("user", it) }
                         }
-                    } else if (currentUserContent.isNotBlank()) {
-                        ChatApiMessage.text("user", currentUserContent)
+                    } else if (requestUserContent.isNotBlank()) {
+                        ChatApiMessage.text("user", requestUserContent)
                     } else {
                         null
                     }

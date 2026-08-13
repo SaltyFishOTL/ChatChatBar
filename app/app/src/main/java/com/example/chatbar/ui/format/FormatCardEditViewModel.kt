@@ -8,6 +8,10 @@ import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.FormatCard
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
+import com.example.chatbar.data.local.entity.FormatCardUserToolType
+import com.example.chatbar.domain.card.FormatCardUserToolPolicy
+import com.example.chatbar.domain.card.FormatCardUserToolValidation
 import com.example.chatbar.domain.card.NamePolicy
 import java.util.UUID
 import kotlinx.coroutines.Job
@@ -37,6 +41,8 @@ class FormatCardEditViewModel(
 
     var name by mutableStateOf("")
     var content by mutableStateOf("")
+    var userTools by mutableStateOf<List<FormatCardUserToolConfig>>(emptyList())
+        private set
     var isDefault by mutableStateOf(false)
     var saveError by mutableStateOf<String?>(null)
     var draftSavedAt by mutableStateOf<Long?>(null)
@@ -54,6 +60,11 @@ class FormatCardEditViewModel(
     var saveConflict by mutableStateOf(false)
     var sourceDeleted by mutableStateOf(false)
         private set
+
+    val canSave: Boolean
+        get() = name.isNotBlank() &&
+            content.isNotBlank() &&
+            FormatCardUserToolPolicy.firstValidationError(userTools) == null
 
     init {
         loadFormatCard()
@@ -124,7 +135,7 @@ class FormatCardEditViewModel(
      * 保存格式卡片
      */
     fun saveFormatCard(onSuccess: () -> Unit, forceOverwrite: Boolean = false, saveAsNew: Boolean = false) {
-        if (name.isBlank() || content.isBlank()) return
+        if (!canSave) return
 
         viewModelScope.launch {
             draftJob?.cancelAndJoin()
@@ -148,11 +159,13 @@ class FormatCardEditViewModel(
             val card = targetId?.let { repository.getById(it) }?.copy(
                 name = name,
                 content = content,
+                userTools = userTools,
                 isDefault = isDefault
             ) ?: FormatCard(
                 id = targetId ?: UUID.randomUUID().toString(),
                 name = name,
                 content = content,
+                userTools = userTools,
                 isDefault = isDefault,
                 createdAt = _formatCard.value?.createdAt ?: System.currentTimeMillis()
             )
@@ -184,6 +197,44 @@ class FormatCardEditViewModel(
         }
     }
 
+    fun addUserTool(type: FormatCardUserToolType) {
+        val tool = when (type) {
+            FormatCardUserToolType.RANDOM_NUMBER -> FormatCardUserToolConfig.randomNumber()
+            FormatCardUserToolType.STRONG_PROMPT_SUFFIX -> FormatCardUserToolConfig.strongPromptSuffix()
+        }
+        userTools = userTools + tool
+        scheduleDraftSave()
+    }
+
+    fun updateUserTool(index: Int, transform: (FormatCardUserToolConfig) -> FormatCardUserToolConfig) {
+        if (index !in userTools.indices) return
+        userTools = userTools.toMutableList().also { tools ->
+            tools[index] = transform(tools[index])
+        }
+        scheduleDraftSave()
+    }
+
+    fun moveUserTool(index: Int, offset: Int) {
+        val target = index + offset
+        if (index !in userTools.indices || target !in userTools.indices) return
+        userTools = userTools.toMutableList().also { tools ->
+            val moved = tools.removeAt(index)
+            tools.add(target, moved)
+        }
+        scheduleDraftSave()
+    }
+
+    fun deleteUserTool(index: Int) {
+        if (index !in userTools.indices) return
+        userTools = userTools.toMutableList().also { it.removeAt(index) }
+        scheduleDraftSave()
+    }
+
+    fun userToolValidation(index: Int): FormatCardUserToolValidation =
+        userTools.getOrNull(index)
+            ?.let(FormatCardUserToolPolicy::validate)
+            ?: FormatCardUserToolValidation()
+
     fun saveDraftAndExit(onDone: () -> Unit) {
         viewModelScope.launch {
             draftJob?.cancelAndJoin()
@@ -211,11 +262,13 @@ class FormatCardEditViewModel(
         _formatCard.value?.copy(
             name = name,
             content = content,
+            userTools = userTools,
             isDefault = isDefault
         ) ?: FormatCard(
             id = UUID.randomUUID().toString(),
             name = name,
             content = content,
+            userTools = userTools,
             isDefault = isDefault,
             createdAt = System.currentTimeMillis()
         )
@@ -224,13 +277,14 @@ class FormatCardEditViewModel(
         _formatCard.value = card
         name = card.name
         content = card.content
+        userTools = card.userTools
         isDefault = card.isDefault
     }
 
     private fun refreshChangeState() {
         val base = baseCard
         hasLocalChanges = if (base == null) {
-            sourceDeleted || name.isNotBlank() || content.isNotBlank() || isDefault
+            sourceDeleted || name.isNotBlank() || content.isNotBlank() || userTools.isNotEmpty() || isDefault
         } else {
             currentPayload() != base
         }

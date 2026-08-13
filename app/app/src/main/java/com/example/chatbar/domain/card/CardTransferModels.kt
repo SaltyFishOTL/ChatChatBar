@@ -2,6 +2,7 @@ package com.example.chatbar.domain.card
 
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.WorldBook
 import kotlinx.serialization.Serializable
 
@@ -103,13 +104,25 @@ internal fun CharacterCardPackage.withoutEmptyCharacterPlaceholders(): Character
 
 @Serializable
 data class FormatCardPackage(
-    val schemaVersion: Int = 1,
+    val schemaVersion: Int = FORMAT_CARD_PACKAGE_SCHEMA_VERSION,
     val exportedAt: Long = System.currentTimeMillis(),
     val name: String,
     val content: String,
+    val userTools: List<FormatCardUserToolConfig> = emptyList(),
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null
 )
+
+const val FORMAT_CARD_PACKAGE_SCHEMA_VERSION = 2
+
+fun FormatCardPackage.validateForImport() {
+    require(schemaVersion in 1..FORMAT_CARD_PACKAGE_SCHEMA_VERSION) {
+        "不支持的格式卡 schemaVersion：$schemaVersion"
+    }
+    require(name.isNotBlank()) { "格式卡名称不能为空" }
+    require(content.isNotBlank()) { "格式卡内容不能为空" }
+    FormatCardUserToolPolicy.requireValid(userTools)
+}
 
 @Serializable
 data class WorldBookPackage(

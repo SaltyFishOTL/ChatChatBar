@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.FormatCard
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBook
@@ -168,6 +169,27 @@ class EditorDraftRepositoryTest {
         assertNotNull(repo.getForTarget(EditorDraftType.FORMAT_CARD, base.id))
         repo.deleteForTarget(EditorDraftType.FORMAT_CARD, base.id)
         assertNull(repo.getForTarget(EditorDraftType.FORMAT_CARD, base.id))
+    }
+
+    @Test
+    fun formatDraftRoundTripPreservesIncompleteUserToolInput() = runTest {
+        val repo = newRepository()
+        val payload = formatCard("工具草稿", "格式要求").copy(
+            userTools = listOf(
+                FormatCardUserToolConfig.randomNumber().copy(minimum = "-")
+            )
+        )
+
+        repo.save(
+            repo.formatDraft(
+                targetId = null,
+                draftSessionId = "tool-session",
+                payload = payload,
+                base = null
+            )
+        )
+
+        assertEquals("-", repo.getLatestNew(EditorDraftType.FORMAT_CARD)?.formatPayload?.userTools?.single()?.minimum)
     }
 
     private fun newRepository(): EditorDraftRepository = EditorDraftRepository(newStorage())
