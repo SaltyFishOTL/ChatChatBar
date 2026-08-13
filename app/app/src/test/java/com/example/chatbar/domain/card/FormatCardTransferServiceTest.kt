@@ -42,9 +42,26 @@ class FormatCardTransferServiceTest {
     }
 
     @Test
-    fun bundledThinkchainFormatDemonstratesBothUserToolTypes() {
+    fun bothUserToolTypesDecodeThroughTransferPipeline() {
         val decoded = newService().decode(
-            File("src/main/assets/presets/formats/thinkchain-format.json").readText()
+            """
+            {
+              "schemaVersion": 2,
+              "name": "工具示例",
+              "content": "格式要求",
+              "userTools": [
+                {
+                  "type": "RANDOM_NUMBER",
+                  "minimum": "1",
+                  "maximum": "100"
+                },
+                {
+                  "type": "STRONG_PROMPT_SUFFIX",
+                  "text": "请严格遵守当前格式卡的全部要求。"
+                }
+              ]
+            }
+            """.trimIndent()
         )
 
         assertEquals(FORMAT_CARD_PACKAGE_SCHEMA_VERSION, decoded.schemaVersion)
@@ -57,7 +74,7 @@ class FormatCardTransferServiceTest {
         )
         assertEquals("1", decoded.userTools.first().minimum)
         assertEquals("100", decoded.userTools.first().maximum)
-        assertEquals("请严格遵守按照格式卡要求，完整输出状态栏和六个阶段的思维模拟。", decoded.userTools.last().text)
+        assertEquals("请严格遵守当前格式卡的全部要求。", decoded.userTools.last().text)
     }
 
     @Test

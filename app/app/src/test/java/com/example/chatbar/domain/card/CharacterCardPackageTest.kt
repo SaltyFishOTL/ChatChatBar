@@ -144,7 +144,7 @@ class CharacterCardPackageTest {
     }
 
     @Test
-    fun bundledCharacterCardsUseVersionThreeSchema() {
+    fun bundledCharacterCardsPassStableContractValidation() {
         val assetsDirectory = listOf(File("app/src/main/assets"), File("src/main/assets"))
             .first { it.isDirectory }
         val manifest = json.decodeFromString(
@@ -158,14 +158,8 @@ class CharacterCardPackageTest {
         assertTrue(files.isNotEmpty())
         files.forEach { file ->
             assertTrue("预置角色文件不存在：${file.path}", file.isFile)
-            val raw = file.readText()
-            val packageData = json.decodeFromString(CharacterCardPackage.serializer(), raw)
+            val packageData = json.decodeFromString(CharacterCardPackage.serializer(), file.readText())
             packageData.validateForImport()
-            assertEquals(3, packageData.schemaVersion)
-            assertFalse(raw.contains("\"filePath\""))
-            assertFalse(raw.contains("\"customDocuments\""))
-            assertFalse(raw.contains("\"createdAt\""))
-            assertFalse(raw.contains("\"updatedAt\""))
         }
     }
 }

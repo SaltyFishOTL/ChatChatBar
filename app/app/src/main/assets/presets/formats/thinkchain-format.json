@@ -4,11 +4,6 @@
   "name": "通用思考",
   "userTools": [
     {
-      "type": "RANDOM_NUMBER",
-      "minimum": "1",
-      "maximum": "100"
-    },
-    {
       "type": "STRONG_PROMPT_SUFFIX",
       "text": "请严格遵守按照格式卡要求，完整输出状态栏和六个阶段的思维模拟。"
     }
