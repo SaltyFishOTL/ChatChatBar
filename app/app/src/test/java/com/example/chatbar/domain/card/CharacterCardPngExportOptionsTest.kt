@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.card
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class CharacterCardPngExportOptionsTest {
@@ -13,7 +14,8 @@ class CharacterCardPngExportOptionsTest {
             titleScale = 2f,
             cropCenterX = -1f,
             cropCenterY = 2f,
-            cropZoom = 20f
+            cropZoom = 20f,
+            applyFullImagePatch = true
         ).normalized()
 
         assertEquals(0.25f, normalized.gradientHeight, 0f)
@@ -23,5 +25,6 @@ class CharacterCardPngExportOptionsTest {
         assertEquals(0f, normalized.cropCenterX, 0f)
         assertEquals(1f, normalized.cropCenterY, 0f)
         assertEquals(6f, normalized.cropZoom, 0f)
+        assertTrue(normalized.applyFullImagePatch)
     }
 }

@@ -16,6 +16,8 @@ import android.text.TextPaint
 import android.text.TextUtils
 import com.example.chatbar.R
 import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.domain.image.FullImagePatchOperation
+import com.example.chatbar.domain.image.transformFullImageAdversarialPatch
 import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.math.max
@@ -29,7 +31,8 @@ data class CharacterCardPngExportOptions(
     val titleScale: Float = 0.052f,
     val cropCenterX: Float = 0.5f,
     val cropCenterY: Float = 0.5f,
-    val cropZoom: Float = 1f
+    val cropZoom: Float = 1f,
+    val applyFullImagePatch: Boolean = false
 ) {
     fun normalized(): CharacterCardPngExportOptions = copy(
         sizePx = sizePx.coerceIn(1024, 2048),
@@ -63,6 +66,9 @@ object CharacterCardPngRenderer {
         }
         drawBottomGradient(canvas, size, normalized)
         drawBrandRow(context, canvas, size, card.name.ifBlank { "未命名角色" }, normalized)
+        if (normalized.applyFullImagePatch) {
+            transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Apply)
+        }
 
         return ByteArrayOutputStream().use { output ->
             bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)

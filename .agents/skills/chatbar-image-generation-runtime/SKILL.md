@@ -17,6 +17,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Shared image viewer/actions: ui/components/ImagePreviewDialog.kt and ImageMosaicEditor.kt
 - Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Prompt-tool image processing: ui/imageprompt/ImageProcessingPage.kt, ImageProcessingViewModel.kt, domain/image/ImageProcessingService.kt, and FullImageAdversarialPatch.kt
+- Character-card PNG export patch option: domain/card/CharacterCardPngRenderer.kt and ui/manage/ManageScreen.kt
 - Chat orchestration: ui/chat/ChatViewModel.kt and ChatScreen.kt
 - Moments orchestration: ui/moments/MomentsViewModel.kt and MomentsScreen.kt
 - Shared foreground/background protection: use `chatbar-background-work-runtime`
@@ -59,6 +60,8 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Keep image-processing imports and results in the owned `filesDir/images/image-processing` work area. Static output is PNG; GIF output preserves animation by processing every frame. Share/save through shared image actions, and clean only stale work files.
 - Full-image patch apply/restore must share one deterministic transform. Restore is exact only before channel clipping, compression, resizing, or later edits.
+- Character-card export applies the optional full-image patch only to the final rendered PNG pixels before metadata insertion; packaged source images and local card-owned files remain unchanged.
+- Character-card export dialog uses `CharacterCardPngRenderer` at 1024px for its debounced patched preview so preview and saved PNG share the same transform; the unpatched path keeps the lightweight Compose preview.
 - The full-image patch is a five-layer multi-scale chroma transform (per-frame global color cast ±6, 3×3 block shift ±28, 8×8 DCT-aligned DC bias ±14, three low-frequency sine waves at 64/96/128px periods whose phases shift per frame index, Bayer ordered-dither jitter). Keep every layer deterministic from position and frame index so restore stays an exact inverse before lossy steps.
 - GIF output re-encodes each frame with `AnimatedGifEncoder` quality 1 (lower value = denser NeuQuant sampling = finer palette), keeping per-channel perturbation amplitude (~±30 RMS) well above palette quantization noise; this SNR margin is what preserves the patch through 256-color quantization. Do not add pixel-domain residual feedback loops (encode→decode→diffuse): nearest-color mapping is locally optimal, so residual feedback is absorbed at snap time and changes nothing.
 - Preserve owning entity identity and non-image state: message alternatives/timeline data or Moment text/likes/time.
@@ -83,6 +86,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.
 - Prompt-tool blank manual draft, AI-plan materialization, manual generation, reference-image replacement, and vision fallback.
 - Image-processing apply/restore status visibility, automatic result reveal, static-image round trip, layered patch inverse exactness and per-frame variation, GIF frame count/timing/loop/transparency, patch amplitude vs palette quantization noise margin, direct share, and gallery save.
+- Character-card PNG export defaults the patch off, preserves the option through normalization, and keeps embedded card metadata importable when the patch is enabled.
 - Fullscreen prompt editor hides the dialog window, then restores it on close without losing the draft.
 - Save failure, repository failure, and old-file cleanup failure.
 - Concurrent text generation and image generation; two unrelated image tasks.

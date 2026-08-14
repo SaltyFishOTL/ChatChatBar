@@ -4,6 +4,7 @@ import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.manage.ManageViewModel.SharedImportDecodeResult
 
 import android.content.Intent
+import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
 import android.widget.Toast
@@ -40,6 +41,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -56,12 +58,15 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -99,6 +104,7 @@ import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
 import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
+import com.example.chatbar.domain.card.CharacterCardPngRenderer
 import com.example.chatbar.domain.card.SharedImportEvent
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
@@ -155,6 +161,7 @@ import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -729,6 +736,24 @@ private fun CharacterPngExportDialog(
             } else {
                 CbButton("调整背景裁剪", { showBackgroundCrop = true }, variant = ButtonVariant.Outline)
             }
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    CbText("应用全图 AI 贴片", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "对最终导出图叠加多尺度色度扰动；不修改角色卡中的原始图片。预览会显示扰动效果。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(
+                    checked = normalized.applyFullImagePatch,
+                    onCheckedChange = { onOptionsChange(normalized.copy(applyFullImagePatch = it)) },
+                    modifier = Modifier.semantics { contentDescription = "应用全图 AI 贴片" }
+                )
+            }
             CbField("导出尺寸") {
                 val sizes = listOf(1024, 1536, 2048)
                 CbSelect(normalized.sizePx, sizes, { "${it} x ${it}" }, { onOptionsChange(normalized.copy(sizePx = it)) })
@@ -785,6 +810,41 @@ private fun CharacterPngExportDialog(
 
 @Composable
 private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngExportOptions) {
+    val context = LocalContext.current
+    var patchedPreview by remember(card.id) { mutableStateOf<Bitmap?>(null) }
+    LaunchedEffect(card.id, card.updatedAt, card.chatBackground, card.name, options) {
+        if (!options.applyFullImagePatch) {
+            patchedPreview?.recycle()
+            patchedPreview = null
+            return@LaunchedEffect
+        }
+        delay(180)
+        val renderedBytes = withContext(Dispatchers.Default) {
+            CharacterCardPngRenderer.render(
+                context,
+                card,
+                options.copy(sizePx = PATCH_PREVIEW_SIZE_PX)
+            )
+        }
+        val rendered = BitmapFactory.decodeByteArray(renderedBytes, 0, renderedBytes.size)
+            ?: error("无法生成贴片预览")
+        patchedPreview?.recycle()
+        patchedPreview = rendered
+    }
+    DisposableEffect(card.id) {
+        onDispose { patchedPreview?.recycle() }
+    }
+    patchedPreview?.let { bitmap ->
+        Image(
+            bitmap = bitmap.asImageBitmap(),
+            contentDescription = "已应用全图 AI 贴片的导出预览",
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1f)
+                .clip(RoundedCornerShape(14.dp))
+        )
+        return
+    }
     val backgroundFile = remember(card.chatBackground) {
         card.chatBackground?.let(::File)?.takeIf(File::isFile)
     }
@@ -2259,6 +2319,8 @@ private fun SettingsTab(
         )
     }
 }
+
+private const val PATCH_PREVIEW_SIZE_PX = 1024
 
 @Composable
 private fun MomentSchedulePreviewBlock(
