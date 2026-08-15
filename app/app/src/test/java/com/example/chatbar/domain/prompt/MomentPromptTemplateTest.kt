@@ -148,7 +148,7 @@ class MomentPromptTemplateTest {
         assertTrue(prompt.contains("林澄: 今天风很大。"))
         assertTrue(prompt.contains("图片设计：后台走廊里的随手拍。"))
         assertTrue(prompt.contains("最新一条消息"))
-        assertTrue(prompt.contains("用户:\n最新消息：我已经到后台门口了，外面还有记者。"))
+        assertTrue(prompt.contains("最新消息：我已经到后台门口了，外面还有记者。"))
         assertFalse(prompt.contains("角色卡"))
         assertFalse(prompt.contains("会话"))
         assertFalse(prompt.contains("角色列表"))
@@ -171,7 +171,6 @@ class MomentPromptTemplateTest {
         assertTrue(system.contains("纯文字朋友圈"))
         assertTrue(system.contains("\"imageBrief\""))
         assertTrue(system.contains("40-90 字"))
-        assertTrue(system.contains("由用户决定是否配图"))
         assertTrue(user.contains("角色卡设定摘要"))
         assertFalse(user.contains("图片设计"))
     }

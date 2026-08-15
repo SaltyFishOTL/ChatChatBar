@@ -18,6 +18,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
+import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.ChatOutputTokenPolicy
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
 import com.example.chatbar.domain.chat.InterruptedReplyPolicy
@@ -95,6 +96,7 @@ import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.coroutines.coroutineContext
 
 private class UserStoppedResponseGenerationException : CancellationException("用户停止生成")
@@ -126,6 +128,23 @@ internal fun buildOpeningSystemPrompt(
     requirementsSystemPrompt.takeIf { formatPromptPosition.includesStart }.orEmpty(),
     stableSystemPrompt
 ).filter(String::isNotBlank).joinToString("\n\n")
+
+internal fun filterRegenerationTargetMessage(
+    messages: List<ChatMessage>,
+    regeneratingMessageId: String?
+): List<ChatMessage> {
+    if (regeneratingMessageId == null) return messages
+    return messages.filterNot { it.id == regeneratingMessageId }
+}
+
+internal fun mergeStreamingMessageIntoTimeline(
+    messages: List<ChatMessage>,
+    streamingMessage: ChatMessage?
+): List<ChatMessage> {
+    streamingMessage ?: return messages
+    return (messages.filterNot { it.id == streamingMessage.id } + streamingMessage)
+        .sortedWith(ChatMessage.TimelineComparator)
+}
 
 enum class ImageGenerationPhase {
     QUEUED,
@@ -193,6 +212,23 @@ private const val MEMORY_HISTORY_PAGE_SIZE = 20
 data class MessageFormatRepairState(
     val messageId: String,
     val previewContent: String
+)
+
+data class DebugMessageOrderMove(
+    val messageId: String,
+    val fromPosition: Int,
+    val toPosition: Int,
+    val summary: String
+)
+
+data class DebugMessageOrderRepairPreview(
+    val baseline: List<ChatMessageOrderSnapshot>,
+    val totalMessages: Int,
+    val moves: List<DebugMessageOrderMove>,
+    val anchoredMessageCount: Int,
+    val orphanedAnchorCount: Int,
+    val cyclicAnchorCount: Int,
+    val backupAvailable: Boolean
 )
 
 val ImageGenerationState.isTerminal: Boolean
@@ -362,6 +398,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private var draftSaveSequence = 0
     private val scrollPositionSaveSequence = AtomicLong(System.currentTimeMillis())
     private var responseJob: Job? = null
+    private val hiddenRegenerationMessageId = AtomicReference<String?>(null)
     private var manualFormatRepairJob: Job? = null
     private var activeFormatRepairJob: Job? = null
     private var formatRepairStopRequested = false
@@ -676,8 +713,95 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val sequence = messageRefreshSequence.incrementAndGet()
         val refreshed = chatRepository.getMessages(sessionId)
         if (sequence == messageRefreshSequence.get()) {
-            _messages.value = refreshed
+            _messages.value = filterRegenerationTargetMessage(
+                messages = refreshed,
+                regeneratingMessageId = hiddenRegenerationMessageId.get()
+            )
         }
+    }
+
+    internal suspend fun previewDebugMessageOrderRepair(): DebugMessageOrderRepairPreview {
+        requireMessageOrderRepairIdle()
+        val plan = chatRepository.previewMessageOrderRepair(sessionId)
+        val messagesById = plan.repairedMessages.associateBy(ChatMessage::id)
+        return DebugMessageOrderRepairPreview(
+            baseline = plan.baseline,
+            totalMessages = plan.repairedMessages.size,
+            moves = plan.moves.map { move ->
+                DebugMessageOrderMove(
+                    messageId = move.messageId,
+                    fromPosition = move.fromIndex + 1,
+                    toPosition = move.toIndex + 1,
+                    summary = messagesById.getValue(move.messageId).debugOrderSummary()
+                )
+            },
+            anchoredMessageCount = plan.anchoredMessageCount,
+            orphanedAnchorCount = plan.orphanedAnchorMessageIds.size,
+            cyclicAnchorCount = plan.cyclicAnchorMessageIds.size,
+            backupAvailable = chatRepository.hasMessageOrderBackup(sessionId)
+        )
+    }
+
+    internal suspend fun applyDebugMessageOrderRepair(
+        preview: DebugMessageOrderRepairPreview
+    ): String {
+        requireMessageOrderRepairIdle()
+        val plan = chatRepository.repairMessageOrder(sessionId, preview.baseline)
+        replaceMessagesFromRepository()
+        _session.value = chatRepository.getSession(sessionId)
+        val derivedWarning = refreshDerivedStateAfterMessageOrderChange()
+        return buildString {
+            if (plan.requiresRepair) {
+                append("已修复 ${plan.moves.size} 条消息的位置，并保存修复前顺序备份。")
+            } else {
+                append("当前消息顺序无需修复。")
+            }
+            derivedWarning?.let { append("\n\n$it") }
+        }
+    }
+
+    internal suspend fun undoDebugMessageOrderRepair(): String {
+        requireMessageOrderRepairIdle()
+        chatRepository.restoreMessageOrderBackup(sessionId)
+        replaceMessagesFromRepository()
+        _session.value = chatRepository.getSession(sessionId)
+        val derivedWarning = refreshDerivedStateAfterMessageOrderChange()
+        return buildString {
+            append("已恢复修复前的消息顺序。")
+            derivedWarning?.let { append("\n\n$it") }
+        }
+    }
+
+    private fun requireMessageOrderRepairIdle() {
+        check(!_isResponding.value) { "消息生成或格式处理进行中，请完成后再修复顺序" }
+        check(imageGenerationTaskStore.states.value.none { !it.isTerminal }) {
+            "图片生成进行中，请完成或停止后再修复顺序"
+        }
+    }
+
+    private suspend fun refreshDerivedStateAfterMessageOrderChange(): String? {
+        if (_session.value?.longTermMemoryEnabled != true) return null
+        return runCatching {
+            longTermMemoryService.refreshForCurrentConditions(sessionId)
+            _longTermMemoryUiState.value = loadLongTermMemoryUiState()
+        }.exceptionOrNull()?.let { error ->
+            "消息顺序已写入，但长期记忆变更检测失败：${error.message ?: error::class.java.simpleName}"
+        }
+    }
+
+    private fun ChatMessage.debugOrderSummary(): String {
+        val roleLabel = when (role) {
+            MessageRole.USER -> "用户"
+            MessageRole.ASSISTANT -> "助手"
+            MessageRole.SYSTEM -> "系统"
+        }
+        val text = displayContent.replace(Regex("\\s+"), " ").trim().take(48)
+        val body = when {
+            text.isNotEmpty() -> text
+            images.isNotEmpty() -> "图片 ×${images.size}"
+            else -> "空消息"
+        }
+        return "$roleLabel · $body"
     }
 
     fun refreshSaveSlots() {
@@ -2106,7 +2230,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         if (_isResponding.value && !respondingAlreadyStarted) return
 
-        val job = ChatBarApp.instance.applicationScope.launch {
+        val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
             if (!respondingAlreadyStarted) {
                 _isResponding.value = true
             }
@@ -2846,6 +2970,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 ).also { assistantReplyPersisted = true }
                             }
 
+                            alternativeTargetMessageId?.let { targetId ->
+                                hiddenRegenerationMessageId.compareAndSet(targetId, null)
+                            }
                             replaceMessagesFromRepository()
                             _streamingMessage.value = null
                             if (appSettings.automaticFormatCheckEnabled) {
@@ -2905,6 +3032,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     )
                                     assistantReplyPersisted = true
                                 }
+                                alternativeTargetMessageId?.let { targetId ->
+                                    hiddenRegenerationMessageId.compareAndSet(targetId, null)
+                                }
                                 replaceMessagesFromRepository()
                                 ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
                                     sessionId,
@@ -2963,12 +3093,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 protectionLossHandle?.dispose()
                 ChatBarApp.instance.streamingStopRequested.value = false
                 stopStreamingForegroundWork()
+                if (
+                    alternativeTargetMessageId != null &&
+                    hiddenRegenerationMessageId.compareAndSet(alternativeTargetMessageId, null)
+                ) {
+                    _streamingMessage.value = null
+                    runCatching { replaceMessagesFromRepository() }
+                }
             }
         }
         responseJob = job
         job.invokeOnCompletion {
-            if (responseJob == job) responseJob = null
+            if (responseJob == job) {
+                responseJob = null
+                _streamingMessage.value = null
+                if (
+                    alternativeTargetMessageId != null &&
+                    hiddenRegenerationMessageId.compareAndSet(alternativeTargetMessageId, null)
+                ) {
+                    ChatBarApp.instance.applicationScope.launch {
+                        runCatching { replaceMessagesFromRepository() }
+                    }
+                }
+            }
         }
+        job.start()
     }
 
     private suspend fun persistGeneratedAssistantMessage(
@@ -3374,12 +3523,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _isResponding.value = true
             val retryErrorMessageId = selectedMessage.id.takeIf { selectedMessage.id != targetMessage.id }
             val generationMessages = currentMessages.filterNot { it.id == retryErrorMessageId }
+            hiddenRegenerationMessageId.set(targetMessage.id)
             _messages.value = generationMessages.filterNot { it.id == targetMessage.id }
             _streamingMessage.value = null
 
             if (!isMessageInActiveContextWindow(targetMessage.id)) {
                 _streamingMessage.value = null
                 _isResponding.value = false
+                hiddenRegenerationMessageId.compareAndSet(targetMessage.id, null)
                 _messages.value = currentMessages
                 addSystemMessage("This reply is already in long-term memory. Multi-reply regeneration is disabled.")
                 return@launch

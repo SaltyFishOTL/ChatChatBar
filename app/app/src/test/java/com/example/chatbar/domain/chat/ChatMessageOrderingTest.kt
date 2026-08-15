@@ -28,6 +28,11 @@ class ChatMessageOrderingTest {
             result.sortedWith(ChatMessage.TimelineComparator).map { it.id }
         )
         assertEquals("assistant-1", result.first { it.id == "image-1" }.generatedFromMessageId)
+        assertEquals(2 * MESSAGE_ORDER_STEP + 1, result.first { it.id == "image-1" }.orderKey)
+        assertEquals(
+            messages.associate { it.id to it.orderKey },
+            result.filterNot { it.id == "image-1" }.associate { it.id to it.orderKey }
+        )
     }
 
     @Test
@@ -95,6 +100,27 @@ class ChatMessageOrderingTest {
 
         assertEquals(
             listOf("assistant-1", "image-1", "image-2", "assistant-2"),
+            result.sortedWith(ChatMessage.TimelineComparator).map { it.id }
+        )
+    }
+
+    @Test
+    fun `image insertion does not move concurrently regenerated reply`() {
+        val messages = listOf(
+            message("assistant-1", MessageRole.ASSISTANT, "image anchor", orderKey = 1 * MESSAGE_ORDER_STEP),
+            message("user-2", MessageRole.USER, "later", orderKey = 2 * MESSAGE_ORDER_STEP),
+            message("assistant-2", MessageRole.ASSISTANT, "regenerating", orderKey = 3 * MESSAGE_ORDER_STEP)
+        )
+        val image = message("image-1", MessageRole.ASSISTANT, "", images = listOf("/tmp/image.png"))
+
+        val result = ChatMessageOrdering.insertGeneratedImageAfter(messages, image, "assistant-1")
+
+        assertEquals(
+            3 * MESSAGE_ORDER_STEP,
+            result.first { it.id == "assistant-2" }.orderKey
+        )
+        assertEquals(
+            listOf("assistant-1", "image-1", "user-2", "assistant-2"),
             result.sortedWith(ChatMessage.TimelineComparator).map { it.id }
         )
     }

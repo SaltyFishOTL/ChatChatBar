@@ -68,7 +68,7 @@
       "styleKey": "mygo_anime",
       "displayName": "MYGO动画",
       "description": "模仿MYGO原作动画的风格",
-      "prompt": "1.6::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, hyper detailed skin, glistening skin,\n 0.6::no_lineart::, 0.2::artist:rei_(sanbonzakura)::,\n\n-5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::,\n-1::\"3d\"::,\n\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, year 2025,",
+      "prompt": "1.6::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, glistening skin, backlighting,\n 0.6::no_lineart::, 0.4::artist:rei_(sanbonzakura)::,\n\n-1.5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::,\n0.15::\"3d\"::,\n\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, year 2025,",
       "previewImage": "MYGO动画.png"
     }
   ]

@@ -37,7 +37,11 @@ class RoleplaySpeakerPromptTest {
         )
 
         assertTrue(prompt.contains("角色姓名：爱音、灯"))
-        assertTrue(prompt.endsWith("严格按照格式要求，输出【500字】篇幅的回复。"))
+        assertTrue(prompt.endsWith(PromptTemplates.replyLengthTailSystemPrompt(500)))
+        assertTrue(
+            prompt.indexOf("角色姓名：爱音、灯") <
+                prompt.indexOf(PromptTemplates.replyLengthTailSystemPrompt(500))
+        )
     }
 
     @Test
@@ -48,7 +52,7 @@ class RoleplaySpeakerPromptTest {
             characterNames = listOf("爱音", "灯")
         )
 
-        assertEquals("严格按照格式要求，输出【500字】篇幅的回复。", prompt)
+        assertEquals(PromptTemplates.replyLengthTailSystemPrompt(500), prompt)
         assertFalse(prompt.contains("角色姓名："))
         assertFalse(prompt.contains("<n=\"完整角色名\"/>"))
     }

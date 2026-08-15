@@ -223,11 +223,16 @@ class MomentsViewModel : ViewModel() {
             val outcome = runCatching {
                 repository.initialize()
                 characterRepository.initialize()
+                chatRepository.initialize()
                 settingsRepository.initialize()
                 val post = repository.getPost(postId) ?: error("朋友圈不存在")
                 require(!post.isPlaceholder) { "占位朋友圈无法按需生成" }
                 val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
                 val settings = settingsRepository.getAppSettings()
+                val session = chatRepository.getSession(post.sessionId)
+                val globalPlayerName = settingsRepository.getPlayerSetting().playerName
+                    .takeIf(String::isNotBlank)
+                val playerName = session?.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
                 val imageModel = modelResolver.defaultImageModel(settings) ?: error("未配置默认生图模型")
                 require(imageModel.hasConfiguredAuthentication(settings)) { "默认生图模型/API Key 未配置" }
                 val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
@@ -241,6 +246,7 @@ class MomentsViewModel : ViewModel() {
                         momentImageBrief = imageBrief,
                         model = imageModel,
                         finalPromptRequirement = settings.imagePromptToolPreference,
+                        playerName = playerName,
                         onDelta = { text ->
                             _onDemandImage.value = _onDemandImage.value.copy(
                                 phase = MomentOnDemandImagePhase.DESIGNING,
@@ -369,6 +375,9 @@ class MomentsViewModel : ViewModel() {
                 val card = characterRepository.getById(placeholder.characterCardId) ?: error("角色卡不存在")
                 val session = chatRepository.getSession(placeholder.sessionId) ?: error("会话不存在")
                 val settings = settingsRepository.getAppSettings()
+                val globalPlayerName = settingsRepository.getPlayerSetting().playerName
+                    .takeIf(String::isNotBlank)
+                val playerName = session.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
                 val model = modelResolver.defaultChatModel(settings) ?: error("未配置可用默认对话模型")
                 require(model.hasConfiguredAuthentication(settings)) { "默认对话模型/API Key 未配置" }
                 val imageModel = modelResolver.defaultImageModel(settings)
@@ -384,6 +393,7 @@ class MomentsViewModel : ViewModel() {
                         imageModel = imageModel,
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
+                        playerName = playerName,
                         allowCleartextModelApi = settings.allowCleartextModelApi,
                         autoGenerateImages = settings.momentsImagesEnabled,
                         resumeFrom = generationService.decodeCheckpoint(placeholder.generationCheckpoint),

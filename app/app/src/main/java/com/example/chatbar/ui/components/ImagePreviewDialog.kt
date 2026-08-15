@@ -46,6 +46,8 @@ data class ImagePreviewItem(
     val path: String
 )
 
+private data class RemovedImagePreviewItemKey(val index: Int)
+
 @Composable
 fun ImagePreviewDialog(
     path: String,
@@ -189,13 +191,18 @@ fun ImagePreviewDialog(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
-                key = { items[it].messageId + "\u0000" + items[it].path }
+                key = { page ->
+                    items.getOrNull(page)?.let { item ->
+                        item.messageId + "\u0000" + item.path
+                    } ?: RemovedImagePreviewItemKey(page)
+                }
             ) { page ->
-                val item = items[page]
-                ZoomablePreviewImage(
-                    path = editedPaths[item.path] ?: item.path,
-                    onLongPress = { showImageActions = true }
-                )
+                items.getOrNull(page)?.let { item ->
+                    ZoomablePreviewImage(
+                        path = editedPaths[item.path] ?: item.path,
+                        onLongPress = { showImageActions = true }
+                    )
+                }
             }
             CbIconButton(
                 AppIcons.Close,

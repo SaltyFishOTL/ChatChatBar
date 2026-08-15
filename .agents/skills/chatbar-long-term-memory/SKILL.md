@@ -47,11 +47,12 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Distinguish live in-process work from persisted crash residue. Internal reads must not cancel their own active task.
 - Keep failed work visible and retryable. Preserve source data, pending ranges, gaps, source-repair roots, and completed batches.
 - Keep RAG storage independent from long-term memory while using consistent source-turn boundaries.
-- Treat a manually interrupted nonblank assistant draft as normal persisted chat evidence: save it through `ChatRepository` so it inherits the current user source turn, then enqueue application-owned maintenance. Never persist a blank/reasoning-only assistant placeholder or run full-completion-only side effects for that draft.
+- Treat a manually interrupted nonblank assistant draft as normal persisted chat evidence: save it through `ChatRepository` so it inherits the current user source turn, refresh the visible durable timeline before clearing same-ID streaming state, then enqueue application-owned maintenance. Never persist a blank/reasoning-only assistant placeholder or run full-completion-only side effects for that draft.
 - Reject preview or injection changes that leak raw source turns through the long-term-memory block.
 - Generate multi-turn Episode as one direct aggregate body. Keep coverage program-owned through ordered source IDs and hashes; never ask AI for per-turn proof text.
 - Treat `episodeMaxSourceTurns` as exact target count. A trailing remainder is normal pending, never a Gap. Only a historical internal one-turn remainder bounded by active memory on both sides may be committed alone.
 - Compare source meaning with `sourceFingerprints`; numeric `orderKey` and `updatedAt` are excluded. Preserve legacy hashes only for safe one-time migration and structural compatibility.
+- After explicit historical message-order repair or undo, run source-mutation detection only; never start AI repair automatically. Order repair may change `orderKey` but must preserve source identity, message content, images, and timestamps.
 - Automatic Archive→HEAD and manual gap-backfill model calls belong to the application coordinator; page ViewModels only observe coordinator progress. Page destruction must not cancel work. Only current session receives new automatic work.
 - Explicit session deletion is different from page/session switching: reject new coordinator work, cancel and join every application-owned memory job for that session, then remove persisted session and memory data.
 - Treat compression choices as immediate persisted state transitions. Hide the pending choice before coordinator continuation; page ViewModels must not own the follow-up model task.

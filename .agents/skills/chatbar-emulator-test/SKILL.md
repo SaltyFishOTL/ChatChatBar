@@ -1,11 +1,11 @@
 ---
 name: chatbar-emulator-test
-description: Run and verify ChatBar on its configured Android emulator or connected device. Use for Gradle checks, CI-equivalent verification, APK builds, release redeploy, emulator startup, instrumented tests, update-dialog Release Notes retrieval, adb interaction, alternate resolution or density checks, screenshots, logs, and install troubleshooting.
+description: Manage ChatBar post-change release handoff and opt-in Android diagnostics. Use after a feature or fix to follow the repository's ADB-aware release build/install/launch policy and provide manual test steps; also use when the user explicitly asks for emulator/device testing, logs, screenshots, or install troubleshooting.
 ---
 
-# ChatBar Android Testing
+# ChatBar Release Handoff and Android Testing
 
-Use repository scripts as primary entry points. Follow AGENTS.md for verification scope and device-data safety.
+Follow AGENTS.md for target selection, automatic release handoff, test permissions, and device-data safety.
 
 ## Project Facts
 
@@ -17,15 +17,21 @@ Use repository scripts as primary entry points. Follow AGENTS.md for verificatio
 - Emulator debug APK: app/app/build/outputs/apk/debug/app-debug.apk.
 - Physical-device release APK: app/app/build/outputs/apk/release/app-release.apk.
 
-## Primary Entry Points
+## Release Handoff
 
-- Physical phone release build/install/launch from repository root:
+- Build/install/launch release from repository root:
 
   .\redeploy.bat --no-pause
 
-- Release build without install:
+- Build release without install:
 
   .\redeploy.bat --build-only --no-pause
+
+- `redeploy.bat` uses release signing, data-preserving install, downgrade recovery, ColorOS launcher refresh, and MainActivity launch.
+- Because the script uses ADB's default target, invoke its install mode only after AGENTS.md target-count gate passes.
+- Report `app/app/build/outputs/apk/release/app-release.apk` plus feature-specific manual test steps after handoff.
+
+## Explicit Test Entry Points
 
 - Emulator start/build/install/launch from repository root:
 
@@ -42,21 +48,14 @@ Use repository scripts as primary entry points. Follow AGENTS.md for verificatio
 
   .\gradlew.bat :app:connectedDebugAndroidTest
 
-## Script Behavior
+## Explicit Test Workflow
 
-- redeploy.bat uses project release signing and data-preserving adb install.
-- On INSTALL_FAILED_VERSION_DOWNGRADE it retries with downgrade allowance, then can rebuild with installed versionCode/versionName before retrying.
-- emu.cmd targets disposable/emulator debug installs and can rebuild against installed version metadata on downgrade.
-- Physical phones stay on release signing; emulator/disposable devices may use debug signing.
-
-## Workflow
-
-1. Run the smallest relevant JVM/compile check.
-2. Run ci.ps1 -SkipAssemble for UI, navigation, Android API, or shared behavior changes.
-3. Query adb devices -l and dumpsys package before choosing install path.
-4. Use redeploy.bat for a physical phone; use emu.cmd or debug install for the configured emulator.
-5. Launch MainActivity and verify process/activity state.
-6. Use logcat, screenshots, or instrumented tests only for the behavior under test.
+1. Confirm requested test scope: automated checks, emulator, physical device, or specific diagnostics.
+2. Run only checks needed for that scope.
+3. Query adb devices -l and dumpsys package before choosing an install path.
+4. Use redeploy.bat for a physical phone; use emu.cmd or targeted debug install for the configured emulator.
+5. Launch MainActivity only when requested test needs runtime verification.
+6. Use logcat, screenshots, or instrumented tests only for requested behavior.
 
 ## Alternate Resolution Verification
 
@@ -64,7 +63,7 @@ Use repository scripts as primary entry points. Follow AGENTS.md for verificatio
 - Read current physical and override values before changing them. For 1080×1920 compact-height coverage, use `1080x1920` and `480`, then confirm `dumpsys window` reports `w360dp h640dp`.
 - Target every install, input, screenshot, test, and cleanup command with `-s emulator-5554` when a physical device is also connected.
 - Once the user starts manual testing, leave the emulator, resolution, app, and test state untouched until the user explicitly says testing is finished or asks for a change.
-- For agent-only verification, reset size/density and close only the emulator instance started by the agent after evidence is collected. Remove temporary screenshots and UI dumps.
+- Reset size/density and close only the emulator instance started for the explicit request after evidence is collected. Remove temporary screenshots and UI dumps.
 
 ## Update Note Verification
 

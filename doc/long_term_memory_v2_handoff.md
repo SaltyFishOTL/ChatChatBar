@@ -1,13 +1,16 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-08-13
+Last updated: 2026-08-16
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `8ab3ba70 Release 1.3.0`
-Status: 已修复删除会话与应用级长期记忆维护竞态：删除先阻止新任务、取消并等待该会话全部维护任务，再移除持久数据；页面销毁和普通切换会话仍不取消已开始的付费任务。自动测试与设备状态见Verification Baseline。
+Status: 已修复聊天回复重新生成与图片生成并发造成的显示顺序错乱，并在调试控制台增加历史顺序预览、确认修复及安全撤销；同时修复中断草稿暂时消失、完整回复落盘时跳回气泡顶部，以及NovelAI各生图路径的名称占位符策略。聊天生图保留`${'$'}username`玩家标记，其他生图渲染真实名称。最新修正已完成编译与release构建；当前无设备，未部署。
 
 ## Completed
 
+- 2026-08-16 NovelAI名称策略分流：聊天生图必须把有效玩家名归一回`${'$'}username`，并让画面规划与最终Prompt设计请求全程保留该玩家角色标记；`${'$'}botname`仍渲染为`CharacterCard.effectiveBotName`。角色卡封面、朋友圈及Prompt工具继续在请求前渲染真实玩家/角色名称；会话玩家名覆盖优先于全局玩家名。规划Debug展示实际发送的system prompt。模板常量保持占位符，未配置名称时沿用项目现有未解析语义。
+- 2026-08-16流式消息此前作为独立LazyColumn尾项显示，落盘后换成不同key的持久消息；长回复完成时列表丢失条目内偏移并跳回气泡顶部。中断路径又先刷新仓库、再清除流式状态，而刷新会按活动流式ID过滤刚保存的草稿，导致草稿直到下一次聊天刷新才重现。现流式、持久及重新生成替换版本始终按同一消息ID合并为一个时间线条目；持久化后先刷新同ID durable数据，再清流式覆盖。仓库刷新只隐藏明确的重新生成旧目标，不再隐藏普通流稿ID。滚动锚点直接基于合并时间线保存。
+- 2026-08-14聊天回复重新生成期间，仓库刷新会把被替换的持久消息重新插回列表；图片完成又按旧列表重写消息记录，导致瞬态回复、旧回复及图片锚点顺序互相覆盖。现重新生成期间以稳定消息ID持续隐藏旧气泡，图片插入只写新增或实际变更的记录，并通过仓库互斥与持久`orderKey`保护避免并发覆盖。调试控制台新增“修复消息顺序”：按稳定source turn、创建时间与有效图片锚点链生成预览，只修改`orderKey`；确认前拒绝过期快照，写入前持久备份，消息后续新增/删除/更新时拒绝撤销。修复或撤销后仅刷新长期记忆来源变更状态，不触发AI。
 - 2026-08-13崩溃报告显示自动维护捕获上游“会话不存在”后又调用`setMaintenancePreflightError`，第二次`loadLocked`抛出未捕获`IllegalStateException`。根因是会话删除先移除记录，但应用级自动维护、补录、完整/HEAD重建或压缩续跑仍可能存活。现协调器按会话登记所有Job；显式删除原子阻止新Job、取消并join现有Job，等待共享`AiBackgroundWorkManager.run`的`finally`释放前台保护lease后才删除会话；取消不再被普通错误catch转写为预检失败。协调器完成回调独立于协程主体执行，覆盖lazy Job未进入主体即被取消的窗口。删除同时先停止语音生成，持久化pending deletion仍保留失败恢复语义。
 - 已实现HEAD、Episode、Arc、Era结构，连续source turn覆盖、派生显示T、预算压缩、独立分页历史、SaveSlot v4、编辑/恢复和完整注入预览。
 - 自动Episode、手动补录、当前锚点、Archive压缩与HEAD不再把整份`MemorySessionState.revision`当作AI任务冲突锁。Episode只关联其source hash、目标pending成员和同源覆盖；压缩只关联模型实际读取的全部候选节点；HEAD只关联自身版本、输入source，`BACKFILL`额外关联实际发送的Archive文本。提交前在状态锁内重载并基于当前状态重放，因此无关聊天新增、其他节点编辑/新增、HEAD或分页变更不会误杀任务，也不会被旧快照覆盖。
@@ -111,7 +114,7 @@ Status: 已修复删除会话与应用级长期记忆维护竞态：删除先阻
 
 ## Blockers
 
-- 无代码阻塞。用户已允许Codex操作设备；真实模型补录或节点重新生成会消耗API额度，尚未触发。
+- 无代码阻塞。真实NovelAI请求会消耗模型与图片额度，本轮未触发。
 
 ## Recommended Next Steps
 
@@ -141,6 +144,8 @@ Status: 已修复删除会话与应用级长期记忆维护竞态：删除先阻
 
 ## Verification Baseline
 
+- 2026-08-16中断草稿、流式完成滚动及NovelAI名称策略：按用户确认，聊天场景、规划system及最终设计system保留`${'$'}username`，真实玩家名归一为该标记，`${'$'}botname`仍渲染；其他生图路径继续渲染名称。`:app:compileDebugKotlin`、全量JVM测试、`ci.ps1 -SkipAssemble`与`redeploy.bat --build-only --no-pause`通过，Android测试源码编译成功。此前设备`49075ec2`已安装上一轮release；最终例外修正时ADB无设备，未部署最新APK。未调用真实模型或NovelAI。
+- 2026-08-14并发消息排序与历史修复：定向`ChatMessageOrderingTest`、`ChatMessageRefreshPolicyTest`、`ChatMessageOrderRepairPolicyTest`、`ChatRepositoryTest`通过；全量`gradlew test --rerun-tasks`与`ci.ps1 -SkipAssemble`通过，Android测试源码编译成功。覆盖图片锚点插入不改并发回复键、重新生成刷新隐藏旧气泡、source-turn/链式图片修复、孤儿/循环锚点保守处理、修复前快照拒绝、持久备份、撤销及后续消息更新时拒绝撤销。首次CI因沙箱禁止下载固定Gradle 9.1失败，授权网络后同一命令通过。最终实体机`49075ec2`经`redeploy.bat --no-pause`完成release保数据安装与启动命令，进程PID `18805`持续存活，最近`AndroidRuntime`错误为空。未在用户旧聊天执行修复按钮，未调用模型。
 - 2026-08-13删除会话与长期记忆维护竞态修复：定向`SessionScopedJobRegistryTest`、`:app:compileDebugKotlin`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过；覆盖删除时取消并join活跃Job、删除后拒绝新Job、其他会话Job继续运行。首次CI因沙箱禁止下载固定Gradle 9.1失败，授权网络后同一命令通过。实体机`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装并启动，PID `22590`，`MainActivity`为`topResumedActivity`，启动后`AndroidRuntime`无错误。未执行会消耗模型额度并删除会话的真实竞态复现。
 - 2026-08-11 RAG超长完整轮分片：定向`ChatMemoryIndexPolicyTest`/`ChatMemoryIdentityTest`、全量`gradlew test`与`ci.ps1 -SkipAssemble`通过；覆盖600字不拆、300–400字窗口内分段优先、句号次选、300字边界、无标点350字硬切、分片ID及同轮多块替换。实体机`49075ec2`通过`redeploy.bat --no-pause`完成release保数据安装并启动，进程PID `4503`，`MainActivity`为resumed且持有窗口焦点。未执行真实RAG重建、未调用向量API。
 - 2026-08-11零上下文/分来源零召回：`:app:compileDebugKotlin --rerun-tasks`、定向`ContextWindowManagerTest`/`RagSourcePlanTest`与`ci.ps1 -SkipAssemble`通过。测试覆盖0窗口仅保留上一轮并归档全部更早组，以及文档0、记忆0、两者0和0上下文召回边界。`adb devices -l`无连接设备，未部署。

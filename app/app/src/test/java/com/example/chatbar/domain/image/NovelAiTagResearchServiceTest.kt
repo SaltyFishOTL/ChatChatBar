@@ -339,6 +339,8 @@ class NovelAiTagResearchServiceTest {
                 characterPrompts: List<Pair<String, String>>,
                 imageBase64s: List<String>,
                 model: ModelConfig,
+                playerName: String?,
+                botName: String,
                 onRawText: (String) -> Unit
             ): NovelAiTagSearchDecisionResult {
                 onRawText("【思考】\n正在规划空间关系")
@@ -385,6 +387,8 @@ class NovelAiTagResearchServiceTest {
                 characterPrompts: List<Pair<String, String>>,
                 imageBase64s: List<String>,
                 model: ModelConfig,
+                playerName: String?,
+                botName: String,
                 onRawText: (String) -> Unit
             ): NovelAiTagSearchDecisionResult = try {
                 onRawText("【思考】\n持续规划中")
@@ -549,6 +553,8 @@ class NovelAiTagResearchServiceTest {
             characterPrompts: List<Pair<String, String>>,
             imageBase64s: List<String>,
             model: ModelConfig,
+            playerName: String?,
+            botName: String,
             onRawText: (String) -> Unit
         ): NovelAiTagSearchDecisionResult {
             calls += 1

@@ -48,8 +48,9 @@ class NovelAiImageFeatureTest {
         val request = NovelAiPromptDesigner.conversationDesignMessages(
             messages = listOf(message("1", MessageRole.ASSISTANT, "林远站在雨夜窗边。")),
             playerName = "林远",
-            imageContentHint = "低角度，强调窗光。",
-            finalPromptRequirement = "保持 tags 简洁。",
+            botName = "林雾",
+            imageContentHint = "低角度，强调林远身后的窗光。",
+            finalPromptRequirement = "保持林远的 tags 简洁。",
             characterImagePrompts = listOf("林雾" to "1girl, silver hair"),
             structured = true
         )
@@ -59,12 +60,16 @@ class NovelAiImageFeatureTest {
             request.map { it.role }
         )
         assertEquals("\$username站在雨夜窗边。", request[0].content.jsonPrimitive.content)
-        assertTrue(request[1].content.jsonPrimitive.content.contains("低角度，强调窗光。"))
-        assertEquals(PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM.trim(), request[2].content.jsonPrimitive.content)
+        assertTrue(request[1].content.jsonPrimitive.content.contains("低角度，强调\$username身后的窗光。"))
+        assertEquals(
+            PromptTemplates.novelAiImagePromptCoreSystem(playerName = null, botName = "林雾"),
+            request[2].content.jsonPrimitive.content
+        )
+        assertTrue(request[2].content.jsonPrimitive.content.contains("\$username"))
         assertTrue(request[3].content.jsonPrimitive.content.contains("不要在 `baseCaption`"))
         assertFalse(request.joinToString { it.content.toString() }.contains("anime screencap"))
         assertTrue(request[4].content.jsonPrimitive.content.contains("林雾: 1girl, silver hair"))
-        assertTrue(request[5].content.jsonPrimitive.content.contains("保持 tags 简洁。"))
+        assertTrue(request[5].content.jsonPrimitive.content.contains("保持\$username的 tags 简洁。"))
     }
 
     @Test
@@ -323,18 +328,37 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
-    fun `conversation prompt restores player name placeholder`() {
+    fun `conversation image prompt preserves player placeholder and renders bot name`() {
         val prompt = PromptTemplates.novelAiImagePromptConversation(
             messages = listOf(
                 message("1", MessageRole.USER, "我是林远。"),
-                message("2", MessageRole.ASSISTANT, "林远靠近窗边。")
+                message("2", MessageRole.ASSISTANT, "\$username靠近\$botname。")
             ),
-            playerName = "林远"
+            playerName = "林远",
+            botName = "林雾",
+            preserveUsername = true
         )
 
         assertTrue(prompt.contains("User: 我是\$username。"))
-        assertTrue(prompt.contains("Assistant: \$username靠近窗边。"))
-        assertFalse(prompt.contains("林远"))
+        assertTrue(prompt.contains("Assistant: \$username靠近林雾。"))
+        assertTrue(prompt.contains("\$username"))
+        assertFalse(prompt.contains("\$botname"))
+    }
+
+    @Test
+    fun `novelai system prompts render player placeholder before request`() {
+        val planner = PromptTemplates.novelAiTagSearchPlannerSystem(
+            playerName = "林远",
+            botName = "林雾"
+        )
+        val designer = PromptTemplates.novelAiImagePromptCoreSystem(
+            playerName = "林远",
+            botName = "林雾"
+        )
+
+        assertTrue(planner.contains("包括林远"))
+        assertFalse(planner.contains("\$username"))
+        assertFalse(designer.contains("\$username"))
     }
 
     @Test
@@ -360,11 +384,10 @@ class NovelAiImageFeatureTest {
         )
 
         assertTrue(prompt.contains("Assistant: 她站在窗边。"))
-        assertTrue(prompt.contains("用户针对本次画面的额外要求"))
         assertTrue(prompt.contains("低角度，强调雨夜窗光。"))
-        assertTrue(prompt.contains("用户针对最终 NovelAI Prompt 的要求"))
         assertTrue(prompt.contains("baseCaption 先写构图"))
-        assertTrue(prompt.indexOf("Assistant: 她站在窗边。") < prompt.indexOf("用户针对本次画面的额外要求"))
+        assertTrue(prompt.indexOf("Assistant: 她站在窗边。") < prompt.indexOf("低角度，强调雨夜窗光。"))
+        assertTrue(prompt.indexOf("低角度，强调雨夜窗光。") < prompt.indexOf("baseCaption 先写构图"))
     }
 
     @Test
@@ -386,9 +409,7 @@ class NovelAiImageFeatureTest {
             finalPromptRequirement = requirement
         )
 
-        assertTrue(momentPrompt.contains("用户针对最终 NovelAI Prompt 的要求"))
         assertTrue(momentPrompt.contains(requirement))
-        assertTrue(coverPrompt.contains("用户针对最终 NovelAI Prompt 的要求"))
         assertTrue(coverPrompt.contains(requirement))
     }
 

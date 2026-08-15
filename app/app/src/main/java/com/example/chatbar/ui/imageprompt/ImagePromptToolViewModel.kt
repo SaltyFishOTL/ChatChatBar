@@ -251,6 +251,11 @@ class ImagePromptToolViewModel : ViewModel() {
                     ).filter(String::isNotBlank).joinToString("\n\n")
                 }
                 _uiState.update { it.copy(designStatus = "正在设计 NovelAI 提示词") }
+                val playerName = settingsRepository.getPlayerSetting().playerName
+                val botName = snapshot.characterCards
+                    .firstOrNull { it.id == snapshot.selectedCharacterCardId }
+                    ?.effectiveBotName
+                    .orEmpty()
                 val plan = promptDesigner.designForPromptTool(
                     imageDescription = imageDescription,
                     stylePrompt = snapshot.stylePrompt,
@@ -259,6 +264,8 @@ class ImagePromptToolViewModel : ViewModel() {
                     imageBase64s = directImageBase64s,
                     referenceImageProvided = snapshot.referenceImagePath != null,
                     model = model,
+                    playerName = playerName,
+                    botName = botName,
                     onContentDelta = { text ->
                         _uiState.update { it.copy(resultStream = text) }
                     },

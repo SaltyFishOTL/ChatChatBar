@@ -8,14 +8,12 @@ object ChatScrollPositionPolicy {
         messageIds: List<String>,
         firstVisibleItemIndex: Int,
         firstVisibleItemScrollOffset: Int,
-        transientMessageId: String? = null,
         capturedAt: Long = System.currentTimeMillis()
     ): ChatScrollPosition? {
-        if (messageIds.isEmpty() && transientMessageId == null) return null
+        if (messageIds.isEmpty()) return null
         val normalizedIndex = firstVisibleItemIndex.coerceAtLeast(0)
         val fallbackIndex = normalizedIndex.coerceAtMost(messageIds.lastIndex.coerceAtLeast(0))
         val anchorMessageId = messageIds.getOrNull(normalizedIndex)
-            ?: transientMessageId
             ?: messageIds.lastOrNull()
         return ChatScrollPosition(
             sessionId = sessionId,

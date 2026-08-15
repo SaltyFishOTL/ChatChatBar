@@ -23,7 +23,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Chat prompt composition, stable/dynamic/tail cache layers, history roles, previous-turn hot zone, World Book/RAG/Archive/HEAD order, or prompt-delivery diagnosis: use chatbar-prompt-pipeline.
 - Format-card editing, ordered user tools, request-only user-message suffixes, drafts, or transfer: data/local/entity/FormatCard.kt, domain/card/FormatCardUserToolPolicy.kt, ui/format/FormatCardEditScreen.kt, and FormatCardEditViewModel.kt; use chatbar-prompt-pipeline for final API placement.
 - Any model-facing prompt text, template, or builder change in PromptTemplates.kt: use chatbar-prompt-pipeline and maintain its file-header AI prompt directory.
-- Chat screen behavior outside a specific skill: ui/chat/ChatScreen.kt and ChatViewModel.kt.
+- Chat screen behavior outside a specific skill: ui/chat/ChatScreen.kt, ChatViewModel.kt, and DebugLogDialog.kt. Historical timeline-order repair also uses domain/chat/ChatMessageOrderRepairPolicy.kt and data/repository/ChatRepository.kt; use chatbar-image-generation-runtime and chatbar-long-term-memory for anchor/source-turn effects.
 - Long-term memory, HEAD, Episode/Arc/Era, source-turn/T mapping, Gap/backfill, historical source repair, compression, tier history, Archive injection, or SaveSlot memory migration: use chatbar-long-term-memory.
 - Message AI format repair, automatic checks, restore-original notices, repair model selection, or repair state: use chatbar-message-format-repair.
 - Shared AI background protection, foreground-service lifecycle, network guard, notification stop action, wake/Wi-Fi locks, or `ForegroundServiceDidNotStartInTimeException`: use chatbar-background-work-runtime.

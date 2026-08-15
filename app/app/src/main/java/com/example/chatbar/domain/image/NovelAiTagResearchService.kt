@@ -50,6 +50,7 @@ data class NovelAiTagSearchDecision(
 
 data class NovelAiTagSearchDecisionResult(
     val decision: NovelAiTagSearchDecision? = null,
+    val systemPrompt: String = "",
     val requestText: String = "",
     val reasoningResponse: String = "",
     val rawResponse: String = "",
@@ -169,6 +170,8 @@ interface NovelAiTagSearchPlanner {
         characterPrompts: List<Pair<String, String>>,
         imageBase64s: List<String>,
         model: ModelConfig,
+        playerName: String? = null,
+        botName: String = "",
         onRawText: (String) -> Unit = {}
     ): NovelAiTagSearchDecisionResult
 }
@@ -193,16 +196,24 @@ class LlmNovelAiTagSearchPlanner(
         characterPrompts: List<Pair<String, String>>,
         imageBase64s: List<String>,
         model: ModelConfig,
+        playerName: String?,
+        botName: String,
         onRawText: (String) -> Unit
     ): NovelAiTagSearchDecisionResult {
+        val systemPrompt = PromptTemplates.novelAiTagSearchPlannerSystem(
+            playerName = playerName,
+            botName = botName
+        )
         val requestText = PromptTemplates.novelAiTagSearchPlannerUser(
             taskInput = taskInput,
-            characterPrompts = characterPrompts
+            characterPrompts = characterPrompts,
+            playerName = playerName,
+            botName = botName
         )
         val streamingProgress = NovelAiTagPlannerStreamingProgress(onRawText)
         return try {
             val raw = chatService.completeTextStreaming(
-                messages = requestMessages(requestText, imageBase64s),
+                messages = requestMessages(requestText, imageBase64s, systemPrompt),
                 modelConfig = model,
                 thinkingBudget = NOVEL_AI_SCENE_PLANNING_THINKING_BUDGET,
                 onDelta = streamingProgress::appendContent,
@@ -211,6 +222,7 @@ class LlmNovelAiTagSearchPlanner(
             val decision = parseDecision(raw, characterPrompts)
             if (decision == null) {
                 NovelAiTagSearchDecisionResult(
+                    systemPrompt = systemPrompt,
                     requestText = requestText,
                     reasoningResponse = streamingProgress.reasoningText,
                     rawResponse = raw,
@@ -219,6 +231,7 @@ class LlmNovelAiTagSearchPlanner(
             } else {
                 NovelAiTagSearchDecisionResult(
                     decision = decision,
+                    systemPrompt = systemPrompt,
                     requestText = requestText,
                     reasoningResponse = streamingProgress.reasoningText,
                     rawResponse = raw
@@ -227,6 +240,7 @@ class LlmNovelAiTagSearchPlanner(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             NovelAiTagSearchDecisionResult(
+                systemPrompt = systemPrompt,
                 requestText = requestText,
                 reasoningResponse = streamingProgress.reasoningText,
                 rawResponse = streamingProgress.contentText,
@@ -248,7 +262,8 @@ class LlmNovelAiTagSearchPlanner(
 
     internal fun requestMessages(
         requestText: String,
-        imageBase64s: List<String>
+        imageBase64s: List<String>,
+        systemPrompt: String = PromptTemplates.novelAiTagSearchPlannerSystem()
     ): List<ChatApiMessage> {
         val sourceImages = imageBase64s.filter(String::isNotBlank)
         val userMessage = if (sourceImages.isEmpty()) {
@@ -257,7 +272,7 @@ class LlmNovelAiTagSearchPlanner(
             ChatApiMessage.withImages("user", requestText, sourceImages)
         }
         return listOf(
-            ChatApiMessage.text("system", PromptTemplates.novelAiTagSearchPlannerSystem()),
+            ChatApiMessage.text("system", systemPrompt),
             userMessage
         )
     }
@@ -501,6 +516,8 @@ class NovelAiTagResearchService(
         imageBase64s = imageBase64s,
         model = model,
         diversityKey = "",
+        playerName = null,
+        botName = "",
         onProgress = onProgress
     )
 
@@ -510,6 +527,8 @@ class NovelAiTagResearchService(
         imageBase64s: List<String>,
         model: ModelConfig,
         diversityKey: String = "",
+        playerName: String? = null,
+        botName: String = "",
         onProgress: (String) -> Unit = {}
     ): NovelAiTagResearchResult {
         val transcript = TagResearchTranscript(onProgress)
@@ -523,6 +542,8 @@ class NovelAiTagResearchService(
             characterPrompts = characterPrompts,
             imageBase64s = imageBase64s,
             model = model,
+            playerName = playerName,
+            botName = botName,
             onRawText = { streamed -> transcript.update(planningTitle, streamed) }
         )
         val decision = decisionResult.decision

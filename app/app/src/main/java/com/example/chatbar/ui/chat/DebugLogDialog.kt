@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbIcon
@@ -70,6 +71,21 @@ fun DebugLogDialog(
     val scope = rememberCoroutineScope()
     var rebuilding by remember { mutableStateOf(false) }
     var rebuildResult by remember { mutableStateOf<String?>(null) }
+    var orderRepairBusy by remember { mutableStateOf(false) }
+    var orderRepairPreview by remember { mutableStateOf<DebugMessageOrderRepairPreview?>(null) }
+    var orderRepairResult by remember { mutableStateOf<String?>(null) }
+    var confirmOrderRepairUndo by remember { mutableStateOf(false) }
+    val requestOrderRepairPreview: () -> Unit = {
+        orderRepairBusy = true
+        scope.launch {
+            runCatching { viewModel.previewDebugMessageOrderRepair() }
+                .onSuccess { orderRepairPreview = it }
+                .onFailure { error ->
+                    orderRepairResult = "无法生成修复预览：${error.message ?: "未知错误"}"
+                }
+            orderRepairBusy = false
+        }
+    }
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Column(
             modifier
@@ -89,10 +105,39 @@ fun DebugLogDialog(
                             rebuildResult = viewModel.rebuildRagIndex()
                             rebuilding = false
                         }
-                    }, tint = ChatBarTheme.colors.primary)
+                    }, enabled = !orderRepairBusy, tint = ChatBarTheme.colors.primary)
                     CbIconButton(AppIcons.DeleteSweep, "清空日志", { DebugLogManager.clearLogs(sessionId) }, tint = ChatBarTheme.colors.destructive)
                 }
             )
+            CbSurface(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        CbText("消息顺序维护", style = ChatBarTheme.typography.heading)
+                        CbText(
+                            "检查旧聊天中的回复与生成图片位置；写入前可预览。",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                    Spacer(Modifier.width(12.dp))
+                    if (orderRepairBusy) {
+                        CbSpinner(Modifier.size(24.dp))
+                    } else {
+                        CbButton(
+                            "检查顺序",
+                            requestOrderRepairPreview,
+                            enabled = !rebuilding,
+                            variant = ButtonVariant.Outline
+                        )
+                    }
+                }
+            }
             if (sessionLogs.isEmpty()) {
                 Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     CbText("当前会话暂无调试日志", color = ChatBarTheme.colors.mutedForeground)
@@ -111,6 +156,157 @@ fun DebugLogDialog(
     rebuildResult?.let { result ->
         CbDialog(onDismissRequest = { rebuildResult = null }, title = "RAG 重建结果", confirm = { CbButton("确定", { rebuildResult = null }) }) {
             CodeBlock(result, Modifier.heightIn(max = 360.dp))
+        }
+    }
+    orderRepairPreview?.let { preview ->
+        CbDialog(
+            onDismissRequest = { if (!orderRepairBusy) orderRepairPreview = null },
+            title = "修复消息顺序",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { orderRepairPreview = null },
+                    enabled = !orderRepairBusy,
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton(
+                    if (preview.moves.isEmpty()) "关闭" else "写入修复",
+                    {
+                        if (preview.moves.isEmpty()) {
+                            orderRepairPreview = null
+                        } else {
+                            orderRepairBusy = true
+                            scope.launch {
+                                runCatching { viewModel.applyDebugMessageOrderRepair(preview) }
+                                    .onSuccess { result ->
+                                        orderRepairPreview = null
+                                        orderRepairResult = result
+                                    }
+                                    .onFailure { error ->
+                                        orderRepairPreview = null
+                                        orderRepairResult = "修复失败：${error.message ?: "未知错误"}"
+                                    }
+                                orderRepairBusy = false
+                            }
+                        }
+                    },
+                    enabled = !orderRepairBusy
+                )
+            }
+        ) {
+            CbText(
+                if (preview.moves.isEmpty()) {
+                    "已检查 ${preview.totalMessages} 条消息，未发现可确定的顺序错乱。"
+                } else {
+                    "共 ${preview.totalMessages} 条消息；预计调整 ${preview.moves.size} 条。确认后只会重建顺序键，不修改正文、图片、时间或剧情轮身份。"
+                },
+                color = ChatBarTheme.colors.mutedForeground
+            )
+            CbText(
+                "识别到 ${preview.anchoredMessageCount} 条图片锚点关系。修复后仅执行长期记忆变更检测，不会自动调用模型。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            if (preview.orphanedAnchorCount > 0 || preview.cyclicAnchorCount > 0) {
+                CbText(
+                    "警告：${preview.orphanedAnchorCount} 条图片缺少锚点，${preview.cyclicAnchorCount} 条锚点关系形成循环；这些消息仅按保守时间顺序处理。",
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            if (preview.moves.isNotEmpty()) {
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().heightIn(max = 320.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    items(preview.moves, key = { it.messageId }) { move ->
+                        CbSurface(
+                            Modifier.fillMaxWidth(),
+                            border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+                        ) {
+                            Column(Modifier.padding(10.dp)) {
+                                CbText(
+                                    "#${move.fromPosition} → #${move.toPosition}",
+                                    color = ChatBarTheme.colors.primary,
+                                    style = ChatBarTheme.typography.label
+                                )
+                                CbText(
+                                    move.summary,
+                                    color = ChatBarTheme.colors.mutedForeground,
+                                    style = ChatBarTheme.typography.caption
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            if (preview.backupAvailable) {
+                CbButton(
+                    "撤销上次顺序修复",
+                    {
+                        orderRepairPreview = null
+                        confirmOrderRepairUndo = true
+                    },
+                    enabled = !orderRepairBusy,
+                    variant = ButtonVariant.Outline
+                )
+            }
+        }
+    }
+    if (confirmOrderRepairUndo) {
+        CbDialog(
+            onDismissRequest = { if (!orderRepairBusy) confirmOrderRepairUndo = false },
+            title = "撤销顺序修复",
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { confirmOrderRepairUndo = false },
+                    enabled = !orderRepairBusy,
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            confirm = {
+                CbButton(
+                    "恢复备份",
+                    {
+                        orderRepairBusy = true
+                        scope.launch {
+                            runCatching { viewModel.undoDebugMessageOrderRepair() }
+                                .onSuccess { result ->
+                                    confirmOrderRepairUndo = false
+                                    orderRepairPreview = null
+                                    orderRepairResult = result
+                                }
+                                .onFailure { error ->
+                                    confirmOrderRepairUndo = false
+                                    orderRepairResult = "撤销失败：${error.message ?: "未知错误"}"
+                                }
+                            orderRepairBusy = false
+                        }
+                    },
+                    enabled = !orderRepairBusy
+                )
+            }
+        ) {
+            CbText(
+                "将恢复上次修复前保存的顺序键。若修复后消息已有新增、删除或更新，系统会拒绝撤销。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
+    orderRepairResult?.let { result ->
+        CbDialog(
+            onDismissRequest = { orderRepairResult = null },
+            title = "消息顺序维护结果",
+            confirm = { CbButton("确定", { orderRepairResult = null }) }
+        ) {
+            CodeBlock(
+                result,
+                Modifier.heightIn(max = 360.dp),
+                error = result.contains("失败") || result.contains("无法")
+            )
         }
     }
 }

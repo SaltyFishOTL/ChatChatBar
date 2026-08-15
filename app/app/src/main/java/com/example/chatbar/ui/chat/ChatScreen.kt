@@ -173,6 +173,9 @@ fun ChatScreen(
     val messages by viewModel.messages.collectAsState()
     val isResponding by viewModel.isResponding.collectAsState()
     val streamingMessage by viewModel.streamingMessage.collectAsState()
+    val timelineMessages = remember(messages, streamingMessage) {
+        mergeStreamingMessageIntoTimeline(messages, streamingMessage)
+    }
     val messageFormatRepairState by viewModel.messageFormatRepairState.collectAsState()
     val deletingMemory by viewModel.isDeletingMemory.collectAsState()
     val contextWindowSize by viewModel.contextWindowSize.collectAsState()
@@ -333,16 +336,14 @@ fun ChatScreen(
         session?.memoryHeadCommitId,
         session?.memoryUpdateStatus
     ) { mutableStateOf(false) }
-    val latestMessages by rememberUpdatedState(messages)
-    val latestStreamingMessageId by rememberUpdatedState(streamingMessage?.id)
+    val latestTimelineMessages by rememberUpdatedState(timelineMessages)
     val latestInitialScrollDone by rememberUpdatedState(initialScrollDone)
 
     fun captureScrollPosition() = ChatScrollPositionPolicy.capture(
         sessionId = sessionId,
-        messageIds = messages.map { it.id },
+        messageIds = timelineMessages.map { it.id },
         firstVisibleItemIndex = listState.firstVisibleItemIndex,
-        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
-        transientMessageId = streamingMessage?.id
+        firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
     )
 
     DisposableEffect(viewModel, sessionId) {
@@ -350,10 +351,9 @@ fun ChatScreen(
             if (latestInitialScrollDone) {
                 ChatScrollPositionPolicy.capture(
                     sessionId = sessionId,
-                    messageIds = latestMessages.map { it.id },
+                    messageIds = latestTimelineMessages.map { it.id },
                     firstVisibleItemIndex = listState.firstVisibleItemIndex,
-                    firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset,
-                    transientMessageId = latestStreamingMessageId
+                    firstVisibleItemScrollOffset = listState.firstVisibleItemScrollOffset
                 )?.let(viewModel::persistChatScrollPosition)
             }
         }
@@ -424,7 +424,7 @@ fun ChatScreen(
     }
 
     suspend fun scrollToPreviousMessage() {
-        val messageCount = messages.size
+        val messageCount = timelineMessages.size
         if (messageCount <= 0) return
         val firstVisible = listState.firstVisibleItemIndex
         val lastMessageIndex = messageCount - 1
@@ -438,7 +438,7 @@ fun ChatScreen(
     }
 
     suspend fun scrollToFirstMessage() {
-        if (messages.isNotEmpty()) listState.animateScrollToItem(0)
+        if (timelineMessages.isNotEmpty()) listState.animateScrollToItem(0)
     }
 
     val chatImagePicker = rememberLauncherForActivityResult(ActivityResultContracts.PickVisualMedia()) { uri: Uri? ->
@@ -583,13 +583,6 @@ fun ChatScreen(
             .toSet()
     }
     val regenerableId = latestRegenerableAssistantMessageId(messages)
-    val streamingInsertIndex = remember(messages, streamingMessage) {
-        streamingMessage?.let { streaming ->
-            messages.indexOfFirst { message ->
-                ChatMessage.TimelineComparator.compare(message, streaming) > 0
-            }.takeIf { it >= 0 } ?: messages.size
-        }
-    }
     val imageGenerationsByAnchor = remember(imageGenerations) {
         imageGenerations.groupBy { it.anchorMessageId }
     }
@@ -986,10 +979,10 @@ fun ChatScreen(
                     .fillMaxSize()
                     .padding(horizontal = 12.dp)
             ) {
-                itemsIndexed(messages, key = { _, message -> message.id }) { index, message ->
-                    if (streamingInsertIndex == index) {
+                itemsIndexed(timelineMessages, key = { _, message -> message.id }) { _, message ->
+                    if (message.id == streamingMessage?.id) {
                         StreamingChatBubble(
-                            message = streamingMessage,
+                            message = message,
                             fontScale = bubbleFontScale,
                             renderPlayerName = renderPlayerName,
                             renderBotName = renderBotName,
@@ -997,6 +990,7 @@ fun ChatScreen(
                             characterAvatars = characterAvatars,
                             assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
                         )
+                        return@itemsIndexed
                     }
                     val repairState = messageFormatRepairState?.takeIf { it.messageId == message.id }
                     val displayedMessage = repairState?.let {
@@ -1115,19 +1109,6 @@ fun ChatScreen(
                                 onCancel = { viewModel.cancelNovelAiImageGeneration(generation.taskId) }
                             )
                         }
-                    }
-                }
-                streamingMessage?.takeIf { streamingInsertIndex == messages.size }?.let { message ->
-                    item(key = "streaming-${message.id}") {
-                        StreamingChatBubble(
-                            message = message,
-                            fontScale = bubbleFontScale,
-                            renderPlayerName = renderPlayerName,
-                            renderBotName = renderBotName,
-                            botAvatarPath = botAvatarPath,
-                            characterAvatars = characterAvatars,
-                            assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled
-                        )
                     }
                 }
                 orphanedImageGenerations.forEach { generation ->

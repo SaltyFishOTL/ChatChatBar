@@ -101,6 +101,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
+        playerName: String? = session.playerName,
         allowCleartextModelApi: Boolean = false,
         autoGenerateImages: Boolean = true,
         resumeFrom: MomentGenerationCheckpoint? = null,
@@ -114,6 +115,7 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        playerName = playerName,
         allowCleartextModelApi = allowCleartextModelApi,
         autoGenerateImages = autoGenerateImages,
         resumeFrom = resumeFrom,
@@ -131,6 +133,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
+        playerName: String? = session.playerName,
         allowCleartextModelApi: Boolean = false,
         autoGenerateImages: Boolean = true,
         resumeFrom: MomentGenerationCheckpoint? = null,
@@ -145,6 +148,7 @@ class MomentGenerationService(
         imageModel = imageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
+        playerName = playerName,
         allowCleartextModelApi = allowCleartextModelApi,
         autoGenerateImages = autoGenerateImages,
         resumeFrom = resumeFrom,
@@ -162,6 +166,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long,
         finalPromptRequirement: String,
+        playerName: String?,
         allowCleartextModelApi: Boolean,
         autoGenerateImages: Boolean,
         resumeFrom: MomentGenerationCheckpoint?,
@@ -226,6 +231,7 @@ class MomentGenerationService(
                 momentImageBrief = normalizedDraft.imageBrief,
                 model = imageModel,
                 finalPromptRequirement = finalPromptRequirement,
+                playerName = playerName,
                 onDelta = { transcript ->
                     onProgress(
                         MomentGenerationProgress(
@@ -299,6 +305,7 @@ class MomentGenerationService(
         imageModel: ModelConfig?,
         scheduledAt: Long = System.currentTimeMillis(),
         finalPromptRequirement: String = "",
+        playerName: String? = session.playerName,
         allowCleartextModelApi: Boolean = false
     ): MomentDebugGenerationResult {
         val exchanges = mutableListOf<MomentDebugExchange>()
@@ -347,7 +354,8 @@ class MomentGenerationService(
                 card = card,
                 momentImageBrief = normalizedDraft.imageBrief,
                 model = imageModel,
-                finalPromptRequirement = finalPromptRequirement
+                finalPromptRequirement = finalPromptRequirement,
+                playerName = playerName
             )
             exchanges += promptDebug.exchanges.map { exchange ->
                 MomentDebugExchange(

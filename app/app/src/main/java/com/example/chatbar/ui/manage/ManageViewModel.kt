@@ -782,6 +782,9 @@ class ManageViewModel : ViewModel() {
                 require(model.hasConfiguredAuthentication(settings)) { "默认对话模型/API Key 未配置" }
                 val imageModel = modelResolver.defaultImageModel(settings)
                 val latestPost = momentRepository.latestPostForCard(cardId)
+                val globalPlayerName = settingsRepository.getPlayerSetting().playerName
+                    .takeIf(String::isNotBlank)
+                val playerName = session.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
                 AiBackgroundWorkManager.run("moments_debug_$cardId") {
                     momentGenerationService.debugGenerateNow(
                         card = card,
@@ -792,6 +795,7 @@ class ManageViewModel : ViewModel() {
                         imageModel = imageModel,
                         scheduledAt = System.currentTimeMillis(),
                         finalPromptRequirement = settings.imagePromptToolPreference,
+                        playerName = playerName,
                         allowCleartextModelApi = settings.allowCleartextModelApi
                     )
                 }.also { debugResult ->

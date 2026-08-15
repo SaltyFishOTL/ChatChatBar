@@ -3,11 +3,16 @@ package com.example.chatbar.data.repository
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatDraft
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChatMessageOrderBackup
+import com.example.chatbar.data.local.entity.ChatMessageOrderBackupEntry
 import com.example.chatbar.data.local.entity.ChatScrollPosition
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.domain.chat.ChatMessageOrdering
+import com.example.chatbar.domain.chat.ChatMessageOrderRepairPlan
+import com.example.chatbar.domain.chat.ChatMessageOrderRepairPolicy
+import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
 import java.util.UUID
@@ -26,6 +31,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     companion object {
         private const val SESSION_TYPE = "chat_sessions"
         private const val MESSAGE_TYPE = "chat_messages"
+        private const val MESSAGE_ORDER_BACKUP_TYPE = "chat_message_order_backups"
         private const val DRAFT_TYPE = "chat_drafts"
         private const val SCROLL_POSITION_TYPE = "chat_scroll_positions"
     }
@@ -195,6 +201,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         message: ChatMessage,
         anchorMessageId: String
     ): ChatMessage = messageAppendMutex.withLock {
+        val existingMessages = getMessages(message.sessionId)
         val anchor = getMessage(anchorMessageId, message.sessionId)
         val assigned = message.copy(
             sourceTurnId = message.sourceTurnId ?: anchor?.sourceTurnId,
@@ -202,12 +209,17 @@ class ChatRepository(private val storage: JsonFileStorage) {
             timelineTurn = message.timelineTurn ?: anchor?.timelineTurn
         )
         val reordered = ChatMessageOrdering.insertGeneratedImageAfter(
-            messages = getMessages(message.sessionId),
+            messages = existingMessages,
             imageMessage = assigned,
             anchorMessageId = anchorMessageId
         )
         val inserted = reordered.first { it.id == message.id }
-        reordered.forEach { saveMessageRecord(it) }
+        val existingById = existingMessages.associateBy(ChatMessage::id)
+        reordered.forEach { reorderedMessage ->
+            if (reorderedMessage != existingById[reorderedMessage.id]) {
+                saveMessageRecord(reorderedMessage)
+            }
+        }
 
         val latest = reordered.lastOrNull()
         getSession(message.sessionId)?.let { session ->
@@ -232,14 +244,13 @@ class ChatRepository(private val storage: JsonFileStorage) {
         )
     }
 
-    suspend fun updateMessage(message: ChatMessage) {
-        val updated = message.copy(updatedAt = System.currentTimeMillis())
-        storage.saveEntity(
-            MESSAGE_TYPE,
-            messageStorageId(updated.sessionId, updated.id),
-            updated,
-            ChatMessage.serializer()
+    suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withLock {
+        val persisted = getMessage(message.id, message.sessionId)
+        val updated = message.copy(
+            updatedAt = System.currentTimeMillis(),
+            orderKey = persisted?.orderKey ?: message.orderKey
         )
+        saveMessageRecord(updated)
 
         val latest = getMessages(updated.sessionId).lastOrNull()
         if (latest?.id == updated.id) {
@@ -252,6 +263,88 @@ class ChatRepository(private val storage: JsonFileStorage) {
                     )
                 )
             }
+        }
+    }
+
+    suspend fun previewMessageOrderRepair(sessionId: String): ChatMessageOrderRepairPlan =
+        messageAppendMutex.withLock {
+            ChatMessageOrderRepairPolicy.plan(getMessages(sessionId))
+        }
+
+    suspend fun repairMessageOrder(
+        sessionId: String,
+        expectedBaseline: List<ChatMessageOrderSnapshot>
+    ): ChatMessageOrderRepairPlan = messageAppendMutex.withLock {
+        val current = getMessages(sessionId)
+        val plan = ChatMessageOrderRepairPolicy.plan(current)
+        check(plan.baseline == expectedBaseline) {
+            "预览后聊天内容已变化，请重新生成修复预览"
+        }
+        if (!plan.requiresRepair) return@withLock plan
+
+        storage.saveEntity(
+            MESSAGE_ORDER_BACKUP_TYPE,
+            sessionId,
+            ChatMessageOrderBackup(
+                sessionId = sessionId,
+                createdAt = System.currentTimeMillis(),
+                entries = current.map { message ->
+                    ChatMessageOrderBackupEntry(message.id, message.orderKey, message.updatedAt)
+                }
+            ),
+            ChatMessageOrderBackup.serializer()
+        )
+        persistMessageOrder(sessionId, current, plan.repairedMessages)
+        plan
+    }
+
+    suspend fun hasMessageOrderBackup(sessionId: String): Boolean =
+        storage.exists(MESSAGE_ORDER_BACKUP_TYPE, sessionId)
+
+    suspend fun restoreMessageOrderBackup(sessionId: String): List<ChatMessage> =
+        messageAppendMutex.withLock {
+            val backup = storage.loadEntity(
+                MESSAGE_ORDER_BACKUP_TYPE,
+                sessionId,
+                ChatMessageOrderBackup.serializer()
+            ) ?: error("当前会话没有可撤销的顺序修复")
+            val current = getMessages(sessionId)
+            val backupEntries = backup.entries.associateBy(ChatMessageOrderBackupEntry::messageId)
+            check(
+                backup.entries.size == backupEntries.size &&
+                    current.map { it.id }.toSet() == backupEntries.keys &&
+                    current.all { message -> backupEntries.getValue(message.id).updatedAt == message.updatedAt }
+            ) {
+                "修复后聊天内容已变化，无法安全撤销"
+            }
+            val restored = current.map { message ->
+                message.copy(orderKey = backupEntries.getValue(message.id).orderKey)
+            }.sortedWith(ChatMessage.TimelineComparator)
+            persistMessageOrder(sessionId, current, restored)
+            storage.deleteEntity<ChatMessageOrderBackup>(MESSAGE_ORDER_BACKUP_TYPE, sessionId)
+            restored
+        }
+
+    private suspend fun persistMessageOrder(
+        sessionId: String,
+        current: List<ChatMessage>,
+        reordered: List<ChatMessage>
+    ) {
+        val currentById = current.associateBy(ChatMessage::id)
+        reordered.forEach { message ->
+            if (currentById[message.id]?.orderKey != message.orderKey) {
+                saveMessageRecord(message)
+            }
+        }
+        val latest = reordered.sortedWith(ChatMessage.TimelineComparator).lastOrNull()
+        getSession(sessionId)?.let { session ->
+            updateSession(
+                session.copy(
+                    lastMessagePreview = latest?.previewText(),
+                    lastMessageTime = latest?.createdAt,
+                    lastMessageRole = latest?.role
+                )
+            )
         }
     }
 
@@ -294,8 +387,11 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    suspend fun deleteMessagesForSession(sessionId: String): Int =
-        storage.deleteByIdPrefix<ChatMessage>(MESSAGE_TYPE, "${sessionId}_")
+    suspend fun deleteMessagesForSession(sessionId: String): Int {
+        val deleted = storage.deleteByIdPrefix<ChatMessage>(MESSAGE_TYPE, "${sessionId}_")
+        storage.deleteEntity<ChatMessageOrderBackup>(MESSAGE_ORDER_BACKUP_TYPE, sessionId)
+        return deleted
+    }
 
     /** 批量替换会话消息，避免逐条更新会话预览与反复全量加载。 */
     suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) {

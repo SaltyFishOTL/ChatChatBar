@@ -29,6 +29,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 ## Shared NovelAI Entry
 
 - `NOVELAI_IMAGE_PROMPT_SYSTEM` is the shared system prompt for NovelAI tag design.
+- Render `${'$'}username` and `${'$'}botname` before scene-planning and final-design requests, except conversation image generation must preserve `${'$'}username` as the player-role marker while still rendering `${'$'}botname`. Normalize the effective player name in chat-source text and manual chat-image requirements back to `${'$'}username`. Use session player-name override before global player name, use `CharacterCard.effectiveBotName` for the card role, and make Debug exchanges show the exact planner system prompt sent.
 - Reuse it through the feature-appropriate `PromptTemplates` helper: the composed system helper for card-backed flows and `novelAiImagePromptCoreSystem()` for the prompt tool.
 - Send final user-specific image requirements through `novelAiImagePromptPreferenceUser(...)` as the last user-role message. Do not turn them into another system message: cleartext chat-template adaptation may rewrite system roles, and the final adapted request must not end on an assistant role.
 - Prompt-tool reference-image reverse design appends `PromptTemplates.novelAiImagePromptReferenceImageUser()` and still uses the shared system prompt. Keep `referenceImageProvided` independent from direct image payloads so vision-model description fallback retains this instruction.

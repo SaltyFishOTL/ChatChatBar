@@ -56,16 +56,16 @@ class ChatScrollPositionPolicyTest {
     }
 
     @Test
-    fun captureUsesStreamingMessageAtListFooter() {
+    fun captureKeepsStreamingMessageAnchorAfterPersistence() {
         val position = ChatScrollPositionPolicy.capture(
             sessionId = "session",
-            messageIds = listOf("first"),
+            messageIds = listOf("first", "streaming"),
             firstVisibleItemIndex = 1,
-            firstVisibleItemScrollOffset = 12,
-            transientMessageId = "streaming"
+            firstVisibleItemScrollOffset = 12
         )
 
         assertEquals("streaming", position?.anchorMessageId)
+        assertEquals(12, position?.scrollOffset)
         assertEquals(
             1,
             ChatScrollPositionPolicy.restoreMessageIndex(

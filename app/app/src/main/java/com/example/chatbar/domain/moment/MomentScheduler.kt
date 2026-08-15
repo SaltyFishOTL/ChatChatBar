@@ -157,6 +157,9 @@ class MomentScheduler(
             return
         }
         val imageModel = resolveImageModel(settings)
+        val globalPlayerName = settingsRepository.getPlayerSetting().playerName
+            .takeIf(String::isNotBlank)
+        val playerName = session.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
 
         val running = task.copy(status = MomentTaskStatus.RUNNING, sessionId = session.id, failureReason = null)
         momentRepository.updateTask(running)
@@ -173,6 +176,7 @@ class MomentScheduler(
                     imageModel = imageModel,
                     scheduledAt = task.scheduledAt,
                     finalPromptRequirement = settings.imagePromptToolPreference,
+                    playerName = playerName,
                     allowCleartextModelApi = settings.allowCleartextModelApi,
                     autoGenerateImages = settings.momentsImagesEnabled,
                     onCheckpoint = { generationCheckpoint = it }

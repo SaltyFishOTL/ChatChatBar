@@ -1489,7 +1489,8 @@ class CharacterEditViewModel(
                     val prompt = resumeState?.promptPlan ?: novelAiPromptDesigner.designForCharacterCard(
                         card = card,
                         model = model,
-                        finalPromptRequirement = settings.imagePromptToolPreference
+                        finalPromptRequirement = settings.imagePromptToolPreference,
+                        playerName = settingsRepository.getPlayerSetting().playerName
                     ) { promptDraft ->
                         updateCoverImageStateIfCurrent(generationToken, target) {
                             it.copy(

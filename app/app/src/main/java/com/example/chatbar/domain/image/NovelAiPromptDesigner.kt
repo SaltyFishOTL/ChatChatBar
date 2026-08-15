@@ -96,6 +96,7 @@ class NovelAiPromptDesigner(
     ): NovelAiPromptPlan {
         val context = contextForAnchor(messages, anchorMessageId)
         require(context.isNotEmpty()) { "没有可用于生图的聊天上下文" }
+        val botName = card.effectiveBotName
         val structured = card.editMode == CharacterEditMode.STRUCTURED
         val characterPrompts = if (structured) {
             card.characters.map { baseCharacterName(it.name) to it.imagePrompt.trim() }
@@ -105,6 +106,7 @@ class NovelAiPromptDesigner(
         val requestMessages = conversationDesignMessages(
             messages = context,
             playerName = playerName,
+            botName = botName,
             imageContentHint = imageContentHint,
             finalPromptRequirement = finalPromptRequirement,
             characterImagePrompts = characterPrompts,
@@ -115,13 +117,17 @@ class NovelAiPromptDesigner(
             taskInput = PromptTemplates.novelAiImagePromptConversation(
                 messages = context,
                 playerName = playerName,
+                botName = botName,
                 imageContentHint = imageContentHint,
-                finalPromptRequirement = finalPromptRequirement
+                finalPromptRequirement = finalPromptRequirement,
+                preserveUsername = true
             ),
             characterPrompts = characterPrompts,
             imageBase64s = emptyList(),
             model = model,
             diversityKey = "chat:${sessionId ?: card.id}",
+            playerName = null,
+            botName = botName,
             onProgress = progress::updatePrelude
         )
         val finalRequestMessages = withResearchEvidence(
@@ -155,6 +161,7 @@ class NovelAiPromptDesigner(
         card: CharacterCard,
         model: ModelConfig,
         finalPromptRequirement: String = "",
+        playerName: String? = null,
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         require(card.hasImageDesignSource()) { "没有可用于生图的角色卡内容" }
@@ -166,11 +173,15 @@ class NovelAiPromptDesigner(
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
             characterImagePrompts = characterPrompts,
-            structured = structured
+            structured = structured,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val userPrompt = PromptTemplates.novelAiImagePromptCharacterCard(
             card = card,
-            finalPromptRequirement = finalPromptRequirement
+            finalPromptRequirement = finalPromptRequirement,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val requestMessages = listOf(
             ChatApiMessage.text("system", systemPrompt),
@@ -183,6 +194,8 @@ class NovelAiPromptDesigner(
             imageBase64s = emptyList(),
             model = model,
             diversityKey = "card:${card.id}",
+            playerName = playerName,
+            botName = card.effectiveBotName,
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
@@ -207,6 +220,7 @@ class NovelAiPromptDesigner(
         momentImageBrief: String,
         model: ModelConfig,
         finalPromptRequirement: String = "",
+        playerName: String? = null,
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         require(momentImageBrief.isNotBlank()) { "没有可用于朋友圈生图的图片设计" }
@@ -218,11 +232,15 @@ class NovelAiPromptDesigner(
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
             characterImagePrompts = characterPrompts,
-            structured = structured
+            structured = structured,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val userPrompt = PromptTemplates.novelAiImagePromptMoment(
             momentImageBrief = momentImageBrief,
-            finalPromptRequirement = finalPromptRequirement
+            finalPromptRequirement = finalPromptRequirement,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val requestMessages = listOf(
             ChatApiMessage.text("system", systemPrompt),
@@ -235,6 +253,8 @@ class NovelAiPromptDesigner(
             imageBase64s = emptyList(),
             model = model,
             diversityKey = "moment:${card.id}",
+            playerName = playerName,
+            botName = card.effectiveBotName,
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
@@ -259,6 +279,7 @@ class NovelAiPromptDesigner(
         momentImageBrief: String,
         model: ModelConfig,
         finalPromptRequirement: String = "",
+        playerName: String? = null,
         onDelta: (String) -> Unit = {}
     ): NovelAiPromptDebugResult {
         require(momentImageBrief.isNotBlank()) { "没有可用于朋友圈生图的图片设计" }
@@ -270,11 +291,15 @@ class NovelAiPromptDesigner(
         }
         val systemPrompt = PromptTemplates.novelAiImagePromptSystem(
             characterImagePrompts = characterPrompts,
-            structured = structured
+            structured = structured,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val userPrompt = PromptTemplates.novelAiImagePromptMoment(
             momentImageBrief = momentImageBrief,
-            finalPromptRequirement = finalPromptRequirement
+            finalPromptRequirement = finalPromptRequirement,
+            playerName = playerName,
+            botName = card.effectiveBotName
         )
         val requestMessages = listOf(
             ChatApiMessage.text("system", systemPrompt),
@@ -287,6 +312,8 @@ class NovelAiPromptDesigner(
             imageBase64s = emptyList(),
             model = model,
             diversityKey = "moment:${card.id}",
+            playerName = playerName,
+            botName = card.effectiveBotName,
             onProgress = progress::updatePrelude
         )
         val finalRequestMessages = withResearchEvidence(
@@ -330,6 +357,8 @@ class NovelAiPromptDesigner(
         imageBase64s: List<String> = emptyList(),
         referenceImageProvided: Boolean = imageBase64s.any(String::isNotBlank),
         model: ModelConfig,
+        playerName: String? = null,
+        botName: String = "",
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
@@ -340,7 +369,7 @@ class NovelAiPromptDesigner(
             characterPrompt = characterPrompt
         )
         require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、画风、角色提示词或上传图片" }
-        val systemPrompt = PromptTemplates.novelAiImagePromptCoreSystem()
+        val systemPrompt = PromptTemplates.novelAiImagePromptCoreSystem(playerName, botName)
         val scenePrompt = PromptTemplates.novelAiImagePromptConversation(
             listOf(
                 ChatMessage.create(
@@ -349,6 +378,8 @@ class NovelAiPromptDesigner(
                     content = request
                 )
             ),
+            playerName = playerName,
+            botName = botName,
             finalPromptRequirement = finalPromptRequirement
         )
         val userPrompt = buildString {
@@ -375,6 +406,8 @@ class NovelAiPromptDesigner(
             imageBase64s = sourceImages,
             model = model,
             diversityKey = PROMPT_TOOL_SESSION_ID,
+            playerName = playerName,
+            botName = botName,
             onProgress = progress::updatePrelude
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
@@ -601,6 +634,7 @@ class NovelAiPromptDesigner(
         internal fun conversationDesignMessages(
             messages: List<ChatMessage>,
             playerName: String?,
+            botName: String = "",
             imageContentHint: String,
             finalPromptRequirement: String,
             characterImagePrompts: List<Pair<String, String>>,
@@ -611,13 +645,26 @@ class NovelAiPromptDesigner(
             return listOf(
                 ChatApiMessage.text(
                     "assistant",
-                    PromptTemplates.novelAiImagePromptAssistantScene(scene, playerName)
+                    PromptTemplates.novelAiImagePromptAssistantScene(
+                        message = scene,
+                        playerName = playerName,
+                        botName = botName,
+                        preserveUsername = true
+                    )
                 ),
                 ChatApiMessage.text(
                     "user",
-                    PromptTemplates.novelAiImagePromptImageContentHintUser(imageContentHint)
+                    PromptTemplates.novelAiImagePromptImageContentHintUser(
+                        imageContentHint,
+                        playerName,
+                        botName,
+                        preserveUsername = true
+                    )
                 ),
-                ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptCoreSystem()),
+                ChatApiMessage.text(
+                    "system",
+                    PromptTemplates.novelAiImagePromptCoreSystem(playerName = null, botName = botName)
+                ),
                 ChatApiMessage.text(
                     "system",
                     PromptTemplates.novelAiImagePromptStyleExclusionSystem()
@@ -626,12 +673,19 @@ class NovelAiPromptDesigner(
                     "system",
                     PromptTemplates.novelAiImagePromptCharacterPresetSystem(
                         characterImagePrompts,
-                        structured
+                        structured,
+                        null,
+                        botName
                     )
                 ),
                 ChatApiMessage.text(
                     "user",
-                    PromptTemplates.novelAiImagePromptPreferenceUser(finalPromptRequirement)
+                    PromptTemplates.novelAiImagePromptPreferenceUser(
+                        finalPromptRequirement,
+                        playerName,
+                        botName,
+                        preserveUsername = true
+                    )
                 )
             )
         }
@@ -769,7 +823,10 @@ class NovelAiPromptDesigner(
                 NovelAiPromptDebugExchange(
                     title = "自然语言画面设计与检索规划",
                     input = debugMessages(
-                        PromptTemplates.novelAiTagSearchPlannerSystem(),
+                        research.decisionResults.firstOrNull()
+                            ?.systemPrompt
+                            ?.takeIf(String::isNotBlank)
+                            ?: PromptTemplates.novelAiTagSearchPlannerSystem(),
                         research.plannerRequestText
                     ),
                     output = planningOutput

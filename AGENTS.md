@@ -30,14 +30,17 @@ Use PowerShell from `app/`:
 - `ci.ps1 -SkipAssemble`: tests plus Android test compilation.
 - `ci.ps1`: full local verification. JDK 17 required.
 
-## Post-Change Device Testing
+## Post-Change Packaging and User Testing
 
-After completing a feature or fix, if `adb devices -l` shows a connected Android device, automatically rebuild, reinstall, and launch ChatBar for manual testing. Use data-preserving install only:
+After completing a feature or fix, query `adb devices -l` and package the release build:
 
-- Release-owned installs: run `.\redeploy.bat --no-pause` from the project root.
-- Current debug/test install state: run `.\gradlew.bat assembleDebug` from `app/`, then `adb install --no-streaming -r -d app/app/build/outputs/apk/debug/app-debug.apk`, then `adb shell am start -n com.example.chatbar/.MainActivity`.
+- Exactly one authorized device in `device` state: run `.\redeploy.bat --no-pause` from the project root. This builds the release APK, performs a data-preserving reinstall, refreshes the launcher, and opens ChatBar.
+- No authorized connected device: run `.\redeploy.bat --build-only --no-pause` and provide the APK path.
+- Multiple devices, or any ambiguous/offline/unauthorized target: do not guess or install. Build only, report device states, and ask the user to select a target if installation is wanted.
 
-Stop on `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Do not uninstall, clear data, or switch signing keys unless the user explicitly confirms the data risk.
+Use data-preserving installation only. Stop on `INSTALL_FAILED_UPDATE_INCOMPATIBLE`. Do not uninstall, clear data, or switch signing keys unless the user explicitly confirms the data risk.
+
+After packaging, always provide a concise feature-specific manual test flow covering setup, actions, expected results, and nearby regression checks. Do not automatically run tests, start an emulator, capture screenshots, or read device logs. Automated test execution and diagnostic device interaction require an explicit user request.
 
 ## Coding Style & Naming Conventions
 
@@ -45,7 +48,7 @@ Use Kotlin with standard 4-space indentation. Keep package names under `com.exam
 
 ## Testing Guidelines
 
-Add JVM tests in `app/app/src/test` for domain and repository behavior. Add instrumented tests in `app/app/src/androidTest` for Compose UI or device-only behavior. Match existing test names such as `ContextWindowManagerTest` or `TutorialScreenTest`. Run `.\gradlew.bat test` for normal changes; run `.\ci.ps1 -SkipAssemble` when touching UI, navigation, Android APIs, or shared build config.
+Add JVM tests in `app/app/src/test` for domain and repository behavior when useful. Add instrumented tests in `app/app/src/androidTest` for Compose UI or device-only behavior only when their maintenance value is clear. Match existing test names such as `ContextWindowManagerTest` or `TutorialScreenTest`. Never run automated tests unless the user explicitly requests testing.
 
 Prompt tests should assert behavior, parameter inclusion, ordering, omission, and required machine-protocol tokens. Do not assert editable natural-language wording or section titles exactly unless that literal text is itself a required external protocol.
 
