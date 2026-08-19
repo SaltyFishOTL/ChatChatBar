@@ -61,15 +61,29 @@
       "styleKey": "hard_stroke",
       "displayName": "硬笔刷手绘",
       "description": "不油的略微粗线条手绘风格",
-      "prompt": "1.5::artist:yamamoto souichirou::,  1.::artist:channel (caststation)::, 0.7::artist:ciloranko::, 1.4::artist:gogalking::, year 2025, year 2024, best quality, amazing quality, very aesthetic, incredibly absurdres, absurdres, highres, no text, 2::jaggy lines::, -3::artist collaboration::, -1::censored, blurry::, blurry background, even shadows, -1::shiny skin::",
+      "prompt": "2::artist:ohisashiburi::, 1.8::artist:gogalking::,1.7::artist: imamura_ryou ::, 1.3::artist:seramikku ::,1.1::artist:solipsist::, 0.8::artist:ask (askzy) ::,0.7:: artist:gebijiade_89 ::, 0.9::artist:krenz::, 0.8::artist:rei_(sanbonzakura) ::,0.5::artist:teshima nari::,\nyear 2025, year 2024, blender-(Medium), -6::artist collaboration:: , high detail, best quality, amazing quality, very aesthetic, highres, incredibly absurdres, ultra-detailed, illustration, extremely detailed CG unity 8k wallpaper, -1::multiple views::,",
       "previewImage": "硬笔刷手绘.png"
     },
     {
       "styleKey": "mygo_anime",
       "displayName": "MYGO动画",
       "description": "模仿MYGO原作动画的风格",
-      "prompt": "1.6::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, glistening skin, backlighting,\n 0.6::no_lineart::, 0.4::artist:rei_(sanbonzakura)::,\n\n-1.5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::,\n0.15::\"3d\"::,\n\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, year 2025,",
+      "prompt": "2::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, glistening skin, backlighting,\n 0.6::no_lineart::, 0.3::artist:rei_(sanbonzakura)::,\n-1.5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::, \n0.15::\\\"3d\\\"::,\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, 1.5::highres ::, 1.3::best quality ::, amazing quality, absurdres, very aesthetic, amazing, year 2025, best illustration, \n-2::monochrome::, -5::artist collaboration::,  -2::blurry ::, -1::upscaled::, -1::resized ::, -0.1::lowres ::, -1::text::, -0.1::unfinished ::, ",
       "previewImage": "MYGO动画.png"
+    },
+    {
+      "styleKey": "soft_stroke",
+      "displayName": "质感手绘",
+      "description": "一种偏手绘的画风",
+      "prompt": "1.5::artist:gogalking::, 1.25::artist: imamura_ryou ::, 1.1::artist:krenz::, 1.2::artist:sparrowl::, 1.1::artist:solipsist::, 1.3::artist:jima::, 0.4::artist:tianliang duohe fangdongye::, 1.4::artist:wagashi (dagashiya), :: 0.7::artist:ie (raarami)::, 0.8::artist:teshima_nari ::, 1.2::artist:kazuho iwamoto::, 0.9::artist:hyocorou::, 1.0::artist:inoue kiyoshirou::, 0.9::artist:mika pikazo::, 1.1::artist:87yanagi::, 1.5::artist:tarou2, ::, 1.2::artist:john kafka::, 1.5::artist:sarcophage::, 1.5::artist:chomoran::, year 2024, year 2025, -2::monochrome, :: 1.5::highres ::, 1.3::best quality ::,  -5::artist collaboration::, best illustration, absurdres, masterpiece, -2::blurry ::, -1::upscaled::, -1::resized ::, -0.1::lowres ::, -1::text::, -0.1::unfinished ::, -2::multiple views::, 3::detailed background::,",
+      "previewImage": "质感手绘.png"
+    },
+    {
+      "styleKey": "art",
+      "displayName": "唯美厚涂",
+      "description": "由P站 Ling 提供",
+      "prompt": "skindentation, \n2::motion blur,motion lines::,\n-3::multiple_views::, \n8.5::painterly::, \n3::no lineart::,\n-0.8::flat color::,\n0.5::3d::, \n0.1::teshima_nari, gold_can::, \nruoganzhao, haruyuki_(gffewuoutgblubh), rolua, r1zen, jl_tan, 0.6::ushikani_kassen,betanonbeet::, 0.7::artist:ratatatat74, mx2j, artist:akita_hika::, 0.8::otimusyairoha::,1.2::artist:ie (raarami)::, \n2::4k,light ::, \n1.2::highly finished photorealistic artwork, lively color, graphic texture, realistic skin surface, \n1::photorealistic, realistic::, 1.2::photo(medium), absurdly_detailed_composition, anime style face, best quality, absurdres, very aesthetic, detailed, masterpiece::, ultra-detailed, 0.6::hyperrealistic,photorealistic::, -0.6::realistic face::, ",
+      "previewImage": "唯美厚涂.png"
     }
   ]
 }
