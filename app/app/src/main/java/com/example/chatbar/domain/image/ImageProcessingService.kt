@@ -133,7 +133,7 @@ class ImageProcessingService(private val context: Context) {
                     val delayMillis = decoder.nextDelay.coerceAtLeast(MIN_GIF_FRAME_DELAY_MS)
                     val frame = decoder.nextFrame ?: error("GIF 第 ${frameIndex + 1} 帧解码失败")
                     try {
-                        transformFullImageAdversarialPatch(frame, operation, frameIndex)
+                        transformFullImageAdversarialPatch(frame, operation)
                         encoder.setDelay(delayMillis)
                         check(encoder.addFrame(frame)) { "GIF 第 ${frameIndex + 1} 帧编码失败" }
                     } finally {
@@ -246,9 +246,7 @@ class ImageProcessingService(private val context: Context) {
         const val MAX_FRAME_PIXELS = 8_000_000L
         const val MAX_TOTAL_FRAME_PIXELS = 300_000_000L
         const val MIN_GIF_FRAME_DELAY_MS = 10
-        // 越低调色板采样越密、颜色越准（Glide AnimatedGifEncoder 直接以该值作为 NeuQuant 采样间隔），
-        // 量化噪声随之降低，贴片信号（单通道均幅约 ±30）相对噪声的裕度更大
-        const val GIF_ENCODER_QUALITY = 1
+        const val GIF_ENCODER_QUALITY = 10
         const val WORK_FILE_RETENTION_MS = 7L * 24 * 60 * 60 * 1000
     }
 }

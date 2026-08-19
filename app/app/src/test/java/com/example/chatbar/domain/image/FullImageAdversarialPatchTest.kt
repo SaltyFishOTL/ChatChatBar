@@ -2,7 +2,6 @@ package com.example.chatbar.domain.image
 
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class FullImageAdversarialPatchTest {
@@ -18,7 +17,7 @@ class FullImageAdversarialPatchTest {
         )
 
         assertEquals(0x7f, pixels.single() ushr 24)
-        assertEquals(0x7fad6565.toInt(), pixels.single())
+        assertEquals(0x7f987474.toInt(), pixels.single())
     }
 
     @Test
@@ -57,38 +56,6 @@ class FullImageAdversarialPatchTest {
             operation = FullImagePatchOperation.Restore
         )
 
-        assertEquals(0xffd21b1b.toInt(), pixels.single())
-    }
-
-    @Test
-    fun frameIndexChangesPerturbationPattern() {
-        val width = 64
-        val height = 64
-        val first = IntArray(width * height) { 0xff808080.toInt() }
-        val second = first.copyOf()
-
-        transformFullImageAdversarialPatchPixels(
-            first,
-            width = width,
-            height = height,
-            operation = FullImagePatchOperation.Apply,
-            frameIndex = 0
-        )
-        transformFullImageAdversarialPatchPixels(
-            second,
-            width = width,
-            height = height,
-            operation = FullImagePatchOperation.Apply,
-            frameIndex = 1
-        )
-
-        var differs = false
-        for (index in first.indices) {
-            if (first[index] != second[index]) {
-                differs = true
-                break
-            }
-        }
-        assertTrue("不同帧号的贴片应当产生不同图案", differs)
+        assertEquals(0xffe70c0c.toInt(), pixels.single())
     }
 }

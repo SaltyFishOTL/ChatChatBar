@@ -154,7 +154,7 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                     )
                 }
                 CbText(
-                    "实验性多尺度色度扰动：3px/8px 块色偏、低频色波与有序抖动叠加，兼顾人眼可读性与干扰强度；可能被压缩或缩放削弱，不保证对所有模型有效。",
+                    "实验性中等强度色度扰动：兼顾人眼可读性与干扰强度，可能被压缩或缩放削弱，不保证对所有模型有效。",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.label
                 )
