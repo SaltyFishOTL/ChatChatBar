@@ -25,6 +25,7 @@ import com.example.chatbar.domain.voice.qq.QqVoiceGestureGatewayRegistry
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferCoordinator
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferNotificationManager
 import com.example.chatbar.domain.worldbook.WorldBookEngine
+import com.example.chatbar.domain.webai.WebAiController
 import com.example.chatbar.utils.diagnostics.CrashReportManager
 import com.example.chatbar.data.security.FishAudioCredentialStore
 import com.example.chatbar.data.security.NovelAiCredentialStore
@@ -94,6 +95,8 @@ class ChatBarApp : Application() {
     lateinit var worldBookEngine: WorldBookEngine
         private set
     lateinit var streamingChatService: StreamingChatService
+        private set
+    lateinit var webAiController: WebAiController
         private set
     lateinit var messageFormatRepairService: MessageFormatRepairService
         private set
@@ -200,9 +203,13 @@ class ChatBarApp : Application() {
         }
         vectorSearchEngine = VectorSearchEngine()
         
-        streamingChatService = StreamingChatService {
-            settingsRepository.currentAppSettings.allowCleartextModelApi
-        }
+        webAiController = WebAiController(chatRepository, applicationScope)
+        streamingChatService = StreamingChatService(
+            allowCleartextHttp = {
+                settingsRepository.currentAppSettings.allowCleartextModelApi
+            },
+            webAiGateway = webAiController
+        )
         fishAudioStorage = FishAudioStorage(this)
         fishAudioService = FishAudioService(fishAudioStorage)
         fishAudioTagService = FishAudioTagService(streamingChatService)
@@ -278,7 +285,12 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         novelAiStyleCatalogService = NovelAiStyleCatalogService(this, transferJson)
-        effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        effectiveModelResolver = EffectiveModelResolver(
+            modelRepository,
+            settingsRepository,
+            presetModelCatalogService,
+            chatRepository::getSession
+        )
         fishAudioGenerationCoordinator = FishAudioGenerationCoordinator(
             scope = applicationScope,
             chatRepository = chatRepository,

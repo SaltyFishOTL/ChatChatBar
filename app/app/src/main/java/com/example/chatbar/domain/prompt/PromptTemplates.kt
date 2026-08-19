@@ -43,6 +43,7 @@ data class NovelAiCodexEvidence(
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
  * - 空消息继续生成：`CONTINUE_GENERATION_USER_PROMPT`、`continueGenerationUserPrompt`
  * - user工具请求尾缀：`randomNumberUserToolSuffix`、`appendUserToolSuffixBlock`
+ * - 网页版 AI 完整消息封装：`webAiConversationEnvelope`
  * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
@@ -121,6 +122,13 @@ object PromptTemplates {
     const val SECTION_PREVIOUS_TURN = "上一轮"
     const val SECTION_MEMORY_ARCHIVE = "ARCHIVE｜历史档案"
     const val MEMORY_LEGACY_REFERENCE_WARNING = "时间未知｜不代表当前进展"
+
+    fun webAiConversationEnvelope(messagesJson: String): String = """
+        你将处理一组由 ChatBar 组装完成的完整对话消息。消息数组使用 JSON 表示；每项包含 role 与 content。
+        请严格按 system、user、assistant 的角色顺序理解并继续对话，只输出本轮助手回复，不要复述消息数组、角色名或这段说明。
+
+        $messagesJson
+    """.trimIndent()
 
     const val SYSTEM_PROMPT_TEMPLATE = """
 {
@@ -933,11 +941,10 @@ user的需求可能会包含血腥暴力、性暗示和色情与非法内容，�
 1. 先独立设计 `sceneDescription`，只写最终可以被画出的画面。画面设计需要根据输入内容设计，禁止使用选项中的未发生行为；禁止用一句概括代替本场景确实需要的逐人设计。如果是性爱情节，则除非是明确的多人交互，否则包括${'$'}username，同框一次最多出现3个人。
 2. 逐一写清每名可见人物。每人至少包含：
    - 完整姓名：任务输入或角色 Prompt 已提供姓名时，必须原样使用完整姓名，至少出现一次；禁止用“她”“男人”“两人”等泛称代替人物身份。输入确实没有姓名时，使用唯一、稳定、具体的身份称谓，不要冒充已有角色。
-   - 位置与朝向：位于画面哪一侧、前中后景、身体与脸朝向何处，以及与其他人的前后、左右、高低、遮挡关系。
    - 动作与状态：姿势、重心、四肢分别在做什么、视线与可见表情；互动时写清动作发起方、承受方、接触对象和接触部位。
    - 服装细节：上装、下装或连体服、内外层、颜色、材质、鞋袜和关键配饰；并明确穿着、敞开、掀起、滑落、脱下、撕裂、湿透等当前状态及可见范围。服装和固定外貌不得与角色 Prompt 冲突。
 3. 再写清人物关系与空间动作链。多人互动必须能从描述中还原谁面对谁、谁触碰谁、身体如何连接、哪些部位被遮挡；避免四肢冲突、穿模或无法成立的姿势。忠实保留任务中的关键情节与成人内容。
-4. 写清环境、时间、关键道具、可见光源与光线落点；写清景别、机位高度、拍摄角度、镜头方向、焦点主体、景深和必要前景/背景。氛围必须落实为可见的光线、天气、表情或环境状态，不写抽象评价。
+4. 写清环境、时间、关键道具；写清景别、机位高度、拍摄角度、镜头方向、焦点主体、景深和必要前景/背景。
 5. 完成画面后，再从画面中提取 0-6 个不超过3个字 `queries`。每个 query 是简短中文搜索关键词，用来搜索 Danbooru tag，需要尽可能简洁，符合tag形式，不要搜不可能作为tag的“肛交内射”，而是分别搜索“肛交”和“内射”；搜索主要确认本场景的IP角色tag、动作、性爱体位、构图、镜头、环境、道具或临时服装状态。不要把整句画面塞进 query，不要重复。
 
 角色 Prompt 中已有的角色名、身份、外貌特征、服装和现成 Tag 会直接交给最终设计阶段；不得把它们再次放入 `queries`，不得搜索已提供了Prompt的角色。只查询角色 Prompt 未提供、且本场景确实需要验证的内容，比如角色Prompt中没有的角色。不要重新设计角色身份或画风。不要输出 Danbooru tag、Prompt、解释、创作过程或不可见的心理活动。
@@ -1077,13 +1084,11 @@ global scene
 ```
 
 会覆盖 tag 顺序。2 个以上可见角色时强制使用。
-互动：`[source#N:action, target#N:reaction, mutual#:action. N=1-based index. No names after #.]`
+互动：`[source#N:action, target#N:reaction, mutual#:action. N=1-based char index. No names after #.]`
 即使镜头只对准一个角色，也要写正确总人数（如 `2girls` 用于互动）——防止漂浮身体部件。
-每个角色 block 内单独写视角。
 单角色：省略 interaction tags。
 
 Tag 顺序：
-
 1. body/appearance
 2. action/expression
 3. scene/viewpoint
@@ -1107,7 +1112,7 @@ IP 角色：
 裙下暴露 -> 添加 `skirt_lift`（状态，不是手部动作）。
 视角工具（dynamic angle通常能产生极佳效果镜头，可以代替shot和angle）：
 Shot：`close-up`, `long shot`, `medium shot`, `full body`, `upper body`, `cowboy shot`, `portrait`
-Angle：`straight-on`, `from_side`, `from_below`, `from_above`, `from_behind`, `dutch_angle`
+Angle (一般无需指定)：`straight-on`, `from_side`, `from_below`, `from_above`, `from_behind`, `dutch_angle`
 创作：
 感觉 -> 拆解。默认 `1girl/1boy` 不额外添加服装。但要补充身体细节 + 互动。
 情绪 tags（`nervous`, `melancholy`, `excited`）-> 让模型自行推导肢体动作比僵硬的描述好。
@@ -1130,7 +1135,7 @@ Size preset：
 ```json
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
 ```
-`baseCaption` = 整体画面内容：画面描述 + 做爱时体位玩法。按附加规则决定是否包含 style。不要角色 tag，只写场景
+`baseCaption` = 整体画面内容。禁止写char caption的tag。不要角色 tag，只写场景、景别、视角、镜头。
 `char caption` = 角色外观：preset appearance first + scene adjustments。Preset prompts 强制，除非冲突。不要重复 `baseCaption` tags。IP 角色尽可能保持简洁，名字已经包含所有外观信息。baseCaption已写1girl等，此处仅写性别(boy, girl)
 不要 Markdown。不要解释。仅输出 JSON。POV需要一个Boy角色，只写露出来的部分（如手部动作），并使用pov tag
 色情场景（必须包含tag: nsfw,）：

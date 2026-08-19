@@ -3,9 +3,11 @@ package com.example.chatbar.domain.model
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.ModelTransport
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
+import com.example.chatbar.domain.webai.WebAiModelPolicy
 import java.net.URI
 
 data class ModelConfigurationStatus(
@@ -17,17 +19,29 @@ data class ModelConfigurationStatus(
 class EffectiveModelResolver(
     private val models: ModelRepository,
     private val settings: SettingsRepository,
-    private val presets: PresetModelCatalogService
+    private val presets: PresetModelCatalogService,
+    private val sessionProvider: suspend (String) -> com.example.chatbar.data.local.entity.ChatSession? = { null }
 ) {
     suspend fun availableChatModels(): List<ModelConfig> = availableChatModels(settings.getAppSettings())
 
     suspend fun availableChatModels(appSettings: AppSettings): List<ModelConfig> =
         repositoryChatModels(appSettings).ifEmpty { presetChatModels(appSettings) }
 
+    suspend fun availableChatModelsForSession(
+        sessionId: String,
+        appSettings: AppSettings
+    ): List<ModelConfig> = buildList {
+        sessionProvider(sessionId)?.let(WebAiModelPolicy::modelFor)?.let(::add)
+        addAll(availableChatModels(appSettings))
+    }
+
     suspend fun resolveChatModel(
         requestedId: String?,
         appSettings: AppSettings
     ): ModelConfig? {
+        if (WebAiModelPolicy.isWebModelId(requestedId)) {
+            return resolveWebModelExact(requestedId)
+        }
         val available = availableChatModels(appSettings)
         return selectChatModel(requestedId, appSettings, available)
     }
@@ -44,6 +58,9 @@ class EffectiveModelResolver(
         requestedId: String?,
         appSettings: AppSettings
     ): ModelConfig? {
+        if (WebAiModelPolicy.isWebModelId(requestedId)) {
+            return resolveWebModelExact(requestedId)
+        }
         val available = availableChatModels(appSettings)
         return available.firstOrNull { it.id == requestedId }
             ?: defaultImageModel(appSettings, available)
@@ -140,6 +157,12 @@ class EffectiveModelResolver(
         val chatModel = resolveChatModel(requestedChatModelId, appSettings)
         val retrieval = retrievalModel(appSettings)
         val embedding = embeddingModel(appSettings)
+        if (WebAiModelPolicy.isWebModelId(requestedChatModelId) && chatModel == null) {
+            return ModelConfigurationStatus(
+                isUsable = false,
+                errors = listOf("网页版 AI 绑定已失效，请重新打开浏览器完成绑定")
+            )
+        }
         return modelConfigurationStatus(
             default = chatModel,
             retrieval = retrieval,
@@ -150,6 +173,12 @@ class EffectiveModelResolver(
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
         appSettings.siliconFlowApiKey.trim()
+
+    private suspend fun resolveWebModelExact(requestedId: String?): ModelConfig? {
+        val sessionId = WebAiModelPolicy.sessionId(requestedId) ?: return null
+        val session = sessionProvider(sessionId) ?: return null
+        return WebAiModelPolicy.modelFor(session)?.takeIf { it.id == requestedId }
+    }
 
     private suspend fun repositoryChatModels(appSettings: AppSettings): List<ModelConfig> =
         models.getAllModels()
@@ -213,7 +242,8 @@ internal fun ModelConfig.hasConfiguredAuthentication(appSettings: AppSettings): 
     hasConfiguredAuthentication(appSettings.allowCleartextModelApi)
 
 internal fun ModelConfig.hasConfiguredAuthentication(allowCleartextModelApi: Boolean): Boolean =
-    isModelAuthenticationConfigured(baseUrl, apiKey, allowCleartextModelApi)
+    transport == ModelTransport.WEB_VIEW ||
+        isModelAuthenticationConfigured(baseUrl, apiKey, allowCleartextModelApi)
 
 internal fun selectFormatRepairModel(
     requestedId: String?,
@@ -257,7 +287,7 @@ internal fun modelConfigurationStatus(
 ): ModelConfigurationStatus {
     val errors = buildList {
         if (default == null) add("未配置可用默认对话模型")
-        else if (!isModelAuthenticationConfigured(default.baseUrl, default.apiKey, allowCleartextModelApi)) {
+        else if (!default.hasConfiguredAuthentication(allowCleartextModelApi)) {
             add("默认对话模型/API Key 未配置")
         }
     }

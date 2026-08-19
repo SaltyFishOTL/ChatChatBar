@@ -17,6 +17,7 @@ import com.composables.icons.lucide.Copy
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.FileText
 import com.composables.icons.lucide.Heart
+import com.composables.icons.lucide.Globe
 import com.composables.icons.lucide.Image
 import com.composables.icons.lucide.ImagePlus
 import com.composables.icons.lucide.Import
@@ -66,6 +67,7 @@ object AppIcons {
     val ExpandMore: ImageVector get() = Lucide.ChevronDown
     val Face: ImageVector get() = Lucide.Smile
     val Forum: ImageVector get() = Lucide.MessageCircle
+    val Globe: ImageVector get() = Lucide.Globe
     val HelpOutline: ImageVector get() = Lucide.CircleQuestionMark
     val Heart: ImageVector get() = Lucide.Heart
     val Image: ImageVector get() = Lucide.Image

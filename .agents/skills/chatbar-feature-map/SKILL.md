@@ -28,6 +28,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - Message AI format repair, automatic checks, restore-original notices, repair model selection, or repair state: use chatbar-message-format-repair.
 - Shared AI background protection, foreground-service lifecycle, network guard, notification stop action, wake/Wi-Fi locks, or `ForegroundServiceDidNotStartInTimeException`: use chatbar-background-work-runtime.
 - Model fallback, provider request fields, HTTP/local auth, thinking controls, connection tests, SSE timeout/reset, or auxiliary text requests: use chatbar-model-request-runtime.
+- Session-bound DeepSeek/Kimi/Doubao browser login, WebView transport, dynamic “网页版” models, DOM selectors, webpage stream extraction, or app-background cancellation: use chatbar-web-ai-runtime.
 - Generated-image runtime, NovelAI HTTP generation, 429 retry, editable regeneration, metadata, dimensions, seeds, concurrency, or file replacement: use chatbar-image-generation-runtime.
 - Assistant segmented bubble rendering: ui/components/ChatBubble.kt; marker parsing in domain/chat/RoleplayContentSegments.kt; per-turn protocol in PromptTemplates.kt and ChatViewModel.kt; edit/delete in ChatViewModel.kt; selection/screenshot in ChatScreenshotSelection.kt and ChatLongScreenshot.kt.
 - Fish Audio API, credentials, voice library/bindings, AI tags and confirmation, generation batches, anchors, persistence, playback, SaveSlot transfer, or voice UI: use chatbar-fish-audio-voice.

@@ -19,6 +19,7 @@ Separate model selection, request construction, transport, and output parsing. A
 - Connection-test caller: ui/manage/ManageViewModel.kt
 - Embedding-specific transport: domain/rag/EmbeddingService.kt
 - Shared Android foreground/background protection: use chatbar-background-work-runtime.
+- WebView-backed model transport, session binding, DOM streaming, and webpage stop detection: use chatbar-web-ai-runtime.
 - Callers with fixed auxiliary parameters: domain/card/CharacterAutoFillService.kt, CharacterRewriteService.kt, CharacterAppearanceImageService.kt, domain/image/NovelAiPromptDesigner.kt, domain/memory/MemoryAiGateway.kt, and domain/voice/FishAudioTagService.kt
 - Tests: ModelConfigurationTest.kt, CleartextHttpPolicyTest.kt, StreamingChatServiceThinkingTest.kt, StreamingChatServiceTerminalTest.kt, InterruptedReplyPolicyTest.kt, and request-body tests near each caller
 
@@ -27,6 +28,7 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 ## Resolution Rules
 
 - Distinguish unset selection from explicitly stale selection.
+- Treat `ModelTransport.WEB_VIEW` as an exact session-bound transport. Never run API authentication checks or API fallback for a stale web model ID.
 - Apply fallback only where feature policy defines unset as follow-default.
 - Keep selected custom, preset, retrieval, embedding, and auxiliary model sources distinct.
 - Prefer each model's own API key. Use the global default key only when an HTTPS or otherwise authenticated model has a blank key.

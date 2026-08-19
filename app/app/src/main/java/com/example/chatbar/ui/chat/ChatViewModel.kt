@@ -60,6 +60,7 @@ import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
+import com.example.chatbar.domain.webai.WebAiModelPolicy
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import com.example.chatbar.domain.voice.VoiceGenerationBatchState
 import com.example.chatbar.domain.voice.VoicePlaybackState
@@ -326,6 +327,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _memoryCompressionEvents = MutableSharedFlow<String>(extraBufferCapacity = 16)
     val memoryCompressionEvents: SharedFlow<String> = _memoryCompressionEvents.asSharedFlow()
+    private val _chatUiEvents = MutableSharedFlow<String>(extraBufferCapacity = 8)
+    val chatUiEvents: SharedFlow<String> = _chatUiEvents.asSharedFlow()
     private val memoryHistoryLimits = ConcurrentHashMap<MemoryTier, Int>()
 
     private val _isDeletingMemory = MutableStateFlow(false)
@@ -604,12 +607,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             chatRepository.observeSessions().collect { sessions ->
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
                     val modelChanged = _session.value?.modelId != updatedSession.modelId
+                    val webAiBindingChanged =
+                        _session.value?.webAiBinding != updatedSession.webAiBinding
                     val voiceLanguageChanged =
                         _session.value?.voiceLanguage != updatedSession.voiceLanguage
                     val previousAudiobookMode = _audiobookModeEnabled.value
                     _session.value = updatedSession
                     updateEffectiveAudiobookMode()
-                    if (modelChanged) {
+                    if (modelChanged || webAiBindingChanged) {
                         refreshConfigurations()
                     }
                     if (
@@ -686,8 +691,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun refreshConfigurations() {
         viewModelScope.launch {
             val settings = settingsRepository.getAppSettings()
-            val availableModels = modelResolver.availableChatModels(settings)
             val currentSession = chatRepository.getSession(sessionId) ?: _session.value
+            val availableModels = if (currentSession != null) {
+                modelResolver.availableChatModelsForSession(sessionId, settings)
+            } else {
+                modelResolver.availableChatModels(settings)
+            }
             _availableModels.value = availableModels
             _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
             _effectiveDefaultImageModelId.value = modelResolver.resolveImageModel(null, settings)?.id
@@ -1970,6 +1979,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun sendMessage(content: String, imagePaths: List<String> = emptyList()): Boolean {
         if (_isArchived.value || !_isModelUsable.value || _isResponding.value) return false
         if (blockChatDuringMemoryWork()) return false
+        if (imagePaths.isNotEmpty() && WebAiModelPolicy.isWebModelId(_session.value?.modelId)) {
+            _chatUiEvents.tryEmit("网页版 AI 暂不支持图片附件")
+            return false
+        }
         val isBlank = content.isBlank() && imagePaths.isEmpty()
         val effectiveContent = if (isBlank) PromptTemplates.continueGenerationUserPrompt() else content
         if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
@@ -3707,12 +3720,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val currentImages = currentMsgs.flatMap { it.images }.toSet() +
                 listOfNotNull(curSession.chatBackground)
             val latest = materializedSlot.messages.lastOrNull()
+            val restoredModelId = restoreSaveSlotModelId(materializedSlot.modelId, curSession)
+            val restoredImageModelId = restoreSaveSlotModelId(materializedSlot.imageModelId, curSession)
+            val clearedWebModel =
+                (WebAiModelPolicy.isWebModelId(materializedSlot.modelId) && restoredModelId == null) ||
+                    (WebAiModelPolicy.isWebModelId(materializedSlot.imageModelId) && restoredImageModelId == null)
             val restoredSession = curSession.copy(
                 playerSetting = materializedSlot.playerSetting,
                 playerName = materializedSlot.playerName,
                 supplementarySetting = materializedSlot.supplementarySetting,
-                modelId = materializedSlot.modelId,
-                imageModelId = materializedSlot.imageModelId,
+                modelId = restoredModelId,
+                imageModelId = restoredImageModelId,
                 formatCardId = materializedSlot.formatCardId,
                 replyLength = materializedSlot.replyLength,
                 replyLanguage = materializedSlot.replyLanguage,
@@ -3774,8 +3792,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .map(GeneratedVoiceMessage::audioPath)
                 .filterNot { it in preservedAudio }
                 .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
+            if (clearedWebModel) {
+                _chatUiEvents.emit("存档中的网页版模型未恢复：当前会话尚未绑定网页版 AI")
+            }
             loadSessionData()
         }
+    }
+
+    private fun restoreSaveSlotModelId(modelId: String?, currentSession: ChatSession): String? {
+        if (!WebAiModelPolicy.isWebModelId(modelId)) return modelId
+        return currentSession.webAiBinding?.let { WebAiModelPolicy.modelId(currentSession.id) }
     }
 
     /**

@@ -35,6 +35,7 @@ import com.example.chatbar.domain.update.AppUpdateInfo
 import com.example.chatbar.domain.update.AppUpdateInstallResult
 import com.example.chatbar.ui.kit.CbLoadingState
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.webai.WebAiBrowserHost
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CrashReportDialog
 import com.example.chatbar.utils.diagnostics.CrashReportManager
@@ -96,6 +97,7 @@ class MainActivity : ComponentActivity() {
                         .fillMaxSize()
                         .background(ChatBarTheme.colors.background)
                 ) {
+                    WebAiBrowserHost(ChatBarApp.instance.webAiController)
                     if (settingsInitialized) {
                         MainNavigation(
                             tutorialCompleted = settings.tutorialVersion >= CURRENT_TUTORIAL_VERSION,
@@ -178,6 +180,16 @@ class MainActivity : ComponentActivity() {
         currentIntentHandled = false
         setIntent(intent)
         handleSharedIntent(intent)
+    }
+
+    override fun onStart() {
+        super.onStart()
+        ChatBarApp.instance.webAiController.onAppStarted()
+    }
+
+    override fun onStop() {
+        ChatBarApp.instance.webAiController.onAppStopped()
+        super.onStop()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

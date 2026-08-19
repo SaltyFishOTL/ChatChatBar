@@ -90,23 +90,38 @@ fun <T> CbSelect(
     onValueChange: (T) -> Unit,
     modifier: Modifier = Modifier,
     placeholder: String = "请选择",
-    enabled: Boolean = true
+    enabled: Boolean = true,
+    optionVariant: (T) -> SelectOptionVariant = { SelectOptionVariant.Default }
 ) {
     var open by remember { mutableStateOf(false) }
     val shape = RoundedCornerShape(ChatBarShape.sm)
+    val selectedVariant = value?.let(optionVariant) ?: SelectOptionVariant.Default
     Box(
         modifier = modifier
             .alpha(if (enabled) 1f else 0.6f)
             .fillMaxWidth()
             .heightIn(min = 44.dp)
-            .background(ChatBarTheme.colors.surfaceSubtle, shape)
-            .border(1.dp, ChatBarTheme.colors.border, shape)
+            .background(
+                if (selectedVariant == SelectOptionVariant.Accent) ChatBarTheme.colors.primaryAlpha
+                else ChatBarTheme.colors.surfaceSubtle,
+                shape
+            )
+            .border(
+                1.dp,
+                if (selectedVariant == SelectOptionVariant.Accent) ChatBarTheme.colors.primary
+                else ChatBarTheme.colors.border,
+                shape
+            )
             .clickable(enabled = enabled, role = Role.Button) { open = true }
             .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.md)
     ) {
         CbText(
             value?.let(optionLabel) ?: placeholder,
-            color = if (value == null) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.foreground
+            color = when {
+                value == null -> ChatBarTheme.colors.mutedForeground
+                selectedVariant == SelectOptionVariant.Accent -> ChatBarTheme.colors.primary
+                else -> ChatBarTheme.colors.foreground
+            }
         )
     }
     if (open) {
@@ -117,15 +132,23 @@ fun <T> CbSelect(
         ) {
             LazyColumn(Modifier.fillMaxWidth().heightIn(max = 420.dp)) {
                 items(options) { option ->
+                    val variant = optionVariant(option)
                     CbText(
                         optionLabel(option),
                         modifier = Modifier
                             .fillMaxWidth()
+                            .background(
+                                if (variant == SelectOptionVariant.Accent) ChatBarTheme.colors.primaryAlpha
+                                else Color.Transparent,
+                                RoundedCornerShape(ChatBarShape.xs)
+                            )
                             .clickable {
                                 onValueChange(option)
                                 open = false
                             }
-                            .padding(vertical = ChatBarSpacing.md)
+                            .padding(horizontal = ChatBarSpacing.sm, vertical = ChatBarSpacing.md),
+                        color = if (variant == SelectOptionVariant.Accent) ChatBarTheme.colors.primary
+                        else ChatBarTheme.colors.foreground
                     )
                 }
             }
@@ -209,6 +232,11 @@ fun CbTabs(
             }
         }
     }
+}
+
+enum class SelectOptionVariant {
+    Default,
+    Accent
 }
 
 fun Modifier.swipeToAdjacentTab(

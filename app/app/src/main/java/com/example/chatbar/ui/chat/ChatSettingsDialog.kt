@@ -78,6 +78,7 @@ import com.example.chatbar.domain.memory.MemoryBudgetPolicy
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.webai.WebAiModelPolicy
 import com.example.chatbar.ui.components.CreateOpenableDocument
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -96,6 +97,7 @@ import com.example.chatbar.ui.kit.CbTabs
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.SelectOptionVariant
 import com.example.chatbar.ui.kit.FullscreenTextEditor
 import com.example.chatbar.ui.kit.swipeToAdjacentTab
 import java.io.File
@@ -525,11 +527,17 @@ private fun SettingsContent(
             CbSwitch(longTermMemoryEnabled, onLongTermMemoryEnabled)
         }
         CbDivider()
-        val modelOptions = models.map { IdOption(it.id, it.displayName) }
+        val modelOptions = models.map {
+            IdOption(it.id, it.displayName, WebAiModelPolicy.isWebModelId(it.id))
+        }
         DefaultAwareSelect("默认对话模型", modelId, defaultModelId, modelOptions, onModel)
         if (modelId != null && models.none { it.id == modelId }) {
             CbText(
-                "原会话模型在当前配置模式不可用，运行时已跟随全局默认。切回原配置模式后可恢复。",
+                if (WebAiModelPolicy.isWebModelId(modelId)) {
+                    "网页版 AI 绑定已失效；运行时不会回退到 API 模型。"
+                } else {
+                    "原会话模型在当前配置模式不可用，运行时已跟随全局默认。切回原配置模式后可恢复。"
+                },
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -1974,13 +1982,23 @@ private fun DefaultAwareSelect(
     val effectiveId = selectedId ?: defaultId
     val selected = allOptions.firstOrNull { it.id == effectiveId } ?: allOptions.firstOrNull()
     CbField(label) {
-        CbSelect(selected, allOptions, { it.label }, { option ->
-            onSelected(if (option.id == defaultId) null else option.id)
-        })
+        CbSelect(
+            selected,
+            allOptions,
+            { it.label },
+            { option -> onSelected(if (option.id == defaultId) null else option.id) },
+            optionVariant = {
+                if (it.highlight) SelectOptionVariant.Accent else SelectOptionVariant.Default
+            }
+        )
     }
 }
 
-private data class IdOption(val id: String?, val label: String)
+private data class IdOption(
+    val id: String?,
+    val label: String,
+    val highlight: Boolean = false
+)
 private data class AudiobookModeOption(val value: Boolean?, val label: String)
 private data class RagChunkEditor(val chunkId: String?, val content: String)
 
