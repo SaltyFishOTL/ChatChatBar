@@ -112,7 +112,6 @@ import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.voice.VoiceGenerationBatchState
 import com.example.chatbar.domain.voice.VoiceGenerationPhase
 import com.example.chatbar.domain.voice.saveGeneratedVoiceToDownloads
-import com.example.chatbar.domain.webai.WebAiModelPolicy
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferFailureCode
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferPolicy
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferPreflight
@@ -164,7 +163,6 @@ fun ChatScreen(
     viewModel: ChatViewModel = viewModel(key = sessionId, factory = ChatViewModelFactory(sessionId))
 ) {
     val session by viewModel.session.collectAsState()
-    val webChatSelected = WebAiModelPolicy.isWebModelId(session?.modelId)
     val characterCard by viewModel.characterCard.collectAsState()
     val isArchived by viewModel.isArchived.collectAsState()
     val isModelUsable by viewModel.isModelUsable.collectAsState()
@@ -240,18 +238,10 @@ fun ChatScreen(
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
     }
-    LaunchedEffect(viewModel, context) {
-        viewModel.chatUiEvents.collect { message ->
-            Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
-        }
-    }
 
     var input by remember(sessionId) { mutableStateOf(TextFieldValue("")) }
     var inputTouched by remember(sessionId) { mutableStateOf(false) }
     val selectedImages = remember { mutableStateListOf<String>() }
-    LaunchedEffect(webChatSelected) {
-        if (webChatSelected) selectedImages.clear()
-    }
     var settingsOpen by remember { mutableStateOf(false) }
     var debugOpen by remember { mutableStateOf(false) }
     var clearConfirm by remember { mutableStateOf(false) }
@@ -949,9 +939,7 @@ fun ChatScreen(
                 viewModel.updateDraftInput(it.text)
             },
             images = selectedImages,
-            onAddImage = if (webChatSelected) null else {
-                { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) }
-            },
+            onAddImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
             onRemoveImage = { selectedImages.remove(it) },
             onDismiss = { fullComposer = false },
             onConfirm = { finalValue ->
@@ -971,13 +959,6 @@ fun ChatScreen(
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
                 if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(AppIcons.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
-                CbIconButton(
-                    AppIcons.Globe,
-                    "网页版 AI",
-                    { ChatBarApp.instance.webAiController.show(sessionId) },
-                    tint = if (session?.webAiBinding != null) ChatBarTheme.colors.primary
-                    else ChatBarTheme.colors.foreground
-                )
                 CbIconButton(AppIcons.Tune, "会话设置", { settingsOpen = true })
             }
         )
@@ -1258,7 +1239,6 @@ fun ChatScreen(
                             memoryStateLoading -> "正在读取长期记忆…"
                             else -> "本对话已封存"
                         },
-                        imageEnabled = !webChatSelected,
                         onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onFull = { fullComposer = true },
                         onCancel = viewModel::cancelResponseGeneration,
@@ -2479,7 +2459,6 @@ private fun ChatComposer(
     responding: Boolean,
     enabled: Boolean,
     disabledPlaceholder: String,
-    imageEnabled: Boolean,
     onImage: () -> Unit,
     onFull: () -> Unit,
     onCancel: () -> Unit,
@@ -2493,13 +2472,7 @@ private fun ChatComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CbIconButton(
-            AppIcons.AddPhotoAlternate,
-            if (imageEnabled) "添加图片" else "网页版 AI 暂不支持图片",
-            onImage,
-            enabled = enabled && imageEnabled && !responding,
-            tint = ChatBarTheme.colors.primary
-        )
+        CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else disabledPlaceholder, enabled = enabled, minLines = 1)
         Spacer(Modifier.width(8.dp))

@@ -19,12 +19,6 @@ enum class ModelTemplate {
 }
 
 @Serializable
-enum class ModelTransport {
-    OPENAI_COMPATIBLE,
-    WEB_VIEW
-}
-
-@Serializable
 enum class OutputTokenParameter {
     MAX_TOKENS,
     MAX_COMPLETION_TOKENS
@@ -71,7 +65,6 @@ data class ModelConfig(
     val baseUrl: String,
     val apiKey: String,
     val modelName: String,
-    val transport: ModelTransport = ModelTransport.OPENAI_COMPATIBLE,
     val selectableForChat: Boolean = true,
     val isMultimodal: Boolean = false,
     val visionModelId: String? = null, // 文本模型关联的视觉模型

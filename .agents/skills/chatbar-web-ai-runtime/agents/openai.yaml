@@ -1,4 +1,0 @@
-interface:
-  display_name: "ChatBar Web AI Runtime"
-  short_description: "Maintain ChatBar WebView-backed AI chat transport"
-  default_prompt: "Use $chatbar-web-ai-runtime to change or diagnose ChatBar webpage AI bindings and streaming."

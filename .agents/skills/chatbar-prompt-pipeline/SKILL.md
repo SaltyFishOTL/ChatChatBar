@@ -29,7 +29,6 @@ Use chatbar-long-term-memory when Archive, HEAD, timeline constraints, source-tu
 - Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles only for opted-in `http://` requests; Debug Request JSON records this adapted transport body.
 - Keep conversation grouping in ContextWindowManager and shared turn policies.
 - Verify transport request fields with chatbar-model-request-runtime.
-- Web transport wraps final `ChatApiMessage` roles/content once with `PromptTemplates.webAiConversationEnvelope`; keep logical assembly unchanged. Use `chatbar-web-ai-runtime` for website submission and DOM output.
 
 Do not move behavior between these owners without tracing every caller and test.
 

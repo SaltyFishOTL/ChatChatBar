@@ -20,19 +20,6 @@ data class SourceTurnTombstone(
     val sourceOrder: Long
 )
 
-@Serializable
-enum class WebAiSite {
-    DEEPSEEK,
-    KIMI,
-    DOUBAO
-}
-
-@Serializable
-data class WebAiBinding(
-    val site: WebAiSite,
-    val boundAt: Long = System.currentTimeMillis()
-)
-
 /**
  * 聊天会话
  */
@@ -43,7 +30,6 @@ data class ChatSession(
     val title: String,
     val modelId: String? = null,
     val imageModelId: String? = null,
-    val webAiBinding: WebAiBinding? = null,
     val formatCardId: String? = null,
     @Serializable(with = ReplyLengthSerializer::class)
     val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS, // 正文目标字数

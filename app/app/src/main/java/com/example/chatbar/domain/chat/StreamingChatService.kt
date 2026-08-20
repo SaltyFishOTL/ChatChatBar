@@ -1,10 +1,8 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.data.local.entity.ModelTransport
 import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.domain.prompt.PromptTemplates
-import com.example.chatbar.domain.webai.WebAiGateway
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.channels.Channel
@@ -12,8 +10,6 @@ import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.buffer
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.flow.collect
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -150,7 +146,6 @@ data class ChatApiMessage(
  * data: [DONE]
  */
 class StreamingChatService(
-    private val webAiGateway: WebAiGateway? = null,
     private val allowCleartextHttp: () -> Boolean = { false }
 ) {
 
@@ -192,9 +187,7 @@ class StreamingChatService(
         ragChunks: List<String> = emptyList(),
         promptCacheKey: String? = null,
         maxTokens: Int
-    ): Flow<StreamEvent> = if (modelConfig.transport == ModelTransport.WEB_VIEW) {
-        webStream(messages, modelConfig)
-    } else callbackFlow {
+    ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
         var retryCount = 0
         var shouldStop = false
@@ -401,9 +394,7 @@ class StreamingChatService(
         thinkingBudget: Int? = null,
         disableThinking: Boolean = false,
         readTimeoutSeconds: Long? = null
-    ): Flow<StreamEvent> = if (modelConfig.transport == ModelTransport.WEB_VIEW) {
-        webStream(messages, modelConfig)
-    } else callbackFlow {
+    ): Flow<StreamEvent> = callbackFlow {
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
             messages = messages,
@@ -597,11 +588,7 @@ class StreamingChatService(
         disableThinking: Boolean = false,
         isolatedTaskParameters: Boolean = false,
         responseFormatJson: Boolean = false
-    ): String {
-        if (modelConfig.transport == ModelTransport.WEB_VIEW) {
-            return completeWebText(messages, modelConfig)
-        }
-        return suspendCancellableCoroutine { continuation ->
+    ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
         val requestBody = buildRequestBody(
@@ -679,7 +666,6 @@ class StreamingChatService(
                 }
             }
         })
-        }
     }
 
     suspend fun completeTextStreaming(
@@ -695,16 +681,7 @@ class StreamingChatService(
         disableThinking: Boolean = false,
         isolatedTaskParameters: Boolean = false,
         responseFormatJson: Boolean = false
-    ): String {
-        if (modelConfig.transport == ModelTransport.WEB_VIEW) {
-            return completeWebText(
-                messages = messages,
-                modelConfig = modelConfig,
-                onDelta = onDelta,
-                onReasoningDelta = onReasoningDelta
-            )
-        }
-        return suspendCancellableCoroutine { continuation ->
+    ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
         val requestBody = buildRequestBody(
@@ -825,38 +802,6 @@ class StreamingChatService(
             }
         )
         continuation.invokeOnCancellation { eventSource.cancel() }
-        }
-    }
-
-    private fun webStream(
-        messages: List<ChatApiMessage>,
-        modelConfig: ModelConfig
-    ): Flow<StreamEvent> = webAiGateway?.stream(messages, modelConfig)
-        ?: flowOf(StreamEvent.Error("网页版 AI 运行时未就绪"))
-
-    private suspend fun completeWebText(
-        messages: List<ChatApiMessage>,
-        modelConfig: ModelConfig,
-        onDelta: (String) -> Unit = {},
-        onReasoningDelta: (String) -> Unit = {}
-    ): String {
-        val content = StringBuilder()
-        var failure: String? = null
-        webStream(messages, modelConfig).collect { event ->
-            when (event) {
-                is StreamEvent.Delta -> {
-                    content.append(event.text)
-                    onDelta(event.text)
-                }
-                is StreamEvent.ReasoningDelta -> onReasoningDelta(event.text)
-                is StreamEvent.Error -> failure = event.message
-                is StreamEvent.Usage,
-                StreamEvent.Done -> Unit
-            }
-        }
-        failure?.let { throw ModelRequestException(it) }
-        return content.toString().takeIf(String::isNotBlank)
-            ?: throw RuntimeException("网页版 AI 返回空内容")
     }
 
     // ========================= 内部方法 =========================
