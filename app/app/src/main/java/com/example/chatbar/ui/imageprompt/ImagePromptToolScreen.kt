@@ -144,7 +144,6 @@ fun ImagePromptToolScreen(
                         state = state,
                         selectedModel = selectedModel,
                         onDescription = viewModel::updateImageDescription,
-                        onStyle = viewModel::updateStylePrompt,
                         onCharacter = viewModel::updateCharacterPrompt,
                         onPreference = viewModel::updateImagePromptPreference,
                         onSelectReferenceImage = {
@@ -165,6 +164,7 @@ fun ImagePromptToolScreen(
                 item {
                     PromptEditorPanel(
                         draft = state.promptDraft,
+                        stylePrompt = state.stylePrompt,
                         expanded = promptExpanded,
                         enabled = !state.isBusy,
                         canGenerateImage = novelAiConfigured && state.promptDraft.canRegenerate && !state.isBusy,
@@ -173,6 +173,7 @@ fun ImagePromptToolScreen(
                         imageSizePresetOverride = state.imageSizePresetOverride,
                         onExpandedChange = { promptExpanded = it },
                         onDraftChange = viewModel::updatePromptDraft,
+                        onStylePromptChange = viewModel::updateStylePrompt,
                         onBatchSizeInputChange = { imageBatchSizeInput = it },
                         onImageSizePresetChange = viewModel::updateImageSizePresetOverride,
                         onFullscreenEdit = { title, text, onChange ->
@@ -180,7 +181,9 @@ fun ImagePromptToolScreen(
                             fullscreenOnChange = onChange
                         },
                         onCopy = {
-                            clipboard.setText(AnnotatedString(state.promptDraft.toClipboardText()))
+                            clipboard.setText(
+                                AnnotatedString(state.promptDraft.toClipboardText(state.stylePrompt))
+                            )
                             Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
                         },
                         onGenerateImage = {
@@ -279,7 +282,6 @@ private fun PromptInputPanel(
     state: ImagePromptToolUiState,
     selectedModel: ModelConfig?,
     onDescription: (String) -> Unit,
-    onStyle: (String) -> Unit,
     onCharacter: (String) -> Unit,
     onPreference: (String) -> Unit,
     onSelectReferenceImage: () -> Unit,
@@ -350,18 +352,6 @@ private fun PromptInputPanel(
                     optionLabel = { it.name },
                     onValueChange = onImportCharacterCard,
                     placeholder = if (state.characterCards.isEmpty()) "暂无角色卡" else "选择角色卡"
-                )
-            }
-            CbField("画风", onFullscreenEdit = {
-                onFullscreenEdit("画风", state.stylePrompt, onStyle)
-            }) {
-                CbInput(
-                    value = state.stylePrompt,
-                    onValueChange = onStyle,
-                    placeholder = "风格、镜头、质感",
-                    enabled = !state.isBusy,
-                    singleLine = false,
-                    minLines = 1
                 )
             }
             CbField("角色提示词", onFullscreenEdit = {
@@ -439,6 +429,7 @@ private fun StreamPanel(
 @Composable
 private fun PromptEditorPanel(
     draft: NovelAiImageRegenerationDraft,
+    stylePrompt: String,
     expanded: Boolean,
     enabled: Boolean,
     canGenerateImage: Boolean,
@@ -447,6 +438,7 @@ private fun PromptEditorPanel(
     imageSizePresetOverride: NovelAiImageSizePreset?,
     onExpandedChange: (Boolean) -> Unit,
     onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
+    onStylePromptChange: (String) -> Unit,
     onBatchSizeInputChange: (String) -> Unit,
     onImageSizePresetChange: (NovelAiImageSizePreset?) -> Unit,
     onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
@@ -484,8 +476,24 @@ private fun PromptEditorPanel(
             }
             if (expanded) {
                 CbField(
+                    label = "画风提示词",
+                    description = "自动填充所选角色卡画风；不会交给 AI 设计，生图时自动拼接在主提示词前。",
+                    onFullscreenEdit = {
+                        onFullscreenEdit("编辑画风提示词", stylePrompt, onStylePromptChange)
+                    }
+                ) {
+                    CbInput(
+                        value = stylePrompt,
+                        onValueChange = onStylePromptChange,
+                        placeholder = "角色卡未设置画风，可手动填写",
+                        enabled = enabled,
+                        singleLine = false,
+                        minLines = 1
+                    )
+                }
+                CbField(
                     label = "主提示词",
-                    description = "场景、构图、画质和全局风格标签",
+                    description = "人物、场景、构图、视角、光照和动作标签",
                     error = if (draft.baseCaption.isBlank()) "主提示词不能为空" else null,
                     onFullscreenEdit = {
                         onFullscreenEdit("编辑主提示词", draft.baseCaption) {
@@ -750,7 +758,10 @@ private fun StreamText(text: String) {
     }
 }
 
-private fun NovelAiImageRegenerationDraft.toClipboardText(): String = buildString {
+private fun NovelAiImageRegenerationDraft.toClipboardText(stylePrompt: String): String = buildString {
+    appendLine("Style:")
+    appendLine(stylePrompt)
+    appendLine()
     appendLine("Base:")
     appendLine(baseCaption)
     characterPrompts.forEachIndexed { index, character ->

@@ -64,6 +64,32 @@ class StreamingChatServiceTerminalTest {
     }
 
     @Test
+    fun `nullable PPIO stream objects do not abort partial output`() = runBlocking {
+        val payloads = listOf(
+            """{"choices":[{"delta":{"content":"完整回复"},"finish_reason":null}],"usage":null}""",
+            """{"choices":[null],"usage":null}""",
+            """{"choices":[{"delta":null,"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"prompt_tokens_details":null}}""",
+            "[DONE]"
+        )
+
+        SseTestServer(payloads).use { server ->
+            val events = withTimeout(5_000) {
+                service().streamChat(
+                    sessionId = "ppio-nullable-chunk-test",
+                    messages = listOf(ChatApiMessage.text("user", "hello")),
+                    modelConfig = model(server.baseUrl),
+                    maxTokens = 1_000
+                ).toList()
+            }
+
+            assertEquals("完整回复", events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text })
+            assertEquals(10, events.filterIsInstance<StreamEvent.Usage>().single().usage.promptTokens)
+            assertEquals(1, events.count { it is StreamEvent.Done })
+            assertFalse(events.any { it is StreamEvent.Error })
+        }
+    }
+
+    @Test
     fun `terminal event and every queued delta survive a fast stream`() = runBlocking {
         val expected = (0 until 160).joinToString(separator = "") { "$it," }
         val payloads = (0 until 160).map { index ->

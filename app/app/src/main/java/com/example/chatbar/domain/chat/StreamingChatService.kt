@@ -922,8 +922,8 @@ class StreamingChatService(
             }
             throw IllegalArgumentException("服务端返回错误: $errorText")
         }
-        val choice = obj["choices"]?.jsonArray?.firstOrNull()?.jsonObject
-        val delta = choice?.get("delta")?.jsonObject
+        val choice = (obj["choices"] as? JsonArray)?.firstOrNull() as? JsonObject
+        val delta = choice?.get("delta") as? JsonObject
         val content = delta?.get("content")?.let(::deltaContentText)
         val reasoning = delta?.get("reasoning_content")?.jsonPrimitive?.contentOrNull
             ?: delta?.get("reasoning")?.jsonPrimitive?.contentOrNull
@@ -989,11 +989,11 @@ class StreamingChatService(
     }.getOrNull()
 
     private fun parsePromptCacheUsage(data: String): PromptCacheUsage? {
-        val usage = runCatching {
-            json.decodeFromString<JsonObject>(data)["usage"]?.jsonObject
-        }.getOrNull() ?: return null
+        val usage = runCatching { json.decodeFromString<JsonObject>(data) }
+            .getOrNull()
+            ?.get("usage") as? JsonObject ?: return null
         val promptTokens = usage["prompt_tokens"]?.jsonPrimitive?.intOrNull
-        val details = usage["prompt_tokens_details"]?.jsonObject
+        val details = usage["prompt_tokens_details"] as? JsonObject
         val cachedTokens = details?.get("cached_tokens")?.jsonPrimitive?.intOrNull
             ?: usage["prompt_cache_hit_tokens"]?.jsonPrimitive?.intOrNull
         val cacheWriteTokens = details?.get("cache_write_tokens")?.jsonPrimitive?.intOrNull

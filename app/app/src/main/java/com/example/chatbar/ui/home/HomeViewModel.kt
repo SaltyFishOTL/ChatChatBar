@@ -83,6 +83,12 @@ class HomeViewModel : ViewModel() {
         }
     }
 
+    fun updateSessionDisplayTitle(sessionId: String, displayTitle: String?) {
+        viewModelScope.launch {
+            chatRepository.updateSessionDisplayTitle(sessionId, displayTitle)
+        }
+    }
+
     fun deleteSession(session: ChatSession) {
         ChatBarApp.instance.applicationScope.launch {
             ChatBarApp.instance.deletionCoordinator.deleteSession(session.id)

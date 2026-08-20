@@ -86,6 +86,17 @@ class NovelAiImageRegenerationTest {
         assertEquals(NovelAiImageSizePreset.HORIZONTAL, resized.toPromptPlan().sizePreset)
     }
 
+    @Test
+    fun toPromptPlan_prependsEditableStyleOnlyForFinalGenerationPlan() {
+        val draft = draft(characterPrompts = emptyList()).copy(baseCaption = "1girl, rainy street")
+
+        assertEquals("1girl, rainy street", draft.toPromptPlan().baseCaption)
+        assertEquals(
+            "anime screencap, 1girl, rainy street",
+            draft.toPromptPlan(stylePrompt = "anime screencap").baseCaption
+        )
+    }
+
     private fun draft(
         characterPrompts: List<GeneratedImageCharacterPrompt>
     ) = NovelAiImageRegenerationDraft(

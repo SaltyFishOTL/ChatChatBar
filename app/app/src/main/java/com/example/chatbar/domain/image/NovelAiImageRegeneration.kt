@@ -43,8 +43,8 @@ data class NovelAiImageRegenerationDraft(
     fun imageSize(label: String = "重新生成尺寸"): NovelAiImageSize =
         NovelAiImageSize(width = width, height = height, label = label)
 
-    fun toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
-        baseCaption = baseCaption,
+    fun toPromptPlan(stylePrompt: String = ""): NovelAiPromptPlan = NovelAiPromptPlan(
+        baseCaption = NovelAiPromptDesigner.prependStylePrompt(stylePrompt, baseCaption),
         characterCaptions = characterPrompts.map {
             NovelAiCharacterCaption(
                 prompt = it.prompt,

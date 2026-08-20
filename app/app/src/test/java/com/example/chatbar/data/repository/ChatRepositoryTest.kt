@@ -10,6 +10,7 @@ import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -52,6 +53,48 @@ class ChatRepositoryTest {
         assertEquals(0, chats.rewriteSessionTitlesForCharacterCard("card", "", "小红"))
         assertEquals(0, chats.rewriteSessionTitlesForCharacterCard("card", "小明", "小明"))
         assertEquals("小明", requireNotNull(chats.getSession("s1")).title)
+    }
+
+    @Test
+    fun `display title override is normalized without changing source title`() = runTest {
+        val storage = JsonFileStorage(TestContext(temp.newFolder("files")))
+        val chats = ChatRepository(storage)
+        chats.createSession(
+            ChatSession(id = "s1", characterCardId = "card", title = "小明", createdAt = 1, updatedAt = 1)
+        )
+
+        chats.updateSessionDisplayTitle("s1", "  第二周目  ")
+
+        val renamed = requireNotNull(chats.getSession("s1"))
+        assertEquals("小明", renamed.title)
+        assertEquals("第二周目", renamed.displayTitleOverride)
+        assertEquals(listOf("s1"), chats.searchSessions("第二周目").map { it.id })
+
+        chats.updateSessionDisplayTitle("s1", "   ")
+
+        assertNull(requireNotNull(chats.getSession("s1")).displayTitleOverride)
+    }
+
+    @Test
+    fun `character rename preserves display title override`() = runTest {
+        val storage = JsonFileStorage(TestContext(temp.newFolder("files")))
+        val chats = ChatRepository(storage)
+        chats.createSession(
+            ChatSession(
+                id = "s1",
+                characterCardId = "card",
+                title = "小明",
+                displayTitleOverride = "第二周目",
+                createdAt = 1,
+                updatedAt = 1
+            )
+        )
+
+        chats.rewriteSessionTitlesForCharacterCard("card", "小明", "小红")
+
+        val renamed = requireNotNull(chats.getSession("s1"))
+        assertEquals("小红", renamed.title)
+        assertEquals("第二周目", renamed.displayTitleOverride)
     }
 
     @Test

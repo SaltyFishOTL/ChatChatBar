@@ -13,6 +13,7 @@ import com.example.chatbar.domain.chat.ChatMessageOrdering
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPlan
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPolicy
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
+import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
 import java.util.UUID
@@ -149,6 +150,15 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun unpinSession(id: String) {
         getSession(id)?.let { session ->
             updateSession(session.copy(isPinned = false))
+        }
+    }
+
+    suspend fun updateSessionDisplayTitle(id: String, displayTitle: String?) {
+        val normalized = SessionDisplayTitlePolicy.normalize(displayTitle)
+        getSession(id)?.let { session ->
+            if (session.displayTitleOverride != normalized) {
+                updateSession(session.copy(displayTitleOverride = normalized))
+            }
         }
     }
 
@@ -554,7 +564,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
     /** 搜索会话 */
     suspend fun searchSessions(query: String): List<ChatSession> {
         return getAllSessions().filter { session ->
-            session.title.contains(query, ignoreCase = true)
+            session.title.contains(query, ignoreCase = true) ||
+                session.displayTitleOverride?.contains(query, ignoreCase = true) == true
         }
     }
 }

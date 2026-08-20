@@ -95,6 +95,7 @@ import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatScrollPositionPolicy
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.parseNovelAiBatchSize
@@ -572,7 +573,7 @@ fun ChatScreen(
         }
     }
     val renderedTitle = PlaceholderRenderer.render(
-        session?.title ?: characterCard?.name ?: "聊天",
+        session?.let(SessionDisplayTitlePolicy::resolve) ?: characterCard?.name ?: "聊天",
         renderPlayerName,
         renderBotName
     )

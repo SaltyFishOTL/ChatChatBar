@@ -74,7 +74,22 @@ data class ImagePromptToolUiState(
             modelUsable &&
             selectedModelId != null &&
             (referenceImagePath != null ||
-                listOf(imageDescription, stylePrompt, characterPrompt).any { it.isNotBlank() })
+                listOf(imageDescription, characterPrompt).any { it.isNotBlank() })
+
+    internal fun importCharacterCardPrompts(card: CharacterCard): ImagePromptToolUiState {
+        val importedStylePrompt = card.defaultImagePrompt.trim()
+        val importedCharacterPrompt = card.characterImagePromptText()
+        return copy(
+            selectedCharacterCardId = card.id,
+            stylePrompt = importedStylePrompt.ifBlank { stylePrompt },
+            characterPrompt = importedCharacterPrompt.ifBlank { characterPrompt },
+            phase = if (promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
+            imagePreview = null,
+            imagePaths = emptyList(),
+            imageProgress = 0f,
+            error = null
+        )
+    }
 }
 
 class ImagePromptToolViewModel : ViewModel() {
@@ -106,7 +121,18 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun updateStylePrompt(value: String) {
-        updateInput { it.copy(stylePrompt = value) }
+        if (_uiState.value.isBusy) return
+        completedImageCheckpoint = null
+        _uiState.update {
+            it.copy(
+                stylePrompt = value,
+                phase = if (it.promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
+                imagePreview = null,
+                imagePaths = emptyList(),
+                imageProgress = 0f,
+                error = null
+            )
+        }
     }
 
     fun updateCharacterPrompt(value: String) {
@@ -195,13 +221,8 @@ class ImagePromptToolViewModel : ViewModel() {
     fun importCharacterCardPrompts(cardId: String) {
         if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
-        updateInput {
-            it.copy(
-                selectedCharacterCardId = card.id,
-                stylePrompt = card.defaultImagePrompt.trim(),
-                characterPrompt = card.characterImagePromptText()
-            )
-        }
+        completedImageCheckpoint = null
+        _uiState.update { it.importCharacterCardPrompts(card) }
     }
 
     fun designPrompt() {
@@ -258,7 +279,6 @@ class ImagePromptToolViewModel : ViewModel() {
                     .orEmpty()
                 val plan = promptDesigner.designForPromptTool(
                     imageDescription = imageDescription,
-                    stylePrompt = snapshot.stylePrompt,
                     characterPrompt = snapshot.characterPrompt,
                     finalPromptRequirement = snapshot.imagePromptPreference,
                     imageBase64s = directImageBase64s,
@@ -313,7 +333,7 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update { it.copy(error = "主提示词不能为空，已添加的角色提示词也必须填写") }
             return
         }
-        val plan = draft.toPromptPlan()
+        val plan = draft.toPromptPlan(snapshot.stylePrompt)
         imageJob = viewModelScope.launch {
             val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
             if (token == null) {
@@ -525,17 +545,17 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
-    private fun CharacterCard.characterImagePromptText(): String =
-        characters
-            .mapNotNull { character ->
-                character.imagePrompt.trim()
-                    .takeIf(String::isNotBlank)
-                    ?.let { prompt -> "${character.name}:\n$prompt" }
-            }
-            .joinToString("\n\n")
-
     private companion object {
         const val PROMPT_TOOL_IMAGE_SESSION_ID = "image-prompt-tool"
         const val PROMPT_TOOL_DRAFT_SESSION_ID = "image-prompt-tool-reference"
     }
 }
+
+private fun CharacterCard.characterImagePromptText(): String =
+    characters
+        .mapNotNull { character ->
+            character.imagePrompt.trim()
+                .takeIf(String::isNotBlank)
+                ?.let { prompt -> "${character.name}:\n$prompt" }
+        }
+        .joinToString("\n\n")

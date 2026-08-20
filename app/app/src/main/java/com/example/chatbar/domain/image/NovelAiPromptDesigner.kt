@@ -351,7 +351,6 @@ class NovelAiPromptDesigner(
 
     suspend fun designForPromptTool(
         imageDescription: String,
-        stylePrompt: String,
         characterPrompt: String,
         finalPromptRequirement: String = "",
         imageBase64s: List<String> = emptyList(),
@@ -365,10 +364,9 @@ class NovelAiPromptDesigner(
         val sourceImages = imageBase64s.filter(String::isNotBlank)
         val request = promptToolInputText(
             imageDescription = imageDescription,
-            stylePrompt = stylePrompt,
             characterPrompt = characterPrompt
         )
-        require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、画风、角色提示词或上传图片" }
+        require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、角色提示词或上传图片" }
         val systemPrompt = PromptTemplates.novelAiImagePromptCoreSystem(playerName, botName)
         val scenePrompt = PromptTemplates.novelAiImagePromptConversation(
             listOf(
@@ -397,6 +395,7 @@ class NovelAiPromptDesigner(
         }
         val requestMessages = listOf(
             ChatApiMessage.text("system", systemPrompt),
+            ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()),
             userMessage
         )
         val progress = NovelAiPromptProgress(onContentDelta)
@@ -874,10 +873,9 @@ class NovelAiPromptDesigner(
 
         internal fun promptToolInputText(
             imageDescription: String,
-            stylePrompt: String,
             characterPrompt: String
         ): String =
-            listOf(imageDescription, stylePrompt, characterPrompt)
+            listOf(imageDescription, characterPrompt)
                 .map(String::trim)
                 .filter(String::isNotBlank)
                 .joinToString("\n\n")

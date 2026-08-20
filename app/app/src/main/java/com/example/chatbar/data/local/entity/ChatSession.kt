@@ -28,6 +28,7 @@ data class ChatSession(
     val id: String,
     val characterCardId: String,
     val title: String,
+    val displayTitleOverride: String? = null,
     val modelId: String? = null,
     val imageModelId: String? = null,
     val formatCardId: String? = null,

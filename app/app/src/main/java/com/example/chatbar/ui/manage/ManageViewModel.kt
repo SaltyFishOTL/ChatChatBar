@@ -34,6 +34,7 @@ import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.data.local.entity.MomentTaskStatus
 import com.example.chatbar.domain.service.AiBackgroundWorkManager
+import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.rag.EmbeddingService
 import java.io.File
@@ -858,7 +859,8 @@ class ManageViewModel : ViewModel() {
                 MomentSchedulePreviewItem(
                     taskId = task.id,
                     cardName = card?.name?.ifBlank { "未命名角色卡" } ?: "已删除角色卡",
-                    sessionTitle = session?.title?.ifBlank { "未命名会话" } ?: "会话已删除",
+                    sessionTitle = session?.let(SessionDisplayTitlePolicy::resolve)?.ifBlank { "未命名会话" }
+                        ?: "会话已删除",
                     scheduledAt = task.scheduledAt,
                     statusLabel = when {
                         card == null -> "将跳过"

@@ -25,6 +25,7 @@ class ChatSessionSerializationTest {
 
         assertEquals("session", session.id)
         assertEquals("会话", session.title)
+        assertNull(session.displayTitleOverride)
         assertEquals(1L, session.nextTimelineTurn)
         assertTrue(session.timelineTombstones.isEmpty())
         assertEquals(2000, session.memoryLimitChars)
@@ -45,5 +46,19 @@ class ChatSessionSerializationTest {
         )
 
         assertEquals("日语", decoded.voiceLanguage)
+    }
+
+    @Test
+    fun displayTitleOverrideRoundTripsWhenConfigured() {
+        val json = Json { encodeDefaults = true }
+        val session = ChatSession.create("card", "会话").copy(displayTitleOverride = "第二周目")
+
+        val decoded = json.decodeFromString(
+            ChatSession.serializer(),
+            json.encodeToString(ChatSession.serializer(), session)
+        )
+
+        assertEquals("第二周目", decoded.displayTitleOverride)
+        assertEquals("会话", decoded.title)
     }
 }

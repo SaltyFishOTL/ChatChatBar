@@ -247,9 +247,10 @@ private val advancedTutorialPages = listOf(
         summary = "首页的会话卡片不只有点击进入聊天。",
         sections = listOf(
             TutorialSection(
-                title = "置顶与删除",
+                title = "改名、置顶与删除",
                 steps = listOf(
                     "进入首页，长按任意会话卡片。",
+                    "选择“修改显示名称”，可为当前会话设置独立名称；清空后保存会恢复跟随默认名称。",
                     "选择“置顶”，可把常用会话移到顶部；再次长按可取消置顶。",
                     "选择“删除聊天”，会同时删除聊天记录和对应记忆索引。"
                 )

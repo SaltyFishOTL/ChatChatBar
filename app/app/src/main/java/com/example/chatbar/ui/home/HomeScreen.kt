@@ -47,6 +47,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.ui.components.EmptyState
 import com.example.chatbar.ui.components.RagConfigurationNoticeDialog
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -54,8 +55,10 @@ import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbFab
+import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
+import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbScaffold
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
@@ -82,6 +85,8 @@ fun HomeScreen(
     var showStartDialog by remember { mutableStateOf(false) }
     var showRagNotice by remember { mutableStateOf(false) }
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
+    var renameTarget by remember { mutableStateOf<ChatSession?>(null) }
+    var renameDraft by remember { mutableStateOf("") }
     var deleteTarget by remember { mutableStateOf<ChatSession?>(null) }
     val characterBotNamesById = remember(characters) { characters.associate { it.id to it.effectiveBotName } }
     val characterCardsById = remember(characters) { characters.associateBy { it.id } }
@@ -208,9 +213,18 @@ fun HomeScreen(
     actionSession?.let { session ->
         CbDialog(
             onDismissRequest = { actionSession = null },
-            title = renderSessionText(session, session.title),
+            title = renderSessionText(session, SessionDisplayTitlePolicy.resolve(session)),
             dismiss = { CbButton("取消", { actionSession = null }, variant = ButtonVariant.Ghost) }
         ) {
+            ActionRow(
+                icon = AppIcons.Edit,
+                title = "修改显示名称",
+                onClick = {
+                    renameDraft = session.displayTitleOverride.orEmpty()
+                    renameTarget = session
+                    actionSession = null
+                }
+            )
             ActionRow(
                 icon = AppIcons.PushPin,
                 title = if (session.isPinned) "取消置顶" else "置顶",
@@ -231,6 +245,32 @@ fun HomeScreen(
         }
     }
 
+    renameTarget?.let { session ->
+        val defaultTitle = renderSessionText(session, session.title)
+        CbDialog(
+            onDismissRequest = { renameTarget = null },
+            title = "修改显示名称",
+            dismiss = { CbButton("取消", { renameTarget = null }, variant = ButtonVariant.Ghost) },
+            confirm = {
+                CbButton("保存", {
+                    viewModel.updateSessionDisplayTitle(session.id, renameDraft)
+                    renameTarget = null
+                })
+            }
+        ) {
+            CbField(
+                label = "显示名称",
+                description = "留空时跟随默认名称：$defaultTitle"
+            ) {
+                CbInput(
+                    value = renameDraft,
+                    onValueChange = { renameDraft = it.take(SessionDisplayTitlePolicy.MAX_LENGTH) },
+                    placeholder = defaultTitle
+                )
+            }
+        }
+    }
+
     deleteTarget?.let { session ->
         CbDialog(
             onDismissRequest = { deleteTarget = null },
@@ -247,7 +287,10 @@ fun HomeScreen(
                 )
             }
         ) {
-            CbText("确定删除“${renderSessionText(session, session.title)}”？聊天记录和对应记忆索引会一并删除。", color = ChatBarTheme.colors.mutedForeground)
+            CbText(
+                "确定删除“${renderSessionText(session, SessionDisplayTitlePolicy.resolve(session))}”？聊天记录和对应记忆索引会一并删除。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
         }
     }
 }
@@ -347,7 +390,7 @@ fun SessionItem(
         Column(Modifier.weight(1f)) {
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 CbText(
-                    renderSessionText(session, session.title),
+                    renderSessionText(session, SessionDisplayTitlePolicy.resolve(session)),
                     modifier = Modifier.weight(1f),
                     style = ChatBarTheme.typography.heading,
                     maxLines = 1,
