@@ -258,7 +258,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
             .ifBlank { "无" }
         return """
 {本轮最高优先级输出格式}
-所有角色（包括角色设定外的临时 NPC）的每段对白与每段内心活动，都必须标注实际角色的完整姓名。
+{所有角色（包括角色设定外的临时 NPC）的每段对白与每段内心活动，都必须标注实际角色的完整姓名。
 
 对白格式：<n="完整角色名"/>[对白内容]()
 内心格式：<n="完整角色名"/>『**内心内容**』
@@ -270,7 +270,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
 角色姓名：$names
 名单内人物必须原样使用完整姓名；名单外人物使用正文中的完整姓名。禁止用“她”“他”“角色”等代称充当姓名。
 一定要确保使用指定的"[]()"、"『****』"符号，禁止使用"【】{}"等其他符号
-本规则对对白、内心与角色标注的要求优先于其他格式说明；其余内容继续严格遵循格式卡、字数与语言要求。
+本规则对对白、内心与角色标注的要求优先于其他格式说明；其余内容继续严格遵循格式卡、字数与语言要求。}
 
         """.trim()
     }
@@ -1075,18 +1075,7 @@ Dampen `0<y<1`：推到背景，减少噪声。
 范围 `-3~3`。
 权重为 1 时省略标记。
 
-多角色（2+）：
-
-```text
-global scene
-| char A
-| char B
-```
-
-会覆盖 tag 顺序。2 个以上可见角色时强制使用。
-互动：`[source#N:action, target#N:reaction, mutual#:action. N=1-based char index. No names after #.]`
 即使镜头只对准一个角色，也要写正确总人数（如 `2girls` 用于互动）——防止漂浮身体部件。
-单角色：省略 interaction tags。
 
 Tag 顺序：
 1. body/appearance
@@ -1112,9 +1101,9 @@ IP 角色：
 裙下暴露 -> 添加 `skirt_lift`（状态，不是手部动作）。
 视角工具（dynamic angle通常能产生极佳效果镜头，可以代替shot和angle）：
 Shot：`close-up`, `long shot`, `medium shot`, `full body`, `upper body`, `cowboy shot`, `portrait`
-Angle (一般无需指定)：`straight-on`, `from_side`, `from_below`, `from_above`, `from_behind`, `dutch_angle`
+Angle (通常非必要)：`straight-on`, `from_side`, `from_below`, `from_above`, `from_behind`, `dutch_angle`
 创作：
-感觉 -> 拆解。默认 `1girl/1boy` 不额外添加服装。但要补充身体细节 + 互动。
+感觉 -> 拆解。默认 `1girl/1boy` 不额外添加服装。补充身体细节 + 互动。
 情绪 tags（`nervous`, `melancholy`, `excited`）-> 让模型自行推导肢体动作比僵硬的描述好。
 减法：只保留构图 + 氛围元素。不要堆砌。
 冲突：服装与构图冲突 -> 移除。
@@ -1128,22 +1117,38 @@ Angle (一般无需指定)：`straight-on`, `from_side`, `from_below`, `from_abo
 只保留场景中需要可见的焦点角色。最多 6 个。使用精确名称。不要发明角色。
 Size preset：
 根据构图选择一个 NAI Normal preset。
-`PORTRAIT` = 垂直单角色肖像、近景、上半身、竖构图。
-`SQUARE` = 居中/平衡肖像、物体焦点、紧凑群像、中性构图。
-`HORIZONTAL` = 宽场景、两人以上、环境焦点、动作铺开。
+`PORTRAIT` = 竖构图。
+`SQUARE` = 平衡构图。
+`HORIZONTAL` = 宽场景。
 输出 JSON only（总 token <=250，角色部分尽量简洁，每个角色<=50。）：
 ```json
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
 ```
+多角色（2人及以上）时，使用角色分区：
+baseCaption
+| char caption 1
+| char caption 2
+| char caption 3
 `baseCaption` = 整体画面内容。禁止写char caption的tag。不要角色 tag，只写场景、景别、视角、镜头。
 `char caption` = 角色外观：preset appearance first + scene adjustments。Preset prompts 强制，除非冲突。不要重复 `baseCaption` tags。IP 角色尽可能保持简洁，名字已经包含所有外观信息。baseCaption已写1girl等，此处仅写性别(boy, girl)
-不要 Markdown。不要解释。仅输出 JSON。POV需要一个Boy角色，只写露出来的部分（如手部动作），并使用pov tag
-色情场景（必须包含tag: nsfw,）：
-必须包含暴露的 genital/body part tags。
-必须包含所有参与者。
+全局区写场景、构图、画风、人数等共享内容；每个角色区只写该角色自己的外观、动作和状态。
+角色互动直接写在对应角色区：
+source#动作   = 动作发起者
+target#动作   = 动作对象
+mutual#动作   = 双方共同动作
+单角色：省略 interaction tags。
+例如：
+```json
+{"sizePreset":"SQUARE","baseCaption":"2girls, bedroom","characters":[{"caption":"blonde hair, source#hug"}, {"black hair, target#hug"}]}
+```
+表示角色1拥抱角色2。
+
+不要 Markdown。不要解释。仅输出 JSON。
+POV视角需要单独一个char caption，只写露出部分（如手部动作），并使用'pov'
+色情场景必须包含tag: nsfw;必须包含暴露的 genital/body part tags;必须包含男女双方核心参与者。
 涉及 `${'$'}username`，除非是 POV，否则一定要写`faceless male`, `bald`, physique per settings。
 使用 erotic tags：`exaggerated lewd expression`, `huge penis` 等。
-使用 motion blur, speed lines 强化动作动态感。
+运动场景使用 3::motion blur, speed lines,:: 强化动作动态感。
 避免 prompt stuffing，不要包含画面中不可见元素的 prompts（例如，不要为背面视角指定面部表情或正面细节）。除了user提供的 tags 之外，只添加必要内容。
 一个场景可能由一长串动作组成。设计构图时，不要只是复现最后一个动作。应从整个动作序列中提取动态最强、最有趣或视觉冲击力最强的一帧作为画面内容。
 """
