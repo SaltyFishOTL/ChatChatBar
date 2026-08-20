@@ -26,7 +26,7 @@ Use chatbar-long-term-memory when Archive, HEAD, timeline constraints, source-tu
 - Treat the `AI 提示词目录` KDoc at the start of PromptTemplates as mandatory navigation metadata. Every PromptTemplates prompt change must review it; add, remove, rename, recategorize, or revise entries in the same change whenever symbols or purposes change. Use exact searchable symbol names and never line numbers.
 - A PromptTemplates prompt change is incomplete until the header directory remains accurate. Keep template constants beside their builders so directory search lands in one local area.
 - Keep section selection, titles, and layer assignment in PromptAssembler.
-- Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles only for opted-in `http://` requests; Debug Request JSON records this adapted transport body.
+- Keep logical ChatApiMessage roles and interleaving with raw history in ChatViewModel. StreamingChatService adapts later system roles and merges a trailing requirement into the current user only for opted-in `http://` requests; Debug Request JSON records this adapted transport body.
 - Keep conversation grouping in ContextWindowManager and shared turn policies.
 - Verify transport request fields with chatbar-model-request-runtime.
 
@@ -44,7 +44,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Build the complete current-turn requirements text once through `PromptTemplates`, using the rendered active format card and required integer session reply length (default 300), rendered as `N字`. When configured status exclusion affects earlier assistant history and an active format card exists, include the format-continuity notice in that same text. Place that exact text according to the resolved chat model's `formatPromptPosition`: prepend it to the first logical `system` message for `START`, add it as a logical `system` message immediately after the final current user API message for `END`, or do both for `BOTH`. Format-card user tools may append a request-only ordered suffix to that final user API message; keep persisted/displayed user text, retrieval input, history, and memory source text unchanged. Missing persisted values default to `BOTH`. Keep the requirements out of PromptAssembler stable/dynamic/tail layers, persistence, history, and memory source text.
 - Derive the prompt cache key from exact first-system content. Format-card or reply-length changes affect the key when placement includes `START`; `END` keeps those dynamic requirements outside the cached opening prefix.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
-- Cleartext HTTP adaptation changes later system roles to assistant in serialized and debug JSON but never moves or merges their content; HTTPS keeps a configured post-user requirements message as system.
+- Cleartext HTTP adaptation changes non-trailing later system roles to assistant. A configured post-user requirement at the request tail is merged into the current user transport message, including multimodal content, so the serialized request ends with user; logical messages and persisted user text remain unchanged. HTTPS keeps the requirement as system.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.
 - Keep cache keys aligned with exact sent stable content, including conditional history headings.
@@ -78,7 +78,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Stable outlet present versus absent.
 - Document-only, memory-only, and mixed RAG cards.
 - Cache path and non-cache fallback produce equivalent semantic order.
-- Cleartext HTTP serialization preserves message/content order while rewriting only system roles after the first.
+- Cleartext HTTP serialization preserves non-trailing message/content order, merges a trailing requirement into text and multimodal user content, and never ends with an adapted assistant prompt.
 - Expected Archive and HEAD markers exist in final serialized messages.
 
 ## Stop Conditions

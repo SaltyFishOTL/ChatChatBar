@@ -33,7 +33,7 @@ class CleartextHttpChatTemplatePolicyTest {
     }
 
     @Test
-    fun `cleartext http keeps merged opening requirements and stable prompt as system`() {
+    fun `cleartext http merges trailing requirements into current user`() {
         val requirements = "格式要求"
         val source = listOf(
             ChatApiMessage.text("system", "$requirements\n\n固定设定"),
@@ -47,8 +47,49 @@ class CleartextHttpChatTemplatePolicyTest {
             baseUrl = "http://127.0.0.1:8080/v1"
         )
 
-        assertEquals(listOf("system", "user", "assistant"), adapted.map { it.role })
-        assertEquals(source.map { it.content }, adapted.map { it.content })
+        assertEquals(listOf("system", "user"), adapted.map { it.role })
+        assertEquals(source.first().content, adapted.first().content)
+        assertEquals("当前用户消息\n\n格式要求", adapted.last().content.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `cleartext http appends trailing requirements to multimodal user content`() {
+        val source = listOf(
+            ChatApiMessage.text("system", "固定设定"),
+            ChatApiMessage.withImage("user", "当前用户消息", "image-base64"),
+            ChatApiMessage.text("system", "格式要求")
+        )
+
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = source,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+
+        assertEquals(listOf("system", "user"), adapted.map { it.role })
+        val contentParts = adapted.last().content.jsonArray
+        assertEquals(3, contentParts.size)
+        assertEquals("当前用户消息", contentParts[0].jsonObject.getValue("text").jsonPrimitive.content)
+        assertEquals("image_url", contentParts[1].jsonObject.getValue("type").jsonPrimitive.content)
+        assertEquals("格式要求", contentParts[2].jsonObject.getValue("text").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `cleartext http rewrites unmergeable trailing system as user`() {
+        val source = listOf(
+            ChatApiMessage.text("system", "固定设定"),
+            ChatApiMessage.text("assistant", "已有助手消息"),
+            ChatApiMessage.text("system", "尾部要求")
+        )
+
+        val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(
+            messages = source,
+            allowCleartextHttp = true,
+            baseUrl = "http://127.0.0.1:8080/v1"
+        )
+
+        assertEquals(listOf("system", "assistant", "user"), adapted.map { it.role })
+        assertEquals("尾部要求", adapted.last().content.jsonPrimitive.content)
     }
 
     @Test
