@@ -111,6 +111,7 @@ import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.image.ImageCropOffset
 import com.example.chatbar.domain.image.ImageCropSize
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
@@ -1540,6 +1541,7 @@ private fun SettingsTab(
     var fishAudioTtsModelId by remember { mutableStateOf(settings.fishAudioTtsModelId) }
     var voiceTagModelId by remember { mutableStateOf(settings.voiceTagModelId) }
     var audiobookModeEnabled by remember { mutableStateOf(settings.audiobookModeEnabled) }
+    var novelAiImageModel by remember { mutableStateOf(settings.novelAiImageModel) }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
@@ -1616,6 +1618,7 @@ private fun SettingsTab(
         settings.momentsMaxDelayHours,
         settings.momentsBackgroundGuideDismissed,
         settings.momentsAutoStartConfirmed,
+        settings.novelAiImageModel,
         settings.novelAiImageAspectRatio,
         settings.fishAudioTtsModelId,
         settings.voiceTagModelId,
@@ -1648,6 +1651,7 @@ private fun SettingsTab(
         momentsMaxDelayHours = momentDelayRange.maxHours.toFloat()
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
+        novelAiImageModel = settings.novelAiImageModel
         contextSize = settings.defaultContextWindowSize.coerceIn(0, 50).toFloat()
         memoryTopK = settings.memoryRagTopK.coerceIn(0, 15).toFloat()
         episodeMaxSourceTurns = settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat()
@@ -1689,6 +1693,7 @@ private fun SettingsTab(
         episodeMaxSourceTurns = episodeMaxSourceTurns.roundToInt().coerceIn(1, 6),
         excludeAssistantStatusFromHistory = excludeAssistantStatusFromHistory,
         webSearchMaxResultsPerQuery = 1,
+        novelAiImageModel = novelAiImageModel,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
         fishAudioTtsModelId = fishAudioTtsModelId,
         voiceTagModelId = voiceTagModelId,
@@ -2063,6 +2068,17 @@ private fun SettingsTab(
                 color = if (novelAiConfigured) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
+            CbField(
+                "NovelAI 模型",
+                description = "控制对话、朋友圈和角色图片；生图工作室使用工作室内的独立模型设置。"
+            ) {
+                CbSelect(
+                    value = novelAiImageModel,
+                    options = NovelAiImageModel.entries,
+                    optionLabel = { it.displayName },
+                    onValueChange = { novelAiImageModel = it }
+                )
+            }
             CbField(
                 "图片比例",
                 description = novelAiImageSize?.let {

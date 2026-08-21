@@ -34,6 +34,7 @@ import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
 import com.example.chatbar.ui.chat.ChatScreen
 import com.example.chatbar.ui.imageprompt.ImagePromptToolScreen
+import com.example.chatbar.ui.imageprompt.NovelAiHistoryScreen
 import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.moments.MomentsScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
@@ -230,7 +231,13 @@ fun MainNavigation(
                         )
                     }
                     entry<ImagePromptToolRoute> {
-                        ImagePromptToolScreen(onBack = ::popBackStack)
+                        ImagePromptToolScreen(
+                            onBack = ::popBackStack,
+                            onOpenHistory = { pushRoute(NovelAiHistoryRoute) }
+                        )
+                    }
+                    entry<NovelAiHistoryRoute> {
+                        NovelAiHistoryScreen(onBack = ::popBackStack)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(
@@ -294,6 +301,7 @@ private fun NavKey.diagnosticRouteName(): String = when (this) {
     CommunityRoute -> "community"
     ManageRoute -> "manage"
     ImagePromptToolRoute -> "image_prompt_tool"
+    NovelAiHistoryRoute -> "novelai_history"
     is ChatRoute -> "chat"
     is CharacterEditRoute -> "character_edit"
     is FormatCardEditRoute -> "format_card_edit"

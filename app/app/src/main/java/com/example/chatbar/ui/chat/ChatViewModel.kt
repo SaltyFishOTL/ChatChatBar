@@ -32,6 +32,7 @@ import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.TimelineArchiveBoundaryPolicy
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -1663,10 +1664,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     return@run
                 }
                 val seed = novelAiImageService.newSeed()
-                val requestBody = novelAiImageService.buildRequestBody(prompt, seed, imageSize, batchSize)
+                val generationSettings = NovelAiGenerationSettings.legacy(
+                    seed = seed,
+                    count = batchSize,
+                    model = settings.novelAiImageModel
+                )
+                val requestBody = novelAiImageService.buildRequestBody(prompt, imageSize, generationSettings)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
                     sessionId = sessionId,
-                    modelName = "NovelAI Diffusion V4.5 Full",
+                    modelName = "NovelAI Diffusion ${settings.novelAiImageModel.displayName}",
                     apiUrl = "https://image.novelai.net/ai/generate-image-stream",
                     requestBodyJson = requestBody,
                     rawAiOutput = debugPrompt(prompt, imageSize)
@@ -1686,9 +1692,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         novelAiImageService.generate(
                             token = token,
                             prompt = prompt,
-                            seed = currentSeed,
                             imageSize = imageSize,
-                            batchSize = batchSize
+                            settings = generationSettings.copy(seed = currentSeed.toLong())
                         ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Intermediate -> {

@@ -297,6 +297,29 @@ class LongTermMemoryService internal constructor(
         )
     }
 
+    /** Current model preflight succeeded; remove only obsolete model/auth failures. */
+    suspend fun clearResolvedModelConfigurationErrors(sessionId: String) = stateLock(sessionId) {
+        val loaded = loadLocked(sessionId)
+        val cleared = MemoryModelPreflightPolicy.clearResolvedConfigurationErrors(loaded.state)
+        val sessionArchiveCleared =
+            loaded.session.memoryArchiveStatus == MemoryUpdateStatus.ERROR &&
+                loaded.session.memoryArchiveError == MEMORY_MODEL_CONFIGURATION_ERROR &&
+                (cleared.archiveCleared || loaded.state.archiveFailure == null)
+        val sessionHeadCleared =
+            loaded.session.memoryHeadStatus == MemoryUpdateStatus.ERROR &&
+                loaded.session.memoryHeadError == MEMORY_MODEL_CONFIGURATION_ERROR &&
+                (cleared.headCleared || loaded.state.headFailure == null)
+        if (!cleared.changed && !sessionArchiveCleared && !sessionHeadCleared) return@stateLock
+        if (cleared.changed) memoryRepository.saveState(cleared.state)
+        compileAndCacheLocked(
+            loaded.copy(state = cleared.state),
+            archiveStatus = MemoryUpdateStatus.IDLE.takeIf { sessionArchiveCleared },
+            archiveError = null,
+            headStatus = MemoryUpdateStatus.IDLE.takeIf { sessionHeadCleared },
+            headError = null
+        )
+    }
+
     suspend fun maintainHeadAutomatically(sessionId: String, modelConfig: ModelConfig) {
         val shouldBackfill = stateLock(sessionId) {
             val loaded = loadLocked(sessionId)

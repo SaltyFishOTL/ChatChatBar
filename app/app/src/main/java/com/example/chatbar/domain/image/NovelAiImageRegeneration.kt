@@ -48,7 +48,8 @@ data class NovelAiImageRegenerationDraft(
         characterCaptions = characterPrompts.map {
             NovelAiCharacterCaption(
                 prompt = it.prompt,
-                center = DesignedCharacterCenter(it.centerX, it.centerY)
+                center = DesignedCharacterCenter(it.centerX, it.centerY),
+                negativePrompt = it.negativePrompt
             )
         },
         sizePreset = NovelAiImageSizePreset.from(sizePreset),
@@ -74,7 +75,8 @@ fun NovelAiPromptPlan.toRegenerationDraft(): NovelAiImageRegenerationDraft =
             GeneratedImageCharacterPrompt(
                 prompt = it.prompt,
                 centerX = it.center.x,
-                centerY = it.center.y
+                centerY = it.center.y,
+                negativePrompt = it.negativePrompt
             )
         },
         negativePrompt = effectiveNegativePrompt,
@@ -105,7 +107,8 @@ fun NovelAiPromptPlan.toGeneratedImageMetadata(
         GeneratedImageCharacterPrompt(
             prompt = it.prompt,
             centerX = it.center.x,
-            centerY = it.center.y
+            centerY = it.center.y,
+            negativePrompt = it.negativePrompt
         )
     },
     negativePrompt = effectiveNegativePrompt,

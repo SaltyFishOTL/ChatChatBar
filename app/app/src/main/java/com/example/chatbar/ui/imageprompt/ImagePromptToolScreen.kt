@@ -1,19 +1,16 @@
 package com.example.chatbar.ui.imageprompt
 
-import android.net.Uri
-import android.widget.Toast
-import androidx.activity.compose.rememberLauncherForActivityResult
-import androidx.activity.result.PickVisualMediaRequest
-import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.BorderStroke
-import androidx.compose.foundation.background
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
@@ -24,13 +21,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.selection.SelectionContainer
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -40,603 +36,354 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
-import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
-import com.example.chatbar.data.local.entity.CharacterCard
-import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.domain.image.NOVEL_AI_MAX_CHARACTER_PROMPTS
-import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
-import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
-import com.example.chatbar.domain.image.NovelAiImageSizePreset
-import com.example.chatbar.domain.image.parseNovelAiBatchSize
+import com.example.chatbar.domain.image.NovelAiAspectRatio
+import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
+import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiSampler
+import com.example.chatbar.domain.image.NovelAiSeedMode
+import com.example.chatbar.domain.image.NovelAiSizeTier
+import com.example.chatbar.domain.image.NovelAiTagCompletion
+import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
-import com.example.chatbar.ui.components.NovelAiBatchSizeInput
-import com.example.chatbar.ui.components.NovelAiImageSizePresetSelect
-import com.example.chatbar.ui.kit.AppIcons
+import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbChoiceChip
+import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSelect
-import com.example.chatbar.ui.kit.CbSpinner
+import com.example.chatbar.ui.kit.CbSlider
 import com.example.chatbar.ui.kit.CbSurface
-import com.example.chatbar.ui.kit.CbTabs
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
+import com.example.chatbar.ui.kit.FullscreenTextEditor
 import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
+import com.example.chatbar.ui.kit.ChatBarElevation
 import com.example.chatbar.ui.kit.ChatBarTheme
-import com.example.chatbar.ui.kit.FullscreenTextEditor
-import java.io.File
+
+private data class StudioFullscreenEditRequest(
+    val title: String,
+    val text: String,
+    val onApply: (String) -> Unit
+)
 
 @Composable
 fun ImagePromptToolScreen(
     onBack: () -> Unit,
-    modifier: Modifier = Modifier,
-    viewModel: ImagePromptToolViewModel = viewModel(),
-    processingViewModel: ImageProcessingViewModel = viewModel()
+    onOpenHistory: () -> Unit,
+    viewModel: ImagePromptToolViewModel = viewModel()
 ) {
-    val state by viewModel.uiState.collectAsState()
-    val processingState by processingViewModel.uiState.collectAsState()
-    val novelAiConfigured by viewModel.novelAiConfigured.collectAsState()
-    val context = LocalContext.current
+    val state by viewModel.uiState.collectAsStateWithLifecycle()
+    val configured by viewModel.novelAiConfigured.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
-    val selectedModel = state.models.firstOrNull { it.id == state.selectedModelId }
-    val selectedCharacterCard = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId }
-    var fullscreenField by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var fullscreenOnChange by remember { mutableStateOf<((String) -> Unit)?>(null) }
-    var promptExpanded by remember { mutableStateOf(false) }
-    var imageBatchSizeInput by remember { mutableStateOf("1") }
-    var expandedImageIndex by remember { mutableStateOf<Int?>(null) }
-    var selectedPage by remember { mutableStateOf(0) }
-    val referenceImagePicker = rememberLauncherForActivityResult(
-        ActivityResultContracts.PickVisualMedia()
-    ) { uri: Uri? ->
-        uri?.let(viewModel::selectReferenceImage)
+    var fullscreenEdit by remember { mutableStateOf<StudioFullscreenEditRequest?>(null) }
+    var previewPath by remember { mutableStateOf<String?>(null) }
+    val previewPaths = (state.recentHistoryItems.map { it.image.path } + state.imagePaths).distinct()
+    BackHandler(enabled = fullscreenEdit == null && previewPath == null) {
+        viewModel.persistDraftNow()
+        onBack()
     }
+    BackHandler(enabled = fullscreenEdit != null) { fullscreenEdit = null }
 
-    LaunchedEffect(state.promptRevision) {
-        if (state.promptRevision > 0) promptExpanded = true
-    }
-
-    Box(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val expandedOutputMaxHeight = (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(240.dp)
         Column(Modifier.fillMaxSize()) {
-            CbTopBar(
-                title = "生图工具",
-                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
-                actions = {
-                    if (selectedPage == 0 && state.isBusy) {
-                        CbButton(
-                            "停止",
-                            viewModel::cancelActiveTask,
-                            variant = ButtonVariant.Outline
-                        )
-                    } else if (selectedPage == 1 && processingState.isBusy) {
-                        CbButton(
-                            "停止",
-                            processingViewModel::cancelActiveTask,
-                            variant = ButtonVariant.Outline
-                        )
-                    }
-                }
-            )
-            CbTabs(
-                items = listOf("提示词生图", "图像处理"),
-                selectedIndex = selectedPage,
-                onSelected = { selectedPage = it }
-            )
-            if (selectedPage == 0) {
-                LazyColumn(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .navigationBarsPadding()
-                        .imePadding(),
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                item {
-                    PromptInputPanel(
-                        state = state,
-                        selectedModel = selectedModel,
-                        onDescription = viewModel::updateImageDescription,
-                        onCharacter = viewModel::updateCharacterPrompt,
-                        onPreference = viewModel::updateImagePromptPreference,
-                        onSelectReferenceImage = {
-                            referenceImagePicker.launch(
-                                PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)
-                            )
-                        },
-                        onRemoveReferenceImage = viewModel::removeReferenceImage,
-                        onFullscreenEdit = { title, text, onChange ->
-                            fullscreenField = title to text
-                            fullscreenOnChange = onChange
-                        },
-                        selectedCharacterCard = selectedCharacterCard,
-                        onImportCharacterCard = { viewModel.importCharacterCardPrompts(it.id) },
-                        onGeneratePrompt = viewModel::designPrompt
-                    )
-                }
-                item {
-                    PromptEditorPanel(
-                        draft = state.promptDraft,
-                        stylePrompt = state.stylePrompt,
-                        expanded = promptExpanded,
-                        enabled = !state.isBusy,
-                        canGenerateImage = novelAiConfigured && state.promptDraft.canRegenerate && !state.isBusy,
-                        imageGenerating = state.isGeneratingImage,
-                        batchSizeInput = imageBatchSizeInput,
-                        imageSizePresetOverride = state.imageSizePresetOverride,
-                        onExpandedChange = { promptExpanded = it },
-                        onDraftChange = viewModel::updatePromptDraft,
-                        onStylePromptChange = viewModel::updateStylePrompt,
-                        onBatchSizeInputChange = { imageBatchSizeInput = it },
-                        onImageSizePresetChange = viewModel::updateImageSizePresetOverride,
-                        onFullscreenEdit = { title, text, onChange ->
-                            fullscreenField = title to text
-                            fullscreenOnChange = onChange
-                        },
-                        onCopy = {
-                            clipboard.setText(
-                                AnnotatedString(state.promptDraft.toClipboardText(state.stylePrompt))
-                            )
-                            Toast.makeText(context, "已复制提示词", Toast.LENGTH_SHORT).show()
-                        },
-                        onGenerateImage = {
-                            parseNovelAiBatchSize(imageBatchSizeInput)?.let(viewModel::generateImage)
-                        }
-                    )
-                }
-                if (state.isDesigning && state.designStatus.isNotBlank()) {
-                    item {
-                        StreamPanel(
-                            title = "处理进度",
-                            text = state.designStatus,
-                            active = true
-                        )
-                    }
-                }
-                if (state.imageAnalysisStream.isNotBlank()) {
-                    item {
-                        StreamPanel(
-                            title = "图片解析",
-                            text = state.imageAnalysisStream,
-                            active = state.isDesigning
-                        )
-                    }
-                }
-                if (state.reasoningStream.isNotBlank() || state.isDesigning) {
-                    item {
-                        StreamPanel(
-                            title = "思维流",
-                            text = state.reasoningStream,
-                            active = state.isDesigning
-                        )
-                    }
-                }
-                if (state.resultStream.isNotBlank() || state.isDesigning) {
-                    item {
-                        StreamPanel(
-                            title = "结果流",
-                            text = state.resultStream,
-                            active = state.isDesigning
-                        )
-                    }
-                }
-                if (state.imagePreview != null || state.imagePath != null || state.isGeneratingImage) {
-                    item {
-                        ImagePreviewPanel(
-                            state = state,
-                            onOpenImage = { expandedImageIndex = it }
-                        )
-                    }
-                }
-                state.error?.let { error ->
-                    item {
-                        ErrorPanel(error, viewModel::dismissError)
-                    }
-                }
-                }
-            } else {
-                ImageProcessingPage(
-                    state = processingState,
-                    onSelectImage = processingViewModel::selectImage,
-                    onProcess = processingViewModel::process,
-                    onDismissError = processingViewModel::dismissError
-                )
+        CbTopBar(
+            title = "NovelAI 生图工作室",
+            navigation = {
+                CbIconButton(AppIcons.ArrowBack, "返回", { viewModel.persistDraftNow(); onBack() })
+            },
+            actions = {
+                CbButton("历史", { viewModel.persistDraftNow(); onOpenHistory() }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
+            }
+        )
+        OutputPanel(
+            state = state,
+            onToggle = viewModel::toggleOutputExpanded,
+            onSelect = viewModel::selectOutput,
+            onSelectRecent = viewModel::selectRecentImage,
+            onApplyRecent = viewModel::applySelectedRecentHistory,
+            expandedMaxHeight = expandedOutputMaxHeight,
+            onOpenImage = { path -> previewPath = path }
+        )
+        if (state.hasHistoryUndo) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.xs),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CbText("已应用历史配方", Modifier.weight(1f), color = ChatBarTheme.colors.mutedForeground)
+                CbButton("撤销", viewModel::undoHistoryApply, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
+                CbButton("关闭", viewModel::clearHistoryUndo, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
             }
         }
-        if (selectedPage == 0) {
-            fullscreenField?.let { (title, text) ->
-                FullscreenTextEditor(
-                    title = title,
-                    text = text,
-                    onTextChange = { newValue ->
-                        fullscreenOnChange?.invoke(newValue)
-                        fullscreenField = title to newValue
+        LazyColumn(
+            modifier = Modifier.weight(1f).fillMaxWidth(),
+            verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
+        ) {
+            item {
+                PromptSection(state, viewModel) { title, text, onApply ->
+                    fullscreenEdit = StudioFullscreenEditRequest(title, text, onApply)
+                }
+            }
+            item {
+                GenerationSettingsSection(state.draft.activeSettings, state.draft.advancedExpanded, viewModel)
+            }
+            item { Spacer(Modifier.height(ChatBarSpacing.sm)) }
+        }
+        CbSurface(
+            modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding(),
+            shape = RoundedCornerShape(topStart = ChatBarShape.lg, topEnd = ChatBarShape.lg),
+            border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+            elevation = 4.dp
+        ) {
+            Row(
+                Modifier.fillMaxWidth().padding(ChatBarSpacing.md),
+                horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+            ) {
+                CbButton(
+                    "复制正向",
+                    onClick = { clipboard.setText(buildAnnotatedString { append(viewModel.positivePromptForClipboard()) }) },
+                    modifier = Modifier.weight(0.42f),
+                    variant = ButtonVariant.Outline
+                )
+                CbButton(
+                    text = when {
+                        state.applyingHistory -> "正在应用历史"
+                        state.isBusy -> "停止当前任务"
+                        !configured -> "未配置 Token"
+                        else -> "生成 ${state.draft.activeSettings.count} 张"
                     },
-                    visible = true,
-                    onDismiss = {
-                        fullscreenField = null
-                        fullscreenOnChange = null
-                    }
-                )
-            }
-            expandedImageIndex?.let { initialIndex ->
-                ImagePreviewDialog(
-                    items = state.imagePaths.map { path -> ImagePreviewItem(messageId = "", path = path) },
-                    initialIndex = initialIndex,
-                    onDismiss = { expandedImageIndex = null }
+                    onClick = when {
+                        state.applyingHistory -> ({})
+                        state.isBusy -> viewModel::cancelActiveTask
+                        else -> viewModel::generateImage
+                    },
+                    modifier = Modifier.weight(0.58f),
+                    enabled = !state.applyingHistory && configured && (state.canGenerate || state.isBusy),
+                    variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default
                 )
             }
         }
+        }
+        fullscreenEdit?.let { request ->
+            FullscreenTextEditor(
+                title = request.title,
+                text = request.text,
+                onTextChange = request.onApply,
+                visible = true,
+                onDismiss = { fullscreenEdit = null }
+            )
+        }
+    }
+
+    previewPath?.let { selectedPath ->
+        val items = previewPaths.map { path -> ImagePreviewItem(messageId = "", path = path) }
+        ImagePreviewDialog(
+            items = items,
+            initialIndex = previewPaths.indexOf(selectedPath).coerceAtLeast(0),
+            onDismiss = { previewPath = null }
+        )
+    }
+
+    state.error?.let { error ->
+        CbDialog(
+            onDismissRequest = viewModel::dismissError,
+            title = "操作失败",
+            confirm = { CbButton("知道了", viewModel::dismissError) }
+        ) { CbText(error) }
     }
 }
 
 @Composable
-private fun PromptInputPanel(
+private fun OutputPanel(
     state: ImagePromptToolUiState,
-    selectedModel: ModelConfig?,
-    onDescription: (String) -> Unit,
-    onCharacter: (String) -> Unit,
-    onPreference: (String) -> Unit,
-    onSelectReferenceImage: () -> Unit,
-    onRemoveReferenceImage: () -> Unit,
-    onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
-    selectedCharacterCard: CharacterCard?,
-    onImportCharacterCard: (CharacterCard) -> Unit,
-    onGeneratePrompt: () -> Unit
+    onToggle: () -> Unit,
+    onSelect: (Int) -> Unit,
+    onSelectRecent: (String) -> Unit,
+    onApplyRecent: (NovelAiHistoryApplyMode) -> Unit,
+    expandedMaxHeight: Dp,
+    onOpenImage: (String) -> Unit
 ) {
+    val selectedPath = state.selectedOutputPath
+    val selectedModel: Any? = selectedPath ?: state.imagePreview
+    val selectedRecent = state.selectedRecentHistoryItem
+    val expanded = state.draft.outputExpanded
     CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(ChatBarSpacing.md)
+            .then(if (expanded) Modifier.height(expandedMaxHeight) else Modifier),
+        color = ChatBarTheme.colors.card,
+        shape = RoundedCornerShape(ChatBarShape.xl),
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+        elevation = ChatBarElevation.xhigh
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            CbField(
-                label = "参考图片",
-                description = "上传后，AI 会根据画面内容反推 NovelAI 提示词。"
+        Column(
+            modifier = (if (expanded) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
+                .padding(ChatBarSpacing.md)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                state.referenceImagePath?.let { path ->
-                    AsyncImage(
-                        model = File(path),
-                        contentDescription = "提示词参考图片",
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .heightIn(max = 220.dp)
-                            .clip(RoundedCornerShape(ChatBarShape.sm)),
-                        contentScale = ContentScale.Fit
-                    )
-                }
                 Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    modifier = Modifier.weight(1f).heightIn(min = 56.dp).clickable(onClick = onToggle),
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    CbButton(
-                        if (state.referenceImagePath == null) "上传图片" else "替换图片",
-                        onSelectReferenceImage,
+                    CbText(
+                        text = when (state.phase) {
+                            ImagePromptToolPhase.GENERATING -> "正在连接 NovelAI"
+                            ImagePromptToolPhase.STREAMING -> "生成中 ${(state.imageProgress * 100).toInt()}%"
+                            ImagePromptToolPhase.SAVING -> "正在保存批次"
+                            ImagePromptToolPhase.FINISHED -> "已完成 ${state.imagePaths.size} 张"
+                            ImagePromptToolPhase.FAILED -> "生成失败"
+                            else -> "输出"
+                        },
                         modifier = Modifier.weight(1f),
-                        enabled = !state.isBusy,
-                        variant = ButtonVariant.Outline
+                        style = ChatBarTheme.typography.label
                     )
-                    if (state.referenceImagePath != null) {
-                        CbIconButton(
-                            AppIcons.Delete,
-                            "移除参考图片",
-                            onRemoveReferenceImage,
-                            enabled = !state.isBusy,
-                            tint = ChatBarTheme.colors.destructive
+                    if (!expanded && selectedModel != null) {
+                        AsyncImage(
+                            model = selectedModel,
+                            contentDescription = "当前输出缩略图",
+                            modifier = Modifier
+                                .size(48.dp)
+                                .clip(RoundedCornerShape(ChatBarShape.sm)),
+                            contentScale = ContentScale.Crop
                         )
+                        Spacer(Modifier.width(ChatBarSpacing.sm))
                     }
                 }
-            }
-            CbField("图片描述", onFullscreenEdit = {
-                onFullscreenEdit("图片描述", state.imageDescription, onDescription)
-            }) {
-                CbInput(
-                    value = state.imageDescription,
-                    onValueChange = onDescription,
-                    placeholder = "想要生成的画面",
-                    enabled = !state.isBusy,
-                    singleLine = false,
-                    minLines = 1
-                )
-            }
-            CbField("导入角色卡提示词") {
-                CbSelect(
-                    value = selectedCharacterCard,
-                    options = state.characterCards,
-                    optionLabel = { it.name },
-                    onValueChange = onImportCharacterCard,
-                    placeholder = if (state.characterCards.isEmpty()) "暂无角色卡" else "选择角色卡"
-                )
-            }
-            CbField("角色提示词", onFullscreenEdit = {
-                onFullscreenEdit("角色提示词", state.characterPrompt, onCharacter)
-            }) {
-                CbInput(
-                    value = state.characterPrompt,
-                    onValueChange = onCharacter,
-                    placeholder = "角色外貌、服装、Danbooru 标签",
-                    enabled = !state.isBusy,
-                    singleLine = false,
-                    minLines = 1
-                )
-            }
-            CbField(
-                label = "生图偏好",
-                description = "约束最终 NovelAI Prompt 的格式、标签、权重或构图取舍；不会单独作为画面来源。",
-                onFullscreenEdit = {
-                    onFullscreenEdit("生图偏好", state.imagePromptPreference, onPreference)
-                }
-            ) {
-                CbInput(
-                    value = state.imagePromptPreference,
-                    onValueChange = onPreference,
-                    placeholder = "例如：更重视镜头构图，避免长串无关 tags",
-                    enabled = !state.isBusy,
-                    singleLine = false,
-                    minLines = 1
-                )
-            }
-            CbField("默认生图模型") {
-                CbText(
-                    selectedModel?.displayName ?: "未配置默认生图模型",
-                    color = if (selectedModel == null) ChatBarTheme.colors.destructive else ChatBarTheme.colors.foreground,
-                    style = ChatBarTheme.typography.body
-                )
-            }
-            state.modelErrors.firstOrNull()?.let {
-                CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
-                CbButton(
-                    "生成 NAI 提示词",
-                    onGeneratePrompt,
-                    modifier = Modifier.weight(1f),
-                    enabled = state.canDesign
-                )
-                if (state.isDesigning) CbSpinner(Modifier.size(22.dp))
-            }
-        }
-    }
-}
-
-@Composable
-private fun StreamPanel(
-    title: String,
-    text: String,
-    active: Boolean
-) {
-    CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.card,
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbText(title, style = ChatBarTheme.typography.heading)
-                if (active) CbSpinner(Modifier.size(18.dp))
-            }
-            StreamText(text.ifBlank { "等待流式输出" })
-        }
-    }
-}
-
-@Composable
-private fun PromptEditorPanel(
-    draft: NovelAiImageRegenerationDraft,
-    stylePrompt: String,
-    expanded: Boolean,
-    enabled: Boolean,
-    canGenerateImage: Boolean,
-    imageGenerating: Boolean,
-    batchSizeInput: String,
-    imageSizePresetOverride: NovelAiImageSizePreset?,
-    onExpandedChange: (Boolean) -> Unit,
-    onDraftChange: (NovelAiImageRegenerationDraft) -> Unit,
-    onStylePromptChange: (String) -> Unit,
-    onBatchSizeInputChange: (String) -> Unit,
-    onImageSizePresetChange: (NovelAiImageSizePreset?) -> Unit,
-    onFullscreenEdit: (title: String, text: String, onChange: (String) -> Unit) -> Unit,
-    onCopy: () -> Unit,
-    onGenerateImage: () -> Unit
-) {
-    CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.card,
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
-    ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = 48.dp)
-                    .clickable { onExpandedChange(!expanded) },
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                Column(Modifier.weight(1f)) {
-                    CbText("NovelAI 提示词", style = ChatBarTheme.typography.heading)
-                    CbText(
-                        if (draft.baseCaption.isBlank()) "未填写；展开后可手写或让 AI 设计" else "已填写；可编辑后直接生图",
-                        color = ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.caption
+                selectedRecent?.let {
+                    CbButton(
+                        "应用设置",
+                        { onApplyRecent(NovelAiHistoryApplyMode.NEW_SEED) },
+                        enabled = !state.applyingHistory && !state.isBusy,
+                        variant = ButtonVariant.Outline,
+                        size = ButtonSize.Xs
                     )
+                    Spacer(Modifier.width(ChatBarSpacing.xs))
+                    CbButton(
+                        "应用 Seed",
+                        { onApplyRecent(NovelAiHistoryApplyMode.SEED_ONLY) },
+                        enabled = !state.applyingHistory && !state.isBusy,
+                        variant = ButtonVariant.Secondary,
+                        size = ButtonSize.Xs
+                    )
+                    Spacer(Modifier.width(ChatBarSpacing.xs))
                 }
                 CbIconButton(
                     if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                    if (expanded) "收起提示词" else "展开提示词",
-                    { onExpandedChange(!expanded) },
-                    tint = ChatBarTheme.colors.mutedForeground
+                    if (expanded) "折叠输出" else "展开输出",
+                    onToggle
                 )
             }
             if (expanded) {
-                CbField(
-                    label = "画风提示词",
-                    description = "自动填充所选角色卡画风；不会交给 AI 设计，生图时自动拼接在主提示词前。",
-                    onFullscreenEdit = {
-                        onFullscreenEdit("编辑画风提示词", stylePrompt, onStylePromptChange)
-                    }
+                LazyColumn(
+                    modifier = Modifier.fillMaxWidth().weight(1f),
+                    verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
                 ) {
-                    CbInput(
-                        value = stylePrompt,
-                        onValueChange = onStylePromptChange,
-                        placeholder = "角色卡未设置画风，可手动填写",
-                        enabled = enabled,
-                        singleLine = false,
-                        minLines = 1
-                    )
-                }
-                CbField(
-                    label = "主提示词",
-                    description = "人物、场景、构图、视角、光照和动作标签",
-                    error = if (draft.baseCaption.isBlank()) "主提示词不能为空" else null,
-                    onFullscreenEdit = {
-                        onFullscreenEdit("编辑主提示词", draft.baseCaption) {
-                            onDraftChange(draft.copy(baseCaption = it))
-                        }
-                    }
-                ) {
-                    CbInput(
-                        value = draft.baseCaption,
-                        onValueChange = { onDraftChange(draft.copy(baseCaption = it)) },
-                        enabled = enabled,
-                        singleLine = false,
-                        minLines = 1,
-                        isError = draft.baseCaption.isBlank()
-                    )
-                }
-                CbField(
-                    label = "负面提示词",
-                    description = "不希望图片出现的内容或质量问题",
-                    onFullscreenEdit = {
-                        onFullscreenEdit("编辑负面提示词", draft.negativePrompt) {
-                            onDraftChange(draft.copy(negativePrompt = it))
-                        }
-                    }
-                ) {
-                    CbInput(
-                        value = draft.negativePrompt,
-                        onValueChange = { onDraftChange(draft.copy(negativePrompt = it)) },
-                        enabled = enabled,
-                        singleLine = false,
-                        minLines = 1
-                    )
-                }
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(Modifier.weight(1f)) {
-                        CbText("角色提示词", style = ChatBarTheme.typography.label)
-                        CbText(
-                            "${draft.characterPrompts.size}/$NOVEL_AI_MAX_CHARACTER_PROMPTS，可按需添加或删除",
-                            color = ChatBarTheme.colors.mutedForeground,
-                            style = ChatBarTheme.typography.caption
-                        )
-                    }
-                    CbButton(
-                        "添加角色",
-                        { onDraftChange(draft.addCharacterPrompt()) },
-                        enabled = enabled && draft.characterPrompts.size < NOVEL_AI_MAX_CHARACTER_PROMPTS,
-                        variant = ButtonVariant.Outline
-                    )
-                }
-                draft.characterPrompts.forEachIndexed { index, characterPrompt ->
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        verticalAlignment = Alignment.Top
-                    ) {
-                        CbField(
-                            label = "角色提示词 ${index + 1}",
-                            modifier = Modifier.weight(1f),
-                            error = if (characterPrompt.prompt.isBlank()) "角色提示词不能为空；不需要时可删除" else null,
-                            onFullscreenEdit = {
-                                onFullscreenEdit("编辑角色提示词 ${index + 1}", characterPrompt.prompt) { value ->
-                                    onDraftChange(
-                                        draft.copy(
-                                            characterPrompts = draft.characterPrompts.mapIndexed { itemIndex, item ->
-                                                if (itemIndex == index) item.copy(prompt = value) else item
-                                            }
-                                        )
-                                    )
-                                }
+                    item {
+                        if (selectedModel == null) {
+                            Box(Modifier.fillMaxWidth().height(140.dp), contentAlignment = Alignment.Center) {
+                                CbText("生成结果会显示在这里", color = ChatBarTheme.colors.mutedForeground)
                             }
-                        ) {
-                            CbInput(
-                                value = characterPrompt.prompt,
-                                onValueChange = { value ->
-                                    onDraftChange(
-                                        draft.copy(
-                                            characterPrompts = draft.characterPrompts.mapIndexed { itemIndex, item ->
-                                                if (itemIndex == index) item.copy(prompt = value) else item
-                                            }
-                                        )
-                                    )
-                                },
-                                enabled = enabled,
-                                singleLine = false,
-                                minLines = 1,
-                                isError = characterPrompt.prompt.isBlank()
+                        } else {
+                            AsyncImage(
+                                model = selectedModel,
+                                contentDescription = "当前生成结果",
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp)
+                                    .clip(RoundedCornerShape(ChatBarShape.md))
+                                    .clickable(enabled = selectedPath != null) {
+                                        selectedPath?.let(onOpenImage)
+                                    },
+                                contentScale = ContentScale.Fit
                             )
                         }
-                        CbIconButton(
-                            AppIcons.Delete,
-                            "删除角色提示词 ${index + 1}",
-                            { onDraftChange(draft.removeCharacterPrompt(index)) },
-                            modifier = Modifier.size(48.dp),
-                            enabled = enabled,
-                            tint = ChatBarTheme.colors.destructive
-                        )
+                    }
+                    val showStreamingPreviews = state.isBusy && state.completedPreviews.isNotEmpty()
+                    if (showStreamingPreviews || state.recentHistoryItems.isNotEmpty()) {
+                        item {
+                            LazyRow(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                                if (showStreamingPreviews) {
+                                    itemsIndexed(state.completedPreviews) { index, preview ->
+                                        OutputThumbnail(
+                                            model = preview,
+                                            contentDescription = "本批第 ${index + 1} 张",
+                                            selected = selectedPath == state.imagePaths.getOrNull(index),
+                                            onClick = { onSelect(index) }
+                                        )
+                                    }
+                                } else {
+                                    itemsIndexed(
+                                        state.recentHistoryItems,
+                                        key = { _, item -> item.image.path }
+                                    ) { index, item ->
+                                        OutputThumbnail(
+                                            model = item.image.path,
+                                            contentDescription = "近期图片 ${index + 1}",
+                                            selected = selectedPath == item.image.path,
+                                            onClick = { onSelectRecent(item.image.path) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    if (selectedPath != null) {
+                        item {
+                            CbText(
+                                "点击大图查看；全屏长按可打码、保存或分享",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
                     }
                 }
-                CbField(
-                    label = "图片比例",
-                    description = "自动时优先使用全局图片比例；全局留空时采用提示词建议。"
-                ) {
-                    NovelAiImageSizePresetSelect(
-                        value = imageSizePresetOverride,
-                        onValueChange = onImageSizePresetChange,
-                        enabled = enabled,
-                        includeAutomatic = true
-                    )
-                }
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Bottom
-                ) {
-                    CbButton(
-                        "复制全部",
-                        onCopy,
-                        modifier = Modifier.weight(1f),
-                        enabled = draft.baseCaption.isNotBlank(),
-                        variant = ButtonVariant.Secondary
-                    )
-                    NovelAiBatchSizeInput(
-                        value = batchSizeInput,
-                        onValueChange = onBatchSizeInputChange,
-                        enabled = enabled
-                    )
-                    CbButton(
-                        if (imageGenerating) "生成中" else "用此提示词生图",
-                        onGenerateImage,
-                        modifier = Modifier.weight(1f),
-                        enabled = canGenerateImage && parseNovelAiBatchSize(batchSizeInput) != null
-                    )
-                }
-                CbText(
-                    "批量范围 1–$NOVEL_AI_MAX_BATCH_SIZE；多图会额外消耗 Anlas。",
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
-                )
             }
         }
+    }
+}
+
+@Composable
+private fun OutputThumbnail(
+    model: Any,
+    contentDescription: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    CbSurface(
+        modifier = Modifier.size(68.dp).clickable(onClick = onClick),
+        shape = RoundedCornerShape(ChatBarShape.sm),
+        border = BorderStroke(
+            if (selected) 2.dp else 1.dp,
+            if (selected) ChatBarTheme.colors.primary else ChatBarTheme.colors.border
+        )
+    ) {
+        AsyncImage(
+            model = model,
+            contentDescription = contentDescription,
+            modifier = Modifier.fillMaxSize(),
+            contentScale = ContentScale.Crop
+        )
     }
 }
 
@@ -645,131 +392,365 @@ internal fun ImagePreviewPanel(
     state: ImagePromptToolUiState,
     onOpenImage: (Int) -> Unit
 ) {
-    val label = when (state.phase) {
-        ImagePromptToolPhase.GENERATING -> "NovelAI 正在生成"
-        ImagePromptToolPhase.STREAMING -> "流式预览 ${(state.imageProgress * 100).toInt()}%"
-        ImagePromptToolPhase.SAVING -> "正在保存图片"
-        ImagePromptToolPhase.FINISHED -> "生图完成（${state.imagePaths.size} 张）"
-        ImagePromptToolPhase.FAILED -> "生图失败"
-        ImagePromptToolPhase.CANCELLED -> "已停止"
-        else -> "图片预览"
-    }
-    CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.card,
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    val index = state.selectedOutputIndex.coerceIn(0, state.imagePaths.lastIndex.coerceAtLeast(0))
+    val path = state.imagePaths.getOrNull(index) ?: return
+    AsyncImage(
+        model = path,
+        contentDescription = "NovelAI 生图结果",
+        modifier = Modifier
+            .fillMaxWidth()
+            .heightIn(min = 180.dp, max = 420.dp)
+            .clickable { onOpenImage(index) },
+        contentScale = ContentScale.Fit
+    )
+}
+
+@Composable
+private fun PromptSection(
+    state: ImagePromptToolUiState,
+    viewModel: ImagePromptToolViewModel,
+    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+) {
+    val draft = state.draft
+    Column(
+        Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md),
+        verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                if (state.isGeneratingImage) CbSpinner(Modifier.size(18.dp))
-                CbText(label, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        SectionCard("Prompt") {
+            TagPromptInput(
+                label = "画风 Prompt",
+                value = draft.stylePrompt,
+                field = NovelAiPromptFieldKey("style"),
+                state = state.tagSuggestions,
+                minLines = 3,
+                onValueChange = { viewModel.updateDraft { draft -> draft.copy(stylePrompt = it) } },
+                onSuggest = viewModel::requestTagSuggestions,
+                onFullscreenEdit = onFullscreenEdit
+            )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CbText("自然语言模式", Modifier.weight(1f))
+                CbSwitch(draft.naturalLanguageMode, { checked -> viewModel.updateDraft { it.copy(naturalLanguageMode = checked) } })
             }
-            when {
-                state.imagePaths.size > 1 -> Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    state.imagePaths.forEachIndexed { index, path ->
-                        AsyncImage(
-                            model = File(path),
-                            contentDescription = "NovelAI 生图结果 ${index + 1}",
-                            modifier = Modifier
-                                .width(220.dp)
-                                .height(300.dp)
-                                .clip(RoundedCornerShape(ChatBarShape.sm))
-                                .clickable { onOpenImage(index) },
-                            contentScale = ContentScale.Fit
-                        )
+            TagPromptInput(
+                label = "基础 Prompt",
+                value = draft.basePrompt,
+                field = NovelAiPromptFieldKey("base"),
+                state = state.tagSuggestions,
+                minLines = 3,
+                onValueChange = { viewModel.updateDraft { draft -> draft.copy(basePrompt = it) } },
+                onSuggest = viewModel::requestTagSuggestions,
+                onFullscreenEdit = onFullscreenEdit
+            )
+            if (draft.naturalLanguageMode) {
+                Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                    CbButton("AI 转化", viewModel::convertNaturalLanguagePrompt, enabled = !state.isBusy, size = ButtonSize.Sm)
+                    if (draft.conversionSnapshot != null) {
+                        CbButton("还原", viewModel::restoreConvertedPrompt, variant = ButtonVariant.Outline, size = ButtonSize.Sm)
                     }
                 }
-                state.imagePaths.size == 1 -> AsyncImage(
-                    model = File(state.imagePaths.first()),
-                    contentDescription = "NovelAI 生图结果",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .clip(RoundedCornerShape(ChatBarShape.sm))
-                        .clickable { onOpenImage(0) },
-                    contentScale = ContentScale.Fit
-                )
-                state.imagePreview != null -> AsyncImage(
-                    model = state.imagePreview,
-                    contentDescription = "NovelAI 流式生图预览",
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 420.dp)
-                        .clip(RoundedCornerShape(ChatBarShape.sm)),
-                    contentScale = ContentScale.Fit
-                )
-                else -> Box(
-                    Modifier.fillMaxWidth().height(180.dp).background(ChatBarTheme.colors.muted, RoundedCornerShape(ChatBarShape.sm)),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CbText("等待图片流", color = ChatBarTheme.colors.mutedForeground)
-                }
             }
-            if (state.imagePaths.isNotEmpty()) {
-                CbText(
-                    "点击查看大图；大图中长按可打码、保存或分享",
-                    color = ChatBarTheme.colors.mutedForeground,
-                    style = ChatBarTheme.typography.caption
+            CharacterCardImport(state, viewModel)
+            draft.characters.forEachIndexed { index, character ->
+                CharacterPromptEditor(index, character, state, viewModel, onFullscreenEdit)
+            }
+            CbButton("添加角色 Prompt", viewModel::addCharacter, variant = ButtonVariant.Outline)
+            CollapsibleHeader(
+                title = "基础负面 Prompt",
+                summary = if (draft.negativeExpanded) "收起" else "已设置",
+                expanded = draft.negativeExpanded,
+                onClick = { viewModel.updateDraft { it.copy(negativeExpanded = !it.negativeExpanded) } }
+            )
+            if (draft.negativeExpanded) {
+                TagPromptInput(
+                    label = "基础负面 Prompt",
+                    value = draft.negativePrompt,
+                    field = NovelAiPromptFieldKey("negative"),
+                    state = state.tagSuggestions,
+                    minLines = 3,
+                    onValueChange = { viewModel.updateDraft { draft -> draft.copy(negativePrompt = it) } },
+                    onSuggest = viewModel::requestTagSuggestions,
+                    onFullscreenEdit = onFullscreenEdit
                 )
+            }
+        }
+        SectionCard("AI 设计") {
+            CollapsibleHeader(
+                title = "AI 设计面板",
+                summary = if (draft.aiPanelExpanded) "收起" else if (draft.naturalLanguageMode) "自然语言规划" else "Tag 设计",
+                expanded = draft.aiPanelExpanded,
+                onClick = { viewModel.updateDraft { it.copy(aiPanelExpanded = !it.aiPanelExpanded) } }
+            )
+            if (draft.aiPanelExpanded) {
+                StudioMultilineInput(
+                    label = "画面内容",
+                    value = draft.imageDescription,
+                    minLines = 3,
+                    onValueChange = { value -> viewModel.updateDraft { it.copy(imageDescription = value) } },
+                    onFullscreenEdit = onFullscreenEdit
+                )
+                StudioMultilineInput(
+                    label = "额外要求",
+                    value = draft.extraRequirement,
+                    minLines = 2,
+                    onValueChange = { value -> viewModel.updateDraft { it.copy(extraRequirement = value) } },
+                    onFullscreenEdit = onFullscreenEdit
+                )
+                CbButton(
+                    if (state.isDesigning) "停止 AI" else "开始 AI 设计",
+                    if (state.isDesigning) viewModel::cancelActiveTask else viewModel::designPrompt,
+                    enabled = state.canDesign || state.isDesigning,
+                    variant = if (state.isDesigning) ButtonVariant.Destructive else ButtonVariant.Default
+                )
+                if (state.designStatus.isNotBlank()) CbText(state.designStatus, color = ChatBarTheme.colors.mutedForeground)
+                state.modelErrors.forEach { message -> CbText(message, color = ChatBarTheme.colors.destructive) }
+                if (state.reasoningStream.isNotBlank()) CbText("推理\n${state.reasoningStream}", color = ChatBarTheme.colors.mutedForeground)
+                if (state.resultStream.isNotBlank()) CbText(state.resultStream)
             }
         }
     }
 }
 
 @Composable
-private fun ErrorPanel(
-    error: String,
-    onDismiss: () -> Unit
+private fun CharacterCardImport(state: ImagePromptToolUiState, viewModel: ImagePromptToolViewModel) {
+    if (state.characterCards.isEmpty()) return
+    CbField("导入角色卡 Prompt", description = "仅作为 AI 组装素材，不覆盖当前角色 Prompt") {
+        CbSelect(
+            value = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId },
+            options = state.characterCards,
+            optionLabel = { it.name },
+            onValueChange = { viewModel.importCharacterCardPrompts(it.id) },
+            placeholder = "选择角色卡"
+        )
+    }
+}
+
+@Composable
+private fun CharacterPromptEditor(
+    index: Int,
+    character: NovelAiCharacterPromptDraft,
+    state: ImagePromptToolUiState,
+    viewModel: ImagePromptToolViewModel,
+    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
 ) {
     CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.muted,
-        border = BorderStroke(1.dp, ChatBarTheme.colors.destructive)
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.surfaceSubtle,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
-        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            CbText(error, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-            CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost)
+        Column(Modifier.fillMaxWidth().padding(ChatBarSpacing.md), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CbText("角色 ${index + 1}", Modifier.weight(1f), style = ChatBarTheme.typography.label)
+                CbButton("上移", { viewModel.moveCharacter(character.id, -1) }, enabled = index > 0, variant = ButtonVariant.Ghost, size = ButtonSize.Xs)
+                CbButton("下移", { viewModel.moveCharacter(character.id, 1) }, enabled = index < state.draft.characters.lastIndex, variant = ButtonVariant.Ghost, size = ButtonSize.Xs)
+                CbIconButton(AppIcons.Delete, "删除角色", { viewModel.removeCharacter(character.id) }, tint = ChatBarTheme.colors.destructive)
+            }
+            TagPromptInput(
+                label = "角色正向",
+                value = character.prompt,
+                field = NovelAiPromptFieldKey("character", character.id),
+                state = state.tagSuggestions,
+                minLines = 2,
+                editorHeight = 104.dp,
+                onValueChange = { value -> viewModel.updateCharacter(character.id) { it.copy(prompt = value) } },
+                onSuggest = viewModel::requestTagSuggestions,
+                onFullscreenEdit = onFullscreenEdit
+            )
+            CollapsibleHeader(
+                title = "角色负面",
+                summary = if (character.negativeExpanded) "收起" else if (character.negativePrompt.isBlank()) "空" else "已设置",
+                expanded = character.negativeExpanded,
+                onClick = { viewModel.updateCharacter(character.id) { it.copy(negativeExpanded = !it.negativeExpanded) } }
+            )
+            if (character.negativeExpanded) {
+                TagPromptInput(
+                    label = "角色负面",
+                    value = character.negativePrompt,
+                    field = NovelAiPromptFieldKey("character_negative", character.id),
+                    state = state.tagSuggestions,
+                    minLines = 2,
+                    editorHeight = 104.dp,
+                    onValueChange = { value -> viewModel.updateCharacter(character.id) { it.copy(negativePrompt = value) } },
+                    onSuggest = viewModel::requestTagSuggestions,
+                    onFullscreenEdit = onFullscreenEdit
+                )
+            }
         }
     }
 }
 
 @Composable
-private fun StreamText(text: String) {
-    CbSurface(
-        modifier = Modifier.fillMaxWidth(),
-        color = ChatBarTheme.colors.muted,
-        shape = RoundedCornerShape(ChatBarShape.sm)
-    ) {
-        SelectionContainer {
-            CbText(
-                text,
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(max = 220.dp)
-                    .verticalScroll(rememberScrollState())
-                    .padding(ChatBarSpacing.sm),
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
+private fun GenerationSettingsSection(
+    settings: NovelAiGenerationSettings,
+    advancedExpanded: Boolean,
+    viewModel: ImagePromptToolViewModel
+) {
+    Column(Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md)) {
+        SectionCard("生成设置") {
+            CbField("模型") {
+                CbSelect(settings.model, NovelAiImageModel.entries, { it.displayName }, viewModel::selectImageModel)
+            }
+            CbField("尺寸档") {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                    NovelAiSizeTier.entries.forEach { tier ->
+                        CbChoiceChip(tier.displayName, settings.sizeTier == tier, onClick = {
+                            viewModel.updateGenerationSettings { it.copy(sizeTier = tier) }
+                        })
+                    }
+                }
+            }
+            CbField("比例 · ${settings.imageSize().width}×${settings.imageSize().height}") {
+                Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                    NovelAiAspectRatio.entries.filterNot { settings.sizeTier == NovelAiSizeTier.WALLPAPER && it == NovelAiAspectRatio.SQUARE }.forEach { ratio ->
+                        CbChoiceChip(ratio.displayName, settings.aspectRatio == ratio, onClick = {
+                            viewModel.updateGenerationSettings { it.copy(aspectRatio = ratio) }
+                        })
+                    }
+                }
+            }
+            CbField("数量") {
+                Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                    (1..4).forEach { count ->
+                        CbChoiceChip(count.toString(), settings.count == count, { viewModel.updateGenerationSettings { it.copy(count = count) } }, Modifier.weight(1f))
+                    }
+                }
+            }
+            CollapsibleHeader(
+                title = "高级设置",
+                summary = "${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} · ${settings.sampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
+                expanded = advancedExpanded,
+                onClick = { viewModel.updateDraft { it.copy(advancedExpanded = !it.advancedExpanded) } }
+            )
+            if (advancedExpanded) AdvancedSettings(settings, viewModel)
+        }
+    }
+}
+
+@Composable
+private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
+    CbField("Steps · ${settings.steps}") {
+        CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
+    }
+    CbField("Guidance · ${"%.1f".format(settings.guidance)}") {
+        CbSlider(settings.guidance, { value -> viewModel.updateGenerationSettings { it.copy(guidance = (value * 10).toInt() / 10f) } }, 1f..10f, steps = 89)
+    }
+    CbField("Sampler") {
+        CbSelect(settings.sampler, NovelAiSampler.entries, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+    }
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        CbText("随机 Seed", Modifier.weight(1f))
+        CbSwitch(settings.seedMode == NovelAiSeedMode.RANDOM, { random ->
+            viewModel.updateGenerationSettings { it.copy(seedMode = if (random) NovelAiSeedMode.RANDOM else NovelAiSeedMode.FIXED) }
+        })
+    }
+    if (settings.seedMode == NovelAiSeedMode.FIXED) {
+        CbField("Seed", description = "0–${settings.maxAllowedBaseSeed}") {
+            CbInput(
+                value = settings.seed.toString(),
+                onValueChange = { text -> text.toLongOrNull()?.let { seed -> viewModel.updateGenerationSettings { it.copy(seed = seed) } } },
+                singleLine = true
             )
         }
     }
 }
 
-private fun NovelAiImageRegenerationDraft.toClipboardText(stylePrompt: String): String = buildString {
-    appendLine("Style:")
-    appendLine(stylePrompt)
-    appendLine()
-    appendLine("Base:")
-    appendLine(baseCaption)
-    characterPrompts.forEachIndexed { index, character ->
-        appendLine()
-        appendLine("Char ${index + 1}:")
-        appendLine(character.prompt)
+@Composable
+private fun TagPromptInput(
+    label: String,
+    value: String,
+    field: NovelAiPromptFieldKey,
+    state: NovelAiTagSuggestionState,
+    minLines: Int = 1,
+    editorHeight: Dp = 150.dp,
+    onValueChange: (String) -> Unit,
+    onSuggest: (NovelAiPromptFieldKey, String, Int) -> Unit,
+    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+) {
+    var fieldValue by remember(field) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    LaunchedEffect(value) {
+        if (value != fieldValue.text) fieldValue = TextFieldValue(value, TextRange(value.length))
     }
-    appendLine()
-    appendLine("Negative:")
-    append(negativePrompt)
+    val applyFullscreenText: (String) -> Unit = { text ->
+        fieldValue = TextFieldValue(text, TextRange(text.length))
+        onValueChange(text)
+    }
+    CbField(
+        label,
+        onFullscreenEdit = { onFullscreenEdit(label, fieldValue.text, applyFullscreenText) }
+    ) {
+        CbInput(
+            value = fieldValue,
+            onValueChange = { next ->
+                fieldValue = next
+                onValueChange(next.text)
+                onSuggest(field, next.text, next.selection.end)
+            },
+            modifier = Modifier.height(editorHeight),
+            singleLine = false,
+            minLines = minLines
+        )
+        if (state.field == field) {
+            when {
+                state.loading -> CbText("正在补全…", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                state.error != null -> CbText(state.error, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+                state.candidates.isNotEmpty() -> Row(
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = ChatBarSpacing.xs),
+                    horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
+                ) {
+                    state.candidates.forEach { candidate ->
+                        val labelText = buildString {
+                            append(candidate.name)
+                            if (candidate.translatedName.isNotBlank()) append(" · ${candidate.translatedName}")
+                            append(" · ${candidate.category.label}")
+                            if (candidate.count > 0) append(" ${candidate.count}")
+                        }
+                        CbButton(labelText, {
+                            val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, candidate.name)
+                            fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
+                            onValueChange(inserted.text)
+                        }, variant = ButtonVariant.Outline, size = ButtonSize.Xs)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StudioMultilineInput(
+    label: String,
+    value: String,
+    minLines: Int,
+    onValueChange: (String) -> Unit,
+    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+) {
+    CbField(label, onFullscreenEdit = { onFullscreenEdit(label, value, onValueChange) }) {
+        CbInput(value, onValueChange, singleLine = false, minLines = minLines)
+    }
+}
+
+@Composable
+private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(Modifier.fillMaxWidth().padding(ChatBarSpacing.md), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
+            CbText(title, style = ChatBarTheme.typography.title)
+            CbDivider()
+            content()
+        }
+    }
+}
+
+@Composable
+private fun CollapsibleHeader(title: String, summary: String, expanded: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbText(title, Modifier.weight(1f), style = ChatBarTheme.typography.label)
+        CbText(summary, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        Spacer(Modifier.width(ChatBarSpacing.xs))
+        CbIconButton(if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore, null, onClick)
+    }
 }

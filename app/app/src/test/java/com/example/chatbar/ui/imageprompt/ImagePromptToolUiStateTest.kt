@@ -1,10 +1,9 @@
 package com.example.chatbar.ui.imageprompt
 
-import com.example.chatbar.data.local.entity.CharacterCard
-import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
-import com.example.chatbar.domain.image.NovelAiImageSizePreset
+import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
+import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
+import com.example.chatbar.domain.image.NovelAiStudioDraft
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -12,110 +11,68 @@ import org.junit.Test
 
 class ImagePromptToolUiStateTest {
     @Test
-    fun `image prompt preference alone cannot design`() {
-        val state = baseState().copy(imagePromptPreference = "保持最终 tags 简洁")
-
+    fun `extra requirement alone cannot start AI design`() {
+        val state = baseState().copy(draft = NovelAiStudioDraft(extraRequirement = "保持简洁"))
         assertFalse(state.canDesign)
     }
 
     @Test
-    fun `image prompt source fields can design with preference`() {
-        assertTrue(baseState().copy(imageDescription = "雨夜窗边", imagePromptPreference = "保持简洁").canDesign)
-        assertTrue(baseState().copy(characterPrompt = "1girl, silver hair", imagePromptPreference = "保持简洁").canDesign)
+    fun `image content enables AI design when helper model is usable`() {
+        val state = baseState().copy(draft = NovelAiStudioDraft(imageDescription = "雨夜窗边"))
+        assertTrue(state.canDesign)
     }
 
     @Test
-    fun `style prompt alone cannot design because it is appended only when generating image`() {
-        assertFalse(baseState().copy(stylePrompt = "anime screencap").canDesign)
+    fun `style prompt alone cannot start AI design`() {
+        val state = baseState().copy(draft = NovelAiStudioDraft(stylePrompt = "anime screencap"))
+        assertFalse(state.canDesign)
     }
 
     @Test
-    fun `selected card only qualifies after prompts are imported`() {
-        val card = CharacterCard(
-            id = "card",
-            name = "夜雨诊所",
-            defaultImagePrompt = "",
-            createdAt = 1,
-            updatedAt = 1
+    fun `base prompt enables direct generation without helper model`() {
+        val state = ImagePromptToolUiState(
+            draft = NovelAiStudioDraft(basePrompt = "1girl, rainy street"),
+            modelUsable = false
         )
-        val selectedOnly = baseState().copy(
-            characterCards = listOf(card),
-            selectedCharacterCardId = card.id,
-            imagePromptPreference = "保持简洁"
-        )
-        val importedPrompt = selectedOnly.copy(characterPrompt = "1girl, silver hair")
-
-        assertFalse(selectedOnly.canDesign)
-        assertTrue(importedPrompt.canDesign)
+        assertTrue(state.canGenerate)
     }
 
     @Test
-    fun `switching character card preserves every editable NovelAI prompt`() {
-        val draft = NovelAiImageRegenerationDraft(
-            baseCaption = "1girl, rainy street",
-            characterPrompts = emptyList(),
-            negativePrompt = "lowres",
-            sizePreset = NovelAiImageSizePreset.PORTRAIT.name,
-            width = NovelAiImageSizePreset.PORTRAIT.width,
-            height = NovelAiImageSizePreset.PORTRAIT.height
+    fun `selected recent image retains owning recipe for apply actions`() {
+        val image = NovelAiGenerationHistoryImage(path = "history/image.png", seed = 42L)
+        val entry = NovelAiGenerationHistoryEntry(id = "batch", images = listOf(image))
+        val state = ImagePromptToolUiState(
+            recentHistoryItems = listOf(NovelAiRecentHistoryItem(entry, image)),
+            selectedOutputPath = image.path
         )
-        val card = CharacterCard(
-            id = "new-card",
-            name = "新角色卡",
-            defaultImagePrompt = "anime screencap",
-            characters = listOf(
-                CharacterInfo(id = "character", name = "角色", imagePrompt = "1girl, silver hair")
-            ),
-            createdAt = 1,
-            updatedAt = 1
-        )
-        val switched = baseState().copy(
-            imageDescription = "保留图片描述",
-            imagePromptPreference = "保留生图偏好",
-            promptDraft = draft
-        ).importCharacterCardPrompts(card)
 
-        assertEquals("new-card", switched.selectedCharacterCardId)
-        assertEquals("anime screencap", switched.stylePrompt)
-        assertEquals("角色:\n1girl, silver hair", switched.characterPrompt)
-        assertEquals("保留图片描述", switched.imageDescription)
-        assertEquals("保留生图偏好", switched.imagePromptPreference)
-        assertEquals(draft, switched.promptDraft)
-        assertEquals(ImagePromptToolPhase.READY, switched.phase)
+        assertEquals(entry, state.selectedRecentHistoryItem?.entry)
+        assertEquals(42L, state.selectedRecentHistoryItem?.image?.seed)
     }
 
     @Test
-    fun `blank character card prompts do not erase manual prompts`() {
-        val switched = baseState().copy(
-            stylePrompt = "manual style",
-            characterPrompt = "manual character"
-        ).importCharacterCardPrompts(
-            CharacterCard(
-                id = "blank-card",
-                name = "空提示词角色卡",
-                createdAt = 1,
-                updatedAt = 1
-            )
+    fun `history apply blocks editing and generation actions`() {
+        val state = baseState().copy(
+            draft = NovelAiStudioDraft(imageDescription = "scene", basePrompt = "tags"),
+            applyingHistory = true
         )
 
-        assertEquals("manual style", switched.stylePrompt)
-        assertEquals("manual character", switched.characterPrompt)
+        assertFalse(state.canDesign)
+        assertFalse(state.canGenerate)
     }
 
-    private fun baseState(): ImagePromptToolUiState =
-        ImagePromptToolUiState(
-            models = listOf(model()),
-            selectedModelId = "model",
-            modelUsable = true
-        )
+    private fun baseState(): ImagePromptToolUiState = ImagePromptToolUiState(
+        models = listOf(model()),
+        selectedModelId = "model",
+        modelUsable = true
+    )
 
-    private fun model(): ModelConfig =
-        ModelConfig(
-            id = "model",
-            displayName = "Model",
-            baseUrl = "https://example.test",
-            apiKey = "key",
-            modelName = "model",
-            createdAt = 1
-        )
+    private fun model() = ModelConfig(
+        id = "model",
+        displayName = "Model",
+        baseUrl = "https://example.test",
+        apiKey = "key",
+        modelName = "model",
+        createdAt = 1
+    )
 }

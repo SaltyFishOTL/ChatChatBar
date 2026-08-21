@@ -3,6 +3,7 @@ package com.example.chatbar.data.local.entity
 import com.example.chatbar.domain.appearance.DefaultThemeColorHsv
 import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
 import com.example.chatbar.domain.appearance.ThemeColorHsv
+import com.example.chatbar.domain.image.NovelAiImageModel
 import kotlinx.serialization.Serializable
 
 /**
@@ -45,6 +46,7 @@ data class AppSettings(
     val characterRewriteResearchSourceMode: CharacterResearchSourceMode =
         CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
     val webSearchMaxResultsPerQuery: Int = 1,
+    val novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val novelAiImageAspectRatio: String = "",
     val imagePromptToolPreference: String = "",
     val fishAudioTtsModelId: String = DEFAULT_FISH_AUDIO_TTS_MODEL,

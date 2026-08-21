@@ -86,7 +86,7 @@ data class NovelAiCodexEvidence(
  * - 参考图/画风排除/角色预设：`novelAiImagePromptReferenceImageUser`、
  *   `novelAiImagePromptStyleExclusionSystem`、`novelAiImagePromptCharacterPresetSystem`
  * - 图片内容/user偏好：`novelAiImagePromptImageContentHintUser`、
- *   `novelAiImagePromptPreferenceUser`
+ *   `novelAiImagePromptPreferenceUser`、`novelAiImageTargetModelUser`
  * - 对话场景输入：`novelAiImagePromptAssistantScene`、`novelAiImagePromptConversation`
  *
  * ### 5. 长期记忆、RAG 与语音标签
@@ -1243,6 +1243,9 @@ JSON only, no Markdown, no explanation:
                 renderNovelAiPromptText(text, playerName, botName)
             }
         }
+
+    fun novelAiImageTargetModelUser(modelName: String): String =
+        "目标 NovelAI 模型：${modelName.trim()}。请按该模型能力规划画面与角色数量。"
 
     fun novelAiImagePromptAssistantScene(
         message: ChatMessage,

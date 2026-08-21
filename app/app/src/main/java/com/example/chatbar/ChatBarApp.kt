@@ -69,6 +69,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var voiceMessageRepository: VoiceMessageRepository
         private set
+    lateinit var novelAiStudioRepository: NovelAiStudioRepository
+        private set
 
     // 领域层服务
     lateinit var chunkingEngine: ChunkingEngine
@@ -133,6 +135,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiImageStorage: NovelAiImageStorage
         private set
+    lateinit var novelAiTagSuggestClient: TagSuggestClient
+        private set
     lateinit var fishAudioCredentialStore: FishAudioCredentialStore
         private set
     lateinit var fishAudioStorage: FishAudioStorage
@@ -191,6 +195,7 @@ class ChatBarApp : Application() {
         memoryRepository = MemoryRepository(jsonFileStorage)
         worldBookRepository = WorldBookRepository(jsonFileStorage)
         editorDraftRepository = EditorDraftRepository(jsonFileStorage)
+        novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage)
         editorDraftAssetService = EditorDraftAssetService(this)
 
         // 3. 初始化 RAG 服务和其它引擎
@@ -221,11 +226,12 @@ class ChatBarApp : Application() {
             catalog = novelAiCodexLoad.catalog,
             unavailableReason = novelAiCodexLoad.fatalError.orEmpty()
         )
+        novelAiTagSuggestClient = TagSuggestClient()
         novelAiPromptDesigner = NovelAiPromptDesigner(
             chatService = streamingChatService,
             tagResearchService = NovelAiTagResearchService(
                 planner = LlmNovelAiTagSearchPlanner(streamingChatService),
-                searchClient = TagSuggestClient(),
+                searchClient = novelAiTagSuggestClient,
                 codexSearcher = novelAiCodexSearchEngine
             ),
             promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules)
@@ -420,6 +426,7 @@ class ChatBarApp : Application() {
                 voiceMessageRepository.voices.value.mapTo(mutableSetOf()) { it.audioPath }
             )
             momentRepository.initialize()
+            novelAiStudioRepository.initialize()
             momentScheduler.kick("startup")
         }
     }

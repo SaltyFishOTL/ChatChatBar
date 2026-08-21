@@ -18,7 +18,7 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 
 - Persisted models: data/local/entity/LongTermMemory.kt, ChatMessage.kt, ChatSession.kt, AppSettings.kt, SaveSlot.kt.
 - Storage: data/repository/MemoryRepository.kt, ChatRepository.kt.
-- Core behavior: domain/memory/LongTermMemoryService.kt, MemoryHeadUpdatePolicy.kt, MemoryBackfillPolicy.kt, MemoryCompressionDecisionPolicy.kt, MemoryRegenerationPolicy.kt, MemoryAiGateway.kt, MemoryAiFailurePolicy.kt, and focused policies under domain/memory/.
+- Core behavior: domain/memory/LongTermMemoryService.kt, MemoryHeadUpdatePolicy.kt, MemoryBackfillPolicy.kt, MemoryCompressionDecisionPolicy.kt, MemoryRegenerationPolicy.kt, MemoryModelPreflightPolicy.kt, MemoryAiGateway.kt, MemoryAiFailurePolicy.kt, and focused policies under domain/memory/.
 - App-owned maintenance: domain/memory/LongTermMemoryAutoMaintenanceCoordinator.kt. Episode grouping owner: MemoryEpisodeBatchPolicy.kt. Semantic source evidence owner: MemorySourceFingerprint.kt.
 - Historical source repair: domain/memory/MemorySourceRepairPolicy.kt and MemorySourceRepairProgress.kt.
 - Timeline/context boundaries: domain/chat/TimelineTurnPolicy.kt, TimelineArchiveBoundaryPolicy.kt, ContextWindowManager.kt, ChatHistoryPromptPolicy.kt, InterruptedReplyPolicy.kt.
@@ -46,6 +46,7 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Distinguish durable facts from current eligibility. Context changes may hide work; they must not erase missing-memory facts.
 - Distinguish live in-process work from persisted crash residue. Internal reads must not cancel their own active task.
 - Keep failed work visible and retryable. Preserve source data, pending ranges, gaps, source-repair roots, and completed batches.
+- After the current session model resolves and passes the same authentication check used for work, clear only persisted `PREFLIGHT` failures whose message exactly equals `MEMORY_MODEL_CONFIGURATION_ERROR`, including matching session Archive/HEAD mirrors and backfill state. Preserve request/network/output failures and every unrelated preflight error.
 - Keep RAG storage independent from long-term memory while using consistent source-turn boundaries.
 - Treat a manually interrupted nonblank assistant draft as normal persisted chat evidence: save it through `ChatRepository` so it inherits the current user source turn, refresh the visible durable timeline before clearing same-ID streaming state, then enqueue application-owned maintenance. Never persist a blank/reasoning-only assistant placeholder or run full-completion-only side effects for that draft.
 - Reject preview or injection changes that leak raw source turns through the long-term-memory block.

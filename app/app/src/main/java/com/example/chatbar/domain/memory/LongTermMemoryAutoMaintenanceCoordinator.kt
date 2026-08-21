@@ -258,9 +258,10 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         val settings = settingsRepository.getAppSettings()
         val model = modelResolver.resolveChatModel(session.modelId, settings)
         if (model == null || !model.hasConfiguredAuthentication(settings)) {
-            memoryService.setBackfillPreflightError(sessionId, "对话模型未配置或缺少鉴权")
+            memoryService.setBackfillPreflightError(sessionId, MEMORY_MODEL_CONFIGURATION_ERROR)
             return
         }
+        memoryService.clearResolvedModelConfigurationErrors(sessionId)
         val requireValidated = !isAllowedLocalHttp(model.baseUrl, settings.allowCleartextModelApi)
         try {
             AiBackgroundWorkManager.run(sessionId, requireValidatedInternet = requireValidated) {
@@ -306,10 +307,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
                 if (model == null || !model.hasConfiguredAuthentication(settings)) {
                     memoryService.setMaintenancePreflightError(
                         sessionId,
-                        "对话模型未配置或缺少鉴权"
+                        MEMORY_MODEL_CONFIGURATION_ERROR
                     )
                     return@withLock
                 }
+                memoryService.clearResolvedModelConfigurationErrors(sessionId)
                 val requireValidated = !isAllowedLocalHttp(
                     model.baseUrl,
                     settings.allowCleartextModelApi
@@ -352,9 +354,10 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         val settings = settingsRepository.getAppSettings()
         val model = modelResolver.resolveChatModel(session.modelId, settings)
         if (model == null || !model.hasConfiguredAuthentication(settings)) {
-            memoryService.setHeadPreflightError(sessionId, "对话模型未配置或缺少鉴权")
+            memoryService.setHeadPreflightError(sessionId, MEMORY_MODEL_CONFIGURATION_ERROR)
             return
         }
+        memoryService.clearResolvedModelConfigurationErrors(sessionId)
         val requireValidated = !isAllowedLocalHttp(model.baseUrl, settings.allowCleartextModelApi)
         try {
             AiBackgroundWorkManager.run(sessionId, requireValidatedInternet = requireValidated) {
@@ -387,9 +390,10 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         val settings = settingsRepository.getAppSettings()
         val model = modelResolver.resolveChatModel(session.modelId, settings)
         if (model == null || !model.hasConfiguredAuthentication(settings)) {
-            memoryService.setMaintenancePreflightError(sessionId, "对话模型未配置或缺少鉴权")
+            memoryService.setMaintenancePreflightError(sessionId, MEMORY_MODEL_CONFIGURATION_ERROR)
             return MaintenancePassResult()
         }
+        memoryService.clearResolvedModelConfigurationErrors(sessionId)
         val requireValidated = !isAllowedLocalHttp(model.baseUrl, settings.allowCleartextModelApi)
         var hasMoreArchiveBatches = false
         try {

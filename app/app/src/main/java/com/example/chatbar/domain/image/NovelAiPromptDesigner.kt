@@ -51,7 +51,8 @@ data class DesignedCharacterCenter(
 @Serializable
 data class NovelAiCharacterCaption(
     val prompt: String,
-    val center: DesignedCharacterCenter
+    val center: DesignedCharacterCenter,
+    val negativePrompt: String = ""
 )
 
 @Serializable
@@ -352,12 +353,14 @@ class NovelAiPromptDesigner(
     suspend fun designForPromptTool(
         imageDescription: String,
         characterPrompt: String,
+        characterImagePrompts: List<Pair<String, String>> = emptyList(),
         finalPromptRequirement: String = "",
         imageBase64s: List<String> = emptyList(),
         referenceImageProvided: Boolean = imageBase64s.any(String::isNotBlank),
         model: ModelConfig,
         playerName: String? = null,
         botName: String = "",
+        targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
@@ -382,6 +385,9 @@ class NovelAiPromptDesigner(
         )
         val userPrompt = buildString {
             append(scenePrompt)
+            appendLine()
+            appendLine()
+            append(PromptTemplates.novelAiImageTargetModelUser(targetImageModel.displayName))
             if (referenceImageProvided) {
                 appendLine()
                 appendLine()
@@ -393,15 +399,28 @@ class NovelAiPromptDesigner(
         } else {
             ChatApiMessage.withImages("user", userPrompt, sourceImages)
         }
-        val requestMessages = listOf(
-            ChatApiMessage.text("system", systemPrompt),
-            ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()),
-            userMessage
-        )
+        val requestMessages = buildList {
+            add(ChatApiMessage.text("system", systemPrompt))
+            add(ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()))
+            if (characterImagePrompts.isNotEmpty()) {
+                add(
+                    ChatApiMessage.text(
+                        "system",
+                        PromptTemplates.novelAiImagePromptCharacterPresetSystem(
+                            characterImagePrompts = characterImagePrompts,
+                            structured = true,
+                            playerName = playerName,
+                            botName = botName
+                        )
+                    )
+                )
+            }
+            add(userMessage)
+        }
         val progress = NovelAiPromptProgress(onContentDelta)
         val research = tagResearchService.research(
             taskInput = userPrompt,
-            characterPrompts = emptyList(),
+            characterPrompts = characterImagePrompts,
             imageBase64s = sourceImages,
             model = model,
             diversityKey = PROMPT_TOOL_SESSION_ID,
@@ -427,7 +446,45 @@ class NovelAiPromptDesigner(
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
             onReasoningDelta = onReasoningDelta
         )
-        return convert(promptPostProcessor.process(designed).prompt)
+        return convert(
+            designed = promptPostProcessor.process(designed).prompt,
+            maxCharacters = targetImageModel.maxCharacters
+        )
+    }
+
+    suspend fun planNaturalLanguageForPromptTool(
+        imageDescription: String,
+        characterPrompt: String,
+        characterImagePrompts: List<Pair<String, String>> = emptyList(),
+        finalPromptRequirement: String = "",
+        model: ModelConfig,
+        targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
+        playerName: String? = null,
+        botName: String = "",
+        onContentDelta: (String) -> Unit = {}
+    ): String {
+        val request = promptToolInputText(imageDescription, characterPrompt)
+        require(request.isNotBlank()) { "请输入画面内容" }
+        val taskInput = buildString {
+            append(request)
+            if (finalPromptRequirement.isNotBlank()) {
+                appendLine()
+                appendLine()
+                append(PromptTemplates.novelAiImagePromptPreferenceUser(finalPromptRequirement))
+            }
+            appendLine()
+            appendLine()
+            append(PromptTemplates.novelAiImageTargetModelUser(targetImageModel.displayName))
+        }
+        return tagResearchService.planSceneOnly(
+            taskInput = taskInput,
+            characterPrompts = characterImagePrompts,
+            imageBase64s = emptyList(),
+            model = model,
+            playerName = playerName,
+            botName = botName,
+            onProgress = onContentDelta
+        ).sceneDescription
     }
 
     private suspend fun parseOrRepair(
@@ -566,7 +623,8 @@ class NovelAiPromptDesigner(
         internal fun convert(
             designed: DesignedImagePrompt,
             negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt(),
-            stylePrompt: String = ""
+            stylePrompt: String = "",
+            maxCharacters: Int = NOVEL_AI_MAX_CHARACTER_PROMPTS
         ): NovelAiPromptPlan {
             val normalizedBase = prependStylePrompt(
                 stylePrompt = stylePrompt,
@@ -574,7 +632,7 @@ class NovelAiPromptDesigner(
             )
             val sizePreset = NovelAiImageSizePreset.from(designed.sizePreset)
             val effectiveNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
-            val characters = designed.characters.take(NOVEL_AI_MAX_CHARACTER_PROMPTS)
+            val characters = designed.characters.take(maxCharacters.coerceAtLeast(0))
             if (characters.isEmpty()) return NovelAiPromptPlan(
                 normalizedBase,
                 emptyList(),

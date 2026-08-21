@@ -48,6 +48,7 @@ import com.example.chatbar.domain.image.CharacterAvatarImagePolicy
 import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiPromptPlan
@@ -1277,14 +1278,18 @@ class CharacterEditViewModel(
                     return@launch
                 }
                 val card = buildCurrentCard(markDirty = false)
+                val appSettings = settingsRepository.getAppSettings()
                 AiBackgroundWorkManager.run(card.id) {
                     val seed = novelAiImageService.newSeed()
                     var finalImage: ByteArray? = resumeState?.completedImage
                     if (finalImage == null) novelAiImageService.generate(
                         token = token,
                         prompt = plan,
-                        seed = seed,
-                        imageSize = imageSize
+                        imageSize = imageSize,
+                        settings = NovelAiGenerationSettings.legacy(
+                            seed = seed,
+                            model = appSettings.novelAiImageModel
+                        )
                     ).collect { event ->
                         if (generationToken != avatarImageGenerationToken) return@collect
                         when (event) {
@@ -1510,7 +1515,15 @@ class CharacterEditViewModel(
                     }
                     val seed = novelAiImageService.newSeed()
                     var finalImage: ByteArray? = resumeState?.completedImage
-                    if (finalImage == null) novelAiImageService.generate(token, prompt, seed, imageSize).collect { event ->
+                    if (finalImage == null) novelAiImageService.generate(
+                        token = token,
+                        prompt = prompt,
+                        imageSize = imageSize,
+                        settings = NovelAiGenerationSettings.legacy(
+                            seed = seed,
+                            model = settings.novelAiImageModel
+                        )
+                    ).collect { event ->
                         when (event) {
                             is NovelAiImageEvent.Intermediate -> {
                                 finalImage = event.image

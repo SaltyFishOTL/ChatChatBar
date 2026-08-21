@@ -307,6 +307,12 @@ private val advancedTutorialPages = listOf(
                 )
             ),
             TutorialSection(
+                title = "生图工作室",
+                steps = listOf(
+                    "点击工作室输出大图或历史详情大图进入全屏预览；在全屏中长按可打码、保存、分享。历史删除或清空只删除应用缓存，不会删除图库副本。"
+                )
+            ),
+            TutorialSection(
                 title = "自定义本次生图",
                 steps = listOf(
                     "点击助手消息旁的生图按钮，会直接使用当前会话保存的生图偏好。",

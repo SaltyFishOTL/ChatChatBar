@@ -174,6 +174,7 @@ class MomentScheduler(
                     latestPost = latestPost,
                     model = model,
                     imageModel = imageModel,
+                    novelAiImageModel = settings.novelAiImageModel,
                     scheduledAt = task.scheduledAt,
                     finalPromptRequirement = settings.imagePromptToolPreference,
                     playerName = playerName,

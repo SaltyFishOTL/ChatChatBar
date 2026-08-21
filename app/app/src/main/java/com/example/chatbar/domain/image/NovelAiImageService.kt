@@ -47,8 +47,20 @@ class NovelAiImageService(
         seed: Int,
         imageSize: NovelAiImageSize = prompt.sizePreset.imageSize,
         batchSize: Int = 1
+    ): Flow<NovelAiImageEvent> = generate(
+        token = token,
+        prompt = prompt,
+        imageSize = imageSize,
+        settings = NovelAiGenerationSettings.legacy(seed, batchSize)
+    )
+
+    fun generate(
+        token: String,
+        prompt: NovelAiPromptPlan,
+        imageSize: NovelAiImageSize,
+        settings: NovelAiGenerationSettings
     ): Flow<NovelAiImageEvent> = callbackFlow {
-        val requestBody = buildRequestBody(prompt, seed, imageSize, batchSize).toRequestBody(JSON_MEDIA_TYPE)
+        val requestBody = buildRequestBody(prompt, imageSize, settings).toRequestBody(JSON_MEDIA_TYPE)
         val activeCall = AtomicReference<Call?>()
 
         fun enqueueAttempt(attempt: Int) {
@@ -118,7 +130,7 @@ class NovelAiImageService(
                                 val count = stream.read(buffer)
                                 if (count < 0) break
                                 decoder.feed(buffer.copyOf(count)).forEach { frame ->
-                                    decodeFrame(frame)?.let { event ->
+                                    decodeFrame(frame, settings.steps)?.let { event ->
                                         when (event) {
                                             is NovelAiImageEvent.Intermediate -> trySend(event)
                                             is NovelAiImageEvent.Final -> trySend(event)
@@ -156,10 +168,21 @@ class NovelAiImageService(
         seed: Int = randomSeed(),
         imageSize: NovelAiImageSize = prompt.sizePreset.imageSize,
         batchSize: Int = 1
+    ): String = buildRequestBody(
+        prompt = prompt,
+        imageSize = imageSize,
+        settings = NovelAiGenerationSettings.legacy(seed, batchSize)
+    )
+
+    fun buildRequestBody(
+        prompt: NovelAiPromptPlan,
+        imageSize: NovelAiImageSize,
+        settings: NovelAiGenerationSettings
     ): String {
-        require(batchSize in 1..NOVEL_AI_MAX_BATCH_SIZE) {
+        require(settings.count in 1..NOVEL_AI_MAX_BATCH_SIZE) {
             "NovelAI 批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间"
         }
+        settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
         val negative = prompt.effectiveNegativePrompt.trim()
         val characterCaptions = buildJsonArray {
             prompt.characterCaptions.forEach { caption ->
@@ -183,7 +206,7 @@ class NovelAiImageService(
                 put("char_captions", buildJsonArray {
                     prompt.characterCaptions.forEach { caption ->
                         add(buildJsonObject {
-                            put("char_caption", "")
+                            put("char_caption", caption.negativePrompt)
                             put("centers", centerArray(caption.center))
                         })
                     }
@@ -195,18 +218,18 @@ class NovelAiImageService(
         }
         return buildJsonObject {
             put("input", prompt.baseCaption)
-            put("model", MODEL)
+            put("model", settings.model.apiId)
             put("action", "generate")
             put("parameters", buildJsonObject {
                 put("params_version", 3)
                 put("width", imageSize.width)
                 put("height", imageSize.height)
-                put("scale", SCALE)
-                put("sampler", "k_euler_ancestral")
-                put("steps", STEPS)
-                put("seed", seed)
-                put("extra_noise_seed", seed)
-                put("n_samples", batchSize)
+                put("scale", settings.guidance)
+                put("sampler", settings.sampler.apiId)
+                put("steps", settings.steps)
+                put("seed", settings.seed)
+                put("extra_noise_seed", settings.seed)
+                put("n_samples", settings.count)
                 put("ucPreset", 3)
                 put("qualityToggle", false)
                 put("negative_prompt", negative)
@@ -237,7 +260,7 @@ class NovelAiImageService(
         })
     }
 
-    internal fun decodeFrame(frame: ByteArray): NovelAiImageEvent? {
+    internal fun decodeFrame(frame: ByteArray, steps: Int = STEPS): NovelAiImageEvent? {
         val unpacker = MessagePack.newDefaultUnpacker(frame)
         val map = unpacker.unpackValue().asMapValue().map()
         unpacker.close()
@@ -249,7 +272,7 @@ class NovelAiImageService(
                 val image = value("image")?.asBinaryValue()?.asByteArray()
                     ?: error("intermediate 事件缺少图片")
                 val step = value("step_ix")?.asIntegerValue()?.toInt() ?: 0
-                NovelAiImageEvent.Intermediate(image, step, (step / STEPS.toFloat()).coerceIn(0f, 1f))
+                NovelAiImageEvent.Intermediate(image, step, (step / steps.toFloat()).coerceIn(0f, 1f))
             }
             "final" -> NovelAiImageEvent.Final(
                 value("image")?.asBinaryValue()?.asByteArray() ?: error("final 事件缺少图片")
@@ -266,9 +289,7 @@ class NovelAiImageService(
     private companion object {
         val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         const val ENDPOINT = "https://image.novelai.net/ai/generate-image-stream"
-        const val MODEL = "nai-diffusion-4-5-full"
         const val STEPS = 28
-        const val SCALE = 8.0
         const val CONNECT_TIMEOUT_SECONDS = 30L
         const val READ_TIMEOUT_MINUTES = 10L
         const val WRITE_TIMEOUT_SECONDS = 30L

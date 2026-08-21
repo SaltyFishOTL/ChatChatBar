@@ -11,6 +11,7 @@ import com.example.chatbar.domain.card.CharacterCardImageTarget
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPngMetadataReader
@@ -149,20 +150,26 @@ class MomentsViewModel : ViewModel() {
         viewModelScope.launch {
             val outcome = runCatching {
                 repository.initialize()
+                settingsRepository.initialize()
                 val source = repository.getPost(postId) ?: error("原朋友圈不存在")
                 require(!source.isPlaceholder && source.imagePath == imagePath) { "原朋友圈图片已发生变化" }
                 val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
+                val appSettings = settingsRepository.getAppSettings()
                 val prompt = draft.toPromptPlan()
                 val imageSize = draft.imageSize()
                 val imageBytes = AiBackgroundWorkManager.run("moments_image_regenerate_$postId") {
                     GlobalImageGenerationConcurrencyGate.instance.run {
                         var finalImage: ByteArray? = null
                         var errorMessage: String? = null
+                        val seed = imageService.newSeed()
                         imageService.generate(
                             token = token,
                             prompt = prompt,
-                            seed = imageService.newSeed(),
-                            imageSize = imageSize
+                            imageSize = imageSize,
+                            settings = NovelAiGenerationSettings.legacy(
+                                seed = seed,
+                                model = appSettings.novelAiImageModel
+                            )
                         ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Final -> finalImage = event.image
@@ -267,11 +274,15 @@ class MomentsViewModel : ViewModel() {
                     GlobalImageGenerationConcurrencyGate.instance.run {
                         var finalImage: ByteArray? = null
                         var streamError: String? = null
+                        val seed = imageService.newSeed()
                         imageService.generate(
                             token = token,
                             prompt = plan,
-                            seed = imageService.newSeed(),
-                            imageSize = imageSize
+                            imageSize = imageSize,
+                            settings = NovelAiGenerationSettings.legacy(
+                                seed = seed,
+                                model = settings.novelAiImageModel
+                            )
                         ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Final -> finalImage = event.image
@@ -391,6 +402,7 @@ class MomentsViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
+                        novelAiImageModel = settings.novelAiImageModel,
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,

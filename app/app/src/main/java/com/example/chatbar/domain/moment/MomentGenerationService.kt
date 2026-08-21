@@ -10,7 +10,9 @@ import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiImageEvent
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageService
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
@@ -99,6 +101,7 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
+        novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
         playerName: String? = session.playerName,
@@ -113,6 +116,7 @@ class MomentGenerationService(
         latestPost = latestPost,
         model = model,
         imageModel = imageModel,
+        novelAiImageModel = novelAiImageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
         playerName = playerName,
@@ -131,6 +135,7 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
+        novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
         scheduledAt: Long,
         finalPromptRequirement: String = "",
         playerName: String? = session.playerName,
@@ -146,6 +151,7 @@ class MomentGenerationService(
         latestPost = latestPost,
         model = model,
         imageModel = imageModel,
+        novelAiImageModel = novelAiImageModel,
         scheduledAt = scheduledAt,
         finalPromptRequirement = finalPromptRequirement,
         playerName = playerName,
@@ -164,6 +170,7 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
+        novelAiImageModel: NovelAiImageModel,
         scheduledAt: Long,
         finalPromptRequirement: String,
         playerName: String?,
@@ -246,7 +253,7 @@ class MomentGenerationService(
             }
         }
         val imageSize = NovelAiImageSizePreset.SQUARE.imageSize
-        val bytes = generateImageWithRetry(token, prompt, imageSize, onProgress)
+        val bytes = generateImageWithRetry(token, prompt, imageSize, novelAiImageModel, onProgress)
         onProgress(MomentGenerationProgress(MomentGenerationProgressPhase.SAVING, "正在保存图片", progress = 1f))
         val imagePath = imageStorage.save("moments_${card.id}", bytes)
         val post = createPost(card, session, normalizedDraft, prompt, imagePath, imageSize, scheduledAt)
@@ -258,6 +265,7 @@ class MomentGenerationService(
         token: String,
         prompt: NovelAiPromptPlan,
         imageSize: NovelAiImageSize,
+        novelAiImageModel: NovelAiImageModel,
         onProgress: (MomentGenerationProgress) -> Unit
     ): ByteArray {
         var lastError = "NovelAI 未返回最终图片"
@@ -271,7 +279,13 @@ class MomentGenerationService(
                     "正在生成图片$retryLabel"
                 )
             )
-            imageService.generate(token, prompt, imageService.newSeed(), imageSize).collect { event ->
+            val seed = imageService.newSeed()
+            imageService.generate(
+                token = token,
+                prompt = prompt,
+                imageSize = imageSize,
+                settings = NovelAiGenerationSettings.legacy(seed, model = novelAiImageModel)
+            ).collect { event ->
                 when (event) {
                     is NovelAiImageEvent.Final -> finalImage = event.image
                     is NovelAiImageEvent.Error -> errorMessage = event.message
@@ -303,6 +317,7 @@ class MomentGenerationService(
         latestPost: MomentPost?,
         model: ModelConfig,
         imageModel: ModelConfig?,
+        novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
         scheduledAt: Long = System.currentTimeMillis(),
         finalPromptRequirement: String = "",
         playerName: String? = session.playerName,
@@ -367,11 +382,12 @@ class MomentGenerationService(
             val prompt = promptDebug.plan
             val imageSize = NovelAiImageSizePreset.SQUARE.imageSize
             val seed = imageService.newSeed()
-            val imageInput = imageService.buildRequestBody(prompt, seed, imageSize)
+            val generationSettings = NovelAiGenerationSettings.legacy(seed, model = novelAiImageModel)
+            val imageInput = imageService.buildRequestBody(prompt, imageSize, generationSettings)
             var finalImage: ByteArray? = null
             var errorMessage: String? = null
             val imageOutput = StringBuilder()
-            imageService.generate(token, prompt, seed, imageSize).collect { event ->
+            imageService.generate(token, prompt, imageSize, generationSettings).collect { event ->
                 when (event) {
                     is NovelAiImageEvent.Final -> {
                         finalImage = event.image

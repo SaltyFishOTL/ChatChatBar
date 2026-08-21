@@ -8,6 +8,7 @@ import kotlinx.serialization.Serializable
 @Serializable data object CommunityRoute : NavKey
 @Serializable data object ManageRoute : NavKey
 @Serializable data object ImagePromptToolRoute : NavKey
+@Serializable data object NovelAiHistoryRoute : NavKey
 @Serializable data class ChatRoute(val sessionId: String) : NavKey
 @Serializable data class CharacterEditRoute(val characterId: String? = null, val draftId: String = "") : NavKey
 @Serializable data class FormatCardEditRoute(val formatCardId: String? = null, val draftId: String = "") : NavKey

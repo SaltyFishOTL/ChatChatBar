@@ -33,7 +33,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Reuse it through the feature-appropriate `PromptTemplates` helper: the composed system helper for card-backed flows and `novelAiImagePromptCoreSystem()` for the prompt tool.
 - Send final user-specific image requirements through `novelAiImagePromptPreferenceUser(...)` as the last user-role message. Do not turn them into another system message: cleartext chat-template adaptation may rewrite system roles, and the final adapted request must not end on an assistant role.
 - Prompt-tool reference-image reverse design appends `PromptTemplates.novelAiImagePromptReferenceImageUser()` and still uses the shared system prompt. Keep `referenceImageProvided` independent from direct image payloads so vision-model description fallback retains this instruction.
-- `ImagePromptToolViewModel` sends the source image directly when the selected design model is multimodal; otherwise `ImageUnderstandingService` produces a description for the same shared NovelAI prompt flow.
+- Studio first release is text-to-image only. `NovelAiPromptDesigner` retains reference-image request support for existing compatible callers, but studio UI does not expose Img2Img/reference tools.
 - Character-card cover image user prompt lives in `PromptTemplates.novelAiImagePromptCharacterCard(...)`; `NovelAiPromptDesigner` should call it instead of embedding cover prompt text.
 - Character-card built-in style presets use `presets/image_styles/default-image-styles.json` as sole catalog source. `NovelAiStyleCatalogService` validates entries and preview availability; previews belong under `presets/image_styles/previews/`. Character editor one-click fill replaces only `CharacterCard.defaultImagePrompt`, persists no style key, and leaves negative prompt plus generation flow unchanged.
 - Default negative tags live in `PromptTemplates.DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`; card-level `CharacterCard.defaultImageNegativePrompt` flows into `NovelAiPromptPlan.negativePrompt`, with the template used only when that value is blank. `NovelAiImageService` disables quality-tag injection, uses `ucPreset=3` (None), and sends that one effective negative text identically through legacy and V4 fields without combining another preset.
@@ -43,10 +43,12 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Do not add feature-specific NovelAI system prompt constants.
 - Do not add full feature-specific NAI templates such as `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE`.
 - If feature needs extra visual guidance, add a small `PromptTemplates` helper that supplies only modifiers: target style, composition preference, mood, brief image intent.
+- Studio adds only `novelAiImageTargetModelUser(...)` as a small target-model modifier; do not fork the core prompt by V4.5/V5.
 
 ## Danbooru Tag Research
 
 - Every AI-backed `NovelAiPromptDesigner.design*` flow first runs `NovelAiTagResearchService`: the same design model produces one detailed natural-language `sceneDescription` plus up to six Chinese `queries`, each no longer than three characters, in one call. The scene must identify each visible person, individual action and clothing state, spatial relationship, environment, composition, camera, and visible atmosphere before any tag design.
+- Exception: studio natural-language mode calls `planSceneOnly`, consumes `sceneDescription`, and stops. It must not call TagSuggest, local codex retrieval, final Tag design, or repair. “AI 转化” still runs the complete research/design flow and changes positives only after success.
 - NovelAI task calls override only the selected model's `thinking_budget`: scene planning uses 256, while final Prompt design and JSON repair use 512. Keep the stored model configuration unchanged.
 - Planner output contains only `sceneDescription` and `queries`; do not add `action`, `purpose`, or `reason`. TagSuggest receives only the planned queries and normalizes unavoidable English spaces to Danbooru underscores before HTTP lookup.
 - Local codex compiler preserves each selected source file's complete `###` section as one reference block. Retrieval uses only Chinese text extracted from the whole section, scored by corpus-weighted Chinese two/three-character overlap against both detailed scene and queries; English prompt tags and rewrite aliases never affect local recall. Select the five most relevant blocks, randomize only their delivery order, and never penalize recently used blocks. Send each selected original section intact as optional final-design evidence. All TagSuggest lookups run concurrently.
@@ -54,6 +56,14 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Prompt-tool style text is a UI-owned generation modifier: keep it out of AI design input, include the shared style-exclusion system message, and prepend the editable style to the designed/manual base caption only when the user starts NovelAI generation.
 - Manual Prompt generation, generation from an existing Prompt, and image regeneration bypass research because they do not invoke AI Prompt design.
 - TagSuggest candidates are process-memory cached only. Do not add credentials, settings, or persisted fields for this flow.
+- Studio live completion reuses the same application-scoped `TagSuggestClient` and cache as research. Keep its 250ms UI debounce, cancellation, max-eight candidates, and nonblocking failure state outside prompt text.
+
+## Studio Character Capacity
+
+- V4.5 Full supports at most six ordered character captions; V5 Full supports at most 22 in studio.
+- Imported character-card image prompts are persisted AI assembly sources. Send them to scene planning and final design as structured character presets; never copy them directly over handwritten studio character prompts.
+- `designForPromptTool` materializes up to the selected target model limit. Card/chat/Moments conversion keeps the legacy six-character cap.
+- AI result merge preserves existing per-index negatives, gives new items empty negatives, and retains unmatched manual tail items. Model switches and imports never silently truncate.
 
 ## Prompt Shape
 

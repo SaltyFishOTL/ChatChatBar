@@ -39,7 +39,8 @@ fun Long.toMessageOrderKey(): Long = this * MESSAGE_ORDER_STEP
 data class GeneratedImageCharacterPrompt(
     val prompt: String,
     val centerX: Float,
-    val centerY: Float
+    val centerY: Float,
+    val negativePrompt: String = ""
 )
 
 @Serializable

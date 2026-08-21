@@ -1,23 +1,38 @@
 package com.example.chatbar.ui.imageprompt
 
-import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.domain.image.ImageFileEncoder
+import com.example.chatbar.domain.image.NovelAiCharacterCaption
+import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
+import com.example.chatbar.domain.image.NovelAiCharacterPromptSource
+import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
+import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageEvent
-import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
-import com.example.chatbar.domain.image.NovelAiImageSizePolicy
-import com.example.chatbar.domain.image.NOVEL_AI_MAX_BATCH_SIZE
-import com.example.chatbar.domain.image.emptyNovelAiImageRegenerationDraft
-import com.example.chatbar.domain.image.toRegenerationDraft
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
+import com.example.chatbar.domain.image.NovelAiPromptDesigner
+import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.NovelAiSeedMode
+import com.example.chatbar.domain.image.NovelAiStudioDraft
+import com.example.chatbar.domain.image.NovelAiTagCandidate
+import com.example.chatbar.domain.image.NovelAiTagCompletion
+import com.example.chatbar.domain.image.copyPositivePrompt
+import com.example.chatbar.domain.image.novelAiHistoryImages
+import com.example.chatbar.domain.image.toRecipe
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
+import java.util.UUID
+import kotlin.random.Random
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -26,23 +41,27 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 enum class ImagePromptToolPhase {
-    IDLE,
-    DESIGNING,
-    READY,
-    GENERATING,
-    STREAMING,
-    SAVING,
-    FINISHED,
-    FAILED,
-    CANCELLED
+    IDLE, DESIGNING, READY, GENERATING, STREAMING, SAVING, FINISHED, FAILED, CANCELLED
 }
 
+data class NovelAiPromptFieldKey(val kind: String, val characterId: String? = null)
+
+data class NovelAiTagSuggestionState(
+    val field: NovelAiPromptFieldKey? = null,
+    val candidates: List<NovelAiTagCandidate> = emptyList(),
+    val error: String? = null,
+    val loading: Boolean = false
+)
+
+data class NovelAiRecentHistoryItem(
+    val entry: NovelAiGenerationHistoryEntry,
+    val image: NovelAiGenerationHistoryImage
+)
+
 data class ImagePromptToolUiState(
-    val imageDescription: String = "",
-    val stylePrompt: String = "",
-    val characterPrompt: String = "",
-    val imagePromptPreference: String = "",
-    val referenceImagePath: String? = null,
+    val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
+    val draftLoaded: Boolean = false,
+    val hasHistoryUndo: Boolean = false,
     val characterCards: List<CharacterCard> = emptyList(),
     val selectedCharacterCardId: String? = null,
     val models: List<ModelConfig> = emptyList(),
@@ -51,439 +70,491 @@ data class ImagePromptToolUiState(
     val modelUsable: Boolean = false,
     val phase: ImagePromptToolPhase = ImagePromptToolPhase.IDLE,
     val designStatus: String = "",
-    val imageAnalysisStream: String = "",
     val reasoningStream: String = "",
     val resultStream: String = "",
-    val promptDraft: NovelAiImageRegenerationDraft = emptyNovelAiImageRegenerationDraft(),
-    val imageSizePresetOverride: NovelAiImageSizePreset? = null,
-    val promptRevision: Int = 0,
     val imagePreview: ByteArray? = null,
+    val completedPreviews: List<ByteArray> = emptyList(),
     val imagePaths: List<String> = emptyList(),
+    val recentHistoryItems: List<NovelAiRecentHistoryItem> = emptyList(),
+    val selectedOutputPath: String? = null,
+    val selectedOutputIndex: Int = 0,
     val imageProgress: Float = 0f,
+    val applyingHistory: Boolean = false,
+    val tagSuggestions: NovelAiTagSuggestionState = NovelAiTagSuggestionState(),
     val error: String? = null
 ) {
-    val imagePath: String? get() = imagePaths.firstOrNull()
     val isDesigning: Boolean get() = phase == ImagePromptToolPhase.DESIGNING
-    val isGeneratingImage: Boolean
-        get() = phase == ImagePromptToolPhase.GENERATING ||
-            phase == ImagePromptToolPhase.STREAMING ||
-            phase == ImagePromptToolPhase.SAVING
+    val isGeneratingImage: Boolean get() = phase in setOf(
+        ImagePromptToolPhase.GENERATING,
+        ImagePromptToolPhase.STREAMING,
+        ImagePromptToolPhase.SAVING
+    )
     val isBusy: Boolean get() = isDesigning || isGeneratingImage
-    val canDesign: Boolean
-        get() = !isBusy &&
-            modelUsable &&
-            selectedModelId != null &&
-            (referenceImagePath != null ||
-                listOf(imageDescription, characterPrompt).any { it.isNotBlank() })
-
-    internal fun importCharacterCardPrompts(card: CharacterCard): ImagePromptToolUiState {
-        val importedStylePrompt = card.defaultImagePrompt.trim()
-        val importedCharacterPrompt = card.characterImagePromptText()
-        return copy(
-            selectedCharacterCardId = card.id,
-            stylePrompt = importedStylePrompt.ifBlank { stylePrompt },
-            characterPrompt = importedCharacterPrompt.ifBlank { characterPrompt },
-            phase = if (promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
-            imagePreview = null,
-            imagePaths = emptyList(),
-            imageProgress = 0f,
-            error = null
-        )
-    }
+    val selectedRecentHistoryItem: NovelAiRecentHistoryItem?
+        get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
+    val canDesign: Boolean get() = !isBusy && !applyingHistory && modelUsable && selectedModelId != null && draft.imageDescription.isNotBlank()
+    val canGenerate: Boolean get() = !isBusy && !applyingHistory && draft.basePrompt.isNotBlank()
 }
 
 class ImagePromptToolViewModel : ViewModel() {
-    private val settingsRepository = ChatBarApp.instance.settingsRepository
-    private val characterRepository = ChatBarApp.instance.characterRepository
-    private val modelResolver = ChatBarApp.instance.effectiveModelResolver
-    private val promptDesigner = ChatBarApp.instance.novelAiPromptDesigner
-    private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
-    private val imageService = ChatBarApp.instance.novelAiImageService
-    private val imageStorage = ChatBarApp.instance.novelAiImageStorage
-    private val imageUnderstandingService = ChatBarApp.instance.imageUnderstandingService
-    private val draftAssetService = ChatBarApp.instance.editorDraftAssetService
+    private val app = ChatBarApp.instance
+    private val repository = app.novelAiStudioRepository
+    private val settingsRepository = app.settingsRepository
+    private val characterRepository = app.characterRepository
+    private val modelResolver = app.effectiveModelResolver
+    private val promptDesigner = app.novelAiPromptDesigner
+    private val credentials = app.novelAiCredentialStore
+    private val imageService = app.novelAiImageService
+    private val imageStorage = app.novelAiImageStorage
+    private val tagSuggestClient = app.novelAiTagSuggestClient
 
     private val _uiState = MutableStateFlow(ImagePromptToolUiState())
     val uiState: StateFlow<ImagePromptToolUiState> = _uiState.asStateFlow()
-    val novelAiConfigured: StateFlow<Boolean> = novelAiCredentials.configured
+    val novelAiConfigured: StateFlow<Boolean> = credentials.configured
 
     private var designJob: Job? = null
     private var imageJob: Job? = null
-    private var completedImageCheckpoint: Pair<Int, List<ByteArray>>? = null
+    private var draftSaveJob: Job? = null
+    private var tagJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            repository.initialize()
+            repository.loadDraft()
+            repository.draft.collect { draft ->
+                draft ?: return@collect
+                _uiState.update {
+                    it.copy(
+                        draft = draft,
+                        draftLoaded = true,
+                        hasHistoryUndo = repository.loadUndoDraft() != null,
+                        selectedCharacterCardId = draft.importedCharacterCardId,
+                        phase = if (draft.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
+                    )
+                }
+            }
+        }
         observeCharacterCards()
         observeModelConfiguration()
+        observeRecentImages()
     }
 
-    fun updateImageDescription(value: String) {
-        updateInput { it.copy(imageDescription = value) }
-    }
-
-    fun updateStylePrompt(value: String) {
-        if (_uiState.value.isBusy) return
-        completedImageCheckpoint = null
-        _uiState.update {
-            it.copy(
-                stylePrompt = value,
-                phase = if (it.promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
-                imagePreview = null,
-                imagePaths = emptyList(),
-                imageProgress = 0f,
+    fun updateDraft(transform: (NovelAiStudioDraft) -> NovelAiStudioDraft) {
+        if (!_uiState.value.draftLoaded || _uiState.value.isBusy || _uiState.value.applyingHistory) return
+        _uiState.update { state ->
+            val next = transform(state.draft).copy(updatedAt = System.currentTimeMillis())
+            state.copy(
+                draft = next,
+                phase = if (next.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY,
                 error = null
             )
         }
+        scheduleDraftSave()
     }
 
-    fun updateCharacterPrompt(value: String) {
-        updateInput { it.copy(characterPrompt = value) }
+    fun selectImageModel(model: NovelAiImageModel) {
+        updateDraft { draft -> draft.copy(selectedModel = model) }
     }
 
-    fun updateImagePromptPreference(value: String) {
-        updateInput { it.copy(imagePromptPreference = value) }
-        viewModelScope.launch {
-            val settings = settingsRepository.getAppSettings()
-            if (settings.imagePromptToolPreference != value) {
-                settingsRepository.saveAppSettings(settings.copy(imagePromptToolPreference = value))
-            }
+    fun toggleOutputExpanded() {
+        if (!_uiState.value.draftLoaded) return
+        _uiState.update { state -> state.copy(draft = state.draft.copy(outputExpanded = !state.draft.outputExpanded)) }
+        scheduleDraftSave()
+    }
+
+    fun updateGenerationSettings(transform: (NovelAiGenerationSettings) -> NovelAiGenerationSettings) {
+        updateDraft { draft -> draft.withActiveSettings(transform(draft.activeSettings).copy(model = draft.selectedModel).normalized()) }
+    }
+
+    fun addCharacter() {
+        val draft = _uiState.value.draft
+        if (draft.characters.size >= draft.selectedModel.maxCharacters) {
+            _uiState.update { it.copy(error = "${draft.selectedModel.displayName} 最多支持 ${draft.selectedModel.maxCharacters} 个角色") }
+            return
         }
+        updateDraft { it.copy(characters = it.characters + NovelAiCharacterPromptDraft()) }
     }
 
-    fun selectReferenceImage(uri: Uri) {
-        if (_uiState.value.isBusy) return
-        viewModelScope.launch {
-            val previousPath = _uiState.value.referenceImagePath
-            try {
-                val extension = when (ChatBarApp.instance.contentResolver.getType(uri)) {
-                    "image/png" -> "png"
-                    "image/gif" -> "gif"
-                    "image/webp" -> "webp"
-                    else -> "jpg"
-                }
-                val newPath = draftAssetService.copyImageToDraft(
-                    draftSessionId = PROMPT_TOOL_DRAFT_SESSION_ID,
-                    uri = uri,
-                    extension = extension
-                )
-                updateInput { it.copy(referenceImagePath = newPath) }
-                previousPath?.takeIf(draftAssetService::isDraftAsset)?.let { oldPath ->
-                    draftAssetService.deleteFiles(listOf(oldPath))
-                }
-            } catch (error: CancellationException) {
-                throw error
-            } catch (error: Throwable) {
-                _uiState.update {
-                    it.copy(error = "读取参考图片失败：${error.message ?: "未知错误"}")
-                }
-            }
+    fun updateCharacter(id: String, transform: (NovelAiCharacterPromptDraft) -> NovelAiCharacterPromptDraft) =
+        updateDraft { draft ->
+            draft.copy(characters = draft.characters.map { if (it.id == id) transform(it) else it })
         }
+
+    fun removeCharacter(id: String) = updateDraft { draft ->
+        draft.copy(characters = draft.characters.filterNot { it.id == id })
     }
 
-    fun removeReferenceImage() {
-        if (_uiState.value.isBusy) return
-        val oldPath = _uiState.value.referenceImagePath ?: return
-        updateInput { it.copy(referenceImagePath = null) }
-        if (draftAssetService.isDraftAsset(oldPath)) {
-            viewModelScope.launch { draftAssetService.deleteFiles(listOf(oldPath)) }
-        }
-    }
-
-    fun updatePromptDraft(draft: NovelAiImageRegenerationDraft) {
-        if (_uiState.value.isBusy) return
-        completedImageCheckpoint = null
-        _uiState.update {
-            it.copy(
-                phase = if (draft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
-                promptDraft = draft,
-                imagePreview = null,
-                imagePaths = emptyList(),
-                imageProgress = 0f,
-                error = null
-            )
-        }
-    }
-
-    fun updateImageSizePresetOverride(preset: NovelAiImageSizePreset?) {
-        if (_uiState.value.isBusy) return
-        completedImageCheckpoint = null
-        _uiState.update {
-            it.copy(
-                phase = if (it.promptDraft.canRegenerate) ImagePromptToolPhase.READY else ImagePromptToolPhase.IDLE,
-                imageSizePresetOverride = preset,
-                imagePreview = null,
-                imagePaths = emptyList(),
-                imageProgress = 0f,
-                error = null
-            )
-        }
+    fun moveCharacter(id: String, delta: Int) = updateDraft { draft ->
+        val source = draft.characters.indexOfFirst { it.id == id }
+        val target = source + delta
+        if (source < 0 || target !in draft.characters.indices) return@updateDraft draft
+        val reordered = draft.characters.toMutableList()
+        val item = reordered.removeAt(source)
+        reordered.add(target, item)
+        draft.copy(characters = reordered)
     }
 
     fun importCharacterCardPrompts(cardId: String) {
-        if (_uiState.value.isBusy) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
-        completedImageCheckpoint = null
-        _uiState.update { it.importCharacterCardPrompts(card) }
+        val sources = card.characters.mapIndexedNotNull { index, character ->
+            character.imagePrompt.trim().takeIf(String::isNotBlank)?.let { prompt ->
+                NovelAiCharacterPromptSource(
+                    name = character.name.trim().ifBlank { "角色 ${index + 1}" },
+                    prompt = prompt
+                )
+            }
+        }
+        updateDraft { draft ->
+            draft.importCharacterCardPromptSources(
+                cardId = cardId,
+                cardStylePrompt = card.defaultImagePrompt,
+                sources = sources
+            )
+        }
+        _uiState.update { it.copy(selectedCharacterCardId = cardId) }
+        if (sources.size > _uiState.value.draft.selectedModel.maxCharacters) {
+            _uiState.update {
+                it.copy(error = "${it.draft.selectedModel.displayName} 最多支持 ${it.draft.selectedModel.maxCharacters} 个角色；角色卡提供 ${sources.size} 个")
+            }
+        }
     }
 
-    fun designPrompt() {
+    fun designPrompt() = startDesign(conversion = false)
+
+    fun convertNaturalLanguagePrompt() = startDesign(conversion = true)
+
+    private fun startDesign(conversion: Boolean) {
         if (_uiState.value.isBusy) return
         val snapshot = _uiState.value
         val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
         if (model == null || !snapshot.modelUsable) {
-            _uiState.update { it.copy(error = "默认生图模型/API Key 未配置") }
+            _uiState.update { it.copy(error = "默认生图辅助模型/API Key 未配置") }
             return
         }
-        completedImageCheckpoint = null
+        val draft = snapshot.draft
+        val cardCharacterPrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt }
+        if (cardCharacterPrompts.size > draft.selectedModel.maxCharacters) {
+            _uiState.update {
+                it.copy(error = "${draft.selectedModel.displayName} 最多支持 ${draft.selectedModel.maxCharacters} 个角色；角色卡提供 ${cardCharacterPrompts.size} 个")
+            }
+            return
+        }
+        val sourceText = if (conversion) draft.basePrompt else draft.imageDescription
+        if (sourceText.isBlank()) {
+            _uiState.update { it.copy(error = if (conversion) "基础 Prompt 为空" else "请输入画面内容") }
+            return
+        }
         designJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.DESIGNING,
-                    designStatus = if (snapshot.referenceImagePath == null) "正在设计提示词" else "正在读取参考图片",
-                    imageAnalysisStream = "",
+                    designStatus = if (conversion) "正在转化为 NovelAI Tags" else "正在设计画面",
                     reasoningStream = "",
                     resultStream = "",
-                    imagePreview = null,
-                    imagePaths = emptyList(),
-                    imageProgress = 0f,
                     error = null
                 )
             }
             try {
-                var imageDescription = snapshot.imageDescription
-                var directImageBase64s = emptyList<String>()
-                snapshot.referenceImagePath?.let { imagePath ->
-                    val imageBase64 = ImageFileEncoder.encodeToJpegBase64(imagePath)
-                    val understanding = imageUnderstandingService.prepare(
-                        imageBase64s = listOf(imageBase64),
-                        generationModel = model,
-                        requireUnderstanding = true,
-                        announceDirect = true,
-                        onStatus = { status ->
-                            _uiState.update { it.copy(designStatus = status) }
-                        },
-                        onDescriptionText = { _, text ->
-                            _uiState.update { it.copy(imageAnalysisStream = text) }
-                        }
-                    )
-                    directImageBase64s = understanding.directImageBase64s
-                    imageDescription = listOf(
-                        snapshot.imageDescription,
-                        understanding.descriptions.joinToString("\n")
-                    ).filter(String::isNotBlank).joinToString("\n\n")
-                }
-                _uiState.update { it.copy(designStatus = "正在设计 NovelAI 提示词") }
                 val playerName = settingsRepository.getPlayerSetting().playerName
-                val botName = snapshot.characterCards
-                    .firstOrNull { it.id == snapshot.selectedCharacterCardId }
-                    ?.effectiveBotName
-                    .orEmpty()
-                val plan = promptDesigner.designForPromptTool(
-                    imageDescription = imageDescription,
-                    characterPrompt = snapshot.characterPrompt,
-                    finalPromptRequirement = snapshot.imagePromptPreference,
-                    imageBase64s = directImageBase64s,
-                    referenceImageProvided = snapshot.referenceImagePath != null,
-                    model = model,
-                    playerName = playerName,
-                    botName = botName,
-                    onContentDelta = { text ->
-                        _uiState.update { it.copy(resultStream = text) }
-                    },
-                    onReasoningDelta = { text ->
-                        _uiState.update { it.copy(reasoningStream = text) }
-                    }
-                )
-                _uiState.update {
-                    it.copy(
-                        phase = ImagePromptToolPhase.READY,
-                        designStatus = "提示词设计完成",
-                        promptDraft = plan.toRegenerationDraft(),
-                        promptRevision = it.promptRevision + 1,
-                        error = null
+                val characterText = draft.characters.joinToString("\n\n") { it.prompt }
+                if (draft.naturalLanguageMode && !conversion) {
+                    val scene = promptDesigner.planNaturalLanguageForPromptTool(
+                        imageDescription = sourceText,
+                        characterPrompt = characterText,
+                        characterImagePrompts = cardCharacterPrompts,
+                        finalPromptRequirement = draft.extraRequirement,
+                        model = model,
+                        targetImageModel = draft.selectedModel,
+                        playerName = playerName,
+                        onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } }
                     )
+                    updateDraftAfterDesign(draft.copy(basePrompt = scene))
+                } else {
+                    val plan = promptDesigner.designForPromptTool(
+                        imageDescription = sourceText,
+                        characterPrompt = characterText,
+                        characterImagePrompts = cardCharacterPrompts,
+                        finalPromptRequirement = draft.extraRequirement,
+                        model = model,
+                        targetImageModel = draft.selectedModel,
+                        playerName = playerName,
+                        onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } },
+                        onReasoningDelta = { text -> _uiState.update { it.copy(reasoningStream = text) } }
+                    )
+                    val before = if (conversion) NovelAiPositivePromptSnapshot(
+                        basePrompt = draft.basePrompt,
+                        characterPrompts = draft.characters.map(NovelAiCharacterPromptDraft::prompt)
+                    ) else null
+                    updateDraftAfterDesign(mergeAiPlan(draft, plan).copy(conversionSnapshot = before))
                 }
             } catch (error: Throwable) {
                 if (error is CancellationException) {
-                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED, error = null) }
+                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED) }
                     throw error
                 }
                 _uiState.update {
-                    it.copy(
-                        phase = ImagePromptToolPhase.FAILED,
-                        error = "提示词生成失败：${error.message ?: "未知错误"}"
-                    )
+                    it.copy(phase = ImagePromptToolPhase.FAILED, error = "AI 设计失败：${error.message ?: "未知错误"}")
                 }
             }
+        }.also { job -> job.invokeOnCompletion { designJob = null } }
+    }
+
+    private fun mergeAiPlan(draft: NovelAiStudioDraft, plan: NovelAiPromptPlan): NovelAiStudioDraft {
+        val merged = buildList {
+            plan.characterCaptions.forEachIndexed { index, caption ->
+                val old = draft.characters.getOrNull(index)
+                add((old ?: NovelAiCharacterPromptDraft()).copy(prompt = caption.prompt))
+            }
+            addAll(draft.characters.drop(plan.characterCaptions.size))
         }
-        designJob?.invokeOnCompletion {
-            designJob = null
+        return draft.copy(basePrompt = plan.baseCaption, characters = merged)
+    }
+
+    private fun updateDraftAfterDesign(draft: NovelAiStudioDraft) {
+        _uiState.update {
+            it.copy(draft = draft, phase = ImagePromptToolPhase.READY, designStatus = "完成", error = null)
+        }
+        scheduleDraftSave()
+    }
+
+    fun restoreConvertedPrompt() {
+        val snapshot = _uiState.value.draft.conversionSnapshot ?: return
+        updateDraft { draft ->
+            val restored = draft.characters.mapIndexed { index, character ->
+                snapshot.characterPrompts.getOrNull(index)?.let { character.copy(prompt = it) } ?: character
+            }
+            draft.copy(basePrompt = snapshot.basePrompt, characters = restored, conversionSnapshot = null)
         }
     }
 
-    fun generateImage(batchSize: Int = 1) {
+    fun generateImage() {
         if (_uiState.value.isBusy) return
-        if (batchSize !in 1..NOVEL_AI_MAX_BATCH_SIZE) {
-            _uiState.update { it.copy(error = "批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间") }
+        val draft = _uiState.value.draft
+        val configured = draft.activeSettings
+        configured.validationError(draft.characters.size)?.let { message ->
+            _uiState.update { it.copy(error = message) }
             return
         }
-        val snapshot = _uiState.value
-        val draft = snapshot.promptDraft
-        val imageSizePresetOverride = snapshot.imageSizePresetOverride
-        if (!draft.canRegenerate) {
-            _uiState.update { it.copy(error = "主提示词不能为空，已添加的角色提示词也必须填写") }
+        if (draft.basePrompt.isBlank() || draft.characters.any { it.prompt.isBlank() }) {
+            _uiState.update { it.copy(error = "基础 Prompt 与已添加角色 Prompt 不能为空") }
             return
         }
-        val plan = draft.toPromptPlan(snapshot.stylePrompt)
         imageJob = viewModelScope.launch {
-            val token = withContext(Dispatchers.IO) { novelAiCredentials.load() }
+            val token = withContext(Dispatchers.IO) { credentials.load() }
             if (token == null) {
-                _uiState.update {
-                    it.copy(
-                        phase = ImagePromptToolPhase.FAILED,
-                        error = "缺少 NovelAI Token，无法生图"
-                    )
-                }
+                _uiState.update { it.copy(phase = ImagePromptToolPhase.FAILED, error = "缺少 NovelAI Token") }
                 return@launch
             }
-            val settings = settingsRepository.getAppSettings()
-            val ratioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
-            if (imageSizePresetOverride == null && ratioError != null) {
-                _uiState.update { it.copy(phase = ImagePromptToolPhase.FAILED, error = ratioError) }
-                return@launch
-            }
-            val imageSize = NovelAiImageSizePolicy.resolve(
-                settings.novelAiImageAspectRatio,
-                plan.sizePreset,
-                imageSizePresetOverride
-            )
-            val seed = imageService.newSeed()
-            val resumeImages = completedImageCheckpoint
-                ?.takeIf { checkpoint ->
-                    _uiState.value.phase == ImagePromptToolPhase.FAILED && checkpoint.first == batchSize
-                }
-                ?.second
-            if (resumeImages == null) completedImageCheckpoint = null
+            val seed = if (configured.seedMode == NovelAiSeedMode.RANDOM) {
+                Random.nextLong(NovelAiGenerationSettings.MIN_SEED, configured.maxAllowedBaseSeed + 1)
+            } else configured.seed
+            val requestSettings = configured.copy(seed = seed, seedMode = NovelAiSeedMode.FIXED)
+            val plan = draft.toPromptPlan()
+            val historyId = UUID.randomUUID().toString()
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.GENERATING,
                     imagePreview = null,
+                    completedPreviews = emptyList(),
                     imagePaths = emptyList(),
+                    selectedOutputPath = null,
+                    selectedOutputIndex = 0,
                     imageProgress = 0f,
                     error = null
                 )
             }
             try {
-                val completedImages = resumeImages ?: run {
-                    val finalImages = mutableListOf<ByteArray>()
-                    var streamError: String? = null
-                    imageService.generate(
-                        token = token,
-                        prompt = plan,
-                        seed = seed,
-                        imageSize = imageSize,
-                        batchSize = batchSize
-                    ).collect { event ->
-                        when (event) {
-                            is NovelAiImageEvent.Intermediate -> {
-                                _uiState.update {
-                                    it.copy(
-                                        phase = ImagePromptToolPhase.STREAMING,
-                                        imagePreview = event.image,
-                                        imageProgress = ((finalImages.size + event.progress) / batchSize)
-                                            .coerceIn(0f, 1f)
-                                    )
-                                }
-                            }
-                            is NovelAiImageEvent.Final -> {
-                                finalImages += event.image
-                                _uiState.update {
-                                    it.copy(
-                                        phase = ImagePromptToolPhase.STREAMING,
-                                        imagePreview = event.image,
-                                        imageProgress = (finalImages.size / batchSize.toFloat())
-                                            .coerceIn(0f, 1f)
-                                    )
-                                }
-                            }
-                            is NovelAiImageEvent.Error -> streamError = event.message
+                val images = mutableListOf<ByteArray>()
+                var streamError: String? = null
+                imageService.generate(token, plan, requestSettings.imageSize(), requestSettings).collect { event ->
+                    when (event) {
+                        is NovelAiImageEvent.Intermediate -> _uiState.update {
+                            it.copy(
+                                phase = ImagePromptToolPhase.STREAMING,
+                                imagePreview = event.image,
+                                imageProgress = ((images.size + event.progress) / requestSettings.count).coerceIn(0f, 1f)
+                            )
                         }
-                    }
-                    check(streamError == null) { streamError.orEmpty() }
-                    check(finalImages.size == batchSize) {
-                        "NovelAI 批量生图返回数量异常：请求 $batchSize 张，收到 ${finalImages.size} 张"
-                    }
-                    finalImages.toList().also { images ->
-                        completedImageCheckpoint = batchSize to images
+                        is NovelAiImageEvent.Final -> {
+                            images += event.image
+                            _uiState.update {
+                                it.copy(
+                                    phase = ImagePromptToolPhase.STREAMING,
+                                    imagePreview = event.image,
+                                    completedPreviews = images.toList(),
+                                    selectedOutputIndex = images.lastIndex,
+                                    imageProgress = images.size / requestSettings.count.toFloat()
+                                )
+                            }
+                        }
+                        is NovelAiImageEvent.Error -> streamError = event.message
                     }
                 }
-                _uiState.update {
-                    it.copy(
-                        phase = ImagePromptToolPhase.SAVING,
-                        imagePreview = completedImages.last(),
-                        imageProgress = 1f
+                check(streamError == null) { streamError.orEmpty() }
+                check(images.size == requestSettings.count) {
+                    "批量返回数量异常：请求 ${requestSettings.count}，收到 ${images.size}"
+                }
+                _uiState.update { it.copy(phase = ImagePromptToolPhase.SAVING) }
+                val paths = withContext(Dispatchers.IO) { images.map { imageStorage.save(historyId, it) } }
+                repository.saveHistory(
+                    NovelAiGenerationHistoryEntry(
+                        id = historyId,
+                        images = novelAiHistoryImages(paths, seed),
+                        recipe = draft.toRecipe(requestSettings),
+                        createdAt = System.currentTimeMillis()
                     )
-                }
-                val paths = saveGeneratedImages(completedImages)
+                )
                 _uiState.update {
                     it.copy(
                         phase = ImagePromptToolPhase.FINISHED,
-                        imagePreview = completedImages.last(),
+                        imagePreview = images.last(),
+                        completedPreviews = images,
                         imagePaths = paths,
-                        imageProgress = 1f,
-                        error = null
+                        selectedOutputPath = paths.last(),
+                        selectedOutputIndex = images.lastIndex,
+                        imageProgress = 1f
                     )
                 }
             } catch (error: Throwable) {
+                withContext(NonCancellable + Dispatchers.IO) { imageStorage.deleteSession(historyId) }
                 if (error is CancellationException) {
-                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED, error = null) }
+                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED) }
                     throw error
                 }
                 _uiState.update {
+                    it.copy(phase = ImagePromptToolPhase.FAILED, error = "生图失败：${error.message ?: "未知错误"}")
+                }
+            }
+        }.also { job -> job.invokeOnCompletion { imageJob = null } }
+    }
+
+    fun selectOutput(index: Int) {
+        val preview = _uiState.value.completedPreviews.getOrNull(index) ?: return
+        _uiState.update {
+            it.copy(
+                selectedOutputIndex = index,
+                selectedOutputPath = it.imagePaths.getOrNull(index),
+                imagePreview = preview
+            )
+        }
+    }
+
+    fun selectRecentImage(path: String) {
+        _uiState.update { it.copy(selectedOutputPath = path, imagePreview = null) }
+    }
+
+    fun applySelectedRecentHistory(mode: NovelAiHistoryApplyMode) {
+        val snapshot = _uiState.value
+        if (snapshot.isBusy || snapshot.applyingHistory) return
+        val selected = snapshot.selectedRecentHistoryItem ?: return
+        viewModelScope.launch {
+            _uiState.update { it.copy(applyingHistory = true, error = null) }
+            runCatching {
+                repository.applyHistory(selected.entry, selected.image, mode)
+            }.onSuccess { appliedDraft ->
+                _uiState.update {
                     it.copy(
-                        phase = ImagePromptToolPhase.FAILED,
-                        error = "生图失败：${error.message ?: "未知错误"}"
+                        draft = appliedDraft,
+                        hasHistoryUndo = true,
+                        applyingHistory = false,
+                        phase = if (appliedDraft.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
+                    )
+                }
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        applyingHistory = false,
+                        error = "应用历史失败：${error.message ?: "未知错误"}"
                     )
                 }
             }
         }
-        imageJob?.invokeOnCompletion {
-            imageJob = null
-        }
     }
 
-    private suspend fun saveGeneratedImages(images: List<ByteArray>): List<String> =
-        withContext(Dispatchers.IO) {
-            val saved = mutableListOf<String>()
+    fun requestTagSuggestions(field: NovelAiPromptFieldKey, text: String, cursor: Int) {
+        tagJob?.cancel()
+        val fragment = NovelAiTagCompletion.activeFragment(text, cursor)
+        if (fragment == null || fragment.query.length < 2) {
+            _uiState.update { it.copy(tagSuggestions = NovelAiTagSuggestionState()) }
+            return
+        }
+        tagJob = viewModelScope.launch {
+            delay(250)
+            _uiState.update { it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, loading = true)) }
             try {
-                images.forEach { image ->
-                    saved += imageStorage.save(PROMPT_TOOL_IMAGE_SESSION_ID, image)
+                val result = tagSuggestClient.search(fragment.query)
+                _uiState.update {
+                    it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, candidates = result.candidates.take(8)))
                 }
-                saved.toList()
             } catch (error: Throwable) {
-                saved.forEach { path -> imageStorage.deleteIfOwned(path) }
-                throw error
+                if (error is CancellationException) throw error
+                _uiState.update {
+                    it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, error = "补全不可用：${error.message ?: "网络错误"}"))
+                }
             }
         }
+    }
+
+    fun clearTagSuggestions() {
+        tagJob?.cancel()
+        _uiState.update { it.copy(tagSuggestions = NovelAiTagSuggestionState()) }
+    }
+
+    fun undoHistoryApply() {
+        viewModelScope.launch {
+            val previous = repository.loadUndoDraft() ?: return@launch
+            repository.saveDraft(previous)
+            repository.clearUndoDraft()
+            _uiState.update { it.copy(draft = previous, hasHistoryUndo = false) }
+        }
+    }
+
+    fun clearHistoryUndo() {
+        viewModelScope.launch {
+            repository.clearUndoDraft()
+            _uiState.update { it.copy(hasHistoryUndo = false) }
+        }
+    }
 
     fun cancelActiveTask() {
-        val active = _uiState.value
-        if (!active.isBusy) return
-        designJob?.cancel(CancellationException("用户停止跑图工具任务"))
-        imageJob?.cancel(CancellationException("用户停止跑图工具任务"))
-        _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED, error = null) }
+        designJob?.cancel(CancellationException("用户取消"))
+        imageJob?.cancel(CancellationException("用户取消"))
     }
 
-    fun dismissError() {
-        _uiState.update { it.copy(error = null) }
+    fun dismissError() = _uiState.update { it.copy(error = null) }
+
+    fun positivePromptForClipboard(): String = _uiState.value.draft.copyPositivePrompt()
+
+    fun persistDraftNow() {
+        draftSaveJob?.cancel()
+        val draft = _uiState.value.draft
+        draftSaveJob = viewModelScope.launch { repository.saveDraft(draft) }
     }
 
-    override fun onCleared() {
-        designJob?.cancel()
-        imageJob?.cancel()
-        _uiState.value.referenceImagePath
-            ?.takeIf(draftAssetService::isDraftAsset)
-            ?.let { path -> runCatching { java.io.File(path).delete() } }
-        super.onCleared()
+    private fun NovelAiStudioDraft.toPromptPlan(): NovelAiPromptPlan {
+        val count = characters.size
+        return NovelAiPromptPlan(
+            baseCaption = NovelAiPromptDesigner.prependStylePrompt(stylePrompt, basePrompt),
+            characterCaptions = characters.mapIndexed { index, character ->
+                NovelAiCharacterCaption(
+                    prompt = character.prompt,
+                    center = NovelAiPromptDesigner.fallbackCenter(index, count),
+                    negativePrompt = character.negativePrompt
+                )
+            },
+            sizePreset = NovelAiImageSizePreset.PORTRAIT,
+            negativePrompt = negativePrompt
+        )
+    }
+
+    private fun scheduleDraftSave() {
+        if (!_uiState.value.draftLoaded) return
+        draftSaveJob?.cancel()
+        val draft = _uiState.value.draft
+        draftSaveJob = viewModelScope.launch {
+            delay(400)
+            repository.saveDraft(draft)
+        }
     }
 
     private fun observeModelConfiguration() {
@@ -492,21 +563,12 @@ class ImagePromptToolViewModel : ViewModel() {
             settingsRepository.appSettings.collect { settings ->
                 val models = modelResolver.availableChatModels(settings)
                 val defaultModel = modelResolver.defaultImageModel(settings)
-                val imageModelErrors = buildList {
-                    if (defaultModel == null) {
-                        add("未配置可用默认生图模型")
-                    } else if (!defaultModel.hasConfiguredAuthentication(settings)) {
-                        add("默认生图模型/API Key 未配置")
-                    }
+                val errors = buildList {
+                    if (defaultModel == null) add("未配置可用默认生图辅助模型")
+                    else if (!defaultModel.hasConfiguredAuthentication(settings)) add("默认生图辅助模型/API Key 未配置")
                 }
                 _uiState.update {
-                    it.copy(
-                        models = models,
-                        selectedModelId = defaultModel?.id,
-                        modelErrors = imageModelErrors,
-                        modelUsable = imageModelErrors.isEmpty(),
-                        imagePromptPreference = settings.imagePromptToolPreference
-                    )
+                    it.copy(models = models, selectedModelId = defaultModel?.id, modelErrors = errors, modelUsable = errors.isEmpty())
                 }
             }
         }
@@ -519,43 +581,41 @@ class ImagePromptToolViewModel : ViewModel() {
                 _uiState.update { state ->
                     state.copy(
                         characterCards = cards,
-                        selectedCharacterCardId = state.selectedCharacterCardId
-                            ?.takeIf { selected -> cards.any { it.id == selected } }
+                        selectedCharacterCardId = state.selectedCharacterCardId?.takeIf { id -> cards.any { it.id == id } }
                     )
                 }
             }
         }
     }
 
-    private fun updateInput(transform: (ImagePromptToolUiState) -> ImagePromptToolUiState) {
-        completedImageCheckpoint = null
-        _uiState.update {
-            transform(it).copy(
-                phase = ImagePromptToolPhase.IDLE,
-                designStatus = "",
-                imageAnalysisStream = "",
-                reasoningStream = "",
-                resultStream = "",
-                promptDraft = emptyNovelAiImageRegenerationDraft(),
-                imagePreview = null,
-                imagePaths = emptyList(),
-                imageProgress = 0f,
-                error = null
-            )
+    private fun observeRecentImages() {
+        viewModelScope.launch {
+            repository.initialize()
+            repository.history.collect { entries ->
+                val recent = entries.flatMap { entry ->
+                    entry.images.asReversed().map { image -> NovelAiRecentHistoryItem(entry, image) }
+                }.take(12)
+                _uiState.update { state ->
+                    val availablePaths = recent.map { it.image.path }.toSet() + state.imagePaths
+                    state.copy(
+                        recentHistoryItems = recent,
+                        selectedOutputPath = state.selectedOutputPath
+                            ?.takeIf(availablePaths::contains)
+                            ?: state.imagePaths.lastOrNull()
+                            ?: recent.firstOrNull()?.image?.path
+                    )
+                }
+            }
         }
     }
 
-    private companion object {
-        const val PROMPT_TOOL_IMAGE_SESSION_ID = "image-prompt-tool"
-        const val PROMPT_TOOL_DRAFT_SESSION_ID = "image-prompt-tool-reference"
+    override fun onCleared() {
+        val finalDraft = _uiState.value.draft
+        app.applicationScope.launch { repository.saveDraft(finalDraft) }
+        draftSaveJob?.cancel()
+        tagJob?.cancel()
+        designJob?.cancel()
+        imageJob?.cancel()
+        super.onCleared()
     }
 }
-
-private fun CharacterCard.characterImagePromptText(): String =
-    characters
-        .mapNotNull { character ->
-            character.imagePrompt.trim()
-                .takeIf(String::isNotBlank)
-                ?.let { prompt -> "${character.name}:\n$prompt" }
-        }
-        .joinToString("\n\n")

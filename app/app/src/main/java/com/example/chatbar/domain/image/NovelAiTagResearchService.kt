@@ -504,6 +504,37 @@ class NovelAiTagResearchService(
     private val requestTimeoutMs: Long = TAG_SEARCH_REQUEST_TIMEOUT_MS,
     private val batchTimeoutMs: Long = TAG_SEARCH_BATCH_TIMEOUT_MS
 ) {
+    suspend fun planSceneOnly(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>,
+        imageBase64s: List<String>,
+        model: ModelConfig,
+        playerName: String? = null,
+        botName: String = "",
+        onProgress: (String) -> Unit = {}
+    ): NovelAiTagResearchResult {
+        val transcript = TagResearchTranscript(onProgress)
+        val title = "AI 图片画面设计"
+        transcript.update(title, "正在连接 AI；只生成自然语言画面草案…")
+        val decisionResult = planner.decide(
+            taskInput = taskInput,
+            characterPrompts = characterPrompts,
+            imageBase64s = imageBase64s,
+            model = model,
+            playerName = playerName,
+            botName = botName,
+            onRawText = { streamed -> transcript.update(title, streamed) }
+        )
+        val decision = decisionResult.decision
+            ?: error("画面规划失败：${decisionResult.failureReason.ifBlank { "返回内容无法解析" }}")
+        transcript.complete(title, decisionResult.displayResponse())
+        return NovelAiTagResearchResult(
+            decisionResults = listOf(decisionResult),
+            sceneDescription = decision.sceneDescription,
+            transcript = transcript.snapshot()
+        )
+    }
+
     suspend fun research(
         taskInput: String,
         characterPrompts: List<Pair<String, String>>,

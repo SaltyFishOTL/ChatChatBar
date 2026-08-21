@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.DEFAULT_CHAT_BACKGROUND_IMAGE_OPACI
 import com.example.chatbar.data.local.entity.withNormalizedAppearance
 import com.example.chatbar.domain.appearance.DefaultThemeColorHsv
 import com.example.chatbar.domain.appearance.ThemeColorHsv
+import com.example.chatbar.domain.image.NovelAiImageModel
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertEquals
@@ -27,6 +28,19 @@ class AppSettingsSerializationTest {
         assertEquals(DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY, decoded.chatBackgroundImageOpacity)
         assertEquals(DefaultThemeColorHsv, decoded.themeColor)
         assertTrue(decoded.themeColorHistory.isEmpty())
+        assertEquals(NovelAiImageModel.V4_5_FULL, decoded.novelAiImageModel)
+    }
+
+    @Test
+    fun novelAiImageModel_roundTrips() {
+        val encoded = Json.encodeToString(
+            AppSettings.serializer(),
+            AppSettings(novelAiImageModel = NovelAiImageModel.V5_FULL)
+        )
+
+        val decoded = Json.decodeFromString(AppSettings.serializer(), encoded)
+
+        assertEquals(NovelAiImageModel.V5_FULL, decoded.novelAiImageModel)
     }
 
     @Test
