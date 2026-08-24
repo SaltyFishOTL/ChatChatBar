@@ -15,7 +15,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Prompt design boundary: domain/image/NovelAiPromptDesigner.kt
 - Shared editor: ui/components/NovelAiImageRegenerationDialog.kt
 - Shared image viewer/actions: ui/components/ImagePreviewDialog.kt and ImageMosaicEditor.kt
-- Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
+- Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt; gallery-import parsing/merge lives in domain/image/NovelAiPngMetadataReader.kt and NovelAiStudioImageImport.kt
 - Studio prompt token budgets: domain/image/NovelAiPromptTokenCounter.kt plus assets/tokenizers; reproducible compact `.binz` GZIP assets come from tools/build_novelai_tokenizer_assets.py (`.gz` is forbidden because Android packaging expands and renames it)
 - Studio account quota and immediate Anlas estimate: domain/image/NovelAiAccountService.kt; UI ownership remains ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Studio contracts and persistence: domain/image/NovelAiStudioModels.kt, data/repository/NovelAiStudioRepository.kt, ui/imageprompt/NovelAiHistoryViewModel.kt, and NovelAiHistoryScreen.kt
@@ -50,7 +50,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Chat/Moments metadata persists path, base caption, per-character prompts and negatives, base negative, size preset, width, and height. Studio history persists one batch recipe plus every owned path and per-image seed.
 - Convert metadata through NovelAiImageRegenerationDraft and NovelAiPromptPlan helpers instead of reconstructing fields in each screen.
 - Studio uses one debounced `NovelAiStudioDraft`, including per-model settings, fold state, AI inputs, conversion undo, ordered character positives/negatives, and natural-language mode. Do not reconstruct it from transient Compose fields.
-- Studio character-card import replaces style only when nonblank. Card character image prompts persist as AI assembly sources and never overwrite handwritten ordered character prompts. Never truncate imported sources; model-limit validation blocks AI design visibly.
+- Studio character-card import replaces style only when nonblank. Card character image prompts persist only as an unlimited AI reference catalog and never overwrite handwritten ordered character prompts or enter the NovelAI generation plan. Import is disabled until the draft is loaded and while any busy task or history apply is active; the selected card ID changes only with a successful draft import. Model character limits apply only to the editable/generated ordered character prompts.
 - Studio generation owns a unique history ID/directory. Save every image, then persist the batch history JSON, then publish result paths. Any failure deletes only that new directory. Random-mode draft remains random after the concrete seeds are recorded.
 - Applying a history image snapshots the previous complete draft in the separate undo singleton. Full reproduce restores recipe plus fixed selected seed; new-seed restore uses random mode; seed-only changes only current seed. Natural-language mode configures AI design only: new recipes leave its compatibility field false, history detail hides it, and applying history preserves the current draft mode.
 - Studio history displays a flattened newest-first image gallery while preserving each batch's image order. Date and positive-Prompt filters are transient; detail and full-screen pagers use the current filtered image sequence and synchronize their page. Delete remains batch-scoped because each history ID owns one image directory.
@@ -59,6 +59,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Regeneration exposes editable main and negative prompts, plus zero to six addable/removable character prompts.
 - Initialize regeneration with original pixel dimensions, allow explicit Portrait/Square/Horizontal override, and request a fresh seed.
 - Legacy images may recover metadata from persisted fields or embedded PNG metadata where feature policy supports it.
+- Studio image import uses Android's document picker with an image MIME filter, then copies the selected URI into the owned image-processing work area. Recognized NovelAI PNG Comment metadata may selectively replace base positive, base negative, ordered character positives/negatives, generation settings, and fixed seed; unchecked sections, style, and natural-language mode remain unchanged. Images without recognized metadata go directly to ImageMosaicEditor.
 - Keep shared dialog content scrollable and bottom actions visible.
 - While FullscreenTextEditor is active, stop composing CbDialog; its separate Android window otherwise covers the activity-hosted editor. Restore the dialog when fullscreen editing closes.
 - Studio multiline editors host one FullscreenTextEditor at screen root; never compose it inside a LazyColumn item. Expanded studio output stays within half the screen and scrolls internally; collapsed output keeps the current thumbnail visible. Recent thumbnails retain their owning recipe; output-header shortcuts apply settings with a new seed or apply only the image seed, while full reproduce remains in history detail. Generation state updates must preserve the user's current output fold state. Durable output/history images open shared ImagePreviewDialog for zoom, mosaic, save, and share.
@@ -72,6 +73,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - History deletion may delete only its ID-owned cache directory. Gallery copies are external and never deleted. Do not migrate or sweep legacy unindexed prompt-tool directories.
 - Keep prompt-tool reference images as owned draft assets. Copy a replacement before deleting the previous asset; removal and ViewModel cleanup may delete only that owned draft path.
 - Keep image-processing imports and results in the owned `filesDir/images/image-processing` work area. Static output is PNG; GIF output preserves animation by processing every frame. Share/save through shared image actions, and clean only stale work files.
+- Gallery-import editing reuses ImageMosaicEditor. Its inverse full-image action uses `FullImagePatchOperation.Restore`; completed copies reopen shared ImagePreviewDialog so save/share/mosaic behavior stays centralized.
 - Full-image patch apply/restore must share one deterministic transform. Restore is exact only before channel clipping, compression, resizing, or later edits.
 - Character-card export applies the optional full-image patch only to the final rendered PNG pixels before metadata insertion; packaged source images and local card-owned files remain unchanged.
 - Character-card export dialog uses `CharacterCardPngRenderer` at 1024px for its debounced patched preview so preview and saved PNG share the same transform; the unpatched path keeps the lightweight Compose preview.
@@ -97,7 +99,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - 429 succeeds on third attempt and fails once after three total attempts.
 - New image and legacy image metadata loading.
 - Editable prompt round-trip, character add/remove limits, original dimensions, and new seed.
-- Studio first defaults, full draft round-trip, per-model settings, AI-plan merge/restore, role-limit validation, output collapse, fixed bottom action, and 22-role scrolling.
+- Studio first defaults, full draft round-trip, per-model settings, AI-plan merge/restore, unlimited card-reference import, generated-role limit validation, output collapse, fixed bottom action, and 22-role scrolling.
 - Studio batch transaction, per-image base-seed increments, history three-way apply, one-shot undo, owned-directory delete, and legacy-unindexed retention.
 - Image-processing apply/restore status visibility, automatic result reveal, static-image round trip, layered patch inverse exactness and per-frame variation, GIF frame count/timing/loop/transparency, patch amplitude vs palette quantization noise margin, direct share, and gallery save.
 - Character-card PNG export defaults the patch off, preserves the option through normalization, and keeps embedded card metadata importable when the patch is enabled.

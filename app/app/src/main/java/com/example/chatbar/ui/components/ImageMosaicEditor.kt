@@ -142,19 +142,30 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(
-                        "旋转 90°",
+                        "逆向 AI 贴片",
                         {
                             undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
                             if (undoStack.size > 10) undoStack.removeFirst().recycle()
-                            bitmap = rotateBitmap90(bitmap)
+                            transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Restore)
                             revision++
                         },
                         Modifier.weight(1f),
                         variant = ButtonVariant.Outline
                     )
                 }
+                CbButton(
+                    "旋转 90°",
+                    {
+                        undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
+                        if (undoStack.size > 10) undoStack.removeFirst().recycle()
+                        bitmap = rotateBitmap90(bitmap)
+                        revision++
+                    },
+                    Modifier.fillMaxWidth(),
+                    variant = ButtonVariant.Outline
+                )
                 CbText(
-                    "实验性中等强度色度扰动：兼顾人眼可读性与干扰强度，可能被压缩或缩放削弱，不保证对所有模型有效。",
+                    "AI 贴片会对全图加入色度扰动；逆向操作用于还原由本工具加入的贴片。压缩或缩放会降低还原效果。",
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.label
                 )

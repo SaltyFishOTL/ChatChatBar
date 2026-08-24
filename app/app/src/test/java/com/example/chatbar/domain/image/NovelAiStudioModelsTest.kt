@@ -53,22 +53,23 @@ class NovelAiStudioModelsTest {
     @Test
     fun `character card prompt sources do not overwrite handwritten character prompts`() {
         val handwritten = NovelAiCharacterPromptDraft(prompt = "handwritten character")
+        val sources = List(7) { index ->
+            NovelAiCharacterPromptSource("Character $index", "reference prompt $index")
+        }
         val draft = NovelAiStudioDraft(
             stylePrompt = "manual style",
             characters = listOf(handwritten)
         ).importCharacterCardPromptSources(
             cardId = "card-1",
             cardStylePrompt = "card style",
-            sources = listOf(NovelAiCharacterPromptSource("Alice", "alice prompt"))
+            sources = sources
         )
 
         assertEquals(listOf(handwritten), draft.characters)
         assertEquals("card style", draft.stylePrompt)
         assertEquals("card-1", draft.importedCharacterCardId)
-        assertEquals(
-            listOf("Alice" to "alice prompt"),
-            draft.importedCharacterPromptSources.map { it.name to it.prompt }
-        )
+        assertEquals(sources, draft.importedCharacterPromptSources)
+        assertNull(draft.activeSettings.validationError(draft.characters.size))
     }
 
     @Test

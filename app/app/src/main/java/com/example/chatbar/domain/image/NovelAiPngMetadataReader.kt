@@ -14,6 +14,7 @@ import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 
 object NovelAiPngMetadataReader {
     private val pngSignature = byteArrayOf(-119, 80, 78, 71, 13, 10, 26, 10)
@@ -30,6 +31,22 @@ object NovelAiPngMetadataReader {
 
     internal fun parseComment(comment: String, imagePath: String): GeneratedImageMetadata? =
         runCatching { json.parseToJsonElement(comment).jsonObject.toMetadata(imagePath) }.getOrNull()
+
+    fun readStudio(imagePath: String): NovelAiStudioPngMetadata? {
+        val file = File(imagePath)
+        if (!file.isFile) return null
+        val chunks = pngTextChunks(file.readBytes())
+        val comment = chunks["Comment"] ?: return null
+        return parseStudioComment(comment, imagePath, chunks["Source"])
+    }
+
+    internal fun parseStudioComment(
+        comment: String,
+        imagePath: String,
+        source: String? = null
+    ): NovelAiStudioPngMetadata? = runCatching {
+        json.parseToJsonElement(comment).jsonObject.toStudioMetadata(imagePath, source)
+    }.getOrNull()
 
     private fun JsonObject.toMetadata(imagePath: String): GeneratedImageMetadata? {
         val positive = this["v4_prompt"]?.jsonObjectOrNull()
@@ -48,6 +65,12 @@ object NovelAiPngMetadataReader {
         }
         val negativeCaption = this["v4_negative_prompt"]?.jsonObjectOrNull()
             ?.get("caption")?.jsonObjectOrNull()
+        val negativeCharacters = negativeCaption?.get("char_captions")?.jsonArrayOrNull().orEmpty()
+        val charactersWithNegative = characters.mapIndexed { index, character ->
+            val negative = negativeCharacters.getOrNull(index)?.jsonObjectOrNull()
+                ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty()
+            character.copy(negativePrompt = negative)
+        }
         val negativePrompt = negativeCaption?.get("base_caption")?.jsonPrimitive?.contentOrNull
             ?: this["uc"]?.jsonPrimitive?.contentOrNull
             ?: ""
@@ -61,9 +84,70 @@ object NovelAiPngMetadataReader {
         return GeneratedImageMetadata(
             imagePath = imagePath,
             baseCaption = baseCaption,
-            characterPrompts = characters,
+            characterPrompts = charactersWithNegative,
             negativePrompt = negativePrompt,
             sizePreset = preset.name,
+            width = width,
+            height = height
+        )
+    }
+
+    private fun JsonObject.toStudioMetadata(imagePath: String, source: String?): NovelAiStudioPngMetadata? {
+        val positiveCaption = this["v4_prompt"]?.jsonObjectOrNull()
+            ?.get("caption")?.jsonObjectOrNull()
+        val negativeCaption = this["v4_negative_prompt"]?.jsonObjectOrNull()
+            ?.get("caption")?.jsonObjectOrNull()
+        val hasNovelAiStructure = positiveCaption != null || (
+            containsKey("prompt") && containsKey("uc") && containsKey("steps") &&
+                containsKey("sampler") && containsKey("seed")
+            )
+        if (!hasNovelAiStructure) return null
+        val positivePrompt = positiveCaption?.get("base_caption")?.jsonPrimitive?.contentOrNull
+            ?: this["prompt"]?.jsonPrimitive?.contentOrNull
+            ?: return null
+        val width = this["width"]?.jsonPrimitive?.intOrNull ?: return null
+        val height = this["height"]?.jsonPrimitive?.intOrNull ?: return null
+        if (width <= 0 || height <= 0) return null
+
+        val positiveCharacters = positiveCaption?.get("char_captions")?.jsonArrayOrNull()
+        val negativeCharacters = negativeCaption?.get("char_captions")?.jsonArrayOrNull()
+        val hasCharacters = positiveCharacters != null || negativeCharacters != null
+        val characterCount = maxOf(positiveCharacters?.size ?: 0, negativeCharacters?.size ?: 0)
+        val characters = List(characterCount) { index ->
+            NovelAiImportedCharacterPrompt(
+                prompt = positiveCharacters?.getOrNull(index)?.jsonObjectOrNull()
+                    ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                negativePrompt = negativeCharacters?.getOrNull(index)?.jsonObjectOrNull()
+                    ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty()
+            )
+        }
+        val matchedSize = matchStudioSize(width, height)
+        val modelText = listOfNotNull(
+            this["model"]?.jsonPrimitive?.contentOrNull,
+            this["model_id"]?.jsonPrimitive?.contentOrNull,
+            this["source"]?.jsonPrimitive?.contentOrNull,
+            source
+        ).joinToString(" ")
+        return NovelAiStudioPngMetadata(
+            imagePath = imagePath,
+            positivePrompt = positivePrompt,
+            negativePrompt = negativeCaption?.get("base_caption")?.jsonPrimitive?.contentOrNull
+                ?: this["uc"]?.jsonPrimitive?.contentOrNull,
+            characters = characters,
+            hasCharacterPrompts = hasCharacters,
+            settings = NovelAiImportedGenerationSettings(
+                model = modelText.toNovelAiModelOrNull(),
+                sizeTier = matchedSize?.first,
+                aspectRatio = matchedSize?.second,
+                count = this["n_samples"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..4 },
+                steps = this["steps"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..50 },
+                guidance = this["scale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 1f..10f },
+                sampler = this["sampler"]?.jsonPrimitive?.contentOrNull?.let { sampler ->
+                    NovelAiSampler.entries.firstOrNull { it.apiId.equals(sampler, ignoreCase = true) }
+                }
+            ),
+            seed = this["seed"]?.jsonPrimitive?.longOrNull
+                ?.takeIf { it in NovelAiGenerationSettings.MIN_SEED..NovelAiGenerationSettings.MAX_SEED },
             width = width,
             height = height
         )
@@ -126,6 +210,26 @@ object NovelAiPngMetadataReader {
             ((bytes[offset + 1].toInt() and 0xff) shl 16) or
             ((bytes[offset + 2].toInt() and 0xff) shl 8) or
             (bytes[offset + 3].toInt() and 0xff)
+}
+
+private fun matchStudioSize(width: Int, height: Int): Pair<NovelAiSizeTier, NovelAiAspectRatio>? {
+    NovelAiSizeTier.entries.forEach { tier ->
+        NovelAiAspectRatio.entries.forEach { aspect ->
+            if (tier == NovelAiSizeTier.WALLPAPER && aspect == NovelAiAspectRatio.SQUARE) return@forEach
+            val size = NovelAiGenerationSettings(sizeTier = tier, aspectRatio = aspect).imageSize()
+            if (size.width == width && size.height == height) return tier to aspect
+        }
+    }
+    return null
+}
+
+private fun String.toNovelAiModelOrNull(): NovelAiImageModel? {
+    val normalized = lowercase()
+    return when {
+        "nai-diffusion-5" in normalized || "diffusion v5" in normalized -> NovelAiImageModel.V5_FULL
+        "nai-diffusion-4" in normalized || "diffusion v4" in normalized -> NovelAiImageModel.V4_5_FULL
+        else -> null
+    }
 }
 
 private fun kotlinx.serialization.json.JsonElement.jsonObjectOrNull(): JsonObject? =

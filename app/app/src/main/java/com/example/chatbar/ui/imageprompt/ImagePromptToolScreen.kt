@@ -2,6 +2,8 @@ package com.example.chatbar.ui.imageprompt
 
 import androidx.compose.foundation.BorderStroke
 import androidx.activity.compose.BackHandler
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
@@ -56,8 +58,11 @@ import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiSampler
 import com.example.chatbar.domain.image.NovelAiSeedMode
 import com.example.chatbar.domain.image.NovelAiSizeTier
+import com.example.chatbar.domain.image.NovelAiStudioMetadataSelection
+import com.example.chatbar.domain.image.NovelAiStudioPngMetadata
 import com.example.chatbar.domain.image.NovelAiTagCompletion
 import com.example.chatbar.ui.kit.AppIcons
+import com.example.chatbar.ui.components.ImageMosaicEditor
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.kit.ButtonSize
@@ -98,6 +103,12 @@ fun ImagePromptToolScreen(
     val clipboard = LocalClipboardManager.current
     var fullscreenEdit by remember { mutableStateOf<StudioFullscreenEditRequest?>(null) }
     var previewPath by remember { mutableStateOf<String?>(null) }
+    var importedEditorPath by remember { mutableStateOf<String?>(null) }
+    var importedPreviewPath by remember { mutableStateOf<String?>(null) }
+    var showMetadataSelection by remember { mutableStateOf(false) }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        uri?.let(viewModel::importImage)
+    }
     val previewPaths = (state.recentHistoryItems.map { it.image.path } + state.imagePaths).distinct()
     val accountUsage = state.account.usage
     val anlasLabel = accountUsage?.anlas?.toString()
@@ -106,6 +117,14 @@ fun ImagePromptToolScreen(
         ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
     val generationCost = state.generationCost
     LaunchedEffect(Unit) { viewModel.refreshAccountUsage() }
+    LaunchedEffect(state.imageImport.source?.path, state.imageImport.metadata) {
+        showMetadataSelection = false
+        val source = state.imageImport.source ?: return@LaunchedEffect
+        if (state.imageImport.metadata == null) {
+            importedEditorPath = source.path
+            viewModel.clearImportedImage()
+        }
+    }
     BackHandler(enabled = fullscreenEdit == null && previewPath == null) {
         viewModel.persistDraftNow()
         onBack()
@@ -130,6 +149,12 @@ fun ImagePromptToolScreen(
                 }
             },
             actions = {
+                CbIconButton(
+                    AppIcons.Image,
+                    "从文件导入图片",
+                    { imagePicker.launch(arrayOf("image/*")) },
+                    enabled = !state.isBusy && !state.applyingHistory
+                )
                 CbButton("历史", { viewModel.persistDraftNow(); onOpenHistory() }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
             }
         )
@@ -241,12 +266,180 @@ fun ImagePromptToolScreen(
         )
     }
 
+    importedPreviewPath?.let { selectedPath ->
+        ImagePreviewDialog(
+            items = listOf(ImagePreviewItem(messageId = "", path = selectedPath)),
+            initialIndex = 0,
+            onDismiss = { importedPreviewPath = null }
+        )
+    }
+
+    importedEditorPath?.let { sourcePath ->
+        ImageMosaicEditor(
+            sourcePath = sourcePath,
+            onDismiss = { importedEditorPath = null },
+            onComplete = { outputPath ->
+                importedEditorPath = null
+                importedPreviewPath = outputPath
+            }
+        )
+    }
+
+    if (state.imageImport.loading) {
+        CbDialog(
+            onDismissRequest = viewModel::clearImportedImage,
+            title = "正在读取图片",
+            dismissOnClickOutside = false,
+            confirm = { CbButton("取消", viewModel::clearImportedImage, variant = ButtonVariant.Ghost) }
+        ) {
+            CbText("正在复制图片并检查 NovelAI 元数据…", color = ChatBarTheme.colors.mutedForeground)
+        }
+    }
+
+    val importedMetadata = state.imageImport.metadata
+    val importedSource = state.imageImport.source
+    if (importedMetadata != null && importedSource != null && !showMetadataSelection) {
+        ImportedImageActionDialog(
+            imagePath = importedSource.path,
+            metadata = importedMetadata,
+            onDismiss = viewModel::clearImportedImage,
+            onEditImage = {
+                importedEditorPath = importedSource.path
+                viewModel.clearImportedImage()
+            },
+            onParseMetadata = { showMetadataSelection = true }
+        )
+    }
+
+    if (importedMetadata != null && importedSource != null && showMetadataSelection) {
+        ImportedMetadataSelectionDialog(
+            metadata = importedMetadata,
+            onDismiss = { showMetadataSelection = false },
+            onConfirm = { selection ->
+                showMetadataSelection = false
+                viewModel.applyImportedMetadata(selection)
+            }
+        )
+    }
+
     state.error?.let { error ->
         CbDialog(
             onDismissRequest = viewModel::dismissError,
             title = "操作失败",
             confirm = { CbButton("知道了", viewModel::dismissError) }
         ) { CbText(error) }
+    }
+}
+
+@Composable
+private fun ImportedImageActionDialog(
+    imagePath: String,
+    metadata: NovelAiStudioPngMetadata,
+    onDismiss: () -> Unit,
+    onEditImage: () -> Unit,
+    onParseMetadata: () -> Unit
+) {
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "检测到 NovelAI 元数据",
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        AsyncImage(
+            model = imagePath,
+            contentDescription = "导入图片预览",
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(180.dp)
+                .clip(RoundedCornerShape(ChatBarShape.md)),
+            contentScale = ContentScale.Fit
+        )
+        Spacer(Modifier.height(ChatBarSpacing.md))
+        CbText(
+            "${metadata.width}×${metadata.height} · 可编辑图片，或选择性覆盖工作室参数",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        Spacer(Modifier.height(ChatBarSpacing.md))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+            CbButton(
+                "打码 / 还原贴片",
+                onEditImage,
+                Modifier.weight(1f),
+                variant = ButtonVariant.Outline
+            )
+            CbButton("解析元数据", onParseMetadata, Modifier.weight(1f))
+        }
+    }
+}
+
+@Composable
+private fun ImportedMetadataSelectionDialog(
+    metadata: NovelAiStudioPngMetadata,
+    onDismiss: () -> Unit,
+    onConfirm: (NovelAiStudioMetadataSelection) -> Unit
+) {
+    var selection by remember(metadata.imagePath) { mutableStateOf(NovelAiStudioMetadataSelection()) }
+    val negativeAvailable = metadata.negativePrompt != null
+    val settingsAvailable = metadata.settings.hasAny
+    val seedAvailable = metadata.seed != null
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "解析 NovelAI 元数据",
+        dismiss = { CbButton("返回", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = { CbButton("确认解析", { onConfirm(selection) }) }
+    ) {
+        CbText(
+            "仅开启项目会覆盖工作室对应内容；画风 Prompt 与自然语言模式不变。",
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        Spacer(Modifier.height(ChatBarSpacing.sm))
+        MetadataToggleRow("正向 Prompt", selection.positivePrompt, true) {
+            selection = selection.copy(positivePrompt = it)
+        }
+        MetadataToggleRow("逆向 Prompt（基础负面）", selection.negativePrompt, negativeAvailable) {
+            selection = selection.copy(negativePrompt = it)
+        }
+        MetadataToggleRow(
+            "角色 Prompt（正向与负面）· ${metadata.characters.size} 个",
+            selection.characterPrompts,
+            metadata.hasCharacterPrompts
+        ) {
+            selection = selection.copy(characterPrompts = it)
+        }
+        MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
+            selection = selection.copy(generationSettings = it)
+        }
+        MetadataToggleRow(
+            metadata.seed?.let { "种子 · $it" } ?: "种子",
+            selection.seed,
+            seedAvailable
+        ) {
+            selection = selection.copy(seed = it)
+        }
+    }
+}
+
+@Composable
+private fun MetadataToggleRow(
+    label: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .heightIn(min = 48.dp)
+            .clickable(enabled = enabled) { onCheckedChange(!checked) },
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbText(
+            label,
+            Modifier.weight(1f),
+            color = if (enabled) ChatBarTheme.colors.foreground else ChatBarTheme.colors.mutedForeground
+        )
+        CbSwitch(checked = checked && enabled, onCheckedChange = onCheckedChange, enabled = enabled)
     }
 }
 
@@ -629,13 +822,14 @@ private fun CharacterCardImport(state: ImagePromptToolUiState, viewModel: ImageP
         CbText("暂无可选角色卡", color = ChatBarTheme.colors.mutedForeground)
         return
     }
-    CbField("导入角色卡 Prompt", description = "仅作为 AI 组装素材，不覆盖当前角色 Prompt") {
+    CbField("导入角色卡 Prompt", description = "填充画风；角色 Prompt 仅供 AI 设计参考，不参与实际生图") {
         CbSelect(
             value = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId },
             options = state.characterCards,
             optionLabel = { it.name },
             onValueChange = { viewModel.importCharacterCardPrompts(it.id) },
-            placeholder = "选择角色卡"
+            placeholder = "选择角色卡",
+            enabled = state.canImportCharacterCard
         )
     }
 }

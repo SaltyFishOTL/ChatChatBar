@@ -1,5 +1,6 @@
 package com.example.chatbar.ui.imageprompt
 
+import android.net.Uri
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
@@ -14,6 +15,8 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiGenerationCost
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
+import com.example.chatbar.domain.image.ImageProcessingService
+import com.example.chatbar.domain.image.ImportedProcessImage
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageCostEstimator
@@ -23,10 +26,14 @@ import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiSeedMode
 import com.example.chatbar.domain.image.NovelAiStudioDraft
+import com.example.chatbar.domain.image.NovelAiStudioMetadataSelection
+import com.example.chatbar.domain.image.NovelAiStudioPngMetadata
 import com.example.chatbar.domain.image.NovelAiTagCandidate
 import com.example.chatbar.domain.image.NovelAiTagCompletion
 import com.example.chatbar.domain.image.copyPositivePrompt
+import com.example.chatbar.domain.image.applyImportedMetadata
 import com.example.chatbar.domain.image.novelAiHistoryImages
+import com.example.chatbar.domain.image.NovelAiPngMetadataReader
 import com.example.chatbar.domain.image.toRecipe
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import java.util.UUID
@@ -75,6 +82,12 @@ data class NovelAiAccountUiState(
     val error: String? = null
 )
 
+data class NovelAiStudioImageImportUiState(
+    val loading: Boolean = false,
+    val source: ImportedProcessImage? = null,
+    val metadata: NovelAiStudioPngMetadata? = null
+)
+
 data class ImagePromptToolUiState(
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val draftLoaded: Boolean = false,
@@ -100,6 +113,7 @@ data class ImagePromptToolUiState(
     val tagSuggestions: NovelAiTagSuggestionState = NovelAiTagSuggestionState(),
     val promptTokens: NovelAiPromptTokenState = NovelAiPromptTokenState(),
     val account: NovelAiAccountUiState = NovelAiAccountUiState(),
+    val imageImport: NovelAiStudioImageImportUiState = NovelAiStudioImageImportUiState(),
     val error: String? = null
 ) {
     val isDesigning: Boolean get() = phase == ImagePromptToolPhase.DESIGNING
@@ -108,9 +122,10 @@ data class ImagePromptToolUiState(
         ImagePromptToolPhase.STREAMING,
         ImagePromptToolPhase.SAVING
     )
-    val isBusy: Boolean get() = isDesigning || isGeneratingImage
+    val isBusy: Boolean get() = isDesigning || isGeneratingImage || imageImport.loading
     val selectedRecentHistoryItem: NovelAiRecentHistoryItem?
         get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
+    val canImportCharacterCard: Boolean get() = draftLoaded && !isBusy && !applyingHistory
     val canDesign: Boolean get() = !isBusy && !applyingHistory && modelUsable && selectedModelId != null && draft.imageDescription.isNotBlank()
     val canGenerate: Boolean get() = !isBusy && !applyingHistory && draft.basePrompt.isNotBlank()
     val generationCost: NovelAiGenerationCost
@@ -130,6 +145,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private val imageStorage = app.novelAiImageStorage
     private val tagSuggestClient = app.novelAiTagSuggestClient
     private val promptTokenCounter = app.novelAiPromptTokenCounter
+    private val imageProcessingService = ImageProcessingService(app)
 
     private val _uiState = MutableStateFlow(ImagePromptToolUiState())
     val uiState: StateFlow<ImagePromptToolUiState> = _uiState.asStateFlow()
@@ -141,6 +157,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private var tagJob: Job? = null
     private var tokenCountJob: Job? = null
     private var accountJob: Job? = null
+    private var imageImportJob: Job? = null
     private var tokenCountRevision = 0L
     private var lastTokenCountRequest: Pair<NovelAiImageModel, NovelAiPromptPlan>? = null
 
@@ -180,6 +197,54 @@ class ImagePromptToolViewModel : ViewModel() {
         }
         scheduleDraftSave()
         scheduleTokenCount(_uiState.value.draft)
+    }
+
+    fun importImage(uri: Uri) {
+        if (_uiState.value.isBusy || _uiState.value.applyingHistory) return
+        imageImportJob?.cancel()
+        imageImportJob = viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    imageImport = NovelAiStudioImageImportUiState(loading = true),
+                    error = null
+                )
+            }
+            try {
+                val (source, metadata) = withContext(Dispatchers.IO) {
+                    val imported = imageProcessingService.importImage(uri)
+                    imported to NovelAiPngMetadataReader.readStudio(imported.path)
+                }
+                _uiState.update {
+                    it.copy(
+                        imageImport = NovelAiStudioImageImportUiState(
+                            source = source,
+                            metadata = metadata
+                        )
+                    )
+                }
+            } catch (error: CancellationException) {
+                _uiState.update { it.copy(imageImport = NovelAiStudioImageImportUiState()) }
+                throw error
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(
+                        imageImport = NovelAiStudioImageImportUiState(),
+                        error = "导入图片失败：${error.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }.also { job -> job.invokeOnCompletion { imageImportJob = null } }
+    }
+
+    fun applyImportedMetadata(selection: NovelAiStudioMetadataSelection) {
+        val metadata = _uiState.value.imageImport.metadata ?: return
+        updateDraft { draft -> draft.applyImportedMetadata(metadata, selection) }
+        clearImportedImage()
+    }
+
+    fun clearImportedImage() {
+        imageImportJob?.cancel()
+        _uiState.update { it.copy(imageImport = NovelAiStudioImageImportUiState()) }
     }
 
     fun selectImageModel(model: NovelAiImageModel) {
@@ -225,6 +290,7 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun importCharacterCardPrompts(cardId: String) {
+        if (!_uiState.value.canImportCharacterCard) return
         val card = _uiState.value.characterCards.firstOrNull { it.id == cardId } ?: return
         val sources = card.characters.mapIndexedNotNull { index, character ->
             character.imagePrompt.trim().takeIf(String::isNotBlank)?.let { prompt ->
@@ -242,11 +308,6 @@ class ImagePromptToolViewModel : ViewModel() {
             )
         }
         _uiState.update { it.copy(selectedCharacterCardId = cardId) }
-        if (sources.size > _uiState.value.draft.selectedModel.maxCharacters) {
-            _uiState.update {
-                it.copy(error = "${it.draft.selectedModel.displayName} 最多支持 ${it.draft.selectedModel.maxCharacters} 个角色；角色卡提供 ${sources.size} 个")
-            }
-        }
     }
 
     fun designPrompt() = startDesign(conversion = false)
@@ -263,12 +324,6 @@ class ImagePromptToolViewModel : ViewModel() {
         }
         val draft = snapshot.draft
         val cardCharacterPrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt }
-        if (cardCharacterPrompts.size > draft.selectedModel.maxCharacters) {
-            _uiState.update {
-                it.copy(error = "${draft.selectedModel.displayName} 最多支持 ${draft.selectedModel.maxCharacters} 个角色；角色卡提供 ${cardCharacterPrompts.size} 个")
-            }
-            return
-        }
         val sourceText = if (conversion) draft.basePrompt else draft.imageDescription
         if (sourceText.isBlank()) {
             _uiState.update { it.copy(error = if (conversion) "基础 Prompt 为空" else "请输入画面内容") }
@@ -553,6 +608,7 @@ class ImagePromptToolViewModel : ViewModel() {
     fun cancelActiveTask() {
         designJob?.cancel(CancellationException("用户取消"))
         imageJob?.cancel(CancellationException("用户取消"))
+        imageImportJob?.cancel(CancellationException("用户取消"))
     }
 
     fun dismissError() = _uiState.update { it.copy(error = null) }
@@ -745,6 +801,7 @@ class ImagePromptToolViewModel : ViewModel() {
         tokenCountJob?.cancel()
         designJob?.cancel()
         imageJob?.cancel()
+        imageImportJob?.cancel()
         super.onCleared()
     }
 }

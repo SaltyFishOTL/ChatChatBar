@@ -62,7 +62,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 ## Studio Character Capacity
 
 - V4.5 Full supports at most six ordered character captions; V5 Full supports at most 22 in studio.
-- Imported character-card image prompts are persisted AI assembly sources. Send them to scene planning and final design as structured character presets; never copy them directly over handwritten studio character prompts.
+- Imported character-card image prompts are persisted, unlimited AI design references. Send all of them to scene planning and final design as a candidate reference catalog; only task-requested visible characters may match and consume entries, and catalog membership must never create a character. Never count references against the target model's character limit, copy them over handwritten studio character prompts, or place them directly in the NovelAI generation plan.
 - `designForPromptTool` materializes up to the selected target model limit. Card/chat/Moments conversion keeps the legacy six-character cap.
 - AI result merge preserves existing per-index negatives, gives new items empty negatives, and retains unmatched manual tail items. Model switches and imports never silently truncate.
 

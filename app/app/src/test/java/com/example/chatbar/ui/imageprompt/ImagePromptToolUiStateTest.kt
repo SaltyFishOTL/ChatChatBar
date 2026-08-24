@@ -61,6 +61,16 @@ class ImagePromptToolUiStateTest {
         assertFalse(state.canGenerate)
     }
 
+    @Test
+    fun `character card import requires loaded idle draft`() {
+        val ready = baseState().copy(draftLoaded = true)
+
+        assertTrue(ready.canImportCharacterCard)
+        assertFalse(ready.copy(draftLoaded = false).canImportCharacterCard)
+        assertFalse(ready.copy(phase = ImagePromptToolPhase.DESIGNING).canImportCharacterCard)
+        assertFalse(ready.copy(applyingHistory = true).canImportCharacterCard)
+    }
+
     private fun baseState(): ImagePromptToolUiState = ImagePromptToolUiState(
         models = listOf(model()),
         selectedModelId = "model",
