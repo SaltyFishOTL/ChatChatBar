@@ -133,6 +133,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiImageService: NovelAiImageService
         private set
+    lateinit var novelAiPromptTokenCounter: NovelAiPromptTokenCounter
+        private set
     lateinit var novelAiImageStorage: NovelAiImageStorage
         private set
     lateinit var novelAiTagSuggestClient: TagSuggestClient
@@ -237,6 +239,7 @@ class ChatBarApp : Application() {
             promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules)
         )
         novelAiImageService = NovelAiImageService()
+        novelAiPromptTokenCounter = NovelAiPromptTokenCounter(this)
         novelAiImageStorage = NovelAiImageStorage(this)
         searchBackend = MediaWikiSearchBackend()
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)

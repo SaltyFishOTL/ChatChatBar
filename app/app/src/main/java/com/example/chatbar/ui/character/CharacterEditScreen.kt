@@ -51,7 +51,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.text.BasicText
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -68,7 +67,6 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Shape
-import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
@@ -130,6 +128,7 @@ import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbField
+import com.example.chatbar.ui.kit.CbFullscreenTextArea
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
@@ -3328,8 +3327,6 @@ private fun DocumentEditScreen(
         onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
     }
     val colors = ChatBarTheme.colors
-    val intSrc = remember { MutableInteractionSource() }
-    val focused by intSrc.collectIsFocusedAsState()
     Box(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
         Column(Modifier.fillMaxSize().padding(16.dp)) {
             CbText(title, style = ChatBarTheme.typography.title)
@@ -3340,22 +3337,12 @@ private fun DocumentEditScreen(
             Spacer(Modifier.height(8.dp))
             CbField("文档内容") {
                 Box(Modifier.fillMaxWidth().weight(1f).heightIn(min = 200.dp)) {
-                    BasicTextField(
+                    CbFullscreenTextArea(
                         value = content,
                         onValueChange = onContentChange,
                         modifier = Modifier
-                            .fillMaxSize()
-                            .background(colors.input, RoundedCornerShape(8.dp))
-                            .border(if (focused) 1.5.dp else 1.dp, if (focused) colors.primary else colors.border, RoundedCornerShape(8.dp))
-                            .padding(horizontal = 12.dp, vertical = 11.dp),
-                        singleLine = false,
-                        textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-                        cursorBrush = SolidColor(colors.primary),
-                        interactionSource = intSrc,
-                        decorationBox = { inner ->
-                            if (content.isEmpty()) CbText("输入文档内容…", color = colors.mutedForeground)
-                            inner()
-                        }
+                            .fillMaxSize(),
+                        placeholder = "输入文档内容…"
                     )
                 }
             }

@@ -17,11 +17,14 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -29,6 +32,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -56,6 +60,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
@@ -65,6 +70,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.AnnotatedString
@@ -155,7 +161,7 @@ internal fun canUseChatImageLongPress(
     screenshotSelectionMode: Boolean
 ): Boolean = !screenshotSelectionMode
 
-@OptIn(ExperimentalFoundationApi::class)
+@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
 @Composable
 fun ChatScreen(
     sessionId: String,
@@ -203,6 +209,7 @@ fun ChatScreen(
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
     val context = LocalContext.current
+    val density = LocalDensity.current
     val lifecycleOwner = LocalLifecycleOwner.current
     val clipboardManager = LocalClipboardManager.current
     val rootView = LocalView.current
@@ -278,6 +285,8 @@ fun ChatScreen(
     var viewportAnchor by remember { mutableStateOf(0 to 0) }
     var restoringViewport by remember { mutableStateOf(false) }
     var initialScrollDone by remember(sessionId) { mutableStateOf(false) }
+    var imeBottomAnchor by remember(sessionId) { mutableStateOf(false) }
+    var previousImeBottomPx by remember(sessionId) { mutableStateOf(0) }
     var screenshotSelectionMode by remember(sessionId) { mutableStateOf(false) }
     var selectedScreenshotBlockIds by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
     var screenshotHeightPx by remember(sessionId) { mutableStateOf(0) }
@@ -418,9 +427,19 @@ fun ChatScreen(
         val last = listState.layoutInfo.totalItemsCount - 1
         if (last < 0) return
         if (animated) {
-            listState.animateScrollToItem(last, Int.MAX_VALUE)
+            listState.animateScrollToItem(last)
         } else {
-            listState.scrollToItem(last, Int.MAX_VALUE)
+            listState.scrollToItem(last)
+        }
+        val layoutInfo = listState.layoutInfo
+        val lastItem = layoutInfo.visibleItemsInfo.firstOrNull { it.index == last } ?: return
+        val remaining = lastItem.offset + lastItem.size - layoutInfo.viewportEndOffset
+        if (remaining > 0) {
+            if (animated) {
+                listState.animateScrollBy(remaining.toFloat())
+            } else {
+                listState.scrollBy(remaining.toFloat())
+            }
         }
     }
 
@@ -562,6 +581,7 @@ fun ChatScreen(
         derivedStateOf { listState.firstVisibleItemIndex > 0 || listState.firstVisibleItemScrollOffset > 0 }
     }
     val latestComplete = !isResponding && streamingMessage == null && messages.isNotEmpty()
+    val imeBottomPx = WindowInsets.ime.getBottom(density)
     val backgroundPath = session?.chatBackground ?: characterCard?.chatBackground
     val renderPlayerName = session?.playerName?.takeIf { it.isNotBlank() }
         ?: playerSetting.playerName.takeIf { it.isNotBlank() }
@@ -879,6 +899,21 @@ fun ChatScreen(
             }
         }
     }
+    LaunchedEffect(isAtBottom, imeBottomPx) {
+        if (imeBottomPx == 0) imeBottomAnchor = isAtBottom
+    }
+    LaunchedEffect(imeBottomPx, initialScrollDone) {
+        if (!initialScrollDone) {
+            previousImeBottomPx = imeBottomPx
+            return@LaunchedEffect
+        }
+        val imeChanged = imeBottomPx != previousImeBottomPx
+        previousImeBottomPx = imeBottomPx
+        if (imeChanged && imeBottomAnchor && listState.layoutInfo.totalItemsCount > 0) {
+            withFrameNanos { }
+            scrollToBottom(animated = false)
+        }
+    }
     LaunchedEffect(streamingMessage?.content?.length, streamingMessage?.reasoningContent?.length) {
         if (streamingMessage != null && !listState.isScrollInProgress) {
             val totalItems = listState.layoutInfo.totalItemsCount
@@ -954,7 +989,12 @@ fun ChatScreen(
         return
     }
 
-    Column(modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
+    Column(
+        modifier
+            .fillMaxSize()
+            .background(ChatBarTheme.colors.background)
+            .windowInsetsPadding(WindowInsets.ime)
+    ) {
         CbTopBar(
             title = renderedTitle,
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
@@ -978,6 +1018,7 @@ fun ChatScreen(
                     .align(Alignment.Center)
                     .widthIn(max = ChatContentMaxWidth)
                     .fillMaxSize()
+                    .imeNestedScroll()
                     .padding(horizontal = 12.dp)
             ) {
                 itemsIndexed(timelineMessages, key = { _, message -> message.id }) { _, message ->
@@ -2465,6 +2506,8 @@ private fun ChatComposer(
     onCancel: () -> Unit,
     onSend: () -> Unit
 ) {
+    val placeholder = if (enabled) "发送消息…" else disabledPlaceholder
+
     Row(
         Modifier
             .fillMaxWidth()
@@ -2475,7 +2518,14 @@ private fun ChatComposer(
     ) {
         CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
         CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
-        CbInput(input, onInput, Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp), placeholder = if (enabled) "发送消息…" else disabledPlaceholder, enabled = enabled, minLines = 1)
+        CbInput(
+            input,
+            onInput,
+            Modifier.weight(1f).heightIn(min = 44.dp, max = 104.dp),
+            placeholder = placeholder,
+            enabled = enabled,
+            minLines = 1
+        )
         Spacer(Modifier.width(8.dp))
         CbIconButton(
             if (responding) AppIcons.Close else AppIcons.Send,

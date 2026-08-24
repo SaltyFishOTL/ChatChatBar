@@ -3,6 +3,8 @@ package com.example.chatbar.ui.components
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.byValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.contentDescription
@@ -26,13 +28,14 @@ fun NovelAiBatchSizeInput(
         CbText("批量", style = ChatBarTheme.typography.label)
         CbInput(
             value = value,
-            onValueChange = { next ->
-                if (next.length <= 1 && next.all(Char::isDigit)) onValueChange(next)
-            },
+            onValueChange = onValueChange,
             modifier = Modifier.semantics { contentDescription = "批量生图数量" },
             enabled = enabled,
             isError = parseNovelAiBatchSize(value) == null,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+            inputTransformation = InputTransformation.byValue { _, proposed ->
+                proposed.filter(Char::isDigit).take(1)
+            },
             placeholder = "1-$NOVEL_AI_MAX_BATCH_SIZE"
         )
     }

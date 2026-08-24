@@ -38,6 +38,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.byValue
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
@@ -69,7 +71,6 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
-import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.IntSize
@@ -1759,7 +1760,7 @@ private fun SettingsTab(
             )
             modelErrors.forEach { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
             CbField("全局默认 API Key") {
-                CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", visualTransformation = PasswordVisualTransformation())
+                CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", secure = true)
             }
             Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 Column(Modifier.weight(1f)) {
@@ -1828,9 +1829,14 @@ private fun SettingsTab(
             SliderField("保留上下文消息：${contextSize.toInt()} 组", contextSize, 0f..50f, 49) { contextSize = it }
             if (contextSize.toInt() >= 50) {
                 CbField("自定义上下文上限") {
-                    CbInput(customContextSize, { newValue ->
-                        customContextSize = newValue.filter { it.isDigit() }
-                    }, placeholder = "50")
+                    CbInput(
+                        customContextSize,
+                        { customContextSize = it },
+                        placeholder = "50",
+                        inputTransformation = InputTransformation.byValue { _, proposed ->
+                            proposed.filter(Char::isDigit)
+                        }
+                    )
                 }
             }
             SliderField(
@@ -2101,7 +2107,7 @@ private fun SettingsTab(
                     novelAiToken,
                     { novelAiToken = it },
                     placeholder = if (novelAiConfigured) "输入新 Token 以替换" else "粘贴 NovelAI Persistent API Token",
-                    visualTransformation = PasswordVisualTransformation()
+                    secure = true
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2153,7 +2159,7 @@ private fun SettingsTab(
                     fishAudioApiKey,
                     { fishAudioApiKey = it },
                     placeholder = if (fishAudioConfigured) "输入新 Key 以替换" else "粘贴 Fish Audio API Key",
-                    visualTransformation = PasswordVisualTransformation()
+                    secure = true
                 )
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -2593,7 +2599,7 @@ private fun EmbeddingDialog(original: EmbeddingConfig?, onDismiss: () -> Unit, o
     }) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("显示名称") { CbInput(name, { name = it }) }; CbField("Base URL") { CbInput(url, { url = it }) }
-            CbField("API Key") { CbInput(key, { key = it }, visualTransformation = PasswordVisualTransformation()) }
+            CbField("API Key") { CbInput(key, { key = it }, secure = true) }
             CbField("模型名称") { CbInput(model, { model = it }) }; CbField("向量维度") { CbInput(dimensions, { dimensions = it }) }
         }
     }
@@ -2609,7 +2615,7 @@ private fun RetrievalDialog(original: ModelConfig?, onDismiss: () -> Unit, onSav
     }) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             CbField("显示名称") { CbInput(name, { name = it }) }; CbField("Base URL") { CbInput(url, { url = it }) }
-            CbField("API Key") { CbInput(key, { key = it }, visualTransformation = PasswordVisualTransformation()) }
+            CbField("API Key") { CbInput(key, { key = it }, secure = true) }
             CbField("模型名称") { CbInput(model, { model = it }) }; CbField("最大输出 Token") { CbInput(maxTokens, { maxTokens = it }) }
         }
     }

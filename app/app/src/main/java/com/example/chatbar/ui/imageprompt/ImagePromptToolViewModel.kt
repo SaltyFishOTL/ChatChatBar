@@ -58,6 +58,14 @@ data class NovelAiRecentHistoryItem(
     val image: NovelAiGenerationHistoryImage
 )
 
+data class NovelAiPromptTokenState(
+    val positive: Int? = null,
+    val negative: Int? = null,
+    val limit: Int = NovelAiImageModel.V4_5_FULL.promptTokenLimit,
+    val loading: Boolean = true,
+    val error: String? = null
+)
+
 data class ImagePromptToolUiState(
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val draftLoaded: Boolean = false,
@@ -81,6 +89,7 @@ data class ImagePromptToolUiState(
     val imageProgress: Float = 0f,
     val applyingHistory: Boolean = false,
     val tagSuggestions: NovelAiTagSuggestionState = NovelAiTagSuggestionState(),
+    val promptTokens: NovelAiPromptTokenState = NovelAiPromptTokenState(),
     val error: String? = null
 ) {
     val isDesigning: Boolean get() = phase == ImagePromptToolPhase.DESIGNING
@@ -107,6 +116,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private val imageService = app.novelAiImageService
     private val imageStorage = app.novelAiImageStorage
     private val tagSuggestClient = app.novelAiTagSuggestClient
+    private val promptTokenCounter = app.novelAiPromptTokenCounter
 
     private val _uiState = MutableStateFlow(ImagePromptToolUiState())
     val uiState: StateFlow<ImagePromptToolUiState> = _uiState.asStateFlow()
@@ -116,6 +126,9 @@ class ImagePromptToolViewModel : ViewModel() {
     private var imageJob: Job? = null
     private var draftSaveJob: Job? = null
     private var tagJob: Job? = null
+    private var tokenCountJob: Job? = null
+    private var tokenCountRevision = 0L
+    private var lastTokenCountRequest: Pair<NovelAiImageModel, NovelAiPromptPlan>? = null
 
     init {
         viewModelScope.launch {
@@ -132,6 +145,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         phase = if (draft.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
                     )
                 }
+                scheduleTokenCount(draft)
             }
         }
         observeCharacterCards()
@@ -150,6 +164,7 @@ class ImagePromptToolViewModel : ViewModel() {
             )
         }
         scheduleDraftSave()
+        scheduleTokenCount(_uiState.value.draft)
     }
 
     fun selectImageModel(model: NovelAiImageModel) {
@@ -315,6 +330,7 @@ class ImagePromptToolViewModel : ViewModel() {
             it.copy(draft = draft, phase = ImagePromptToolPhase.READY, designStatus = "完成", error = null)
         }
         scheduleDraftSave()
+        scheduleTokenCount(draft)
     }
 
     fun restoreConvertedPrompt() {
@@ -460,6 +476,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         phase = if (appliedDraft.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
                     )
                 }
+                scheduleTokenCount(appliedDraft)
             }.onFailure { error ->
                 _uiState.update {
                     it.copy(
@@ -506,6 +523,7 @@ class ImagePromptToolViewModel : ViewModel() {
             repository.saveDraft(previous)
             repository.clearUndoDraft()
             _uiState.update { it.copy(draft = previous, hasHistoryUndo = false) }
+            scheduleTokenCount(previous)
         }
     }
 
@@ -554,6 +572,57 @@ class ImagePromptToolViewModel : ViewModel() {
         draftSaveJob = viewModelScope.launch {
             delay(400)
             repository.saveDraft(draft)
+        }
+    }
+
+    private fun scheduleTokenCount(draft: NovelAiStudioDraft) {
+        if (!_uiState.value.draftLoaded) return
+        val request = draft.selectedModel to draft.toPromptPlan()
+        if (request == lastTokenCountRequest && _uiState.value.promptTokens.error == null) return
+        lastTokenCountRequest = request
+        val revision = ++tokenCountRevision
+        tokenCountJob?.cancel()
+        _uiState.update { state ->
+            val modelChanged = state.promptTokens.limit != draft.selectedModel.promptTokenLimit
+            state.copy(
+                promptTokens = state.promptTokens.copy(
+                    positive = state.promptTokens.positive.takeUnless { modelChanged },
+                    negative = state.promptTokens.negative.takeUnless { modelChanged },
+                    limit = draft.selectedModel.promptTokenLimit,
+                    loading = true,
+                    error = null
+                )
+            )
+        }
+        tokenCountJob = viewModelScope.launch {
+            delay(50)
+            try {
+                val usage = withContext(Dispatchers.Default) {
+                    promptTokenCounter.count(request.second, request.first)
+                }
+                if (revision != tokenCountRevision) return@launch
+                _uiState.update {
+                    it.copy(
+                        promptTokens = NovelAiPromptTokenState(
+                            positive = usage.positive,
+                            negative = usage.negative,
+                            limit = usage.limit,
+                            loading = false
+                        )
+                    )
+                }
+            } catch (error: Throwable) {
+                if (error is CancellationException) throw error
+                if (revision != tokenCountRevision) return@launch
+                _uiState.update {
+                    it.copy(
+                        promptTokens = it.promptTokens.copy(
+                            loading = false,
+                            error = "Token 计数不可用：${error.message ?: "资产读取失败"}"
+                        )
+                    )
+                }
+            }
         }
     }
 
@@ -614,6 +683,7 @@ class ImagePromptToolViewModel : ViewModel() {
         app.applicationScope.launch { repository.saveDraft(finalDraft) }
         draftSaveJob?.cancel()
         tagJob?.cancel()
+        tokenCountJob?.cancel()
         designJob?.cancel()
         imageJob?.cancel()
         super.onCleared()

@@ -57,6 +57,7 @@ Use chatbar-image-generation-runtime for NovelAI HTTP generation, streaming fram
 - Manual Prompt generation, generation from an existing Prompt, and image regeneration bypass research because they do not invoke AI Prompt design.
 - TagSuggest candidates are process-memory cached only. Do not add credentials, settings, or persisted fields for this flow.
 - Studio live completion reuses the same application-scoped `TagSuggestClient` and cache as research. Keep its 250ms UI debounce, cancellation, max-eight candidates, and nonblocking failure state outside prompt text.
+- V5 text-rendering convenience belongs to deterministic request construction, not AI prompt design: quoted positive text is mirrored into a trailing base `Text:` block unless any positive prompt already contains an explicit `Text:` block. Keep stored/designed text unchanged and never apply this to V4.5.
 
 ## Studio Character Capacity
 

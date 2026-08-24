@@ -10,7 +10,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
@@ -34,14 +33,22 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicSecureTextField
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.TextFieldDecorator
+import androidx.compose.foundation.text.input.TextFieldLineLimits
+import androidx.compose.foundation.text.input.TextFieldState
+import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -57,11 +64,11 @@ import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
 import androidx.compose.ui.text.input.TextFieldValue
-import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
 import java.io.File
 import kotlin.math.roundToInt
+import kotlinx.coroutines.flow.distinctUntilChanged
 
 @Composable
 fun CbField(
@@ -117,7 +124,129 @@ fun CbInput(
     expand: Boolean = false,
     isError: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
-    visualTransformation: VisualTransformation = VisualTransformation.None
+    inputTransformation: InputTransformation? = null,
+    secure: Boolean = false
+) {
+    val state = rememberControlledTextFieldState(value, onValueChange)
+    StateBasedCbInput(
+        state = state,
+        modifier = modifier,
+        placeholder = placeholder,
+        enabled = enabled,
+        singleLine = singleLine,
+        minLines = minLines,
+        expand = expand,
+        isError = isError,
+        keyboardOptions = keyboardOptions,
+        inputTransformation = inputTransformation,
+        secure = secure,
+        fixedMultilineHeight = 150.dp
+    )
+}
+
+@Composable
+private fun rememberControlledTextFieldState(
+    value: String,
+    onValueChange: (String) -> Unit
+): TextFieldState {
+    val state = rememberTextFieldState(
+        initialText = value,
+        initialSelection = TextRange(value.length)
+    )
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val pendingEchoes = remember { mutableListOf<String>() }
+
+    LaunchedEffect(state) {
+        snapshotFlow { state.text.toString() }
+            .distinctUntilChanged()
+            .collect { next ->
+                if (next != latestValue) {
+                    pendingEchoes += next
+                    if (pendingEchoes.size > 32) pendingEchoes.removeAt(0)
+                    latestOnValueChange(next)
+                }
+            }
+    }
+    LaunchedEffect(value) {
+        val echoIndex = pendingEchoes.indexOf(value)
+        if (echoIndex >= 0) {
+            repeat(echoIndex + 1) { pendingEchoes.removeAt(0) }
+            return@LaunchedEffect
+        }
+        if (state.text.toString() != value) {
+            state.edit {
+                replace(0, length, value)
+                selection = TextRange(value.length)
+            }
+        }
+    }
+    return state
+}
+
+@Composable
+private fun rememberControlledTextFieldState(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit
+): TextFieldState {
+    val state = rememberTextFieldState(
+        initialText = value.text,
+        initialSelection = value.selection
+    )
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+    val pendingEchoes = remember { mutableListOf<TextFieldValue>() }
+
+    LaunchedEffect(state) {
+        snapshotFlow {
+            TextFieldValue(
+                text = state.text.toString(),
+                selection = state.selection,
+                composition = state.composition
+            )
+        }
+            .distinctUntilChanged()
+            .collect { next ->
+                if (next != latestValue) {
+                    pendingEchoes += next
+                    if (pendingEchoes.size > 32) pendingEchoes.removeAt(0)
+                    latestOnValueChange(next)
+                }
+            }
+    }
+    LaunchedEffect(value.text, value.selection, value.composition) {
+        val echoIndex = pendingEchoes.indexOf(value)
+        if (echoIndex >= 0) {
+            repeat(echoIndex + 1) { pendingEchoes.removeAt(0) }
+            return@LaunchedEffect
+        }
+        if (state.text.toString() != value.text || state.selection != value.selection) {
+            state.edit {
+                replace(0, length, value.text)
+                selection = TextRange(
+                    value.selection.start.coerceIn(0, value.text.length),
+                    value.selection.end.coerceIn(0, value.text.length)
+                )
+            }
+        }
+    }
+    return state
+}
+
+@Composable
+private fun StateBasedCbInput(
+    state: TextFieldState,
+    modifier: Modifier,
+    placeholder: String,
+    enabled: Boolean,
+    singleLine: Boolean,
+    minLines: Int,
+    expand: Boolean,
+    isError: Boolean,
+    keyboardOptions: KeyboardOptions,
+    inputTransformation: InputTransformation?,
+    secure: Boolean,
+    fixedMultilineHeight: androidx.compose.ui.unit.Dp?
 ) {
     val colors = ChatBarTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
@@ -136,166 +265,60 @@ fun CbInput(
         animationSpec = tween(200),
         label = "inputBorderWidth"
     )
-    val heightModifier = when {
+    val sizeModifier = when {
         singleLine -> Modifier.heightIn(min = 44.dp)
         expand -> Modifier.fillMaxSize()
-        else -> Modifier.height(150.dp)
+        fixedMultilineHeight != null -> Modifier.height(fixedMultilineHeight)
+        else -> Modifier.heightIn(min = 44.dp)
     }
     val shape = RoundedCornerShape(ChatBarShape.sm)
-    if (expand && !singleLine) {
-        CursorAwareExpandedStringInput(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = modifier,
-            placeholder = placeholder,
-            enabled = enabled,
-            minLines = minLines,
-            keyboardOptions = keyboardOptions,
-            visualTransformation = visualTransformation,
-            colors = colors,
-            shape = shape,
-            borderWidth = borderWidth,
-            borderColor = borderColor,
-            interactionSource = interactionSource,
-            focused = focused
-        )
-        return
-    }
     Box(modifier = modifier.fillMaxWidth()) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .then(heightModifier)
-                .background(colors.input, shape)
-                .border(borderWidth, borderColor, shape)
-                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
-            enabled = enabled,
-            singleLine = singleLine,
-            minLines = minLines,
-            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-            cursorBrush = SolidColor(colors.primary),
-            interactionSource = interactionSource,
-            keyboardOptions = keyboardOptions,
-            visualTransformation = visualTransformation,
-            decorationBox = { innerTextField ->
-                if (value.isEmpty() && placeholder.isNotEmpty()) {
+        val textModifier = Modifier.fillMaxWidth().then(sizeModifier)
+        val decorator = TextFieldDecorator { innerTextField ->
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(colors.input, shape)
+                    .border(borderWidth, borderColor, shape)
+                    .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp)
+            ) {
+                if (state.text.isEmpty() && placeholder.isNotEmpty()) {
                     CbText(placeholder, color = colors.mutedForeground)
                 }
                 innerTextField()
             }
-        )
-        CharacterCount(
-            length = value.length,
-            modifier = Modifier.align(Alignment.BottomEnd)
-        )
-    }
-}
-
-@Composable
-private fun CursorAwareExpandedStringInput(
-    value: String,
-    onValueChange: (String) -> Unit,
-    modifier: Modifier,
-    placeholder: String,
-    enabled: Boolean,
-    minLines: Int,
-    keyboardOptions: KeyboardOptions,
-    visualTransformation: VisualTransformation,
-    colors: ChatBarColors,
-    shape: RoundedCornerShape,
-    borderWidth: androidx.compose.ui.unit.Dp,
-    borderColor: Color,
-    interactionSource: MutableInteractionSource,
-    focused: Boolean
-) {
-    val density = LocalDensity.current
-    val scrollState = rememberScrollState()
-    var fieldValue by remember { mutableStateOf(TextFieldValue(value, selection = TextRange(value.length))) }
-    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
-    var fieldHeightPx by remember { mutableStateOf(0) }
-    var lastSelectionEnd by remember { mutableStateOf(fieldValue.selection.end) }
-    var preferredCursorY by remember { mutableStateOf<Float?>(null) }
-    val imeBottom = WindowInsets.ime.getBottom(density)
-
-    LaunchedEffect(value, focused) {
-        if (!focused && value != fieldValue.text) {
-            val start = fieldValue.selection.start.coerceIn(0, value.length)
-            val end = fieldValue.selection.end.coerceIn(0, value.length)
-            fieldValue = fieldValue.copy(text = value, selection = TextRange(start, end), composition = null)
         }
-    }
-
-    LaunchedEffect(fieldValue.selection.end, fieldValue.text, imeBottom, fieldHeightPx, textLayoutResult, focused) {
-        val layout = textLayoutResult ?: return@LaunchedEffect
-        if (!focused || fieldHeightPx <= 0) return@LaunchedEffect
-        val selectionEnd = fieldValue.selection.end.coerceIn(0, fieldValue.text.length)
-        val cursorRect = layout.getCursorRect(selectionEnd)
-        val cursorCenter = (cursorRect.top + cursorRect.bottom) / 2f
-        val verticalPadding = with(density) { 22.dp.toPx() }
-        val visibleHeight = (fieldHeightPx - verticalPadding).coerceAtLeast(1f)
-        val margin = with(density) { 24.dp.toPx() }
-        val maxPreferredY = (visibleHeight - margin).coerceAtLeast(margin)
-
-        if (selectionEnd != lastSelectionEnd || preferredCursorY == null) {
-            preferredCursorY = (cursorCenter - scrollState.value).coerceIn(margin, maxPreferredY)
-        }
-
-        val desiredCursorY = (preferredCursorY ?: (cursorCenter - scrollState.value)).coerceIn(margin, maxPreferredY)
-        var targetScroll = (cursorCenter - desiredCursorY).roundToInt().coerceIn(0, scrollState.maxValue)
-        val bottomAfterScroll = cursorRect.bottom - targetScroll
-        val topAfterScroll = cursorRect.top - targetScroll
-        if (bottomAfterScroll > visibleHeight - margin) {
-            targetScroll += (bottomAfterScroll - (visibleHeight - margin)).roundToInt()
-        } else if (topAfterScroll < margin) {
-            targetScroll -= (margin - topAfterScroll).roundToInt()
-        }
-        targetScroll = targetScroll.coerceIn(0, scrollState.maxValue)
-        if (targetScroll != scrollState.value) scrollState.scrollTo(targetScroll)
-        preferredCursorY = (cursorCenter - targetScroll).coerceIn(margin, maxPreferredY)
-        lastSelectionEnd = selectionEnd
-    }
-
-    BoxWithConstraints(modifier = modifier.fillMaxWidth()) {
-        val availableHeight = maxHeight
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .onSizeChanged { fieldHeightPx = it.height }
-                .background(colors.input, shape)
-                .border(borderWidth, borderColor, shape)
-                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp)
-        ) {
-            BasicTextField(
-                value = fieldValue,
-                onValueChange = { newValue ->
-                    fieldValue = newValue
-                    if (newValue.text != value) onValueChange(newValue.text)
-                },
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .heightIn(min = availableHeight.coerceAtLeast(1.dp))
-                    .verticalScroll(scrollState),
+        if (secure) {
+            BasicSecureTextField(
+                state = state,
+                modifier = textModifier,
                 enabled = enabled,
-                singleLine = false,
-                minLines = minLines,
+                inputTransformation = inputTransformation,
+                textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+                interactionSource = interactionSource,
+                cursorBrush = SolidColor(colors.primary),
+                decorator = decorator
+            )
+        } else {
+            BasicTextField(
+                state = state,
+                modifier = textModifier,
+                enabled = enabled,
+                inputTransformation = inputTransformation,
                 textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
                 cursorBrush = SolidColor(colors.primary),
                 interactionSource = interactionSource,
                 keyboardOptions = keyboardOptions,
-                visualTransformation = visualTransformation,
-                onTextLayout = { textLayoutResult = it },
-                decorationBox = { innerTextField ->
-                    if (fieldValue.text.isEmpty() && placeholder.isNotEmpty()) {
-                        CbText(placeholder, color = colors.mutedForeground)
-                    }
-                    innerTextField()
-                }
+                lineLimits = if (singleLine) {
+                    TextFieldLineLimits.SingleLine
+                } else {
+                    TextFieldLineLimits.MultiLine(minHeightInLines = minLines)
+                },
+                decorator = decorator
             )
         }
         CharacterCount(
-            length = value.length,
+            length = state.text.length,
             modifier = Modifier.align(Alignment.BottomEnd)
         )
     }
@@ -309,48 +332,25 @@ fun CbInput(
     placeholder: String = "",
     enabled: Boolean = true,
     singleLine: Boolean = false,
-    minLines: Int = 1
+    minLines: Int = 1,
+    expand: Boolean = false,
+    inputTransformation: InputTransformation? = null
 ) {
-    val colors = ChatBarTheme.colors
-    val interactionSource = remember { MutableInteractionSource() }
-    val focused by interactionSource.collectIsFocusedAsState()
-    val borderColor by animateColorAsState(
-        if (focused) colors.primary else colors.border,
-        animationSpec = tween(200),
-        label = "inputBorder"
+    val state = rememberControlledTextFieldState(value, onValueChange)
+    StateBasedCbInput(
+        state = state,
+        modifier = modifier,
+        placeholder = placeholder,
+        enabled = enabled,
+        singleLine = singleLine,
+        minLines = minLines,
+        expand = expand,
+        isError = false,
+        keyboardOptions = KeyboardOptions.Default,
+        inputTransformation = inputTransformation,
+        secure = false,
+        fixedMultilineHeight = null
     )
-    val borderWidth by animateDpAsState(
-        if (focused) 1.5.dp else 1.dp,
-        animationSpec = tween(200),
-        label = "inputBorderWidth"
-    )
-    val shape = RoundedCornerShape(ChatBarShape.sm)
-    Box(modifier = modifier.fillMaxWidth()) {
-        BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
-            modifier = Modifier
-                .fillMaxWidth()
-                .heightIn(min = 44.dp)
-                .background(colors.input, shape)
-                .border(borderWidth, borderColor, shape)
-                .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp),
-            enabled = enabled,
-            singleLine = singleLine,
-            minLines = minLines,
-            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
-            cursorBrush = SolidColor(colors.primary),
-            interactionSource = interactionSource,
-            decorationBox = { inner ->
-                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
-                inner()
-            }
-        )
-        CharacterCount(
-            length = value.text.length,
-            modifier = Modifier.align(Alignment.BottomEnd)
-        )
-    }
 }
 
 @Composable
@@ -370,9 +370,12 @@ fun FullscreenTextEditor(
     canConfirm: (String) -> Boolean = { true }
 ) {
     if (!visible) return
-    var editorValue by remember(text) { mutableStateOf(TextFieldValue(text, selection = TextRange(text.length))) }
+    val editorState = rememberTextFieldState(
+        initialText = text,
+        initialSelection = TextRange(text.length)
+    )
     val confirm = {
-        val finalText = editorValue.text
+        val finalText = editorState.text.toString()
         onTextChange(finalText)
         if (onConfirm == null) {
             onDismiss()
@@ -380,12 +383,9 @@ fun FullscreenTextEditor(
             onConfirm(finalText)
         }
     }
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorValue.text), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorState.text.toString()), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
-            value = editorValue,
-            onValueChange = { newValue ->
-                editorValue = newValue
-            },
+            state = editorState,
             placeholder = placeholder,
             colors = ctxColors,
             interactionSource = interactionSource,
@@ -411,8 +411,19 @@ fun FullscreenTextEditor(
     canConfirm: (TextFieldValue) -> Boolean = { true }
 ) {
     if (!visible) return
-    var editorValue by remember(value) { mutableStateOf(value) }
+    val editorState = rememberTextFieldState(
+        initialText = value.text,
+        initialSelection = value.selection
+    )
+    val finalValue = {
+        TextFieldValue(
+            text = editorState.text.toString(),
+            selection = editorState.selection,
+            composition = editorState.composition
+        )
+    }
     val confirm = {
+        val editorValue = finalValue()
         onValueChange(editorValue)
         if (onConfirm == null) {
             onDismiss()
@@ -420,10 +431,9 @@ fun FullscreenTextEditor(
             onConfirm(editorValue)
         }
     }
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorValue), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(finalValue()), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
-            value = editorValue,
-            onValueChange = { editorValue = it },
+            state = editorState,
             placeholder = placeholder,
             colors = ctxColors,
             interactionSource = interactionSource,
@@ -434,54 +444,44 @@ fun FullscreenTextEditor(
 
 @Composable
 private fun CursorAwareFullscreenTextField(
-    value: TextFieldValue,
-    onValueChange: (TextFieldValue) -> Unit,
+    state: TextFieldState,
     placeholder: String,
     colors: ChatBarColors,
     interactionSource: MutableInteractionSource,
-    focused: Boolean
+    focused: Boolean,
+    modifier: Modifier = Modifier
 ) {
     val density = LocalDensity.current
     val shape = RoundedCornerShape(ChatBarShape.sm)
     val scrollState = rememberScrollState()
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var fieldHeightPx by remember { mutableStateOf(0) }
-    var lastSelectionEnd by remember { mutableStateOf(value.selection.end) }
-    var preferredCursorY by remember { mutableStateOf<Float?>(null) }
     val imeBottom = WindowInsets.ime.getBottom(density)
 
-    LaunchedEffect(value.selection.end, value.text, imeBottom, fieldHeightPx, textLayoutResult, focused) {
+    LaunchedEffect(
+        state.selection,
+        state.text,
+        imeBottom,
+        fieldHeightPx,
+        textLayoutResult,
+        scrollState.maxValue,
+        focused
+    ) {
         val layout = textLayoutResult ?: return@LaunchedEffect
         if (!focused || fieldHeightPx <= 0) return@LaunchedEffect
-        val selectionEnd = value.selection.end.coerceIn(0, value.text.length)
+        val selectionEnd = state.selection.end.coerceIn(0, state.text.length)
         val cursorRect = layout.getCursorRect(selectionEnd)
-        val cursorCenter = (cursorRect.top + cursorRect.bottom) / 2f
-        val verticalPadding = with(density) { 22.dp.toPx() }
-        val visibleHeight = (fieldHeightPx - verticalPadding).coerceAtLeast(1f)
-        val margin = with(density) { 24.dp.toPx() }
-        val maxPreferredY = (visibleHeight - margin).coerceAtLeast(margin)
-
-        if (selectionEnd != lastSelectionEnd || preferredCursorY == null) {
-            preferredCursorY = (cursorCenter - scrollState.value).coerceIn(margin, maxPreferredY)
-        }
-
-        val desiredCursorY = (preferredCursorY ?: (cursorCenter - scrollState.value)).coerceIn(margin, maxPreferredY)
-        var targetScroll = (cursorCenter - desiredCursorY).roundToInt().coerceIn(0, scrollState.maxValue)
-        val bottomAfterScroll = cursorRect.bottom - targetScroll
-        val topAfterScroll = cursorRect.top - targetScroll
-        if (bottomAfterScroll > visibleHeight - margin) {
-            targetScroll += (bottomAfterScroll - (visibleHeight - margin)).roundToInt()
-        } else if (topAfterScroll < margin) {
-            targetScroll -= (margin - topAfterScroll).roundToInt()
-        }
-        targetScroll = targetScroll.coerceIn(0, scrollState.maxValue)
+        val targetScroll = fullscreenCursorScrollTarget(
+            cursorTopPx = cursorRect.top,
+            maxScrollPx = scrollState.maxValue,
+            imeVisible = imeBottom > 0,
+            selection = state.selection
+        ) ?: return@LaunchedEffect
         if (targetScroll != scrollState.value) scrollState.scrollTo(targetScroll)
-        preferredCursorY = (cursorCenter - targetScroll).coerceIn(margin, maxPreferredY)
-        lastSelectionEnd = selectionEnd
     }
 
     BoxWithConstraints(
-        modifier = Modifier
+        modifier = modifier
             .fillMaxSize()
             .onSizeChanged { fieldHeightPx = it.height }
             .background(colors.input, shape)
@@ -489,27 +489,57 @@ private fun CursorAwareFullscreenTextField(
             .padding(horizontal = ChatBarSpacing.md, vertical = 11.dp)
     ) {
         BasicTextField(
-            value = value,
-            onValueChange = onValueChange,
+            state = state,
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(min = maxHeight.coerceAtLeast(1.dp))
-                .verticalScroll(scrollState),
-            singleLine = false,
+                .heightIn(min = maxHeight.coerceAtLeast(1.dp)),
+            lineLimits = TextFieldLineLimits.MultiLine(),
             textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
             cursorBrush = SolidColor(colors.primary),
             interactionSource = interactionSource,
-            onTextLayout = { textLayoutResult = it },
-            decorationBox = { inner ->
-                if (value.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
+            scrollState = scrollState,
+            onTextLayout = { getResult -> textLayoutResult = getResult() },
+            decorator = { inner ->
+                if (state.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
                 inner()
             }
         )
         CharacterCount(
-            length = value.text.length,
+            length = state.text.length,
             modifier = Modifier.align(Alignment.BottomEnd)
         )
     }
+}
+
+internal fun fullscreenCursorScrollTarget(
+    cursorTopPx: Float,
+    maxScrollPx: Int,
+    imeVisible: Boolean,
+    selection: TextRange
+): Int? {
+    if (!imeVisible || !selection.collapsed) return null
+    return cursorTopPx.roundToInt().coerceIn(0, maxScrollPx.coerceAtLeast(0))
+}
+
+@Composable
+fun CbFullscreenTextArea(
+    value: String,
+    onValueChange: (String) -> Unit,
+    modifier: Modifier = Modifier,
+    placeholder: String = "输入内容…"
+) {
+    val state = rememberControlledTextFieldState(value, onValueChange)
+    val colors = ChatBarTheme.colors
+    val interactionSource = remember { MutableInteractionSource() }
+    val focused by interactionSource.collectIsFocusedAsState()
+    CursorAwareFullscreenTextField(
+        state = state,
+        placeholder = placeholder,
+        colors = colors,
+        interactionSource = interactionSource,
+        focused = focused,
+        modifier = modifier
+    )
 }
 
 @Composable

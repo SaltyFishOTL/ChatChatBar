@@ -44,4 +44,63 @@ class NovelAiStudioRequestTest {
             .getValue("caption").jsonObject.getValue("char_captions").jsonArray
         assertEquals(listOf("bad first", "bad second"), negatives.map { it.jsonObject.getValue("char_caption").jsonPrimitive.content })
     }
+
+    @Test
+    fun `v5 request appends quoted text block from base and character prompts`() {
+        val body = requestBody(
+            model = NovelAiImageModel.V5_FULL,
+            plan = NovelAiPromptPlan(
+                baseCaption = "speech bubble reading \"Hello, world!\"",
+                characterCaptions = listOf(
+                    NovelAiCharacterCaption(
+                        prompt = "holding a sign marked “再见”",
+                        center = DesignedCharacterCenter(0.5f, 0.5f)
+                    )
+                )
+            )
+        )
+
+        assertEquals(
+            "speech bubble reading \"Hello, world!\"\n\nText: Hello, world!\n\n再见",
+            baseCaption(body)
+        )
+        assertEquals(baseCaption(body), body.getValue("input").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `explicit text block disables v5 quoted text automation`() {
+        val original = "poster reading \"ignored\"\n\nText: 手动文字"
+        val body = requestBody(
+            model = NovelAiImageModel.V5_FULL,
+            plan = NovelAiPromptPlan(original, emptyList())
+        )
+
+        assertEquals(original, baseCaption(body))
+    }
+
+    @Test
+    fun `v45 request leaves quoted text untouched`() {
+        val original = "speech bubble reading \"Hello, world!\""
+        val body = requestBody(
+            model = NovelAiImageModel.V4_5_FULL,
+            plan = NovelAiPromptPlan(original, emptyList())
+        )
+
+        assertEquals(original, baseCaption(body))
+    }
+
+    private fun requestBody(model: NovelAiImageModel, plan: NovelAiPromptPlan) =
+        Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = plan,
+                imageSize = NovelAiImageSize(1024, 1024, "Normal Square"),
+                settings = NovelAiGenerationSettings(model = model)
+            )
+        ).jsonObject
+
+    private fun baseCaption(body: kotlinx.serialization.json.JsonObject): String =
+        body.getValue("parameters").jsonObject
+            .getValue("v4_prompt").jsonObject
+            .getValue("caption").jsonObject
+            .getValue("base_caption").jsonPrimitive.content
 }

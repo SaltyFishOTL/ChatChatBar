@@ -183,9 +183,10 @@ class NovelAiImageService(
             "NovelAI 批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间"
         }
         settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
-        val negative = prompt.effectiveNegativePrompt.trim()
+        val effectivePrompt = NovelAiV5TextPromptPolicy.apply(prompt, settings.model)
+        val negative = effectivePrompt.effectiveNegativePrompt.trim()
         val characterCaptions = buildJsonArray {
-            prompt.characterCaptions.forEach { caption ->
+            effectivePrompt.characterCaptions.forEach { caption ->
                 add(buildJsonObject {
                     put("char_caption", caption.prompt)
                     put("centers", centerArray(caption.center))
@@ -194,7 +195,7 @@ class NovelAiImageService(
         }
         val v4Prompt = buildJsonObject {
             put("caption", buildJsonObject {
-                put("base_caption", prompt.baseCaption)
+                put("base_caption", effectivePrompt.baseCaption)
                 put("char_captions", characterCaptions)
             })
             put("use_coords", false)
@@ -204,7 +205,7 @@ class NovelAiImageService(
             put("caption", buildJsonObject {
                 put("base_caption", negative)
                 put("char_captions", buildJsonArray {
-                    prompt.characterCaptions.forEach { caption ->
+                    effectivePrompt.characterCaptions.forEach { caption ->
                         add(buildJsonObject {
                             put("char_caption", caption.negativePrompt)
                             put("centers", centerArray(caption.center))
@@ -217,7 +218,7 @@ class NovelAiImageService(
             put("use_order", true)
         }
         return buildJsonObject {
-            put("input", prompt.baseCaption)
+            put("input", effectivePrompt.baseCaption)
             put("model", settings.model.apiId)
             put("action", "generate")
             put("parameters", buildJsonObject {

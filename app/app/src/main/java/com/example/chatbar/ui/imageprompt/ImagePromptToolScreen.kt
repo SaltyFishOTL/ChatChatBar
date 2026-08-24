@@ -2,6 +2,7 @@ package com.example.chatbar.ui.imageprompt
 
 import androidx.compose.foundation.BorderStroke
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
@@ -24,6 +25,8 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.byValue
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -101,8 +104,9 @@ fun ImagePromptToolScreen(
     }
     BackHandler(enabled = fullscreenEdit != null) { fullscreenEdit = null }
 
-    BoxWithConstraints(Modifier.fillMaxSize()) {
-        val expandedOutputMaxHeight = (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(240.dp)
+    BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
+        val expandedOutputMaxHeight =
+            (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(0.dp)
         Column(Modifier.fillMaxSize()) {
         CbTopBar(
             title = "NovelAI 生图工作室",
@@ -147,37 +151,45 @@ fun ImagePromptToolScreen(
             item { Spacer(Modifier.height(ChatBarSpacing.sm)) }
         }
         CbSurface(
-            modifier = Modifier.fillMaxWidth().imePadding().navigationBarsPadding(),
+            modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
             shape = RoundedCornerShape(topStart = ChatBarShape.lg, topEnd = ChatBarShape.lg),
             border = BorderStroke(1.dp, ChatBarTheme.colors.border),
             elevation = 4.dp
         ) {
-            Row(
-                Modifier.fillMaxWidth().padding(ChatBarSpacing.md),
-                horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
-            ) {
-                CbButton(
-                    "复制正向",
-                    onClick = { clipboard.setText(buildAnnotatedString { append(viewModel.positivePromptForClipboard()) }) },
-                    modifier = Modifier.weight(0.42f),
-                    variant = ButtonVariant.Outline
-                )
-                CbButton(
-                    text = when {
-                        state.applyingHistory -> "正在应用历史"
-                        state.isBusy -> "停止当前任务"
-                        !configured -> "未配置 Token"
-                        else -> "生成 ${state.draft.activeSettings.count} 张"
-                    },
-                    onClick = when {
-                        state.applyingHistory -> ({})
-                        state.isBusy -> viewModel::cancelActiveTask
-                        else -> viewModel::generateImage
-                    },
-                    modifier = Modifier.weight(0.58f),
-                    enabled = !state.applyingHistory && configured && (state.canGenerate || state.isBusy),
-                    variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default
-                )
+            Column(Modifier.fillMaxWidth()) {
+                PromptTokenBudget(state.promptTokens)
+                Row(
+                    Modifier.fillMaxWidth().padding(
+                        start = ChatBarSpacing.md,
+                        top = ChatBarSpacing.sm,
+                        end = ChatBarSpacing.md,
+                        bottom = ChatBarSpacing.md
+                    ),
+                    horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+                ) {
+                    CbButton(
+                        "复制正向",
+                        onClick = { clipboard.setText(buildAnnotatedString { append(viewModel.positivePromptForClipboard()) }) },
+                        modifier = Modifier.weight(0.42f),
+                        variant = ButtonVariant.Outline
+                    )
+                    CbButton(
+                        text = when {
+                            state.applyingHistory -> "正在应用历史"
+                            state.isBusy -> "停止当前任务"
+                            !configured -> "未配置 Token"
+                            else -> "生成 ${state.draft.activeSettings.count} 张"
+                        },
+                        onClick = when {
+                            state.applyingHistory -> ({})
+                            state.isBusy -> viewModel::cancelActiveTask
+                            else -> viewModel::generateImage
+                        },
+                        modifier = Modifier.weight(0.58f),
+                        enabled = !state.applyingHistory && configured && (state.canGenerate || state.isBusy),
+                        variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default
+                    )
+                }
             }
         }
         }
@@ -207,6 +219,65 @@ fun ImagePromptToolScreen(
             title = "操作失败",
             confirm = { CbButton("知道了", viewModel::dismissError) }
         ) { CbText(error) }
+    }
+}
+
+@Composable
+private fun PromptTokenBudget(state: NovelAiPromptTokenState) {
+    Column(
+        Modifier.fillMaxWidth().padding(
+            start = ChatBarSpacing.md,
+            top = ChatBarSpacing.xs,
+            end = ChatBarSpacing.md
+        ),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        if (state.error != null) {
+            CbText(
+                state.error,
+                color = ChatBarTheme.colors.destructive,
+                style = ChatBarTheme.typography.caption
+            )
+        } else {
+            PromptTokenBudgetRow("+", state.positive, state.limit, state.loading)
+            PromptTokenBudgetRow("-", state.negative, state.limit, state.loading)
+        }
+    }
+}
+
+@Composable
+private fun PromptTokenBudgetRow(symbol: String, count: Int?, limit: Int, loading: Boolean) {
+    val progress = ((count ?: 0).toFloat() / limit.coerceAtLeast(1)).coerceIn(0f, 1f)
+    val indicatorColor = when {
+        count != null && count > limit -> ChatBarTheme.colors.destructive
+        count != null && count >= limit * 0.85f -> ChatBarTheme.colors.warning
+        else -> ChatBarTheme.colors.primary
+    }
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        CbText(symbol, Modifier.width(14.dp), style = ChatBarTheme.typography.caption)
+        Box(
+            Modifier.weight(1f).height(4.dp).clip(RoundedCornerShape(ChatBarShape.full))
+                .background(ChatBarTheme.colors.muted)
+        ) {
+            Box(
+                Modifier.fillMaxWidth(progress).height(4.dp)
+                    .background(indicatorColor)
+            )
+        }
+        Spacer(Modifier.width(ChatBarSpacing.sm))
+        CbText(
+            when {
+                count == null -> "…/$limit"
+                loading -> "$count/$limit…"
+                else -> "$count/$limit"
+            },
+            color = if (count != null && count > limit) {
+                ChatBarTheme.colors.destructive
+            } else {
+                ChatBarTheme.colors.mutedForeground
+            },
+            style = ChatBarTheme.typography.caption
+        )
     }
 }
 
@@ -416,6 +487,9 @@ private fun PromptSection(
         Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md),
         verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
     ) {
+        SectionCard("角色卡") {
+            CharacterCardImport(state, viewModel)
+        }
         SectionCard("Prompt") {
             TagPromptInput(
                 label = "画风 Prompt",
@@ -423,24 +497,29 @@ private fun PromptSection(
                 field = NovelAiPromptFieldKey("style"),
                 state = state.tagSuggestions,
                 minLines = 3,
+                editorHeight = 104.dp,
                 onValueChange = { viewModel.updateDraft { draft -> draft.copy(stylePrompt = it) } },
                 onSuggest = viewModel::requestTagSuggestions,
                 onFullscreenEdit = onFullscreenEdit
             )
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                CbText("自然语言模式", Modifier.weight(1f))
-                CbSwitch(draft.naturalLanguageMode, { checked -> viewModel.updateDraft { it.copy(naturalLanguageMode = checked) } })
-            }
             TagPromptInput(
                 label = "基础 Prompt",
                 value = draft.basePrompt,
                 field = NovelAiPromptFieldKey("base"),
                 state = state.tagSuggestions,
                 minLines = 3,
+                editorHeight = 150.dp,
                 onValueChange = { viewModel.updateDraft { draft -> draft.copy(basePrompt = it) } },
                 onSuggest = viewModel::requestTagSuggestions,
                 onFullscreenEdit = onFullscreenEdit
             )
+            if (draft.selectedModel == NovelAiImageModel.V5_FULL) {
+                CbText(
+                    "V5：正向 Prompt 中直接写引号内容会自动生成 Text: 块；手写 Text: 后自动功能停用",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
             if (draft.naturalLanguageMode) {
                 Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
                     CbButton("AI 转化", viewModel::convertNaturalLanguagePrompt, enabled = !state.isBusy, size = ButtonSize.Sm)
@@ -449,7 +528,6 @@ private fun PromptSection(
                     }
                 }
             }
-            CharacterCardImport(state, viewModel)
             draft.characters.forEachIndexed { index, character ->
                 CharacterPromptEditor(index, character, state, viewModel, onFullscreenEdit)
             }
@@ -481,6 +559,13 @@ private fun PromptSection(
                 onClick = { viewModel.updateDraft { it.copy(aiPanelExpanded = !it.aiPanelExpanded) } }
             )
             if (draft.aiPanelExpanded) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    CbText("自然语言模式", Modifier.weight(1f))
+                    CbSwitch(
+                        draft.naturalLanguageMode,
+                        { checked -> viewModel.updateDraft { it.copy(naturalLanguageMode = checked) } }
+                    )
+                }
                 StudioMultilineInput(
                     label = "画面内容",
                     value = draft.imageDescription,
@@ -512,7 +597,10 @@ private fun PromptSection(
 
 @Composable
 private fun CharacterCardImport(state: ImagePromptToolUiState, viewModel: ImagePromptToolViewModel) {
-    if (state.characterCards.isEmpty()) return
+    if (state.characterCards.isEmpty()) {
+        CbText("暂无可选角色卡", color = ChatBarTheme.colors.mutedForeground)
+        return
+    }
     CbField("导入角色卡 Prompt", description = "仅作为 AI 组装素材，不覆盖当前角色 Prompt") {
         CbSelect(
             value = state.characterCards.firstOrNull { it.id == state.selectedCharacterCardId },
@@ -646,8 +734,15 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
         CbField("Seed", description = "0–${settings.maxAllowedBaseSeed}") {
             CbInput(
                 value = settings.seed.toString(),
-                onValueChange = { text -> text.toLongOrNull()?.let { seed -> viewModel.updateGenerationSettings { it.copy(seed = seed) } } },
-                singleLine = true
+                onValueChange = { text ->
+                    viewModel.updateGenerationSettings { it.copy(seed = text.toLong()) }
+                },
+                singleLine = true,
+                inputTransformation = InputTransformation.byValue { current, proposed ->
+                    proposed.takeIf { value ->
+                        value.isNotEmpty() && value.all(Char::isDigit) && value.toString().toLongOrNull() != null
+                    } ?: current
+                }
             )
         }
     }
@@ -675,6 +770,7 @@ private fun TagPromptInput(
     }
     CbField(
         label,
+        modifier = Modifier.fillMaxWidth(),
         onFullscreenEdit = { onFullscreenEdit(label, fieldValue.text, applyFullscreenText) }
     ) {
         CbInput(
@@ -686,7 +782,8 @@ private fun TagPromptInput(
             },
             modifier = Modifier.height(editorHeight),
             singleLine = false,
-            minLines = minLines
+            minLines = minLines,
+            expand = true
         )
         if (state.field == field) {
             when {

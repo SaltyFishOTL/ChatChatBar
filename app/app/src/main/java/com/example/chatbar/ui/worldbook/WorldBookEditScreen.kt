@@ -16,6 +16,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.byValue
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -126,7 +128,18 @@ fun WorldBookEditScreen(
             }
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                 CbField("扫描深度", Modifier.weight(1f)) {
-                    CbInput(viewModel.scanDepth.toString(), { viewModel.scanDepth = it.toIntOrNull()?.coerceAtLeast(0) ?: viewModel.scanDepth; viewModel.scheduleDraftSave() })
+                    CbInput(
+                        viewModel.scanDepth.toString(),
+                        {
+                            viewModel.scanDepth = it.toInt().coerceAtLeast(0)
+                            viewModel.scheduleDraftSave()
+                        },
+                        inputTransformation = InputTransformation.byValue { current, proposed ->
+                            proposed.takeIf { value ->
+                                value.isNotEmpty() && value.all(Char::isDigit) && value.toString().toIntOrNull() != null
+                            } ?: current
+                        }
+                    )
                 }
                 CbField("Token 预算", Modifier.weight(1f)) {
                     CbInput(viewModel.tokenBudget, { viewModel.tokenBudget = it; viewModel.scheduleDraftSave() }, placeholder = "空 = 不限制")

@@ -36,8 +36,10 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 - `CbDialog` owns safe-drawing/IME padding, available-window height, and fixed title/action regions. Do not duplicate those insets in ordinary dialog content. Large dialog bodies must still provide their own bounded `LazyColumn` or `verticalScroll` container so the flexible body can scroll on 360×640dp screens.
 - Fullscreen custom `Dialog` pages do not inherit `CbDialog` behavior; keep status-bar handling in `CbTopBar` and apply navigation-bar padding to the full-page content.
 - Every multi-line or otherwise large text input must expose standard `CbField(onFullscreenEdit = ...)` entry and reuse `FullscreenTextEditor`; keep screen state source of truth.
+- `CbInput` uses the state-based `TextFieldState` pipeline. Compatibility overloads must preserve text, selection, and IME composition; constrained fields filter through `InputTransformation`, not lossy `onValueChange` rewriting.
 - `FullscreenTextEditor` owns an internal transient text draft. Dismiss/× discards it; confirm/√ commits once. Custom confirm callbacks receive the final `String` or `TextFieldValue`; use `canConfirm` when validity depends on the transient draft.
 - `FullscreenTextEditor` is activity-hosted. When launching it from `CbDialog`, stop composing the dialog while the editor is visible, then restore it on close; the dialog's separate window otherwise covers the editor.
+- Chat keeps its composer above IME and combines `imeNestedScroll` with bottom anchoring so an already-bottomed timeline rises with the keyboard; historical reading positions must not be forced to the bottom.
 
 ## API Rules
 
