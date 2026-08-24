@@ -113,7 +113,8 @@ fun CbButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     variant: ButtonVariant = ButtonVariant.Default,
-    size: ButtonSize = ButtonSize.Default
+    size: ButtonSize = ButtonSize.Default,
+    supportingText: String? = null
 ) {
     var pressVersion by remember { mutableStateOf(0) }
     val scale by animateFloatAsState(
@@ -177,8 +178,14 @@ fun CbButton(
             },
         contentAlignment = Alignment.Center
     ) {
-        Box(Modifier.padding(horizontal = hp)) {
+        Column(
+            Modifier.padding(horizontal = hp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
             CbText(text, color = fg, style = ChatBarTheme.typography.label)
+            supportingText?.let {
+                CbText(it, color = fg, style = ChatBarTheme.typography.caption)
+            }
         }
     }
 }

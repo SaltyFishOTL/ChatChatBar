@@ -50,6 +50,7 @@ import coil.compose.AsyncImage
 import com.example.chatbar.domain.image.NovelAiAspectRatio
 import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiGenerationChargeKind
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiSampler
@@ -98,6 +99,11 @@ fun ImagePromptToolScreen(
     var fullscreenEdit by remember { mutableStateOf<StudioFullscreenEditRequest?>(null) }
     var previewPath by remember { mutableStateOf<String?>(null) }
     val previewPaths = (state.recentHistoryItems.map { it.image.path } + state.imagePaths).distinct()
+    val accountUsage = state.account.usage
+    val anlasLabel = accountUsage?.anlas?.toString() ?: if (state.account.loading) "…" else "—"
+    val v5Label = accountUsage?.approximateV5Images?.let { "约${it}张" }
+        ?: if (state.account.loading) "…" else "—"
+    val generationCost = state.generationCost
     BackHandler(enabled = fullscreenEdit == null && previewPath == null) {
         viewModel.persistDraftNow()
         onBack()
@@ -109,9 +115,17 @@ fun ImagePromptToolScreen(
             (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(0.dp)
         Column(Modifier.fillMaxSize()) {
         CbTopBar(
-            title = "NovelAI 生图工作室",
+            title = "",
             navigation = {
                 CbIconButton(AppIcons.ArrowBack, "返回", { viewModel.persistDraftNow(); onBack() })
+                Column(Modifier.padding(start = ChatBarSpacing.xs)) {
+                    CbText("Anlas · $anlasLabel", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "V5 · $v5Label",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
             },
             actions = {
                 CbButton("历史", { viewModel.persistDraftNow(); onOpenHistory() }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
@@ -178,7 +192,9 @@ fun ImagePromptToolScreen(
                             state.applyingHistory -> "正在应用历史"
                             state.isBusy -> "停止当前任务"
                             !configured -> "未配置 Token"
-                            else -> "生成 ${state.draft.activeSettings.count} 张"
+                            generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE -> "生成免费"
+                            generationCost.kind == NovelAiGenerationChargeKind.FREE -> "生成免费"
+                            else -> "生成消耗 ${generationCost.anlas} Anlas"
                         },
                         onClick = when {
                             state.applyingHistory -> ({})
@@ -187,7 +203,17 @@ fun ImagePromptToolScreen(
                         },
                         modifier = Modifier.weight(0.58f),
                         enabled = !state.applyingHistory && configured && (state.canGenerate || state.isBusy),
-                        variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default
+                        variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default,
+                        supportingText = if (
+                            !state.applyingHistory &&
+                            !state.isBusy &&
+                            configured &&
+                            generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE
+                        ) {
+                            "消耗 V5 额度"
+                        } else {
+                            null
+                        }
                     )
                 }
             }

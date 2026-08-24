@@ -17,6 +17,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Shared image viewer/actions: ui/components/ImagePreviewDialog.kt and ImageMosaicEditor.kt
 - Prompt tool: ui/imageprompt/ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Studio prompt token budgets: domain/image/NovelAiPromptTokenCounter.kt plus assets/tokenizers; reproducible compact `.binz` GZIP assets come from tools/build_novelai_tokenizer_assets.py (`.gz` is forbidden because Android packaging expands and renames it)
+- Studio account quota and immediate Anlas estimate: domain/image/NovelAiAccountService.kt; UI ownership remains ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
 - Studio contracts and persistence: domain/image/NovelAiStudioModels.kt, data/repository/NovelAiStudioRepository.kt, ui/imageprompt/NovelAiHistoryViewModel.kt, and NovelAiHistoryScreen.kt
 - Prompt-tool image processing: ui/imageprompt/ImageProcessingPage.kt, ImageProcessingViewModel.kt, domain/image/ImageProcessingService.kt, and FullImageAdversarialPatch.kt
 - Character-card PNG export patch option: domain/card/CharacterCardPngRenderer.kt and ui/manage/ManageScreen.kt
@@ -41,6 +42,7 @@ Use chatbar-character-card-ai for card cover/avatar candidate policy and chatbar
 - Keep V4/V5 coordinates disabled unless product behavior explicitly changes; stored centers remain compatibility metadata.
 - For V5 only, request construction collects quoted positive text from base and character prompts and appends one base `Text:` block. Preserve quoted source text; any explicit case-insensitive `Text:` block disables automation for the whole request. V4.5 remains unchanged.
 - Studio token budgets count the same effective outbound prompt: V4.5 uses NovelAI T5 rules with a 512-token linked-field limit; V5 Full uses NovelAI Qwen rules with a 1471-token linked-field limit. Keep tokenizer assets lazy, compact, local, and off the main thread. Qwen's regex already carries explicit Unicode properties; do not pass Java `UNICODE_CHARACTER_CLASS`, which Android rejects on supported devices. Positive and negative totals each link base plus ordered character fields; counting failure stays visible but never blocks generation.
+- Studio reads current Anlas and V5 Opus allowance from `/user/subscription` on entry and after successful generation. Keep the V5 count explicitly approximate. Estimate button cost locally with the official web formula and free-sample rules so setting changes stay immediate; account-fetch failure must not block generation or claim a V5-free request.
 - Keep NovelAI quality-tag injection disabled and use `ucPreset=3` (None) so NovelAI does not combine its UC preset with app text. Send exactly one negative source—`NovelAiPromptPlan.effectiveNegativePrompt`—identically through legacy and V4 fields.
 
 ## Metadata and Regeneration

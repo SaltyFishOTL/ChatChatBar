@@ -8,12 +8,15 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiCharacterCaption
 import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiCharacterPromptSource
+import com.example.chatbar.domain.image.NovelAiAccountUsage
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
+import com.example.chatbar.domain.image.NovelAiGenerationCost
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiImageCostEstimator
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
 import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
@@ -66,6 +69,12 @@ data class NovelAiPromptTokenState(
     val error: String? = null
 )
 
+data class NovelAiAccountUiState(
+    val usage: NovelAiAccountUsage? = null,
+    val loading: Boolean = true,
+    val error: String? = null
+)
+
 data class ImagePromptToolUiState(
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val draftLoaded: Boolean = false,
@@ -90,6 +99,7 @@ data class ImagePromptToolUiState(
     val applyingHistory: Boolean = false,
     val tagSuggestions: NovelAiTagSuggestionState = NovelAiTagSuggestionState(),
     val promptTokens: NovelAiPromptTokenState = NovelAiPromptTokenState(),
+    val account: NovelAiAccountUiState = NovelAiAccountUiState(),
     val error: String? = null
 ) {
     val isDesigning: Boolean get() = phase == ImagePromptToolPhase.DESIGNING
@@ -103,6 +113,8 @@ data class ImagePromptToolUiState(
         get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
     val canDesign: Boolean get() = !isBusy && !applyingHistory && modelUsable && selectedModelId != null && draft.imageDescription.isNotBlank()
     val canGenerate: Boolean get() = !isBusy && !applyingHistory && draft.basePrompt.isNotBlank()
+    val generationCost: NovelAiGenerationCost
+        get() = NovelAiImageCostEstimator.estimate(draft.activeSettings, account.usage)
 }
 
 class ImagePromptToolViewModel : ViewModel() {
@@ -114,6 +126,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private val promptDesigner = app.novelAiPromptDesigner
     private val credentials = app.novelAiCredentialStore
     private val imageService = app.novelAiImageService
+    private val accountService = app.novelAiAccountService
     private val imageStorage = app.novelAiImageStorage
     private val tagSuggestClient = app.novelAiTagSuggestClient
     private val promptTokenCounter = app.novelAiPromptTokenCounter
@@ -127,6 +140,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private var draftSaveJob: Job? = null
     private var tagJob: Job? = null
     private var tokenCountJob: Job? = null
+    private var accountJob: Job? = null
     private var tokenCountRevision = 0L
     private var lastTokenCountRequest: Pair<NovelAiImageModel, NovelAiPromptPlan>? = null
 
@@ -151,6 +165,7 @@ class ImagePromptToolViewModel : ViewModel() {
         observeCharacterCards()
         observeModelConfiguration()
         observeRecentImages()
+        observeAccountUsage()
     }
 
     fun updateDraft(transform: (NovelAiStudioDraft) -> NovelAiStudioDraft) {
@@ -431,6 +446,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         imageProgress = 1f
                     )
                 }
+                refreshAccountUsage()
             } catch (error: Throwable) {
                 withContext(NonCancellable + Dispatchers.IO) { imageStorage.deleteSession(historyId) }
                 if (error is CancellationException) {
@@ -619,6 +635,49 @@ class ImagePromptToolViewModel : ViewModel() {
                         promptTokens = it.promptTokens.copy(
                             loading = false,
                             error = "Token 计数不可用：${error.message ?: "资产读取失败"}"
+                        )
+                    )
+                }
+            }
+        }
+    }
+
+    private fun observeAccountUsage() {
+        viewModelScope.launch {
+            credentials.configured.collect { configured ->
+                if (configured) {
+                    refreshAccountUsage()
+                } else {
+                    accountJob?.cancel()
+                    _uiState.update {
+                        it.copy(account = NovelAiAccountUiState(loading = false, error = "未配置 Token"))
+                    }
+                }
+            }
+        }
+    }
+
+    private fun refreshAccountUsage() {
+        accountJob?.cancel()
+        accountJob = viewModelScope.launch {
+            _uiState.update { state ->
+                state.copy(account = state.account.copy(loading = true, error = null))
+            }
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    val token = credentials.load() ?: error("未配置 Token")
+                    accountService.fetch(token)
+                }
+            }
+            result.onSuccess { usage ->
+                _uiState.update { it.copy(account = NovelAiAccountUiState(usage = usage, loading = false)) }
+            }.onFailure { error ->
+                if (error is CancellationException) return@onFailure
+                _uiState.update { state ->
+                    state.copy(
+                        account = state.account.copy(
+                            loading = false,
+                            error = error.message ?: "账户信息获取失败"
                         )
                     )
                 }
