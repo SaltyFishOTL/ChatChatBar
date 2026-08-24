@@ -71,7 +71,8 @@ fun ImagePreviewDialog(
     onDismiss: () -> Unit,
     onLocateMessage: ((String) -> Unit)? = null,
     onSetCardAvatar: ((String) -> Unit)? = null,
-    onSetCardBackground: ((String) -> Unit)? = null
+    onSetCardBackground: ((String) -> Unit)? = null,
+    onPageChanged: ((Int) -> Unit)? = null
 ) {
     if (items.isEmpty()) return
     val safeInitialIndex = initialIndex.coerceIn(items.indices)
@@ -85,6 +86,9 @@ fun ImagePreviewDialog(
 
     LaunchedEffect(items.size) {
         if (pagerState.currentPage !in items.indices) pagerState.scrollToPage(items.lastIndex)
+    }
+    LaunchedEffect(pagerState.currentPage) {
+        onPageChanged?.invoke(pagerState.currentPage)
     }
 
     if (showImageActions) {

@@ -100,10 +100,12 @@ fun ImagePromptToolScreen(
     var previewPath by remember { mutableStateOf<String?>(null) }
     val previewPaths = (state.recentHistoryItems.map { it.image.path } + state.imagePaths).distinct()
     val accountUsage = state.account.usage
-    val anlasLabel = accountUsage?.anlas?.toString() ?: if (state.account.loading) "…" else "—"
+    val anlasLabel = accountUsage?.anlas?.toString()
+        ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
     val v5Label = accountUsage?.approximateV5Images?.let { "约${it}张" }
-        ?: if (state.account.loading) "…" else "—"
+        ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
     val generationCost = state.generationCost
+    LaunchedEffect(Unit) { viewModel.refreshAccountUsage() }
     BackHandler(enabled = fullscreenEdit == null && previewPath == null) {
         viewModel.persistDraftNow()
         onBack()

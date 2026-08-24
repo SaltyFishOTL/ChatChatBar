@@ -224,7 +224,6 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         basePrompt = recipe.basePrompt,
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
-        naturalLanguageMode = recipe.naturalLanguageMode,
         selectedModel = recipe.settings.model,
         conversionSnapshot = null
     ).withActiveSettings(recipe.settings.copy(seedMode = NovelAiSeedMode.FIXED, seed = imageSeed))
@@ -233,7 +232,6 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         basePrompt = recipe.basePrompt,
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
-        naturalLanguageMode = recipe.naturalLanguageMode,
         selectedModel = recipe.settings.model,
         conversionSnapshot = null
     ).withActiveSettings(recipe.settings.copy(seedMode = NovelAiSeedMode.RANDOM))
@@ -248,7 +246,6 @@ fun NovelAiStudioDraft.toRecipe(settings: NovelAiGenerationSettings = activeSett
         basePrompt = basePrompt,
         characters = characters,
         negativePrompt = negativePrompt,
-        naturalLanguageMode = naturalLanguageMode,
         settings = settings
     )
 

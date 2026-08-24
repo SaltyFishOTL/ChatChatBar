@@ -64,7 +64,8 @@ class NovelAiAccountService(
             val usage = root["usage"] as? JsonObject
             val tier = root["tier"]?.jsonPrimitive?.intOrNull ?: 0
             val expiresAt = root["expiresAt"]?.jsonPrimitive?.longOrNull ?: 0L
-            val active = tier > 0 && expiresAt > System.currentTimeMillis() / 1_000L
+            val active = root["active"]?.jsonPrimitive?.booleanOrNull
+                ?: (tier > 0 && expiresAt > System.currentTimeMillis() / 1_000L)
             NovelAiAccountUsage(
                 anlas = parseAnlas(root["trainingStepsLeft"]),
                 tier = tier,
@@ -103,7 +104,10 @@ object NovelAiImageCostEstimator {
     ): NovelAiGenerationCost {
         val imageSize = settings.imageSize()
         val pixels = max(imageSize.width.toLong() * imageSize.height, MIN_PRICED_PIXELS)
-        val baseCost = ceil(PIXEL_COST_FACTOR * pixels).toInt()
+        val baseCost = ceil(
+            PIXEL_BASE_COST_FACTOR * pixels +
+                PIXEL_STEP_COST_FACTOR * pixels * settings.steps
+        ).toInt()
         val modelCost = if (settings.model == NovelAiImageModel.V5_FULL) {
             ceil(baseCost * V5_PRICE_MULTIPLIER).toInt()
         } else {
@@ -111,12 +115,12 @@ object NovelAiImageCostEstimator {
         }.coerceAtLeast(MIN_IMAGE_COST)
 
         val freeSampleEligible = account?.isActiveOpus == true &&
+            settings.count == 1 &&
             imageSize.width.toLong() * imageSize.height <= NORMAL_MAX_PIXELS &&
             settings.steps <= FREE_MAX_STEPS &&
             (settings.model != NovelAiImageModel.V5_FULL ||
                 account.v5AllowancePercent != null && !account.v5AllowanceExhausted)
-        val paidSamples = settings.count - if (freeSampleEligible) 1 else 0
-        if (paidSamples <= 0) {
+        if (freeSampleEligible) {
             return NovelAiGenerationCost(
                 kind = if (settings.model == NovelAiImageModel.V5_FULL) {
                     NovelAiGenerationChargeKind.V5_ALLOWANCE
@@ -127,7 +131,7 @@ object NovelAiImageCostEstimator {
         }
         return NovelAiGenerationCost(
             kind = NovelAiGenerationChargeKind.ANLAS,
-            anlas = modelCost * paidSamples
+            anlas = modelCost * settings.count
         )
     }
 
@@ -135,6 +139,7 @@ object NovelAiImageCostEstimator {
     private const val NORMAL_MAX_PIXELS = 1_048_576L
     private const val FREE_MAX_STEPS = 28
     private const val MIN_IMAGE_COST = 2
-    private const val PIXEL_COST_FACTOR = 2.951823174884865e-6
+    private const val PIXEL_BASE_COST_FACTOR = 2.951823174884865e-6
+    private const val PIXEL_STEP_COST_FACTOR = 5.753298233447344e-7
     private const val V5_PRICE_MULTIPLIER = 1.5
 }

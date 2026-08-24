@@ -657,7 +657,7 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
-    private fun refreshAccountUsage() {
+    fun refreshAccountUsage() {
         accountJob?.cancel()
         accountJob = viewModelScope.launch {
             _uiState.update { state ->

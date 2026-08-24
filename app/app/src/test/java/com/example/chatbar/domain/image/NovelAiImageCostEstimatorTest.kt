@@ -1,7 +1,7 @@
 package com.example.chatbar.domain.image
 
-import kotlin.test.Test
-import kotlin.test.assertEquals
+import org.junit.Assert.assertEquals
+import org.junit.Test
 
 class NovelAiImageCostEstimatorTest {
     @Test
@@ -12,7 +12,7 @@ class NovelAiImageCostEstimatorTest {
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
-        assertEquals(3, cost.anlas)
+        assertEquals(20, cost.anlas)
     }
 
     @Test
@@ -34,18 +34,18 @@ class NovelAiImageCostEstimatorTest {
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
-        assertEquals(5, cost.anlas)
+        assertEquals(30, cost.anlas)
     }
 
     @Test
-    fun opusBatchChargesAllSamplesAfterFreeFirstSample() {
+    fun opusBatchChargesEverySample() {
         val cost = NovelAiImageCostEstimator.estimate(
             NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, count = 3),
             account = opus(v5Percent = 50.0)
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
-        assertEquals(10, cost.anlas)
+        assertEquals(90, cost.anlas)
     }
 
     @Test
@@ -56,7 +56,7 @@ class NovelAiImageCostEstimatorTest {
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
-        assertEquals(3, cost.anlas)
+        assertEquals(20, cost.anlas)
     }
 
     private fun opus(

@@ -5,6 +5,7 @@ import com.composables.icons.lucide.ArchiveRestore
 import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.ArrowUpToLine
 import com.composables.icons.lucide.Bug
+import com.composables.icons.lucide.CalendarDays
 import com.composables.icons.lucide.Camera
 import com.composables.icons.lucide.Check
 import com.composables.icons.lucide.ChevronDown
@@ -31,6 +32,7 @@ import com.composables.icons.lucide.Pin
 import com.composables.icons.lucide.Play
 import com.composables.icons.lucide.RefreshCw
 import com.composables.icons.lucide.Save
+import com.composables.icons.lucide.Search
 import com.composables.icons.lucide.Send
 import com.composables.icons.lucide.Settings
 import com.composables.icons.lucide.SlidersHorizontal
@@ -52,6 +54,7 @@ object AppIcons {
     val ArrowUpToLine: ImageVector get() = Lucide.ArrowUpToLine
     val Article: ImageVector get() = Lucide.FileText
     val BugReport: ImageVector get() = Lucide.Bug
+    val Calendar: ImageVector get() = Lucide.CalendarDays
     val Chat: ImageVector get() = Lucide.MessageCircle
     val Check: ImageVector get() = Lucide.Check
     val Close: ImageVector get() = Lucide.X
@@ -82,6 +85,7 @@ object AppIcons {
     val Refresh: ImageVector get() = Lucide.RefreshCw
     val Restore: ImageVector get() = Lucide.ArchiveRestore
     val Save: ImageVector get() = Lucide.Save
+    val Search: ImageVector get() = Lucide.Search
     val Send: ImageVector get() = Lucide.Send
     val Settings: ImageVector get() = Lucide.Settings
     val Star: ImageVector get() = Lucide.Star

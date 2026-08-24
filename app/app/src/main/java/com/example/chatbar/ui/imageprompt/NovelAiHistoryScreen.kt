@@ -1,32 +1,44 @@
 package com.example.chatbar.ui.imageprompt
 
+import android.widget.Toast
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.navigationBarsPadding
-import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.lazy.itemsIndexed
+import androidx.compose.foundation.lazy.grid.GridCells
+import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
+import androidx.compose.foundation.lazy.grid.itemsIndexed
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.layout.ContentScale
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
@@ -35,12 +47,16 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.ui.components.ImagePreviewDialog
+import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.kit.AppIcons
-import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbIconButton
+import com.example.chatbar.ui.kit.CbInput
+import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
@@ -48,6 +64,7 @@ import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.text.SimpleDateFormat
+import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
@@ -57,72 +74,161 @@ fun NovelAiHistoryScreen(
     viewModel: NovelAiHistoryViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
-    var selected by remember { mutableStateOf<Pair<NovelAiGenerationHistoryEntry, NovelAiGenerationHistoryImage>?>(null) }
-    var previewPath by remember { mutableStateOf<String?>(null) }
+    var searchExpanded by remember { mutableStateOf(false) }
+    var showDateFilter by remember { mutableStateOf(false) }
+    var selectedKey by remember { mutableStateOf<String?>(null) }
+    var fullPreviewIndex by remember { mutableStateOf<Int?>(null) }
     var pendingDelete by remember { mutableStateOf<NovelAiGenerationHistoryEntry?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
 
-    LaunchedEffect(state.applied) { if (state.applied) onBack() }
+    LaunchedEffect(state.applied) {
+        if (state.applied) {
+            viewModel.consumeApplied()
+            onBack()
+        }
+    }
+    LaunchedEffect(state.filteredImages, selectedKey) {
+        if (selectedKey != null && state.filteredImages.none { it.key == selectedKey }) {
+            selectedKey = null
+            fullPreviewIndex = null
+        }
+    }
 
     Column(Modifier.fillMaxSize().navigationBarsPadding()) {
         CbTopBar(
             title = "生图历史",
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
+                CbIconButton(
+                    AppIcons.Calendar,
+                    "按日期筛选",
+                    { showDateFilter = true },
+                    enabled = state.entries.isNotEmpty(),
+                    tint = if (state.dateFilter != null) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground
+                )
+                CbIconButton(
+                    AppIcons.Search,
+                    "搜索 Prompt",
+                    {
+                        if (searchExpanded) viewModel.updateSearchQuery("")
+                        searchExpanded = !searchExpanded
+                    },
+                    enabled = state.entries.isNotEmpty(),
+                    tint = if (state.searchQuery.isNotEmpty()) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground
+                )
                 if (state.entries.isNotEmpty()) {
-                    CbButton("清空", { confirmClear = true }, enabled = !state.busy, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
+                    CbIconButton(
+                        AppIcons.DeleteSweep,
+                        "清空全部历史",
+                        { confirmClear = true },
+                        enabled = !state.busy,
+                        tint = ChatBarTheme.colors.destructive
+                    )
                 }
             }
         )
-        if (state.entries.isEmpty()) {
-            Column(Modifier.fillMaxSize().padding(ChatBarSpacing.xl), verticalArrangement = Arrangement.Center) {
-                CbText("暂无历史批次", color = ChatBarTheme.colors.mutedForeground)
-            }
-        } else {
-            LazyColumn(
-                Modifier.fillMaxSize().padding(ChatBarSpacing.md),
-                verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
+
+        if (searchExpanded) {
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.sm),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
             ) {
-                items(state.entries, key = NovelAiGenerationHistoryEntry::id) { entry ->
-                    HistoryBatchCard(entry, { image -> selected = entry to image }, { pendingDelete = entry })
-                }
+                CbInput(
+                    value = state.searchQuery,
+                    onValueChange = viewModel::updateSearchQuery,
+                    modifier = Modifier.weight(1f),
+                    placeholder = "搜索画风、基础或角色 Prompt"
+                )
+                CbIconButton(
+                    AppIcons.Close,
+                    "关闭并清除搜索",
+                    {
+                        viewModel.updateSearchQuery("")
+                        searchExpanded = false
+                    }
+                )
             }
         }
-    }
 
-    if (previewPath == null) selected?.let { (entry, image) ->
-        CbDialog(
-            onDismissRequest = { selected = null },
-            title = "Seed ${image.seed}",
-            dismiss = { CbButton("关闭", { selected = null }, variant = ButtonVariant.Ghost) }
-        ) {
-            AsyncImage(
-                model = image.path,
-                contentDescription = "历史大图",
-                modifier = Modifier
+        state.dateFilter?.let { filter ->
+            Row(
+                Modifier
                     .fillMaxWidth()
-                    .heightIn(max = 520.dp)
-                    .clip(RoundedCornerShape(ChatBarShape.md))
-                    .clickable { previewPath = image.path },
-                contentScale = ContentScale.Fit
+                    .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.xs)
+                    .background(ChatBarTheme.colors.primaryAlpha, RoundedCornerShape(ChatBarShape.sm))
+                    .padding(start = ChatBarSpacing.md),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CbText(
+                    "日期 · ${filter.displayLabel()} · ${state.filteredImages.size} 张",
+                    modifier = Modifier.weight(1f),
+                    color = ChatBarTheme.colors.primary,
+                    style = ChatBarTheme.typography.caption
+                )
+                CbIconButton(AppIcons.Close, "清除日期筛选", { viewModel.applyDateFilter(null) })
+            }
+        }
+
+        when {
+            state.entries.isEmpty() -> HistoryEmptyState("暂无历史图片")
+            state.filteredImages.isEmpty() -> HistoryEmptyState("没有符合筛选条件的图片")
+            else -> NovelAiHistoryGallery(
+                items = state.filteredImages,
+                onSelect = { selectedKey = it.key }
             )
-            CbText(
-                "点击大图查看；全屏长按可打码、保存或分享",
-                modifier = Modifier.padding(top = ChatBarSpacing.xs),
-                color = ChatBarTheme.colors.mutedForeground,
-                style = ChatBarTheme.typography.caption
-            )
-            Spacer(Modifier.height(ChatBarSpacing.md))
-            CbButton("完整复现", { viewModel.apply(entry, image, NovelAiHistoryApplyMode.FULL) }, Modifier.fillMaxWidth(), enabled = !state.busy)
-            Spacer(Modifier.height(ChatBarSpacing.sm))
-            CbButton("复用设置，新 Seed", { viewModel.apply(entry, image, NovelAiHistoryApplyMode.NEW_SEED) }, Modifier.fillMaxWidth(), enabled = !state.busy, variant = ButtonVariant.Outline)
-            Spacer(Modifier.height(ChatBarSpacing.sm))
-            CbButton("仅用 Seed", { viewModel.apply(entry, image, NovelAiHistoryApplyMode.SEED_ONLY) }, Modifier.fillMaxWidth(), enabled = !state.busy, variant = ButtonVariant.Secondary)
         }
     }
 
-    previewPath?.let { path ->
-        ImagePreviewDialog(path = path, onDismiss = { previewPath = null })
+    if (showDateFilter) {
+        HistoryDateFilterDialog(
+            entries = state.entries,
+            current = state.dateFilter,
+            onDismiss = { showDateFilter = false },
+            onClear = {
+                viewModel.applyDateFilter(null)
+                showDateFilter = false
+            },
+            onApply = { filter ->
+                viewModel.applyDateFilter(filter)
+                showDateFilter = false
+            }
+        )
+    }
+
+    val selectedIndex = selectedKey?.let { key -> state.filteredImages.indexOfFirst { it.key == key } }
+        ?.takeIf { it >= 0 }
+    if (
+        selectedIndex != null && fullPreviewIndex == null && pendingDelete == null &&
+        !showDateFilter && !confirmClear
+    ) {
+        HistoryDetailDialog(
+            items = state.filteredImages,
+            initialIndex = selectedIndex,
+            busy = state.busy,
+            onDismiss = { selectedKey = null },
+            onCurrentChanged = { item -> selectedKey = item.key },
+            onOpenImage = { index -> fullPreviewIndex = index },
+            onApply = viewModel::apply,
+            onDeleteBatch = { entry -> pendingDelete = entry }
+        )
+    }
+
+    fullPreviewIndex?.let { index ->
+        val previewItems = state.filteredImages.map { item ->
+            ImagePreviewItem(messageId = item.entry.id, path = item.image.path)
+        }
+        if (previewItems.isNotEmpty()) {
+            ImagePreviewDialog(
+                items = previewItems,
+                initialIndex = index.coerceIn(previewItems.indices),
+                onDismiss = { fullPreviewIndex = null },
+                onPageChanged = { page ->
+                    fullPreviewIndex = page
+                    state.filteredImages.getOrNull(page)?.let { selectedKey = it.key }
+                }
+            )
+        }
     }
 
     pendingDelete?.let { entry ->
@@ -130,19 +236,41 @@ fun NovelAiHistoryScreen(
             onDismissRequest = { pendingDelete = null },
             title = "删除历史批次？",
             confirm = {
-                CbButton("删除", { pendingDelete = null; viewModel.delete(entry) }, variant = ButtonVariant.Destructive)
+                CbButton(
+                    "删除",
+                    {
+                        pendingDelete = null
+                        selectedKey = null
+                        viewModel.delete(entry)
+                    },
+                    variant = ButtonVariant.Destructive
+                )
             },
             dismiss = { CbButton("取消", { pendingDelete = null }, variant = ButtonVariant.Ghost) }
-        ) { CbText("将删除记录及 ${entry.images.size} 张应用缓存图片。已保存到系统图库的副本不受影响。") }
+        ) {
+            CbText("将删除记录及 ${entry.images.size} 张应用缓存图片。已保存到系统图库的副本不受影响。")
+        }
     }
 
     if (confirmClear) {
         CbDialog(
             onDismissRequest = { confirmClear = false },
             title = "清空全部历史？",
-            confirm = { CbButton("清空", { confirmClear = false; viewModel.clearAll() }, variant = ButtonVariant.Destructive) },
+            confirm = {
+                CbButton(
+                    "清空",
+                    {
+                        confirmClear = false
+                        selectedKey = null
+                        viewModel.clearAll()
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            },
             dismiss = { CbButton("取消", { confirmClear = false }, variant = ButtonVariant.Ghost) }
-        ) { CbText("将删除所有已建索引历史及其应用缓存图片。旧版未建索引文件不会删除。") }
+        ) {
+            CbText("将删除全部已建索引历史及其应用缓存图片，不仅限于当前筛选结果。旧版未建索引文件不会删除。")
+        }
     }
 
     state.error?.let { error ->
@@ -155,45 +283,272 @@ fun NovelAiHistoryScreen(
 }
 
 @Composable
-private fun HistoryBatchCard(
-    entry: NovelAiGenerationHistoryEntry,
-    onSelect: (NovelAiGenerationHistoryImage) -> Unit,
-    onDelete: () -> Unit
+private fun HistoryEmptyState(text: String) {
+    Box(Modifier.fillMaxSize().padding(ChatBarSpacing.xl), contentAlignment = Alignment.Center) {
+        CbText(text, color = ChatBarTheme.colors.mutedForeground)
+    }
+}
+
+@Composable
+internal fun NovelAiHistoryGallery(
+    items: List<NovelAiHistoryImageItem>,
+    onSelect: (NovelAiHistoryImageItem) -> Unit,
+    modifier: Modifier = Modifier
 ) {
-    val settings = entry.recipe.settings
-    CbSurface(
-        Modifier.fillMaxWidth(),
-        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    LazyVerticalGrid(
+        columns = GridCells.Adaptive(minSize = 104.dp),
+        modifier = modifier.fillMaxSize(),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(ChatBarSpacing.sm),
+        horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs),
+        verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
     ) {
-        Column(Modifier.fillMaxWidth().padding(ChatBarSpacing.md)) {
-            Row {
-                Column(Modifier.weight(1f)) {
-                    CbText(settings.model.displayName, style = ChatBarTheme.typography.label)
-                    CbText(
-                        "${formatTime(entry.createdAt)} · ${entry.images.size} 张 · ${settings.imageSize().width}×${settings.imageSize().height} · ${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} · ${settings.sampler.displayName}",
-                        color = ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.caption
+        itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
+            AsyncImage(
+                model = item.image.path,
+                contentDescription = "历史图片 ${index + 1}",
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+                    .clip(RoundedCornerShape(ChatBarShape.sm))
+                    .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
+                    .clickable { onSelect(item) },
+                contentScale = ContentScale.Crop
+            )
+        }
+    }
+}
+
+@Composable
+private fun HistoryDateFilterDialog(
+    entries: List<NovelAiGenerationHistoryEntry>,
+    current: NovelAiHistoryDateFilter?,
+    onDismiss: () -> Unit,
+    onClear: () -> Unit,
+    onApply: (NovelAiHistoryDateFilter) -> Unit
+) {
+    val latestTimestamp = entries.firstOrNull()?.createdAt ?: System.currentTimeMillis()
+    val (defaultYear, defaultMonth, defaultDay) = NovelAiHistoryFilterPolicy.dateParts(latestTimestamp)
+    var granularity by remember(current, latestTimestamp) {
+        mutableStateOf(current?.granularity ?: NovelAiHistoryDateGranularity.DAY)
+    }
+    var year by remember(current, latestTimestamp) { mutableIntStateOf(current?.year ?: defaultYear) }
+    var month by remember(current, latestTimestamp) { mutableIntStateOf(current?.month ?: defaultMonth) }
+    var day by remember(current, latestTimestamp) { mutableIntStateOf(current?.day ?: defaultDay) }
+    val years = remember(entries, year) {
+        (entries.map { NovelAiHistoryFilterPolicy.dateParts(it.createdAt).first } + year)
+            .distinct()
+            .sortedDescending()
+    }
+    val maximumDay = remember(year, month) {
+        Calendar.getInstance().run {
+            set(Calendar.YEAR, year)
+            set(Calendar.MONTH, month - 1)
+            set(Calendar.DAY_OF_MONTH, 1)
+            getActualMaximum(Calendar.DAY_OF_MONTH)
+        }
+    }
+    LaunchedEffect(maximumDay) {
+        if (day > maximumDay) day = maximumDay
+    }
+
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "日期筛选",
+        confirm = {
+            CbButton(
+                "应用",
+                {
+                    onApply(
+                        NovelAiHistoryDateFilter(
+                            granularity = granularity,
+                            year = year,
+                            month = month.takeUnless { granularity == NovelAiHistoryDateGranularity.YEAR },
+                            day = day.takeIf { granularity == NovelAiHistoryDateGranularity.DAY }
+                        )
                     )
                 }
-                CbIconButton(AppIcons.Delete, "删除批次", onDelete, tint = ChatBarTheme.colors.destructive)
+            )
+        },
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
+            NovelAiHistoryDateGranularity.entries.forEach { option ->
+                CbChoiceChip(
+                    text = when (option) {
+                        NovelAiHistoryDateGranularity.DAY -> "按日"
+                        NovelAiHistoryDateGranularity.MONTH -> "按月"
+                        NovelAiHistoryDateGranularity.YEAR -> "按年"
+                    },
+                    selected = granularity == option,
+                    onClick = { granularity = option },
+                    modifier = Modifier.weight(1f)
+                )
             }
+        }
+        Spacer(Modifier.height(ChatBarSpacing.md))
+        CbSelect(year, years, { "${it}年" }, { year = it }, placeholder = "年份")
+        if (granularity != NovelAiHistoryDateGranularity.YEAR) {
             Spacer(Modifier.height(ChatBarSpacing.sm))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
-                itemsIndexed(entry.images) { index, image ->
-                    Column(Modifier.clickable { onSelect(image) }) {
-                        AsyncImage(
-                            model = image.path,
-                            contentDescription = "批次图片 ${index + 1}",
-                            modifier = Modifier.size(108.dp).clip(RoundedCornerShape(ChatBarShape.sm)),
-                            contentScale = ContentScale.Crop
-                        )
-                        CbText("Seed ${image.seed}", style = ChatBarTheme.typography.caption, maxLines = 1)
+            CbSelect(month, (1..12).toList(), { "${it}月" }, { month = it }, placeholder = "月份")
+        }
+        if (granularity == NovelAiHistoryDateGranularity.DAY) {
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            CbSelect(day, (1..maximumDay).toList(), { "${it}日" }, { day = it }, placeholder = "日期")
+        }
+        Spacer(Modifier.height(ChatBarSpacing.sm))
+        CbButton("全部日期", onClear, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
+    }
+}
+
+@Composable
+internal fun HistoryDetailDialog(
+    items: List<NovelAiHistoryImageItem>,
+    initialIndex: Int,
+    busy: Boolean,
+    onDismiss: () -> Unit,
+    onCurrentChanged: (NovelAiHistoryImageItem) -> Unit,
+    onOpenImage: (Int) -> Unit,
+    onApply: (NovelAiGenerationHistoryEntry, NovelAiGenerationHistoryImage, NovelAiHistoryApplyMode) -> Unit,
+    onDeleteBatch: (NovelAiGenerationHistoryEntry) -> Unit
+) {
+    val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(items.indices)) { items.size }
+    val currentIndex = pagerState.currentPage.coerceIn(items.indices)
+    val current = items[currentIndex]
+
+    LaunchedEffect(pagerState.currentPage, items) {
+        items.getOrNull(pagerState.currentPage)?.let(onCurrentChanged)
+    }
+
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "图片详情",
+        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        BoxWithConstraints(Modifier.fillMaxWidth()) {
+            val previewHeight = (maxHeight * 0.44f).coerceIn(168.dp, 300.dp)
+            Column(Modifier.fillMaxWidth().heightIn(max = maxHeight)) {
+                HorizontalPager(
+                    state = pagerState,
+                    modifier = Modifier.fillMaxWidth().height(previewHeight),
+                    key = { page -> items[page].key }
+                ) { page ->
+                    AsyncImage(
+                        model = items[page].image.path,
+                        contentDescription = "历史详情图片 ${page + 1}",
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .clip(RoundedCornerShape(ChatBarShape.md))
+                            .background(ChatBarTheme.colors.surfaceSubtle)
+                            .clickable { onOpenImage(page) },
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                CbText(
+                    "第 ${currentIndex + 1} 张 / 共 ${items.size} 张",
+                    modifier = Modifier.fillMaxWidth().padding(vertical = ChatBarSpacing.xs),
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                    HistoryApplyIcon(AppIcons.Restore, "完整复现", "完整复现", !busy) {
+                        onApply(current.entry, current.image, NovelAiHistoryApplyMode.FULL)
                     }
+                    HistoryApplyIcon(AppIcons.Tune, "复用设置", "复用设置并使用新 Seed", !busy) {
+                        onApply(current.entry, current.image, NovelAiHistoryApplyMode.NEW_SEED)
+                    }
+                    HistoryApplyIcon(AppIcons.Refresh, "仅用 Seed", "仅复用 Seed", !busy) {
+                        onApply(current.entry, current.image, NovelAiHistoryApplyMode.SEED_ONLY)
+                    }
+                }
+                CbDivider(Modifier.padding(vertical = ChatBarSpacing.sm))
+                LazyColumn(Modifier.fillMaxWidth().weight(1f, fill = false).heightIn(max = 320.dp)) {
+                    item { HistoryDetailContent(current, onDeleteBatch) }
                 }
             }
         }
     }
 }
 
-private fun formatTime(timestamp: Long): String =
-    SimpleDateFormat("MM-dd HH:mm", Locale.getDefault()).format(Date(timestamp))
+@Composable
+private fun androidx.compose.foundation.layout.RowScope.HistoryApplyIcon(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    label: String,
+    description: String,
+    enabled: Boolean,
+    onClick: () -> Unit
+) {
+    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
+        CbIconButton(icon, description, onClick, enabled = enabled)
+        CbText(
+            label,
+            color = if (enabled) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.45f),
+            style = ChatBarTheme.typography.caption,
+            maxLines = 1
+        )
+    }
+}
+
+@Composable
+private fun HistoryDetailContent(
+    item: NovelAiHistoryImageItem,
+    onDeleteBatch: (NovelAiGenerationHistoryEntry) -> Unit
+) {
+    val recipe = item.entry.recipe
+    val settings = recipe.settings
+    val size = settings.imageSize()
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            CbText(formatFullTime(item.entry.createdAt), style = ChatBarTheme.typography.label)
+            CbText("Seed ${item.image.seed}", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        }
+        CbIconButton(
+            AppIcons.Delete,
+            "删除当前图片所属批次",
+            { onDeleteBatch(item.entry) },
+            tint = ChatBarTheme.colors.destructive
+        )
+    }
+    Spacer(Modifier.height(ChatBarSpacing.sm))
+    HistoryDetailValue("画风 Prompt", recipe.stylePrompt)
+    HistoryDetailValue("基础 Prompt", recipe.basePrompt)
+    recipe.characters.forEachIndexed { index, character ->
+        HistoryDetailValue("角色 ${index + 1} Prompt", character.prompt)
+    }
+    HistoryDetailValue("基础负面 Prompt", recipe.negativePrompt)
+    recipe.characters.forEachIndexed { index, character ->
+        HistoryDetailValue("角色 ${index + 1} 负面 Prompt", character.negativePrompt)
+    }
+    HistoryDetailValue(
+        "详细设置",
+        "${settings.model.displayName} · ${size.width}×${size.height} · ${settings.count} 张\n" +
+            "${settings.steps} Steps · Guidance ${"%.1f".format(settings.guidance)} · ${settings.sampler.displayName}"
+    )
+}
+
+@Composable
+private fun HistoryDetailValue(label: String, value: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
+    CbText(label, style = ChatBarTheme.typography.label)
+    Spacer(Modifier.height(ChatBarSpacing.xs))
+    CbSurface(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClickLabel = "复制$label") {
+                clipboard.setText(AnnotatedString(value))
+                Toast.makeText(context, "已复制$label", Toast.LENGTH_SHORT).show()
+            },
+        color = ChatBarTheme.colors.surfaceSubtle,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        CbText(
+            value.ifBlank { "（空）" },
+            modifier = Modifier.fillMaxWidth().padding(ChatBarSpacing.sm),
+            color = if (value.isBlank()) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.foreground
+        )
+    }
+    Spacer(Modifier.height(ChatBarSpacing.sm))
+}
+
+private fun formatFullTime(timestamp: Long): String =
+    SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(timestamp))

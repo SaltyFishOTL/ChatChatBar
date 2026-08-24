@@ -2,6 +2,7 @@ package com.example.chatbar.domain.image
 
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -106,6 +107,7 @@ class NovelAiStudioModelsTest {
         val current = NovelAiStudioDraft(
             stylePrompt = "current style",
             basePrompt = "current base",
+            naturalLanguageMode = true,
             selectedModel = NovelAiImageModel.V4_5_FULL
         )
         val recipe = NovelAiGenerationRecipe(
@@ -118,14 +120,23 @@ class NovelAiStudioModelsTest {
         assertEquals(NovelAiImageModel.V5_FULL, full.selectedModel)
         assertEquals(NovelAiSeedMode.FIXED, full.activeSettings.seedMode)
         assertEquals(99L, full.activeSettings.seed)
+        assertTrue(full.naturalLanguageMode)
 
         val newSeed = current.applyHistoryRecipe(recipe, 99L, NovelAiHistoryApplyMode.NEW_SEED)
         assertEquals(NovelAiSeedMode.RANDOM, newSeed.activeSettings.seedMode)
+        assertTrue(newSeed.naturalLanguageMode)
 
         val seedOnly = current.applyHistoryRecipe(recipe, 99L, NovelAiHistoryApplyMode.SEED_ONLY)
         assertEquals("current base", seedOnly.basePrompt)
         assertEquals(NovelAiImageModel.V4_5_FULL, seedOnly.selectedModel)
         assertEquals(99L, seedOnly.activeSettings.seed)
+    }
+
+    @Test
+    fun `AI design language mode is not generation recipe state`() {
+        val draft = NovelAiStudioDraft(naturalLanguageMode = true)
+
+        assertFalse(draft.toRecipe().naturalLanguageMode)
     }
 
     @Test
