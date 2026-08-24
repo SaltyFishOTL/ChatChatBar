@@ -20,7 +20,7 @@ data class ChatMemoryTurn(
 
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
-    const val CONTENT_VERSION = "6"
+    const val CONTENT_VERSION = "7"
 
     private const val LONG_TURN_SPLIT_THRESHOLD = 600
     private const val SPLIT_SEARCH_START = 300
@@ -40,22 +40,33 @@ object ChatMemoryIndexPolicy {
         "ok", "okay", "yes", "no"
     )
 
-    /** 一个稳定source turn对应一个原始对话身份单元；SYSTEM永不进入RAG正文。 */
+    /** 一个稳定source turn对应一个原始对话身份单元；无可索引文本的消息不进入RAG身份。 */
     fun buildTurns(messages: List<ChatMessage>): List<ChatMemoryTurn> =
         ChatContextGroupPolicy.groups(messages).mapNotNull { group ->
             val storyMessages = group.messages.filter { it.role != MessageRole.SYSTEM }
             val hasStableSourceTurn = storyMessages.isNotEmpty() &&
                 storyMessages.all { it.sourceTurnId != null }
-            if (storyMessages.isEmpty() || (!hasStableSourceTurn && !group.isCompleteTurn)) {
+            val indexMessages = storyMessages.filter(::contributesToIndex)
+            if (
+                storyMessages.isEmpty() ||
+                indexMessages.isEmpty() ||
+                (!hasStableSourceTurn && !group.isCompleteTurn)
+            ) {
                 null
             } else {
                 ChatMemoryTurn(
                     sourceTurnId = storyMessages.mapNotNull { it.sourceTurnId }.distinct().singleOrNull(),
                     sourceTurnOrder = storyMessages.mapNotNull { it.sourceTurnOrder }.distinct().singleOrNull(),
-                    messages = storyMessages
+                    messages = indexMessages
                 )
             }
         }
+
+    fun contributesToIndex(message: ChatMessage): Boolean = when (message.role) {
+        MessageRole.USER -> message.displayContent.isNotBlank()
+        MessageRole.ASSISTANT -> cleanAssistantContent(message.displayContent).isNotBlank()
+        MessageRole.SYSTEM -> false
+    }
 
     fun buildIndexableTurns(
         messages: List<ChatMessage>,

@@ -3182,18 +3182,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
 
-            _isDeletingMemory.value = true
-            yield()
-            try {
-                ragMemoryMutationMutex.withLock {
-                    if (deletedMessage == null) {
-                        ragManager.deleteMemoryForMessage(messageId)
-                    } else {
-                        refreshMemoryAfterMessageDeletion(deletedMessage)
+            if (deletedMessage == null || ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
+                _isDeletingMemory.value = true
+                yield()
+                try {
+                    ragMemoryMutationMutex.withLock {
+                        if (deletedMessage == null) {
+                            ragManager.deleteMemoryForMessage(messageId)
+                        } else {
+                            refreshMemoryAfterMessageDeletion(deletedMessage)
+                        }
                     }
+                } finally {
+                    _isDeletingMemory.value = false
                 }
-            } finally {
-                _isDeletingMemory.value = false
             }
         }
     }
@@ -3203,8 +3205,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
-            deleteDisposableChatImage(imagePath)
             if (remaining.isEmpty() && message.content.isBlank()) {
+                chatRepository.deleteMessage(messageId, sessionId)
+                _messages.value = _messages.value.filterNot { it.id == messageId }
+                refreshMessages()
+
                 val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
                 if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
                     fishAudioCoordinator.stopPlayback()
@@ -3212,20 +3217,29 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 deletedVoices.forEach { voice ->
                     ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
                 }
-                chatRepository.deleteMessage(messageId, sessionId)
-                ragMemoryMutationMutex.withLock {
-                    refreshMemoryAfterMessageDeletion(message)
+                withContext(Dispatchers.IO) {
+                    deleteDisposableChatImage(imagePath)
+                }
+                if (ChatMemoryIndexPolicy.contributesToIndex(message)) {
+                    ragMemoryMutationMutex.withLock {
+                        refreshMemoryAfterMessageDeletion(message)
+                    }
                 }
             } else {
-                chatRepository.updateMessage(
-                    message.copy(
-                        images = remaining,
-                        generatedImageMetadata = message.generatedImageMetadata
-                            .filter { it.imagePath in remaining }
-                    )
+                val updatedMessage = message.copy(
+                    images = remaining,
+                    generatedImageMetadata = message.generatedImageMetadata
+                        .filter { it.imagePath in remaining }
                 )
+                chatRepository.updateMessage(updatedMessage)
+                _messages.value = _messages.value.map { current ->
+                    if (current.id == messageId) updatedMessage else current
+                }
+                refreshMessages()
+                withContext(Dispatchers.IO) {
+                    deleteDisposableChatImage(imagePath)
+                }
             }
-            refreshMessages()
         }
     }
 
@@ -3359,6 +3373,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private suspend fun refreshMemoryAfterMessageDeletion(deletedMessage: ChatMessage) {
+        if (!ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) return
+
         val remainingTurnMessage = deletedMessage.sourceTurnId?.let { sourceTurnId ->
             chatRepository.getMessages(sessionId).firstOrNull { it.sourceTurnId == sourceTurnId }
         }

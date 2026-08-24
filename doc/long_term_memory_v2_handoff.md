@@ -1,13 +1,14 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-08-22
+Last updated: 2026-08-24
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `532e460 Release 1.3.22`
-Status: 已修复模型配置恢复正常后，长期记忆维护仍显示旧“对话模型未配置或缺少鉴权”的状态残留。JVM全测与`ci.ps1 -SkipAssemble`通过；release已保数据部署到设备`49075ec2`。未调用真实模型，模型恢复后的维护页状态仍待专项手测。
+Status: 已修复聊天中的AI生成图片错误进入RAG消息身份、导致删除图片时等待远程Embedding的问题。RAG v7只索引规范化后的非空文本消息；图片仍保留聊天与长期记忆source-turn身份。release已保数据部署到设备`49075ec2`，未调用真实模型或Embedding。
 
 ## Completed
 
+- 2026-08-24聊天AI图片与RAG解耦：空正文AI生成图片消息此前虽不进入向量正文，仍进入完整source turn的`messageIds`并成为末尾assistant anchor；删除历史图片会因此重建整轮向量并等待远程Embedding。现`ChatMemoryIndexPolicy`只把规范化后非空文本消息放入RAG正文、`messageIds`和anchor，纯图片轮不建索引；内容版本升至7使旧错误块安全失效。删除图片或整条图片消息时先持久化并即时刷新UI、文件清理走IO，且纯图片消息不再等待RAG互斥或触发Embedding。长期记忆语义指纹仍保留图片及其source-turn变化，RAG所有权保持独立。
 - 2026-08-21长期记忆模型预检错误自愈：Archive/HEAD/backfill曾把“对话模型未配置或缺少鉴权”持久化；模型恢复可用后，若Gap、来源修复或压缩选择使维护阶段提前返回，旧错误不会经过正常成功路径清除，造成对话可用但维护页持续报错。现协调器每次成功解析当前会话模型并通过同一鉴权检查后，先清除仅限`PREFLIGHT + 精确模型配置错误`的旧Archive/HEAD/backfill状态；真实网络、请求、输出校验及其他预检错误完整保留。纯策略回归测试与本地CI已通过。
 - 2026-08-16 NovelAI名称策略分流：聊天生图必须把有效玩家名归一回`${'$'}username`，并让画面规划与最终Prompt设计请求全程保留该玩家角色标记；`${'$'}botname`仍渲染为`CharacterCard.effectiveBotName`。角色卡封面、朋友圈及Prompt工具继续在请求前渲染真实玩家/角色名称；会话玩家名覆盖优先于全局玩家名。规划Debug展示实际发送的system prompt。模板常量保持占位符，未配置名称时沿用项目现有未解析语义。
 - 2026-08-16流式消息此前作为独立LazyColumn尾项显示，落盘后换成不同key的持久消息；长回复完成时列表丢失条目内偏移并跳回气泡顶部。中断路径又先刷新仓库、再清除流式状态，而刷新会按活动流式ID过滤刚保存的草稿，导致草稿直到下一次聊天刷新才重现。现流式、持久及重新生成替换版本始终按同一消息ID合并为一个时间线条目；持久化后先刷新同ID durable数据，再清流式覆盖。仓库刷新只隐藏明确的重新生成旧目标，不再隐藏普通流稿ID。滚动锚点直接基于合并时间线保存。
@@ -147,6 +148,7 @@ Status: 已修复模型配置恢复正常后，长期记忆维护仍显示旧“
 
 ## Verification Baseline
 
+- 2026-08-24聊天AI图片与RAG解耦：`redeploy.bat --no-pause`通过release Kotlin编译、Lint Vital、打包和签名检查，并在唯一授权设备`49075ec2`完成保数据安装与启动。新增`ChatMemoryIndexPolicyTest`覆盖同轮纯图片消息不进入RAG正文/`messageIds`/anchor、纯图片轮不建索引及v6块失效；按项目规则未运行自动测试。未触发真实Embedding或长期记忆模型调用。
 - 2026-08-21长期记忆模型预检错误自愈：`redeploy.bat --build-only --no-pause` release构建通过，包含release Kotlin编译、lint vital、打包与签名检查。新增`MemoryModelPreflightPolicyTest`覆盖只清除精确模型配置预检错误，并保留同文案的非预检失败及其他backfill错误；按项目规则未运行测试。`adb devices -l`无连接设备，未部署、未调用模型。
 - 2026-08-16中断草稿、流式完成滚动及NovelAI名称策略：按用户确认，聊天场景、规划system及最终设计system保留`${'$'}username`，真实玩家名归一为该标记，`${'$'}botname`仍渲染；其他生图路径继续渲染名称。`:app:compileDebugKotlin`、全量JVM测试、`ci.ps1 -SkipAssemble`与`redeploy.bat --build-only --no-pause`通过，Android测试源码编译成功。此前设备`49075ec2`已安装上一轮release；最终例外修正时ADB无设备，未部署最新APK。未调用真实模型或NovelAI。
 - 2026-08-14并发消息排序与历史修复：定向`ChatMessageOrderingTest`、`ChatMessageRefreshPolicyTest`、`ChatMessageOrderRepairPolicyTest`、`ChatRepositoryTest`通过；全量`gradlew test --rerun-tasks`与`ci.ps1 -SkipAssemble`通过，Android测试源码编译成功。覆盖图片锚点插入不改并发回复键、重新生成刷新隐藏旧气泡、source-turn/链式图片修复、孤儿/循环锚点保守处理、修复前快照拒绝、持久备份、撤销及后续消息更新时拒绝撤销。首次CI因沙箱禁止下载固定Gradle 9.1失败，授权网络后同一命令通过。最终实体机`49075ec2`经`redeploy.bat --no-pause`完成release保数据安装与启动命令，进程PID `18805`持续存活，最近`AndroidRuntime`错误为空。未在用户旧聊天执行修复按钮，未调用模型。

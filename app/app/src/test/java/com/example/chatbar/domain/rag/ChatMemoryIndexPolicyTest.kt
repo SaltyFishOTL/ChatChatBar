@@ -48,6 +48,44 @@ class ChatMemoryIndexPolicyTest {
     }
 
     @Test
+    fun buildTurns_excludesAssistantImageMessagesFromRagIdentity() {
+        val messages = listOf(
+            message("user", MessageRole.USER, "我们去码头。", sourceTurnId = "turn-7"),
+            message("assistant", MessageRole.ASSISTANT, "她答应同行。", sourceTurnId = "turn-7"),
+            message(
+                "image",
+                MessageRole.ASSISTANT,
+                "",
+                images = listOf("generated.png"),
+                sourceTurnId = "turn-7"
+            )
+        )
+
+        val turn = ChatMemoryIndexPolicy.buildTurns(messages).single()
+
+        assertEquals(setOf("user", "assistant"), turn.messageIds)
+        assertEquals("assistant", turn.anchorMessage.id)
+        assertEquals(
+            "user:\n我们去码头。\n\nassistant:\n她答应同行。",
+            ChatMemoryIndexPolicy.contentForIndex(turn)
+        )
+        assertFalse(ChatMemoryIndexPolicy.contributesToIndex(messages.last()))
+    }
+
+    @Test
+    fun buildTurns_skipsStableTurnContainingOnlyAssistantImage() {
+        val image = message(
+            "image",
+            MessageRole.ASSISTANT,
+            "",
+            images = listOf("generated.png"),
+            sourceTurnId = "turn-7"
+        )
+
+        assertTrue(ChatMemoryIndexPolicy.buildTurns(listOf(image)).isEmpty())
+    }
+
+    @Test
     fun buildIndexableTurns_includesEveryCompleteTOutsideActiveContext() {
         val messages = listOf(
             message("opening", MessageRole.ASSISTANT, "她在旧车站等待。", sourceTurnId = "turn-0"),
@@ -183,8 +221,8 @@ class ChatMemoryIndexPolicyTest {
     fun rebuildPolicy_marksPairAndOldTurnChunksButNeverManualChunks() {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("message_pair", "4")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("memory_node", "1")))
-        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "5")))
-        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }
 
