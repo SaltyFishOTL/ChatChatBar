@@ -33,6 +33,7 @@ import com.example.chatbar.domain.memory.MemoryHashes
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
+import com.example.chatbar.domain.memory.MemoryHeadMaintenanceState
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
@@ -473,6 +474,49 @@ class LongTermMemoryUiTest {
         composeTestRule.onNodeWithText("正在流式生成修复摘要").assertIsDisplayed()
         composeTestRule.onNodeWithText("完成当前节点后暂停").performClick()
         composeTestRule.runOnIdle { assertTrue(paused) }
+    }
+
+    @Test
+    fun queuedSourceRepairShowsNeutralQueuedProgress() {
+        val state = uiState(
+            episode(),
+            memoryState = memoryState().copy(
+                staleSourcesByNodeId = mapOf("episode" to listOf("s0")),
+                sourceRepair = MemorySourceRepairState(status = MemorySourceRepairStatus.RUNNING)
+            )
+        ).copy(
+            sourceRepairProgress = MemorySourceRepairProgress(
+                phase = MemorySourceRepairPhase.WAITING_FOR_ARCHIVE,
+                totalRoots = 0,
+                completedRoots = 0
+            )
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemorySourceRepairAction(state, onStart = {}, onPause = {})
+            }
+        }
+
+        composeTestRule.onNodeWithText("来源修复已排队").assertIsDisplayed()
+    }
+
+    @Test
+    fun laggingValidHeadRemainsVisibleWhileBackgroundCatchesUp() {
+        val head = MemoryHead(throughSourceTurnId = "s0", location = "旧快照仍有效")
+        val state = uiState(episode(), head = head).copy(
+            headPresent = true,
+            headMaintenanceState = MemoryHeadMaintenanceState.REBUILD
+        )
+        composeTestRule.setContent {
+            ChatBarTheme {
+                MemoryHeadPage(state, onEditHead = {})
+            }
+        }
+
+        composeTestRule.onNodeWithText("旧快照仍有效").assertIsDisplayed()
+        composeTestRule.onNodeWithText(
+            "后台正在追赶较新的剧情轮；当前聊天继续使用上方截至点的有效状态。"
+        ).assertIsDisplayed()
     }
 
     @Test

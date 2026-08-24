@@ -6,6 +6,14 @@ enum class MemoryHeadUpdateMode {
     UPDATE
 }
 
+enum class MemoryHeadMaintenanceState {
+    WAITING_FOR_INITIALIZATION,
+    CURRENT,
+    ROLL_FORWARD,
+    REBUILD,
+    SOURCE_UNAVAILABLE
+}
+
 data class MemoryHeadUpdatePlan(
     val mode: MemoryHeadUpdateMode,
     val targetSourceTurnId: String,
@@ -13,6 +21,9 @@ data class MemoryHeadUpdatePlan(
 )
 
 object MemoryHeadUpdatePolicy {
+    fun canInject(hasHeadContent: Boolean, sourceAvailable: Boolean): Boolean =
+        hasHeadContent && sourceAvailable
+
     /**
      * Stable groups include the complete previous turn kept raw at prompt tail.
      * HEAD therefore targets the group immediately before it.
@@ -68,19 +79,41 @@ object MemoryHeadUpdatePolicy {
         return previousIndex >= targetIndex
     }
 
-    fun requiresBackfill(
+    fun maintenanceState(
         hasHeadContent: Boolean,
         throughSourceTurnId: String?,
         stableSourceTurnIds: List<String>,
-        hasHistoricalMemory: Boolean
-    ): Boolean {
+        hasHistoricalMemory: Boolean,
+        sourceAvailable: Boolean = true,
+        pathCrossesGap: Boolean = false
+    ): MemoryHeadMaintenanceState {
+        if (!hasHeadContent && stableSourceTurnIds.size < 3) {
+            return MemoryHeadMaintenanceState.WAITING_FOR_INITIALIZATION
+        }
+        if (!sourceAvailable) return MemoryHeadMaintenanceState.SOURCE_UNAVAILABLE
         val targetIndex = stableSourceTurnIds.lastIndex - 1
-        if (targetIndex < 0) return hasHistoricalMemory && !hasHeadContent
+        if (targetIndex < 0) {
+            return if (hasHeadContent) {
+                MemoryHeadMaintenanceState.CURRENT
+            } else {
+                MemoryHeadMaintenanceState.WAITING_FOR_INITIALIZATION
+            }
+        }
         if (!hasHeadContent) {
-            return stableSourceTurnIds.size > 3 ||
-                (hasHistoricalMemory && stableSourceTurnIds.size < 3)
+            return if (stableSourceTurnIds.size == 3 && !hasHistoricalMemory) {
+                MemoryHeadMaintenanceState.ROLL_FORWARD
+            } else {
+                MemoryHeadMaintenanceState.REBUILD
+            }
         }
         val previousIndex = stableSourceTurnIds.indexOf(throughSourceTurnId)
-        return previousIndex < 0 || targetIndex > previousIndex + 1
+        if (previousIndex < 0 || pathCrossesGap) return MemoryHeadMaintenanceState.REBUILD
+        val lag = targetIndex - previousIndex
+        return when {
+            lag <= 0 -> MemoryHeadMaintenanceState.CURRENT
+            lag == 1 -> MemoryHeadMaintenanceState.ROLL_FORWARD
+            else -> MemoryHeadMaintenanceState.REBUILD
+        }
     }
+
 }

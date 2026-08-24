@@ -108,7 +108,7 @@ data class MemoryNode(
     val overview: String = "",
     val sourceHash: String = "",
     val sourceHashes: Map<String, String> = emptyMap(),
-    /** 仅包含来源语义；排除updatedAt和数值orderKey。 */
+    /** 仅包含记忆模型实际看到的来源语义；排除消息ID、文件路径及排序数值等元数据。 */
     val sourceFingerprints: Map<String, String> = emptyMap(),
     val coverageHash: String = "",
     val staleSourceTurnIds: Set<String> = emptySet(),
@@ -158,7 +158,7 @@ data class MemoryHead(
     val worldState: String = "",
     /** HEAD正文实际采用过的source turn哈希；用于持久识别旧来源编辑/删除。 */
     val sourceHashes: Map<String, String> = emptyMap(),
-    /** 仅包含来源语义；排除updatedAt和数值orderKey。 */
+    /** 仅包含记忆模型实际看到的来源语义；排除消息ID、文件路径及排序数值等元数据。 */
     val sourceFingerprints: Map<String, String> = emptyMap(),
     val version: Long = 0,
     val stale: Boolean = false

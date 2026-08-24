@@ -28,7 +28,14 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
-enum class MemoryMaintenanceTrigger { SESSION_LOADED, REPLY_PERSISTED, NETWORK_RESTORED, RETRY, MANUAL }
+enum class MemoryMaintenanceTrigger {
+    SESSION_LOADED,
+    USER_MESSAGE_PERSISTED,
+    REPLY_PERSISTED,
+    NETWORK_RESTORED,
+    RETRY,
+    MANUAL
+}
 
 enum class MemoryManualMaintenanceKind { FULL_REGENERATION, HEAD_REGENERATION }
 
@@ -54,7 +61,7 @@ class LongTermMemoryAutoMaintenanceCoordinator(
 
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val runnerMutex = Mutex()
-    private val scheduled = ConcurrentHashMap.newKeySet<String>()
+    private val maintenanceMailbox = MemoryMaintenanceMailbox()
     private val scheduledBackfills = ConcurrentHashMap.newKeySet<String>()
     private val scheduledManualMaintenance =
         ConcurrentHashMap<String, MemoryManualMaintenanceKind>()
@@ -71,6 +78,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         MutableStateFlow<Map<String, MemoryManualMaintenanceKind>>(emptyMap())
     val manualMaintenance: StateFlow<Map<String, MemoryManualMaintenanceKind>> =
         _manualMaintenance.asStateFlow()
+    private val scheduledSourceRepairs = ConcurrentHashMap.newKeySet<String>()
+    private val _sourceRepairProgress =
+        MutableStateFlow<Map<String, MemorySourceRepairProgress>>(emptyMap())
+    val sourceRepairProgress: StateFlow<Map<String, MemorySourceRepairProgress>> =
+        _sourceRepairProgress.asStateFlow()
     private val currentSessionId = AtomicReference<String?>(null)
 
     init {
@@ -92,8 +104,10 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     suspend fun cancelAndJoinForSession(sessionId: String) {
         currentSessionId.compareAndSet(sessionId, null)
         sessionJobs.cancelAndJoin(sessionId)
+        maintenanceMailbox.cancel(sessionId)
         _backfillProgress.update { it - sessionId }
         _manualMaintenance.update { it - sessionId }
+        _sourceRepairProgress.update { it - sessionId }
     }
 
     fun enqueue(
@@ -102,12 +116,10 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         manual: Boolean = trigger == MemoryMaintenanceTrigger.MANUAL
     ) {
         if (!manual && currentSessionId.get() != sessionId) return
-        if (scheduledManualMaintenance.containsKey(sessionId)) return
-        if (!scheduled.add(sessionId)) return
+        if (!maintenanceMailbox.request(sessionId)) return
         val completion = CompletableDeferred<Unit>()
         maintenanceCompletions[sessionId] = completion
         val cleanup = {
-            scheduled.remove(sessionId)
             maintenanceCompletions.remove(sessionId, completion)
             completion.complete(Unit)
             Unit
@@ -116,6 +128,7 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             runMaintenanceLoop(sessionId, manual)
         }
         if (job == null) {
+            maintenanceMailbox.cancel(sessionId)
             cleanup()
         } else {
             job.invokeOnCompletion { cleanup() }
@@ -125,8 +138,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     private suspend fun runMaintenanceLoop(sessionId: String, manual: Boolean) {
         var retryAttempt = 0
         while (true) {
-            if (!manual && currentSessionId.get() != sessionId) break
-            if (scheduledManualMaintenance.containsKey(sessionId)) break
+            if (!manual && currentSessionId.get() != sessionId) {
+                maintenanceMailbox.cancel(sessionId)
+                break
+            }
+            val requestedVersion = maintenanceMailbox.versionToProcess(sessionId)
             val result = runnerMutex.withLock {
                 if (!manual && currentSessionId.get() != sessionId) {
                     MaintenancePassResult()
@@ -137,20 +153,24 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             when {
                 result.hasMoreArchiveBatches -> {
                     retryAttempt = 0
+                    maintenanceMailbox.request(sessionId)
                     delay(NEXT_ARCHIVE_PASS_DELAY_MILLIS)
                 }
                 result.shouldRetry && retryAttempt < RETRY_DELAYS_MILLIS.size -> {
                     delay(RETRY_DELAYS_MILLIS[retryAttempt])
                     retryAttempt++
+                    maintenanceMailbox.request(sessionId)
                 }
-                else -> break
+                else -> retryAttempt = 0
             }
+            if (!maintenanceMailbox.completePass(sessionId, requestedVersion)) break
         }
     }
 
     /** Manual backfill is application-owned so leaving the chat cannot cancel a paid model call. */
     fun enqueueBackfill(sessionId: String) {
         if (scheduledManualMaintenance.containsKey(sessionId)) return
+        if (scheduledSourceRepairs.contains(sessionId)) return
         if (!scheduledBackfills.add(sessionId)) return
         val completion = CompletableDeferred<Unit>()
         backfillCompletions[sessionId] = completion
@@ -215,11 +235,38 @@ class LongTermMemoryAutoMaintenanceCoordinator(
     fun enqueueHeadRegeneration(sessionId: String): Boolean =
         enqueueManualMaintenance(sessionId, MemoryManualMaintenanceKind.HEAD_REGENERATION)
 
+    fun enqueueSourceRepair(sessionId: String): Boolean {
+        if (scheduledBackfills.contains(sessionId)) return false
+        if (scheduledManualMaintenance.containsKey(sessionId)) return false
+        if (!scheduledSourceRepairs.add(sessionId)) return false
+        _sourceRepairProgress.update {
+            it + (sessionId to MemorySourceRepairProgress(
+                phase = MemorySourceRepairPhase.WAITING_FOR_ARCHIVE,
+                totalRoots = 0,
+                completedRoots = 0
+            ))
+        }
+        val job = sessionJobs.launch(sessionId) {
+            runnerMutex.withLock { runSourceRepair(sessionId) }
+        }
+        if (job == null) {
+            scheduledSourceRepairs.remove(sessionId)
+            _sourceRepairProgress.update { it - sessionId }
+            return false
+        }
+        job.invokeOnCompletion {
+            scheduledSourceRepairs.remove(sessionId)
+            _sourceRepairProgress.update { it - sessionId }
+        }
+        return true
+    }
+
     private fun enqueueManualMaintenance(
         sessionId: String,
         kind: MemoryManualMaintenanceKind
     ): Boolean {
         if (scheduledBackfills.contains(sessionId)) return false
+        if (scheduledSourceRepairs.contains(sessionId)) return false
         if (scheduledManualMaintenance.putIfAbsent(sessionId, kind) != null) return false
         val completion = CompletableDeferred<Unit>()
         manualMaintenanceCompletions[sessionId] = completion
@@ -369,6 +416,36 @@ class LongTermMemoryAutoMaintenanceCoordinator(
             throw error
         } catch (error: Throwable) {
             memoryService.setHeadPreflightError(
+                sessionId,
+                error.message ?: error::class.simpleName.orEmpty()
+            )
+        }
+    }
+
+    private suspend fun runSourceRepair(sessionId: String) {
+        val session = chatRepository.getSession(sessionId) ?: return
+        if (!session.longTermMemoryEnabled) return
+        val settings = settingsRepository.getAppSettings()
+        val model = modelResolver.resolveChatModel(session.modelId, settings)
+        if (model == null || !model.hasConfiguredAuthentication(settings)) {
+            memoryService.setMaintenancePreflightError(
+                sessionId,
+                MEMORY_MODEL_CONFIGURATION_ERROR
+            )
+            return
+        }
+        memoryService.clearResolvedModelConfigurationErrors(sessionId)
+        val requireValidated = !isAllowedLocalHttp(model.baseUrl, settings.allowCleartextModelApi)
+        try {
+            AiBackgroundWorkManager.run(sessionId, requireValidatedInternet = requireValidated) {
+                memoryService.startSourceRepair(sessionId, model) { progress ->
+                    _sourceRepairProgress.update { it + (sessionId to progress) }
+                }
+            }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (error: Throwable) {
+            memoryService.setMaintenancePreflightError(
                 sessionId,
                 error.message ?: error::class.simpleName.orEmpty()
             )

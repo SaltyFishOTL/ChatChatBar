@@ -14,19 +14,46 @@ class MemorySourceFingerprintTest {
         message("a", MessageRole.ASSISTANT, "world", 2)
     )
 
-    @Test fun `updatedAt and normalized order keys do not change fingerprint`() {
+    @Test fun `metadata not shown to memory model does not change fingerprint`() {
         val changedMetadata = base.mapIndexed { index, message ->
-            message.copy(updatedAt = 999L + index, orderKey = (index + 10L) * 1_000_000L)
+            message.copy(
+                id = "replacement-$index",
+                updatedAt = 999L + index,
+                orderKey = (index + 10L) * 1_000_000L,
+                sourceTurnOrder = 99,
+                images = listOf("moved-$index.png")
+            )
         }
         assertEquals(fingerprint(base), fingerprint(changedMetadata))
     }
 
-    @Test fun `content alternative order and images change fingerprint`() {
+    @Test fun `content alternative order blank-image presence and deletion change fingerprint`() {
         assertNotEquals(fingerprint(base), fingerprint(base.map { if (it.id == "a") it.copy(content = "changed") else it }))
         assertNotEquals(fingerprint(base), fingerprint(base.map { if (it.id == "a") it.copy(alternatives = listOf("alt")) else it }))
         assertNotEquals(fingerprint(base), fingerprint(listOf(base[1].copy(orderKey = 1), base[0].copy(orderKey = 2))))
-        assertNotEquals(fingerprint(base), fingerprint(base.map { if (it.id == "a") it.copy(images = listOf("x.png")) else it }))
         assertNotEquals(fingerprint(base), fingerprint(base.dropLast(1)))
+
+        val blankAssistant = base.map { if (it.id == "a") it.copy(content = "") else it }
+        val blankWithImage = blankAssistant.map {
+            if (it.id == "a") it.copy(images = listOf("x.png")) else it
+        }
+        assertNotEquals(
+            fingerprint(blankAssistant),
+            fingerprint(blankWithImage)
+        )
+        assertEquals(
+            fingerprint(blankWithImage),
+            fingerprint(blankWithImage.map {
+                if (it.id == "a") it.copy(images = listOf("moved.png", "second.png")) else it
+            })
+        )
+    }
+
+    @Test fun `previous semantic fingerprint remains available for safe migration`() {
+        assertNotEquals(
+            fingerprint(base),
+            MemorySourceFingerprint.previousSemantic("s0", base, session)
+        )
     }
 
     private fun fingerprint(messages: List<ChatMessage>) =

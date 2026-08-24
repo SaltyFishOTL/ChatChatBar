@@ -2,7 +2,7 @@
 
 - Episode目标轮数是固定批次，不是上限。尾部不足目标数属于普通pending；只有两侧活跃记忆包围的历史内部单轮余数可例外提交。
 - 来源语义一致性使用`sourceFingerprints`：保留source/message身份、角色、显示正文、图片及相对消息顺序；排除`updatedAt`与数值`orderKey`。
-- 自动Archive与HEAD由应用级协调器串行维护；新任务仅属于当前会话，已开始的模型调用不因页面销毁或切换会话取消。历史追赶每次runner lease最多提交一个Episode，批次间释放全局锁；模型失败的延迟重试也必须在锁外等待。
+- 自动Archive、HEAD与显式来源修复由应用级协调器串行维护；聊天请求不参加该互斥。每会话维护需求使用版本邮箱合并，runner运行期间或退出边界到达的新需求必须产生后续pass。新任务仅属于当前会话，已开始的模型调用不因页面销毁或切换会话取消。历史追赶每次runner lease最多提交一个Episode，批次间释放全局锁；模型失败的延迟重试也必须在锁外等待。
 - 显式删除会话时先永久阻止该会话的新协调器任务，取消并等待所有自动维护、补录、重建和压缩续跑任务完成，再删除会话、消息和记忆数据；协程取消必须继续释放共享后台保护lease。
 
 ## Identity and Timeline
@@ -62,9 +62,9 @@
 - Make HEAD describe current state through its stable source turn, not historical plot summary.
 - HEAD has three explicit modes: `INITIALIZE` uses opening + first complete round when third user round starts; `BACKFILL` uses compiled Archive + penultimate stable baseline group; `UPDATE` uses previous HEAD + exactly next baseline group.
 - Keep latest complete group raw at prompt tail. HEAD target is always immediately before that hot group; never summarize hot group into HEAD early.
-- Blank HEAD injects no HEAD block. Expected new-chat blank state shows no backfill action; historical blank/lagging state requires backfill.
-- Normal HEAD update cannot cross `MemoryGap`. Re-enable/backfill fills missing Archive first, then rebuilds HEAD.
-- Before roleplay request, wait for HEAD preparation and RAG retrieval in parallel. Post-reply HEAD update remains background work.
+- Blank HEAD injects no HEAD block. Expected new-chat blank state silently waits for enough stable groups; historical blank state is rebuilt automatically when evidence suffices.
+- A nonblank, source-valid HEAD remains injectable at its persisted through-T even when one or many stable groups behind. One-group lag uses `UPDATE`; multi-group lag, Gap-crossing path, historical blank HEAD, or stale HEAD uses automatic `BACKFILL` from currently injectable Archive plus the penultimate stable baseline. Stale HEAD itself never injects.
+- Roleplay requests never await HEAD maintenance. After user-message and assistant-reply persistence, increment coordinator demand and assemble the request from the latest committed valid snapshot.
 - Keep HEAD outside Archive character budget. Its internal version and source fingerprints exist only for concurrency and stale-result rejection.
 - Count only active Episode/Arc/Era body text toward per-session automatic budget.
 - Use initial 2000 characters, +2000 per accepted expansion, maximum 20000. Do not derive budget from model context percentage.
@@ -98,7 +98,7 @@
 - Bind every AI task to exact evidence it read, never session-wide revision. Episode guards semantic source fingerprints, target pending membership, and competing coverage; compression guards every immutable candidate shown to model; HEAD guards its own version, exact input fingerprints, and rendered Archive for `BACKFILL`. Unrelated chat append, metadata-only save, HEAD update, node edit, checkpoint, or memory addition must not invalidate task.
 - Persist each successful backfill Episode immediately. Failure must retain remaining gaps and completed nodes.
 - Keep streamed backfill summaries and current phase as runtime UI state; persist committed Episode count and source progress, not partial model output.
-- A requested manual backfill remains runtime-only `WAITING_FOR_ARCHIVE` until it acquires the coordinator lock. Do not mark persisted/displayed backfill `RUNNING` or block chat while it is only queued; switch to `PREPARING` after lock acquisition.
+- A requested manual backfill or source repair remains runtime-only `WAITING_FOR_ARCHIVE` until it acquires the coordinator lock. Switch to `PREPARING` after lock acquisition. Queued and running maintenance never blocks chat.
 - Persist each successful source-mutation root repair immediately. Failure must retain remaining roots and already committed replacements.
 - Pause orphaned persisted backfill or source-repair `RUNNING` after process restart; never pause a runner active in current process.
 - Load old JSON through defaults. Make repairs idempotent. Preserve unverifiable old memory as time-unknown Legacy Reference.

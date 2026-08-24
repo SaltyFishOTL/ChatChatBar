@@ -93,8 +93,6 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.MemoryDecisionTier
-import com.example.chatbar.data.local.entity.MemoryBackfillStatus
-import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
@@ -198,12 +196,6 @@ fun ChatScreen(
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
     val longTermMemoryUiState by viewModel.longTermMemoryUiState.collectAsState()
-    val memoryBackfillRunning = longTermMemoryUiState.memoryState?.backfill?.status ==
-        MemoryBackfillStatus.RUNNING
-    val memorySourceRepairRunning = longTermMemoryUiState.memoryState?.sourceRepair?.status ==
-        MemorySourceRepairStatus.RUNNING
-    val memoryStateLoading = session?.longTermMemoryEnabled == true && longTermMemoryUiState.loading
-    val memoryChatBlocked = memoryBackfillRunning || memorySourceRepairRunning || memoryStateLoading
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
     val listState = rememberLazyListState()
@@ -367,10 +359,6 @@ fun ChatScreen(
                 )?.let(viewModel::persistChatScrollPosition)
             }
         }
-    }
-
-    LaunchedEffect(memoryChatBlocked) {
-        if (memoryChatBlocked) fullComposer = false
     }
 
     LaunchedEffect(voiceGenerationBatches, sessionId) {
@@ -966,7 +954,7 @@ fun ChatScreen(
         )
         return
     }
-    if (fullComposer && !isArchived && !memoryChatBlocked) {
+    if (fullComposer && !isArchived) {
         FullscreenTextEditor(
             title = "撰写消息",
             value = input,
@@ -1275,12 +1263,8 @@ fun ChatScreen(
                             viewModel.updateDraftInput(it.text)
                         },
                         responding = isResponding,
-                        enabled = !isArchived && isModelUsable && !memoryChatBlocked,
-                        disabledPlaceholder = when {
-                            memoryBackfillRunning -> "长期记忆补录中…"
-                            memoryStateLoading -> "正在读取长期记忆…"
-                            else -> "本对话已封存"
-                        },
+                        enabled = !isArchived && isModelUsable,
+                        disabledPlaceholder = "本对话已封存",
                         onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onFull = { fullComposer = true },
                         onCancel = viewModel::cancelResponseGeneration,

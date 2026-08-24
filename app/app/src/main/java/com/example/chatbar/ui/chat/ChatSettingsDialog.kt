@@ -75,6 +75,7 @@ import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBudgetPolicy
+import com.example.chatbar.domain.memory.MemoryHeadMaintenanceState
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.memory.MemorySourceRepairPhase
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
@@ -708,7 +709,7 @@ internal fun MemoryManualRegenerationActions(
             }
         ) {
             CbText(
-                "将删除并替换当前 Archive、HEAD、各级历史版本和手动记忆编辑，然后把仍可归档的原始聊天交给一键补录流程重新生成。聊天原文与长期记忆字数上限保留。页面会显示处理轮数、当前阶段和流式摘要，可在当前步骤后暂停。期间暂时无法聊天，并可能消耗大量 Token。",
+                "将删除并替换当前 Archive、HEAD、各级历史版本和手动记忆编辑，然后把仍可归档的原始聊天交给后台流程重新生成。聊天原文与长期记忆字数上限保留。页面会显示处理轮数、当前阶段和流式摘要，可在当前步骤后暂停。聊天仍可继续，但可能消耗大量 Token。",
                 color = ChatBarTheme.colors.mutedForeground
             )
         }
@@ -916,8 +917,7 @@ private fun LongTermMemoryContent(
                         append("如果空间不足，还可能触发 ${estimate?.compressionCallsMin ?: 0}–${estimate?.compressionCallsMax ?: 0} 次压缩。")
                         append("待处理原文约 ${estimate?.sourceCharacters ?: 0} 字。")
                     }
-                    if (state.headBackfillRequired) append("还会根据长期记忆与最新基线剧情更新当前状态。")
-                    append("补录期间暂时无法继续聊天，可以随时暂停。不同模型耗时和额度消耗不同。")
+                    append("补录会在后台运行；聊天可继续使用最近一次有效记忆快照。可以随时暂停。不同模型耗时和额度消耗不同。")
                 },
                 color = ChatBarTheme.colors.mutedForeground
             )
@@ -949,7 +949,7 @@ private fun LongTermMemoryContent(
                     if (affectedSources.isNotEmpty()) append("，涉及 ${affectedSources.size} 个剧情轮")
                     append("。将只重新生成受影响Episode及其必要祖先，未变化节点保持不动。")
                     if (memoryState?.head?.stale == true) append("完成Archive后还会重建HEAD。")
-                    append("修复期间暂时无法继续聊天，可以暂停。模型调用次数取决于受影响节点层级。")
+                    append("修复会在后台运行；聊天可继续使用未受影响的记忆。可以暂停。模型调用次数取决于受影响节点层级。")
                 },
                 color = ChatBarTheme.colors.mutedForeground
             )
@@ -965,18 +965,26 @@ private fun LongTermMemoryContent(
         state.memoryState?.sourceRepair?.status == MemorySourceRepairStatus.RUNNING ||
         session?.memoryArchiveStatus == MemoryUpdateStatus.UPDATING ||
         session?.memoryHeadStatus == MemoryUpdateStatus.UPDATING
-    val maintenanceAttention = state.manualMaintenance != null ||
-        state.memoryState?.fullRegenerationPending == true ||
-        state.backfillProgress != null ||
-        state.sourceRepairProgress != null ||
-        state.needsSourceRepair() ||
-        (state.backfillEstimate?.missingSourceTurns ?: 0) > 0 ||
-        state.headBackfillRequired ||
+    val sourceRepairNeedsAction = state.needsSourceRepair() &&
+        state.memoryState?.sourceRepair?.status != MemorySourceRepairStatus.RUNNING
+    val backfillNeedsAction = state.memoryState?.backfill?.status in setOf(
+        MemoryBackfillStatus.PAUSED,
+        MemoryBackfillStatus.ERROR
+    )
+    val fullRegenerationNeedsAction = state.memoryState?.fullRegenerationPending == true &&
+        state.backfillProgress == null &&
+        state.memoryState.backfill.status != MemoryBackfillStatus.RUNNING
+    val gapNeedsAction = (state.backfillEstimate?.missingSourceTurns ?: 0) > 0 &&
+        state.backfillProgress == null &&
+        state.memoryState?.backfill?.status != MemoryBackfillStatus.RUNNING
+    val maintenanceAttention = sourceRepairNeedsAction ||
+        backfillNeedsAction ||
+        fullRegenerationNeedsAction ||
+        gapNeedsAction ||
         state.memoryState?.pendingDecision != null ||
         session?.memoryArchiveError != null ||
         session?.memoryHeadError != null ||
-        state.error != null ||
-        state.warnings.isNotEmpty()
+        state.error != null
     if (showMaintenance) {
         MemoryMaintenanceDialog(
             session = session,
@@ -1173,6 +1181,7 @@ internal fun MemorySourceRepairAction(
                 (completedRoots.toFloat() / totalRoots).coerceIn(0f, 1f)
             }
             val phaseText = when (runtime?.phase) {
+                MemorySourceRepairPhase.WAITING_FOR_ARCHIVE -> "来源修复已排队"
                 MemorySourceRepairPhase.PREPARING -> "正在准备下一个受影响记忆节点"
                 MemorySourceRepairPhase.GENERATING_EPISODE ->
                     "正在修复近期流程${runtime.currentRangeLabel.takeIf { it.isNotBlank() }?.let { " $it" }.orEmpty()}"
@@ -1285,7 +1294,7 @@ internal fun MemoryBackfillAction(
         state.memoryState?.fullRegenerationPending == true
     val blockedByDecision = state.memoryState?.pendingDecision != null
     val missingCount = state.backfillEstimate?.missingSourceTurns ?: 0
-    val needsBackfill = missingCount > 0 || state.headBackfillRequired || fullRegeneration
+    val needsBackfill = missingCount > 0 || fullRegeneration
     val runtime = state.backfillProgress
     if (runtime != null || backfill?.status == MemoryBackfillStatus.RUNNING) {
         val waitingForArchive = runtime?.phase == MemoryBackfillPhase.WAITING_FOR_ARCHIVE
@@ -1478,7 +1487,7 @@ internal fun MemoryHeadPage(
                 if (state.headInitializationPending) {
                     "当前状态将在第三轮对话开始时生成。"
                 } else {
-                    "当前状态尚未生成，请打开右上角维护菜单后补录。"
+                    "当前状态正在等待后台维护生成；聊天可继续。"
                 },
                 modifier = Modifier.padding(12.dp),
                 color = ChatBarTheme.colors.mutedForeground
@@ -1500,6 +1509,20 @@ internal fun MemoryHeadPage(
                 CbField("目标") { CbInput(headDraft.goals, { headDraft = headDraft.copy(goals = it) }, singleLine = false, minLines = 2) }
                 CbField("未解决") { CbInput(headDraft.unresolved, { headDraft = headDraft.copy(unresolved = it) }, singleLine = false, minLines = 2) }
                 CbField("世界状态") { CbInput(headDraft.worldState, { headDraft = headDraft.copy(worldState = it) }, singleLine = false, minLines = 2) }
+            }
+        }
+        if (!head.stale && state.headMaintenanceState in setOf(
+                MemoryHeadMaintenanceState.ROLL_FORWARD,
+                MemoryHeadMaintenanceState.REBUILD
+            )
+        ) {
+            CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                CbText(
+                    "后台正在追赶较新的剧情轮；当前聊天继续使用上方截至点的有效状态。",
+                    modifier = Modifier.padding(10.dp),
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
             }
         }
         if (head.stale) {

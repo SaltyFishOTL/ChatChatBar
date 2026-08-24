@@ -13,23 +13,21 @@
 9. On failure, preserve pending IDs and raw chat; expose error.
 
 - Before Episode commit, reload current state and require only exact source fingerprints, continued target-pending membership, and no active node covering those target sources. Rebase unrelated HEAD/page/chat revisions instead of rejecting them.
-- Application coordinator owns automatic and manual Archive→HEAD maintenance. It deduplicates current-session work and outlives the memory page; switching sessions prevents new old-session work without cancelling an already-started model call.
+- Application coordinator owns automatic and manual Archive→HEAD maintenance. A per-session demand-version mailbox coalesces work without dropping triggers received during a pass or at runner shutdown; switching sessions prevents new old-session work without cancelling an already-started model call.
 - Explicit session deletion marks that session unavailable for new coordinator jobs, cancels and joins all already-started maintenance jobs, then permits deletion cleanup. Do not let cancellation write a preflight error or recreate the deleted session.
 - Automatic historical catch-up commits at most one Episode per coordinator lease. If another exact batch is ready, schedule another pass after releasing the global runner lock. Retry backoff sleeps outside that lock so queued backfill or other maintenance can proceed.
 - Manual gap backfill also runs in the application coordinator. Keep streaming progress process-local in the coordinator; page ViewModels subscribe and refresh persisted state after completion instead of owning the job.
-- Trigger coordinator on session load, persisted assistant reply, network restoration, manual retry, and orphaned `UPDATING` recovery. Use `WAITING_FOR_NETWORK` without sending a model request when endpoint-specific network requirements fail.
+- Trigger coordinator on session load, persisted user message, persisted assistant reply, network restoration, manual retry, and orphaned `UPDATING` recovery. Use `WAITING_FOR_NETWORK` without sending a model request when endpoint-specific network requirements fail.
 
 ## HEAD
 
 ```text
-BEFORE_PROMPT
-  → run beside RAG retrieval
-  → INITIALIZE blank new-chat HEAD from opening + first complete round when third user round starts
-  → or UPDATE existing HEAD with exactly next eligible baseline group
-  → await attempt before assembling roleplay request
-
-AFTER_REPLY
-  → background UPDATE only when HEAD already exists and exactly one baseline group is next
+BACKGROUND DEMAND
+  → WAITING_FOR_INITIALIZATION when stable evidence is insufficient
+  → CURRENT when committed HEAD already reaches target baseline
+  → ROLL_FORWARD: INITIALIZE blank new-chat HEAD or UPDATE exactly one next baseline group
+  → REBUILD: BACKFILL historical blank, multi-group lag, or Gap-crossing path
+  → SOURCE_UNAVAILABLE: omit stale HEAD and BACKFILL from safe Archive + current baseline
 
 BACKFILL
   → keep backfill RUNNING
@@ -38,8 +36,8 @@ BACKFILL
 ```
 
 - Keep latest complete group raw at prompt tail; target the immediately preceding group.
-- Treat historical blank HEAD, a watermark more than one group behind, or a Gap-crossing path as requiring explicit backfill. Omit invalid or blank HEAD from injection.
-- On HEAD failure, preserve previous or blank HEAD, expose the error, and let the waiting roleplay request continue after the failed attempt finishes.
+- Inject any nonblank source-valid committed HEAD with its real through-T even while background maintenance is behind. Omit only blank or stale HEAD.
+- Roleplay request never waits for HEAD AI. On HEAD failure, preserve the prior valid snapshot and expose the maintenance error.
 - `INITIALIZE`/`UPDATE` commit binds current HEAD version plus exact input-source fingerprints. `BACKFILL` additionally binds the exact rendered Archive supplied to AI. Session-wide revision changes and unrelated later chat do not invalidate HEAD.
 - When long-term memory is disabled, omit Archive, HEAD, and timeline constraint entirely.
 
@@ -101,7 +99,7 @@ IDLE / PAUSED / ERROR
 - Budget expansion or compression decisions may pause backfill; do not mark it complete.
 - A remaining count from 2 through N-1 waits without crossing a Gap or overlapping existing nodes. Never reread N between batches.
 - During a live batch, expose source progress, phase, T range, committed Episode count, and streamed aggregate summary. Never persist partial streamed output.
-- Only lock acquisition changes runtime phase from `WAITING_FOR_ARCHIVE` to `PREPARING`; only persisted backfill `RUNNING` blocks chat.
+- Only lock acquisition changes runtime phase from `WAITING_FOR_ARCHIVE` to `PREPARING`; queued and persisted backfill work never blocks chat.
 
 ## Historical Source Mutation Repair
 
@@ -127,7 +125,7 @@ IDLE / PAUSED / ERROR
 - On failure set `ERROR`, retain pending roots and completed commits, show exact reason, and allow retry.
 - New source mutations discovered mid-run prevent final completion and remain repairable.
 - Stale user-authored nodes stop automatic repair and require explicit editor save.
-- While repair is required/running, hide backfill action; while running, block chat send like backfill.
+- While repair is required/running, hide backfill action. Coordinator owns queued/running repair progress; chat continues with unaffected Archive and any valid HEAD snapshot.
 
 ## Budget Compression
 
@@ -195,8 +193,8 @@ IDLE / PAUSED / ERROR
 - Live backfill internal reload: remains `RUNNING`; process-restart residue becomes `PAUSED`.
 - Backfill batches: Episode persists and Gap shrinks per batch.
 - Fixed batches: N=2 never emits a normal singleton; 3 pending becomes 2 + normal wait 1; historical internal 3 becomes 2 + bounded 1; disabled/deleted/declined Gap never gets singleton exception.
-- Semantic fingerprint: `updatedAt` and order-key normalization stay current; body/alternative/message order/image/deletion changes go stale; safe legacy migration is idempotent.
-- Lifecycle: disconnected request waits, network restoration resumes, orphan `UPDATING` converges, page destruction does not cancel manual maintenance, session switch schedules no new old-session work, retry backoff holds no global lock, and queued backfill does not block chat before lock acquisition.
+- Semantic fingerprint: hash only model-facing source evidence. Message/file identity, `sourceTurnOrder`, `updatedAt`, and order-key normalization stay current; body/alternative/message order/deletion and blank-vs-image-placeholder changes go stale; safe prior-fingerprint/legacy migration is idempotent.
+- Lifecycle: disconnected request waits, network restoration resumes, orphan `UPDATING` converges, page destruction does not cancel manual maintenance or source repair, session switch schedules no new old-session work, retry backoff holds no global lock, demand at runner shutdown is not lost, and no maintenance phase blocks chat.
 - Request isolation: memory sends no thinking budget or roleplay sampling controls, uses one token field, capability-gates JSON Mode/off control, retries transient transport separately from output validation, and treats auth as non-retryable.
 - Retry accounting: planner/Episode/compressor/HEAD exhaust exactly five output attempts; retryable transport exhausts exactly three requests; non-retryable request and cancellation stop once; truncation growth persists across JSON attempts; final failure reports stage and count.
 - Journal recovery: crash injection after journal/dependency/revision/state writes either completes or discards idempotently without deleting reachable nodes.

@@ -4,9 +4,31 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
 
-/** Stable source evidence: semantic content and relative message order only. */
+/** Stable source evidence: exactly the source semantics shown to memory models. */
 object MemorySourceFingerprint {
     fun semantic(
+        sourceTurnId: String,
+        messages: List<ChatMessage>,
+        session: ChatSession
+    ): String {
+        val sourceMessages = messages
+            .filter { it.sourceTurnId == sourceTurnId && it.role != MessageRole.SYSTEM }
+            .sortedWith(ChatMessage.TimelineComparator)
+        if (sourceMessages.isEmpty()) {
+            val tombstone = session.sourceTurnTombstones.firstOrNull { it.sourceTurnId == sourceTurnId }
+            return MemoryHashes.text(field(sourceTurnId) + field("tombstone") + field(tombstone?.sourceOrder))
+        }
+        return MemoryHashes.text(buildString {
+            append(field(sourceTurnId))
+            sourceMessages.forEach { message ->
+                append(field(message.role.name))
+                append(field(modelFacingBody(message)))
+            }
+        })
+    }
+
+    /** Compatibility proof for semantic fingerprints written before model-facing normalization. */
+    fun previousSemantic(
         sourceTurnId: String,
         messages: List<ChatMessage>,
         session: ChatSession
@@ -48,6 +70,10 @@ object MemorySourceFingerprint {
             "${message.id}:${message.sourceTurnOrder}:${message.orderKey}:${message.updatedAt}:" +
                 "${message.displayContent}:${message.images.joinToString(",")}" 
         })
+    }
+
+    fun modelFacingBody(message: ChatMessage): String = message.displayContent.ifBlank {
+        if (message.images.isNotEmpty()) "[图片]" else "（空）"
     }
 
     private fun field(value: Any?): String {

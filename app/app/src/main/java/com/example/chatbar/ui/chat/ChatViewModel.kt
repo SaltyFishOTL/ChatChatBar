@@ -47,6 +47,7 @@ import com.example.chatbar.domain.memory.MemoryPromptView
 import com.example.chatbar.domain.memory.MemoryBackfillEstimate
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBackfillProgress
+import com.example.chatbar.domain.memory.MemoryHeadMaintenanceState
 import com.example.chatbar.domain.memory.MemorySourceRepairProgress
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryEpisodeBatchPolicy
@@ -73,7 +74,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
-import kotlinx.coroutines.async
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -198,7 +198,8 @@ data class LongTermMemoryUiState(
     val sourceRepairProgress: MemorySourceRepairProgress? = null,
     val headPresent: Boolean = false,
     val headInitializationPending: Boolean = false,
-    val headBackfillRequired: Boolean = false,
+    val headMaintenanceState: MemoryHeadMaintenanceState =
+        MemoryHeadMaintenanceState.WAITING_FOR_INITIALIZATION,
     val warnings: List<String> = emptyList(),
     val archiveMaintenanceRunning: Boolean = false,
     val manualMaintenance: MemoryManualMaintenanceKind? = null,
@@ -420,6 +421,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     init {
         observeMemoryBackfillProgress()
         observeMemoryManualMaintenance()
+        observeMemorySourceRepairProgress()
         loadSessionData()
         refreshConfigurations()
         observeSessionChanges()
@@ -1269,18 +1271,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             )
         )
         memorySourceRepairProgress = null
-        viewModelScope.launch {
-            val error = runCatching {
-                val current = chatRepository.getSession(sessionId) ?: error("会话不存在")
-                val model = modelResolver.resolveChatModel(current.modelId) ?: error("对话模型未配置")
-                longTermMemoryService.startSourceRepair(sessionId, model) { progress ->
-                    memorySourceRepairProgress = progress
-                    _longTermMemoryUiState.update { it.copy(sourceRepairProgress = progress) }
-                }
-            }.exceptionOrNull()
-            memorySourceRepairProgress = null
-            refreshMemoryAfterAction(error)
-        }
+        longTermMemoryAutoMaintenanceCoordinator.enqueueSourceRepair(sessionId)
     }
 
     fun pauseChangedMemorySourceRepair() {
@@ -1429,13 +1420,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
             }
-        val displayedState = if (
+        var displayedState = if (
             memoryBackfillProgress == null ||
             memoryBackfillProgress?.phase == MemoryBackfillPhase.WAITING_FOR_ARCHIVE
         ) state else {
             state.copy(
                 backfill = state.backfill.copy(
                     status = MemoryBackfillStatus.RUNNING,
+                    error = null
+                )
+            )
+        }
+        if (memorySourceRepairProgress != null) {
+            displayedState = displayedState.copy(
+                sourceRepair = displayedState.sourceRepair.copy(
+                    status = MemorySourceRepairStatus.RUNNING,
                     error = null
                 )
             )
@@ -1454,7 +1453,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             sourceRepairProgress = memorySourceRepairProgress,
             headPresent = view.headPresent,
             headInitializationPending = view.headInitializationPending,
-            headBackfillRequired = view.headBackfillRequired,
+            headMaintenanceState = view.headMaintenanceState,
             warnings = view.warnings.map { it.message },
             archiveMaintenanceRunning = memoryArchiveMaintenanceRunning,
             manualMaintenance = memoryManualMaintenance,
@@ -1974,7 +1973,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     fun sendMessage(content: String, imagePaths: List<String> = emptyList()): Boolean {
         if (_isArchived.value || !_isModelUsable.value || _isResponding.value) return false
-        if (blockChatDuringMemoryWork()) return false
         val isBlank = content.isBlank() && imagePaths.isEmpty()
         val effectiveContent = if (isBlank) PromptTemplates.continueGenerationUserPrompt() else content
         if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
@@ -2244,18 +2242,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val cachedSession = _session.value ?: return@launch
             val currentSession = chatRepository.getSession(sessionId) ?: cachedSession
             _session.value = currentSession
-            val currentMemoryState = if (currentSession.longTermMemoryEnabled) {
-                longTermMemoryService.currentState(sessionId)
-            } else {
-                null
-            }
-            if (currentMemoryState?.backfill?.status == MemoryBackfillStatus.RUNNING ||
-                currentMemoryState?.sourceRepair?.status == MemorySourceRepairStatus.RUNNING
-            ) {
-                _memoryCompressionEvents.emit("长期记忆正在处理；请先暂停再继续聊天")
-                _isResponding.value = false
-                return@launch
-            }
             val charCard = characterRepository.getById(currentSession.characterCardId)
             if (charCard == null) {
                 _characterCard.value = null
@@ -2354,6 +2340,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (persistUserMessage) {
                 chatRepository.addMessage(userMsg)
                 refreshMessages()
+                if (currentSession.longTermMemoryEnabled) {
+                    longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                        sessionId,
+                        MemoryMaintenanceTrigger.USER_MESSAGE_PERSISTED
+                    )
+                }
             }
 
             val allMsgs = chatRepository.getMessages(sessionId)
@@ -2407,14 +2399,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 documentRecallCount = appSettings.docRagTopK,
                 memoryRecallCount = appSettings.memoryRagTopK
             )
-            val headPreparation = if (currentSession.longTermMemoryEnabled && persistUserMessage) {
-                async {
-                    longTermMemoryService.prepareHeadBeforePrompt(sessionId, modelConfig)
-                }
-            } else {
-                null
-            }
-
             try {
                 // 4. RAG 检索
                 val ragDebugLogs = mutableListOf<String>()
@@ -2693,7 +2677,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty(),
                         hasPreviousTurn = promptMessageGroups.previousTurnMessages.isNotEmpty()
                     )
-                headPreparation?.await()
                 val memoryView = if (currentSession.longTermMemoryEnabled) {
                     longTermMemoryService.promptView(sessionId).also { view ->
                         check(view.usedArchiveChars == 0 || view.archive.isNotBlank()) {
@@ -3200,6 +3183,34 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
+    private fun observeMemorySourceRepairProgress() {
+        viewModelScope.launch {
+            var observedTask = false
+            longTermMemoryAutoMaintenanceCoordinator.sourceRepairProgress.collect { tasks ->
+                val progress = tasks[sessionId]
+                memorySourceRepairProgress = progress
+                if (progress != null) {
+                    observedTask = true
+                    _longTermMemoryUiState.update { current ->
+                        current.copy(
+                            sourceRepairProgress = progress,
+                            memoryState = current.memoryState?.copy(
+                                sourceRepair = current.memoryState.sourceRepair.copy(
+                                    status = MemorySourceRepairStatus.RUNNING,
+                                    error = null
+                                )
+                            ),
+                            error = null
+                        )
+                    }
+                } else if (observedTask) {
+                    observedTask = false
+                    refreshMemoryAfterAction(null)
+                }
+            }
+        }
+    }
+
     fun deleteImage(messageId: String, imagePath: String) {
         viewModelScope.launch {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
@@ -3524,7 +3535,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /** 重新生成指定 AI 文本回复，保留其消息 ID 与时间轴位置。 */
     fun regenerateResponse(messageId: String) {
         if (_isResponding.value || _isArchived.value) return
-        if (blockChatDuringMemoryWork()) return
 
         viewModelScope.launch {
             val currentMessages = chatRepository.getMessages(sessionId)
@@ -3569,25 +3579,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 respondingAlreadyStarted = true
             )
         }
-    }
-
-    private fun blockChatDuringMemoryWork(): Boolean {
-        if (_session.value?.longTermMemoryEnabled == true && _longTermMemoryUiState.value.loading) {
-            viewModelScope.launch {
-                _memoryCompressionEvents.emit("正在读取长期记忆，请稍后再试")
-            }
-            return true
-        }
-        val state = _longTermMemoryUiState.value.memoryState
-        if (state?.backfill?.status != MemoryBackfillStatus.RUNNING &&
-            state?.sourceRepair?.status != MemorySourceRepairStatus.RUNNING
-        ) {
-            return false
-        }
-        viewModelScope.launch {
-            _memoryCompressionEvents.emit("长期记忆正在处理；请先暂停再继续聊天")
-        }
-        return true
     }
 
     /**

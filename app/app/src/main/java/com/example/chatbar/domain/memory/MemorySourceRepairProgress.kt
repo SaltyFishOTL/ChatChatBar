@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.memory
 
 enum class MemorySourceRepairPhase {
+    WAITING_FOR_ARCHIVE,
     PREPARING,
     GENERATING_EPISODE,
     REBUILDING_PARENT,

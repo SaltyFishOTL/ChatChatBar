@@ -1,14 +1,16 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-08-24
+Last updated: 2026-08-25
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
 Latest stable commit: `532e460 Release 1.3.22`
-Status: 已修复聊天中的AI生成图片错误进入RAG消息身份、导致删除图片时等待远程Embedding的问题。RAG v7只索引规范化后的非空文本消息；图片仍保留聊天与长期记忆source-turn身份。release已保数据部署到设备`49075ec2`，未调用真实模型或Embedding。
+Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pending、Archive/HEAD落后与运行中维护不再触发红点、人工补录或聊天阻塞；聊天使用最近一次已提交且来源有效的Archive/HEAD快照。HEAD单步滚动、多步/跨Gap/历史空白/旧HEAD失效均由后台自动计划；真实Gap与历史来源修改仍需用户确认。来源修复及其进度已迁入应用级协调器，每会话版本邮箱消除runner退出瞬间丢触发。保留2026-08-25模型可见语义指纹修复。完整JVM测试与`ci.ps1 -SkipAssemble`已通过，最终release已保数据部署到唯一授权设备`49075ec2`并启动；未调用真实长期记忆模型。
 
 ## Completed
 
-- 2026-08-24聊天AI图片与RAG解耦：空正文AI生成图片消息此前虽不进入向量正文，仍进入完整source turn的`messageIds`并成为末尾assistant anchor；删除历史图片会因此重建整轮向量并等待远程Embedding。现`ChatMemoryIndexPolicy`只把规范化后非空文本消息放入RAG正文、`messageIds`和anchor，纯图片轮不建索引；内容版本升至7使旧错误块安全失效。删除图片或整条图片消息时先持久化并即时刷新UI、文件清理走IO，且纯图片消息不再等待RAG互斥或触发Embedding。长期记忆语义指纹仍保留图片及其source-turn变化，RAG所有权保持独立。
+- 2026-08-25长期记忆非阻塞自动维护：`MemoryHeadUpdatePolicy`拆为等待初始化、最新、单步滚动、多步重建和来源不可用；HEAD维护新鲜度与注入有效性分离，非空且来源有效的旧HEAD继续按真实截至T注入。聊天请求删除发送前HEAD `await`和所有backfill/source-repair/loading发送门禁，用户消息落盘即递增后台维护需求；图片、普通发送及回复重新生成在维护期间保持可用。普通HEAD落后不再产生补录警告或维护红点，一键补录只处理真实Gap；运行中维护仅显示中性进度。自动Archive可越过旧Gap/stale根继续生成后续干净Episode，预算与压缩只使用当前安全可注入前沿，stale候选不参与压缩，来源修复重新激活前复核预算。协调器用每会话需求版本邮箱替代`scheduled`集合，运行中及退出边界新增需求必有后续pass；来源修复和进度流迁入应用级协调器并继续使用共享后台保护。新增HEAD状态/注入策略及邮箱竞态测试，但按仓库规则未执行。
+- 2026-08-25 HEAD来源误报修复：旧语义指纹包含消息ID、`sourceTurnOrder`及图片文件路径/数量，均不属于Episode/HEAD实际模型输入；普通待组Episode轮在元数据或文件生命周期变化后会被误判为来源修改，使HEAD停止注入并连带出现补录提示。现指纹与`renderSourceTurns`共享模型可见正文归一化，只绑定source-turn身份、角色、消息顺序、显示正文及空白消息的`[图片]`/`（空）`占位。加载时仅在旧语义指纹或更早legacy哈希仍精确匹配当前来源时迁移为新指纹；无法证明相等的旧stale状态不会被静默认可，真实来源变化仍保持拦截。手工保存HEAD同步刷新`sourceFingerprints`，避免只更新兼容哈希后再次变旧。
+- 2026-08-24聊天AI图片与RAG解耦：空正文AI生成图片消息此前虽不进入向量正文，仍进入完整source turn的`messageIds`并成为末尾assistant anchor；删除历史图片会因此重建整轮向量并等待远程Embedding。现`ChatMemoryIndexPolicy`只把规范化后非空文本消息放入RAG正文、`messageIds`和anchor，纯图片轮不建索引；内容版本升至7使旧错误块安全失效。删除图片或整条图片消息时先持久化并即时刷新UI、文件清理走IO，且纯图片消息不再等待RAG互斥或触发Embedding。长期记忆仍保留图片消息的source-turn身份，并按模型实际可见的图片占位追踪语义变化；RAG所有权保持独立。
 - 2026-08-21长期记忆模型预检错误自愈：Archive/HEAD/backfill曾把“对话模型未配置或缺少鉴权”持久化；模型恢复可用后，若Gap、来源修复或压缩选择使维护阶段提前返回，旧错误不会经过正常成功路径清除，造成对话可用但维护页持续报错。现协调器每次成功解析当前会话模型并通过同一鉴权检查后，先清除仅限`PREFLIGHT + 精确模型配置错误`的旧Archive/HEAD/backfill状态；真实网络、请求、输出校验及其他预检错误完整保留。纯策略回归测试与本地CI已通过。
 - 2026-08-16 NovelAI名称策略分流：聊天生图必须把有效玩家名归一回`${'$'}username`，并让画面规划与最终Prompt设计请求全程保留该玩家角色标记；`${'$'}botname`仍渲染为`CharacterCard.effectiveBotName`。角色卡封面、朋友圈及Prompt工具继续在请求前渲染真实玩家/角色名称；会话玩家名覆盖优先于全局玩家名。规划Debug展示实际发送的system prompt。模板常量保持占位符，未配置名称时沿用项目现有未解析语义。
 - 2026-08-16流式消息此前作为独立LazyColumn尾项显示，落盘后换成不同key的持久消息；长回复完成时列表丢失条目内偏移并跳回气泡顶部。中断路径又先刷新仓库、再清除流式状态，而刷新会按活动流式ID过滤刚保存的草稿，导致草稿直到下一次聊天刷新才重现。现流式、持久及重新生成替换版本始终按同一消息ID合并为一个时间线条目；持久化后先刷新同ID durable数据，再清流式覆盖。仓库刷新只隐藏明确的重新生成旧目标，不再隐藏普通流稿ID。滚动锚点直接基于合并时间线保存。
@@ -142,12 +144,14 @@ Status: 已修复聊天中的AI生成图片错误进入RAG消息身份、导致�
 - 重新生成是节点级只读候选任务，不持有Archive整会话锁，也不绑定全局revision。失效边界是目标活跃身份、不可变目标节点和该节点确切依据。
 - 所有直接提交AI任务都必须绑定其实际输入证据并在提交锁内重载rebase：Episode=目标source/pending/覆盖，压缩=全部模型候选节点，HEAD=HEAD版本+输入source，回填HEAD再加Archive文本。全局revision不是冲突键。
 - HEAD、Archive、RAG独立失败和持久化；主聊天不等待后台记忆任务。
-- 自动Archive→HEAD及手动Gap补录由应用级协调器持有；聊天页面只能订阅运行时进度，不能拥有或取消付费模型任务。
+- 自动Archive→HEAD、手动Gap补录及显式来源修复由应用级协调器持有；聊天页面只能订阅运行时进度，不能拥有或取消付费模型任务。普通聊天不参加记忆任务互斥，始终读取最近一次安全提交快照。
 - 页面销毁/切换会话不取消已开始任务；显式删除会话必须先阻止该会话新任务并cancel-and-join所有协调器Job，再删除主记录与派生数据，避免错误回写复活会话。
 - 来源变更检测与修复分离：检测只刷新过期状态和安全注入；用户按钮才启动AI。修复必须沿不可变节点依赖向上重算，不能通过改哈希认可旧正文。
 
 ## Verification Baseline
 
+- 2026-08-25长期记忆最终一致后台维护：`gradlew test`通过全部902项JVM测试；首次执行准确发现空HEAD仅有两个稳定组时误进重建，修正为静默等待后全量复跑通过。`ci.ps1 -SkipAssemble`通过并编译AndroidTest。两次`redeploy.bat --no-pause`均通过release Kotlin编译、Lint Vital、打包与签名检查；最终APK在唯一授权设备`49075ec2`完成保数据覆盖安装并启动。新增`MemoryHeadUpdatePolicyTest`覆盖等待/最新/单步/多步/跨Gap/来源不可用及落后HEAD注入分离，`MemoryMaintenanceMailboxTest`覆盖运行中新增需求与runner停止边界，Compose测试覆盖来源修复排队和落后有效HEAD状态；未调用真实长期记忆模型。
+- 2026-08-25 HEAD来源误报修复：`redeploy.bat --no-pause`通过release Kotlin编译、Lint Vital、打包与签名检查，在唯一授权设备`49075ec2`完成保数据覆盖安装并启动。新增`MemorySourceFingerprintTest`覆盖消息ID/sourceTurnOrder/时间/等序orderKey/图片路径等未发送元数据不改变新指纹，正文/替代版本/消息顺序/删除/空白与图片占位变化仍改变指纹，以及旧语义指纹保留安全迁移入口；按项目规则未运行自动测试，未调用真实长期记忆模型。
 - 2026-08-24聊天AI图片与RAG解耦：`redeploy.bat --no-pause`通过release Kotlin编译、Lint Vital、打包和签名检查，并在唯一授权设备`49075ec2`完成保数据安装与启动。新增`ChatMemoryIndexPolicyTest`覆盖同轮纯图片消息不进入RAG正文/`messageIds`/anchor、纯图片轮不建索引及v6块失效；按项目规则未运行自动测试。未触发真实Embedding或长期记忆模型调用。
 - 2026-08-21长期记忆模型预检错误自愈：`redeploy.bat --build-only --no-pause` release构建通过，包含release Kotlin编译、lint vital、打包与签名检查。新增`MemoryModelPreflightPolicyTest`覆盖只清除精确模型配置预检错误，并保留同文案的非预检失败及其他backfill错误；按项目规则未运行测试。`adb devices -l`无连接设备，未部署、未调用模型。
 - 2026-08-16中断草稿、流式完成滚动及NovelAI名称策略：按用户确认，聊天场景、规划system及最终设计system保留`${'$'}username`，真实玩家名归一为该标记，`${'$'}botname`仍渲染；其他生图路径继续渲染名称。`:app:compileDebugKotlin`、全量JVM测试、`ci.ps1 -SkipAssemble`与`redeploy.bat --build-only --no-pause`通过，Android测试源码编译成功。此前设备`49075ec2`已安装上一轮release；最终例外修正时ADB无设备，未部署最新APK。未调用真实模型或NovelAI。
