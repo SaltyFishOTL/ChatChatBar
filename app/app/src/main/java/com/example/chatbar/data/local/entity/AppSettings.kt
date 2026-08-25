@@ -48,6 +48,8 @@ data class AppSettings(
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val novelAiImageAspectRatio: String = "",
+    val novelAiPromptTranslationConsent: NovelAiPromptTranslationConsent =
+        NovelAiPromptTranslationConsent.DISABLED,
     val imagePromptToolPreference: String = "",
     val fishAudioTtsModelId: String = DEFAULT_FISH_AUDIO_TTS_MODEL,
     val voiceTagModelId: String? = null,
@@ -125,6 +127,13 @@ enum class CharacterResearchSourceMode {
     ENCYCLOPEDIA_SEARCH,
     MANUAL_URLS,
     ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS
+}
+
+@Serializable
+enum class NovelAiPromptTranslationConsent {
+    UNDECIDED,
+    ENABLED,
+    DISABLED
 }
 
 const val CURRENT_WEB_SEARCH_SETTINGS_VERSION = 5

@@ -1,13 +1,15 @@
 package com.example.chatbar.ui.character
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHeightIsEqualTo
-import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.compose.ui.test.onAllNodesWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithTag
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
@@ -110,12 +112,12 @@ class NovelAiStylePresetGalleryTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("novel-ai-style-filter").assertDoesNotExist()
+        composeTestRule.onAllNodesWithTag("novel-ai-style-filter").assertCountEquals(0)
         composeTestRule.onNodeWithText("查看全部（3）").performClick()
         composeTestRule.onNodeWithTag("novel-ai-style-filter").performClick()
         composeTestRule.onNodeWithTag("novel-ai-style-filter-option:V5").performClick()
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 1；支持 V4.5")
-            .assertDoesNotExist()
+        composeTestRule.onAllNodesWithContentDescription("填充画风：画风 1；支持 V4.5")
+            .assertCountEquals(0)
         composeTestRule.onNodeWithContentDescription("填充画风：画风 2；支持 V5")
             .assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("填充画风：画风 3；支持 V4.5 / V5")

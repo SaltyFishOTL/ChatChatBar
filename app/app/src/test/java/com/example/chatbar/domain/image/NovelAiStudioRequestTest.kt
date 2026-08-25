@@ -28,6 +28,7 @@ class NovelAiStudioRequestTest {
                     count = 4,
                     steps = 42,
                     guidance = 7.5f,
+                    cfgRescale = 0.35f,
                     seedMode = NovelAiSeedMode.FIXED,
                     seed = 1234,
                     sampler = NovelAiSampler.DPM_PLUS_PLUS_2M
@@ -38,6 +39,7 @@ class NovelAiStudioRequestTest {
         assertEquals("nai-diffusion-5-full", body.getValue("model").jsonPrimitive.content)
         assertEquals("42", parameters.getValue("steps").jsonPrimitive.content)
         assertEquals("7.5", parameters.getValue("scale").jsonPrimitive.content)
+        assertEquals("0.35", parameters.getValue("cfg_rescale").jsonPrimitive.content)
         assertEquals("k_dpmpp_2m", parameters.getValue("sampler").jsonPrimitive.content)
         assertEquals("4", parameters.getValue("n_samples").jsonPrimitive.content)
         val negatives = parameters.getValue("v4_negative_prompt").jsonObject
@@ -87,6 +89,145 @@ class NovelAiStudioRequestTest {
         )
 
         assertEquals(original, baseCaption(body))
+    }
+
+    @Test
+    fun `request normalizes Chinese commas in every outbound prompt field`() {
+        val body = requestBody(
+            model = NovelAiImageModel.V4_5_FULL,
+            plan = NovelAiPromptPlan(
+                baseCaption = "1girl，red eyes",
+                characterCaptions = listOf(
+                    NovelAiCharacterCaption(
+                        prompt = "green hair，smile",
+                        center = DesignedCharacterCenter(0.5f, 0.5f),
+                        negativePrompt = "bad hands，extra fingers"
+                    )
+                ),
+                negativePrompt = "lowres，blurry"
+            )
+        )
+        val parameters = body.getValue("parameters").jsonObject
+        val positiveCaption = parameters.getValue("v4_prompt").jsonObject
+            .getValue("caption").jsonObject
+        val negativeCaption = parameters.getValue("v4_negative_prompt").jsonObject
+            .getValue("caption").jsonObject
+
+        assertEquals("1girl,red eyes", body.getValue("input").jsonPrimitive.content)
+        assertEquals("1girl,red eyes", positiveCaption.getValue("base_caption").jsonPrimitive.content)
+        assertEquals(
+            "green hair,smile",
+            positiveCaption.getValue("char_captions").jsonArray.single().jsonObject
+                .getValue("char_caption").jsonPrimitive.content
+        )
+        assertEquals("lowres,blurry", parameters.getValue("negative_prompt").jsonPrimitive.content)
+        assertEquals("lowres,blurry", negativeCaption.getValue("base_caption").jsonPrimitive.content)
+        assertEquals(
+            "bad hands,extra fingers",
+            negativeCaption.getValue("char_captions").jsonArray.single().jsonObject
+                .getValue("char_caption").jsonPrimitive.content
+        )
+    }
+
+    @Test
+    fun `image to image writes action source strength and noise`() {
+        val body = Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = NovelAiPromptPlan("scene", emptyList()),
+                imageSize = NovelAiImageSize(832, 1216, "Normal Portrait"),
+                settings = NovelAiGenerationSettings(seedMode = NovelAiSeedMode.FIXED, seed = 9),
+                imageGuidance = NovelAiPreparedImageGuidance(
+                    action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
+                    imageBase64 = "source",
+                    imageToImageStrength = 0.5f,
+                    imageToImageNoise = 0.1f
+                )
+            )
+        ).jsonObject
+        val parameters = body.getValue("parameters").jsonObject
+        assertEquals("img2img", body.getValue("action").jsonPrimitive.content)
+        assertEquals("source", parameters.getValue("image").jsonPrimitive.content)
+        assertEquals("0.5", parameters.getValue("strength").jsonPrimitive.content)
+        assertEquals("0.1", parameters.getValue("noise").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `v5 inpaint selects inpainting model and mask contract`() {
+        val body = Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = NovelAiPromptPlan("scene", emptyList()),
+                imageSize = NovelAiImageSize(1024, 1024, "Normal Square"),
+                settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),
+                imageGuidance = NovelAiPreparedImageGuidance(
+                    action = NovelAiGenerationAction.INPAINT,
+                    imageBase64 = "source",
+                    maskBase64 = "mask",
+                    inpaintStrength = 1f
+                )
+            )
+        ).jsonObject
+        val parameters = body.getValue("parameters").jsonObject
+        assertEquals("infill", body.getValue("action").jsonPrimitive.content)
+        assertEquals("nai-diffusion-5-full-inpainting", body.getValue("model").jsonPrimitive.content)
+        assertEquals("mask", parameters.getValue("mask").jsonPrimitive.content)
+        assertEquals("0.5", parameters.getValue("strength").jsonPrimitive.content)
+        assertEquals("0.1", parameters.getValue("noise").jsonPrimitive.content)
+        assertEquals("1.0", parameters.getValue("inpaintImg2ImgStrength").jsonPrimitive.content)
+        assertEquals("false", parameters.getValue("add_original_image").jsonPrimitive.content)
+    }
+
+    @Test
+    fun `precise arrays use fixed fidelity wire adapter`() {
+        val body = Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = NovelAiPromptPlan("scene", emptyList()),
+                imageSize = NovelAiImageSize(1024, 1024, "Normal Square"),
+                settings = NovelAiGenerationSettings(),
+                imageGuidance = NovelAiPreparedImageGuidance(
+                    action = NovelAiGenerationAction.TEXT_TO_IMAGE,
+                    preciseReferenceBase64 = "precise-reference-base64",
+                    preciseReferenceType = NovelAiPreciseReferenceType.CHARACTER_AND_STYLE,
+                    preciseReferenceStrength = 0.8f,
+                    preciseReferenceFidelity = 0.75f
+                )
+            )
+        ).jsonObject.getValue("parameters").jsonObject
+        val fixture = Json.parseToJsonElement(
+            requireNotNull(javaClass.getResource("/fixtures/novelai_v45_precise_payload.json")).readText()
+        ).jsonObject
+        val expected = fixture.getValue("parameters").jsonObject
+        assertEquals("precise-reference-base64", body.getValue("director_reference_images").jsonArray.single().jsonPrimitive.content)
+        assertEquals(
+            "character&style",
+            body.getValue("director_reference_descriptions").jsonArray.single().jsonObject
+                .getValue("caption").jsonObject.getValue("base_caption").jsonPrimitive.content
+        )
+        assertEquals("0.25", body.getValue("director_reference_secondary_strength_values").jsonArray.single().jsonPrimitive.content)
+        listOf(
+            "director_reference_images",
+            "director_reference_descriptions",
+            "director_reference_information_extracted",
+            "director_reference_strength_values",
+            "director_reference_secondary_strength_values"
+        ).forEach { key -> assertEquals(expected.getValue(key), body.getValue(key)) }
+    }
+
+    @Test
+    fun `vibe arrays write cached encoding information and strength`() {
+        val body = Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = NovelAiPromptPlan("scene", emptyList()),
+                imageSize = NovelAiImageSize(1024, 1024, "Normal Square"),
+                settings = NovelAiGenerationSettings(),
+                imageGuidance = NovelAiPreparedImageGuidance(
+                    action = NovelAiGenerationAction.TEXT_TO_IMAGE,
+                    vibes = listOf(NovelAiPreparedVibeReference("encoded", 0.9f, 0.6f))
+                )
+            )
+        ).jsonObject.getValue("parameters").jsonObject
+        assertEquals("encoded", body.getValue("reference_image_multiple").jsonArray.single().jsonPrimitive.content)
+        assertEquals("0.9", body.getValue("reference_information_extracted_multiple").jsonArray.single().jsonPrimitive.content)
+        assertEquals("0.6", body.getValue("reference_strength_multiple").jsonArray.single().jsonPrimitive.content)
     }
 
     private fun requestBody(model: NovelAiImageModel, plan: NovelAiPromptPlan) =

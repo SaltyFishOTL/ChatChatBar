@@ -94,13 +94,16 @@ enum class NovelAiGenerationChargeKind { FREE, V5_ALLOWANCE, ANLAS }
 
 data class NovelAiGenerationCost(
     val kind: NovelAiGenerationChargeKind,
-    val anlas: Int = 0
+    val anlas: Int = 0,
+    val encodingAnlas: Int = 0
 )
 
 object NovelAiImageCostEstimator {
     fun estimate(
         settings: NovelAiGenerationSettings,
-        account: NovelAiAccountUsage?
+        account: NovelAiAccountUsage?,
+        imageGuidance: NovelAiImageGuidanceDraft = NovelAiImageGuidanceDraft(),
+        vibeCacheMisses: Int = 0
     ): NovelAiGenerationCost {
         val imageSize = settings.imageSize()
         val pixels = max(imageSize.width.toLong() * imageSize.height, MIN_PRICED_PIXELS)
@@ -118,20 +121,31 @@ object NovelAiImageCostEstimator {
             settings.count == 1 &&
             imageSize.width.toLong() * imageSize.height <= NORMAL_MAX_PIXELS &&
             settings.steps <= FREE_MAX_STEPS &&
+            imageGuidance.action == NovelAiGenerationAction.TEXT_TO_IMAGE &&
+            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.NONE &&
             (settings.model != NovelAiImageModel.V5_FULL ||
                 account.v5AllowancePercent != null && !account.v5AllowanceExhausted)
+        val preciseCost = if (
+            settings.model == NovelAiImageModel.V4_5_FULL &&
+            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.PRECISE &&
+            imageGuidance.preciseReference.asset?.isUsable == true
+        ) PRECISE_REFERENCE_COST * settings.count else 0
+        val encodingCost = vibeCacheMisses.coerceAtLeast(0) * VIBE_ENCODING_COST
         if (freeSampleEligible) {
             return NovelAiGenerationCost(
                 kind = if (settings.model == NovelAiImageModel.V5_FULL) {
                     NovelAiGenerationChargeKind.V5_ALLOWANCE
                 } else {
                     NovelAiGenerationChargeKind.FREE
-                }
+                },
+                anlas = preciseCost + encodingCost,
+                encodingAnlas = encodingCost
             )
         }
         return NovelAiGenerationCost(
             kind = NovelAiGenerationChargeKind.ANLAS,
-            anlas = modelCost * settings.count
+            anlas = modelCost * settings.count + preciseCost + encodingCost,
+            encodingAnlas = encodingCost
         )
     }
 
@@ -142,4 +156,6 @@ object NovelAiImageCostEstimator {
     private const val PIXEL_BASE_COST_FACTOR = 2.951823174884865e-6
     private const val PIXEL_STEP_COST_FACTOR = 5.753298233447344e-7
     private const val V5_PRICE_MULTIPLIER = 1.5
+    private const val PRECISE_REFERENCE_COST = 5
+    private const val VIBE_ENCODING_COST = 2
 }

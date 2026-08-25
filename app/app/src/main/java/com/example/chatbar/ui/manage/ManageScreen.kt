@@ -97,6 +97,7 @@ import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.ModelTemplate
+import com.example.chatbar.data.local.entity.NovelAiPromptTranslationConsent
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.PresetEntry
 import com.example.chatbar.data.local.entity.ThemeMode
@@ -1544,6 +1545,9 @@ private fun SettingsTab(
     var audiobookModeEnabled by remember { mutableStateOf(settings.audiobookModeEnabled) }
     var novelAiImageModel by remember { mutableStateOf(settings.novelAiImageModel) }
     var novelAiImageAspectRatio by remember { mutableStateOf(settings.novelAiImageAspectRatio) }
+    var novelAiPromptTranslationConsent by remember {
+        mutableStateOf(settings.novelAiPromptTranslationConsent)
+    }
     var formatId by remember { mutableStateOf(settings.defaultFormatCardId) }
     var themeMode by remember { mutableStateOf(settings.themeMode) }
     var themeColor by remember { mutableStateOf(settings.themeColor) }
@@ -1621,6 +1625,7 @@ private fun SettingsTab(
         settings.momentsAutoStartConfirmed,
         settings.novelAiImageModel,
         settings.novelAiImageAspectRatio,
+        settings.novelAiPromptTranslationConsent,
         settings.fishAudioTtsModelId,
         settings.voiceTagModelId,
         settings.audiobookModeEnabled,
@@ -1653,6 +1658,7 @@ private fun SettingsTab(
         momentsBackgroundGuideDismissed = settings.momentsBackgroundGuideDismissed
         momentsAutoStartConfirmed = settings.momentsAutoStartConfirmed
         novelAiImageModel = settings.novelAiImageModel
+        novelAiPromptTranslationConsent = settings.novelAiPromptTranslationConsent
         contextSize = settings.defaultContextWindowSize.coerceIn(0, 50).toFloat()
         memoryTopK = settings.memoryRagTopK.coerceIn(0, 15).toFloat()
         episodeMaxSourceTurns = settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat()
@@ -1696,6 +1702,7 @@ private fun SettingsTab(
         webSearchMaxResultsPerQuery = 1,
         novelAiImageModel = novelAiImageModel,
         novelAiImageAspectRatio = novelAiImageAspectRatio.trim(),
+        novelAiPromptTranslationConsent = novelAiPromptTranslationConsent,
         fishAudioTtsModelId = fishAudioTtsModelId,
         voiceTagModelId = voiceTagModelId,
         audiobookModeEnabled = audiobookModeEnabled,
@@ -2083,6 +2090,30 @@ private fun SettingsTab(
                     options = NovelAiImageModel.entries,
                     optionLabel = { it.displayName },
                     onValueChange = { novelAiImageModel = it }
+                )
+            }
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Column(Modifier.weight(1f)) {
+                    CbText("Prompt 中文翻译注释", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "优先使用 TagSuggest 精确中文名，未命中时使用内置离线词典。注释不进入实际 Prompt。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                CbSwitch(
+                    checked = novelAiPromptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED,
+                    onCheckedChange = { enabled ->
+                        novelAiPromptTranslationConsent = if (enabled) {
+                            NovelAiPromptTranslationConsent.ENABLED
+                        } else {
+                            NovelAiPromptTranslationConsent.DISABLED
+                        }
+                    }
                 )
             }
             CbField(

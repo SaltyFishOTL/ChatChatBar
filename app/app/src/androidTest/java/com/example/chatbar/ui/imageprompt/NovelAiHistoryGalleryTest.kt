@@ -44,6 +44,7 @@ class NovelAiHistoryGalleryTest {
         val items = historyItems()
         var appliedMode: NovelAiHistoryApplyMode? = null
         var openedIndex: Int? = null
+        var usedAsKey: String? = null
         composeTestRule.setContent {
             ChatBarTheme {
                 HistoryDetailDialog(
@@ -54,6 +55,7 @@ class NovelAiHistoryGalleryTest {
                     onCurrentChanged = {},
                     onOpenImage = { openedIndex = it },
                     onApply = { _, _, mode -> appliedMode = mode },
+                    onUseAs = { usedAsKey = it.key },
                     onDeleteBatch = {}
                 )
             }
@@ -62,6 +64,8 @@ class NovelAiHistoryGalleryTest {
         composeTestRule.onNodeWithText("第 1 张 / 共 2 张").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("完整复现").performClick()
         composeTestRule.runOnIdle { assertEquals(NovelAiHistoryApplyMode.FULL, appliedMode) }
+        composeTestRule.onNodeWithContentDescription("用作图像引导").performClick()
+        composeTestRule.runOnIdle { assertEquals(items.first().key, usedAsKey) }
 
         composeTestRule.onNodeWithContentDescription("历史详情图片 1")
             .performTouchInput { swipeLeft() }

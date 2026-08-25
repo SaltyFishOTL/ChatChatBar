@@ -15,6 +15,7 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonNull
+import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -58,9 +59,10 @@ class NovelAiImageService(
         token: String,
         prompt: NovelAiPromptPlan,
         imageSize: NovelAiImageSize,
-        settings: NovelAiGenerationSettings
+        settings: NovelAiGenerationSettings,
+        imageGuidance: NovelAiPreparedImageGuidance = NovelAiPreparedImageGuidance.NONE
     ): Flow<NovelAiImageEvent> = callbackFlow {
-        val requestBody = buildRequestBody(prompt, imageSize, settings).toRequestBody(JSON_MEDIA_TYPE)
+        val requestBody = buildRequestBody(prompt, imageSize, settings, imageGuidance).toRequestBody(JSON_MEDIA_TYPE)
         val activeCall = AtomicReference<Call?>()
 
         fun enqueueAttempt(attempt: Int) {
@@ -177,13 +179,22 @@ class NovelAiImageService(
     fun buildRequestBody(
         prompt: NovelAiPromptPlan,
         imageSize: NovelAiImageSize,
-        settings: NovelAiGenerationSettings
+        settings: NovelAiGenerationSettings,
+        imageGuidance: NovelAiPreparedImageGuidance = NovelAiPreparedImageGuidance.NONE
     ): String {
         require(settings.count in 1..NOVEL_AI_MAX_BATCH_SIZE) {
             "NovelAI 批量生图数量必须在 1..$NOVEL_AI_MAX_BATCH_SIZE 之间"
         }
+        require(imageGuidance.preciseReferenceBase64 == null || imageGuidance.vibes.isEmpty()) {
+            "精确参考与氛围参考不能同时启用"
+        }
+        require(
+            settings.model == NovelAiImageModel.V4_5_FULL ||
+                imageGuidance.preciseReferenceBase64 == null && imageGuidance.vibes.isEmpty()
+        ) { "V5 Full 暂不支持精确参考或氛围参考" }
         settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
-        val effectivePrompt = NovelAiV5TextPromptPolicy.apply(prompt, settings.model)
+        val normalizedPrompt = NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt)
+        val effectivePrompt = NovelAiV5TextPromptPolicy.apply(normalizedPrompt, settings.model)
         val negative = effectivePrompt.effectiveNegativePrompt.trim()
         val characterCaptions = buildJsonArray {
             effectivePrompt.characterCaptions.forEach { caption ->
@@ -217,10 +228,15 @@ class NovelAiImageService(
             put("use_coords", false)
             put("use_order", true)
         }
+        val requestModel = if (imageGuidance.action == NovelAiGenerationAction.INPAINT) {
+            "${settings.model.apiId}-inpainting"
+        } else {
+            settings.model.apiId
+        }
         return buildJsonObject {
             put("input", effectivePrompt.baseCaption)
-            put("model", settings.model.apiId)
-            put("action", "generate")
+            put("model", requestModel)
+            put("action", imageGuidance.action.apiId)
             put("parameters", buildJsonObject {
                 put("params_version", 3)
                 put("width", imageSize.width)
@@ -243,13 +259,59 @@ class NovelAiImageService(
                 put("sm", false)
                 put("sm_dyn", false)
                 put("dynamic_thresholding", false)
-                put("cfg_rescale", 0.0)
+                put("cfg_rescale", settings.cfgRescale)
                 put("skip_cfg_above_sigma", JsonNull)
                 put("deliberate_euler_ancestral_bug", false)
                 put("prefer_brownian", true)
                 put("stream", "msgpack")
                 put("v4_prompt", v4Prompt)
                 put("v4_negative_prompt", v4NegativePrompt)
+                when (imageGuidance.action) {
+                    NovelAiGenerationAction.IMAGE_TO_IMAGE -> {
+                        put("image", requireNotNull(imageGuidance.imageBase64) { "图生图缺少基图" })
+                        put("strength", imageGuidance.imageToImageStrength.coerceIn(0f, 1f))
+                        put("noise", imageGuidance.imageToImageNoise.coerceIn(0f, 1f))
+                    }
+                    NovelAiGenerationAction.INPAINT -> {
+                        put("image", requireNotNull(imageGuidance.imageBase64) { "Inpaint 缺少基图" })
+                        put("mask", requireNotNull(imageGuidance.maskBase64) { "Inpaint 缺少蒙版" })
+                        put("strength", imageGuidance.imageToImageStrength.coerceIn(0f, 1f))
+                        put("noise", imageGuidance.imageToImageNoise.coerceIn(0f, 1f))
+                        put("inpaintImg2ImgStrength", imageGuidance.inpaintStrength.coerceIn(0f, 1f))
+                        put("add_original_image", false)
+                    }
+                    NovelAiGenerationAction.TEXT_TO_IMAGE -> Unit
+                }
+                imageGuidance.preciseReferenceBase64?.let { reference ->
+                    put("director_reference_images", buildJsonArray { add(reference) })
+                    put("director_reference_descriptions", buildJsonArray {
+                        add(buildJsonObject {
+                            put("caption", buildJsonObject {
+                                put("base_caption", imageGuidance.preciseReferenceType.wireCaption)
+                                put("char_captions", buildJsonArray { })
+                            })
+                            put("legacy_uc", false)
+                        })
+                    })
+                    put("director_reference_information_extracted", buildJsonArray { add(1f) })
+                    put("director_reference_strength_values", buildJsonArray {
+                        add(imageGuidance.preciseReferenceStrength.coerceIn(0f, 1f))
+                    })
+                    put("director_reference_secondary_strength_values", buildJsonArray {
+                        add(NovelAiPreciseReferenceWirePolicy.secondaryStrength(imageGuidance.preciseReferenceFidelity))
+                    })
+                }
+                if (imageGuidance.vibes.isNotEmpty()) {
+                    put("reference_image_multiple", buildJsonArray {
+                        imageGuidance.vibes.forEach { add(it.encoding) }
+                    })
+                    put("reference_information_extracted_multiple", buildJsonArray {
+                        imageGuidance.vibes.forEach { add(it.informationExtracted.coerceIn(0f, 1f)) }
+                    })
+                    put("reference_strength_multiple", buildJsonArray {
+                        imageGuidance.vibes.forEach { add(it.strength.coerceIn(0f, 1f)) }
+                    })
+                }
             })
         }.toString()
     }

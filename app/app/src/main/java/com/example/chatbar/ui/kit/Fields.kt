@@ -14,6 +14,7 @@ import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.interaction.collectIsFocusedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -37,6 +38,7 @@ import androidx.compose.foundation.text.BasicSecureTextField
 import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.TextFieldDecorator
 import androidx.compose.foundation.text.input.TextFieldLineLimits
 import androidx.compose.foundation.text.input.TextFieldState
@@ -63,6 +65,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -125,6 +128,7 @@ fun CbInput(
     isError: Boolean = false,
     keyboardOptions: KeyboardOptions = KeyboardOptions.Default,
     inputTransformation: InputTransformation? = null,
+    outputTransformation: OutputTransformation? = null,
     secure: Boolean = false
 ) {
     val state = rememberControlledTextFieldState(value, onValueChange)
@@ -139,8 +143,10 @@ fun CbInput(
         isError = isError,
         keyboardOptions = keyboardOptions,
         inputTransformation = inputTransformation,
+        outputTransformation = outputTransformation,
         secure = secure,
-        fixedMultilineHeight = 150.dp
+        fixedMultilineHeight = 150.dp,
+        onFocusChanged = null
     )
 }
 
@@ -245,8 +251,12 @@ private fun StateBasedCbInput(
     isError: Boolean,
     keyboardOptions: KeyboardOptions,
     inputTransformation: InputTransformation?,
+    outputTransformation: OutputTransformation?,
     secure: Boolean,
-    fixedMultilineHeight: androidx.compose.ui.unit.Dp?
+    fixedMultilineHeight: androidx.compose.ui.unit.Dp?,
+    onFocusChanged: ((Boolean) -> Unit)?,
+    textStyle: TextStyle? = null,
+    textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int) -> Unit)? = null
 ) {
     val colors = ChatBarTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
@@ -272,6 +282,9 @@ private fun StateBasedCbInput(
         else -> Modifier.heightIn(min = 44.dp)
     }
     val shape = RoundedCornerShape(ChatBarShape.sm)
+    val textScrollState = rememberScrollState()
+    var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
+    LaunchedEffect(focused) { onFocusChanged?.invoke(focused) }
     Box(modifier = modifier.fillMaxWidth()) {
         val textModifier = Modifier.fillMaxWidth().then(sizeModifier)
         val decorator = TextFieldDecorator { innerTextField ->
@@ -286,6 +299,7 @@ private fun StateBasedCbInput(
                     CbText(placeholder, color = colors.mutedForeground)
                 }
                 innerTextField()
+                textOverlay?.invoke(this, textLayoutResult, textScrollState.value)
             }
         }
         if (secure) {
@@ -305,10 +319,13 @@ private fun StateBasedCbInput(
                 modifier = textModifier,
                 enabled = enabled,
                 inputTransformation = inputTransformation,
-                textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+                outputTransformation = outputTransformation,
+                textStyle = (textStyle ?: ChatBarTheme.typography.body).copy(color = colors.foreground),
                 cursorBrush = SolidColor(colors.primary),
                 interactionSource = interactionSource,
                 keyboardOptions = keyboardOptions,
+                scrollState = textScrollState,
+                onTextLayout = { getResult -> textLayoutResult = getResult() },
                 lineLimits = if (singleLine) {
                     TextFieldLineLimits.SingleLine
                 } else {
@@ -334,7 +351,11 @@ fun CbInput(
     singleLine: Boolean = false,
     minLines: Int = 1,
     expand: Boolean = false,
-    inputTransformation: InputTransformation? = null
+    inputTransformation: InputTransformation? = null,
+    outputTransformation: OutputTransformation? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null,
+    textStyle: TextStyle? = null,
+    textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int) -> Unit)? = null
 ) {
     val state = rememberControlledTextFieldState(value, onValueChange)
     StateBasedCbInput(
@@ -348,8 +369,12 @@ fun CbInput(
         isError = false,
         keyboardOptions = KeyboardOptions.Default,
         inputTransformation = inputTransformation,
+        outputTransformation = outputTransformation,
         secure = false,
-        fixedMultilineHeight = null
+        fixedMultilineHeight = null,
+        onFocusChanged = onFocusChanged,
+        textStyle = textStyle,
+        textOverlay = textOverlay
     )
 }
 
@@ -367,13 +392,16 @@ fun FullscreenTextEditor(
     onRemoveImage: ((String) -> Unit)? = null,
     confirmIcon: ImageVector = AppIcons.Check,
     confirmEnabled: Boolean = true,
-    canConfirm: (String) -> Boolean = { true }
+    canConfirm: (String) -> Boolean = { true },
+    outputTransformation: OutputTransformation? = null,
+    onDraftTextChange: ((String) -> Unit)? = null
 ) {
     if (!visible) return
     val editorState = rememberTextFieldState(
         initialText = text,
         initialSelection = TextRange(text.length)
     )
+    val latestOnDraftTextChange by rememberUpdatedState(onDraftTextChange)
     val confirm = {
         val finalText = editorState.text.toString()
         onTextChange(finalText)
@@ -383,13 +411,21 @@ fun FullscreenTextEditor(
             onConfirm(finalText)
         }
     }
+    LaunchedEffect(editorState) {
+        if (latestOnDraftTextChange != null) {
+            snapshotFlow { editorState.text.toString() }
+                .distinctUntilChanged()
+                .collect { latestOnDraftTextChange?.invoke(it) }
+        }
+    }
     FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(editorState.text.toString()), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
             state = editorState,
             placeholder = placeholder,
             colors = ctxColors,
             interactionSource = interactionSource,
-            focused = focused
+            focused = focused,
+            outputTransformation = outputTransformation
         )
     }
 }
@@ -449,7 +485,8 @@ private fun CursorAwareFullscreenTextField(
     colors: ChatBarColors,
     interactionSource: MutableInteractionSource,
     focused: Boolean,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    outputTransformation: OutputTransformation? = null
 ) {
     val density = LocalDensity.current
     val shape = RoundedCornerShape(ChatBarShape.sm)
@@ -496,6 +533,7 @@ private fun CursorAwareFullscreenTextField(
             lineLimits = TextFieldLineLimits.MultiLine(),
             textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
             cursorBrush = SolidColor(colors.primary),
+            outputTransformation = outputTransformation,
             interactionSource = interactionSource,
             scrollState = scrollState,
             onTextLayout = { getResult -> textLayoutResult = getResult() },

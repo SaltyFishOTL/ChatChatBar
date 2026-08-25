@@ -17,6 +17,7 @@ class NovelAiPngMetadataReaderTest {
               "model": "nai-diffusion-5-full",
               "steps": 31,
               "scale": 5.5,
+              "cfg_rescale": 0.25,
               "sampler": "k_dpmpp_2m",
               "seed": 123456789,
               "n_samples": 3,
@@ -57,6 +58,7 @@ class NovelAiPngMetadataReaderTest {
         assertEquals(3, studio?.settings?.count)
         assertEquals(31, studio?.settings?.steps)
         assertEquals(5.5f, studio?.settings?.guidance)
+        assertEquals(0.25f, studio?.settings?.cfgRescale)
         assertEquals(NovelAiSampler.DPM_PLUS_PLUS_2M, studio?.settings?.sampler)
         assertEquals(123456789L, studio?.seed)
     }
@@ -66,5 +68,32 @@ class NovelAiPngMetadataReaderTest {
         val comment = """{"prompt":"hello","width":1024,"height":1024}"""
 
         assertNull(NovelAiPngMetadataReader.parseStudioComment(comment, "/tmp/generic.png"))
+    }
+
+    @Test
+    fun `parses image guidance and encoded vibe metadata`() {
+        val comment = """
+            {
+              "prompt":"scene", "uc":"bad", "width":1024, "height":1024,
+              "steps":28, "sampler":"k_euler_ancestral", "seed":7,
+              "action":"infill", "image":"base", "mask":"mask", "strength":1.0,
+              "director_reference_images":["precise"],
+              "director_reference_descriptions":[{"caption":{"base_caption":"style","char_captions":[]}}],
+              "director_reference_strength_values":[0.8],
+              "director_reference_secondary_strength_values":[0.25],
+              "reference_image_multiple":["encoded"],
+              "reference_information_extracted_multiple":[0.9],
+              "reference_strength_multiple":[0.6]
+            }
+        """.trimIndent()
+
+        val guidance = NovelAiPngMetadataReader.parseStudioComment(comment, "/tmp/guided.png")?.imageGuidance
+
+        assertEquals(NovelAiGenerationAction.INPAINT, guidance?.action)
+        assertEquals("base", guidance?.baseImageBase64)
+        assertEquals("mask", guidance?.maskBase64)
+        assertEquals(NovelAiPreciseReferenceType.STYLE, guidance?.preciseType)
+        assertEquals(0.75f, guidance?.preciseFidelity)
+        assertEquals("encoded", guidance?.vibes?.single()?.encodedVibe)
     }
 }

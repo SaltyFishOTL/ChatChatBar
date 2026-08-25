@@ -18,4 +18,13 @@ class NovelAiTagCompletionTest {
         assertEquals("1girl, {{1.2::blue_hair::}}, solo", result.text)
         assertEquals(result.text.indexOf("blue_hair") + "blue_hair".length, result.cursor)
     }
+
+    @Test
+    fun `insert at cursor keeps unfinished suffix as following tag`() {
+        val source = "1girl, greenred eyes"
+        val cursor = source.indexOf("red eyes")
+        val result = NovelAiTagCompletion.insert(source, cursor, "green hair")
+        assertEquals("1girl, green hair, red eyes", result.text)
+        assertEquals(result.text.indexOf("red eyes"), result.cursor)
+    }
 }

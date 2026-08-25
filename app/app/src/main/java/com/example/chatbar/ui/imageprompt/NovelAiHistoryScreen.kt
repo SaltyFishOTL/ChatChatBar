@@ -46,6 +46,10 @@ import coil.compose.AsyncImage
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
+import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiImageUseTarget
+import com.example.chatbar.domain.image.hasMissingHistorySource
+import com.example.chatbar.domain.image.requiresImageGuidanceReuseWarning
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.kit.AppIcons
@@ -68,6 +72,12 @@ import java.util.Calendar
 import java.util.Date
 import java.util.Locale
 
+private data class PendingHistoryApply(
+    val entry: NovelAiGenerationHistoryEntry,
+    val image: NovelAiGenerationHistoryImage,
+    val mode: NovelAiHistoryApplyMode
+)
+
 @Composable
 fun NovelAiHistoryScreen(
     onBack: () -> Unit,
@@ -80,6 +90,8 @@ fun NovelAiHistoryScreen(
     var fullPreviewIndex by remember { mutableStateOf<Int?>(null) }
     var pendingDelete by remember { mutableStateOf<NovelAiGenerationHistoryEntry?>(null) }
     var confirmClear by remember { mutableStateOf(false) }
+    var useAsItem by remember { mutableStateOf<NovelAiHistoryImageItem?>(null) }
+    var pendingApply by remember { mutableStateOf<PendingHistoryApply?>(null) }
 
     LaunchedEffect(state.applied) {
         if (state.applied) {
@@ -200,7 +212,7 @@ fun NovelAiHistoryScreen(
         ?.takeIf { it >= 0 }
     if (
         selectedIndex != null && fullPreviewIndex == null && pendingDelete == null &&
-        !showDateFilter && !confirmClear
+        pendingApply == null && !showDateFilter && !confirmClear
     ) {
         HistoryDetailDialog(
             items = state.filteredImages,
@@ -209,8 +221,27 @@ fun NovelAiHistoryScreen(
             onDismiss = { selectedKey = null },
             onCurrentChanged = { item -> selectedKey = item.key },
             onOpenImage = { index -> fullPreviewIndex = index },
-            onApply = viewModel::apply,
+            onApply = { entry, image, mode ->
+                if (entry.recipe.requiresImageGuidanceReuseWarning(mode)) {
+                    pendingApply = PendingHistoryApply(entry, image, mode)
+                } else {
+                    viewModel.apply(entry, image, mode)
+                }
+            },
+            onUseAs = { item -> useAsItem = item },
             onDeleteBatch = { entry -> pendingDelete = entry }
+        )
+    }
+
+    useAsItem?.let { item ->
+        HistoryUseAsDialog(
+            model = state.studioModel,
+            onDismiss = { useAsItem = null },
+            onSelect = { target ->
+                useAsItem = null
+                selectedKey = null
+                viewModel.useImage(item, target)
+            }
         )
     }
 
@@ -249,6 +280,24 @@ fun NovelAiHistoryScreen(
             dismiss = { CbButton("取消", { pendingDelete = null }, variant = ButtonVariant.Ghost) }
         ) {
             CbText("将删除记录及 ${entry.images.size} 张应用缓存图片。已保存到系统图库的副本不受影响。")
+        }
+    }
+
+    pendingApply?.let { request ->
+        CbDialog(
+            onDismissRequest = { pendingApply = null },
+            title = "无法准确复现",
+            confirm = {
+                CbButton("仍然应用", {
+                    pendingApply = null
+                    viewModel.apply(request.entry, request.image, request.mode)
+                })
+            },
+            dismiss = { CbButton("取消", { pendingApply = null }, variant = ButtonVariant.Ghost) }
+        ) {
+            CbText(
+                "原图生成时使用了图像参考，但历史未保存其来源图片。复用设置或 Seed 只能恢复现有参数，结果无法准确复现。"
+            )
         }
     }
 
@@ -401,6 +450,35 @@ private fun HistoryDateFilterDialog(
 }
 
 @Composable
+private fun HistoryUseAsDialog(
+    model: NovelAiImageModel,
+    onDismiss: () -> Unit,
+    onSelect: (NovelAiImageUseTarget) -> Unit
+) {
+    val targets = NovelAiImageUseTarget.entries.filter {
+        model == NovelAiImageModel.V4_5_FULL || it in setOf(
+            NovelAiImageUseTarget.IMAGE_TO_IMAGE,
+            NovelAiImageUseTarget.INPAINT
+        )
+    }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "用作图像引导",
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        targets.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                row.forEach { target ->
+                    CbButton(target.displayName, { onSelect(target) }, Modifier.weight(1f), variant = ButtonVariant.Outline)
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(ChatBarSpacing.xs))
+        }
+    }
+}
+
+@Composable
 internal fun HistoryDetailDialog(
     items: List<NovelAiHistoryImageItem>,
     initialIndex: Int,
@@ -409,6 +487,7 @@ internal fun HistoryDetailDialog(
     onCurrentChanged: (NovelAiHistoryImageItem) -> Unit,
     onOpenImage: (Int) -> Unit,
     onApply: (NovelAiGenerationHistoryEntry, NovelAiGenerationHistoryImage, NovelAiHistoryApplyMode) -> Unit,
+    onUseAs: (NovelAiHistoryImageItem) -> Unit,
     onDeleteBatch: (NovelAiGenerationHistoryEntry) -> Unit
 ) {
     val pagerState = rememberPagerState(initialPage = initialIndex.coerceIn(items.indices)) { items.size }
@@ -449,15 +528,25 @@ internal fun HistoryDetailDialog(
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
+                val fullReproductionAvailable = !current.entry.recipe.imageGuidance.hasMissingHistorySource()
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-                    HistoryApplyIcon(AppIcons.Restore, "完整复现", "完整复现", !busy) {
+                    NovelAiImageAction(
+                        AppIcons.Restore,
+                        if (fullReproductionAvailable) "完整复现" else "缺少来源",
+                        "完整复现",
+                        !busy && fullReproductionAvailable,
+                        Modifier.weight(1f)
+                    ) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.FULL)
                     }
-                    HistoryApplyIcon(AppIcons.Tune, "复用设置", "复用设置并使用新 Seed", !busy) {
+                    NovelAiImageAction(AppIcons.Tune, "复用设置", "复用设置并使用新 Seed", !busy, Modifier.weight(1f)) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.NEW_SEED)
                     }
-                    HistoryApplyIcon(AppIcons.Refresh, "仅用 Seed", "仅复用 Seed", !busy) {
+                    NovelAiImageAction(AppIcons.Refresh, "复用 Seed", "仅复用 Seed", !busy, Modifier.weight(1f)) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.SEED_ONLY)
+                    }
+                    NovelAiImageAction(AppIcons.AddPhotoAlternate, "用作", "用作图像引导", !busy, Modifier.weight(1f)) {
+                        onUseAs(current)
                     }
                 }
                 CbDivider(Modifier.padding(vertical = ChatBarSpacing.sm))
@@ -466,25 +555,6 @@ internal fun HistoryDetailDialog(
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun androidx.compose.foundation.layout.RowScope.HistoryApplyIcon(
-    icon: androidx.compose.ui.graphics.vector.ImageVector,
-    label: String,
-    description: String,
-    enabled: Boolean,
-    onClick: () -> Unit
-) {
-    Column(Modifier.weight(1f), horizontalAlignment = Alignment.CenterHorizontally) {
-        CbIconButton(icon, description, onClick, enabled = enabled)
-        CbText(
-            label,
-            color = if (enabled) ChatBarTheme.colors.mutedForeground else ChatBarTheme.colors.mutedForeground.copy(alpha = 0.45f),
-            style = ChatBarTheme.typography.caption,
-            maxLines = 1
-        )
     }
 }
 
@@ -518,10 +588,28 @@ private fun HistoryDetailContent(
     recipe.characters.forEachIndexed { index, character ->
         HistoryDetailValue("角色 ${index + 1} 负面 Prompt", character.negativePrompt)
     }
+    recipe.imageGuidance.summary(settings.model).takeIf(String::isNotBlank)?.let { summary ->
+        val guidance = recipe.imageGuidance
+        HistoryDetailValue(
+            "图像引导",
+            buildString {
+                append(summary)
+                when (guidance.action) {
+                    com.example.chatbar.domain.image.NovelAiGenerationAction.IMAGE_TO_IMAGE ->
+                        append("\nStrength ${"%.2f".format(guidance.imageToImageStrength)} · Noise ${"%.2f".format(guidance.imageToImageNoise)}")
+                    com.example.chatbar.domain.image.NovelAiGenerationAction.INPAINT ->
+                        append("\nStrength ${"%.2f".format(guidance.inpaintStrength)} · 原始基图/蒙版未随历史保存")
+                    else -> Unit
+                }
+                if (guidance.hasMissingHistorySource()) append("\n缺少生成来源；完整复现不可用")
+            }
+        )
+    }
     HistoryDetailValue(
         "详细设置",
         "${settings.model.displayName} · ${size.width}×${size.height} · ${settings.count} 张\n" +
-            "${settings.steps} Steps · Guidance ${"%.1f".format(settings.guidance)} · ${settings.sampler.displayName}"
+            "${settings.steps} Steps · CFG Scale ${"%.1f".format(settings.guidance)} · " +
+            "CFG Rescale ${"%.2f".format(settings.cfgRescale)} · ${settings.sampler.displayName}"
     )
 }
 

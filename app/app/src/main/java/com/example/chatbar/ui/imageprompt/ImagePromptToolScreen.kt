@@ -4,9 +4,12 @@ import androidx.compose.foundation.BorderStroke
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import android.widget.Toast
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,18 +22,23 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.input.InputTransformation
+import androidx.compose.foundation.text.input.OutputTransformation
 import androidx.compose.foundation.text.input.byValue
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -39,28 +47,50 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
+import androidx.compose.ui.text.drawText
 import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.style.LineHeightStyle
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.text.style.TextGeometricTransform
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import kotlin.math.roundToInt
+import com.example.chatbar.data.local.entity.NovelAiPromptTranslationConsent
 import com.example.chatbar.domain.image.NovelAiAspectRatio
 import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiGenerationChargeKind
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiImageUseTarget
+import com.example.chatbar.domain.image.NovelAiStudioAssetRef
 import com.example.chatbar.domain.image.NovelAiSampler
 import com.example.chatbar.domain.image.NovelAiSeedMode
 import com.example.chatbar.domain.image.NovelAiSizeTier
 import com.example.chatbar.domain.image.NovelAiStudioMetadataSelection
 import com.example.chatbar.domain.image.NovelAiStudioPngMetadata
 import com.example.chatbar.domain.image.NovelAiTagCompletion
+import com.example.chatbar.domain.image.NovelAiPromptAnnotation
+import com.example.chatbar.domain.image.NovelAiPromptWrapPolicy
+import com.example.chatbar.domain.image.requiresImageGuidanceReuseWarning
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.components.ImageMosaicEditor
 import com.example.chatbar.ui.components.ImagePreviewDialog
@@ -89,7 +119,14 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 private data class StudioFullscreenEditRequest(
     val title: String,
     val text: String,
+    val field: NovelAiPromptFieldKey?,
+    val naturalLanguage: Boolean,
     val onApply: (String) -> Unit
+)
+
+private data class StudioTagEditTarget(
+    val field: NovelAiPromptFieldKey,
+    val insert: (String) -> Unit
 )
 
 @Composable
@@ -101,36 +138,72 @@ fun ImagePromptToolScreen(
     val state by viewModel.uiState.collectAsStateWithLifecycle()
     val configured by viewModel.novelAiConfigured.collectAsStateWithLifecycle()
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     var fullscreenEdit by remember { mutableStateOf<StudioFullscreenEditRequest?>(null) }
     var previewPath by remember { mutableStateOf<String?>(null) }
     var importedEditorPath by remember { mutableStateOf<String?>(null) }
     var importedPreviewPath by remember { mutableStateOf<String?>(null) }
     var showMetadataSelection by remember { mutableStateOf(false) }
+    var showImageTools by remember { mutableStateOf(false) }
+    var showGuidanceEditor by remember { mutableStateOf(false) }
+    var guidancePickTarget by remember { mutableStateOf<NovelAiImageUseTarget?>(null) }
+    var stagedGuidanceAsset by remember {
+        mutableStateOf<Pair<NovelAiImageUseTarget, Pair<NovelAiStudioAssetRef, NovelAiStudioAssetRef?>>?>(null)
+    }
+    var useAsPath by remember { mutableStateOf<String?>(null) }
+    var pendingRecentApply by remember { mutableStateOf<NovelAiHistoryApplyMode?>(null) }
+    var activeTagEditTarget by remember { mutableStateOf<StudioTagEditTarget?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let(viewModel::importImage)
+        if (uri != null) {
+            showImageTools = true
+            viewModel.importImage(uri)
+        }
+    }
+    val guidancePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        val target = guidancePickTarget
+        guidancePickTarget = null
+        if (uri != null && target != null) {
+            viewModel.stageGuidanceImage(uri, target) { asset, mask ->
+                stagedGuidanceAsset = target to (asset to mask)
+            }
+        }
     }
     val previewPaths = (state.recentHistoryItems.map { it.image.path } + state.imagePaths).distinct()
     val accountUsage = state.account.usage
-    val anlasLabel = accountUsage?.anlas?.toString()
+    val anlasLabel = state.account.displayAnlas?.toString()
         ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
-    val v5Label = accountUsage?.approximateV5Images?.let { "约${it}张" }
+    val v5Label = state.account.approximateV5Images?.let { "约${it}张" }
         ?: if (state.account.loading) "…" else if (state.account.error != null) "获取失败" else "—"
     val generationCost = state.generationCost
+    val guidanceSummary = state.draft.imageGuidance.summary(state.draft.selectedModel)
+    val openGuidanceEditor: () -> Unit = {
+        viewModel.beginGuidanceEditor()
+        showGuidanceEditor = true
+    }
     LaunchedEffect(Unit) { viewModel.refreshAccountUsage() }
-    LaunchedEffect(state.imageImport.source?.path, state.imageImport.metadata) {
-        showMetadataSelection = false
-        val source = state.imageImport.source ?: return@LaunchedEffect
-        if (state.imageImport.metadata == null) {
-            importedEditorPath = source.path
-            viewModel.clearImportedImage()
+    LaunchedEffect(state.promptTranslationNotice) {
+        state.promptTranslationNotice?.let { notice ->
+            Toast.makeText(context, notice, Toast.LENGTH_SHORT).show()
+            viewModel.consumePromptTranslationNotice()
         }
     }
-    BackHandler(enabled = fullscreenEdit == null && previewPath == null) {
+    LaunchedEffect(state.guidanceEditorRequest) {
+        if (state.guidanceEditorRequest != null) {
+            openGuidanceEditor()
+            viewModel.consumeGuidanceEditorRequest()
+        }
+    }
+    BackHandler(enabled = fullscreenEdit == null && previewPath == null && !showGuidanceEditor) {
         viewModel.persistDraftNow()
         onBack()
     }
     BackHandler(enabled = fullscreenEdit != null) { fullscreenEdit = null }
 
+    val density = LocalDensity.current
+    val imeVisible = WindowInsets.ime.getBottom(density) > 0
+    LaunchedEffect(imeVisible) {
+        if (!imeVisible) viewModel.clearTagSuggestions()
+    }
     BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
         val expandedOutputMaxHeight =
             (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(0.dp)
@@ -151,7 +224,15 @@ fun ImagePromptToolScreen(
             actions = {
                 CbIconButton(
                     AppIcons.Image,
-                    "从文件导入图片",
+                    if (guidanceSummary.isBlank()) "图像引导" else "图像引导：已启用 $guidanceSummary",
+                    openGuidanceEditor,
+                    enabled = !state.isBusy && !state.applyingHistory,
+                    tint = if (guidanceSummary.isNotBlank()) ChatBarTheme.colors.primary else ChatBarTheme.colors.foreground,
+                    dirty = guidanceSummary.isNotBlank()
+                )
+                CbIconButton(
+                    AppIcons.Tools,
+                    "图片工具",
                     { imagePicker.launch(arrayOf("image/*")) },
                     enabled = !state.isBusy && !state.applyingHistory
                 )
@@ -163,9 +244,26 @@ fun ImagePromptToolScreen(
             onToggle = viewModel::toggleOutputExpanded,
             onSelect = viewModel::selectOutput,
             onSelectRecent = viewModel::selectRecentImage,
-            onApplyRecent = viewModel::applySelectedRecentHistory,
+            onApplyRecent = { mode ->
+                val selected = state.selectedRecentHistoryItem
+                if (selected != null && selected.entry.recipe.requiresImageGuidanceReuseWarning(mode)) {
+                    pendingRecentApply = mode
+                } else {
+                    viewModel.applySelectedRecentHistory(mode)
+                }
+            },
+            expanded = state.draft.outputExpanded && !imeVisible,
             expandedMaxHeight = expandedOutputMaxHeight,
-            onOpenImage = { path -> previewPath = path }
+            onOpenImage = { path -> previewPath = path },
+            onUseAs = { path -> useAsPath = path },
+            compactTagSuggestions = activeTagEditTarget?.takeIf { imeVisible }?.let { target ->
+                state.tagSuggestions.takeIf { it.field == target.field }
+                    ?: NovelAiTagSuggestionState(field = target.field)
+            },
+            onInsertTag = { candidate ->
+                activeTagEditTarget?.insert?.invoke(candidate)
+                viewModel.clearTagSuggestions()
+            }
         )
         if (state.hasHistoryUndo) {
             Row(
@@ -182,12 +280,32 @@ fun ImagePromptToolScreen(
             verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
         ) {
             item {
-                PromptSection(state, viewModel) { title, text, onApply ->
-                    fullscreenEdit = StudioFullscreenEditRequest(title, text, onApply)
-                }
+                PromptSection(
+                    state = state,
+                    viewModel = viewModel,
+                    onFullscreenEdit = { title, text, field, naturalLanguage, onApply ->
+                        fullscreenEdit = StudioFullscreenEditRequest(
+                            title = title,
+                            text = text,
+                            field = field,
+                            naturalLanguage = naturalLanguage,
+                            onApply = onApply
+                        )
+                    },
+                    onTagEditTarget = { activeTagEditTarget = it },
+                    onTagEditEnd = { field ->
+                        if (activeTagEditTarget?.field == field) activeTagEditTarget = null
+                        viewModel.clearTagSuggestions()
+                    }
+                )
             }
             item {
-                GenerationSettingsSection(state.draft.activeSettings, state.draft.advancedExpanded, viewModel)
+                GenerationSettingsSection(
+                    state.draft.activeSettings,
+                    state.draft.advancedExpanded,
+                    guidanceSummary,
+                    viewModel
+                )
             }
             item { Spacer(Modifier.height(ChatBarSpacing.sm)) }
         }
@@ -198,7 +316,43 @@ fun ImagePromptToolScreen(
             elevation = 4.dp
         ) {
             Column(Modifier.fillMaxWidth()) {
-                PromptTokenBudget(state.promptTokens)
+                if (guidanceSummary.isNotBlank()) {
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(onClick = openGuidanceEditor)
+                            .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.xs),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CbText(
+                            "图像引导已启用 · $guidanceSummary",
+                            Modifier.weight(1f),
+                            color = ChatBarTheme.colors.primary,
+                            style = ChatBarTheme.typography.caption
+                        )
+                        CbText("点击管理", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth().padding(end = ChatBarSpacing.xs),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    PromptTokenBudget(state.promptTokens, Modifier.weight(1f))
+                    CbIconButton(
+                        AppIcons.Undo,
+                        "撤销工作室修改",
+                        viewModel::undoDraftChange,
+                        enabled = state.canUndoDraft &&
+                            (!state.isBusy || state.isGeneratingImage) && !state.applyingHistory
+                    )
+                    CbIconButton(
+                        AppIcons.Redo,
+                        "重做工作室修改",
+                        viewModel::redoDraftChange,
+                        enabled = state.canRedoDraft &&
+                            (!state.isBusy || state.isGeneratingImage) && !state.applyingHistory
+                    )
+                }
                 Row(
                     Modifier.fillMaxWidth().padding(
                         start = ChatBarSpacing.md,
@@ -217,30 +371,31 @@ fun ImagePromptToolScreen(
                     CbButton(
                         text = when {
                             state.applyingHistory -> "正在应用历史"
+                            state.phase == ImagePromptToolPhase.CANCELLING -> "正在停止"
                             state.isBusy -> "停止当前任务"
                             !configured -> "未配置 Token"
+                            generationCost.anlas > 0 -> buildString {
+                                append("生成消耗 ${generationCost.anlas} Anlas")
+                                if (generationCost.encodingAnlas > 0) append("（含编码 ${generationCost.encodingAnlas}）")
+                            }
                             generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE -> "生成免费"
                             generationCost.kind == NovelAiGenerationChargeKind.FREE -> "生成免费"
                             else -> "生成消耗 ${generationCost.anlas} Anlas"
                         },
                         onClick = when {
                             state.applyingHistory -> ({})
+                            state.phase == ImagePromptToolPhase.CANCELLING -> ({})
                             state.isBusy -> viewModel::cancelActiveTask
                             else -> viewModel::generateImage
                         },
                         modifier = Modifier.weight(0.58f),
-                        enabled = !state.applyingHistory && configured && (state.canGenerate || state.isBusy),
+                        enabled = !state.applyingHistory && configured &&
+                            state.phase != ImagePromptToolPhase.CANCELLING && (state.canGenerate || state.isBusy),
                         variant = if (state.isBusy) ButtonVariant.Destructive else ButtonVariant.Default,
-                        supportingText = if (
-                            !state.applyingHistory &&
-                            !state.isBusy &&
-                            configured &&
-                            generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE
-                        ) {
-                            "消耗 V5 额度"
-                        } else {
-                            null
-                        }
+                        supportingText = state.draft.imageGuidance.validationError(state.draft.selectedModel)
+                            ?: if (!state.applyingHistory && !state.isBusy && configured &&
+                                generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE && generationCost.anlas == 0
+                            ) "消耗 V5 额度" else null
                     )
                 }
             }
@@ -252,8 +407,63 @@ fun ImagePromptToolScreen(
                 text = request.text,
                 onTextChange = request.onApply,
                 visible = true,
-                onDismiss = { fullscreenEdit = null }
+                onDismiss = {
+                    fullscreenEdit = null
+                    viewModel.restoreDraftPromptAnnotations()
+                }
             )
+        }
+    }
+
+    if (showGuidanceEditor) {
+        NovelAiImageGuidanceEditor(
+            initial = state.guidanceCheckpoint ?: state.draft.imageGuidance,
+            model = state.draft.selectedModel,
+            onDismiss = {
+                showGuidanceEditor = false
+                stagedGuidanceAsset = null
+                viewModel.clearGuidanceCheckpoint()
+            },
+            onPickImage = { target ->
+                guidancePickTarget = target
+                guidancePicker.launch(arrayOf("image/png", "image/jpeg", "image/webp"))
+            },
+            stagedAsset = stagedGuidanceAsset,
+            onConsumeStagedAsset = { stagedGuidanceAsset = null },
+            onSaveBitmap = viewModel::saveEditedGuidanceBitmap,
+            onCheckpoint = viewModel::saveGuidanceCheckpoint,
+            onSave = { guidance ->
+                viewModel.commitImageGuidance(guidance)
+                showGuidanceEditor = false
+                stagedGuidanceAsset = null
+            }
+        )
+    }
+
+    useAsPath?.let { path ->
+        ImageUseAsDialog(
+            model = state.draft.selectedModel,
+            onDismiss = { useAsPath = null },
+            onSelect = { target ->
+                useAsPath = null
+                viewModel.useImage(path, target)
+            }
+        )
+    }
+
+    pendingRecentApply?.let { mode ->
+        CbDialog(
+            onDismissRequest = { pendingRecentApply = null },
+            title = "无法准确复现",
+            confirm = {
+                CbButton("仍然应用", {
+                    pendingRecentApply = null
+                    viewModel.applySelectedRecentHistory(mode)
+                })
+            },
+            dismiss = { CbButton("取消", { pendingRecentApply = null }, variant = ButtonVariant.Ghost) }
+        ) {
+            CbText("原图使用了图像参考，但历史未保存来源图片。当前操作只能恢复参数或 Seed，无法准确复现原图。")
         }
     }
 
@@ -285,29 +495,26 @@ fun ImagePromptToolScreen(
         )
     }
 
-    if (state.imageImport.loading) {
-        CbDialog(
-            onDismissRequest = viewModel::clearImportedImage,
-            title = "正在读取图片",
-            dismissOnClickOutside = false,
-            confirm = { CbButton("取消", viewModel::clearImportedImage, variant = ButtonVariant.Ghost) }
-        ) {
-            CbText("正在复制图片并检查 NovelAI 元数据…", color = ChatBarTheme.colors.mutedForeground)
-        }
-    }
-
     val importedMetadata = state.imageImport.metadata
     val importedSource = state.imageImport.source
-    if (importedMetadata != null && importedSource != null && !showMetadataSelection) {
-        ImportedImageActionDialog(
-            imagePath = importedSource.path,
+    if (showImageTools && !showMetadataSelection && importedEditorPath == null && importedPreviewPath == null) {
+        StudioImageToolsDialog(
+            source = importedSource,
             metadata = importedMetadata,
-            onDismiss = viewModel::clearImportedImage,
-            onEditImage = {
-                importedEditorPath = importedSource.path
-                viewModel.clearImportedImage()
-            },
-            onParseMetadata = { showMetadataSelection = true }
+            loading = state.imageImport.loading,
+            toolBusy = state.imageImport.toolBusy,
+            busy = state.isBusy,
+            toolResultPath = state.imageImport.toolResult?.path,
+            designStatus = state.designStatus,
+            isDesigning = state.isDesigning,
+            onDismiss = { showImageTools = false },
+            onPickImage = { imagePicker.launch(arrayOf("image/*")) },
+            onRemoveImage = viewModel::clearImportedImage,
+            onParseMetadata = { showMetadataSelection = true },
+            onMosaic = { importedSource?.let { importedEditorPath = it.path } },
+            onRestorePatch = viewModel::restoreImportedPatch,
+            onReversePrompt = viewModel::reverseImportedPrompt,
+            onOpenResult = { path -> importedPreviewPath = path }
         )
     }
 
@@ -332,42 +539,122 @@ fun ImagePromptToolScreen(
 }
 
 @Composable
-private fun ImportedImageActionDialog(
-    imagePath: String,
-    metadata: NovelAiStudioPngMetadata,
+private fun StudioImageToolsDialog(
+    source: com.example.chatbar.domain.image.ImportedProcessImage?,
+    metadata: NovelAiStudioPngMetadata?,
+    loading: Boolean,
+    toolBusy: Boolean,
+    busy: Boolean,
+    toolResultPath: String?,
+    designStatus: String,
+    isDesigning: Boolean,
     onDismiss: () -> Unit,
-    onEditImage: () -> Unit,
-    onParseMetadata: () -> Unit
+    onPickImage: () -> Unit,
+    onRemoveImage: () -> Unit,
+    onParseMetadata: () -> Unit,
+    onMosaic: () -> Unit,
+    onRestorePatch: () -> Unit,
+    onReversePrompt: () -> Unit,
+    onOpenResult: (String) -> Unit
 ) {
     CbDialog(
         onDismissRequest = onDismiss,
-        title = "检测到 NovelAI 元数据",
+        title = "图片工具",
+        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
+    ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())
+        ) {
+        CbButton(
+            "更换图片文件",
+            onPickImage,
+            Modifier.fillMaxWidth(),
+            enabled = !busy,
+            variant = ButtonVariant.Outline
+        )
+        if (loading) {
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            CbText("正在读取图片并检查 NovelAI 元数据…", color = ChatBarTheme.colors.mutedForeground)
+        }
+        source?.let { imported ->
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            AsyncImage(
+                model = imported.path,
+                contentDescription = "导入图片预览",
+                modifier = Modifier.fillMaxWidth().height(180.dp).clip(RoundedCornerShape(ChatBarShape.md)),
+                contentScale = ContentScale.Fit
+            )
+            CbText(
+                "${imported.width}×${imported.height} · ${imported.displayName}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            CbText("工具栏", style = ChatBarTheme.typography.label)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                NovelAiImageAction(
+                    AppIcons.Article,
+                    "元数据",
+                    if (metadata == null) "未检测到 NovelAI 元数据" else "提取 NovelAI 元数据",
+                    !busy && metadata != null,
+                    Modifier.weight(1f),
+                    onParseMetadata
+                )
+                NovelAiImageAction(AppIcons.Edit, "打码", "打开打码工具", !busy, Modifier.weight(1f), onMosaic)
+                NovelAiImageAction(AppIcons.Restore, "去贴片", "逆向还原 AI 贴片", !busy, Modifier.weight(1f), onRestorePatch)
+                NovelAiImageAction(AppIcons.Search, "反推 Prompt", "使用多模态 AI 反推提示词", !busy, Modifier.weight(1f), onReversePrompt)
+            }
+            if (toolBusy || isDesigning) {
+                Spacer(Modifier.height(ChatBarSpacing.sm))
+                CbText(
+                    if (toolBusy) "正在还原贴片…" else designStatus.ifBlank { "正在反推提示词…" },
+                    color = ChatBarTheme.colors.primary,
+                    style = ChatBarTheme.typography.caption
+                )
+            } else if (designStatus == "反推完成") {
+                Spacer(Modifier.height(ChatBarSpacing.sm))
+                CbText("反推完成；基础与角色正向 Prompt 已更新，可在工作室撤销还原。", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.caption)
+            }
+            toolResultPath?.let { path ->
+                Spacer(Modifier.height(ChatBarSpacing.sm))
+                CbButton("查看还原结果", { onOpenResult(path) }, Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
+            }
+            CbButton("移除当前图片", onRemoveImage, Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost, enabled = !busy)
+        }
+        }
+    }
+}
+
+@Composable
+private fun ImageUseAsDialog(
+    model: NovelAiImageModel,
+    onDismiss: () -> Unit,
+    onSelect: (NovelAiImageUseTarget) -> Unit
+) {
+    val targets = NovelAiImageUseTarget.entries.filter {
+        model == NovelAiImageModel.V4_5_FULL || it in setOf(
+            NovelAiImageUseTarget.IMAGE_TO_IMAGE,
+            NovelAiImageUseTarget.INPAINT
+        )
+    }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "用作图像引导",
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) }
     ) {
-        AsyncImage(
-            model = imagePath,
-            contentDescription = "导入图片预览",
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(180.dp)
-                .clip(RoundedCornerShape(ChatBarShape.md)),
-            contentScale = ContentScale.Fit
-        )
-        Spacer(Modifier.height(ChatBarSpacing.md))
-        CbText(
-            "${metadata.width}×${metadata.height} · 可编辑图片，或选择性覆盖工作室参数",
-            color = ChatBarTheme.colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
-        )
-        Spacer(Modifier.height(ChatBarSpacing.md))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
-            CbButton(
-                "打码 / 还原贴片",
-                onEditImage,
-                Modifier.weight(1f),
-                variant = ButtonVariant.Outline
-            )
-            CbButton("解析元数据", onParseMetadata, Modifier.weight(1f))
+        targets.chunked(2).forEach { row ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                row.forEach { target ->
+                    CbButton(
+                        target.displayName,
+                        { onSelect(target) },
+                        Modifier.weight(1f),
+                        variant = ButtonVariant.Outline
+                    )
+                }
+                if (row.size == 1) Spacer(Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(ChatBarSpacing.xs))
         }
     }
 }
@@ -382,6 +669,7 @@ private fun ImportedMetadataSelectionDialog(
     val negativeAvailable = metadata.negativePrompt != null
     val settingsAvailable = metadata.settings.hasAny
     val seedAvailable = metadata.seed != null
+    val guidanceAvailable = metadata.imageGuidance.hasAny
     CbDialog(
         onDismissRequest = onDismiss,
         title = "解析 NovelAI 元数据",
@@ -409,6 +697,9 @@ private fun ImportedMetadataSelectionDialog(
         }
         MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
             selection = selection.copy(generationSettings = it)
+        }
+        MetadataToggleRow("图像引导", selection.imageGuidance, guidanceAvailable) {
+            selection = selection.copy(imageGuidance = it)
         }
         MetadataToggleRow(
             metadata.seed?.let { "种子 · $it" } ?: "种子",
@@ -444,9 +735,9 @@ private fun MetadataToggleRow(
 }
 
 @Composable
-private fun PromptTokenBudget(state: NovelAiPromptTokenState) {
+private fun PromptTokenBudget(state: NovelAiPromptTokenState, modifier: Modifier = Modifier) {
     Column(
-        Modifier.fillMaxWidth().padding(
+        modifier.fillMaxWidth().padding(
             start = ChatBarSpacing.md,
             top = ChatBarSpacing.xs,
             end = ChatBarSpacing.md
@@ -509,17 +800,23 @@ private fun OutputPanel(
     onSelect: (Int) -> Unit,
     onSelectRecent: (String) -> Unit,
     onApplyRecent: (NovelAiHistoryApplyMode) -> Unit,
+    expanded: Boolean,
     expandedMaxHeight: Dp,
-    onOpenImage: (String) -> Unit
+    onOpenImage: (String) -> Unit,
+    onUseAs: (String) -> Unit,
+    compactTagSuggestions: NovelAiTagSuggestionState?,
+    onInsertTag: (String) -> Unit
 ) {
     val selectedPath = state.selectedOutputPath
     val selectedModel: Any? = selectedPath ?: state.imagePreview
     val selectedRecent = state.selectedRecentHistoryItem
-    val expanded = state.draft.outputExpanded
     CbSurface(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(ChatBarSpacing.md)
+            .padding(
+                horizontal = ChatBarSpacing.md,
+                vertical = if (compactTagSuggestions != null) ChatBarSpacing.xs else ChatBarSpacing.md
+            )
             .then(if (expanded) Modifier.height(expandedMaxHeight) else Modifier),
         color = ChatBarTheme.colors.card,
         shape = RoundedCornerShape(ChatBarShape.xl),
@@ -528,63 +825,121 @@ private fun OutputPanel(
     ) {
         Column(
             modifier = (if (expanded) Modifier.fillMaxSize() else Modifier.fillMaxWidth())
-                .padding(ChatBarSpacing.md)
+                .padding(if (compactTagSuggestions != null) ChatBarSpacing.sm else ChatBarSpacing.md)
         ) {
             Row(
-                modifier = Modifier.fillMaxWidth().heightIn(min = 56.dp),
-                verticalAlignment = Alignment.CenterVertically
+                modifier = Modifier.fillMaxWidth().heightIn(min = 48.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
             ) {
-                Row(
-                    modifier = Modifier.weight(1f).heightIn(min = 56.dp).clickable(onClick = onToggle),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    CbText(
-                        text = when (state.phase) {
-                            ImagePromptToolPhase.GENERATING -> "正在连接 NovelAI"
-                            ImagePromptToolPhase.STREAMING -> "生成中 ${(state.imageProgress * 100).toInt()}%"
-                            ImagePromptToolPhase.SAVING -> "正在保存批次"
-                            ImagePromptToolPhase.FINISHED -> "已完成 ${state.imagePaths.size} 张"
-                            ImagePromptToolPhase.FAILED -> "生成失败"
-                            else -> "输出"
-                        },
-                        modifier = Modifier.weight(1f),
-                        style = ChatBarTheme.typography.label
+                selectedModel?.takeIf { !expanded }?.let { model ->
+                    AsyncImage(
+                        model = model,
+                        contentDescription = "当前输出缩略图",
+                        modifier = Modifier
+                            .size(if (compactTagSuggestions != null) 40.dp else 48.dp)
+                            .clip(RoundedCornerShape(ChatBarShape.sm))
+                            .clickable(onClick = onToggle),
+                        contentScale = ContentScale.Crop
                     )
-                    if (!expanded && selectedModel != null) {
-                        AsyncImage(
-                            model = selectedModel,
-                            contentDescription = "当前输出缩略图",
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(RoundedCornerShape(ChatBarShape.sm)),
-                            contentScale = ContentScale.Crop
+                }
+                if (compactTagSuggestions != null) {
+                    when {
+                        compactTagSuggestions.loading -> CbText(
+                            "预测中…",
+                            Modifier.weight(1f),
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
                         )
-                        Spacer(Modifier.width(ChatBarSpacing.sm))
+                        compactTagSuggestions.error != null -> CbText(
+                            compactTagSuggestions.error,
+                            Modifier.weight(1f),
+                            color = ChatBarTheme.colors.destructive,
+                            style = ChatBarTheme.typography.caption,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        compactTagSuggestions.candidates.isEmpty() -> CbText(
+                            "输入 Tag 获取预测",
+                            Modifier.weight(1f),
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                        else -> LazyRow(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
+                        ) {
+                            items(
+                                compactTagSuggestions.candidates,
+                                key = { candidate -> candidate.name }
+                            ) { candidate ->
+                                CbButton(
+                                    text = buildString {
+                                        append(candidate.name)
+                                        if (candidate.translatedName.isNotBlank()) append(" · ${candidate.translatedName}")
+                                    },
+                                    onClick = { onInsertTag(candidate.name) },
+                                    size = ButtonSize.Xs,
+                                    variant = ButtonVariant.Outline
+                                )
+                            }
+                        }
                     }
-                }
-                selectedRecent?.let {
-                    CbButton(
-                        "应用设置",
-                        { onApplyRecent(NovelAiHistoryApplyMode.NEW_SEED) },
-                        enabled = !state.applyingHistory && !state.isBusy,
-                        variant = ButtonVariant.Outline,
-                        size = ButtonSize.Xs
+                } else {
+                    if (expanded || selectedRecent == null) {
+                        Row(
+                            modifier = Modifier.weight(1f).heightIn(min = 48.dp).clickable(onClick = onToggle),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            CbText(
+                                text = when (state.phase) {
+                                    ImagePromptToolPhase.GENERATING -> "正在连接 NovelAI"
+                                    ImagePromptToolPhase.STREAMING -> "生成中 ${(state.imageProgress * 100).toInt()}%"
+                                    ImagePromptToolPhase.SAVING -> "正在保存批次"
+                                    ImagePromptToolPhase.CANCELLING -> "正在停止"
+                                    ImagePromptToolPhase.FINISHED -> "已完成 ${state.imagePaths.size} 张"
+                                    ImagePromptToolPhase.FAILED -> "生成失败"
+                                    else -> "输出"
+                                },
+                                modifier = Modifier.weight(1f),
+                                style = ChatBarTheme.typography.label
+                            )
+                        }
+                    } else {
+                        Spacer(Modifier.weight(1f))
+                    }
+                    selectedRecent?.let {
+                        Row(Modifier.width(112.dp)) {
+                            NovelAiImageAction(
+                                AppIcons.Tune,
+                                "复用设置",
+                                "复用设置并使用新 Seed",
+                                !state.applyingHistory && !state.isBusy,
+                                Modifier.weight(1f)
+                            ) { onApplyRecent(NovelAiHistoryApplyMode.NEW_SEED) }
+                            NovelAiImageAction(
+                                AppIcons.Refresh,
+                                "复用 Seed",
+                                "仅复用 Seed",
+                                !state.applyingHistory && !state.isBusy,
+                                Modifier.weight(1f)
+                            ) { onApplyRecent(NovelAiHistoryApplyMode.SEED_ONLY) }
+                        }
+                    }
+                    selectedPath?.let { path ->
+                        NovelAiImageAction(
+                            AppIcons.AddPhotoAlternate,
+                            "用作",
+                            "用作图像引导",
+                            !state.applyingHistory && !state.isBusy
+                        ) { onUseAs(path) }
+                    }
+                    CbIconButton(
+                        if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
+                        if (expanded) "折叠输出" else "展开输出",
+                        onToggle
                     )
-                    Spacer(Modifier.width(ChatBarSpacing.xs))
-                    CbButton(
-                        "应用 Seed",
-                        { onApplyRecent(NovelAiHistoryApplyMode.SEED_ONLY) },
-                        enabled = !state.applyingHistory && !state.isBusy,
-                        variant = ButtonVariant.Secondary,
-                        size = ButtonSize.Xs
-                    )
-                    Spacer(Modifier.width(ChatBarSpacing.xs))
                 }
-                CbIconButton(
-                    if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore,
-                    if (expanded) "折叠输出" else "展开输出",
-                    onToggle
-                )
             }
             if (expanded) {
                 LazyColumn(
@@ -701,7 +1056,9 @@ internal fun ImagePreviewPanel(
 private fun PromptSection(
     state: ImagePromptToolUiState,
     viewModel: ImagePromptToolViewModel,
-    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit,
+    onTagEditTarget: (StudioTagEditTarget) -> Unit,
+    onTagEditEnd: (NovelAiPromptFieldKey) -> Unit
 ) {
     val draft = state.draft
     Column(
@@ -711,27 +1068,55 @@ private fun PromptSection(
         SectionCard("角色卡") {
             CharacterCardImport(state, viewModel)
         }
-        SectionCard("Prompt") {
+        val translationEnabled =
+            state.promptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED
+        SectionCard(
+            title = "Prompt",
+            titleAction = {
+                CbIconButton(
+                    imageVector = AppIcons.Translate,
+                    contentDescription = if (translationEnabled) {
+                        "关闭 Prompt 中文翻译"
+                    } else {
+                        "开启 Prompt 中文翻译"
+                    },
+                    onClick = { viewModel.setPromptTranslationEnabled(!translationEnabled) },
+                    modifier = Modifier.size(32.dp),
+                    tint = if (translationEnabled) {
+                        ChatBarTheme.colors.primary
+                    } else {
+                        ChatBarTheme.colors.mutedForeground
+                    }
+                )
+            }
+        ) {
+            val styleField = NovelAiPromptFieldKey("style")
             TagPromptInput(
                 label = "画风 Prompt",
                 value = draft.stylePrompt,
-                field = NovelAiPromptFieldKey("style"),
-                state = state.tagSuggestions,
+                field = styleField,
+                annotations = state.promptAnnotations[styleField].orEmpty(),
                 minLines = 3,
                 editorHeight = 104.dp,
-                onValueChange = { viewModel.updateDraft { draft -> draft.copy(stylePrompt = it) } },
+                onValueChange = { viewModel.updateDraft("prompt:style") { draft -> draft.copy(stylePrompt = it) } },
                 onSuggest = viewModel::requestTagSuggestions,
+                onTagEditTarget = onTagEditTarget,
+                onTagEditEnd = onTagEditEnd,
                 onFullscreenEdit = onFullscreenEdit
             )
+            val baseField = NovelAiPromptFieldKey("base")
             TagPromptInput(
                 label = "基础 Prompt",
                 value = draft.basePrompt,
-                field = NovelAiPromptFieldKey("base"),
-                state = state.tagSuggestions,
+                field = baseField,
+                annotations = state.promptAnnotations[baseField].orEmpty(),
+                naturalLanguage = false,
                 minLines = 3,
                 editorHeight = 150.dp,
-                onValueChange = { viewModel.updateDraft { draft -> draft.copy(basePrompt = it) } },
+                onValueChange = { viewModel.updateDraft("prompt:base") { draft -> draft.copy(basePrompt = it) } },
                 onSuggest = viewModel::requestTagSuggestions,
+                onTagEditTarget = onTagEditTarget,
+                onTagEditEnd = onTagEditEnd,
                 onFullscreenEdit = onFullscreenEdit
             )
             if (draft.selectedModel == NovelAiImageModel.V5_FULL) {
@@ -750,7 +1135,15 @@ private fun PromptSection(
                 }
             }
             draft.characters.forEachIndexed { index, character ->
-                CharacterPromptEditor(index, character, state, viewModel, onFullscreenEdit)
+                CharacterPromptEditor(
+                    index,
+                    character,
+                    state,
+                    viewModel,
+                    onFullscreenEdit,
+                    onTagEditTarget,
+                    onTagEditEnd
+                )
             }
             CbButton("添加角色 Prompt", viewModel::addCharacter, variant = ButtonVariant.Outline)
             CollapsibleHeader(
@@ -760,14 +1153,17 @@ private fun PromptSection(
                 onClick = { viewModel.updateDraft { it.copy(negativeExpanded = !it.negativeExpanded) } }
             )
             if (draft.negativeExpanded) {
+                val negativeField = NovelAiPromptFieldKey("negative")
                 TagPromptInput(
                     label = "基础负面 Prompt",
                     value = draft.negativePrompt,
-                    field = NovelAiPromptFieldKey("negative"),
-                    state = state.tagSuggestions,
+                    field = negativeField,
+                    annotations = state.promptAnnotations[negativeField].orEmpty(),
                     minLines = 3,
-                    onValueChange = { viewModel.updateDraft { draft -> draft.copy(negativePrompt = it) } },
+                    onValueChange = { viewModel.updateDraft("prompt:negative") { draft -> draft.copy(negativePrompt = it) } },
                     onSuggest = viewModel::requestTagSuggestions,
+                    onTagEditTarget = onTagEditTarget,
+                    onTagEditEnd = onTagEditEnd,
                     onFullscreenEdit = onFullscreenEdit
                 )
             }
@@ -791,14 +1187,14 @@ private fun PromptSection(
                     label = "画面内容",
                     value = draft.imageDescription,
                     minLines = 3,
-                    onValueChange = { value -> viewModel.updateDraft { it.copy(imageDescription = value) } },
+                    onValueChange = { value -> viewModel.updateDraft("ai:image_description") { it.copy(imageDescription = value) } },
                     onFullscreenEdit = onFullscreenEdit
                 )
                 StudioMultilineInput(
                     label = "额外要求",
                     value = draft.extraRequirement,
                     minLines = 2,
-                    onValueChange = { value -> viewModel.updateDraft { it.copy(extraRequirement = value) } },
+                    onValueChange = { value -> viewModel.updateDraft("ai:extra_requirement") { it.copy(extraRequirement = value) } },
                     onFullscreenEdit = onFullscreenEdit
                 )
                 CbButton(
@@ -840,7 +1236,9 @@ private fun CharacterPromptEditor(
     character: NovelAiCharacterPromptDraft,
     state: ImagePromptToolUiState,
     viewModel: ImagePromptToolViewModel,
-    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit,
+    onTagEditTarget: (StudioTagEditTarget) -> Unit,
+    onTagEditEnd: (NovelAiPromptFieldKey) -> Unit
 ) {
     CbSurface(
         Modifier.fillMaxWidth(),
@@ -854,15 +1252,18 @@ private fun CharacterPromptEditor(
                 CbButton("下移", { viewModel.moveCharacter(character.id, 1) }, enabled = index < state.draft.characters.lastIndex, variant = ButtonVariant.Ghost, size = ButtonSize.Xs)
                 CbIconButton(AppIcons.Delete, "删除角色", { viewModel.removeCharacter(character.id) }, tint = ChatBarTheme.colors.destructive)
             }
+            val characterField = NovelAiPromptFieldKey("character", character.id)
             TagPromptInput(
                 label = "角色正向",
                 value = character.prompt,
-                field = NovelAiPromptFieldKey("character", character.id),
-                state = state.tagSuggestions,
+                field = characterField,
+                annotations = state.promptAnnotations[characterField].orEmpty(),
                 minLines = 2,
                 editorHeight = 104.dp,
-                onValueChange = { value -> viewModel.updateCharacter(character.id) { it.copy(prompt = value) } },
+                onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character:${character.id}") { it.copy(prompt = value) } },
                 onSuggest = viewModel::requestTagSuggestions,
+                onTagEditTarget = onTagEditTarget,
+                onTagEditEnd = onTagEditEnd,
                 onFullscreenEdit = onFullscreenEdit
             )
             CollapsibleHeader(
@@ -872,15 +1273,18 @@ private fun CharacterPromptEditor(
                 onClick = { viewModel.updateCharacter(character.id) { it.copy(negativeExpanded = !it.negativeExpanded) } }
             )
             if (character.negativeExpanded) {
+                val negativeField = NovelAiPromptFieldKey("character_negative", character.id)
                 TagPromptInput(
                     label = "角色负面",
                     value = character.negativePrompt,
-                    field = NovelAiPromptFieldKey("character_negative", character.id),
-                    state = state.tagSuggestions,
+                    field = negativeField,
+                    annotations = state.promptAnnotations[negativeField].orEmpty(),
                     minLines = 2,
                     editorHeight = 104.dp,
-                    onValueChange = { value -> viewModel.updateCharacter(character.id) { it.copy(negativePrompt = value) } },
+                    onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character_negative:${character.id}") { it.copy(negativePrompt = value) } },
                     onSuggest = viewModel::requestTagSuggestions,
+                    onTagEditTarget = onTagEditTarget,
+                    onTagEditEnd = onTagEditEnd,
                     onFullscreenEdit = onFullscreenEdit
                 )
             }
@@ -892,12 +1296,20 @@ private fun CharacterPromptEditor(
 private fun GenerationSettingsSection(
     settings: NovelAiGenerationSettings,
     advancedExpanded: Boolean,
+    guidanceSummary: String,
     viewModel: ImagePromptToolViewModel
 ) {
     Column(Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md)) {
         SectionCard("生成设置") {
             CbField("模型") {
                 CbSelect(settings.model, NovelAiImageModel.entries, { it.displayName }, viewModel::selectImageModel)
+            }
+            if (guidanceSummary.isNotBlank()) {
+                CbText(
+                    "图像引导已启用 · $guidanceSummary",
+                    color = ChatBarTheme.colors.primary,
+                    style = ChatBarTheme.typography.caption
+                )
             }
             CbField("尺寸档") {
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
@@ -925,8 +1337,8 @@ private fun GenerationSettingsSection(
                 }
             }
             CollapsibleHeader(
-                title = "高级设置",
-                summary = "${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} · ${settings.sampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
+                title = "",
+                summary = "${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} / ${"%.2f".format(settings.cfgRescale)} · ${settings.sampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
                 expanded = advancedExpanded,
                 onClick = { viewModel.updateDraft { it.copy(advancedExpanded = !it.advancedExpanded) } }
             )
@@ -938,10 +1350,27 @@ private fun GenerationSettingsSection(
 @Composable
 private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
     CbField("Steps · ${settings.steps}") {
-        CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
+        CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
     }
-    CbField("Guidance · ${"%.1f".format(settings.guidance)}") {
-        CbSlider(settings.guidance, { value -> viewModel.updateGenerationSettings { it.copy(guidance = (value * 10).toInt() / 10f) } }, 1f..10f, steps = 89)
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
+        CbField("CFG Scale · ${"%.1f".format(settings.guidance)}", Modifier.weight(1f)) {
+            CbSlider(
+                settings.guidance,
+                { value -> viewModel.updateGenerationSettings("settings:guidance") { it.copy(guidance = (value * 10).toInt() / 10f) } },
+                1f..10f,
+                steps = 89,
+                contentDescription = "CFG Scale"
+            )
+        }
+        CbField("CFG Rescale · ${"%.2f".format(settings.cfgRescale)}", Modifier.weight(1f)) {
+            CbSlider(
+                settings.cfgRescale,
+                { value -> viewModel.updateGenerationSettings("settings:cfg_rescale") { it.copy(cfgRescale = kotlin.math.round(value * 20f) / 20f) } },
+                0f..1f,
+                steps = 19,
+                contentDescription = "CFG Rescale"
+            )
+        }
     }
     CbField("Sampler") {
         CbSelect(settings.sampler, NovelAiSampler.entries, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
@@ -957,7 +1386,7 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
             CbInput(
                 value = settings.seed.toString(),
                 onValueChange = { text ->
-                    viewModel.updateGenerationSettings { it.copy(seed = text.toLong()) }
+                    viewModel.updateGenerationSettings("settings:seed") { it.copy(seed = text.toLong()) }
                 },
                 singleLine = true,
                 inputTransformation = InputTransformation.byValue { current, proposed ->
@@ -975,16 +1404,31 @@ private fun TagPromptInput(
     label: String,
     value: String,
     field: NovelAiPromptFieldKey,
-    state: NovelAiTagSuggestionState,
+    annotations: List<NovelAiPromptAnnotation>,
+    naturalLanguage: Boolean = false,
     minLines: Int = 1,
     editorHeight: Dp = 150.dp,
     onValueChange: (String) -> Unit,
     onSuggest: (NovelAiPromptFieldKey, String, Int) -> Unit,
-    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+    onTagEditTarget: (StudioTagEditTarget) -> Unit,
+    onTagEditEnd: (NovelAiPromptFieldKey) -> Unit,
+    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit
 ) {
     var fieldValue by remember(field) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    fun insertTag(tag: String) {
+        val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, tag)
+        fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
+        onValueChange(inserted.text)
+        onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
+    }
+    fun publishEditTarget() {
+        onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
+    }
     LaunchedEffect(value) {
         if (value != fieldValue.text) fieldValue = TextFieldValue(value, TextRange(value.length))
+    }
+    DisposableEffect(field) {
+        onDispose { onTagEditEnd(field) }
     }
     val applyFullscreenText: (String) -> Unit = { text ->
         fieldValue = TextFieldValue(text, TextRange(text.length))
@@ -993,40 +1437,177 @@ private fun TagPromptInput(
     CbField(
         label,
         modifier = Modifier.fillMaxWidth(),
-        onFullscreenEdit = { onFullscreenEdit(label, fieldValue.text, applyFullscreenText) }
+        onFullscreenEdit = {
+            onFullscreenEdit(label, fieldValue.text, field, naturalLanguage, applyFullscreenText)
+        }
     ) {
-        CbInput(
-            value = fieldValue,
-            onValueChange = { next ->
-                fieldValue = next
-                onValueChange(next.text)
-                onSuggest(field, next.text, next.selection.end)
-            },
-            modifier = Modifier.height(editorHeight),
-            singleLine = false,
-            minLines = minLines,
-            expand = true
-        )
-        if (state.field == field) {
-            when {
-                state.loading -> CbText("正在补全…", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
-                state.error != null -> CbText(state.error, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
-                state.candidates.isNotEmpty() -> Row(
-                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = ChatBarSpacing.xs),
-                    horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
-                ) {
-                    state.candidates.forEach { candidate ->
-                        val labelText = buildString {
-                            append(candidate.name)
-                            if (candidate.translatedName.isNotBlank()) append(" · ${candidate.translatedName}")
-                            append(" · ${candidate.category.label}")
-                            if (candidate.count > 0) append(" ${candidate.count}")
-                        }
-                        CbButton(labelText, {
-                            val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, candidate.name)
-                            fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
-                            onValueChange(inserted.text)
-                        }, variant = ButtonVariant.Outline, size = ButtonSize.Xs)
+        Box(Modifier.fillMaxWidth()) {
+            val visibleAnnotations = annotations.filter { annotation ->
+                annotation.matches(fieldValue.text)
+            }
+            val wrappingTransformation = promptTagWrappingOutputTransformation(naturalLanguage)
+            CbInput(
+                value = fieldValue,
+                onValueChange = { next ->
+                    fieldValue = next
+                    onValueChange(next.text)
+                    onSuggest(field, next.text, next.selection.end)
+                    publishEditTarget()
+                },
+                modifier = Modifier.height(editorHeight),
+                singleLine = false,
+                minLines = minLines,
+                expand = true,
+                textStyle = ChatBarTheme.typography.body.copy(
+                    lineHeight = 25.sp,
+                    lineHeightStyle = LineHeightStyle(
+                        alignment = LineHeightStyle.Alignment.Top,
+                        trim = LineHeightStyle.Trim.None
+                    ),
+                    lineBreak = LineBreak.Paragraph
+                ),
+                outputTransformation = wrappingTransformation,
+                textOverlay = { layout, scrollOffset ->
+                    PromptTranslationOverlay(
+                        layout = layout,
+                        annotations = visibleAnnotations,
+                        scrollOffsetPx = scrollOffset
+                    )
+                },
+                onFocusChanged = { isFocused ->
+                    if (isFocused) publishEditTarget() else onTagEditEnd(field)
+                }
+            )
+        }
+    }
+}
+
+private fun NovelAiPromptAnnotation.matches(text: String): Boolean =
+    start >= 0 && end in start..text.length && text.substring(start, end) == source
+
+@Composable
+private fun promptTagWrappingOutputTransformation(
+    naturalLanguage: Boolean
+): OutputTransformation? {
+    if (naturalLanguage) return null
+    val commaStyle = remember {
+        SpanStyle(textGeometricTransform = TextGeometricTransform(scaleX = 0.55f))
+    }
+    return remember(commaStyle) {
+        OutputTransformation {
+            val wrapPlan = NovelAiPromptWrapPolicy.plan(toString())
+            wrapPlan.nonBreakingSpaceOffsets.forEach { offset ->
+                replace(offset, offset + 1, "\u00A0")
+            }
+            wrapPlan.breakableCommaOffsets.forEach { offset ->
+                replace(offset, offset + 1, "\uFF0C")
+                addStyle(commaStyle, offset, offset + 1)
+            }
+        }
+    }
+}
+
+@Composable
+private fun PromptTranslationOverlay(
+    layout: TextLayoutResult?,
+    annotations: List<NovelAiPromptAnnotation>,
+    scrollOffsetPx: Int
+) {
+    val textMeasurer = rememberTextMeasurer()
+    val annotationColor = ChatBarTheme.colors.mutedForeground.copy(alpha = 0.55f)
+    val annotationStyle = TextStyle(color = annotationColor, fontSize = 9.sp)
+    Canvas(Modifier.fillMaxSize()) {
+        val textLayout = layout ?: return@Canvas
+        val textLength = textLayout.layoutInput.text.length
+        val horizontalGap = 1f
+        val verticalGap = 5f
+        val annotationHeight = textMeasurer.measure(
+            text = AnnotatedString("中"),
+            style = annotationStyle,
+            maxLines = 1
+        ).size.height
+        val placements = annotations
+            .asSequence()
+            .filter { it.start in 0..textLength && it.translation.isNotBlank() }
+            .map { annotation ->
+                val startOffset = annotation.start.coerceIn(0, textLength)
+                val endOffset = annotation.end.coerceIn(startOffset, textLength)
+                val startLine = textLayout.getLineForOffset(startOffset)
+                val endLine = textLayout.getLineForOffset((endOffset - 1).coerceAtLeast(startOffset))
+                PromptAnnotationPlacement(
+                    annotation = annotation,
+                    slots = (startLine..endLine).map { line ->
+                        PromptAnnotationLineSlot(
+                            line = line,
+                            startX = if (line == startLine) {
+                                textLayout.getCursorRect(startOffset).left
+                            } else {
+                                textLayout.getLineLeft(line)
+                            },
+                            endX = if (line == endLine && endOffset > startOffset) {
+                                textLayout.getBoundingBox(endOffset - 1).right
+                            } else {
+                                textLayout.getLineRight(line)
+                            }
+                        )
+                    }
+                )
+            }
+            .sortedWith(
+                compareBy<PromptAnnotationPlacement> { it.slots.first().line }
+                    .thenBy { it.slots.first().startX }
+            )
+            .toList()
+
+        placements.forEach { placement ->
+            var remainingTranslation = placement.annotation.translation
+            placement.slots.forEachIndexed { slotIndex, slot ->
+                val y = textLayout.getLineBaseline(slot.line) + verticalGap - scrollOffsetPx
+                val visible = y < size.height && y + annotationHeight > 0f
+                val availableWidth = (slot.endX - slot.startX - horizontalGap)
+                    .roundToInt()
+                    .coerceAtLeast(1)
+                if (remainingTranslation.isEmpty()) {
+                    if (visible && slot.endX - slot.startX >= 2f) {
+                        val centerY = y + annotationHeight * 0.55f
+                        drawLine(
+                            color = annotationColor,
+                            start = Offset(slot.startX, centerY),
+                            end = Offset(slot.endX, centerY),
+                            strokeWidth = 1f
+                        )
+                    }
+                    return@forEachIndexed
+                }
+                val lastSlot = slotIndex == placement.slots.lastIndex
+                val measured = textMeasurer.measure(
+                    text = AnnotatedString(remainingTranslation),
+                    style = annotationStyle,
+                    overflow = if (lastSlot) TextOverflow.Ellipsis else TextOverflow.Clip,
+                    softWrap = true,
+                    maxLines = 1,
+                    constraints = Constraints(maxWidth = availableWidth)
+                )
+                if (visible) {
+                    drawText(measured, topLeft = Offset(slot.startX, y))
+                }
+                val consumed = if (lastSlot) {
+                    remainingTranslation.length
+                } else {
+                    measured.getLineEnd(0, visibleEnd = true)
+                        .coerceIn(1, remainingTranslation.length)
+                }
+                remainingTranslation = remainingTranslation.substring(consumed)
+                if (remainingTranslation.isEmpty() && !measured.hasVisualOverflow) {
+                    val lineStartX = slot.startX + measured.getLineRight(0) + 1f
+                    if (visible && slot.endX - lineStartX >= 2f) {
+                        val centerY = y + measured.size.height * 0.55f
+                        drawLine(
+                            color = annotationColor,
+                            start = Offset(lineStartX, centerY),
+                            end = Offset(slot.endX, centerY),
+                            strokeWidth = 1f
+                        )
                     }
                 }
             }
@@ -1034,27 +1615,52 @@ private fun TagPromptInput(
     }
 }
 
+private data class PromptAnnotationPlacement(
+    val annotation: NovelAiPromptAnnotation,
+    val slots: List<PromptAnnotationLineSlot>
+)
+
+private data class PromptAnnotationLineSlot(
+    val line: Int,
+    val startX: Float,
+    val endX: Float
+)
+
 @Composable
 private fun StudioMultilineInput(
     label: String,
     value: String,
     minLines: Int,
     onValueChange: (String) -> Unit,
-    onFullscreenEdit: (String, String, (String) -> Unit) -> Unit
+    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit
 ) {
-    CbField(label, onFullscreenEdit = { onFullscreenEdit(label, value, onValueChange) }) {
+    CbField(label, onFullscreenEdit = { onFullscreenEdit(label, value, null, false, onValueChange) }) {
         CbInput(value, onValueChange, singleLine = false, minLines = minLines)
     }
 }
 
 @Composable
-private fun SectionCard(title: String, content: @Composable ColumnScope.() -> Unit) {
+private fun SectionCard(
+    title: String,
+    titleAction: (@Composable () -> Unit)? = null,
+    content: @Composable ColumnScope.() -> Unit
+) {
     CbSurface(
         Modifier.fillMaxWidth(),
         border = BorderStroke(1.dp, ChatBarTheme.colors.border)
     ) {
         Column(Modifier.fillMaxWidth().padding(ChatBarSpacing.md), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
-            CbText(title, style = ChatBarTheme.typography.title)
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CbText(title, style = ChatBarTheme.typography.title)
+                if (titleAction != null) {
+                    Spacer(Modifier.width(ChatBarSpacing.xs))
+                    titleAction()
+                }
+                Spacer(Modifier.weight(1f))
+            }
             CbDivider()
             content()
         }
@@ -1067,8 +1673,17 @@ private fun CollapsibleHeader(title: String, summary: String, expanded: Boolean,
         Modifier.fillMaxWidth().heightIn(min = 48.dp).clickable(onClick = onClick),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CbText(title, Modifier.weight(1f), style = ChatBarTheme.typography.label)
-        CbText(summary, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+        if (title.isNotBlank()) {
+            CbText(title, Modifier.weight(1f), style = ChatBarTheme.typography.label, maxLines = 1)
+        }
+        CbText(
+            summary,
+            modifier = if (title.isBlank()) Modifier.weight(1f) else Modifier,
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
         Spacer(Modifier.width(ChatBarSpacing.xs))
         CbIconButton(if (expanded) AppIcons.ExpandLess else AppIcons.ExpandMore, null, onClick)
     }

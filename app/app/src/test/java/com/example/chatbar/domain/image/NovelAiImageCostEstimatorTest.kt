@@ -59,6 +59,51 @@ class NovelAiImageCostEstimatorTest {
         assertEquals(20, cost.anlas)
     }
 
+    @Test
+    fun imageGuidanceDisablesOpusFreeSample() {
+        val asset = NovelAiStudioAssetRef(path = "base.png", sha256 = "hash", width = 832, height = 1216)
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL),
+            account = opus(),
+            imageGuidance = NovelAiImageGuidanceDraft(
+                action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
+                baseImage = asset
+            )
+        )
+
+        assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
+        assertEquals(20, cost.anlas)
+    }
+
+    @Test
+    fun preciseCostScalesPerReferenceAndOutput() {
+        val asset = NovelAiStudioAssetRef(path = "ref.png", sha256 = "hash", width = 1024, height = 1024)
+        val precise = NovelAiImageGuidanceDraft(
+            referenceMode = NovelAiReferenceMode.PRECISE,
+            preciseReference = NovelAiPreciseReferenceDraft(asset = asset)
+        )
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(count = 2),
+            account = null,
+            imageGuidance = precise
+        )
+
+        assertEquals(50, cost.anlas)
+        assertEquals(0, cost.encodingAnlas)
+    }
+
+    @Test
+    fun uncachedVibeEncodingCostIsIncludedInDisplayedTotal() {
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(count = 2),
+            account = null,
+            vibeCacheMisses = 2
+        )
+
+        assertEquals(44, cost.anlas)
+        assertEquals(4, cost.encodingAnlas)
+    }
+
     private fun opus(
         v5Percent: Double? = null,
         exhausted: Boolean = false

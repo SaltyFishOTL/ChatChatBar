@@ -71,6 +71,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiStudioRepository: NovelAiStudioRepository
         private set
+    lateinit var novelAiPromptTranslationCacheRepository: NovelAiPromptTranslationCacheRepository
+        private set
 
     // 领域层服务
     lateinit var chunkingEngine: ChunkingEngine
@@ -139,7 +141,13 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiImageStorage: NovelAiImageStorage
         private set
+    lateinit var novelAiStudioAssetStorage: NovelAiStudioAssetStorage
+        private set
+    lateinit var novelAiVibeEncodingService: NovelAiVibeEncodingService
+        private set
     lateinit var novelAiTagSuggestClient: TagSuggestClient
+        private set
+    lateinit var novelAiPromptTranslationService: NovelAiPromptTranslationService
         private set
     lateinit var fishAudioCredentialStore: FishAudioCredentialStore
         private set
@@ -200,6 +208,7 @@ class ChatBarApp : Application() {
         worldBookRepository = WorldBookRepository(jsonFileStorage)
         editorDraftRepository = EditorDraftRepository(jsonFileStorage)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage)
+        novelAiPromptTranslationCacheRepository = NovelAiPromptTranslationCacheRepository(jsonFileStorage)
         editorDraftAssetService = EditorDraftAssetService(this)
 
         // 3. 初始化 RAG 服务和其它引擎
@@ -231,6 +240,14 @@ class ChatBarApp : Application() {
             unavailableReason = novelAiCodexLoad.fatalError.orEmpty()
         )
         novelAiTagSuggestClient = TagSuggestClient()
+        val novelAiPromptWordDictionary = assets.open("novelai_prompt_words.tsv").use(
+            NovelAiPromptWordDictionary::fromTsv
+        )
+        novelAiPromptTranslationService = NovelAiPromptTranslationService(
+            cacheRepository = novelAiPromptTranslationCacheRepository,
+            wordDictionary = novelAiPromptWordDictionary,
+            tagSearchClient = novelAiTagSuggestClient
+        )
         novelAiPromptDesigner = NovelAiPromptDesigner(
             chatService = streamingChatService,
             tagResearchService = NovelAiTagResearchService(
@@ -238,12 +255,17 @@ class ChatBarApp : Application() {
                 searchClient = novelAiTagSuggestClient,
                 codexSearcher = novelAiCodexSearchEngine
             ),
-            promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules)
+            promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules),
+            imageUnderstandingServiceProvider = {
+                if (::imageUnderstandingService.isInitialized) imageUnderstandingService else null
+            }
         )
         novelAiImageService = NovelAiImageService()
         novelAiAccountService = NovelAiAccountService()
         novelAiPromptTokenCounter = NovelAiPromptTokenCounter(this)
         novelAiImageStorage = NovelAiImageStorage(this)
+        novelAiStudioAssetStorage = NovelAiStudioAssetStorage(this)
+        novelAiVibeEncodingService = NovelAiVibeEncodingService(this)
         searchBackend = MediaWikiSearchBackend()
         characterResearchPlanner = CharacterResearchPlanner(streamingChatService)
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
@@ -433,6 +455,14 @@ class ChatBarApp : Application() {
             )
             momentRepository.initialize()
             novelAiStudioRepository.initialize()
+            val studioDraft = novelAiStudioRepository.loadDraft()
+            val studioUndo = novelAiStudioRepository.loadUndoDraft()
+            val studioGuidanceCheckpoint = novelAiStudioRepository.loadGuidanceCheckpoint()
+            novelAiStudioAssetStorage.cleanupOrphans(
+                studioDraft.imageGuidance.ownedAssetPaths() +
+                    studioUndo?.imageGuidance?.ownedAssetPaths().orEmpty() +
+                    studioGuidanceCheckpoint?.ownedAssetPaths().orEmpty()
+            )
             momentScheduler.kick("startup")
         }
     }

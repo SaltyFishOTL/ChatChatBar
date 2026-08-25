@@ -128,6 +128,34 @@ object NovelAiPngMetadataReader {
             this["source"]?.jsonPrimitive?.contentOrNull,
             source
         ).joinToString(" ")
+        val action = when (this["action"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
+            NovelAiGenerationAction.IMAGE_TO_IMAGE.apiId -> NovelAiGenerationAction.IMAGE_TO_IMAGE
+            NovelAiGenerationAction.INPAINT.apiId -> NovelAiGenerationAction.INPAINT
+            else -> NovelAiGenerationAction.TEXT_TO_IMAGE
+        }
+        val preciseImage = this["director_reference_images"]?.jsonArrayOrNull()
+            ?.firstOrNull()?.jsonPrimitive?.contentOrNull
+        val preciseCaption = this["director_reference_descriptions"]?.jsonArrayOrNull()
+            ?.firstOrNull()?.jsonObjectOrNull()
+            ?.get("caption")?.jsonObjectOrNull()
+            ?.get("base_caption")?.jsonPrimitive?.contentOrNull
+        val preciseType = NovelAiPreciseReferenceType.entries.firstOrNull { it.wireCaption == preciseCaption }
+        val preciseStrength = this["director_reference_strength_values"]?.jsonArrayOrNull()
+            ?.firstOrNull()?.jsonPrimitive?.floatOrNull
+        val preciseFidelity = this["director_reference_secondary_strength_values"]?.jsonArrayOrNull()
+            ?.firstOrNull()?.jsonPrimitive?.floatOrNull
+            ?.let(NovelAiPreciseReferenceWirePolicy::fidelity)
+        val vibeEncodings = this["reference_image_multiple"]?.jsonArrayOrNull().orEmpty()
+            .mapNotNull { it.jsonPrimitive.contentOrNull }
+        val vibeInformation = this["reference_information_extracted_multiple"]?.jsonArrayOrNull().orEmpty()
+        val vibeStrengths = this["reference_strength_multiple"]?.jsonArrayOrNull().orEmpty()
+        val importedVibes = vibeEncodings.mapIndexed { index, encoding ->
+            NovelAiVibeReferenceDraft(
+                encodedVibe = encoding,
+                informationExtracted = vibeInformation.getOrNull(index)?.jsonPrimitive?.floatOrNull ?: 1f,
+                strength = vibeStrengths.getOrNull(index)?.jsonPrimitive?.floatOrNull ?: 0.6f
+            )
+        }
         return NovelAiStudioPngMetadata(
             imagePath = imagePath,
             positivePrompt = positivePrompt,
@@ -142,9 +170,27 @@ object NovelAiPngMetadataReader {
                 count = this["n_samples"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..4 },
                 steps = this["steps"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..50 },
                 guidance = this["scale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 1f..10f },
+                cfgRescale = this["cfg_rescale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 0f..1f },
                 sampler = this["sampler"]?.jsonPrimitive?.contentOrNull?.let { sampler ->
                     NovelAiSampler.entries.firstOrNull { it.apiId.equals(sampler, ignoreCase = true) }
                 }
+            ),
+            imageGuidance = NovelAiImportedImageGuidance(
+                action = action,
+                baseImageBase64 = this["image"]?.jsonPrimitive?.contentOrNull,
+                maskBase64 = this["mask"]?.jsonPrimitive?.contentOrNull,
+                imageToImageStrength = if (action == NovelAiGenerationAction.IMAGE_TO_IMAGE) {
+                    this["strength"]?.jsonPrimitive?.floatOrNull
+                } else null,
+                imageToImageNoise = this["noise"]?.jsonPrimitive?.floatOrNull,
+                inpaintStrength = if (action == NovelAiGenerationAction.INPAINT) {
+                    this["strength"]?.jsonPrimitive?.floatOrNull
+                } else null,
+                preciseImageBase64 = preciseImage,
+                preciseType = preciseType,
+                preciseStrength = preciseStrength,
+                preciseFidelity = preciseFidelity,
+                vibes = importedVibes
             ),
             seed = this["seed"]?.jsonPrimitive?.longOrNull
                 ?.takeIf { it in NovelAiGenerationSettings.MIN_SEED..NovelAiGenerationSettings.MAX_SEED },

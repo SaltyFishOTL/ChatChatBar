@@ -22,7 +22,7 @@
       "displayName": "唯美厚涂",
       "description": "由P站 Ling 提供",
       "modelSupport": "BOTH",
-      "prompt": "skindentation, \n2::motion blur,motion lines::,\n-3::multiple_views::, \n8.5::painterly::, \n3::no lineart::,\n-0.8::flat color::,\n0.5::3d::, \n0.1::teshima_nari, gold_can::, \nruoganzhao, haruyuki_(gffewuoutgblubh), rolua, r1zen, jl_tan, 0.6::ushikani_kassen,betanonbeet::, 0.7::artist:ratatatat74, mx2j, artist:akita_hika::, 0.8::otimusyairoha::,1.2::artist:ie (raarami)::, \n2::4k,light ::, \n1.2::highly finished photorealistic artwork, lively color, graphic texture, realistic skin surface, \n1::photorealistic, realistic::, 1.2::photo(medium), absurdly_detailed_composition, anime style face, best quality, absurdres, very aesthetic, detailed, masterpiece::, ultra-detailed, 0.6::hyperrealistic,photorealistic::, -1.6::realistic face::, ",
+      "prompt": "skindentation, \n2::motion blur,motion lines::,\n-3::multiple_views::, \n8.5::painterly::, \n3::no lineart::,\n-0.8::flat color::,\n0.5::3d::, \n0.1::teshima_nari, gold_can::, \nruoganzhao, haruyuki_(gffewuoutgblubh), rolua, r1zen, jl_tan, 0.6::ushikani_kassen,betanonbeet::, 0.7::artist:ratatatat74, mx2j, artist:akita_hika::, 0.8::otimusyairoha::,1.2::artist:ie (raarami)::, \n2::4k,light ::, \n1.2::highly finished photorealistic artwork, lively color, graphic texture, realistic skin surface, \n1::photorealistic, realistic::, 1.2::photo(medium), absurdly_detailed_composition, anime style face, best quality, absurdres, very aesthetic, detailed, masterpiece::, ultra-detailed, 0.6::hyperrealistic,photorealistic::, -3::realistic face::, ",
       "previewImage": "唯美厚涂.png"
     },
     {

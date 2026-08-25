@@ -6,6 +6,8 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.ImageUnderstandingResult
+import com.example.chatbar.domain.chat.ImageUnderstandingService
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
@@ -67,6 +69,21 @@ data class NovelAiPromptPlan(
         get() = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
 }
 
+internal object NovelAiPromptDelimiterPolicy {
+    fun normalizeForRequest(prompt: NovelAiPromptPlan): NovelAiPromptPlan = prompt.copy(
+        baseCaption = normalize(prompt.baseCaption),
+        characterCaptions = prompt.characterCaptions.map { caption ->
+            caption.copy(
+                prompt = normalize(caption.prompt),
+                negativePrompt = normalize(caption.negativePrompt)
+            )
+        },
+        negativePrompt = normalize(prompt.negativePrompt)
+    )
+
+    fun normalize(text: String): String = text.replace('，', ',')
+}
+
 data class NovelAiPromptDebugExchange(
     val title: String,
     val input: String,
@@ -82,6 +99,7 @@ class NovelAiPromptDesigner(
     private val chatService: StreamingChatService,
     private val tagResearchService: NovelAiTagResearchService,
     private val promptPostProcessor: NovelAiPromptPostProcessor = NovelAiPromptPostProcessor.disabled(),
+    private val imageUnderstandingServiceProvider: () -> ImageUnderstandingService? = { null },
     private val json: Json = Json { ignoreUnknownKeys = true; isLenient = true }
 ) {
     suspend fun design(
@@ -361,10 +379,29 @@ class NovelAiPromptDesigner(
         playerName: String? = null,
         botName: String = "",
         targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
+        referenceImageInstruction: String? = null,
+        excludeStyle: Boolean = true,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         val sourceImages = imageBase64s.filter(String::isNotBlank)
+        val understoodImages = if (sourceImages.isEmpty()) {
+            ImageUnderstandingResult()
+        } else {
+            imageUnderstandingServiceProvider()?.prepare(
+                imageBase64s = sourceImages,
+                generationModel = model,
+                requireUnderstanding = true,
+                announceDirect = true,
+                onStatus = { status -> onContentDelta(status) },
+                onDescriptionText = { _, text -> onContentDelta(text) }
+            ) ?: if (model.isMultimodal) {
+                ImageUnderstandingResult(directImageBase64s = sourceImages)
+            } else {
+                error("当前模型不支持多模态，且未配置可用的视觉模型，无法反推图片")
+            }
+        }
+        val directImages = understoodImages.directImageBase64s
         val request = promptToolInputText(
             imageDescription = imageDescription,
             characterPrompt = characterPrompt
@@ -388,20 +425,31 @@ class NovelAiPromptDesigner(
             appendLine()
             appendLine()
             append(PromptTemplates.novelAiImageTargetModelUser(targetImageModel.displayName))
+            if (understoodImages.descriptions.isNotEmpty()) {
+                appendLine()
+                appendLine()
+                append(
+                    PromptTemplates.novelAiImagePromptImageContentHintUser(
+                        understoodImages.descriptions.joinToString("\n\n")
+                    )
+                )
+            }
             if (referenceImageProvided) {
                 appendLine()
                 appendLine()
-                append(PromptTemplates.novelAiImagePromptReferenceImageUser())
+                append(referenceImageInstruction ?: PromptTemplates.novelAiImagePromptReferenceImageUser())
             }
         }
-        val userMessage = if (sourceImages.isEmpty()) {
+        val userMessage = if (directImages.isEmpty()) {
             ChatApiMessage.text("user", userPrompt)
         } else {
-            ChatApiMessage.withImages("user", userPrompt, sourceImages)
+            ChatApiMessage.withImages("user", userPrompt, directImages)
         }
         val requestMessages = buildList {
             add(ChatApiMessage.text("system", systemPrompt))
-            add(ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()))
+            if (excludeStyle) {
+                add(ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()))
+            }
             if (characterImagePrompts.isNotEmpty()) {
                 add(
                     ChatApiMessage.text(
@@ -421,7 +469,7 @@ class NovelAiPromptDesigner(
         val research = tagResearchService.research(
             taskInput = userPrompt,
             characterPrompts = characterImagePrompts,
-            imageBase64s = sourceImages,
+            imageBase64s = directImages,
             model = model,
             diversityKey = PROMPT_TOOL_SESSION_ID,
             playerName = playerName,

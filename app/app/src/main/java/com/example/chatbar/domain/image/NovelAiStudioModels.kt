@@ -51,7 +51,8 @@ data class NovelAiGenerationSettings(
     val guidance: Float = 6f,
     val seedMode: NovelAiSeedMode = NovelAiSeedMode.RANDOM,
     val seed: Long = 0L,
-    val sampler: NovelAiSampler = NovelAiSampler.EULER_ANCESTRAL
+    val sampler: NovelAiSampler = NovelAiSampler.EULER_ANCESTRAL,
+    val cfgRescale: Float = 0f
 ) {
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)
 
@@ -93,6 +94,7 @@ data class NovelAiGenerationSettings(
         count !in 1..4 -> "生成数量必须在 1–4 之间"
         steps !in 1..50 -> "Steps 必须在 1–50 之间"
         guidance !in 1f..10f -> "Guidance 必须在 1.0–10.0 之间"
+        cfgRescale !in 0f..1f -> "CFG Rescale 必须在 0.0–1.0 之间"
         seedMode == NovelAiSeedMode.FIXED && seed !in MIN_SEED..maxAllowedBaseSeed -> "当前数量下 Seed 必须在 $MIN_SEED–$maxAllowedBaseSeed 之间"
         characterCount > model.maxCharacters -> "${model.displayName} 最多支持 ${model.maxCharacters} 个角色；当前 $characterCount 个"
         else -> null
@@ -158,6 +160,7 @@ data class NovelAiStudioDraft(
     val advancedExpanded: Boolean = false,
     val aiPanelExpanded: Boolean = false,
     val conversionSnapshot: NovelAiPositivePromptSnapshot? = null,
+    val imageGuidance: NovelAiImageGuidanceDraft = NovelAiImageGuidanceDraft(),
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val activeSettings: NovelAiGenerationSettings
@@ -186,13 +189,17 @@ data class NovelAiStudioDraft(
 data class NovelAiStudioUndoDraft(val draft: NovelAiStudioDraft? = null)
 
 @Serializable
+data class NovelAiGuidanceEditorCheckpoint(val guidance: NovelAiImageGuidanceDraft? = null)
+
+@Serializable
 data class NovelAiGenerationRecipe(
     val stylePrompt: String = "",
     val basePrompt: String = "",
     val characters: List<NovelAiCharacterPromptDraft> = emptyList(),
     val negativePrompt: String = PromptTemplates.defaultCharacterNaiNegativePrompt(),
     val naturalLanguageMode: Boolean = false,
-    val settings: NovelAiGenerationSettings = NovelAiGenerationSettings()
+    val settings: NovelAiGenerationSettings = NovelAiGenerationSettings(),
+    val imageGuidance: NovelAiImageGuidanceDraft = NovelAiImageGuidanceDraft()
 )
 
 @Serializable
@@ -214,6 +221,9 @@ fun novelAiHistoryImages(paths: List<String>, baseSeed: Long): List<NovelAiGener
 
 enum class NovelAiHistoryApplyMode { FULL, NEW_SEED, SEED_ONLY }
 
+fun NovelAiGenerationRecipe.requiresImageGuidanceReuseWarning(mode: NovelAiHistoryApplyMode): Boolean =
+    mode != NovelAiHistoryApplyMode.FULL && imageGuidance.hasMissingHistorySource()
+
 fun NovelAiStudioDraft.applyHistoryRecipe(
     recipe: NovelAiGenerationRecipe,
     imageSeed: Long,
@@ -225,7 +235,8 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
         selectedModel = recipe.settings.model,
-        conversionSnapshot = null
+        conversionSnapshot = null,
+        imageGuidance = recipe.imageGuidance.restoredFromHistory()
     ).withActiveSettings(recipe.settings.copy(seedMode = NovelAiSeedMode.FIXED, seed = imageSeed))
     NovelAiHistoryApplyMode.NEW_SEED -> copy(
         stylePrompt = recipe.stylePrompt,
@@ -233,7 +244,8 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
         selectedModel = recipe.settings.model,
-        conversionSnapshot = null
+        conversionSnapshot = null,
+        imageGuidance = recipe.imageGuidance.restoredFromHistory()
     ).withActiveSettings(recipe.settings.copy(seedMode = NovelAiSeedMode.RANDOM))
     NovelAiHistoryApplyMode.SEED_ONLY -> withActiveSettings(
         activeSettings.copy(seedMode = NovelAiSeedMode.FIXED, seed = imageSeed)
@@ -246,8 +258,34 @@ fun NovelAiStudioDraft.toRecipe(settings: NovelAiGenerationSettings = activeSett
         basePrompt = basePrompt,
         characters = characters,
         negativePrompt = negativePrompt,
-        settings = settings
+        settings = settings,
+        imageGuidance = imageGuidance.toHistoryRecipe()
     )
+
+fun NovelAiImageGuidanceDraft.hasMissingHistorySource(): Boolean =
+    action != NovelAiGenerationAction.TEXT_TO_IMAGE ||
+        referenceMode == NovelAiReferenceMode.PRECISE ||
+        referenceMode == NovelAiReferenceMode.VIBE && vibes.any { it.encodedVibe.isNullOrBlank() }
+
+private fun NovelAiImageGuidanceDraft.toHistoryRecipe(): NovelAiImageGuidanceDraft = copy(
+    baseImage = null,
+    maskImage = null,
+    preciseReference = preciseReference.copy(asset = null),
+    vibes = vibes.map { it.copy(asset = null) }.filter { !it.encodedVibe.isNullOrBlank() }
+)
+
+private fun NovelAiImageGuidanceDraft.restoredFromHistory(): NovelAiImageGuidanceDraft = copy(
+    action = NovelAiGenerationAction.TEXT_TO_IMAGE,
+    baseImage = null,
+    maskImage = null,
+    preciseReference = preciseReference.copy(asset = null),
+    referenceMode = when {
+        referenceMode == NovelAiReferenceMode.VIBE && vibes.any { !it.encodedVibe.isNullOrBlank() } ->
+            NovelAiReferenceMode.VIBE
+        else -> NovelAiReferenceMode.NONE
+    },
+    vibes = vibes.map { it.copy(asset = null) }.filter { !it.encodedVibe.isNullOrBlank() }
+)
 
 fun NovelAiStudioDraft.copyPositivePrompt(): String {
     val characterBlock = characters.joinToString("\n") { character ->

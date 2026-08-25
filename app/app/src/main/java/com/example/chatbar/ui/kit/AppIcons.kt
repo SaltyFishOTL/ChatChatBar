@@ -25,6 +25,7 @@ import com.composables.icons.lucide.LogIn
 import com.composables.icons.lucide.LogOut
 import com.composables.icons.lucide.Lock
 import com.composables.icons.lucide.Lucide
+import com.composables.icons.lucide.Languages
 import com.composables.icons.lucide.Maximize2
 import com.composables.icons.lucide.MessageCircle
 import com.composables.icons.lucide.Pencil
@@ -42,7 +43,10 @@ import com.composables.icons.lucide.Square
 import com.composables.icons.lucide.Trash
 import com.composables.icons.lucide.Trash2
 import com.composables.icons.lucide.Upload
+import com.composables.icons.lucide.Undo2
+import com.composables.icons.lucide.Redo2
 import com.composables.icons.lucide.Volume2
+import com.composables.icons.lucide.Wrench
 import com.composables.icons.lucide.X
 
 // Compatibility facade. Icons are provided by Lucide Compose, not hand-drawn paths.
@@ -77,6 +81,7 @@ object AppIcons {
     val KeyboardArrowRight: ImageVector get() = Lucide.ChevronRight
     val Login: ImageVector get() = Lucide.LogIn
     val Lock: ImageVector get() = Lucide.Lock
+    val Translate: ImageVector get() = Lucide.Languages
     val Logout: ImageVector get() = Lucide.LogOut
     val OpenInFull: ImageVector get() = Lucide.Maximize2
     val PhotoCamera: ImageVector get() = Lucide.Camera
@@ -91,6 +96,9 @@ object AppIcons {
     val Star: ImageVector get() = Lucide.Star
     val Stop: ImageVector get() = Lucide.Square
     val Tune: ImageVector get() = Lucide.SlidersHorizontal
+    val Tools: ImageVector get() = Lucide.Wrench
+    val Undo: ImageVector get() = Lucide.Undo2
+    val Redo: ImageVector get() = Lucide.Redo2
     val UploadFile: ImageVector get() = Lucide.Upload
     val Volume: ImageVector get() = Lucide.Volume2
 }

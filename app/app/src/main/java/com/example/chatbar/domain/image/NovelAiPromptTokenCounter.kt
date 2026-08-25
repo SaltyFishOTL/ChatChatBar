@@ -27,7 +27,8 @@ class NovelAiPromptTokenCounter(context: Context) {
     }
 
     fun count(prompt: NovelAiPromptPlan, model: NovelAiImageModel): NovelAiPromptTokenUsage {
-        val effectivePrompt = NovelAiV5TextPromptPolicy.apply(prompt, model)
+        val normalizedPrompt = NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt)
+        val effectivePrompt = NovelAiV5TextPromptPolicy.apply(normalizedPrompt, model)
         val tokenizer = when (model.tokenizerKind) {
             NovelAiTokenizerKind.T5 -> t5Tokenizer
             NovelAiTokenizerKind.QWEN -> qwenTokenizer

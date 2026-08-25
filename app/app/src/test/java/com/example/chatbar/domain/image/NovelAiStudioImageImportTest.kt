@@ -21,6 +21,7 @@ class NovelAiStudioImageImportTest {
             count = 2,
             steps = 35,
             guidance = 5.5f,
+            cfgRescale = 0.4f,
             sampler = NovelAiSampler.DPM_PLUS_PLUS_SDE
         ),
         seed = 987654321L,
@@ -56,6 +57,7 @@ class NovelAiStudioImageImportTest {
         assertEquals(2, result.activeSettings.count)
         assertEquals(35, result.activeSettings.steps)
         assertEquals(5.5f, result.activeSettings.guidance)
+        assertEquals(0.4f, result.activeSettings.cfgRescale)
         assertEquals(NovelAiSampler.DPM_PLUS_PLUS_SDE, result.activeSettings.sampler)
         assertEquals(NovelAiSeedMode.FIXED, result.activeSettings.seedMode)
         assertEquals(987654321L, result.activeSettings.seed)

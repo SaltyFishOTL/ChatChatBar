@@ -46,6 +46,7 @@ class NovelAiStudioModelsTest {
         assertEquals(2, settings.count)
         assertEquals(28, settings.steps)
         assertEquals(8f, settings.guidance)
+        assertEquals(0f, settings.cfgRescale)
         assertEquals(NovelAiSampler.EULER_ANCESTRAL, settings.sampler)
         assertEquals(123L, settings.seed)
     }
@@ -100,7 +101,31 @@ class NovelAiStudioModelsTest {
         assertEquals(NovelAiImageModel.V4_5_FULL, draft.selectedModel)
         assertEquals(28, draft.activeSettings.steps)
         assertEquals(6f, draft.activeSettings.guidance)
+        assertEquals(0f, draft.activeSettings.cfgRescale)
         assertEquals(NovelAiSeedMode.RANDOM, draft.activeSettings.seedMode)
+    }
+
+    @Test
+    fun `old persisted settings decode with CFG Rescale disabled`() {
+        val draft = Json { ignoreUnknownKeys = true }.decodeFromString(
+            NovelAiStudioDraft.serializer(),
+            """{"selectedModel":"V4_5_FULL","v45Settings":{"guidance":7.0,"steps":32}}"""
+        )
+
+        assertEquals(7f, draft.activeSettings.guidance)
+        assertEquals(32, draft.activeSettings.steps)
+        assertEquals(0f, draft.activeSettings.cfgRescale)
+    }
+
+    @Test
+    fun `CFG Rescale validates official range`() {
+        assertNull(NovelAiGenerationSettings(cfgRescale = 1f).validationError(0))
+        assertTrue(
+            NovelAiGenerationSettings(cfgRescale = 1.05f)
+                .validationError(0)
+                .orEmpty()
+                .contains("CFG Rescale")
+        )
     }
 
     @Test
@@ -131,6 +156,19 @@ class NovelAiStudioModelsTest {
         assertEquals("current base", seedOnly.basePrompt)
         assertEquals(NovelAiImageModel.V4_5_FULL, seedOnly.selectedModel)
         assertEquals(99L, seedOnly.activeSettings.seed)
+    }
+
+    @Test
+    fun `guided history warns for settings and seed reuse`() {
+        val recipe = NovelAiGenerationRecipe(
+            imageGuidance = NovelAiImageGuidanceDraft(
+                action = NovelAiGenerationAction.IMAGE_TO_IMAGE
+            )
+        )
+
+        assertFalse(recipe.requiresImageGuidanceReuseWarning(NovelAiHistoryApplyMode.FULL))
+        assertTrue(recipe.requiresImageGuidanceReuseWarning(NovelAiHistoryApplyMode.NEW_SEED))
+        assertTrue(recipe.requiresImageGuidanceReuseWarning(NovelAiHistoryApplyMode.SEED_ONLY))
     }
 
     @Test

@@ -4,8 +4,10 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
+import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.image.NovelAiStudioUndoDraft
+import com.example.chatbar.domain.image.NovelAiGuidanceEditorCheckpoint
 import com.example.chatbar.domain.image.applyHistoryRecipe
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -18,6 +20,9 @@ import kotlinx.coroutines.sync.withLock
 class NovelAiStudioRepository(private val storage: JsonFileStorage) {
     private val _draft = MutableStateFlow<NovelAiStudioDraft?>(null)
     val draft: StateFlow<NovelAiStudioDraft?> = _draft.asStateFlow()
+    private val _pendingGuidanceEditorTarget = MutableStateFlow<NovelAiImageUseTarget?>(null)
+    val pendingGuidanceEditorTarget: StateFlow<NovelAiImageUseTarget?> =
+        _pendingGuidanceEditorTarget.asStateFlow()
     private val draftMutex = Mutex()
     private val undoMutex = Mutex()
 
@@ -47,6 +52,33 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
         storage.saveSingleton(UNDO_ENTITY, NovelAiStudioUndoDraft(), NovelAiStudioUndoDraft.serializer())
     }
 
+    suspend fun saveGuidanceCheckpoint(guidance: com.example.chatbar.domain.image.NovelAiImageGuidanceDraft) {
+        storage.saveSingleton(
+            GUIDANCE_CHECKPOINT_ENTITY,
+            NovelAiGuidanceEditorCheckpoint(guidance),
+            NovelAiGuidanceEditorCheckpoint.serializer()
+        )
+    }
+
+    suspend fun loadGuidanceCheckpoint(): com.example.chatbar.domain.image.NovelAiImageGuidanceDraft? =
+        storage.loadSingleton(GUIDANCE_CHECKPOINT_ENTITY, NovelAiGuidanceEditorCheckpoint.serializer())?.guidance
+
+    suspend fun clearGuidanceCheckpoint() {
+        storage.saveSingleton(
+            GUIDANCE_CHECKPOINT_ENTITY,
+            NovelAiGuidanceEditorCheckpoint(),
+            NovelAiGuidanceEditorCheckpoint.serializer()
+        )
+    }
+
+    fun requestGuidanceEditor(target: NovelAiImageUseTarget) {
+        _pendingGuidanceEditorTarget.value = target
+    }
+
+    fun consumeGuidanceEditorRequest() {
+        _pendingGuidanceEditorTarget.value = null
+    }
+
     suspend fun applyHistory(
         entry: NovelAiGenerationHistoryEntry,
         image: NovelAiGenerationHistoryImage,
@@ -55,7 +87,10 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
         val current = loadDraft()
         saveUndoDraft(current)
         return try {
-            current.applyHistoryRecipe(entry.recipe, image.seed, mode).also { saveDraft(it) }
+            current.applyHistoryRecipe(entry.recipe, image.seed, mode).also {
+                saveDraft(it)
+                clearGuidanceCheckpoint()
+            }
         } catch (error: Throwable) {
             clearUndoDraft()
             throw error
@@ -81,6 +116,7 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
     companion object {
         private const val DRAFT_ENTITY = "novelai_studio_draft"
         private const val UNDO_ENTITY = "novelai_studio_history_undo"
+        private const val GUIDANCE_CHECKPOINT_ENTITY = "novelai_studio_guidance_checkpoint"
         private const val HISTORY_ENTITY = "novelai_generation_history"
     }
 }

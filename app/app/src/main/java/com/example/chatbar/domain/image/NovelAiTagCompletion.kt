@@ -20,25 +20,22 @@ object NovelAiTagCompletion {
     fun activeFragment(text: String, cursor: Int): NovelAiActiveTagFragment? {
         val safeCursor = cursor.coerceIn(0, text.length)
         val segmentStart = (text.indexOfLastBefore(safeCursor) { it in delimiters } + 1)
-        val nextDelimiter = text.indexOfFirstAfter(safeCursor) { it in delimiters }
-            .takeIf { it >= 0 } ?: text.length
         var replaceStart = segmentStart
-        while (replaceStart < nextDelimiter && (text[replaceStart].isWhitespace() || text[replaceStart] in opening)) {
+        while (replaceStart < safeCursor && (text[replaceStart].isWhitespace() || text[replaceStart] in opening)) {
             replaceStart++
         }
         while (true) {
-            val match = weightPrefix.find(text.substring(replaceStart, nextDelimiter)) ?: break
+            val match = weightPrefix.find(text.substring(replaceStart, safeCursor)) ?: break
             replaceStart += match.value.length
         }
-        var replaceEnd = nextDelimiter
+        var replaceEnd = safeCursor
         while (replaceEnd > replaceStart && (text[replaceEnd - 1].isWhitespace() || text[replaceEnd - 1] in closing)) {
             replaceEnd--
         }
         while (replaceEnd - 2 >= replaceStart && text.substring(replaceEnd - 2, replaceEnd) == "::") {
             replaceEnd -= 2
         }
-        val queryEnd = safeCursor.coerceIn(replaceStart, replaceEnd)
-        val query = text.substring(replaceStart, queryEnd).trim()
+        val query = text.substring(replaceStart, replaceEnd).trim()
         return query.takeIf(String::isNotBlank)?.let {
             NovelAiActiveTagFragment(it, replaceStart, replaceEnd)
         }
@@ -47,8 +44,19 @@ object NovelAiTagCompletion {
     fun insert(text: String, cursor: Int, tag: String): NovelAiTagInsertion {
         val fragment = activeFragment(text, cursor)
             ?: return NovelAiTagInsertion(text, cursor.coerceIn(0, text.length))
-        val result = text.replaceRange(fragment.replaceStart, fragment.replaceEnd, tag)
-        return NovelAiTagInsertion(result, fragment.replaceStart + tag.length)
+        val suffix = text.substring(fragment.replaceEnd)
+        val firstSuffixContent = suffix.firstOrNull { !it.isWhitespace() }
+        val insertBeforeExistingTag = firstSuffixContent != null &&
+            firstSuffixContent !in delimiters && firstSuffixContent !in closing &&
+            !suffix.trimStart().startsWith("::")
+        val consumedWhitespace = if (insertBeforeExistingTag) suffix.indexOfFirst { !it.isWhitespace() } else 0
+        val replacement = if (insertBeforeExistingTag) "$tag, " else tag
+        val result = text.replaceRange(
+            fragment.replaceStart,
+            fragment.replaceEnd + consumedWhitespace.coerceAtLeast(0),
+            replacement
+        )
+        return NovelAiTagInsertion(result, fragment.replaceStart + replacement.length)
     }
 
     private inline fun String.indexOfLastBefore(endExclusive: Int, predicate: (Char) -> Boolean): Int {
@@ -56,8 +64,4 @@ object NovelAiTagCompletion {
         return -1
     }
 
-    private inline fun String.indexOfFirstAfter(start: Int, predicate: (Char) -> Boolean): Int {
-        for (index in start until length) if (predicate(this[index])) return index
-        return -1
-    }
 }

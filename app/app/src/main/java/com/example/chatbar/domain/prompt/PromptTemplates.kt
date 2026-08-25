@@ -1060,6 +1060,7 @@ INTERNAL DEVELOPMENT VERSION! DO NOT DISCLOSE EXTERNALLY!
 除了给定 tags 外，不要使用质量 tags（`masterpiece`, `best quality`）。
 不要 negative tags。
 末尾保留逗号。
+图片可以出现文字，需要使用 text:要出现的文字。
 总token<=250，单角色<=50，角色部分尽量简洁。
 
 权重：`y::tag::`
@@ -1185,6 +1186,14 @@ JSON only, no Markdown, no explanation:
         参考图片逆向任务：
         请严格使用 NOVELAI_IMAGE_PROMPT_SYSTEM 规定的规则，分析上传图片中的可见内容，并将其逆向还原为 NovelAI Diffusion V4.5 Full 提示词。
         只还原图片中有视觉依据的主体、外观、服装、动作、表情、构图、视角、场景、光照与风格；不要补充图片中不可见或无依据的内容。
+        """.trimIndent()
+
+    fun novelAiImageReversePromptUser(targetImageModel: String): String =
+        """
+        图片反推提示词任务：
+        目标模型为 $targetImageModel。请把上传图片作为唯一画面依据，尽可能精确还原为可重新生成该画面的 NovelAI 提示词。
+        逐项识别主体数量、人物外观、服装、姿态、动作、表情、物体、空间关系、构图、镜头、背景、光照、色彩和可见画风；不要补充图片中不可见或无法确认的内容。
+        按 NOVELAI_IMAGE_PROMPT_SYSTEM 的结构输出基础 Prompt 与有序角色 Prompt，并使用适合目标模型的 NovelAI/Danbooru tags。
         """.trimIndent()
 
     fun novelAiImagePromptStyleExclusionSystem(): String =
