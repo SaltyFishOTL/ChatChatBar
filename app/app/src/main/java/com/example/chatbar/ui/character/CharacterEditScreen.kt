@@ -40,6 +40,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
@@ -47,6 +48,7 @@ import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items as gridItems
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -85,10 +87,13 @@ import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.Popup
+import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
@@ -105,6 +110,7 @@ import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageCropOffset
 import com.example.chatbar.domain.image.ImageCropSize
 import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
+import com.example.chatbar.domain.image.NovelAiStyleModelFilter
 import com.example.chatbar.domain.image.NovelAiStylePreset
 import com.example.chatbar.domain.image.clampCropOffset
 import com.example.chatbar.domain.image.coverDisplaySize
@@ -141,6 +147,7 @@ import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
+import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.FullscreenTextEditor
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.collect
@@ -521,7 +528,9 @@ fun CharacterEditScreen(
                             verticalAlignment = Alignment.CenterVertically
                         ) {
                             CbText(
-                                "已填充 ${undo.displayName}",
+                                "已填充 ${undo.displayName} · 已应用${
+                                    if (undo.appliedCustomNegativePrompt) "专用负面词" else "默认负面词"
+                                }",
                                 color = ChatBarTheme.colors.mutedForeground,
                                 style = ChatBarTheme.typography.caption
                             )
@@ -1299,9 +1308,8 @@ internal fun NovelAiStylePresetGallery(
                     CbButton(
                         "查看全部（${catalog.styles.size}）",
                         { showAllStyles = true },
-                        modifier = Modifier.heightIn(min = 48.dp),
-                        variant = ButtonVariant.Outline,
-                        size = ButtonSize.Sm
+                        variant = ButtonVariant.Ghost,
+                        size = ButtonSize.Xs
                     )
                 }
                 LazyRow(
@@ -1349,6 +1357,8 @@ private fun NovelAiStylePresetGalleryDialog(
     onApply: (NovelAiStylePreset) -> Unit,
     onDismiss: () -> Unit
 ) {
+    var modelFilter by remember { mutableStateOf(NovelAiStyleModelFilter.ALL) }
+    val filteredStyles = styles.filter { style -> style.modelSupport.supports(modelFilter) }
     Dialog(
         onDismissRequest = onDismiss,
         properties = DialogProperties(
@@ -1373,36 +1383,157 @@ private fun NovelAiStylePresetGalleryDialog(
                         )
                     },
                     actions = {
-                        CbText(
-                            "${styles.size} 项",
-                            color = ChatBarTheme.colors.mutedForeground,
-                            style = ChatBarTheme.typography.caption
-                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            NovelAiStyleModelFilterControl(
+                                selected = modelFilter,
+                                onSelected = { modelFilter = it }
+                            )
+                            CbText(
+                                "${filteredStyles.size}/${styles.size}",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
                     }
                 )
-                LazyVerticalGrid(
-                    columns = GridCells.Adaptive(minSize = 148.dp),
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f)
-                        .windowInsetsPadding(WindowInsets.navigationBars),
-                    contentPadding = PaddingValues(16.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(12.dp)
-                ) {
-                    gridItems(styles, key = NovelAiStylePreset::styleKey) { style ->
-                        NovelAiStylePresetCard(
-                            style = style,
-                            isSelected = currentPrompt == style.prompt,
-                            onClick = { onApply(style) },
-                            modifier = Modifier.fillMaxWidth()
+                if (filteredStyles.isEmpty()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .windowInsetsPadding(WindowInsets.navigationBars),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CbText(
+                            "没有支持 ${modelFilter.displayLabel} 的内置画风",
+                            color = ChatBarTheme.colors.mutedForeground
                         )
+                    }
+                } else {
+                    LazyVerticalGrid(
+                        columns = GridCells.Adaptive(minSize = 148.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f)
+                            .windowInsetsPadding(WindowInsets.navigationBars),
+                        contentPadding = PaddingValues(16.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        gridItems(filteredStyles, key = NovelAiStylePreset::styleKey) { style ->
+                            NovelAiStylePresetCard(
+                                style = style,
+                                isSelected = currentPrompt == style.prompt,
+                                onClick = { onApply(style) },
+                                modifier = Modifier.fillMaxWidth()
+                            )
+                        }
                     }
                 }
             }
         }
     }
 }
+
+@Composable
+private fun NovelAiStyleModelFilterControl(
+    selected: NovelAiStyleModelFilter,
+    onSelected: (NovelAiStyleModelFilter) -> Unit
+) {
+    var expanded by remember { mutableStateOf(false) }
+    val popupOffset = with(LocalDensity.current) { 48.dp.roundToPx() }
+    Box {
+        Box(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clickable(role = Role.Button) { expanded = true }
+                .semantics {
+                    contentDescription = "画风模型筛选：${selected.displayLabel}"
+                }
+                .testTag("novel-ai-style-filter"),
+            contentAlignment = Alignment.Center
+        ) {
+            CbSurface(
+                color = ChatBarTheme.colors.surfaceSubtle,
+                shape = RoundedCornerShape(ChatBarShape.sm),
+                border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+            ) {
+                CbText(
+                    "模型：${selected.displayLabel}",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 5.dp),
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption,
+                    maxLines = 1
+                )
+            }
+        }
+        if (expanded) {
+            Popup(
+                alignment = Alignment.TopEnd,
+                offset = IntOffset(0, popupOffset),
+                onDismissRequest = { expanded = false },
+                properties = PopupProperties(focusable = true)
+            ) {
+                CbSurface(
+                    modifier = Modifier.widthIn(min = 128.dp),
+                    color = ChatBarTheme.colors.popover,
+                    shape = RoundedCornerShape(ChatBarShape.md),
+                    border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+                    elevation = 4.dp
+                ) {
+                    Column(Modifier.padding(4.dp)) {
+                        NovelAiStyleModelFilter.entries.forEach { filter ->
+                            val isSelected = selected == filter
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .heightIn(min = 48.dp)
+                                    .background(
+                                        if (isSelected) {
+                                            ChatBarTheme.colors.accent
+                                        } else {
+                                            Color.Transparent
+                                        },
+                                        RoundedCornerShape(ChatBarShape.sm)
+                                    )
+                                    .selectable(
+                                        selected = isSelected,
+                                        role = Role.RadioButton
+                                    ) {
+                                        onSelected(filter)
+                                        expanded = false
+                                    }
+                                    .padding(horizontal = 12.dp)
+                                    .testTag("novel-ai-style-filter-option:${filter.name}"),
+                                contentAlignment = Alignment.CenterStart
+                            ) {
+                                CbText(
+                                    filter.displayLabel,
+                                    color = if (isSelected) {
+                                        ChatBarTheme.colors.primary
+                                    } else {
+                                        ChatBarTheme.colors.foreground
+                                    },
+                                    style = ChatBarTheme.typography.label
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+private val NovelAiStyleModelFilter.displayLabel: String
+    get() = when (this) {
+        NovelAiStyleModelFilter.ALL -> "全部"
+        NovelAiStyleModelFilter.V4_5 -> "V4.5"
+        NovelAiStyleModelFilter.V5 -> "V5"
+    }
 
 @Composable
 private fun NovelAiStylePresetCard(
@@ -1415,7 +1546,10 @@ private fun NovelAiStylePresetCard(
         modifier = modifier
             .clickable(role = Role.Button, onClick = onClick)
             .semantics(mergeDescendants = true) {
-                contentDescription = "填充画风：${style.displayName}"
+                contentDescription = buildString {
+                    append("填充画风：${style.displayName}；支持 ${style.modelSupport.badgeLabel}")
+                    if (style.hasCustomNegativePrompt) append("；含专用负面提示词")
+                }
                 selected = isSelected
             },
         border = BorderStroke(
@@ -1424,29 +1558,48 @@ private fun NovelAiStylePresetCard(
         )
     ) {
         Column(Modifier.fillMaxWidth()) {
-            if (style.previewAvailable) {
-                AsyncImage(
-                    model = "file:///android_asset/${style.previewAssetPath}",
-                    contentDescription = null,
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f)
+            ) {
+                if (style.previewAvailable) {
+                    AsyncImage(
+                        model = "file:///android_asset/${style.previewAssetPath}",
+                        contentDescription = null,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("novel-ai-style-preview:${style.styleKey}"),
+                        contentScale = ContentScale.Crop
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .testTag("novel-ai-style-preview:${style.styleKey}")
+                            .background(ChatBarTheme.colors.muted),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        CbText(
+                            "例图缺失",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                }
+                NovelAiStyleCornerBadge(
+                    text = style.modelSupport.badgeLabel,
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .testTag("novel-ai-style-preview:${style.styleKey}"),
-                    contentScale = ContentScale.Crop
+                        .align(Alignment.TopEnd)
+                        .padding(8.dp)
                 )
-            } else {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f)
-                        .testTag("novel-ai-style-preview:${style.styleKey}")
-                        .background(ChatBarTheme.colors.muted),
-                    contentAlignment = Alignment.Center
-                ) {
-                    CbText(
-                        "例图缺失",
-                        color = ChatBarTheme.colors.mutedForeground,
-                        style = ChatBarTheme.typography.caption
+                if (style.hasCustomNegativePrompt) {
+                    NovelAiStyleCornerBadge(
+                        text = "专用负面词",
+                        modifier = Modifier
+                            .align(Alignment.BottomStart)
+                            .padding(8.dp),
+                        emphasized = false
                     )
                 }
             }
@@ -1472,6 +1625,32 @@ private fun NovelAiStylePresetCard(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun NovelAiStyleCornerBadge(
+    text: String,
+    modifier: Modifier = Modifier,
+    emphasized: Boolean = true
+) {
+    CbSurface(
+        modifier = modifier,
+        color = if (emphasized) ChatBarTheme.colors.primary else ChatBarTheme.colors.card,
+        shape = RoundedCornerShape(ChatBarShape.sm),
+        border = if (emphasized) null else BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        CbText(
+            text,
+            modifier = Modifier.padding(horizontal = 7.dp, vertical = 4.dp),
+            color = if (emphasized) {
+                ChatBarTheme.colors.primaryForeground
+            } else {
+                ChatBarTheme.colors.foreground
+            },
+            style = ChatBarTheme.typography.caption,
+            maxLines = 1
+        )
     }
 }
 

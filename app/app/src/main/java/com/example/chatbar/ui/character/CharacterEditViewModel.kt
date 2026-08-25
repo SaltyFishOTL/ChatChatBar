@@ -341,12 +341,20 @@ class CharacterEditViewModel(
     var editMode by mutableStateOf(CharacterEditMode.STRUCTURED)
     var basicSetting by mutableStateOf("")
     var freeformCharacterText by mutableStateOf("")
-    private var defaultImagePromptFillState by mutableStateOf(NovelAiStylePromptFillState())
+    private var defaultImagePromptFillState by mutableStateOf(
+        NovelAiStylePromptFillState(
+            negativeValue = PromptTemplates.defaultCharacterNaiNegativePrompt()
+        )
+    )
     val defaultImagePrompt: String
         get() = defaultImagePromptFillState.value
     val defaultImagePromptUndo
         get() = defaultImagePromptFillState.undo
-    var defaultImageNegativePrompt by mutableStateOf(PromptTemplates.defaultCharacterNaiNegativePrompt())
+    var defaultImageNegativePrompt: String
+        get() = defaultImagePromptFillState.negativeValue
+        set(value) {
+            defaultImagePromptFillState = defaultImagePromptFillState.editNegative(value)
+        }
     var systemPrompt by mutableStateOf("")
     var postHistoryInstructions by mutableStateOf("")
     var mesExample by mutableStateOf("")
@@ -394,7 +402,10 @@ class CharacterEditViewModel(
     }
 
     fun applyNovelAiStylePreset(preset: NovelAiStylePreset) {
-        defaultImagePromptFillState = defaultImagePromptFillState.apply(preset)
+        defaultImagePromptFillState = defaultImagePromptFillState.apply(
+            preset = preset,
+            defaultNegativePrompt = PromptTemplates.defaultCharacterNaiNegativePrompt()
+        )
     }
 
     fun undoNovelAiStylePreset() {

@@ -5,6 +5,7 @@
       "styleKey": "delicate_lucid",
       "displayName": "精细莹润",
       "description": "由P站 只是一只企鹅 提供",
+      "modelSupport": "V4.5",
       "prompt": "very aesthetic, absurdres, {realistic background},year2024,ai-generated,delicate lines,very aesthetic, best quality, amazing quality, absurdres, highly finished, ultra-detailed, Adding contrast to the shadows in illustration,best quality, intricate, overall detail,{{{{{by houkisei,by ask (askzy),by kanzarin,by modare,by kurono mitsuki}}}}},, ::glistening skin::,",
       "previewImage": "精细莹润.png"
     },
@@ -12,20 +13,48 @@
       "styleKey": "luminous_stroke",
       "displayName": "透光厚涂",
       "description": "由P站 duxingz 提供",
+      "modelSupport": "BOTH",
       "prompt": "-2::flat_color::, -2::artist collaboration::, 0.95::feipin_zhanshi(year 2025)::, 1.2::sincos(year 2025)::, 0.25::katsura harufumi::, 0.6::healthyman::, 0.7::lunch_(shin_new)::,\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, -2::sweat::,",
       "previewImage": "透光厚涂.png"
+    },
+    {
+      "styleKey": "art",
+      "displayName": "唯美厚涂",
+      "description": "由P站 Ling 提供",
+      "modelSupport": "BOTH",
+      "prompt": "skindentation, \n2::motion blur,motion lines::,\n-3::multiple_views::, \n8.5::painterly::, \n3::no lineart::,\n-0.8::flat color::,\n0.5::3d::, \n0.1::teshima_nari, gold_can::, \nruoganzhao, haruyuki_(gffewuoutgblubh), rolua, r1zen, jl_tan, 0.6::ushikani_kassen,betanonbeet::, 0.7::artist:ratatatat74, mx2j, artist:akita_hika::, 0.8::otimusyairoha::,1.2::artist:ie (raarami)::, \n2::4k,light ::, \n1.2::highly finished photorealistic artwork, lively color, graphic texture, realistic skin surface, \n1::photorealistic, realistic::, 1.2::photo(medium), absurdly_detailed_composition, anime style face, best quality, absurdres, very aesthetic, detailed, masterpiece::, ultra-detailed, 0.6::hyperrealistic,photorealistic::, -1.6::realistic face::, ",
+      "previewImage": "唯美厚涂.png"
+    },
+    {
+      "styleKey": "captain",
+      "displayName": "温暖涂抹",
+      "description": "由P站 Captain 提供",
+      "modelSupport": "V4.5",
+      "prompt": "0.15::artist:bee (deadflow)::, 1.0::artist:e-note::, 1.0::artist:renetan::, 1.1::artist:mankai kaika::, 1.1::artist:sincos::, 0.3::artist:asanagi::, 0.2::artist:poper (arin sel)::, 1.1::artist:shinjiro::, 1.2::artist:kawase seiki::, 1.2::artist:yue (show-ei)::, 1.2::artist:blue gk::, 1.2::artist:veryhardloco::, 1.2::artist:lunch (shin new)::, 0.4::artist:tomari (veryberry00)::, 0.6::artist:yoneyama mai::, 1.3::artist:yd (orange maru)::\n\n-4::artist collaboration::, year2024, year2025, masterpiece, best quality, very aesthetic, absurdres, 1.2::detailed skin, detailed textures, intricate details, curvy,incredibly absurdres,detailed face, facial features, beautiful detailed eyes, highres,::, 1.1::ambient lighting, color harmony::,1.0::dynamic lighting,::,",
+      "negativePrompt": "owres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, nsfw, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page, dairi, kanon (kurogane knights), 0.5::kou hiyoyo::, tsuda nanafushi, tukiwani, mizuki hitoshi, gaoo (frpjx283), neocoill, awa, onija tarou, yagisaka seto, miuku (marine sapphire), hayashiya zankurou, nameo (judgemasterkou), maru (marg0613), -0.5::ningen mame::, 1.5::anatomical nonsense::, mismatched pupils, glowing eyes, {{{{bad anatomy}}}}, bad perspective, {{{{bad proportions}}}}, {{{{{long neck}}}}}, {{{poorly drawn face}}}, {{{{bad hands}}}}, {{{{bad feet}}}}, {{{extra limbs}}}, {{{missing limbs}}}, {{{{{more than 2 legs}}}}},2::multiple views, upscaled, watermark, copyright notice::,ai-generated, lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, ugly, chromatic aberration, dithering, halftone, screentone, logo, too many watermarks, negative space, blank page,cropped, text, {{{adult}}},high contrast, overexposure,\nx-ray,",
+      "previewImage": "温暖涂抹.png"
+    },
+    {
+      "styleKey": "jijiji",
+      "displayName": "油光可爱",
+      "description": "由P站 机机机 提供",
+      "modelSupport": "V4.5",
+      "prompt": "sweetonedollar, mx2j, s16xue, quasarcake, honnryou hanaru, modare, henriiku (ahemaru), asahina yoshitoshi, 1.5::[[zankuro]]::, honnryou hanaru, greatm8, sos adult, kase daiki, choujiroo, blue gk, {chamchami, kajimakoto, rhasta, manzai sugar}, 1=2, as109, peter mon, kanzarin, erufura, 1.2::chen bin::,\n2::dkclaude3d::, 3::3D, blender (medium)::,\n-1::simple illustration::, -4::artist collaboration::,\nwet skin, sharp specular highlights, extreme high gloss, subsurface scattering, translucent soft skin, fleshy,\nbest quality,amazing quality,very aesthetic,aesthetic,incredibly absurdres,highres,Intricate details,very aesthetic,masterpiece,",
+      "previewImage": "油光可爱.png"
     },
     {
       "styleKey": "luminous_moist",
       "displayName": "莹润光影",
       "description": "高完成度的数字厚涂",
-      "prompt": "artists: by nixeu, 0.6::by masaki (ekakiningen)::, 0.6::by alex ross, anato finnstark::, 1.34::by vitaminechan::, 1.34::by mochirong::, by dishwasher1910, ::by hero neisan::, 1.34:: by meion::, :: chochomi::, 1.34::nyantcha, by akita hika (data from year 2024)::. rating: general, 1.7:: photorealistic::, 1.5::expert shading, fully rendered, highly finished, anatomical shading::, 1.5::real skin emphasis, highres textured skin, highly detailed skin, highres textured body, highly detailed body, high-res face, highly detailed face::, 0.8::moist skin::,",
+      "modelSupport": "V4.5",
+      "prompt": "artists: by nixeu, 0.6::by masaki (ekakiningen)::, 0.6::by alex ross, anato finnstark::, 1.34::by vitaminechan::, 1.34::by mochirong::, by dishwasher1910, ::by hero neisan::, 1.34:: by meion::, :: chochomi::, 1.34::nyantcha, by akita hika (data from year 2024)::. rating: general, 1.7:: photorealistic::, 1.5::expert shading, fully rendered, highly finished, anatomical shading::, 1.5::real skin emphasis, highres textured skin, highly detailed skin, highres textured body, highly detailed body, high-res face, highly detailed face::, 0.8::moist skin::, -1.2::realistic face::,",
       "previewImage": "莹润光影.png"
     },
     {
       "styleKey": "boldline_glazed",
       "displayName": "重线油润",
       "description": "油腻师姐熟味儿",
+      "modelSupport": "V4.5",
       "prompt": "{{{masterpiece}}}, {{{best quality}}}, {{ultra-detailed}}, {{an extremely delicate and beautiful}},{{{{{{thick outline}}}}}}, color,{{{{{black outline}}}}},1.5::,illustration,very aesthetic, best quality, absurdres,green eyes, best quality, amazing quality, very aesthetic, absurdres ::,,2::,blue gk art style, very aesthetic, masterpiece, no text::,",
       "previewImage": "重线油润.png"
     },
@@ -33,6 +62,7 @@
       "styleKey": "soft_3d",
       "displayName": "柔光3D",
       "description": "柔和光影与通透肌肤",
+      "modelSupport": "BOTH",
       "prompt": "3::nikke official art::, ono no imoko, ruanjia, nixeu, 0.7::wlop, fugtrup::, dohna dohna issho ni warui koto o shiyou, 0.7::dikko, cle masahiro, null (nyanpyoun)::, kanzarin, mochirong, quasarcake, 0.7::yd (orange maru)::, xiujia yihuizi, akita hika, sakimichan,\n4::nose::, 4::photorealistic, hyperrealistic::, -3::shiny skin::, 3::no lineart::, -10::outline, 2D, simple illustration, realistic face::, -2::cel shading::, -6::saturated::,\n10::3D::, 5::blender (medium)::, 2::photo (medium):: 1.5::raytracing, smooth shading, soft focus::, 10::intricate detailed::,\n-4::artist collaboration::, year2025, 1.5::masterpiece, best quality, very aesthetic, absurdres::, 2::subsurface scattering, super fine illustration::,\n0.4::chiaroscuro, fine fabric emphasis::, blurry background ,sweat,steaming body,",
       "previewImage": "柔光3D.png"
     },
@@ -40,6 +70,7 @@
       "styleKey": "anime-cel",
       "displayName": "平涂漫画",
       "description": "简洁、平涂的画风",
+      "modelSupport": "V4.5",
       "prompt": "loliconder, hidebou, furau, wagashi_(dagashiya), photorealistic, photo like theme, aqua thema, no text, best quality, very aesthetic, absurdres",
       "previewImage": "平涂漫画.png"
     },
@@ -47,6 +78,7 @@
       "styleKey": "soft_lucid_celstyle",
       "displayName": "日系柔光",
       "description": "温润通透的肤色晕染",
+      "modelSupport": "V4.5",
       "prompt": "masterpiece,best_quality,highres,1.5::aoi_tiduru::,bluefield, wantan meo, dorontabi， artist:lunch (shin new),ohisashiburi,wakura (gcdan),mochirong,artist:nia_(nia4294),artist:ishikei,karochii, year 2025, blurry background ",
       "previewImage": "日系柔光.png"
     },
@@ -54,6 +86,7 @@
       "styleKey": "muted_melancholy_cel",
       "displayName": "盐系平涂",
       "description": "干净利落的透光感",
+      "modelSupport": "V4.5",
       "prompt": "masterpiece, best quality, amazing quality,\nblender (medium),\n1.2::healthyman,kanimura_ebio:: ,0.9::wagashi_(dagashiya),henriiku (ahemaru):: ,healthyman ,0.7::hirune_(imomonono),ask_(askzy):: ,0.65::omone_hokoma_agm, quetzalli::,1.3::binggong_asylum ,ie_(raarami),almondman :: ,-2::artist collaboration::, year 2025, year 2024,colored, newest,",
       "previewImage": "盐系平涂.png"
     },
@@ -61,6 +94,7 @@
       "styleKey": "hard_stroke",
       "displayName": "硬笔刷手绘",
       "description": "不油的略微粗线条手绘风格",
+      "modelSupport": "BOTH",
       "prompt": "1.5::artist:gogalking::, 1.25::artist: imamura_ryou ::, 1.1::artist:krenz::, 1.2::artist:sparrowl::, 1.1::artist:solipsist::, 1.3::artist:jima::, 0.4::artist:tianliang duohe fangdongye::, 1.4::artist:wagashi (dagashiya), :: 0.7::artist:ie (raarami)::, 0.8::artist:teshima_nari ::, 1.2::artist:kazuho iwamoto::, 0.9::artist:hyocorou::, 1.0::artist:inoue kiyoshirou::, 0.9::artist:mika pikazo::, 1.1::artist:87yanagi::, 1.5::artist:tarou2, ::, 1.2::artist:john kafka::, 1.5::artist:sarcophage::, 1.5::artist:chomoran::, year 2024, year 2025, -2::monochrome, :: 1.5::highres ::, 1.3::best quality ::,  -5::artist collaboration::, best illustration, absurdres, masterpiece, -2::blurry ::, -1::upscaled::, -1::resized ::, -0.1::lowres ::, -1::text::, -0.1::unfinished ::, -2::multiple views::, 3::detailed background::,",
       "previewImage": "硬笔刷手绘.png"
     },
@@ -68,6 +102,7 @@
       "styleKey": "mygo_anime",
       "displayName": "MYGO动画",
       "description": "模仿MYGO原作动画的风格",
+      "modelSupport": "BOTH",
       "prompt": "2::bang dream! it's mygo!!!!!, anime_screenshot, official_style, anime coloring, cel_shading::, glistening skin, backlighting,\n 0.6::no_lineart::, 0.3::artist:rei_(sanbonzakura)::,\n-1.5::colored shadows, purple lighting, magenta lighting, pink lighting, outline, thick_lineart::, \n0.15::\\\"3d\\\"::,\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, 1.5::highres ::, 1.3::best quality ::, amazing quality, absurdres, very aesthetic, amazing, year 2025, best illustration, \n-2::monochrome::, -5::artist collaboration::,  -2::blurry ::, -1::upscaled::, -1::resized ::, -0.1::lowres ::, -1::text::, -0.1::unfinished ::, ",
       "previewImage": "MYGO动画.png"
     },
@@ -75,15 +110,9 @@
       "styleKey": "soft_stroke",
       "displayName": "质感手绘",
       "description": "一种偏手绘的画风",
+      "modelSupport": "BOTH",
       "prompt": "1.7::artist:feipin Zhanshi , takano_suzu::, 1.5::artist:ie_(raarami) ::, \n0.6::artist:sos_adult::, \n1.1::artist:xipa::, \n1.3::terasu_mc, metsu_end::, \n0.4::artist:ahemaru, artist:motsuaki:: ,\n-6::artist collaboration::,\nyear 2025,\ndepth of field,\nperspective,\nhigh detail,\nuncensord,\nbest quality,\namazing quality,\nvery aesthetic,\naesthetic,\nincredibly absurdres,\nhighres,\nIntricate details,\nvery aesthetic,\nmasterpiece,",
       "previewImage": "质感手绘.png"
-    },
-    {
-      "styleKey": "art",
-      "displayName": "唯美厚涂",
-      "description": "由P站 Ling 提供",
-      "prompt": "skindentation, \n2::motion blur,motion lines::,\n-3::multiple_views::, \n8.5::painterly::, \n3::no lineart::,\n-0.8::flat color::,\n0.5::3d::, \n0.1::teshima_nari, gold_can::, \nruoganzhao, haruyuki_(gffewuoutgblubh), rolua, r1zen, jl_tan, 0.6::ushikani_kassen,betanonbeet::, 0.7::artist:ratatatat74, mx2j, artist:akita_hika::, 0.8::otimusyairoha::,1.2::artist:ie (raarami)::, \n2::4k,light ::, \n1.2::highly finished photorealistic artwork, lively color, graphic texture, realistic skin surface, \n1::photorealistic, realistic::, 1.2::photo(medium), absurdly_detailed_composition, anime style face, best quality, absurdres, very aesthetic, detailed, masterpiece::, ultra-detailed, 0.6::hyperrealistic,photorealistic::, -0.6::realistic face::, ",
-      "previewImage": "唯美厚涂.png"
     }
   ]
 }

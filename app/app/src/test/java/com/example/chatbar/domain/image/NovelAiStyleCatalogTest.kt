@@ -36,6 +36,8 @@ class NovelAiStyleCatalogTest {
                   "displayName": "第二项",
                   "description": "简介二",
                   "prompt": "second prompt",
+                  "negativePrompt": "second negative",
+                  "modelSupport": "V5",
                   "previewImage": "second.webp"
                 }
               ]
@@ -51,6 +53,9 @@ class NovelAiStyleCatalogTest {
         assertEquals(listOf("first", "second"), result.styles.map { it.styleKey })
         assertEquals(" first prompt  ", result.styles.first().prompt)
         assertEquals("第一项", result.styles.first().displayName)
+        assertEquals(NovelAiStyleModelSupport.BOTH, result.styles.first().modelSupport)
+        assertEquals(NovelAiStyleModelSupport.V5, result.styles.last().modelSupport)
+        assertEquals("second negative", result.styles.last().negativePrompt)
         assertEquals(
             listOf(
                 "presets/image_styles/previews/first.webp",
@@ -146,13 +151,34 @@ class NovelAiStyleCatalogTest {
     fun `fill replaces prompt and undo restores one previous value`() {
         val preset = preset("first", "第一项", "new prompt")
 
-        val applied = NovelAiStylePromptFillState("manual prompt").apply(preset)
+        val applied = NovelAiStylePromptFillState(
+            value = "manual prompt",
+            negativeValue = "manual negative"
+        ).apply(preset, "default negative")
         val restored = applied.undoLastFill()
 
         assertEquals("new prompt", applied.value)
+        assertEquals("default negative", applied.negativeValue)
         assertEquals("manual prompt", applied.undo?.previousPrompt)
+        assertEquals("manual negative", applied.undo?.previousNegativePrompt)
         assertEquals("manual prompt", restored.value)
+        assertEquals("manual negative", restored.negativeValue)
         assertNull(restored.undo)
+    }
+
+    @Test
+    fun `fill uses preset negative prompt instead of default`() {
+        val preset = preset("first", "第一项", "new prompt").copy(
+            negativePrompt = "style negative"
+        )
+
+        val applied = NovelAiStylePromptFillState(
+            value = "manual prompt",
+            negativeValue = "manual negative"
+        ).apply(preset, "default negative")
+
+        assertEquals("style negative", applied.negativeValue)
+        assertTrue(applied.undo?.appliedCustomNegativePrompt == true)
     }
 
     @Test
@@ -161,8 +187,8 @@ class NovelAiStyleCatalogTest {
         val second = preset("second", "第二项", "second prompt")
 
         val state = NovelAiStylePromptFillState("manual")
-            .apply(first)
-            .apply(second)
+            .apply(first, "default negative")
+            .apply(second, "default negative")
 
         assertEquals("second prompt", state.value)
         assertEquals("first prompt", state.undo?.previousPrompt)
@@ -172,7 +198,7 @@ class NovelAiStyleCatalogTest {
     @Test
     fun `manual edit clears undo and cannot overwrite new content`() {
         val state = NovelAiStylePromptFillState("manual")
-            .apply(preset("first", "第一项", "first prompt"))
+            .apply(preset("first", "第一项", "first prompt"), "default negative")
             .edit("hand edited")
 
         assertNull(state.undo)
@@ -183,7 +209,8 @@ class NovelAiStyleCatalogTest {
     fun `catalog prompt passes through character card into base caption unchanged`() {
         val prompt = "watercolor (medium), soft colors"
         val applied = NovelAiStylePromptFillState().apply(
-            preset("watercolor", "水彩", prompt)
+            preset("watercolor", "水彩", prompt),
+            "low quality"
         )
         val card = CharacterCard(
             id = "card",
@@ -222,6 +249,15 @@ class NovelAiStyleCatalogTest {
         assertEquals("$prompt, 1girl, rain", plan.baseCaption)
         assertFalse(designMessages.joinToString { it.content.toString() }.contains(prompt))
         assertTrue(designMessages[3].content.jsonPrimitive.content.contains("不要在 `baseCaption`"))
+    }
+
+    @Test
+    fun `model support filters include compatible shared styles`() {
+        assertTrue(NovelAiStyleModelSupport.V4_5.supports(NovelAiStyleModelFilter.V4_5))
+        assertFalse(NovelAiStyleModelSupport.V4_5.supports(NovelAiStyleModelFilter.V5))
+        assertTrue(NovelAiStyleModelSupport.V5.supports(NovelAiStyleModelFilter.V5))
+        assertTrue(NovelAiStyleModelSupport.BOTH.supports(NovelAiStyleModelFilter.V4_5))
+        assertTrue(NovelAiStyleModelSupport.BOTH.supports(NovelAiStyleModelFilter.V5))
     }
 
     private fun preset(key: String, name: String, prompt: String) = NovelAiStylePreset(

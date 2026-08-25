@@ -2,6 +2,7 @@ package com.example.chatbar.domain.image
 
 import android.content.Context
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.SerialName
 import kotlinx.serialization.Transient
 import kotlinx.serialization.json.Json
 
@@ -23,11 +24,50 @@ data class NovelAiStylePreset(
     val displayName: String = "",
     val description: String = "",
     val prompt: String = "",
+    val negativePrompt: String = "",
+    val modelSupport: NovelAiStyleModelSupport = NovelAiStyleModelSupport.BOTH,
     val previewImage: String = "",
     @Transient val previewAvailable: Boolean = true
 ) {
     val previewAssetPath: String
         get() = "$NOVEL_AI_STYLE_PREVIEW_ASSET_ROOT/$previewImage"
+
+    val hasCustomNegativePrompt: Boolean
+        get() = negativePrompt.isNotBlank()
+
+    fun effectiveNegativePrompt(defaultNegativePrompt: String): String =
+        negativePrompt.takeIf(String::isNotBlank) ?: defaultNegativePrompt
+}
+
+@Serializable
+enum class NovelAiStyleModelSupport {
+    @SerialName("V4.5")
+    V4_5,
+
+    @SerialName("V5")
+    V5,
+
+    @SerialName("BOTH")
+    BOTH;
+
+    val badgeLabel: String
+        get() = when (this) {
+            V4_5 -> "V4.5"
+            V5 -> "V5"
+            BOTH -> "V4.5 / V5"
+        }
+
+    fun supports(filter: NovelAiStyleModelFilter): Boolean = when (filter) {
+        NovelAiStyleModelFilter.ALL -> true
+        NovelAiStyleModelFilter.V4_5 -> this == V4_5 || this == BOTH
+        NovelAiStyleModelFilter.V5 -> this == V5 || this == BOTH
+    }
+}
+
+enum class NovelAiStyleModelFilter {
+    ALL,
+    V4_5,
+    V5
 }
 
 data class NovelAiStyleCatalogLoadResult(
@@ -143,32 +183,55 @@ class NovelAiStyleCatalogService(
 
 data class NovelAiStylePromptUndo(
     val previousPrompt: String,
+    val previousNegativePrompt: String,
     val appliedPrompt: String,
-    val displayName: String
+    val appliedNegativePrompt: String,
+    val displayName: String,
+    val appliedCustomNegativePrompt: Boolean
 )
 
 data class NovelAiStylePromptFillState(
     val value: String = "",
+    val negativeValue: String = "",
     val undo: NovelAiStylePromptUndo? = null
 ) {
-    fun apply(preset: NovelAiStylePreset): NovelAiStylePromptFillState {
-        if (value == preset.prompt) return this
+    fun apply(
+        preset: NovelAiStylePreset,
+        defaultNegativePrompt: String
+    ): NovelAiStylePromptFillState {
+        val appliedNegativePrompt = preset.effectiveNegativePrompt(defaultNegativePrompt)
+        if (value == preset.prompt && negativeValue == appliedNegativePrompt) return this
         return NovelAiStylePromptFillState(
             value = preset.prompt,
+            negativeValue = appliedNegativePrompt,
             undo = NovelAiStylePromptUndo(
                 previousPrompt = value,
+                previousNegativePrompt = negativeValue,
                 appliedPrompt = preset.prompt,
-                displayName = preset.displayName
+                appliedNegativePrompt = appliedNegativePrompt,
+                displayName = preset.displayName,
+                appliedCustomNegativePrompt = preset.hasCustomNegativePrompt
             )
         )
     }
 
     fun edit(newValue: String): NovelAiStylePromptFillState =
-        NovelAiStylePromptFillState(value = newValue)
+        NovelAiStylePromptFillState(value = newValue, negativeValue = negativeValue)
+
+    fun editNegative(newValue: String): NovelAiStylePromptFillState =
+        NovelAiStylePromptFillState(value = value, negativeValue = newValue)
 
     fun undoLastFill(): NovelAiStylePromptFillState {
         val currentUndo = undo ?: return this
-        if (value != currentUndo.appliedPrompt) return copy(undo = null)
-        return NovelAiStylePromptFillState(value = currentUndo.previousPrompt)
+        if (
+            value != currentUndo.appliedPrompt ||
+            negativeValue != currentUndo.appliedNegativePrompt
+        ) {
+            return copy(undo = null)
+        }
+        return NovelAiStylePromptFillState(
+            value = currentUndo.previousPrompt,
+            negativeValue = currentUndo.previousNegativePrompt
+        )
     }
 }

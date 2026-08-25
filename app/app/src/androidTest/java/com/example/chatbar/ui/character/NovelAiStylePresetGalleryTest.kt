@@ -3,6 +3,7 @@ package com.example.chatbar.ui.character
 import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.assertHasClickAction
 import androidx.compose.ui.test.assertHeightIsEqualTo
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.assertIsSelected
 import androidx.compose.ui.test.assertWidthIsEqualTo
@@ -14,6 +15,7 @@ import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.unit.dp
 import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
+import com.example.chatbar.domain.image.NovelAiStyleModelSupport
 import com.example.chatbar.domain.image.NovelAiStylePreset
 import com.example.chatbar.ui.kit.ChatBarTheme
 import org.junit.Assert.assertEquals
@@ -39,10 +41,10 @@ class NovelAiStylePresetGalleryTest {
             }
         }
 
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 1")
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 1；支持 V4.5 / V5")
             .assertHasClickAction()
             .assertIsSelected()
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 2")
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 2；支持 V4.5 / V5")
             .performClick()
         composeTestRule.runOnIdle { assertEquals(second, applied) }
     }
@@ -62,7 +64,7 @@ class NovelAiStylePresetGalleryTest {
             }
         }
 
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 6")
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 6；支持 V4.5 / V5")
             .performScrollTo()
             .assertIsDisplayed()
         composeTestRule.onNodeWithText("例图缺失", useUnmergedTree = true)
@@ -91,6 +93,34 @@ class NovelAiStylePresetGalleryTest {
         composeTestRule.onNodeWithText("查看全部（10）").performClick()
         composeTestRule.onNodeWithText("全部内置画风").assertIsDisplayed()
         composeTestRule.onNodeWithContentDescription("关闭全部画风").performClick()
+    }
+
+    @Test
+    fun modelFilterShowsOnlyCompatibleStyles() {
+        val v45 = style(1).copy(modelSupport = NovelAiStyleModelSupport.V4_5)
+        val v5 = style(2).copy(modelSupport = NovelAiStyleModelSupport.V5)
+        val both = style(3).copy(modelSupport = NovelAiStyleModelSupport.BOTH)
+        composeTestRule.setContent {
+            ChatBarTheme {
+                NovelAiStylePresetGallery(
+                    catalog = NovelAiStyleCatalogLoadResult(styles = listOf(v45, v5, both)),
+                    currentPrompt = "",
+                    onApply = {}
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithTag("novel-ai-style-filter").assertDoesNotExist()
+        composeTestRule.onNodeWithText("查看全部（3）").performClick()
+        composeTestRule.onNodeWithTag("novel-ai-style-filter").performClick()
+        composeTestRule.onNodeWithTag("novel-ai-style-filter-option:V5").performClick()
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 1；支持 V4.5")
+            .assertDoesNotExist()
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 2；支持 V5")
+            .assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 3；支持 V4.5 / V5")
+            .performScrollTo()
+            .assertIsDisplayed()
     }
 
     @Test
