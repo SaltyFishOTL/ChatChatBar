@@ -24,7 +24,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
@@ -32,7 +31,6 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
-import androidx.compose.foundation.layout.imeNestedScroll
 import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -159,7 +157,7 @@ internal fun canUseChatImageLongPress(
     screenshotSelectionMode: Boolean
 ): Boolean = !screenshotSelectionMode
 
-@OptIn(ExperimentalFoundationApi::class, ExperimentalLayoutApi::class)
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 fun ChatScreen(
     sessionId: String,
@@ -1006,7 +1004,6 @@ fun ChatScreen(
                     .align(Alignment.Center)
                     .widthIn(max = ChatContentMaxWidth)
                     .fillMaxSize()
-                    .imeNestedScroll()
                     .padding(horizontal = 12.dp)
             ) {
                 itemsIndexed(timelineMessages, key = { _, message -> message.id }) { _, message ->
