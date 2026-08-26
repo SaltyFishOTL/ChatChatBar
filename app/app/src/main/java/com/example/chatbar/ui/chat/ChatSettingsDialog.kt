@@ -72,6 +72,7 @@ import com.example.chatbar.data.local.entity.MIN_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.domain.chat.PlaceholderRenderer
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.memory.MemoryTimelinePolicy
 import com.example.chatbar.domain.memory.MemoryBackfillPhase
 import com.example.chatbar.domain.memory.MemoryBudgetPolicy
@@ -133,6 +134,7 @@ fun ChatSettingsDialog(
     var tab by remember { mutableIntStateOf(0) }
     var modelId by remember { mutableStateOf(session?.modelId) }
     var imageModelId by remember { mutableStateOf(session?.imageModelId) }
+    var novelAiImageModel by remember { mutableStateOf(session?.novelAiImageModel) }
     var formatId by remember { mutableStateOf(session?.formatCardId) }
     var replyLength by remember {
         mutableStateOf((session?.replyLength ?: DEFAULT_REPLY_LENGTH_CHARS).toString())
@@ -197,7 +199,10 @@ fun ChatSettingsDialog(
     }
     LaunchedEffect(session) {
         session?.let {
-            modelId = it.modelId; imageModelId = it.imageModelId; formatId = it.formatCardId
+            modelId = it.modelId
+            imageModelId = it.imageModelId
+            novelAiImageModel = it.novelAiImageModel
+            formatId = it.formatCardId
             replyLength = it.replyLength.toString()
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
@@ -221,6 +226,7 @@ fun ChatSettingsDialog(
     val settingsDirty = session?.let {
         modelId != it.modelId ||
             imageModelId != it.imageModelId ||
+            novelAiImageModel != it.novelAiImageModel ||
             formatId != it.formatCardId ||
             parsedReplyLength != it.replyLength ||
             replyLanguage.takeIf(String::isNotBlank) != it.replyLanguage ||
@@ -271,6 +277,7 @@ fun ChatSettingsDialog(
                             viewModel.updateSessionConfig(
                                 modelId = modelId,
                                 imageModelId = imageModelId,
+                                novelAiImageModel = novelAiImageModel,
                                 formatCardId = formatId,
                                 replyLength = parsedReplyLength ?: DEFAULT_REPLY_LENGTH_CHARS,
                                 replyLanguage = replyLanguage.takeIf(String::isNotBlank),
@@ -309,6 +316,7 @@ fun ChatSettingsDialog(
                         "参数与设定" -> SettingsContent(
                             modelId, { modelId = it }, defaultModelId, models,
                             imageModelId, { imageModelId = it }, defaultImageModelId,
+                            novelAiImageModel, { novelAiImageModel = it }, globalAppSettings.novelAiImageModel,
                             formatId, { formatId = it }, defaultFormatId, formats,
                             worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
                             replyLength,
@@ -468,6 +476,8 @@ fun ChatSettingsDialog(
 private fun SettingsContent(
     modelId: String?, onModel: (String?) -> Unit, defaultModelId: String?, models: List<ModelConfig>,
     imageModelId: String?, onImageModel: (String?) -> Unit, defaultImageModelId: String?,
+    novelAiImageModel: NovelAiImageModel?, onNovelAiImageModel: (NovelAiImageModel?) -> Unit,
+    globalNovelAiImageModel: NovelAiImageModel,
     formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
     worldBooks: List<WorldBook>, inheritedWorldBookIds: List<String>, extraWorldBookIds: List<String>, onExtraWorldBookIds: (List<String>) -> Unit,
     length: String,
@@ -535,12 +545,28 @@ private fun SettingsContent(
                 style = ChatBarTheme.typography.caption
             )
         }
-        DefaultAwareSelect("默认生图模型", imageModelId, defaultImageModelId, modelOptions, onImageModel)
+        DefaultAwareSelect("图片 Prompt 设计模型", imageModelId, defaultImageModelId, modelOptions, onImageModel)
         if (imageModelId != null && models.none { it.id == imageModelId }) {
             CbText(
-                "原会话生图模型在当前配置模式不可用，运行时已跟随全局默认生图模型。",
+                "原会话图片 Prompt 设计模型在当前配置模式不可用，运行时已跟随全局默认值。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
+            )
+        }
+        val novelAiModelOptions = listOf(
+            NovelAiImageModelOption(null, "跟随全局（${globalNovelAiImageModel.displayName}）")
+        ) + NovelAiImageModel.entries.map { model ->
+            NovelAiImageModelOption(model, model.displayName)
+        }
+        CbField(
+            "NovelAI 生图模型",
+            description = "仅作用于当前会话的对话生图和该会话产生的朋友圈图片。"
+        ) {
+            CbSelect(
+                value = novelAiModelOptions.first { it.value == novelAiImageModel },
+                options = novelAiModelOptions,
+                optionLabel = NovelAiImageModelOption::label,
+                onValueChange = { onNovelAiImageModel(it.value) }
             )
         }
         DefaultAwareSelect("格式卡", formatId, defaultFormatId, formats.map { IdOption(it.id, it.name) }, onFormat, noneLabel = "不设置")
@@ -2004,6 +2030,7 @@ private fun DefaultAwareSelect(
 }
 
 private data class IdOption(val id: String?, val label: String)
+private data class NovelAiImageModelOption(val value: NovelAiImageModel?, val label: String)
 private data class AudiobookModeOption(val value: Boolean?, val label: String)
 private data class RagChunkEditor(val chunkId: String?, val content: String)
 

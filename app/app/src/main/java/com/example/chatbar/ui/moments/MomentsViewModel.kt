@@ -155,6 +155,9 @@ class MomentsViewModel : ViewModel() {
                 require(!source.isPlaceholder && source.imagePath == imagePath) { "原朋友圈图片已发生变化" }
                 val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
                 val appSettings = settingsRepository.getAppSettings()
+                val novelAiImageModel = chatRepository.getSession(source.sessionId)
+                    ?.resolvedNovelAiImageModel(appSettings.novelAiImageModel)
+                    ?: appSettings.novelAiImageModel
                 val prompt = draft.toPromptPlan()
                 val imageSize = draft.imageSize()
                 val imageBytes = AiBackgroundWorkManager.run("moments_image_regenerate_$postId") {
@@ -168,7 +171,7 @@ class MomentsViewModel : ViewModel() {
                             imageSize = imageSize,
                             settings = NovelAiGenerationSettings.legacy(
                                 seed = seed,
-                                model = appSettings.novelAiImageModel
+                                model = novelAiImageModel
                             )
                         ).collect { event ->
                             when (event) {
@@ -237,6 +240,8 @@ class MomentsViewModel : ViewModel() {
                 val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
                 val settings = settingsRepository.getAppSettings()
                 val session = chatRepository.getSession(post.sessionId)
+                val novelAiImageModel = session?.resolvedNovelAiImageModel(settings.novelAiImageModel)
+                    ?: settings.novelAiImageModel
                 val globalPlayerName = settingsRepository.getPlayerSetting().playerName
                     .takeIf(String::isNotBlank)
                 val playerName = session?.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
@@ -281,7 +286,7 @@ class MomentsViewModel : ViewModel() {
                             imageSize = imageSize,
                             settings = NovelAiGenerationSettings.legacy(
                                 seed = seed,
-                                model = settings.novelAiImageModel
+                                model = novelAiImageModel
                             )
                         ).collect { event ->
                             when (event) {
@@ -402,7 +407,7 @@ class MomentsViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        novelAiImageModel = settings.novelAiImageModel,
+                        novelAiImageModel = session.resolvedNovelAiImageModel(settings.novelAiImageModel),
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,

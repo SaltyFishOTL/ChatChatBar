@@ -74,7 +74,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Failed placeholders persist completed generation checkpoints. Retry resumes after completed judge, draft, and NovelAI Prompt-design phases instead of repeating them.
 - Generated images persist full `GeneratedImageMetadata`. Regeneration reuses `NovelAiImageRegenerationDialog`, exposes editable main/character/negative prompts, preserves original dimensions, and always requests a new seed.
 - Moment image generation forces SQUARE (`NovelAiImageSizePreset.SQUARE.imageSize`) in both the scheduler/generation path (`MomentGenerationService`), the debug path, and the on-demand path (`MomentsViewModel`); do not use the AI-chosen `sizePreset` or the user NovelAI ratio setting for moment images.
-- Moment generation, retry, debug, on-demand generation, and regeneration use global `AppSettings.novelAiImageModel`; studio model selection remains independent.
+- Moment generation, retry, debug, on-demand generation, and regeneration use the owning `ChatSession.novelAiImageModel`, falling back to global `AppSettings.novelAiImageModel` for null, missing, or legacy sessions; studio model selection remains independent.
 - Legacy moment images load regeneration data from persisted metadata, then PNG metadata, then `imagePrompt` plus decoded image dimensions.
 - On-demand image generation for a text-only post reuses `novelAiPromptDesigner.designForMoment(card, post.imageBrief, ...)` then `novelAiImageService.generate(...)`, persists the new path+metadata before replacing/creating, and streams design text + image progress live. Do not change the post text/content.
 

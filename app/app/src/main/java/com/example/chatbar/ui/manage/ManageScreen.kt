@@ -2083,7 +2083,7 @@ private fun SettingsTab(
             )
             CbField(
                 "NovelAI 模型",
-                description = "控制对话、朋友圈和角色图片；生图工作室使用工作室内的独立模型设置。"
+                description = "作为会话未单独选择时的默认值，并控制角色图片；生图工作室使用工作室内的独立设置。"
             ) {
                 CbSelect(
                     value = novelAiImageModel,

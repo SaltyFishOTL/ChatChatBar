@@ -794,7 +794,7 @@ class ManageViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        novelAiImageModel = settings.novelAiImageModel,
+                        novelAiImageModel = session.resolvedNovelAiImageModel(settings.novelAiImageModel),
                         scheduledAt = System.currentTimeMillis(),
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,

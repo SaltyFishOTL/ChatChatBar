@@ -1,5 +1,6 @@
 package com.example.chatbar.data.local.entity
 
+import com.example.chatbar.domain.image.NovelAiImageModel
 import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -19,6 +20,7 @@ data class SaveSlot(
     val supplementarySetting: String? = null,
     val modelId: String? = null,
     val imageModelId: String? = null,
+    val novelAiImageModel: NovelAiImageModel? = null,
     val formatCardId: String? = null,
     @Serializable(with = ReplyLengthSerializer::class)
     val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS,
@@ -56,7 +58,7 @@ data class SaveSlot(
             messages: List<ChatMessage> = emptyList(),
             vectorChunks: List<VectorChunk> = emptyList()
         ): SaveSlot = SaveSlot(
-            schemaVersion = 6,
+            schemaVersion = 7,
             id = Uuid.random().toString(),
             sessionId = sessionId,
             name = name,

@@ -33,6 +33,7 @@ import com.example.chatbar.domain.chat.TimelineArchiveBoundaryPolicy
 import com.example.chatbar.domain.chat.editRoleplayMessageSegment
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.GlobalImageGenerationConcurrencyGate
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -1666,12 +1667,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val generationSettings = NovelAiGenerationSettings.legacy(
                     seed = seed,
                     count = batchSize,
-                    model = settings.novelAiImageModel
+                    model = currentSession?.resolvedNovelAiImageModel(settings.novelAiImageModel)
+                        ?: settings.novelAiImageModel
                 )
                 val requestBody = novelAiImageService.buildRequestBody(prompt, imageSize, generationSettings)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
                     sessionId = sessionId,
-                    modelName = "NovelAI Diffusion ${settings.novelAiImageModel.displayName}",
+                    modelName = "NovelAI Diffusion ${generationSettings.model.displayName}",
                     apiUrl = "https://image.novelai.net/ai/generate-image-stream",
                     requestBodyJson = requestBody,
                     rawAiOutput = debugPrompt(prompt, imageSize)
@@ -3587,6 +3589,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun updateSessionConfig(
         modelId: String?,
         imageModelId: String?,
+        novelAiImageModel: NovelAiImageModel?,
         formatCardId: String?,
         replyLength: Int,
         replyLanguage: String?,
@@ -3609,6 +3612,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val updated = base.copy(
                     modelId = modelId,
                     imageModelId = imageModelId,
+                    novelAiImageModel = novelAiImageModel,
                     formatCardId = formatCardId,
                     replyLength = replyLength,
                     replyLanguage = replyLanguage?.takeIf { it.isNotBlank() },
@@ -3662,6 +3666,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 supplementarySetting = activeSuppSetting,
                 modelId = curSession.modelId,
                 imageModelId = curSession.imageModelId,
+                novelAiImageModel = curSession.novelAiImageModel,
                 formatCardId = curSession.formatCardId,
                 replyLength = curSession.replyLength,
                 replyLanguage = curSession.replyLanguage,
@@ -3725,6 +3730,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 supplementarySetting = materializedSlot.supplementarySetting,
                 modelId = materializedSlot.modelId,
                 imageModelId = materializedSlot.imageModelId,
+                novelAiImageModel = materializedSlot.novelAiImageModel,
                 formatCardId = materializedSlot.formatCardId,
                 replyLength = materializedSlot.replyLength,
                 replyLanguage = materializedSlot.replyLanguage,
@@ -4036,7 +4042,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private fun validateSaveSlotImport(slot: SaveSlot) {
-        require(slot.schemaVersion in 1..6) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
+        require(slot.schemaVersion in 1..7) { "不支持的存档 schemaVersion：${slot.schemaVersion}" }
         require(slot.name.isNotBlank()) { "存档名称不能为空" }
         require(slot.messages.all { it.id.isNotBlank() }) { "存档包含空消息 ID" }
         require(slot.messages.map { it.id }.distinct().size == slot.messages.size) { "存档包含重复消息 ID" }
