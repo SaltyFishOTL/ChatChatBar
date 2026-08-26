@@ -88,7 +88,7 @@ class SaveSlotSerializationTest {
     }
 
     @Test
-    fun oldSaveSlotStringReplyLengthMigratesAndNewSlotsUseSchemaV6() {
+    fun oldSaveSlotStringReplyLengthMigratesAndNewSlotsUseSchemaV7() {
         val oldSlot = json.decodeFromString(
             SaveSlot.serializer(),
             """
@@ -104,12 +104,12 @@ class SaveSlotSerializationTest {
         val newSlot = SaveSlot.create("session-1", "新存档")
 
         assertEquals(500, oldSlot.replyLength)
-        assertEquals(6, newSlot.schemaVersion)
+        assertEquals(7, newSlot.schemaVersion)
         assertEquals(300, newSlot.replyLength)
     }
 
     @Test
-    fun saveSlotV6RoundTripsEmbeddedVoiceAudio() {
+    fun saveSlotV7RoundTripsEmbeddedVoiceAudio() {
         val voice = GeneratedVoiceMessage.create(
             sessionId = "session-1",
             messageId = "message-1",
@@ -146,7 +146,7 @@ class SaveSlotSerializationTest {
             )
         )
 
-        assertEquals(6, decoded.schemaVersion)
+        assertEquals(7, decoded.schemaVersion)
         assertEquals(voice, decoded.voiceMessages.single())
         assertEquals("Hello", decoded.voiceMessages.single().effectiveSynthesisText)
         assertEquals("bXAz", decoded.audioResources.getValue("voice-resource").data)

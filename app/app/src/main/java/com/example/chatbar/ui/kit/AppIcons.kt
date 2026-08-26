@@ -5,6 +5,7 @@ import com.composables.icons.lucide.ArchiveRestore
 import com.composables.icons.lucide.ArrowLeft
 import com.composables.icons.lucide.ArrowUpToLine
 import com.composables.icons.lucide.Bug
+import com.composables.icons.lucide.Bot
 import com.composables.icons.lucide.CalendarDays
 import com.composables.icons.lucide.Camera
 import com.composables.icons.lucide.Check
@@ -18,6 +19,7 @@ import com.composables.icons.lucide.Copy
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.FileText
 import com.composables.icons.lucide.Heart
+import com.composables.icons.lucide.History
 import com.composables.icons.lucide.Image
 import com.composables.icons.lucide.ImagePlus
 import com.composables.icons.lucide.Import
@@ -28,6 +30,7 @@ import com.composables.icons.lucide.Lucide
 import com.composables.icons.lucide.Languages
 import com.composables.icons.lucide.Maximize2
 import com.composables.icons.lucide.MessageCircle
+import com.composables.icons.lucide.MessageSquarePlus
 import com.composables.icons.lucide.Pencil
 import com.composables.icons.lucide.Pin
 import com.composables.icons.lucide.Play
@@ -58,6 +61,7 @@ object AppIcons {
     val ArrowUpToLine: ImageVector get() = Lucide.ArrowUpToLine
     val Article: ImageVector get() = Lucide.FileText
     val BugReport: ImageVector get() = Lucide.Bug
+    val Bot: ImageVector get() = Lucide.Bot
     val Calendar: ImageVector get() = Lucide.CalendarDays
     val Chat: ImageVector get() = Lucide.MessageCircle
     val Check: ImageVector get() = Lucide.Check
@@ -73,8 +77,10 @@ object AppIcons {
     val ExpandMore: ImageVector get() = Lucide.ChevronDown
     val Face: ImageVector get() = Lucide.Smile
     val Forum: ImageVector get() = Lucide.MessageCircle
+    val NewChat: ImageVector get() = Lucide.MessageSquarePlus
     val HelpOutline: ImageVector get() = Lucide.CircleQuestionMark
     val Heart: ImageVector get() = Lucide.Heart
+    val History: ImageVector get() = Lucide.History
     val Image: ImageVector get() = Lucide.Image
     val Import: ImageVector get() = Lucide.Import
     val KeyboardArrowDown: ImageVector get() = Lucide.ChevronDown

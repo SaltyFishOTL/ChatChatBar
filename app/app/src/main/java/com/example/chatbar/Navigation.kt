@@ -34,6 +34,8 @@ import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
 import com.example.chatbar.ui.chat.ChatScreen
 import com.example.chatbar.ui.imageprompt.ImagePromptToolScreen
+import com.example.chatbar.ui.imageprompt.NovelAiDesignHistoryScreen
+import com.example.chatbar.ui.imageprompt.NovelAiDesignScreen
 import com.example.chatbar.ui.imageprompt.NovelAiHistoryScreen
 import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.moments.MomentsScreen
@@ -233,11 +235,21 @@ fun MainNavigation(
                     entry<ImagePromptToolRoute> {
                         ImagePromptToolScreen(
                             onBack = ::popBackStack,
-                            onOpenHistory = { pushRoute(NovelAiHistoryRoute) }
+                            onOpenHistory = { pushRoute(NovelAiHistoryRoute) },
+                            onOpenAiDesign = { pushRoute(NovelAiDesignRoute) }
                         )
                     }
                     entry<NovelAiHistoryRoute> {
                         NovelAiHistoryScreen(onBack = ::popBackStack)
+                    }
+                    entry<NovelAiDesignRoute> {
+                        NovelAiDesignScreen(
+                            onBack = ::popBackStack,
+                            onOpenHistory = { pushRoute(NovelAiDesignHistoryRoute) }
+                        )
+                    }
+                    entry<NovelAiDesignHistoryRoute> {
+                        NovelAiDesignHistoryScreen(onBack = ::popBackStack)
                     }
                     entry<TutorialRoute> { key ->
                         TutorialScreen(
@@ -302,6 +314,8 @@ private fun NavKey.diagnosticRouteName(): String = when (this) {
     ManageRoute -> "manage"
     ImagePromptToolRoute -> "image_prompt_tool"
     NovelAiHistoryRoute -> "novelai_history"
+    NovelAiDesignRoute -> "novelai_design"
+    NovelAiDesignHistoryRoute -> "novelai_design_history"
     is ChatRoute -> "chat"
     is CharacterEditRoute -> "character_edit"
     is FormatCardEditRoute -> "format_card_edit"

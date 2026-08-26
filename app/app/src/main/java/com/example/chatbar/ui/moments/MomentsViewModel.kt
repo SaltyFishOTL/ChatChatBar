@@ -259,6 +259,7 @@ class MomentsViewModel : ViewModel() {
                         model = imageModel,
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,
+                        targetImageModel = novelAiImageModel,
                         onDelta = { text ->
                             _onDemandImage.value = _onDemandImage.value.copy(
                                 phase = MomentOnDemandImagePhase.DESIGNING,

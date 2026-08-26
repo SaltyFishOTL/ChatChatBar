@@ -1,10 +1,51 @@
 package com.example.chatbar.domain.prompt
 
+import com.example.chatbar.domain.image.NovelAiImageModel
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PromptTemplatesTest {
+    @Test
+    fun novelAiPromptSystemUsesVersionSpecificBudgetsWithoutChangingV45Contract() {
+        val v45 = PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM
+        val v5 = PromptTemplates.NOVELAI_IMAGE_PROMPT_SYSTEM_V5
+
+        assertTrue(v45.contains("NovelAI Diffusion V4.5 Full"))
+        assertTrue(v45.contains("总token<=250，单角色<=50，角色部分尽量简洁"))
+        assertFalse(v45.contains("总token<=1000"))
+        assertTrue(v5.contains("NovelAI Diffusion V5 Full"))
+        assertTrue(v5.contains("总token<=1000，单角色<=150"))
+        assertTrue(v5.contains("总 token <=1000，每个角色<=150"))
+        assertFalse(v5.contains("简洁"))
+        assertTrue(
+            PromptTemplates.novelAiImagePromptCoreSystem(
+                targetImageModel = NovelAiImageModel.V4_5_FULL
+            ).contains("总token<=250")
+        )
+        assertTrue(
+            PromptTemplates.novelAiImagePromptCoreSystem(
+                targetImageModel = NovelAiImageModel.V5_FULL
+            ).contains("总token<=1000")
+        )
+    }
+
+    @Test
+    fun novelAiRevisionPromptKeepsRequestPreferenceAndTargetModelInOrder() {
+        val prompt = PromptTemplates.novelAiImagePromptRevisionUser(
+            modificationRequest = "把雨伞改成透明伞",
+            finalPromptRequirement = "保持电影感",
+            targetImageModel = NovelAiImageModel.V5_FULL
+        )
+
+        val requestIndex = prompt.indexOf("把雨伞改成透明伞")
+        val preferenceIndex = prompt.indexOf("保持电影感")
+        val modelIndex = prompt.indexOf(NovelAiImageModel.V5_FULL.displayName)
+        assertTrue(requestIndex >= 0)
+        assertTrue(preferenceIndex > requestIndex)
+        assertTrue(modelIndex > preferenceIndex)
+    }
+
     @Test
     fun referenceImagePromptKeepsRequiredProtocolTokens() {
         val prompt = PromptTemplates.novelAiImagePromptReferenceImageUser()

@@ -152,6 +152,7 @@ data class NovelAiStudioDraft(
     val naturalLanguageMode: Boolean = false,
     val imageDescription: String = "",
     val extraRequirement: String = "",
+    val aiDesignModelId: String? = null,
     val selectedModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val v45Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL),
     val v5Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),
@@ -200,6 +201,19 @@ data class NovelAiGenerationRecipe(
     val naturalLanguageMode: Boolean = false,
     val settings: NovelAiGenerationSettings = NovelAiGenerationSettings(),
     val imageGuidance: NovelAiImageGuidanceDraft = NovelAiImageGuidanceDraft()
+)
+
+fun NovelAiStudioDraft.applyDesignedPromptPlan(
+    plan: NovelAiPromptPlan,
+    targetImageModel: NovelAiImageModel
+): NovelAiStudioDraft = copy(
+    basePrompt = plan.baseCaption,
+    characters = plan.characterCaptions.map { caption ->
+        NovelAiCharacterPromptDraft(prompt = caption.prompt, negativePrompt = "")
+    },
+    selectedModel = targetImageModel,
+    naturalLanguageMode = false,
+    conversionSnapshot = null
 )
 
 @Serializable

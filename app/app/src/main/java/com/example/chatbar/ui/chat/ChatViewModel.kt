@@ -1613,6 +1613,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val finalPromptRequirement = initialPreference
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
+            val targetImageModel = currentSession?.resolvedNovelAiImageModel(settings.novelAiImageModel)
+                ?: settings.novelAiImageModel
             val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
             val modelUsable = model?.hasConfiguredAuthentication(settings) == true
             val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)
@@ -1649,7 +1651,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerName = playerName,
                     sessionId = sessionId,
                     imageContentHint = imageContentHint,
-                    finalPromptRequirement = finalPromptRequirement
+                    finalPromptRequirement = finalPromptRequirement,
+                    targetImageModel = targetImageModel
                 ) { draft ->
                     val current = imageGenerationState(taskId)
                     if (current?.phase == ImageGenerationPhase.DESIGNING) {
@@ -1667,8 +1670,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val generationSettings = NovelAiGenerationSettings.legacy(
                     seed = seed,
                     count = batchSize,
-                    model = currentSession?.resolvedNovelAiImageModel(settings.novelAiImageModel)
-                        ?: settings.novelAiImageModel
+                    model = targetImageModel
                 )
                 val requestBody = novelAiImageService.buildRequestBody(prompt, imageSize, generationSettings)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(

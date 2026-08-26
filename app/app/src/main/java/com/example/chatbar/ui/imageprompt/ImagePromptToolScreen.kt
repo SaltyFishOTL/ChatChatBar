@@ -41,6 +41,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -133,6 +135,7 @@ private data class StudioTagEditTarget(
 fun ImagePromptToolScreen(
     onBack: () -> Unit,
     onOpenHistory: () -> Unit,
+    onOpenAiDesign: () -> Unit,
     viewModel: ImagePromptToolViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -222,6 +225,12 @@ fun ImagePromptToolScreen(
                 }
             },
             actions = {
+                CbIconButton(
+                    AppIcons.Bot,
+                    "AI 设计",
+                    { viewModel.openAiDesign(onOpenAiDesign) },
+                    enabled = !state.isBusy && !state.applyingHistory
+                )
                 CbIconButton(
                     AppIcons.Image,
                     if (guidanceSummary.isBlank()) "图像引导" else "图像引导：已启用 $guidanceSummary",
@@ -1126,14 +1135,6 @@ private fun PromptSection(
                     style = ChatBarTheme.typography.caption
                 )
             }
-            if (draft.naturalLanguageMode) {
-                Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
-                    CbButton("AI 转化", viewModel::convertNaturalLanguagePrompt, enabled = !state.isBusy, size = ButtonSize.Sm)
-                    if (draft.conversionSnapshot != null) {
-                        CbButton("还原", viewModel::restoreConvertedPrompt, variant = ButtonVariant.Outline, size = ButtonSize.Sm)
-                    }
-                }
-            }
             draft.characters.forEachIndexed { index, character ->
                 CharacterPromptEditor(
                     index,
@@ -1166,47 +1167,6 @@ private fun PromptSection(
                     onTagEditEnd = onTagEditEnd,
                     onFullscreenEdit = onFullscreenEdit
                 )
-            }
-        }
-        SectionCard("AI 设计") {
-            CollapsibleHeader(
-                title = "AI 设计面板",
-                summary = if (draft.aiPanelExpanded) "收起" else if (draft.naturalLanguageMode) "自然语言规划" else "Tag 设计",
-                expanded = draft.aiPanelExpanded,
-                onClick = { viewModel.updateDraft { it.copy(aiPanelExpanded = !it.aiPanelExpanded) } }
-            )
-            if (draft.aiPanelExpanded) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    CbText("自然语言模式", Modifier.weight(1f))
-                    CbSwitch(
-                        draft.naturalLanguageMode,
-                        { checked -> viewModel.updateDraft { it.copy(naturalLanguageMode = checked) } }
-                    )
-                }
-                StudioMultilineInput(
-                    label = "画面内容",
-                    value = draft.imageDescription,
-                    minLines = 3,
-                    onValueChange = { value -> viewModel.updateDraft("ai:image_description") { it.copy(imageDescription = value) } },
-                    onFullscreenEdit = onFullscreenEdit
-                )
-                StudioMultilineInput(
-                    label = "额外要求",
-                    value = draft.extraRequirement,
-                    minLines = 2,
-                    onValueChange = { value -> viewModel.updateDraft("ai:extra_requirement") { it.copy(extraRequirement = value) } },
-                    onFullscreenEdit = onFullscreenEdit
-                )
-                CbButton(
-                    if (state.isDesigning) "停止 AI" else "开始 AI 设计",
-                    if (state.isDesigning) viewModel::cancelActiveTask else viewModel::designPrompt,
-                    enabled = state.canDesign || state.isDesigning,
-                    variant = if (state.isDesigning) ButtonVariant.Destructive else ButtonVariant.Default
-                )
-                if (state.designStatus.isNotBlank()) CbText(state.designStatus, color = ChatBarTheme.colors.mutedForeground)
-                state.modelErrors.forEach { message -> CbText(message, color = ChatBarTheme.colors.destructive) }
-                if (state.reasoningStream.isNotBlank()) CbText("推理\n${state.reasoningStream}", color = ChatBarTheme.colors.mutedForeground)
-                if (state.resultStream.isNotBlank()) CbText(state.resultStream)
             }
         }
     }
@@ -1415,6 +1375,7 @@ private fun TagPromptInput(
     onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit
 ) {
     var fieldValue by remember(field) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
+    var inputGeneration by remember(field) { mutableIntStateOf(0) }
     fun insertTag(tag: String) {
         val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, tag)
         fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
@@ -1425,7 +1386,10 @@ private fun TagPromptInput(
         onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
     }
     LaunchedEffect(value) {
-        if (value != fieldValue.text) fieldValue = TextFieldValue(value, TextRange(value.length))
+        if (value != fieldValue.text) {
+            fieldValue = TextFieldValue(value, TextRange(value.length))
+            inputGeneration++
+        }
     }
     DisposableEffect(field) {
         onDispose { onTagEditEnd(field) }
@@ -1446,38 +1410,41 @@ private fun TagPromptInput(
                 annotation.matches(fieldValue.text)
             }
             val wrappingTransformation = promptTagWrappingOutputTransformation(naturalLanguage)
-            CbInput(
-                value = fieldValue,
-                onValueChange = { next ->
-                    fieldValue = next
-                    onValueChange(next.text)
-                    onSuggest(field, next.text, next.selection.end)
-                    publishEditTarget()
-                },
-                modifier = Modifier.height(editorHeight),
-                singleLine = false,
-                minLines = minLines,
-                expand = true,
-                textStyle = ChatBarTheme.typography.body.copy(
-                    lineHeight = 25.sp,
-                    lineHeightStyle = LineHeightStyle(
-                        alignment = LineHeightStyle.Alignment.Top,
-                        trim = LineHeightStyle.Trim.None
+            key(inputGeneration) {
+                CbInput(
+                    value = fieldValue,
+                    onValueChange = { next ->
+                        val textChanged = next.text != fieldValue.text
+                        fieldValue = next
+                        if (textChanged) onValueChange(next.text)
+                        onSuggest(field, next.text, next.selection.end)
+                        publishEditTarget()
+                    },
+                    modifier = Modifier.height(editorHeight),
+                    singleLine = false,
+                    minLines = minLines,
+                    expand = true,
+                    textStyle = ChatBarTheme.typography.body.copy(
+                        lineHeight = 25.sp,
+                        lineHeightStyle = LineHeightStyle(
+                            alignment = LineHeightStyle.Alignment.Top,
+                            trim = LineHeightStyle.Trim.None
+                        ),
+                        lineBreak = LineBreak.Paragraph
                     ),
-                    lineBreak = LineBreak.Paragraph
-                ),
-                outputTransformation = wrappingTransformation,
-                textOverlay = { layout, scrollOffset ->
-                    PromptTranslationOverlay(
-                        layout = layout,
-                        annotations = visibleAnnotations,
-                        scrollOffsetPx = scrollOffset
-                    )
-                },
-                onFocusChanged = { isFocused ->
-                    if (isFocused) publishEditTarget() else onTagEditEnd(field)
-                }
-            )
+                    outputTransformation = wrappingTransformation,
+                    textOverlay = { layout, scrollOffset ->
+                        PromptTranslationOverlay(
+                            layout = layout,
+                            annotations = visibleAnnotations,
+                            scrollOffsetPx = scrollOffset
+                        )
+                    },
+                    onFocusChanged = { isFocused ->
+                        if (isFocused) publishEditTarget() else onTagEditEnd(field)
+                    }
+                )
+            }
         }
     }
 }

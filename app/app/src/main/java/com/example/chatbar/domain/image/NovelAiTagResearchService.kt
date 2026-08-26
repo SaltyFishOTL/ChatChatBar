@@ -174,6 +174,23 @@ interface NovelAiTagSearchPlanner {
         botName: String = "",
         onRawText: (String) -> Unit = {}
     ): NovelAiTagSearchDecisionResult
+
+    suspend fun decideQueriesOnly(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>,
+        model: ModelConfig,
+        playerName: String? = null,
+        botName: String = "",
+        onRawText: (String) -> Unit = {}
+    ): NovelAiTagSearchDecisionResult = decide(
+        taskInput = taskInput,
+        characterPrompts = characterPrompts,
+        imageBase64s = emptyList(),
+        model = model,
+        playerName = playerName,
+        botName = botName,
+        onRawText = onRawText
+    )
 }
 
 interface NovelAiTagSearchClient {
@@ -249,6 +266,60 @@ class LlmNovelAiTagSearchPlanner(
         }
     }
 
+    override suspend fun decideQueriesOnly(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>,
+        model: ModelConfig,
+        playerName: String?,
+        botName: String,
+        onRawText: (String) -> Unit
+    ): NovelAiTagSearchDecisionResult {
+        val systemPrompt = PromptTemplates.novelAiTagRevisionQueryPlannerSystem(playerName, botName)
+        val requestText = PromptTemplates.novelAiTagRevisionQueryPlannerUser(
+            taskInput = taskInput,
+            characterPrompts = characterPrompts,
+            playerName = playerName,
+            botName = botName
+        )
+        val streamingProgress = NovelAiTagPlannerStreamingProgress(onRawText)
+        return try {
+            val raw = chatService.completeTextStreaming(
+                messages = requestMessages(requestText, emptyList(), systemPrompt),
+                modelConfig = model,
+                thinkingBudget = NOVEL_AI_SCENE_PLANNING_THINKING_BUDGET,
+                onDelta = streamingProgress::appendContent,
+                onReasoningDelta = streamingProgress::appendReasoning
+            )
+            val decision = parseQueryDecision(raw, characterPrompts)
+            if (decision == null) {
+                NovelAiTagSearchDecisionResult(
+                    systemPrompt = systemPrompt,
+                    requestText = requestText,
+                    reasoningResponse = streamingProgress.reasoningText,
+                    rawResponse = raw,
+                    failureReason = "修改需求检索规划 JSON 无法解析"
+                )
+            } else {
+                NovelAiTagSearchDecisionResult(
+                    decision = decision,
+                    systemPrompt = systemPrompt,
+                    requestText = requestText,
+                    reasoningResponse = streamingProgress.reasoningText,
+                    rawResponse = raw
+                )
+            }
+        } catch (error: Throwable) {
+            if (error is CancellationException) throw error
+            NovelAiTagSearchDecisionResult(
+                systemPrompt = systemPrompt,
+                requestText = requestText,
+                reasoningResponse = streamingProgress.reasoningText,
+                rawResponse = streamingProgress.contentText,
+                failureReason = error.message ?: error::class.java.simpleName
+            )
+        }
+    }
+
     internal fun parseDecision(
         raw: String,
         characterPrompts: List<Pair<String, String>> = emptyList()
@@ -256,6 +327,30 @@ class LlmNovelAiTagSearchPlanner(
         val candidates = raw.extractJsonObjectCandidates().ifEmpty { listOf(raw.trim()) }
         val parsed = candidates.firstNotNullOfOrNull { candidate ->
             decodeFlexibleDecision(candidate) ?: decodeStrictDecision(candidate)
+        }
+        return parsed?.withoutExistingCharacterQueries(characterPrompts)
+    }
+
+    internal fun parseQueryDecision(
+        raw: String,
+        characterPrompts: List<Pair<String, String>> = emptyList()
+    ): NovelAiTagSearchDecision? {
+        val candidates = raw.extractJsonObjectCandidates().ifEmpty { listOf(raw.trim()) }
+        val parsed = candidates.firstNotNullOfOrNull { candidate ->
+            runCatching {
+                val obj = json.parseToJsonElement(candidate).jsonObject
+                if (!obj.containsKey("queries") && !obj.containsKey("keywords")) return@runCatching null
+                val queries = obj.queryValues().asSequence()
+                    .map(String::normalizePlannerQuery)
+                    .filter { it.length in MIN_TAG_QUERY_LENGTH..MAX_TAG_QUERY_LENGTH }
+                    .distinctBy { it.lowercase(Locale.ROOT) }
+                    .take(MAX_TAG_SEARCH_QUERIES)
+                    .toList()
+                NovelAiTagSearchDecision(
+                    action = if (queries.isEmpty()) TAG_SEARCH_ACTION_FINISH else TAG_SEARCH_ACTION_SEARCH,
+                    queries = queries
+                )
+            }.getOrNull()
         }
         return parsed?.withoutExistingCharacterQueries(characterPrompts)
     }
@@ -670,6 +765,104 @@ class NovelAiTagResearchService(
             sceneDescription = decision.sceneDescription,
             queryResults = results,
             codexSearchResult = codexResult,
+            transcript = transcript.snapshot()
+        )
+    }
+
+    suspend fun researchTagsOnly(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>,
+        model: ModelConfig,
+        playerName: String? = null,
+        botName: String = "",
+        onProgress: (String) -> Unit = {}
+    ): NovelAiTagResearchResult {
+        val transcript = TagResearchTranscript(onProgress)
+        val planningTitle = "AI 修改需求检索规划"
+        transcript.update(planningTitle, "正在判断本轮是否需要查询新 Tag…")
+        val decisionResult = planner.decideQueriesOnly(
+            taskInput = taskInput,
+            characterPrompts = characterPrompts,
+            model = model,
+            playerName = playerName,
+            botName = botName,
+            onRawText = { streamed -> transcript.update(planningTitle, streamed) }
+        )
+        val decision = decisionResult.decision
+        if (decision == null) {
+            transcript.complete(
+                planningTitle,
+                listOf(
+                    decisionResult.displayResponse(),
+                    "规划失败：${decisionResult.failureReason.ifBlank { "未知错误" }}；跳过本轮 TagSuggest，继续修改 Prompt"
+                ).filter(String::isNotBlank).joinToString("\n")
+            )
+            return NovelAiTagResearchResult(
+                decisionResults = listOf(decisionResult),
+                transcript = transcript.snapshot()
+            )
+        }
+        transcript.complete(
+            planningTitle,
+            listOf(
+                decisionResult.displayResponse(),
+                if (decision.queries.isEmpty() || decision.action == TAG_SEARCH_ACTION_FINISH) {
+                    "本轮无需查询新 TagSuggest"
+                } else {
+                    "本轮需要查询 ${decision.queries.size} 个新词条"
+                }
+            ).filter(String::isNotBlank).joinToString("\n")
+        )
+        if (decision.action == TAG_SEARCH_ACTION_FINISH || decision.queries.isEmpty()) {
+            return NovelAiTagResearchResult(
+                decisionResults = listOf(decisionResult),
+                sceneDescription = decision.sceneDescription,
+                transcript = transcript.snapshot()
+            )
+        }
+
+        val batchTitle = "TagSuggest 批量搜索"
+        val statusLock = Any()
+        val statuses = decision.queries.map { query ->
+            "- $query → q=${query.normalizeTagSuggestQuery()}｜等待请求"
+        }.toMutableList()
+        transcript.update(batchTitle, statuses.joinToString("\n"))
+        val rawResults = coroutineScope {
+            decision.queries.mapIndexed { index, query ->
+                async {
+                    val effectiveQuery = query.normalizeTagSuggestQuery()
+                    synchronized(statusLock) {
+                        statuses[index] = "- $query → q=$effectiveQuery｜请求中…"
+                        transcript.update(batchTitle, statuses.joinToString("\n"))
+                    }
+                    val result = searchOne(query, effectiveQuery)
+                    synchronized(statusLock) {
+                        statuses[index] = result.batchProgressText()
+                        transcript.update(batchTitle, statuses.joinToString("\n"))
+                    }
+                    result
+                }
+            }.awaitAll()
+        }
+        val seenTags = mutableSetOf<String>()
+        val results = rawResults.map { result ->
+            val remainingCandidates = MAX_TOTAL_TAG_CANDIDATES - seenTags.size
+            result.copy(
+                candidates = result.candidates.asSequence()
+                    .filter { seenTags.add(it.name.lowercase(Locale.ROOT)) }
+                    .take(remainingCandidates.coerceAtLeast(0))
+                    .toList()
+            )
+        }
+        transcript.complete(
+            batchTitle,
+            statuses.joinToString("\n") +
+                "\n\n全局去重后保留 ${results.sumOf { it.candidates.size }} 个候选"
+        )
+        return NovelAiTagResearchResult(
+            decisionResults = listOf(decisionResult),
+            sceneDescription = decision.sceneDescription,
+            queryResults = results,
             transcript = transcript.snapshot()
         )
     }

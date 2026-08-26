@@ -71,6 +71,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiStudioRepository: NovelAiStudioRepository
         private set
+    lateinit var novelAiDesignConversationRepository: NovelAiDesignConversationRepository
+        private set
     lateinit var novelAiPromptTranslationCacheRepository: NovelAiPromptTranslationCacheRepository
         private set
 
@@ -208,6 +210,7 @@ class ChatBarApp : Application() {
         worldBookRepository = WorldBookRepository(jsonFileStorage)
         editorDraftRepository = EditorDraftRepository(jsonFileStorage)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage)
+        novelAiDesignConversationRepository = NovelAiDesignConversationRepository(jsonFileStorage)
         novelAiPromptTranslationCacheRepository = NovelAiPromptTranslationCacheRepository(jsonFileStorage)
         editorDraftAssetService = EditorDraftAssetService(this)
 
@@ -455,6 +458,7 @@ class ChatBarApp : Application() {
             )
             momentRepository.initialize()
             novelAiStudioRepository.initialize()
+            novelAiDesignConversationRepository.initialize()
             val studioDraft = novelAiStudioRepository.loadDraft()
             val studioUndo = novelAiStudioRepository.loadUndoDraft()
             val studioGuidanceCheckpoint = novelAiStudioRepository.loadGuidanceCheckpoint()

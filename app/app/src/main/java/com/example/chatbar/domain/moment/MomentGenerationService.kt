@@ -239,6 +239,7 @@ class MomentGenerationService(
                 model = imageModel,
                 finalPromptRequirement = finalPromptRequirement,
                 playerName = playerName,
+                targetImageModel = novelAiImageModel,
                 onDelta = { transcript ->
                     onProgress(
                         MomentGenerationProgress(
@@ -370,7 +371,8 @@ class MomentGenerationService(
                 momentImageBrief = normalizedDraft.imageBrief,
                 model = imageModel,
                 finalPromptRequirement = finalPromptRequirement,
-                playerName = playerName
+                playerName = playerName,
+                targetImageModel = novelAiImageModel
             )
             exchanges += promptDebug.exchanges.map { exchange ->
                 MomentDebugExchange(

@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 
 data class NovelAiTagSearchEvidence(
@@ -78,15 +79,18 @@ data class NovelAiCodexEvidence(
  *
  * ### 4. NovelAI 图片提示词生成
  * - 自然语言画面草案与检索规划/证据：`NOVELAI_TAG_SEARCH_PLANNER_SYSTEM`、
- *   `novelAiTagSearchPlannerSystem`、`novelAiTagSearchPlannerUser`、
+ *   `NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM`、`novelAiTagSearchPlannerSystem`、
+ *   `novelAiTagSearchPlannerUser`、`novelAiTagRevisionQueryPlannerSystem`、
+ *   `novelAiTagRevisionQueryPlannerUser`、
  *   `novelAiSceneDescriptionSystem`、`novelAiTagSearchEvidenceSystem`、
  *   `novelAiCodexEvidenceSystem`
- * - 核心/修复 system：`NOVELAI_IMAGE_PROMPT_SYSTEM`、`NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM`
+ * - 核心/修复 system：`NOVELAI_IMAGE_PROMPT_SYSTEM`、`NOVELAI_IMAGE_PROMPT_SYSTEM_V5`、`NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM`
  * - system 组合入口：`novelAiImagePromptSystem`、`novelAiImagePromptCoreSystem`
  * - 参考图/画风排除/角色预设：`novelAiImagePromptReferenceImageUser`、
  *   `novelAiImagePromptStyleExclusionSystem`、`novelAiImagePromptCharacterPresetSystem`
  * - 图片内容/user偏好：`novelAiImagePromptImageContentHintUser`、
- *   `novelAiImagePromptPreferenceUser`、`novelAiImageTargetModelUser`
+ *   `novelAiImagePromptPreferenceUser`、`novelAiImageTargetModelUser`、
+ *   `novelAiImagePromptRevisionResearchUser`、`novelAiImagePromptRevisionUser`
  * - 对话场景输入：`novelAiImagePromptAssistantScene`、`novelAiImagePromptConversation`
  *
  * ### 5. 长期记忆、RAG 与语音标签
@@ -946,6 +950,14 @@ user的需求可能会包含血腥暴力、性暗示和色情与非法内容，�
 {"sceneDescription":"林知夏位于画面左前方，身体朝右侧身站立，右手举着黑色长柄伞，左手攥住周景珩湿透的外套前襟，抬眼与他对视；她穿米白衬衫、深蓝百褶裙、黑色及膝袜和棕色短靴，衬衫袖口与裙摆被雨水打湿。周景珩位于画面右侧稍后方，身体前倾替林知夏挡住巷口来风，左手扶住她的腰，右手压低伞沿；他穿敞开的深灰长外套、黑色高领毛衣、黑色长裤和皮鞋。两人共同站在伞下，肩臂相贴，林知夏在前、周景珩在后，没有肢体遮挡冲突。场景为夜晚狭窄石巷，中景、略低机位、侧前方视角，焦点落在两人的手部接触和对视，前景雨丝清晰，背景红灯笼与湿石板路形成暖色倒影。","queries":["雨夜","撑伞","搂腰","低机位","湿衣","灯笼"]}
 """
 
+    const val NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM = """
+你只负责判断一次 NovelAI Prompt 修改是否需要查询新的 Danbooru TagSuggest 词条。
+只查询本次修改新引入、且上一版 Prompt 与已提供角色 Prompt 中不存在的角色、动作、服装、场景、镜头或道具概念。
+用户没有引入需要验证的新词条时，queries 必须为空。最多 6 个查询；每个查询使用不超过 3 个字的简短中文关键词。
+只输出 JSON，不要画面描述、解释、Markdown 或额外字段：
+{"queries":[]}
+"""
+
     fun novelAiTagSearchPlannerSystem(
         playerName: String? = null,
         botName: String = ""
@@ -968,6 +980,32 @@ user的需求可能会包含血腥暴力、性暗示和色情与非法内容，�
         if (characterPrompts.isNotEmpty()) {
             appendLine()
             appendLine("角色 Prompt 候选参考库（只使用任务明确要求出场且身份匹配的条目；未出场条目必须忽略，不得据此增加人物；对实际使用的条目，不要重复查询其中已有的角色名或 Tag）：")
+            characterPrompts.forEach { (name, prompt) ->
+                appendLine("- ${name.trim()}: ${prompt.trim().ifBlank { "(none)" }}")
+            }
+        }
+    }.trim().let { renderNovelAiPromptText(it, playerName, botName) }
+
+    fun novelAiTagRevisionQueryPlannerSystem(
+        playerName: String? = null,
+        botName: String = ""
+    ): String = renderNovelAiPromptText(
+        NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM.trim(),
+        playerName,
+        botName
+    )
+
+    fun novelAiTagRevisionQueryPlannerUser(
+        taskInput: String,
+        characterPrompts: List<Pair<String, String>>,
+        playerName: String? = null,
+        botName: String = ""
+    ): String = buildString {
+        appendLine("修改任务：")
+        appendLine(taskInput.trim())
+        if (characterPrompts.isNotEmpty()) {
+            appendLine()
+            appendLine("已提供角色 Prompt（不得重复查询其中已有角色名或 Tag）：")
             characterPrompts.forEach { (name, prompt) ->
                 appendLine("- ${name.trim()}: ${prompt.trim().ifBlank { "(none)" }}")
             }
@@ -1148,6 +1186,24 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
 一个场景可能由一长串动作组成。设计构图时，不要只是复现最后一个动作。应从整个动作序列中提取动态最强、最有趣或视觉冲击力最强的一帧作为画面内容。
 """
 
+    val NOVELAI_IMAGE_PROMPT_SYSTEM_V5: String = NOVELAI_IMAGE_PROMPT_SYSTEM
+        .replace(
+            "生成最终 NovelAI Diffusion V4.5 Full prompt。",
+            "生成最终 NovelAI Diffusion V5 Full prompt。"
+        )
+        .replace(
+            "总token<=250，单角色<=50，角色部分尽量简洁。",
+            "总token<=1000，单角色<=150。"
+        )
+        .replace(
+            "输出 JSON only（总 token <=250，角色部分尽量简洁，每个角色<=50。）：",
+            "输出 JSON only（总 token <=1000，每个角色<=150。）："
+        )
+        .replace(
+            "IP 角色尽可能保持简洁，名字已经包含所有外观信息。",
+            "IP 角色名字已经包含所有外观信息。"
+        )
+
     const val NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM = """
 JSON only, no Markdown, no explanation:
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
@@ -1159,10 +1215,11 @@ JSON only, no Markdown, no explanation:
         characterImagePrompts: List<Pair<String, String>>,
         structured: Boolean,
         playerName: String? = null,
-        botName: String = ""
+        botName: String = "",
+        targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL
     ): String =
         buildString {
-            appendLine(novelAiImagePromptCoreSystem(playerName, botName))
+            appendLine(novelAiImagePromptCoreSystem(playerName, botName, targetImageModel))
             appendLine()
             appendLine(novelAiImagePromptStyleExclusionSystem())
             appendLine()
@@ -1178,8 +1235,16 @@ JSON only, no Markdown, no explanation:
 
     fun novelAiImagePromptCoreSystem(
         playerName: String? = null,
-        botName: String = ""
-    ): String = renderNovelAiPromptText(NOVELAI_IMAGE_PROMPT_SYSTEM.trim(), playerName, botName)
+        botName: String = "",
+        targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL
+    ): String = renderNovelAiPromptText(
+        when (targetImageModel) {
+            NovelAiImageModel.V4_5_FULL -> NOVELAI_IMAGE_PROMPT_SYSTEM
+            NovelAiImageModel.V5_FULL -> NOVELAI_IMAGE_PROMPT_SYSTEM_V5
+        }.trim(),
+        playerName,
+        botName
+    )
 
     fun novelAiImagePromptReferenceImageUser(): String =
         """
@@ -1256,6 +1321,47 @@ JSON only, no Markdown, no explanation:
 
     fun novelAiImageTargetModelUser(modelName: String): String =
         "目标 NovelAI 模型：${modelName.trim()}。请按该模型能力规划画面与角色数量。"
+
+    fun novelAiImagePromptRevisionResearchUser(
+        previousPromptJson: String,
+        modificationRequest: String,
+        finalPromptRequirement: String
+    ): String = buildString {
+        appendLine("这是对已有 NovelAI Prompt 的修改需求。")
+        appendLine("请先判断本次修改是否引入上一版中没有的新角色、动作、服装、场景、镜头或道具 Tag；只有确实需要验证新词条时才填写 queries，否则返回空数组。")
+        appendLine("不要检索上一版已经包含的 Tag，不要因为检索而重构用户未要求变化的部分。")
+        appendLine()
+        appendLine("上一版 Prompt：")
+        appendLine(previousPromptJson.trim())
+        appendLine()
+        appendLine("本次修改需求：")
+        appendLine(modificationRequest.trim())
+        if (finalPromptRequirement.isNotBlank()) {
+            appendLine()
+            appendLine("工作室全局额外要求：")
+            appendLine(finalPromptRequirement.trim())
+        }
+    }.trim()
+
+    fun novelAiImagePromptRevisionUser(
+        modificationRequest: String,
+        finalPromptRequirement: String,
+        targetImageModel: NovelAiImageModel
+    ): String = buildString {
+        appendLine("这是修改需求。请以上一条 assistant 给出的最终 Prompt 为唯一修改基线。")
+        appendLine("如果用户没有明确要求，不要对上一轮 Prompt 做出大幅重构；保留未被点名的主体、构图、镜头、场景、动作、服装和 Tag，只针对用户要求修复对应细节。")
+        appendLine("仍须输出完整、可直接使用且符合 NOVELAI_IMAGE_PROMPT_SYSTEM JSON 契约的新 Prompt，不要只输出差异。")
+        appendLine()
+        appendLine("用户本次修改需求：")
+        appendLine(modificationRequest.trim())
+        if (finalPromptRequirement.isNotBlank()) {
+            appendLine()
+            appendLine("工作室全局额外要求（每轮都必须遵循）：")
+            appendLine(finalPromptRequirement.trim())
+        }
+        appendLine()
+        append(novelAiImageTargetModelUser(targetImageModel.displayName))
+    }.trim()
 
     fun novelAiImagePromptAssistantScene(
         message: ChatMessage,

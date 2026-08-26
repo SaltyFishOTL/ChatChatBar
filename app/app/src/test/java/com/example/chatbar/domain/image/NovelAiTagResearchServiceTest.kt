@@ -1,7 +1,10 @@
 package com.example.chatbar.domain.image
 
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamingChatService
+import com.example.chatbar.domain.prompt.NovelAiCodexEvidence
+import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.io.IOException
 import java.util.concurrent.atomic.AtomicInteger
@@ -83,6 +86,20 @@ class NovelAiTagResearchServiceTest {
         assertTrue(finish?.queries.orEmpty().isEmpty())
         assertEquals("search", flexible?.action)
         assertEquals(listOf("低角度"), flexible?.queries)
+    }
+
+    @Test
+    fun `revision query planner accepts empty query JSON without scene description`() {
+        val planner = planner()
+
+        val empty = planner.parseQueryDecision("""{"queries":[]}""")
+        val search = planner.parseQueryDecision("""{"queries":["透明伞","低机位"]}""")
+
+        assertEquals("finish", empty?.action)
+        assertTrue(empty?.queries.orEmpty().isEmpty())
+        assertEquals(listOf("透明伞", "低机位"), search?.queries)
+        assertTrue(PromptTemplates.NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM.contains("{\"queries\":[]}"))
+        assertFalse(PromptTemplates.NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM.contains("sceneDescription"))
     }
 
     @Test
@@ -495,6 +512,64 @@ class NovelAiTagResearchServiceTest {
         assertEquals(DEFAULT_SCENE_DESCRIPTION, codexScene)
         assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
         assertTrue(result.transcript.contains("无需 TagSuggest"))
+    }
+
+    @Test
+    fun `revision research with empty queries skips both TagSuggest and codex`() = runTest {
+        val planner = StaticPlanner(emptyList(), finish = true)
+        var tagCalls = 0
+        var codexCalls = 0
+        val service = NovelAiTagResearchService(
+            planner = planner,
+            searchClient = LambdaClient {
+                tagCalls += 1
+                outcome(it)
+            },
+            codexSearcher = NovelAiCodexSearcher { _, _, _ ->
+                codexCalls += 1
+                NovelAiCodexSearchResult()
+            }
+        )
+
+        val result = service.researchTagsOnly(
+            taskInput = "只调整伞的透明度",
+            characterPrompts = emptyList(),
+            model = model()
+        )
+
+        assertEquals(1, planner.calls)
+        assertEquals(0, tagCalls)
+        assertEquals(0, codexCalls)
+        assertTrue(result.evidence.isEmpty())
+    }
+
+    @Test
+    fun `revision evidence insertion keeps final modification request as last user message`() {
+        val messages = listOf(
+            ChatApiMessage.text("system", "rules"),
+            ChatApiMessage.text("assistant", "previous prompt"),
+            ChatApiMessage.text("user", "modification request")
+        )
+        val result = NovelAiPromptDesigner.withResearchEvidence(
+            messages = messages,
+            tagEvidence = listOf(
+                NovelAiTagSearchEvidence("initial", "tag_initial", "", 10, "general"),
+                NovelAiTagSearchEvidence("current", "tag_current", "", 20, "general")
+            ),
+            codexEvidence = listOf(
+                NovelAiCodexEvidence("codex", "scene", "scene", "", "night street", emptyList())
+            ),
+            sceneDescription = "current scene"
+        )
+
+        assertEquals("user", result.last().role)
+        assertEquals("modification request", result.last().content.jsonPrimitive.content)
+        val injectedText = result.drop(2).dropLast(1)
+            .joinToString("\n") { it.content.jsonPrimitive.content }
+        assertTrue(injectedText.contains("tag_initial"))
+        assertTrue(injectedText.contains("tag_current"))
+        assertTrue(injectedText.contains("night street"))
+        assertEquals(listOf("system", "assistant", "system", "system", "system", "user"), result.map { it.role })
     }
 
     @Test

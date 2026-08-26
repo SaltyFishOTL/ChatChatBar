@@ -37,7 +37,6 @@ import com.example.chatbar.domain.image.NovelAiReferenceMode
 import com.example.chatbar.domain.image.NovelAiStudioAssetRef
 import com.example.chatbar.domain.image.NovelAiVibeReferenceDraft
 import com.example.chatbar.domain.image.NovelAiImageSizePreset
-import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import com.example.chatbar.domain.image.NovelAiPromptDesigner
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiPromptAnnotation
@@ -68,6 +67,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
@@ -225,7 +225,6 @@ data class ImagePromptToolUiState(
     val selectedRecentHistoryItem: NovelAiRecentHistoryItem?
         get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
     val canImportCharacterCard: Boolean get() = draftLoaded && !isBusy && !applyingHistory
-    val canDesign: Boolean get() = !isBusy && !applyingHistory && modelUsable && selectedModelId != null && draft.imageDescription.isNotBlank()
     val canGenerate: Boolean get() = !isBusy && !applyingHistory && draft.basePrompt.isNotBlank() &&
         draft.imageGuidance.validationError(draft.selectedModel) == null
     val generationCost: NovelAiGenerationCost
@@ -518,7 +517,7 @@ class ImagePromptToolViewModel : ViewModel() {
         if (snapshot.isBusy) return
         val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
         if (model == null || !snapshot.modelUsable) {
-            _uiState.update { it.copy(error = "默认生图辅助模型/API Key 未配置") }
+            _uiState.update { it.copy(error = snapshot.modelErrors.firstOrNull() ?: "生图辅助模型/API Key 未配置") }
             return
         }
         val draft = snapshot.draft
@@ -543,18 +542,15 @@ class ImagePromptToolViewModel : ViewModel() {
                     referenceImageProvided = true,
                     model = model,
                     playerName = playerName,
+                    finalPromptRequirement = draft.extraRequirement,
                     targetImageModel = draft.selectedModel,
                     referenceImageInstruction = PromptTemplates.novelAiImageReversePromptUser(draft.selectedModel.displayName),
                     excludeStyle = false,
                     onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } },
                     onReasoningDelta = { text -> _uiState.update { it.copy(reasoningStream = text) } }
                 )
-                val before = NovelAiPositivePromptSnapshot(
-                    basePrompt = draft.basePrompt,
-                    characterPrompts = draft.characters.map(NovelAiCharacterPromptDraft::prompt)
-                )
                 updateDraftAfterDesign(
-                    mergeAiPlan(draft, plan).copy(conversionSnapshot = before)
+                    mergeAiPlan(draft, plan).copy(conversionSnapshot = null)
                 )
                 _uiState.update { it.copy(designStatus = "反推完成") }
             } catch (error: Throwable) {
@@ -831,80 +827,6 @@ class ImagePromptToolViewModel : ViewModel() {
         _uiState.update { it.copy(selectedCharacterCardId = cardId) }
     }
 
-    fun designPrompt() = startDesign(conversion = false)
-
-    fun convertNaturalLanguagePrompt() = startDesign(conversion = true)
-
-    private fun startDesign(conversion: Boolean) {
-        if (_uiState.value.isBusy) return
-        val snapshot = _uiState.value
-        val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
-        if (model == null || !snapshot.modelUsable) {
-            _uiState.update { it.copy(error = "默认生图辅助模型/API Key 未配置") }
-            return
-        }
-        val draft = snapshot.draft
-        val cardCharacterPrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt }
-        val sourceText = if (conversion) draft.basePrompt else draft.imageDescription
-        if (sourceText.isBlank()) {
-            _uiState.update { it.copy(error = if (conversion) "基础 Prompt 为空" else "请输入画面内容") }
-            return
-        }
-        designJob = viewModelScope.launch {
-            _uiState.update {
-                it.copy(
-                    phase = ImagePromptToolPhase.DESIGNING,
-                    designStatus = if (conversion) "正在转化为 NovelAI Tags" else "正在设计画面",
-                    reasoningStream = "",
-                    resultStream = "",
-                    error = null
-                )
-            }
-            try {
-                val playerName = settingsRepository.getPlayerSetting().playerName
-                val characterText = draft.characters.joinToString("\n\n") { it.prompt }
-                if (draft.naturalLanguageMode && !conversion) {
-                    val scene = promptDesigner.planNaturalLanguageForPromptTool(
-                        imageDescription = sourceText,
-                        characterPrompt = characterText,
-                        characterImagePrompts = cardCharacterPrompts,
-                        finalPromptRequirement = draft.extraRequirement,
-                        model = model,
-                        targetImageModel = draft.selectedModel,
-                        playerName = playerName,
-                        onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } }
-                    )
-                    updateDraftAfterDesign(draft.copy(basePrompt = scene))
-                } else {
-                    val plan = promptDesigner.designForPromptTool(
-                        imageDescription = sourceText,
-                        characterPrompt = characterText,
-                        characterImagePrompts = cardCharacterPrompts,
-                        finalPromptRequirement = draft.extraRequirement,
-                        model = model,
-                        targetImageModel = draft.selectedModel,
-                        playerName = playerName,
-                        onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } },
-                        onReasoningDelta = { text -> _uiState.update { it.copy(reasoningStream = text) } }
-                    )
-                    val before = if (conversion) NovelAiPositivePromptSnapshot(
-                        basePrompt = draft.basePrompt,
-                        characterPrompts = draft.characters.map(NovelAiCharacterPromptDraft::prompt)
-                    ) else null
-                    updateDraftAfterDesign(mergeAiPlan(draft, plan).copy(conversionSnapshot = before))
-                }
-            } catch (error: Throwable) {
-                if (error is CancellationException) {
-                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED) }
-                    throw error
-                }
-                _uiState.update {
-                    it.copy(phase = ImagePromptToolPhase.FAILED, error = "AI 设计失败：${error.message ?: "未知错误"}")
-                }
-            }
-        }.also { job -> job.invokeOnCompletion { designJob = null } }
-    }
-
     private fun mergeAiPlan(draft: NovelAiStudioDraft, plan: NovelAiPromptPlan): NovelAiStudioDraft {
         val merged = buildList {
             plan.characterCaptions.forEachIndexed { index, caption ->
@@ -931,16 +853,6 @@ class ImagePromptToolViewModel : ViewModel() {
         }
         scheduleDraftSave()
         scheduleTokenCount(draft)
-    }
-
-    fun restoreConvertedPrompt() {
-        val snapshot = _uiState.value.draft.conversionSnapshot ?: return
-        updateDraft { draft ->
-            val restored = draft.characters.mapIndexed { index, character ->
-                snapshot.characterPrompts.getOrNull(index)?.let { character.copy(prompt = it) } ?: character
-            }
-            draft.copy(basePrompt = snapshot.basePrompt, characters = restored, conversionSnapshot = null)
-        }
     }
 
     fun generateImage() {
@@ -1249,6 +1161,24 @@ class ImagePromptToolViewModel : ViewModel() {
         draftSaveJob?.cancel()
         val draft = _uiState.value.draft
         draftSaveJob = viewModelScope.launch { repository.saveDraft(draft) }
+    }
+
+    fun openAiDesign(onPersisted: () -> Unit) {
+        if (_uiState.value.isBusy || _uiState.value.applyingHistory) return
+        draftSaveJob?.cancel()
+        val draft = _uiState.value.draft
+        draftSaveJob = viewModelScope.launch {
+            try {
+                repository.saveDraft(draft)
+                onPersisted()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                _uiState.update {
+                    it.copy(error = "打开 AI 设计前保存工作室失败：${error.message ?: "未知错误"}")
+                }
+            }
+        }
     }
 
     private fun NovelAiStudioDraft.toPromptPlan(): NovelAiPromptPlan {
@@ -1624,17 +1554,29 @@ class ImagePromptToolViewModel : ViewModel() {
     private fun observeModelConfiguration() {
         viewModelScope.launch {
             settingsRepository.initialize()
-            settingsRepository.appSettings.collect { settings ->
+            combine(settingsRepository.appSettings, repository.draft) { settings, draft -> settings to draft }
+                .collect { (settings, draft) ->
                 val models = modelResolver.availableChatModels(settings)
                 val defaultModel = modelResolver.defaultImageModel(settings)
+                val explicitModelId = draft?.aiDesignModelId
+                val selectedModel = if (explicitModelId == null) {
+                    defaultModel
+                } else {
+                    models.firstOrNull { it.id == explicitModelId }
+                }
                 val errors = buildList {
-                    if (defaultModel == null) add("未配置可用默认生图辅助模型")
-                    else if (!defaultModel.hasConfiguredAuthentication(settings)) add("默认生图辅助模型/API Key 未配置")
+                    if (explicitModelId != null && selectedModel == null) {
+                        add("已选择的生图辅助模型不可用，请在 AI 设计设置中重新选择")
+                    } else if (selectedModel == null) {
+                        add("未配置可用默认生图辅助模型")
+                    } else if (!selectedModel.hasConfiguredAuthentication(settings)) {
+                        add("生图辅助模型/API Key 未配置")
+                    }
                 }
                 _uiState.update {
                     it.copy(
                         models = models,
-                        selectedModelId = defaultModel?.id,
+                        selectedModelId = selectedModel?.id,
                         modelErrors = errors,
                         modelUsable = errors.isEmpty(),
                         promptTranslationConsent = settings.novelAiPromptTranslationConsent,

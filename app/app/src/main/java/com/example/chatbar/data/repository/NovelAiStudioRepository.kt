@@ -8,6 +8,9 @@ import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.image.NovelAiStudioUndoDraft
 import com.example.chatbar.domain.image.NovelAiGuidanceEditorCheckpoint
+import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.applyDesignedPromptPlan
 import com.example.chatbar.domain.image.applyHistoryRecipe
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,8 +39,27 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun saveDraft(draft: NovelAiStudioDraft) = draftMutex.withLock {
-        storage.saveSingleton(DRAFT_ENTITY, draft.copy(updatedAt = System.currentTimeMillis()), NovelAiStudioDraft.serializer())
-        _draft.value = draft
+        val saved = draft.copy(updatedAt = System.currentTimeMillis())
+        storage.saveSingleton(DRAFT_ENTITY, saved, NovelAiStudioDraft.serializer())
+        _draft.value = saved
+    }
+
+    suspend fun updateDraft(transform: (NovelAiStudioDraft) -> NovelAiStudioDraft): NovelAiStudioDraft =
+        draftMutex.withLock {
+            val current = _draft.value
+                ?: storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
+                ?: NovelAiStudioDraft()
+            val next = transform(current).copy(updatedAt = System.currentTimeMillis())
+            storage.saveSingleton(DRAFT_ENTITY, next, NovelAiStudioDraft.serializer())
+            _draft.value = next
+            next
+        }
+
+    suspend fun applyDesignedPrompt(
+        plan: NovelAiPromptPlan,
+        targetImageModel: NovelAiImageModel
+    ): NovelAiStudioDraft = updateDraft { current ->
+        current.applyDesignedPromptPlan(plan, targetImageModel)
     }
 
     suspend fun saveUndoDraft(draft: NovelAiStudioDraft) = undoMutex.withLock {

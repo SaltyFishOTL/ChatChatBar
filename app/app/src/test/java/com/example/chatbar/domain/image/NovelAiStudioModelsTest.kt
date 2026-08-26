@@ -103,6 +103,7 @@ class NovelAiStudioModelsTest {
         assertEquals(6f, draft.activeSettings.guidance)
         assertEquals(0f, draft.activeSettings.cfgRescale)
         assertEquals(NovelAiSeedMode.RANDOM, draft.activeSettings.seedMode)
+        assertNull(draft.aiDesignModelId)
     }
 
     @Test
@@ -176,6 +177,48 @@ class NovelAiStudioModelsTest {
         val draft = NovelAiStudioDraft(naturalLanguageMode = true)
 
         assertFalse(draft.toRecipe().naturalLanguageMode)
+    }
+
+    @Test
+    fun `AI design apply replaces positives and preserves unrelated studio state`() {
+        val original = NovelAiStudioDraft(
+            stylePrompt = "saved style",
+            basePrompt = "old base",
+            characters = listOf(
+                NovelAiCharacterPromptDraft(prompt = "old character", negativePrompt = "old character negative")
+            ),
+            negativePrompt = "saved base negative",
+            importedCharacterCardId = "card",
+            importedCharacterPromptSources = listOf(NovelAiCharacterPromptSource("角色", "card prompt")),
+            extraRequirement = "saved requirement",
+            aiDesignModelId = "designer",
+            selectedModel = NovelAiImageModel.V4_5_FULL,
+            v45Settings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL, steps = 24),
+            v5Settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, steps = 42),
+            naturalLanguageMode = true,
+            conversionSnapshot = NovelAiPositivePromptSnapshot("snapshot")
+        )
+        val plan = NovelAiPromptPlan(
+            baseCaption = "new base",
+            characterCaptions = listOf(
+                NovelAiCharacterCaption("new character", DesignedCharacterCenter(0.5f, 0.5f), "ignored negative")
+            )
+        )
+
+        val applied = original.applyDesignedPromptPlan(plan, NovelAiImageModel.V5_FULL)
+
+        assertEquals("saved style", applied.stylePrompt)
+        assertEquals("saved base negative", applied.negativePrompt)
+        assertEquals("new base", applied.basePrompt)
+        assertEquals(listOf("new character"), applied.characters.map { it.prompt })
+        assertTrue(applied.characters.all { it.negativePrompt.isEmpty() })
+        assertEquals(NovelAiImageModel.V5_FULL, applied.selectedModel)
+        assertEquals(42, applied.activeSettings.steps)
+        assertEquals(original.importedCharacterPromptSources, applied.importedCharacterPromptSources)
+        assertEquals("saved requirement", applied.extraRequirement)
+        assertEquals("designer", applied.aiDesignModelId)
+        assertFalse(applied.naturalLanguageMode)
+        assertNull(applied.conversionSnapshot)
     }
 
     @Test

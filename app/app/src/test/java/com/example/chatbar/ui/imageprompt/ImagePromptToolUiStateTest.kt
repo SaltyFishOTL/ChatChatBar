@@ -1,6 +1,8 @@
 package com.example.chatbar.ui.imageprompt
 
-import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.image.NovelAiDesignConversation
+import com.example.chatbar.domain.image.NovelAiDesignTurn
+import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiStudioDraft
@@ -11,21 +13,38 @@ import org.junit.Test
 
 class ImagePromptToolUiStateTest {
     @Test
-    fun `extra requirement alone cannot start AI design`() {
-        val state = baseState().copy(draft = NovelAiStudioDraft(extraRequirement = "保持简洁"))
-        assertFalse(state.canDesign)
+    fun `AI design conversation requires initialized usable model and nonblank input`() {
+        val ready = NovelAiDesignUiState(
+            initialized = true,
+            selectedDesignModelId = "model",
+            input = "雨夜窗边"
+        )
+
+        assertTrue(ready.canSend)
+        assertFalse(ready.copy(initialized = false).canSend)
+        assertFalse(ready.copy(selectedDesignModelId = null).canSend)
+        assertFalse(ready.copy(modelError = "模型不可用").canSend)
+        assertFalse(ready.copy(input = " ").canSend)
     }
 
     @Test
-    fun `image content enables AI design when helper model is usable`() {
-        val state = baseState().copy(draft = NovelAiStudioDraft(imageDescription = "雨夜窗边"))
-        assertTrue(state.canDesign)
-    }
+    fun `failed AI design turn blocks sending until retry succeeds`() {
+        val blocked = NovelAiDesignUiState(
+            initialized = true,
+            selectedDesignModelId = "model",
+            input = "增加月光",
+            conversation = NovelAiDesignConversation(
+                turns = listOf(
+                    NovelAiDesignTurn(
+                        userText = "初始画面",
+                        status = NovelAiDesignTurnStatus.FAILED,
+                        error = "invalid JSON"
+                    )
+                )
+            )
+        )
 
-    @Test
-    fun `style prompt alone cannot start AI design`() {
-        val state = baseState().copy(draft = NovelAiStudioDraft(stylePrompt = "anime screencap"))
-        assertFalse(state.canDesign)
+        assertFalse(blocked.canSend)
     }
 
     @Test
@@ -52,18 +71,17 @@ class ImagePromptToolUiStateTest {
 
     @Test
     fun `history apply blocks editing and generation actions`() {
-        val state = baseState().copy(
+        val state = ImagePromptToolUiState().copy(
             draft = NovelAiStudioDraft(imageDescription = "scene", basePrompt = "tags"),
             applyingHistory = true
         )
 
-        assertFalse(state.canDesign)
         assertFalse(state.canGenerate)
     }
 
     @Test
     fun `character card import requires loaded idle draft`() {
-        val ready = baseState().copy(draftLoaded = true)
+        val ready = ImagePromptToolUiState().copy(draftLoaded = true)
 
         assertTrue(ready.canImportCharacterCard)
         assertFalse(ready.copy(draftLoaded = false).canImportCharacterCard)
@@ -71,18 +89,4 @@ class ImagePromptToolUiStateTest {
         assertFalse(ready.copy(applyingHistory = true).canImportCharacterCard)
     }
 
-    private fun baseState(): ImagePromptToolUiState = ImagePromptToolUiState(
-        models = listOf(model()),
-        selectedModelId = "model",
-        modelUsable = true
-    )
-
-    private fun model() = ModelConfig(
-        id = "model",
-        displayName = "Model",
-        baseUrl = "https://example.test",
-        apiKey = "key",
-        modelName = "model",
-        createdAt = 1
-    )
 }
