@@ -60,9 +60,9 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Full regeneration resets derived memory only, seeds eligible raw sources through `MemoryRegenerationPolicy`, then reuses coordinator-owned backfill, compression decisions, progress, pause/retry, and final HEAD rebuild. Do not create a second Archive generation loop.
 - Keep HEAD modes distinct: initialize from opening plus first round, update by exactly one baseline group, and backfill from compiled Archive plus latest eligible baseline group.
 - Keep HEAD injection validity separate from maintenance freshness. A source-valid lagging HEAD stays injectable with its real through-T; chat never awaits HEAD generation. Historical blank, multi-step lag, Gap-crossing, and stale HEAD recovery are automatic background `BACKFILL`, not manual Gap backfill.
-- Detect historical source edits/deletes without calling AI. Stop stale roots and stale HEAD from injection before repair.
+- Detect historical source edits and partial-turn deletions without calling AI. Stop stale roots and stale HEAD from injection before repair.
 - Start source repair only from explicit user action. Rebuild immutable dependencies; never accept old summary text by updating only its hash.
-- Never rebuild an Episode/Arc/Era across a deleted source-turn gap.
+- Treat whole-turn deletion separately: remove tombstones from the display timeline, compact derived T, project affected Episode/Arc/Era relationships without changing body text, cascade only empty parents, clear an affected HEAD, and reset current-session checkpoints through a crash-safe journal. Never create a Gap, backfill warning, or AI source-repair task for that deleted identity.
 - Reject compression that skips, overlaps, reorders, duplicates, or invents coverage.
 - Before every Arc/Era compression, run one non-JSON selection planner over the same children. Keep its short editorial plan runtime-only, then feed it and the original children to the formal compressor. Never persist the plan or treat it as evidence.
 - Apply the exact stage, retry accounting, truncation-budget, and terminal-error rules in `references/invariants.md` and `references/state-machines.md` to planner, Episode, compressor, and HEAD calls. Do not collapse transport failures and invalid output into one counter.

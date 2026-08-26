@@ -1,13 +1,14 @@
 # 长期记忆 v2 Handoff
 
-Last updated: 2026-08-25
+Last updated: 2026-08-26
 Branch/worktree: `master`
 Baseline before V1: `966cea7c 优化聊天图片生成与再生成`
-Latest stable commit: `532e460 Release 1.3.22`
-Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pending、Archive/HEAD落后与运行中维护不再触发红点、人工补录或聊天阻塞；聊天使用最近一次已提交且来源有效的Archive/HEAD快照。HEAD单步滚动、多步/跨Gap/历史空白/旧HEAD失效均由后台自动计划；真实Gap与历史来源修改仍需用户确认。来源修复及其进度已迁入应用级协调器，每会话版本邮箱消除runner退出瞬间丢触发。保留2026-08-25模型可见语义指纹修复。完整JVM测试与`ci.ps1 -SkipAssemble`已通过，最终release已保数据部署到唯一授权设备`49075ec2`并启动；未调用真实长期记忆模型。
+Latest stable commit: `f8c76b4 Release 1.3.25`
+Status: 长期记忆已重构为最终一致后台追赶。整轮删除会移除显示T并连续重排后续T，以不改正文的不可变节点投影级联整理Episode/Arc/Era；空节点才删除，未受影响子树保留。删除不再生成Gap/补录事项，受影响HEAD立即清空并后台重建，当前会话Checkpoint历史通过可恢复journal重置，SaveSlot保持独立。普通Episode尾部pending、Archive/HEAD落后与运行中维护不触发红点、人工补录或聊天阻塞。测试按项目规则仅新增未执行；release交付状态见Verification Baseline。
 
 ## Completed
 
+- 2026-08-26删除轮级联整理：`sourceTurnId/sourceTurnOrder/tombstone`继续作为内部身份和并发证据，但时间线只含现存非系统消息，删除整轮后显示T立即连续前移。新增`MemoryDeletionProjectionPolicy`递归投影可达Episode/Arc/Era：部分受影响节点保留正文/作者/时间并更换ID、重建关系与证明；全空节点才删除并向上级联，单子节点父层保留，Legacy Reference不自动处理。受影响HEAD清空并由协调器后台重建；旧`DELETED_SOURCE` Gap、pending/backfill残留和警告幂等清除。每次整轮删除建立三层无父隐藏基线，并通过扩展删除列表的`MemoryCommitJournal`原子切换状态后清理旧节点、revision与压缩transaction；持久处理标记覆盖提交前崩溃重试。显式消息删除与空图片消息删除投递`MESSAGE_DELETED`，请求加载也会先整理，因此聊天不等待且不会注入删除前树。SaveSlot不改写。新增纯策略与旧JSON/journal兼容测试，按仓库规则未执行。
 - 2026-08-25长期记忆非阻塞自动维护：`MemoryHeadUpdatePolicy`拆为等待初始化、最新、单步滚动、多步重建和来源不可用；HEAD维护新鲜度与注入有效性分离，非空且来源有效的旧HEAD继续按真实截至T注入。聊天请求删除发送前HEAD `await`和所有backfill/source-repair/loading发送门禁，用户消息落盘即递增后台维护需求；图片、普通发送及回复重新生成在维护期间保持可用。普通HEAD落后不再产生补录警告或维护红点，一键补录只处理真实Gap；运行中维护仅显示中性进度。自动Archive可越过旧Gap/stale根继续生成后续干净Episode，预算与压缩只使用当前安全可注入前沿，stale候选不参与压缩，来源修复重新激活前复核预算。协调器用每会话需求版本邮箱替代`scheduled`集合，运行中及退出边界新增需求必有后续pass；来源修复和进度流迁入应用级协调器并继续使用共享后台保护。新增HEAD状态/注入策略及邮箱竞态测试，但按仓库规则未执行。
 - 2026-08-25 HEAD来源误报修复：旧语义指纹包含消息ID、`sourceTurnOrder`及图片文件路径/数量，均不属于Episode/HEAD实际模型输入；普通待组Episode轮在元数据或文件生命周期变化后会被误判为来源修改，使HEAD停止注入并连带出现补录提示。现指纹与`renderSourceTurns`共享模型可见正文归一化，只绑定source-turn身份、角色、消息顺序、显示正文及空白消息的`[图片]`/`（空）`占位。加载时仅在旧语义指纹或更早legacy哈希仍精确匹配当前来源时迁移为新指纹；无法证明相等的旧stale状态不会被静默认可，真实来源变化仍保持拦截。手工保存HEAD同步刷新`sourceFingerprints`，避免只更新兼容哈希后再次变旧。
 - 2026-08-24聊天AI图片与RAG解耦：空正文AI生成图片消息此前虽不进入向量正文，仍进入完整source turn的`messageIds`并成为末尾assistant anchor；删除历史图片会因此重建整轮向量并等待远程Embedding。现`ChatMemoryIndexPolicy`只把规范化后非空文本消息放入RAG正文、`messageIds`和anchor，纯图片轮不建索引；内容版本升至7使旧错误块安全失效。删除图片或整条图片消息时先持久化并即时刷新UI、文件清理走IO，且纯图片消息不再等待RAG互斥或触发Embedding。长期记忆仍保留图片消息的source-turn身份，并按模型实际可见的图片占位追踪语义变化；RAG所有权保持独立。
@@ -49,13 +50,13 @@ Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pe
 - 自动Archive历史追赶改为每次全局runner lease最多提交一个Episode；后面仍有精确批次时释放锁后再排下一次。失败重试的15/60/300秒退避也在锁外等待，避免一个旧会话长期独占维护runner。
 - 一键补录若撞上正在执行的Archive原子步骤，先显示运行时`WAITING_FOR_ARCHIVE`：“补录已排队，当前步骤完成后开始”；此时不伪造持久`RUNNING`、不显示暂停按钮、不锁聊天。取得runner锁后才进入`PREPARING/RUNNING`。
 - HEAD改为三模式：第三轮开始前以开场白+第一轮初始化；普通更新只读上一HEAD+下一基线组；补录以Archive+倒数第二个稳定组重建。最新完整轮始终留在Prompt底部热区。
-- 发送前HEAD准备与RAG并行等待；发送后仍后台滚动。空HEAD不注入；历史空HEAD、落后HEAD或跨Gap更新会提示一键补录。
-- 补录状态在进入聊天时即从持久层加载；补录与HEAD重建完成前输入框、全屏编辑和发送均锁定。
+- 聊天发送读取最近一次已提交且来源有效的HEAD，不等待HEAD模型调用；用户/助手消息落盘后由应用协调器后台滚动。空HEAD不注入；历史空HEAD、落后HEAD或跨Gap更新自动BACKFILL，不提示人工补录。
+- 补录状态在进入聊天时即从持久层加载；补录、完整重建、来源修复及HEAD重建期间输入框、图片、全屏编辑和发送保持可用。
 - V1已移除“重新补录长期记忆（Debug）”按钮、ViewModel入口和重建服务；旧数据中的Debug枚举值继续保留反序列化兼容。
 - 已新增项目Skill：`.agents/skills/chatbar-long-term-memory/`，长期架构约束和状态机不再堆入handoff。
 - 历史消息修改/删除通过现有`sourceTurnId`与来源哈希自动检测；检测本身不调用AI。受影响Archive根节点和过期HEAD立即停止注入，未变后代仅在完整安全前沿不超预算时继续注入，避免旧摘要污染后续聊天。
-- 长期记忆页新增“修复变更后的长期记忆”流程：警告、确认、阶段/根节点进度、流式摘要、暂停、继续和错误重试。修复与补录互斥；修复运行时锁定聊天发送。
-- 修复按受影响活跃根节点分批提交。Episode从当前原始来源重生成；整轮删除会切开连续区间，不生成跨缺口节点。Arc/Era仅在原子节点一一对应且连续时重建，否则提升安全子节点前沿。全部Archive根修复后才重建或清空HEAD。
+- 长期记忆页提供“修复变更后的长期记忆”流程：警告、确认、阶段/根节点进度、流式摘要、暂停、继续和错误重试。修复与补录互斥，但不锁定聊天发送。
+- 修复按受影响活跃根节点分批提交，只处理历史编辑和仍保留该轮的部分消息删除。整轮删除改由无模型投影直接整理树，不进入来源修复；编辑修复仍要求Episode从当前原始来源重生成，Arc/Era按原子节点一一对应重建。全部Archive根修复后才重建或清空HEAD。
 - 修复状态写入会话和SaveSlot：固定待修复根、已完成数、HEAD标记、暂停/错误均可恢复；流式文本只存运行时。进程重启后的孤儿`RUNNING`转`PAUSED`，已提交根不回滚。
 - 仅AI生成节点参与自动修复。来源过期的用户手工节点要求用户在编辑器显式复核并保存，避免覆盖人工语义。
 - 长期记忆固定区现只保留单行容量/Archive/HEAD状态、维护/完整重建/HEAD重建/刷新四个可访问图标和层级Tab。错误、警告、扩容、来源修复、一键补录、压缩选择及全部运行进度移入可滚动“长期记忆维护”弹窗；任一详情或编辑页不再被维护卡片挤掉高度，维护图标用状态点提示待处理事项。
@@ -111,7 +112,7 @@ Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pe
 - 旧SaveSlot、补录暂停后继续仍需真实数据手动回归。
 - 自动Episode/HEAD与用户继续聊天并发、手动多批补录期间继续聊天、压缩期间编辑无关节点，纯策略测试已通过；真实服务instrumented测试已编译但因当前无设备且SDK缺`emulator.exe`未执行，仍待真实长聊和真实模型手动回归。
 - Archive失败重试的用途说明、即时运行态和重复点击隐藏已由Compose测试覆盖并完成Android测试源码编译；尚未在连接设备上用真实慢模型手测等待过程。
-- 来源修改/整轮删除后的警告、安全注入、分批暂停/继续、Arc/Era结构降级和HEAD重建已有纯策略、序列化与UI测试；真实长会话和真实模型输出尚未手动回归。
+- 来源修改的警告、安全注入、分批暂停/继续、Arc/Era结构修复和HEAD重建已有既有测试；整轮删除的连续T投影、级联清空、HEAD清理及journal兼容仅新增测试而未执行。真实长会话与真实模型输出尚未手动回归。
 
 ## Unconfirmed
 
@@ -129,7 +130,7 @@ Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pe
 4. 在存在旧Episode/Arc/Era的真实会话打开完整预览并抓取一次API请求，确认Archive含全部非空正文，所有user/assistant聊天消息都没有程序追加的`[T数字]`前缀。
 5. 选中一条明显错误的Episode/Arc/Era，点击“AI重新生成此节点”；先核对候选，确认错误正文没有影响结果，再决定是否保存Checkpoint。
 6. 在有Episode/Arc/Era的测试会话修改一条历史消息；打开长期记忆页，确认出现修复警告，旧受影响根/HEAD不再进入完整预览。点击修复，观察阶段、流式摘要和逐根完成数。
-7. 删除一个位于压缩节点中间的完整source turn；确认修复不会生成跨删除缺口的Episode/Arc/Era，且暂停/继续或失败重试不会丢失已完成根。
+7. 删除一个位于压缩节点中间的完整source turn；确认该T消失、后续T连续前移，Episode/Arc/Era正文不变且包含范围同步，空子树才级联消失，不出现补录/来源修复红点；受影响HEAD后台重建时聊天仍可发送。
 8. 把全局上下文保留组数从较大值降到最低，再打开长期记忆页或点击刷新；确认新滑出窗口的T范围立即显示“一键补录长期记忆”。
 9. 再把上下文扩大并刷新，确认相应范围只暂时隐藏；缩小后刷新应重新出现，且不产生重复Gap。
 10. 若失败，记录页面展示的完整失败原因；不要重建RAG或清数据。
@@ -150,6 +151,7 @@ Status: 长期记忆已重构为最终一致后台追赶：普通Episode尾部pe
 
 ## Verification Baseline
 
+- 2026-08-26删除轮连续T与记忆树级联整理：`:app:compileReleaseKotlin`及`:app:compileDebugUnitTestKotlin`通过，后者只编译测试源码；按项目规则未执行自动测试。`redeploy.bat --no-pause`通过release Kotlin、Lint Vital、打包与签名检查，APK位于`app/app/build/outputs/apk/release/app-release.apk`，并在唯一授权设备`49075ec2`完成保数据覆盖安装及`MainActivity`启动。纯策略源码覆盖首尾/中间/连续删除的T重排、Episode/Arc/Era/Era→Era部分保留与全空级联、单子父层、未受影响身份、HEAD清空/重排，以及删除与其他历史编辑交叉时不认可旧摘要；repository源码覆盖journal在状态指针前后中断的幂等恢复，序列化源码覆盖旧JSON默认值。未调用长期记忆模型、未读取设备日志。
 - 2026-08-25长期记忆最终一致后台维护：`gradlew test`通过全部902项JVM测试；首次执行准确发现空HEAD仅有两个稳定组时误进重建，修正为静默等待后全量复跑通过。`ci.ps1 -SkipAssemble`通过并编译AndroidTest。两次`redeploy.bat --no-pause`均通过release Kotlin编译、Lint Vital、打包与签名检查；最终APK在唯一授权设备`49075ec2`完成保数据覆盖安装并启动。新增`MemoryHeadUpdatePolicyTest`覆盖等待/最新/单步/多步/跨Gap/来源不可用及落后HEAD注入分离，`MemoryMaintenanceMailboxTest`覆盖运行中新增需求与runner停止边界，Compose测试覆盖来源修复排队和落后有效HEAD状态；未调用真实长期记忆模型。
 - 2026-08-25 HEAD来源误报修复：`redeploy.bat --no-pause`通过release Kotlin编译、Lint Vital、打包与签名检查，在唯一授权设备`49075ec2`完成保数据覆盖安装并启动。新增`MemorySourceFingerprintTest`覆盖消息ID/sourceTurnOrder/时间/等序orderKey/图片路径等未发送元数据不改变新指纹，正文/替代版本/消息顺序/删除/空白与图片占位变化仍改变指纹，以及旧语义指纹保留安全迁移入口；按项目规则未运行自动测试，未调用真实长期记忆模型。
 - 2026-08-24聊天AI图片与RAG解耦：`redeploy.bat --no-pause`通过release Kotlin编译、Lint Vital、打包和签名检查，并在唯一授权设备`49075ec2`完成保数据安装与启动。新增`ChatMemoryIndexPolicyTest`覆盖同轮纯图片消息不进入RAG正文/`messageIds`/anchor、纯图片轮不建索引及v6块失效；按项目规则未运行自动测试。未触发真实Embedding或长期记忆模型调用。

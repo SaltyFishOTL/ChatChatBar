@@ -126,11 +126,15 @@ object MemoryBackfillPolicy {
             emptySet()
         } else {
             timeline.asSequence()
+                .filterNot { it.tombstone }
                 .filter { it.displayT <= maxCoveredT && it.sourceTurnId !in covered }
                 .mapTo(mutableSetOf()) { it.sourceTurnId }
         }
-        val candidates = gaps.flatMapTo(implicitMissing.toMutableSet()) { it.sourceTurnIds }
+        val candidates = gaps.asSequence()
+            .filterNot { it.reason.isPermanentlyUnavailable() }
+            .flatMapTo(implicitMissing.toMutableSet()) { it.sourceTurnIds.asSequence() }
         return timeline.asSequence()
+            .filterNot { it.tombstone }
             .sortedBy { it.sourceOrder }
             .map { it.sourceTurnId }
             .distinct()
@@ -153,6 +157,12 @@ object MemoryBackfillPolicy {
         .distinct()
         .filter { it in availableSourceTurnIds && it in stableSourceTurnIds }
         .toList()
+
+    private fun MemoryGapReason.isPermanentlyUnavailable(): Boolean = when (this) {
+        MemoryGapReason.DELETED_SOURCE,
+        MemoryGapReason.DECLINED_BACKFILL -> true
+        else -> false
+    }
 
     private fun List<MemoryTimelineEntry>.toContiguousGaps(): List<MemoryGap> {
         if (isEmpty()) return emptyList()

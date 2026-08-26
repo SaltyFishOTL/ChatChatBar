@@ -3166,6 +3166,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _messages.value = _messages.value.filter { it.id != messageId }
             chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
+            enqueueLongTermMemoryAfterMessageDeletion()
 
             if (deletedMessage == null || ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
                 _isDeletingMemory.value = true
@@ -3222,6 +3223,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 chatRepository.deleteMessage(messageId, sessionId)
                 _messages.value = _messages.value.filterNot { it.id == messageId }
                 refreshMessages()
+                enqueueLongTermMemoryAfterMessageDeletion()
 
                 val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
                 if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
@@ -3406,6 +3408,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 keepChunkIds = emptySet()
             )
         }
+    }
+
+    private suspend fun enqueueLongTermMemoryAfterMessageDeletion() {
+        if (chatRepository.getSession(sessionId)?.longTermMemoryEnabled != true) return
+        longTermMemoryAutoMaintenanceCoordinator.enqueue(
+            sessionId,
+            MemoryMaintenanceTrigger.MESSAGE_DELETED
+        )
     }
 
     fun switchAssistantAlternative(messageId: String, direction: Int) {

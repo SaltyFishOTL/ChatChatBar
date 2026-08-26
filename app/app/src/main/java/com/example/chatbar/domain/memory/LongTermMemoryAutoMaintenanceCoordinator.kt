@@ -32,6 +32,7 @@ enum class MemoryMaintenanceTrigger {
     SESSION_LOADED,
     USER_MESSAGE_PERSISTED,
     REPLY_PERSISTED,
+    MESSAGE_DELETED,
     NETWORK_RESTORED,
     RETRY,
     MANUAL

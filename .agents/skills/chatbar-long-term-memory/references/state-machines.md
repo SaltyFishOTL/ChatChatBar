@@ -92,6 +92,7 @@ IDLE / PAUSED / ERROR
 - Before selecting a backfill batch, promote any uncovered turn bounded by later active memory from ordinary pending to a durable Gap. Internal reload after the model call must retain that source in backfill pending until Episode commit; otherwise `canContinue` would silently abort a valid result. If any undersized old segment still remains, keep it pending but scan later continuous segments for the next exact-size batch; one incomplete segment never blocks unrelated later work.
 - Allow up to five total AI output-validation attempts for every backfill stage, including Episode generation, Archive compression, and final HEAD rebuild.
 - A disabled-period Gap is explicitly backfillable even while still inside direct context, but a user-only open source turn waits for its assistant reply; normal HEAD UPDATE never crosses it.
+- `DELETED_SOURCE` residue is removed by deletion projection and never enters this machine. `DECLINED_BACKFILL` remains persisted but is not an automatic candidate or missing-memory warning.
 - User pause takes effect after current atomic model call.
 - Process restart loses runner registration; convert orphaned persisted `RUNNING` to `PAUSED`.
 - Internal service reads during live run must retain `RUNNING`.
@@ -100,6 +101,30 @@ IDLE / PAUSED / ERROR
 - A remaining count from 2 through N-1 waits without crossing a Gap or overlapping existing nodes. Never reread N between batches.
 - During a live batch, expose source progress, phase, T range, committed Episode count, and streamed aggregate summary. Never persist partial streamed output.
 - Only lock acquisition changes runtime phase from `WAITING_FOR_ARCHIVE` to `PREPARING`; queued and persisted backfill work never blocks chat.
+
+## Whole-Turn Deletion Projection
+
+Deleting the last non-system message in a source turn records an internal tombstone, then application maintenance performs this deterministic, model-free transaction before ordinary maintenance or injection:
+
+```text
+MESSAGE_DELETED / load
+  -> build timeline only from live non-system messages and compact display T
+  -> remove deleted-source Gap, pending, backfill completion, and warning residue
+  -> recursively project reachable Episode -> Arc -> Era
+     -> unchanged subtree keeps ID and body
+     -> partially affected node gets replacement ID, same body, rebuilt evidence
+     -> empty node disappears; parent disappears only when every child disappears
+  -> clear affected HEAD or rederive unaffected HEAD through-T
+  -> create parentless hidden tier baselines
+  -> journal new nodes + new state pointer + old node/revision/transaction cleanup
+  -> mark deleted source projected and enqueue ordinary background HEAD/Archive catch-up
+```
+
+- Source identity, absolute source order, and tombstone are never reused; only display T compacts.
+- Any crash before cleanup completion replays the journal. Any crash before projection commit retries from the persisted unprocessed tombstone.
+- AI tasks whose exact sources or replaced nodes changed discard their result without a user-facing failure and enqueue another pass. Unrelated work may rebase.
+- Chat and image sending never wait for projection follow-up or HEAD rebuild; request reads force idempotent projection before compiling memory.
+- SaveSlot content is not rewritten. Loading a SaveSlot restores its captured messages and memory snapshot.
 
 ## Historical Source Mutation Repair
 

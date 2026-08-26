@@ -89,6 +89,7 @@ object MemoryRegenerationPolicy {
             memoryWasEnabled = memoryEnabled,
             recordingStartsAfterSourceOrder = null,
             gapRetentionVersion = CURRENT_MEMORY_GAP_RETENTION_VERSION,
+            projectedDeletedSourceTurnIds = current.projectedDeletedSourceTurnIds,
             revision = current.revision + 1,
             createdAt = current.createdAt,
             updatedAt = now

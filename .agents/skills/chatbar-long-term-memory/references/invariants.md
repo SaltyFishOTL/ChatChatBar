@@ -8,8 +8,8 @@
 ## Identity and Timeline
 
 - Use immutable `sourceTurnId` as persisted identity. User turn, matching AI reply, appended reply, and derived image stay in the same source turn.
-- Keep source order stable and never reuse tombstoned identities.
-- Derive display `T` from the current memory timeline. AI never owns T numbering.
+- Keep source order stable and never reuse tombstoned identities. Tombstones remain internal concurrency evidence only.
+- Derive display `T` continuously from still-existing non-system source turns. A whole-turn deletion removes that T and shifts every later display T forward without changing source identity or absolute source order. AI never owns T numbering.
 - Exclude the newest unstable source turn from long-term-memory generation.
 - Treat source-turn grouping as shared boundary logic. Direct context, Episode pending, and RAG may store different data but must agree on turn identity.
 - RAG chunk content, `messageIds`, and anchor include only messages with normalized nonblank text. Generated assistant image-only messages keep their source-turn identity for chat/long-term memory, but never enter RAG or trigger embedding work when deleted.
@@ -36,6 +36,7 @@
 
 - Treat `MemoryGap` as durable evidence that source turns lack long-term memory.
 - Compute ordinary backfill eligibility as missing and uncovered turns that are outside direct context and still have raw source text. A disabled-period Gap may be backfilled inside direct context, but only after that source turn contains an assistant reply and is stable.
+- Whole-turn deletion is not a Gap or backfill candidate. Remove its legacy `DELETED_SOURCE` Gap, normal/backfill pending state, completion residue, and warning; resent content owns a new source identity while the old tombstone stays internal and consumes no display T. `DECLINED_BACKFILL` remains a durable user decision.
 - Make explicit memory-page refresh re-read persisted settings/chat and discover stable archived turns that are uncovered. Route latest continuous uncovered suffix to normal pending; create durable Gap only for a true historical internal hole.
 - When context expands, hide newly direct turns from eligibility without deleting them from durable gaps. When context shrinks, expose them again.
 - Remove a gap source only after successful Episode commit, explicit supported product action, or permanent clear boundary.
@@ -45,11 +46,13 @@
 
 ## Source Mutation Repair
 
-- Detect historical message edit/delete by comparing persisted node/HEAD semantic fingerprints with current source turns. Partial edit keeps `sourceTurnId`; whole-turn deletion remains a tombstoned timeline gap. Migrate legacy hashes only when they still match and the record was not already stale.
+- Detect historical message edits and partial-turn deletions by comparing persisted node/HEAD semantic fingerprints with current source turns. They keep `sourceTurnId` and use explicit source repair. Migrate legacy hashes only when they still match and the record was not already stale.
+- When every non-system message in a source turn is deleted, synchronously project the reachable Archive before injection: affected Episode/Arc/Era receive immutable replacement IDs with unchanged body/author/time and rebuilt relationships/evidence; empty nodes disappear recursively, singleton parents remain, and unaffected subtrees keep identity. Legacy Reference is never auto-projected.
+- Whole-turn deletion clears HEAD only when its evidence or through-source contains the deleted identity. Otherwise preserve HEAD and derive its new through-T. Clear current-session tier checkpoints, revisions, compression transactions, and unreachable old nodes through the deletion journal; SaveSlot snapshots remain independent.
 - Exclude stale active roots and stale HEAD from injection immediately. A stale root may expose only unchanged descendants when their fingerprints still match and the whole safe frontier fits the Archive budget; otherwise omit that root and warn.
 - Repair only after explicit user action on the memory page. Persist ordered root work, completed count, HEAD work, pause/error state, and per-root commits; keep phase and streamed summaries runtime-only.
-- Regenerate stale Episode leaves from current raw source runs. Never let one regenerated node cross a deleted-turn gap.
-- Rebuild Arc/Era only from an exact, continuous one-to-one repaired child set. When deletion breaks that structure, promote the safe repaired child frontier instead of inventing a parent across the gap.
+- Regenerate stale Episode leaves from current raw source runs for edits and partial-turn deletions.
+- Rebuild Arc/Era only from an exact, continuous one-to-one repaired child set. Whole-turn deletion never enters this AI repair machine; deterministic deletion projection owns it.
 - Automatically regenerate only AI-authored stale nodes. A stale user-authored node requires explicit editor review/save.
 - Rebuild or clear stale HEAD only after all queued Archive roots commit. Reject a final commit when source evidence or active root identity changed during AI work.
 

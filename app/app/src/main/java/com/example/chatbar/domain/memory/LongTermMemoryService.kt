@@ -98,6 +98,11 @@ private data class MemorySourceRepairNodeResult(
     val createdNodes: List<MemoryNode>
 )
 
+private data class MemoryDeletionProjectionCommit(
+    val state: MemorySessionState,
+    val nodes: Map<String, MemoryNode>
+)
+
 private sealed interface MaintenanceResult {
     data class Ready(
         val state: MemorySessionState,
@@ -531,6 +536,20 @@ class LongTermMemoryService internal constructor(
                 committedEpisodes = committedEpisodes,
                 hasMoreReadyBatches = hasMoreReadyBatches
             )
+        } catch (_: MemoryEvidenceChangedException) {
+            stateLock(sessionId) {
+                val loaded = loadLocked(sessionId)
+                val next = if (loaded.state.archiveFailure == null) loaded.state else {
+                    loaded.state.copy(
+                        archiveFailure = null,
+                        revision = loaded.state.revision + 1,
+                        updatedAt = System.currentTimeMillis()
+                    ).also { memoryRepository.saveState(it) }
+                }
+                setArchiveStatusLocked(loaded.session, MemoryUpdateStatus.IDLE, null)
+                compileAndCacheLocked(loaded.copy(state = next))
+            }
+            MemoryArchiveUpdateResult()
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             stateLock(sessionId) {
@@ -663,6 +682,10 @@ class LongTermMemoryService internal constructor(
                     setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
                     return@stateLock
                 }
+                if (!sourceTurnsAvailable(newIds, current.messages)) {
+                    setHeadStatusLocked(current.session, MemoryUpdateStatus.IDLE, null)
+                    return@stateLock
+                }
                 val currentHash = MemoryHashes.sourceRefs(
                     sourceRefs(newIds, current.messages, current.session)
                 )
@@ -743,6 +766,13 @@ class LongTermMemoryService internal constructor(
             stateLock(sessionId) {
                 val loaded = loadLocked(sessionId)
                 val session = chatRepository.getSession(sessionId) ?: return@stateLock
+                if (loaded.state.projectedDeletedSourceTurnIds !=
+                    base.state.projectedDeletedSourceTurnIds
+                ) {
+                    setHeadStatusLocked(session, MemoryUpdateStatus.IDLE, null)
+                    compileAndCacheLocked(loaded)
+                    return@stateLock
+                }
                 val failure = failureInfo(MemoryFailureArea.HEAD, error)
                 val next = loaded.state.copy(
                     headFailure = failure,
@@ -823,7 +853,15 @@ class LongTermMemoryService internal constructor(
         } catch (error: Throwable) {
             if (error is CancellationException) throw error
             stateLock(sessionId) {
+                val loaded = loadLocked(sessionId)
                 val session = chatRepository.getSession(sessionId) ?: return@stateLock
+                if (loaded.state.projectedDeletedSourceTurnIds !=
+                    base.state.projectedDeletedSourceTurnIds
+                ) {
+                    setHeadStatusLocked(session, MemoryUpdateStatus.IDLE, null)
+                    compileAndCacheLocked(loaded)
+                    return@stateLock
+                }
                 setHeadStatusLocked(
                     session,
                     MemoryUpdateStatus.ERROR,
@@ -1284,7 +1322,7 @@ class LongTermMemoryService internal constructor(
             if (error is CancellationException) throw error
             stateLock(sessionId) {
                 val current = loadLocked(sessionId)
-                if (current.state.sourceRepair.status == MemorySourceRepairStatus.PAUSED) {
+                if (current.state.sourceRepair.status != MemorySourceRepairStatus.RUNNING) {
                     return@stateLock
                 }
                 memoryRepository.saveState(
@@ -1340,7 +1378,7 @@ class LongTermMemoryService internal constructor(
             val stableIds = stableSourceTurnIds(loaded.messages)
             if (missing.isEmpty() && !loaded.state.fullRegenerationPending) return@stateLock null
             val n = appSettings.episodeMaxSourceTurns.coerceIn(1, 6)
-            val finalTimeline = sourceTimeline(loaded.messages, loaded.session)
+            val finalTimeline = sourceTimeline(loaded.messages)
             val next = loaded.state.copy(
                 timeline = finalTimeline,
                 backfill = MemoryBackfillState(
@@ -1456,7 +1494,18 @@ class LongTermMemoryService internal constructor(
                     }
                 )
                 when (commit) {
-                    EpisodeCommitResult.Aborted -> break
+                    EpisodeCommitResult.Aborted -> {
+                        loaded = stateLock(sessionId) { loadLocked(sessionId) }
+                        val targetChanged = !sourceTurnsAvailable(batch, loaded.messages) ||
+                            batch.any { it !in loaded.state.backfill.pendingSourceTurnIds }
+                        if (loaded.session.longTermMemoryEnabled &&
+                            loaded.state.backfill.status == MemoryBackfillStatus.RUNNING &&
+                            targetChanged
+                        ) {
+                            continue
+                        }
+                        break
+                    }
                     is EpisodeCommitResult.DecisionRequired -> {
                         stateLock(sessionId) {
                             val waiting = loadLocked(sessionId)
@@ -1686,7 +1735,10 @@ class LongTermMemoryService internal constructor(
         rebuildHeadFromAnchor(sessionId, latest, modelConfig)
     }
 
-    suspend fun snapshot(sessionId: String): MemorySnapshot? = memoryRepository.snapshot(sessionId)
+    suspend fun snapshot(sessionId: String): MemorySnapshot? = stateLock(sessionId) {
+        loadLocked(sessionId)
+        memoryRepository.snapshot(sessionId)
+    }
 
     suspend fun loadSnapshot(sessionId: String, snapshot: MemorySnapshot?) = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
@@ -1738,6 +1790,7 @@ class LongTermMemoryService internal constructor(
             disabledAfterSourceOrder = importedState.disabledAfterSourceOrder,
             recordingStartsAfterSourceOrder = importedState.recordingStartsAfterSourceOrder,
             gapRetentionVersion = importedState.gapRetentionVersion,
+            projectedDeletedSourceTurnIds = importedState.projectedDeletedSourceTurnIds,
             backfill = importedState.backfill.copy(
                 status = if (importedState.backfill.status == MemoryBackfillStatus.RUNNING) {
                     MemoryBackfillStatus.PAUSED
@@ -1804,7 +1857,7 @@ class LongTermMemoryService internal constructor(
         return MemorySnapshot(
             state = MemorySessionSnapshot(
                 legacyReferenceNodeIds = legacyNode?.let { listOf(it.id) }.orEmpty(),
-                timeline = sourceTimeline(loaded.messages, loaded.session),
+                timeline = sourceTimeline(loaded.messages),
                 gaps = archived.takeIf { it.isNotEmpty() }?.let { sourceIds ->
                     listOf(
                         MemoryGap(
@@ -1831,7 +1884,7 @@ class LongTermMemoryService internal constructor(
     suspend fun clear(sessionId: String) = stateLock(sessionId) {
         val session = chatRepository.getSession(sessionId) ?: return@stateLock
         val messages = chatRepository.ensureSourceTurns(sessionId)
-        val timeline = sourceTimeline(messages, session)
+        val timeline = sourceTimeline(messages)
         val clearedThroughOrder = timeline.maxOfOrNull { it.sourceOrder }
         memoryRepository.deleteForSession(sessionId)
         val emptyState = MemorySessionState(
@@ -1865,7 +1918,7 @@ class LongTermMemoryService internal constructor(
         stateLock(sessionId) {
             val loaded = loadLocked(sessionId)
             check(loaded.session.longTermMemoryEnabled) { "长期记忆未启用" }
-            val timeline = sourceTimeline(loaded.messages, loaded.session)
+            val timeline = sourceTimeline(loaded.messages)
             val backfillSourceTurnIds = completeArchivedSourceTurnIds(
                 loaded.messages,
                 currentContextWindowSize()
@@ -1932,6 +1985,9 @@ class LongTermMemoryService internal constructor(
             if (!beforeMaintenance.session.longTermMemoryEnabled || !canContinue(beforeMaintenance)) {
                 return EpisodeCommitResult.Aborted
             }
+            if (!sourceTurnsAvailable(episode.sourceTurnIds, beforeMaintenance.messages)) {
+                return EpisodeCommitResult.Aborted
+            }
             validateScope(beforeMaintenance)
             MemoryTaskCommitPolicy.requireEpisodeTargetCurrent(
                 sourceTurnIds = episode.sourceTurnIds,
@@ -1943,13 +1999,17 @@ class LongTermMemoryService internal constructor(
                 activeNodes = beforeMaintenance.state.activeNodeIds.mapNotNull(beforeMaintenance.nodes::get),
                 label = label
             )
-            val maintenance = maintainUntilFits(
-                sessionId = sessionId,
-                initial = beforeMaintenance,
-                stagedEpisode = episode,
-                model = model,
-                limitChars = beforeMaintenance.session.memoryLimitChars
-            )
+            val maintenance = try {
+                maintainUntilFits(
+                    sessionId = sessionId,
+                    initial = beforeMaintenance,
+                    stagedEpisode = episode,
+                    model = model,
+                    limitChars = beforeMaintenance.session.memoryLimitChars
+                )
+            } catch (_: MemoryEvidenceChangedException) {
+                continue
+            }
             if (maintenance is MaintenanceResult.DecisionRequired) {
                 return EpisodeCommitResult.DecisionRequired(maintenance.state)
             }
@@ -1957,6 +2017,9 @@ class LongTermMemoryService internal constructor(
             val committed = stateLock(sessionId) {
                 val current = loadLocked(sessionId)
                 if (!current.session.longTermMemoryEnabled || !canContinue(current)) {
+                    return@stateLock EpisodeCommitResult.Aborted
+                }
+                if (!sourceTurnsAvailable(episode.sourceTurnIds, current.messages)) {
                     return@stateLock EpisodeCommitResult.Aborted
                 }
                 validateScope(current)
@@ -2391,10 +2454,26 @@ class LongTermMemoryService internal constructor(
                 state = reconciled
             }
         }
-        val stateBeforeOrderRepair = checkNotNull(state)
+        val stateBeforeProjection = checkNotNull(state)
         val nodes = memoryRepository.getReachableNodes(
-            stateBeforeOrderRepair.activeNodeIds + stateBeforeOrderRepair.legacyReferenceNodeIds
+            stateBeforeProjection.activeNodeIds + stateBeforeProjection.legacyReferenceNodeIds
         ).associateBy { it.id }.toMutableMap()
+        val deletedSourceIdsToProject = session.sourceTurnTombstones
+            .mapTo(mutableSetOf()) { it.sourceTurnId }
+            .minus(stateBeforeProjection.projectedDeletedSourceTurnIds)
+        if (deletedSourceIdsToProject.isNotEmpty()) {
+            val projected = projectDeletedSourcesLocked(
+                state = stateBeforeProjection,
+                nodes = nodes,
+                messages = messages,
+                session = session,
+                deletedSourceTurnIds = deletedSourceIdsToProject
+            )
+            state = projected.state
+            nodes.clear()
+            nodes.putAll(projected.nodes)
+        }
+        val stateBeforeOrderRepair = checkNotNull(state)
         val orderReconciled = MemoryPageOrderPolicy.normalize(stateBeforeOrderRepair, nodes)
         if (orderReconciled != stateBeforeOrderRepair) {
             var repaired = stateBeforeOrderRepair
@@ -2455,7 +2534,7 @@ class LongTermMemoryService internal constructor(
         messages: List<ChatMessage>,
         contextWindowSize: Int
     ): MemorySessionState {
-        val timeline = sourceTimeline(messages, session)
+        val timeline = sourceTimeline(messages)
         val legacyCommits = memoryRepository.legacyHistory(session.id)
         val oldNodes = memoryRepository.getNodesForSession(session.id).associateBy { it.id }
         val converted = mutableMapOf<String, MemoryNode>()
@@ -2769,19 +2848,115 @@ class LongTermMemoryService internal constructor(
         return state
     }
 
+    private suspend fun projectDeletedSourcesLocked(
+        state: MemorySessionState,
+        nodes: Map<String, MemoryNode>,
+        messages: List<ChatMessage>,
+        session: ChatSession,
+        deletedSourceTurnIds: Set<String>
+    ): MemoryDeletionProjectionCommit {
+        val sourceRefsById = state.timeline.associate { entry ->
+            entry.sourceTurnId to sourceRefs(
+                listOf(entry.sourceTurnId),
+                messages,
+                session
+            ).single()
+        }
+        val tiers = listOf(MemoryTier.EPISODE, MemoryTier.ARC, MemoryTier.ERA)
+        val projection = MemoryDeletionProjectionPolicy.project(
+            activeNodeIdsByTier = tiers.associateWith { state.page(it).activeNodeIds },
+            nodesById = nodes,
+            deletedSourceTurnIds = deletedSourceTurnIds,
+            sourceRefsById = sourceRefsById,
+            timeline = state.timeline
+        )
+        val activeIds = projection.activeNodeIdsByTier.values.flatten().toSet()
+        val head = MemoryDeletionProjectionPolicy.projectHead(
+            head = state.head,
+            deletedSourceTurnIds = deletedSourceTurnIds,
+            timeline = state.timeline
+        )
+        val clearHead = head.render().isBlank() && head.version > state.head.version
+
+        var nextState = state.copy(
+            head = head,
+            headFailure = if (clearHead) null else state.headFailure,
+            staleSourcesByNodeId = state.staleSourcesByNodeId
+                .filterKeys(activeIds::contains)
+                .mapValues { (_, sourceIds) ->
+                    sourceIds.filterNot(deletedSourceTurnIds::contains)
+                }
+                .filterValues { it.isNotEmpty() },
+            sourceRepair = MemorySourceRepairState(),
+            pendingDecision = null,
+            pendingCompressionEvents = emptyList(),
+            projectedDeletedSourceTurnIds = state.projectedDeletedSourceTurnIds +
+                deletedSourceTurnIds
+        )
+        val baselines = tiers.map { tier ->
+            val activeNodeIds = projection.activeNodeIdsByTier.getValue(tier)
+            val revision = MemoryTierRevision(
+                id = MemoryTierRevision.newId(),
+                sessionId = state.sessionId,
+                tier = tier,
+                operation = MemoryRevisionOperation.SOURCE_TURN_DELETE,
+                author = MemoryAuthor.MIGRATION,
+                snapshotNodeIds = activeNodeIds,
+                affectedSourceTurnIds = deletedSourceTurnIds.sorted(),
+                visible = false
+            )
+            val oldPage = nextState.page(tier)
+            nextState = nextState.replacePage(
+                MemoryPageState(
+                    tier = tier,
+                    activeNodeIds = activeNodeIds,
+                    currentRevisionId = revision.id,
+                    uncheckpointedAddedNodeIds = emptyList(),
+                    revisionSequence = oldPage.revisionSequence + 1
+                )
+            )
+            revision
+        }
+        nextState = nextState.copy(
+            revision = state.revision + 1,
+            updatedAt = System.currentTimeMillis()
+        )
+
+        val reachableNodeIds = linkedSetOf<String>()
+        fun visit(nodeId: String) {
+            if (!reachableNodeIds.add(nodeId)) return
+            projection.nodesById[nodeId]?.childIds.orEmpty().forEach(::visit)
+        }
+        (nextState.activeNodeIds + nextState.legacyReferenceNodeIds).forEach(::visit)
+        val reachableNodes = reachableNodeIds.mapNotNull { id ->
+            projection.nodesById[id]?.let { id to it }
+        }.toMap()
+        projection.createdNodes.filter { it.id in reachableNodeIds }.forEach { node ->
+            requireValidNode(node, reachableNodes, nextState)
+        }
+
+        val storedNodes = memoryRepository.getNodesForSession(state.sessionId)
+        val storedRevisions = memoryRepository.allRevisions(state.sessionId)
+        val storedTransactions = memoryRepository.allTransactions(state.sessionId)
+        memoryRepository.commitStateLast(
+            expectedStateRevision = state.revision,
+            nextState = nextState,
+            nodes = projection.createdNodes.filter { it.id in reachableNodeIds },
+            revisions = baselines,
+            deleteNodeIds = storedNodes.map { it.id }.filterNot(reachableNodeIds::contains),
+            deleteRevisionIds = storedRevisions.map { it.id },
+            deleteTransactionIds = storedTransactions.map { it.id }
+        )
+        return MemoryDeletionProjectionCommit(nextState, reachableNodes)
+    }
+
     private fun reconcileState(
         state: MemorySessionState,
         messages: List<ChatMessage>,
         session: ChatSession
     ): MemorySessionState {
-        val known = state.timeline.mapTo(mutableSetOf()) { it.sourceTurnId }
-        val watermark = state.recordingStartsAfterSourceOrder
-        val newEntries = sourceTimeline(messages, session)
-            .filter { watermark == null || it.sourceOrder > watermark }
-            .filterNot { it.sourceTurnId in known }
-        val appendable = newEntries.sortedBy { it.sourceOrder }.mapIndexed { index, entry ->
-            entry.copy(displayT = (state.timeline.maxOfOrNull { it.displayT } ?: -1) + index + 1)
-        }
+        val timeline = sourceTimeline(messages)
+        val liveSourceIds = timeline.mapTo(mutableSetOf()) { it.sourceTurnId }
         val pausedBackfill = MemoryBackfillPolicy.pauseOrphanedRun(
             backfill = state.backfill,
             hasActiveRunner = session.id in activeBackfillSessionIds
@@ -2790,52 +2965,56 @@ class LongTermMemoryService internal constructor(
             repair = state.sourceRepair,
             hasActiveRunner = session.id in activeSourceRepairSessionIds
         )
-        val existingGapSourceIds = state.gaps.flatMapTo(mutableSetOf()) { it.sourceTurnIds }
-        val deletedSourceIds = session.sourceTurnTombstones
-            .filter { watermark == null || it.sourceOrder > watermark }
-            .map { it.sourceTurnId }
-            .filterNot(existingGapSourceIds::contains)
-        val deletionGaps = deletedSourceIds.map { sourceId ->
-            val order = session.sourceTurnTombstones.first { it.sourceTurnId == sourceId }.sourceOrder
-            MemoryGap(
-                id = MemoryGap.newId(),
-                sourceTurnIds = listOf(sourceId),
-                startSourceOrder = order,
-                endSourceOrder = order,
-                reason = MemoryGapReason.DELETED_SOURCE
+        val gaps = state.gaps.mapNotNull { gap ->
+            if (gap.reason == MemoryGapReason.DELETED_SOURCE) return@mapNotNull null
+            val sourceIds = gap.sourceTurnIds.filter(liveSourceIds::contains)
+            if (sourceIds.isEmpty()) return@mapNotNull null
+            val entries = sourceIds.mapNotNull { sourceId ->
+                timeline.firstOrNull { it.sourceTurnId == sourceId }
+            }
+            gap.copy(
+                sourceTurnIds = sourceIds,
+                startSourceOrder = entries.firstOrNull()?.sourceOrder ?: gap.startSourceOrder,
+                endSourceOrder = entries.lastOrNull()?.sourceOrder ?: gap.endSourceOrder
             )
         }
-        val unavailable = session.sourceTurnTombstones.mapTo(mutableSetOf()) { it.sourceTurnId }
+        val pendingSourceTurnIds = state.pendingSourceTurnIds.filter(liveSourceIds::contains)
+        val backfillPending = pausedBackfill.pendingSourceTurnIds.filter(liveSourceIds::contains)
+        val backfillCompleted = pausedBackfill.completedSourceTurnIds.filter(liveSourceIds::contains)
+        val hasRemainingBackfillWork = gaps.any {
+            it.reason != MemoryGapReason.DECLINED_BACKFILL
+        } || backfillPending.isNotEmpty()
+        val removedDeletedBackfillResidue = state.gaps.any {
+            it.reason == MemoryGapReason.DELETED_SOURCE
+        } || backfillPending != pausedBackfill.pendingSourceTurnIds ||
+            backfillCompleted != pausedBackfill.completedSourceTurnIds
+        val resetDeletedBackfill = removedDeletedBackfillResidue &&
+            !hasRemainingBackfillWork && session.id !in activeBackfillSessionIds
         val reconciledBackfill = pausedBackfill.copy(
-            pendingSourceTurnIds = pausedBackfill.pendingSourceTurnIds.filterNot(unavailable::contains)
+            status = if (resetDeletedBackfill) {
+                MemoryBackfillStatus.IDLE
+            } else {
+                pausedBackfill.status
+            },
+            pendingSourceTurnIds = backfillPending,
+            completedSourceTurnIds = backfillCompleted,
+            finalTimeline = pausedBackfill.finalTimeline
+                .takeIf { it.isNotEmpty() }
+                ?.let { timeline }
+                .orEmpty(),
+            error = if (resetDeletedBackfill) null else pausedBackfill.error
         )
-        return state.copy(
-            timeline = state.timeline + appendable,
-            gaps = state.gaps + deletionGaps,
-            pendingSourceTurnIds = state.pendingSourceTurnIds.filterNot(unavailable::contains),
+        val next = state.copy(
+            timeline = timeline,
+            gaps = gaps,
+            pendingSourceTurnIds = pendingSourceTurnIds,
             backfill = reconciledBackfill,
             sourceRepair = pausedSourceRepair,
-            memoryWasEnabled = session.longTermMemoryEnabled,
-            revision = if (
-                appendable.isNotEmpty() || deletionGaps.isNotEmpty() ||
-                reconciledBackfill != state.backfill ||
-                pausedSourceRepair != state.sourceRepair ||
-                state.pendingSourceTurnIds.any(unavailable::contains)
-            ) {
-                state.revision + 1
-            } else {
-                state.revision
-            },
-            updatedAt = if (
-                appendable.isNotEmpty() || deletionGaps.isNotEmpty() ||
-                reconciledBackfill != state.backfill ||
-                pausedSourceRepair != state.sourceRepair ||
-                state.pendingSourceTurnIds.any(unavailable::contains)
-            ) {
-                System.currentTimeMillis()
-            } else {
-                state.updatedAt
-            }
+            memoryWasEnabled = session.longTermMemoryEnabled
+        )
+        return if (next == state) state else next.copy(
+            revision = state.revision + 1,
+            updatedAt = System.currentTimeMillis()
         )
     }
 
@@ -2845,7 +3024,7 @@ class LongTermMemoryService internal constructor(
         messages: List<ChatMessage>,
         session: ChatSession
     ): MemorySessionState {
-        val sourceIds = sourceTimeline(messages, session).map { it.sourceTurnId }
+        val sourceIds = sourceTimeline(messages).map { it.sourceTurnId }
         val currentFingerprints = sourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.semantic(sourceId, messages, session)
         }
@@ -2974,7 +3153,7 @@ class LongTermMemoryService internal constructor(
                 nodes = MemoryTimelinePolicy.sortNodes(active, loaded.state.timeline)
             )
         }
-        val currentHashes = sourceTimeline(loaded.messages, loaded.session).associate { entry ->
+        val currentHashes = sourceTimeline(loaded.messages).associate { entry ->
             entry.sourceTurnId to MemorySourceFingerprint.semantic(
                 entry.sourceTurnId,
                 loaded.messages,
@@ -3565,20 +3744,25 @@ class LongTermMemoryService internal constructor(
         .keys
         .toList()
 
-    private fun sourceTimeline(
-        messages: List<ChatMessage>,
-        session: ChatSession
-    ): List<MemoryTimelineEntry> {
+    private fun sourceTurnsAvailable(
+        sourceTurnIds: Collection<String>,
+        messages: List<ChatMessage>
+    ): Boolean {
+        val available = messages.asSequence()
+            .filter { it.role != MessageRole.SYSTEM }
+            .mapNotNull { it.sourceTurnId }
+            .toSet()
+        return sourceTurnIds.all(available::contains)
+    }
+
+    private fun sourceTimeline(messages: List<ChatMessage>): List<MemoryTimelineEntry> {
         val messageEntries = messages.filter { it.role != MessageRole.SYSTEM }
             .mapNotNull { message ->
                 val id = message.sourceTurnId ?: return@mapNotNull null
                 val order = message.sourceTurnOrder ?: return@mapNotNull null
                 MemoryTimelineEntry(id, order, 0)
             }
-        val tombstones = session.sourceTurnTombstones.map {
-            MemoryTimelineEntry(it.sourceTurnId, it.sourceOrder, 0, tombstone = true)
-        }
-        return MemoryTimelinePolicy.normalize(messageEntries + tombstones)
+        return MemoryTimelinePolicy.normalize(messageEntries)
     }
 
     private fun sourceRefs(
@@ -3772,7 +3956,7 @@ class LongTermMemoryService internal constructor(
     ): MemorySnapshot {
         val commit = snapshot.legacyCommit ?: return snapshot.copy(
             state = MemorySessionSnapshot(
-                timeline = sourceTimeline(loaded.messages, loaded.session),
+                timeline = sourceTimeline(loaded.messages),
                 memoryWasEnabled = loaded.session.longTermMemoryEnabled
             )
         )
@@ -3788,7 +3972,7 @@ class LongTermMemoryService internal constructor(
                 legacyT to sourceId
             }
             .toMap()
-        val timeline = sourceTimeline(loaded.messages, loaded.session)
+        val timeline = sourceTimeline(loaded.messages)
 
         fun legacyReference(old: MemoryNode?, reason: String, oldId: String): MemoryNode {
             val mappedIds = old?.sourceTurns

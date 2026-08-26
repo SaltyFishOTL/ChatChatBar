@@ -31,6 +31,7 @@ enum class MemoryRevisionOperation {
     PRE_RESTORE_CHECKPOINT,
     RESTORE,
     LOAD_SAVE,
+    SOURCE_TURN_DELETE,
     SOURCE_MUTATION_REPAIR,
     DEBUG_REBUILD
 }
@@ -288,6 +289,8 @@ data class MemorySessionState(
     val recordingStartsAfterSourceOrder: Long? = null,
     /** 旧版曾按上下文边界误删Gap；0表示仍需执行一次安全修复。 */
     val gapRetentionVersion: Int = 0,
+    /** 已完成结构投影的整轮删除来源；用于崩溃恢复与幂等加载，不参与显示T。 */
+    val projectedDeletedSourceTurnIds: Set<String> = emptySet(),
     val revision: Long = 0,
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = System.currentTimeMillis()
@@ -374,6 +377,7 @@ data class MemorySessionSnapshot(
     val disabledAfterSourceOrder: Long? = null,
     val recordingStartsAfterSourceOrder: Long? = null,
     val gapRetentionVersion: Int = 0,
+    val projectedDeletedSourceTurnIds: Set<String> = emptySet(),
     val backfill: MemoryBackfillState = MemoryBackfillState(),
     val sourceRepair: MemorySourceRepairState = MemorySourceRepairState(),
     val archiveFailure: MemoryFailureInfo? = null,
@@ -410,6 +414,9 @@ data class MemoryCommitJournal(
     val nodes: List<MemoryNode> = emptyList(),
     val revisions: List<MemoryTierRevision> = emptyList(),
     val transactions: List<MemoryCompressionTransaction> = emptyList(),
+    val deleteNodeIds: List<String> = emptyList(),
+    val deleteRevisionIds: List<String> = emptyList(),
+    val deleteTransactionIds: List<String> = emptyList(),
     val nextState: MemorySessionState,
     val createdAt: Long = System.currentTimeMillis()
 ) {

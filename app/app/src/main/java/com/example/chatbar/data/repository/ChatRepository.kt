@@ -367,8 +367,11 @@ class ChatRepository(private val storage: JsonFileStorage) {
             val removedSourceId = removed?.sourceTurnId
             val removedSourceOrder = removed?.sourceTurnOrder
             val sourceTombstones = if (
+                removed?.role != MessageRole.SYSTEM &&
                 removedSourceId != null && removedSourceOrder != null &&
-                remaining.none { it.sourceTurnId == removedSourceId }
+                remaining.none {
+                    it.role != MessageRole.SYSTEM && it.sourceTurnId == removedSourceId
+                }
             ) {
                 (session.sourceTurnTombstones + com.example.chatbar.data.local.entity.SourceTurnTombstone(
                     sourceTurnId = removedSourceId,

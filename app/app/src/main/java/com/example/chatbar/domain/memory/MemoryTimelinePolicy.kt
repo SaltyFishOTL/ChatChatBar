@@ -8,6 +8,7 @@ data class MemoryDisplayRange(val startT: Long, val endT: Long)
 
 object MemoryTimelinePolicy {
     fun normalize(entries: List<MemoryTimelineEntry>): List<MemoryTimelineEntry> = entries
+        .filterNot { it.tombstone }
         .distinctBy { it.sourceTurnId }
         .sortedWith(compareBy<MemoryTimelineEntry> { it.sourceOrder }.thenBy { it.sourceTurnId })
         .mapIndexed { index, entry -> entry.copy(displayT = index.toLong()) }

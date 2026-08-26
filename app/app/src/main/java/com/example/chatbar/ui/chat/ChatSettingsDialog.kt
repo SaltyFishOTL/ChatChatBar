@@ -1759,6 +1759,7 @@ private fun MemoryRevisionOperation.memoryDisplayName(): String = when (this) {
     MemoryRevisionOperation.PRE_RESTORE_CHECKPOINT -> "恢复前备份"
     MemoryRevisionOperation.RESTORE -> "恢复历史"
     MemoryRevisionOperation.LOAD_SAVE -> "载入存档"
+    MemoryRevisionOperation.SOURCE_TURN_DELETE -> "删除来源整理"
     MemoryRevisionOperation.SOURCE_MUTATION_REPAIR -> "来源修复"
     MemoryRevisionOperation.DEBUG_REBUILD -> "Debug重新补录"
 }

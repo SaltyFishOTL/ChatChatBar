@@ -357,6 +357,48 @@ class MemoryBackfillPolicyTest {
     }
 
     @Test
+    fun legacyDeletedSourceResidueNeverRequestsBackfill() {
+        val timeline = listOf(
+            MemoryTimelineEntry("deleted", 0, 0, tombstone = true),
+            MemoryTimelineEntry("live", 1, 1)
+        )
+        val candidates = MemoryBackfillPolicy.eligibleSourceTurnIds(
+            activeNodes = listOf(node("episode-live", listOf("live"))),
+            gaps = listOf(
+                MemoryGap(
+                    id = "deleted-gap",
+                    sourceTurnIds = listOf("deleted"),
+                    reason = MemoryGapReason.DELETED_SOURCE
+                )
+            ),
+            timeline = timeline,
+            availableSourceTurnIds = setOf("deleted", "live"),
+            archivedSourceTurnIds = setOf("deleted", "live")
+        )
+
+        assertEquals(emptyList<String>(), candidates)
+    }
+
+    @Test
+    fun declinedGapNeverReturnsAsBackfillCandidate() {
+        val candidates = MemoryBackfillPolicy.eligibleSourceTurnIds(
+            activeNodes = emptyList(),
+            gaps = listOf(
+                MemoryGap(
+                    id = "declined-gap",
+                    sourceTurnIds = listOf("s0"),
+                    reason = MemoryGapReason.DECLINED_BACKFILL
+                )
+            ),
+            timeline = timeline(0..0),
+            availableSourceTurnIds = setOf("s0"),
+            archivedSourceTurnIds = setOf("s0")
+        )
+
+        assertEquals(emptyList<String>(), candidates)
+    }
+
+    @Test
     fun uncoveredHoleInsideActiveRangeWaitsUntilItLeavesContext() {
         val active = listOf(node("episode-0", listOf("s0")), node("episode-2", listOf("s2")))
         val whileDirect = MemoryBackfillPolicy.eligibleSourceTurnIds(

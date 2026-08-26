@@ -55,7 +55,10 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         nextState: MemorySessionState,
         nodes: List<MemoryNode> = emptyList(),
         revisions: List<MemoryTierRevision> = emptyList(),
-        transactions: List<MemoryCompressionTransaction> = emptyList()
+        transactions: List<MemoryCompressionTransaction> = emptyList(),
+        deleteNodeIds: List<String> = emptyList(),
+        deleteRevisionIds: List<String> = emptyList(),
+        deleteTransactionIds: List<String> = emptyList()
     ) {
         val journal = MemoryCommitJournal(
             id = MemoryCommitJournal.newId(),
@@ -64,6 +67,9 @@ class MemoryRepository(private val storage: JsonFileStorage) {
             nodes = nodes,
             revisions = revisions,
             transactions = transactions,
+            deleteNodeIds = deleteNodeIds,
+            deleteRevisionIds = deleteRevisionIds,
+            deleteTransactionIds = deleteTransactionIds,
             nextState = nextState
         )
         storage.saveEntity(JOURNAL_TYPE, journal.id, journal, MemoryCommitJournal.serializer())
@@ -96,6 +102,15 @@ class MemoryRepository(private val storage: JsonFileStorage) {
             journal.nextState,
             MemorySessionState.serializer()
         )
+        journal.deleteNodeIds.distinct().forEach { id ->
+            storage.deleteEntity<MemoryNode>(NODE_TYPE, id)
+        }
+        journal.deleteRevisionIds.distinct().forEach { id ->
+            storage.deleteEntity<MemoryTierRevision>(REVISION_TYPE, id)
+        }
+        journal.deleteTransactionIds.distinct().forEach { id ->
+            storage.deleteEntity<MemoryCompressionTransaction>(TRANSACTION_TYPE, id)
+        }
     }
 
     suspend fun getRevision(id: String): MemoryTierRevision? =
@@ -155,6 +170,11 @@ class MemoryRepository(private val storage: JsonFileStorage) {
             id,
             MemoryCompressionTransaction.serializer()
         )
+
+    suspend fun allTransactions(sessionId: String): List<MemoryCompressionTransaction> =
+        storage.query(TRANSACTION_TYPE, MemoryCompressionTransaction.serializer()) {
+            it.sessionId == sessionId
+        }
 
     /** 从最近物化点应用增删delta。 */
     suspend fun materializeRevision(revisionId: String): List<String> {
@@ -242,6 +262,7 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         disabledAfterSourceOrder = disabledAfterSourceOrder,
         recordingStartsAfterSourceOrder = recordingStartsAfterSourceOrder,
         gapRetentionVersion = gapRetentionVersion,
+        projectedDeletedSourceTurnIds = projectedDeletedSourceTurnIds,
         backfill = backfill.copy(
             status = if (backfill.status == com.example.chatbar.data.local.entity.MemoryBackfillStatus.RUNNING) {
                 com.example.chatbar.data.local.entity.MemoryBackfillStatus.PAUSED

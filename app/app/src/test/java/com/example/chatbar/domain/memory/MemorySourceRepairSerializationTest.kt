@@ -2,6 +2,7 @@ package com.example.chatbar.domain.memory
 
 import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySessionState
+import com.example.chatbar.data.local.entity.MemoryCommitJournal
 import com.example.chatbar.data.local.entity.MemorySourceRepairState
 import com.example.chatbar.data.local.entity.MemorySourceRepairStatus
 import kotlinx.serialization.json.Json
@@ -28,6 +29,8 @@ class MemorySourceRepairSerializationTest {
         assertTrue(state.sourceRepair.pendingRootNodeIds.isEmpty())
         assertTrue(!state.fullRegenerationPending)
         assertTrue(!snapshot.fullRegenerationPending)
+        assertTrue(state.projectedDeletedSourceTurnIds.isEmpty())
+        assertTrue(snapshot.projectedDeletedSourceTurnIds.isEmpty())
     }
 
     @Test
@@ -65,5 +68,33 @@ class MemorySourceRepairSerializationTest {
         )
 
         assertTrue(decoded.fullRegenerationPending)
+    }
+
+    @Test
+    fun deletionProjectionAndJournalCleanupFieldsRoundTripWithOldDefaults() {
+        val oldJournal = json.decodeFromString(
+            MemoryCommitJournal.serializer(),
+            """{"id":"journal","sessionId":"session","expectedStateRevision":0,"nextState":{"sessionId":"session"}}"""
+        )
+        assertTrue(oldJournal.deleteNodeIds.isEmpty())
+        assertTrue(oldJournal.deleteRevisionIds.isEmpty())
+        assertTrue(oldJournal.deleteTransactionIds.isEmpty())
+
+        val journal = oldJournal.copy(
+            deleteNodeIds = listOf("node"),
+            deleteRevisionIds = listOf("revision"),
+            deleteTransactionIds = listOf("transaction"),
+            nextState = oldJournal.nextState.copy(
+                projectedDeletedSourceTurnIds = setOf("source")
+            )
+        )
+        val decoded = json.decodeFromString(
+            MemoryCommitJournal.serializer(),
+            json.encodeToString(MemoryCommitJournal.serializer(), journal)
+        )
+        assertEquals(journal.deleteNodeIds, decoded.deleteNodeIds)
+        assertEquals(journal.deleteRevisionIds, decoded.deleteRevisionIds)
+        assertEquals(journal.deleteTransactionIds, decoded.deleteTransactionIds)
+        assertEquals(setOf("source"), decoded.nextState.projectedDeletedSourceTurnIds)
     }
 }
