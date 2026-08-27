@@ -195,6 +195,32 @@ class NovelAiImageFeatureTest {
     }
 
     @Test
+    fun `natural language research evidence preserves Chinese output contract and user tail`() {
+        val result = NovelAiPromptDesigner.withResearchEvidence(
+            messages = listOf(
+                ChatApiMessage.text("system", "V5 natural rules"),
+                ChatApiMessage.text("user", "把伞改成透明伞")
+            ),
+            tagEvidence = listOf(
+                NovelAiTagSearchEvidence(
+                    query = "拥抱",
+                    name = "hug",
+                    translatedName = "拥抱",
+                    count = 10,
+                    category = "general"
+                )
+            ),
+            codexEvidence = emptyList(),
+            sceneDescription = "两人在雨中拥抱。",
+            naturalLanguageMode = true
+        )
+
+        assertEquals("user", result.last().role)
+        assertTrue(result[1].content.jsonPrimitive.content.contains("V5 中文自然语言 Prompt"))
+        assertTrue(result[2].content.jsonPrimitive.content.contains("不要把基础 Prompt 改写成英文 Tag 堆"))
+    }
+
+    @Test
     fun `reference image remains in final user message after tag evidence insertion`() {
         val request = listOf(
             ChatApiMessage.text("system", "rules"),

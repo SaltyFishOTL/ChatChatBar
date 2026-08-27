@@ -5,6 +5,7 @@ import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -12,6 +13,28 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ImagePromptToolUiStateTest {
+    @Test
+    fun `natural language AI design always targets V5`() {
+        assertEquals(
+            NovelAiImageModel.V5_FULL,
+            novelAiDesignTargetModel(
+                NovelAiStudioDraft(
+                    selectedModel = NovelAiImageModel.V4_5_FULL,
+                    aiDesignNaturalLanguageMode = true
+                )
+            )
+        )
+        assertEquals(
+            NovelAiImageModel.V4_5_FULL,
+            novelAiDesignTargetModel(
+                NovelAiStudioDraft(
+                    selectedModel = NovelAiImageModel.V4_5_FULL,
+                    aiDesignNaturalLanguageMode = false
+                )
+            )
+        )
+    }
+
     @Test
     fun `AI design conversation requires initialized usable model and nonblank input`() {
         val ready = NovelAiDesignUiState(

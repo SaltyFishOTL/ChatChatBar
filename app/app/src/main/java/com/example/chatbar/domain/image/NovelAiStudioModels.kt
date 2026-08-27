@@ -153,6 +153,7 @@ data class NovelAiStudioDraft(
     val imageDescription: String = "",
     val extraRequirement: String = "",
     val aiDesignModelId: String? = null,
+    val aiDesignNaturalLanguageMode: Boolean = false,
     val selectedModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val v45Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL),
     val v5Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),

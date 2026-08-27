@@ -30,7 +30,8 @@ class NovelAiDesignConversationRepositoryTest {
         val (conversation, turn) = repository.createCurrentConversation(
             userText = "  雨夜街道\n第二行  ",
             designModelId = "designer-v1",
-            targetImageModel = NovelAiImageModel.V5_FULL
+            targetImageModel = NovelAiImageModel.V5_FULL,
+            naturalLanguageMode = true
         )
 
         assertEquals(conversation.id, repository.currentConversation()?.id)
@@ -38,6 +39,7 @@ class NovelAiDesignConversationRepositoryTest {
         assertEquals("雨夜街道\n第二行", turn.userText)
         assertEquals("designer-v1", turn.designModelId)
         assertEquals(NovelAiImageModel.V5_FULL, turn.targetImageModel)
+        assertTrue(turn.naturalLanguageMode)
         assertTrue(repository.history().isEmpty())
     }
 
@@ -111,7 +113,8 @@ class NovelAiDesignConversationRepositoryTest {
             conversation.id,
             turn.id,
             "designer-b",
-            NovelAiImageModel.V5_FULL
+            NovelAiImageModel.V5_FULL,
+            naturalLanguageMode = true
         )
         repository.completeTurn(
             conversation.id,
@@ -119,7 +122,8 @@ class NovelAiDesignConversationRepositoryTest {
             NovelAiDesignReply(
                 plan = promptPlan(),
                 targetImageModel = NovelAiImageModel.V5_FULL,
-                designModelId = "designer-b"
+                designModelId = "designer-b",
+                naturalLanguageMode = true
             )
         )
 
@@ -127,6 +131,8 @@ class NovelAiDesignConversationRepositoryTest {
         assertEquals(NovelAiDesignTurnStatus.COMPLETED, completed?.status)
         assertEquals("designer-b", completed?.designModelId)
         assertEquals(NovelAiImageModel.V5_FULL, completed?.targetImageModel)
+        assertTrue(completed?.naturalLanguageMode == true)
+        assertEquals("new base", completed?.reply?.displayText)
         assertEquals("new base", completed?.reply?.plan?.baseCaption)
     }
 

@@ -104,6 +104,7 @@ class NovelAiStudioModelsTest {
         assertEquals(0f, draft.activeSettings.cfgRescale)
         assertEquals(NovelAiSeedMode.RANDOM, draft.activeSettings.seedMode)
         assertNull(draft.aiDesignModelId)
+        assertFalse(draft.aiDesignNaturalLanguageMode)
     }
 
     @Test
@@ -192,6 +193,7 @@ class NovelAiStudioModelsTest {
             importedCharacterPromptSources = listOf(NovelAiCharacterPromptSource("角色", "card prompt")),
             extraRequirement = "saved requirement",
             aiDesignModelId = "designer",
+            aiDesignNaturalLanguageMode = true,
             selectedModel = NovelAiImageModel.V4_5_FULL,
             v45Settings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL, steps = 24),
             v5Settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, steps = 42),
@@ -217,7 +219,53 @@ class NovelAiStudioModelsTest {
         assertEquals(original.importedCharacterPromptSources, applied.importedCharacterPromptSources)
         assertEquals("saved requirement", applied.extraRequirement)
         assertEquals("designer", applied.aiDesignModelId)
+        assertTrue(applied.aiDesignNaturalLanguageMode)
         assertFalse(applied.naturalLanguageMode)
+        assertNull(applied.conversionSnapshot)
+    }
+
+    @Test
+    fun `natural language V5 plan apply preserves base and character partitions`() {
+        val original = NovelAiStudioDraft(
+            stylePrompt = "saved style",
+            basePrompt = "old base",
+            characters = listOf(
+                NovelAiCharacterPromptDraft(prompt = "old character", negativePrompt = "old negative")
+            ),
+            negativePrompt = "saved base negative",
+            aiDesignNaturalLanguageMode = true,
+            selectedModel = NovelAiImageModel.V4_5_FULL,
+            v5Settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, steps = 41),
+            conversionSnapshot = NovelAiPositivePromptSnapshot("snapshot")
+        )
+
+        val applied = original.applyDesignedPromptPlan(
+            NovelAiPromptPlan(
+                baseCaption = "两人在雨夜街道共撑透明伞。",
+                characterCaptions = listOf(
+                    NovelAiCharacterCaption(
+                        prompt = "alice, source#hug, 她伸手抱住对方。",
+                        center = DesignedCharacterCenter(0.33f, 0.5f)
+                    ),
+                    NovelAiCharacterCaption(
+                        prompt = "bob, target#hug, 他回应拥抱。",
+                        center = DesignedCharacterCenter(0.67f, 0.5f)
+                    )
+                )
+            ),
+            NovelAiImageModel.V5_FULL
+        )
+
+        assertEquals("saved style", applied.stylePrompt)
+        assertEquals("saved base negative", applied.negativePrompt)
+        assertEquals("两人在雨夜街道共撑透明伞。", applied.basePrompt)
+        assertEquals(2, applied.characters.size)
+        assertEquals("alice, source#hug, 她伸手抱住对方。", applied.characters[0].prompt)
+        assertEquals("bob, target#hug, 他回应拥抱。", applied.characters[1].prompt)
+        assertTrue(applied.characters.all { it.negativePrompt.isEmpty() })
+        assertEquals(NovelAiImageModel.V5_FULL, applied.selectedModel)
+        assertEquals(41, applied.activeSettings.steps)
+        assertTrue(applied.aiDesignNaturalLanguageMode)
         assertNull(applied.conversionSnapshot)
     }
 

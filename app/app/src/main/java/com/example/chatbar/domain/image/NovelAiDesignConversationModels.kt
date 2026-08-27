@@ -99,8 +99,25 @@ data class NovelAiDesignReply(
     val plan: NovelAiPromptPlan,
     val targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val designModelId: String = "",
+    val naturalLanguageMode: Boolean = false,
+    val sceneDescription: String = "",
     val createdAt: Long = System.currentTimeMillis()
-)
+) {
+    val displayText: String
+        get() = if (naturalLanguageMode) {
+            sceneDescription.ifBlank { plan.baseCaption }
+        } else {
+            plan.baseCaption
+        }
+
+    val effectiveSceneDescription: String
+        get() = sceneDescription.ifBlank {
+            listOf(
+                plan.baseCaption,
+                plan.characterCaptions.joinToString("\n") { it.prompt }
+            ).filter(String::isNotBlank).joinToString("\n")
+        }.trim()
+}
 
 @Serializable
 data class NovelAiDesignTurn(
@@ -108,6 +125,7 @@ data class NovelAiDesignTurn(
     val userText: String = "",
     val designModelId: String = "",
     val targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
+    val naturalLanguageMode: Boolean = false,
     val reply: NovelAiDesignReply? = null,
     val status: NovelAiDesignTurnStatus = NovelAiDesignTurnStatus.PENDING,
     val error: String = "",

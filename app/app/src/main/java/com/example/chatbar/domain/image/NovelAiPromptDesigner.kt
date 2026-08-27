@@ -419,9 +419,13 @@ class NovelAiPromptDesigner(
         targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
         referenceImageInstruction: String? = null,
         excludeStyle: Boolean = true,
+        naturalLanguageMode: Boolean = false,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptToolDesignResult {
+        require(!naturalLanguageMode || targetImageModel == NovelAiImageModel.V5_FULL) {
+            "自然语言 Prompt 仅支持 NovelAI Diffusion V5 Full"
+        }
         val sourceImages = imageBase64s.filter(String::isNotBlank)
         val understoodImages = if (sourceImages.isEmpty()) {
             ImageUnderstandingResult()
@@ -445,11 +449,11 @@ class NovelAiPromptDesigner(
             characterPrompt = characterPrompt
         )
         require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、角色提示词或上传图片" }
-        val systemPrompt = PromptTemplates.novelAiImagePromptCoreSystem(
-            playerName,
-            botName,
-            targetImageModel
-        )
+        val systemPrompt = if (naturalLanguageMode) {
+            PromptTemplates.novelAiImageNaturalLanguagePromptCoreSystem(playerName, botName)
+        } else {
+            PromptTemplates.novelAiImagePromptCoreSystem(playerName, botName, targetImageModel)
+        }
         val scenePrompt = PromptTemplates.novelAiImagePromptConversation(
             listOf(
                 ChatMessage.create(
@@ -524,7 +528,8 @@ class NovelAiPromptDesigner(
                 requestMessages,
                 research.evidence,
                 research.codexEvidence,
-                research.sceneDescription
+                research.sceneDescription,
+                naturalLanguageMode = naturalLanguageMode
             ),
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
@@ -534,11 +539,16 @@ class NovelAiPromptDesigner(
             raw = raw,
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
-            onReasoningDelta = onReasoningDelta
+            onReasoningDelta = onReasoningDelta,
+            repairSystemPrompt = if (naturalLanguageMode) {
+                PromptTemplates.NOVELAI_IMAGE_NATURAL_LANGUAGE_PROMPT_REPAIR_SYSTEM_V5
+            } else {
+                PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+            }
         )
         return NovelAiPromptToolDesignResult(
             plan = convert(
-                designed = promptPostProcessor.process(designed).prompt,
+                designed = if (naturalLanguageMode) designed else promptPostProcessor.process(designed).prompt,
                 maxCharacters = targetImageModel.maxCharacters
             ),
             research = NovelAiDesignResearchSnapshot.from(
@@ -559,10 +569,14 @@ class NovelAiPromptDesigner(
         playerName: String? = null,
         botName: String = "",
         targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
+        naturalLanguageMode: Boolean = false,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptPlan {
         require(modificationRequest.isNotBlank()) { "请输入修改需求" }
+        require(!naturalLanguageMode || targetImageModel == NovelAiImageModel.V5_FULL) {
+            "自然语言 Prompt 仅支持 NovelAI Diffusion V5 Full"
+        }
         val previousPromptJson = promptPlanJson(previousPlan)
         val effectiveModification = buildString {
             append(modificationRequest.trim())
@@ -590,11 +604,11 @@ class NovelAiPromptDesigner(
         val requestMessages = listOf(
             ChatApiMessage.text(
                 "system",
-                PromptTemplates.novelAiImagePromptCoreSystem(
-                    playerName,
-                    botName,
-                    targetImageModel
-                )
+                if (naturalLanguageMode) {
+                    PromptTemplates.novelAiImageNaturalLanguagePromptCoreSystem(playerName, botName)
+                } else {
+                    PromptTemplates.novelAiImagePromptCoreSystem(playerName, botName, targetImageModel)
+                }
             ),
             ChatApiMessage.text("system", PromptTemplates.novelAiImagePromptStyleExclusionSystem()),
             ChatApiMessage.text(
@@ -609,18 +623,26 @@ class NovelAiPromptDesigner(
             ChatApiMessage.text("assistant", previousPromptJson),
             ChatApiMessage.text(
                 "user",
-                PromptTemplates.novelAiImagePromptRevisionUser(
-                    modificationRequest = effectiveModification,
-                    finalPromptRequirement = finalPromptRequirement,
-                    targetImageModel = targetImageModel
-                )
+                if (naturalLanguageMode) {
+                    PromptTemplates.novelAiImageNaturalLanguagePromptRevisionUser(
+                        modificationRequest = effectiveModification,
+                        finalPromptRequirement = finalPromptRequirement
+                    )
+                } else {
+                    PromptTemplates.novelAiImagePromptRevisionUser(
+                        modificationRequest = effectiveModification,
+                        finalPromptRequirement = finalPromptRequirement,
+                        targetImageModel = targetImageModel
+                    )
+                }
             )
         )
         val finalRequestMessages = withResearchEvidence(
             messages = requestMessages,
             tagEvidence = initialResearch.promptTagEvidence() + currentResearch.evidence,
             codexEvidence = initialResearch.promptCodexEvidence(),
-            sceneDescription = currentResearch.sceneDescription
+            sceneDescription = currentResearch.sceneDescription,
+            naturalLanguageMode = naturalLanguageMode
         )
         progress.updateStage(PROMPT_DESIGN_STAGE, WAITING_FOR_AI_TEXT)
         val raw = streamCompletion(
@@ -633,10 +655,15 @@ class NovelAiPromptDesigner(
             raw = raw,
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
-            onReasoningDelta = onReasoningDelta
+            onReasoningDelta = onReasoningDelta,
+            repairSystemPrompt = if (naturalLanguageMode) {
+                PromptTemplates.NOVELAI_IMAGE_NATURAL_LANGUAGE_PROMPT_REPAIR_SYSTEM_V5
+            } else {
+                PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+            }
         )
         return convert(
-            designed = promptPostProcessor.process(designed).prompt,
+            designed = if (naturalLanguageMode) designed else promptPostProcessor.process(designed).prompt,
             maxCharacters = targetImageModel.maxCharacters
         )
     }
@@ -666,7 +693,8 @@ class NovelAiPromptDesigner(
         raw: String,
         model: ModelConfig,
         onContentDelta: (String) -> Unit,
-        onReasoningDelta: (String) -> Unit
+        onReasoningDelta: (String) -> Unit,
+        repairSystemPrompt: String = PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
     ): DesignedImagePrompt {
         parse(raw)?.let { return it }
         onContentDelta(WAITING_FOR_AI_TEXT)
@@ -674,7 +702,7 @@ class NovelAiPromptDesigner(
             messages = listOf(
                 ChatApiMessage.text(
                     "system",
-                    PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+                    repairSystemPrompt
                 ),
                 ChatApiMessage.text("user", raw)
             ),
@@ -915,7 +943,8 @@ class NovelAiPromptDesigner(
             messages: List<ChatApiMessage>,
             tagEvidence: List<NovelAiTagSearchEvidence>,
             codexEvidence: List<NovelAiCodexEvidence>,
-            sceneDescription: String
+            sceneDescription: String,
+            naturalLanguageMode: Boolean = false
         ): List<ChatApiMessage> {
             if (tagEvidence.isEmpty() && codexEvidence.isEmpty() && sceneDescription.isBlank()) return messages
             val finalUserIndex = messages.indexOfLast { it.role == "user" }
@@ -927,7 +956,10 @@ class NovelAiPromptDesigner(
                         insertionIndex++,
                         ChatApiMessage.text(
                             "system",
-                            PromptTemplates.novelAiSceneDescriptionSystem(sceneDescription)
+                            PromptTemplates.novelAiSceneDescriptionSystem(
+                                sceneDescription,
+                                naturalLanguageMode
+                            )
                         )
                     )
                 }
@@ -936,7 +968,10 @@ class NovelAiPromptDesigner(
                         insertionIndex++,
                         ChatApiMessage.text(
                             "system",
-                            PromptTemplates.novelAiCodexEvidenceSystem(codexEvidence)
+                            PromptTemplates.novelAiCodexEvidenceSystem(
+                                codexEvidence,
+                                naturalLanguageMode
+                            )
                         )
                     )
                 }
@@ -945,7 +980,10 @@ class NovelAiPromptDesigner(
                         insertionIndex,
                         ChatApiMessage.text(
                             "system",
-                            PromptTemplates.novelAiTagSearchEvidenceSystem(tagEvidence)
+                            PromptTemplates.novelAiTagSearchEvidenceSystem(
+                                tagEvidence,
+                                naturalLanguageMode
+                            )
                         )
                     )
                 }

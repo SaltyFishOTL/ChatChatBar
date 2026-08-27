@@ -85,7 +85,8 @@ class NovelAiDesignConversationRepository(
     suspend fun createCurrentConversation(
         userText: String,
         designModelId: String,
-        targetImageModel: NovelAiImageModel
+        targetImageModel: NovelAiImageModel,
+        naturalLanguageMode: Boolean = false
     ): Pair<NovelAiDesignConversation, NovelAiDesignTurn> =
         mutex.withLock {
             require(userText.isNotBlank()) { "请输入画面内容" }
@@ -94,6 +95,7 @@ class NovelAiDesignConversationRepository(
                 userText = userText.trim(),
                 designModelId = designModelId,
                 targetImageModel = targetImageModel,
+                naturalLanguageMode = naturalLanguageMode,
                 createdAt = now,
                 updatedAt = now
             )
@@ -125,7 +127,8 @@ class NovelAiDesignConversationRepository(
         conversationId: String,
         userText: String,
         designModelId: String,
-        targetImageModel: NovelAiImageModel
+        targetImageModel: NovelAiImageModel,
+        naturalLanguageMode: Boolean = false
     ): NovelAiDesignTurn = mutex.withLock {
         require(userText.isNotBlank()) { "请输入修改需求" }
         val conversation = requireConversationLocked(conversationId)
@@ -135,6 +138,7 @@ class NovelAiDesignConversationRepository(
             userText = userText.trim(),
             designModelId = designModelId,
             targetImageModel = targetImageModel,
+            naturalLanguageMode = naturalLanguageMode,
             createdAt = now,
             updatedAt = now
         )
@@ -148,12 +152,14 @@ class NovelAiDesignConversationRepository(
         conversationId: String,
         turnId: String,
         designModelId: String,
-        targetImageModel: NovelAiImageModel
+        targetImageModel: NovelAiImageModel,
+        naturalLanguageMode: Boolean = false
     ): NovelAiDesignTurn =
         updateTurn(conversationId, turnId) { turn ->
             turn.copy(
                 designModelId = designModelId,
                 targetImageModel = targetImageModel,
+                naturalLanguageMode = naturalLanguageMode,
                 status = NovelAiDesignTurnStatus.PENDING,
                 error = "",
                 updatedAt = nextTimestampLocked()

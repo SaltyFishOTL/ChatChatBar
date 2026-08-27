@@ -9,6 +9,7 @@ import com.example.chatbar.domain.image.NovelAiDesignReply
 import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import java.util.concurrent.atomic.AtomicLong
@@ -173,7 +174,8 @@ class NovelAiDesignViewModel : ViewModel() {
                     conversationRepository.createCurrentConversation(
                         userText = text,
                         designModelId = model.id,
-                        targetImageModel = state.draft.selectedModel
+                        targetImageModel = novelAiDesignTargetModel(state.draft),
+                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
                     )
                 } else {
                     val conversation = state.conversation
@@ -181,7 +183,8 @@ class NovelAiDesignViewModel : ViewModel() {
                         conversationId = conversation.id,
                         userText = text,
                         designModelId = model.id,
-                        targetImageModel = state.draft.selectedModel
+                        targetImageModel = novelAiDesignTargetModel(state.draft),
+                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
                     )
                 }
                 val conversation = pair.first
@@ -255,7 +258,8 @@ class NovelAiDesignViewModel : ViewModel() {
                     conversationId = conversation.id,
                     turnId = turnId,
                     designModelId = model.id,
-                    targetImageModel = state.draft.selectedModel
+                    targetImageModel = novelAiDesignTargetModel(state.draft),
+                    naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
                 )
                 markedPending = true
                 _uiState.update {
@@ -328,7 +332,8 @@ class NovelAiDesignViewModel : ViewModel() {
                     finalPromptRequirement = draft.extraRequirement,
                     model = model,
                     playerName = playerName,
-                    targetImageModel = draft.selectedModel,
+                    targetImageModel = turn.targetImageModel,
+                    naturalLanguageMode = turn.naturalLanguageMode,
                     onContentDelta = { text -> _uiState.update { it.copy(progressText = text) } },
                     onReasoningDelta = { text -> _uiState.update { it.copy(reasoningText = text) } }
                 )
@@ -342,7 +347,8 @@ class NovelAiDesignViewModel : ViewModel() {
                     finalPromptRequirement = draft.extraRequirement,
                     model = model,
                     playerName = playerName,
-                    targetImageModel = draft.selectedModel,
+                    targetImageModel = turn.targetImageModel,
+                    naturalLanguageMode = turn.naturalLanguageMode,
                     onContentDelta = { text -> _uiState.update { it.copy(progressText = text) } },
                     onReasoningDelta = { text -> _uiState.update { it.copy(reasoningText = text) } }
                 )
@@ -351,14 +357,16 @@ class NovelAiDesignViewModel : ViewModel() {
                     research = conversation.initialResearch ?: NovelAiDesignResearchSnapshot()
                 )
             }
+            val reply = NovelAiDesignReply(
+                plan = designResult.plan,
+                targetImageModel = turn.targetImageModel,
+                designModelId = model.id,
+                naturalLanguageMode = turn.naturalLanguageMode
+            )
             conversationRepository.completeTurn(
                 conversationId = conversationId,
                 turnId = turnId,
-                reply = NovelAiDesignReply(
-                    plan = designResult.plan,
-                    targetImageModel = draft.selectedModel,
-                    designModelId = model.id
-                ),
+                reply = reply,
                 initialResearch = if (previousReply == null) designResult.research else null
             )
         } catch (error: CancellationException) {
@@ -448,6 +456,17 @@ class NovelAiDesignViewModel : ViewModel() {
         }
     }
 
+    fun setNaturalLanguageMode(enabled: Boolean) {
+        _uiState.update {
+            it.copy(draft = it.draft.copy(aiDesignNaturalLanguageMode = enabled))
+        }
+        app.applicationScope.launch {
+            studioRepository.updateDraft { draft ->
+                draft.copy(aiDesignNaturalLanguageMode = enabled)
+            }
+        }
+    }
+
     fun persistSettingsNow() {
         settingsSaveJob?.cancel()
         val value = _uiState.value.draft.extraRequirement
@@ -480,6 +499,9 @@ class NovelAiDesignViewModel : ViewModel() {
         private const val SETTINGS_SAVE_DEBOUNCE_MS = 450L
     }
 }
+
+internal fun novelAiDesignTargetModel(draft: NovelAiStudioDraft): NovelAiImageModel =
+    if (draft.aiDesignNaturalLanguageMode) NovelAiImageModel.V5_FULL else draft.selectedModel
 
 data class NovelAiDesignHistoryUiState(
     val initialized: Boolean = false,

@@ -47,6 +47,39 @@ class PromptTemplatesTest {
     }
 
     @Test
+    fun naturalLanguageV5SystemKeepsStructuredPartitionsTagsInteractionsWeightsAndBudgets() {
+        val prompt = PromptTemplates.novelAiImageNaturalLanguagePromptCoreSystem()
+
+        assertTrue(prompt.contains("NovelAI Diffusion V5 Full"))
+        assertTrue(prompt.contains("baseCaption"))
+        assertTrue(prompt.contains("characters"))
+        assertTrue(prompt.contains("英文 NovelAI/Danbooru Tag"))
+        assertTrue(prompt.contains("source#"))
+        assertTrue(prompt.contains("target#"))
+        assertTrue(prompt.contains("mutual#"))
+        assertTrue(prompt.contains("y::内容::"))
+        assertTrue(prompt.contains("1000"))
+        assertTrue(prompt.contains("150"))
+        assertFalse(prompt.contains("V4.5"))
+    }
+
+    @Test
+    fun naturalLanguageRevisionKeepsMinimalChangeAndGlobalRequirement() {
+        val prompt = PromptTemplates.novelAiImageNaturalLanguagePromptRevisionUser(
+            modificationRequest = "把伞改成透明伞",
+            finalPromptRequirement = "保持低机位"
+        )
+
+        val requestIndex = prompt.indexOf("把伞改成透明伞")
+        val requirementIndex = prompt.indexOf("保持低机位")
+        assertTrue(prompt.contains("不要大幅重构"))
+        assertTrue(prompt.contains("baseCaption 与 characters"))
+        assertTrue(prompt.contains("NovelAI Diffusion V5 Full"))
+        assertTrue(requestIndex >= 0)
+        assertTrue(requirementIndex > requestIndex)
+    }
+
+    @Test
     fun referenceImagePromptKeepsRequiredProtocolTokens() {
         val prompt = PromptTemplates.novelAiImagePromptReferenceImageUser()
 

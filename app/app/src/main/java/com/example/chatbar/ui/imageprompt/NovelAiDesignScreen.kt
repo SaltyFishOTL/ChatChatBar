@@ -38,9 +38,9 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiDesignConversation
+import com.example.chatbar.domain.image.NovelAiDesignReply
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
-import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -51,6 +51,7 @@ import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarShape
@@ -148,7 +149,8 @@ fun NovelAiDesignScreen(
                 item {
                     EmptyDesignConversation(
                         legacyPrefilled = state.input.isNotBlank(),
-                        modelName = state.models.firstOrNull { it.id == state.selectedDesignModelId }?.displayName
+                        modelName = state.models.firstOrNull { it.id == state.selectedDesignModelId }?.displayName,
+                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
                     )
                 }
             } else {
@@ -161,7 +163,7 @@ fun NovelAiDesignScreen(
                         turn.reply?.let { reply ->
                             val key = "${conversation.id}:${turn.id}"
                             PromptReplyBubble(
-                                plan = reply.plan,
+                                reply = reply,
                                 modelName = reply.targetImageModel.displayName,
                                 applying = state.applyingReplyKey == key,
                                 applied = state.appliedReplyKey == key,
@@ -226,8 +228,10 @@ fun NovelAiDesignScreen(
             models = state.models,
             selectedModelId = state.selectedDesignModelId,
             modelError = state.modelError,
+            naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode,
             extraRequirement = state.draft.extraRequirement,
             onSelectModel = viewModel::selectDesignModel,
+            onNaturalLanguageMode = viewModel::setNaturalLanguageMode,
             onExtraRequirement = viewModel::updateExtraRequirement,
             onFullscreenExtra = { editingExtraRequirement = true },
             onDismiss = {
@@ -255,7 +259,11 @@ fun NovelAiDesignScreen(
 }
 
 @Composable
-private fun EmptyDesignConversation(legacyPrefilled: Boolean, modelName: String?) {
+private fun EmptyDesignConversation(
+    legacyPrefilled: Boolean,
+    modelName: String?,
+    naturalLanguageMode: Boolean
+) {
     CbSurface(
         Modifier.fillMaxWidth(),
         color = ChatBarTheme.colors.surfaceSubtle,
@@ -274,7 +282,11 @@ private fun EmptyDesignConversation(legacyPrefilled: Boolean, modelName: String?
             )
             CbText("描述想要的画面", style = ChatBarTheme.typography.heading)
             CbText(
-                if (legacyPrefilled) "已载入旧版 AI 设计中尚未发送的画面内容。" else "首条消息会设计完整 Prompt；之后可继续提出局部修改。",
+                when {
+                    legacyPrefilled -> "已载入旧版 AI 设计中尚未发送的画面内容。"
+                    naturalLanguageMode -> "首轮仍会检索资料，并生成 V5 中文自然语言基础/角色 Prompt；之后可继续提出局部修改。"
+                    else -> "首条消息会设计完整 Prompt；之后可继续提出局部修改。"
+                },
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -300,12 +312,13 @@ private fun UserDesignBubble(text: String) {
 
 @Composable
 private fun PromptReplyBubble(
-    plan: NovelAiPromptPlan,
+    reply: NovelAiDesignReply,
     modelName: String,
     applying: Boolean,
     applied: Boolean,
     onApply: () -> Unit
 ) {
+    val plan = reply.plan
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
         CbSurface(
             Modifier.widthIn(max = 340.dp),
@@ -317,12 +330,23 @@ private fun PromptReplyBubble(
                 verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
-                    CbText("基础 Prompt", Modifier.weight(1f), style = ChatBarTheme.typography.label)
+                    CbText(
+                        if (reply.naturalLanguageMode) "基础 Prompt · 中文自然语言" else "基础 Prompt",
+                        Modifier.weight(1f),
+                        style = ChatBarTheme.typography.label
+                    )
                     CbText(modelName, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
                 }
                 PromptCodeText(plan.baseCaption)
                 plan.characterCaptions.forEachIndexed { index, caption ->
-                    CbText("角色 Prompt ${index + 1}", style = ChatBarTheme.typography.label)
+                    CbText(
+                        if (reply.naturalLanguageMode) {
+                            "角色 Prompt ${index + 1} · 中文描述 + 英文 Tag"
+                        } else {
+                            "角色 Prompt ${index + 1}"
+                        },
+                        style = ChatBarTheme.typography.label
+                    )
                     PromptCodeText(caption.prompt)
                 }
                 CbButton(
@@ -441,8 +465,10 @@ private fun NovelAiDesignSettingsDialog(
     models: List<ModelConfig>,
     selectedModelId: String?,
     modelError: String?,
+    naturalLanguageMode: Boolean,
     extraRequirement: String,
     onSelectModel: (ModelConfig) -> Unit,
+    onNaturalLanguageMode: (Boolean) -> Unit,
     onExtraRequirement: (String) -> Unit,
     onFullscreenExtra: () -> Unit,
     onDismiss: () -> Unit
@@ -458,7 +484,11 @@ private fun NovelAiDesignSettingsDialog(
         ) {
             CbField(
                 label = "Prompt 设计模型",
-                description = "只控制负责设计 Prompt 的文本模型；NovelAI V4.5/V5 仍跟随工作室模型。",
+                description = if (naturalLanguageMode) {
+                    "控制负责设计 Prompt 的文本模型；自然语言模式固定面向 NovelAI V5 Full。"
+                } else {
+                    "只控制负责设计 Prompt 的文本模型；NovelAI V4.5/V5 跟随工作室模型。"
+                },
                 error = modelError
             ) {
                 CbSelect(
@@ -468,6 +498,22 @@ private fun NovelAiDesignSettingsDialog(
                     onValueChange = onSelectModel,
                     placeholder = "选择 Prompt 设计模型"
                 )
+            }
+            CbField(
+                label = "自然语言模式",
+                description = "仅适用于 V5。保留画面规划、TagSuggest、法典和最终 AI 设计；基础区使用中文自然语言，角色区保留英文 Tag、互动语法与独立分区。应用时自动切换 V5。"
+            ) {
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    CbText(
+                        if (naturalLanguageMode) "已开启" else "已关闭",
+                        color = ChatBarTheme.colors.mutedForeground
+                    )
+                    CbSwitch(naturalLanguageMode, onNaturalLanguageMode)
+                }
             }
             CbField(
                 label = "额外要求",
@@ -538,7 +584,7 @@ private fun DesignHistoryRow(
     busy: Boolean,
     onClick: () -> Unit
 ) {
-    val summary = conversation.lastReply?.plan?.baseCaption
+    val summary = conversation.lastReply?.displayText
         ?.replace('\n', ' ')
         ?.take(90)
         .orEmpty()
@@ -562,8 +608,8 @@ private fun DesignHistoryRow(
             }
             CbText(
                 summary.ifBlank {
-                    conversation.turns.lastOrNull()?.error?.ifBlank { "尚未生成有效 Prompt" }
-                        ?: "尚未生成有效 Prompt"
+                    conversation.turns.lastOrNull()?.error?.ifBlank { "尚未生成有效回复" }
+                        ?: "尚未生成有效回复"
                 },
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption,
