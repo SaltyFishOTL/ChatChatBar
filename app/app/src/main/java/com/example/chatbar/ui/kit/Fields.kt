@@ -2,7 +2,6 @@ package com.example.chatbar.ui.kit
 
 import com.example.chatbar.ui.kit.AppIcons
 
-import android.app.Activity
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
@@ -27,6 +26,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -45,7 +45,6 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -61,7 +60,9 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalDensity
-import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.platform.LocalSoftwareKeyboardController
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextRange
@@ -489,11 +490,18 @@ private fun CursorAwareFullscreenTextField(
     outputTransformation: OutputTransformation? = null
 ) {
     val density = LocalDensity.current
+    val keyboardController = LocalSoftwareKeyboardController.current
+    val focusRequester = remember { FocusRequester() }
     val shape = RoundedCornerShape(ChatBarShape.sm)
     val scrollState = rememberScrollState()
     var textLayoutResult by remember { mutableStateOf<TextLayoutResult?>(null) }
     var fieldHeightPx by remember { mutableStateOf(0) }
     val imeBottom = WindowInsets.ime.getBottom(density)
+
+    LaunchedEffect(focusRequester) {
+        focusRequester.requestFocus()
+        keyboardController?.show()
+    }
 
     LaunchedEffect(
         state.selection,
@@ -529,6 +537,7 @@ private fun CursorAwareFullscreenTextField(
             state = state,
             modifier = Modifier
                 .fillMaxWidth()
+                .focusRequester(focusRequester)
                 .heightIn(min = maxHeight.coerceAtLeast(1.dp)),
             lineLimits = TextFieldLineLimits.MultiLine(),
             textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
@@ -609,20 +618,17 @@ private fun FullscreenTextEditorLayout(
     onRemoveImage: ((String) -> Unit)?,
     textField: @Composable (colors: ChatBarColors, interactionSource: MutableInteractionSource, focused: Boolean) -> Unit
 ) {
-    val localView = LocalView.current
-    DisposableEffect(Unit) {
-        val window = (localView.context as? Activity)?.window
-        val controller = window?.let { androidx.core.view.WindowCompat.getInsetsController(it, localView) }
-        controller?.let {
-            it.systemBarsBehavior = androidx.core.view.WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-            it.hide(androidx.core.view.WindowInsetsCompat.Type.systemBars())
-        }
-        onDispose { controller?.show(androidx.core.view.WindowInsetsCompat.Type.systemBars()) }
-    }
     val colors = ChatBarTheme.colors
     val interactionSource = remember { MutableInteractionSource() }
     val focused by interactionSource.collectIsFocusedAsState()
-    Box(Modifier.fillMaxSize().background(colors.background).windowInsetsPadding(WindowInsets.navigationBars).windowInsetsPadding(WindowInsets.ime)) {
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(colors.background)
+            .windowInsetsPadding(WindowInsets.statusBars)
+            .windowInsetsPadding(WindowInsets.navigationBars)
+            .windowInsetsPadding(WindowInsets.ime)
+    ) {
         Column(Modifier.fillMaxSize().padding(ChatBarSpacing.lg)) {
             CbText(title, style = ChatBarTheme.typography.title)
             Spacer(Modifier.size(ChatBarSpacing.md))

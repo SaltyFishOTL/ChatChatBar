@@ -2,6 +2,7 @@ package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.domain.image.NovelAiDesignConversation
+import com.example.chatbar.domain.image.NovelAiDesignContextSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignCurrentState
 import com.example.chatbar.domain.image.NovelAiDesignReply
 import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
@@ -24,6 +25,9 @@ class NovelAiDesignConversationRepository(
     val conversations: StateFlow<List<NovelAiDesignConversation>> = _conversations.asStateFlow()
     private val _currentConversationId = MutableStateFlow<String?>(null)
     val currentConversationId: StateFlow<String?> = _currentConversationId.asStateFlow()
+    private val scrollLock = Any()
+    private val scrollPositions = mutableMapOf<String, Pair<Int, Int>>()
+    private val openAtBottom = mutableSetOf<String>()
     private var initialized = false
 
     suspend fun initialize() = mutex.withLock {
@@ -82,11 +86,31 @@ class NovelAiDesignConversationRepository(
             .toList()
     }
 
+    fun rememberScrollPosition(conversationId: String, itemIndex: Int, scrollOffset: Int) {
+        synchronized(scrollLock) {
+            scrollPositions[conversationId] = itemIndex.coerceAtLeast(0) to scrollOffset.coerceAtLeast(0)
+        }
+    }
+
+    fun consumeInitialScrollPosition(conversationId: String, itemCount: Int): Pair<Int, Int> {
+        val lastIndex = (itemCount - 1).coerceAtLeast(0)
+        return synchronized(scrollLock) {
+            if (openAtBottom.remove(conversationId)) {
+                lastIndex to 0
+            } else {
+                scrollPositions[conversationId]
+                    ?.let { (index, offset) -> index.coerceIn(0, lastIndex) to offset }
+                    ?: (lastIndex to 0)
+            }
+        }
+    }
+
     suspend fun createCurrentConversation(
         userText: String,
         designModelId: String,
         targetImageModel: NovelAiImageModel,
-        naturalLanguageMode: Boolean = false
+        naturalLanguageMode: Boolean = false,
+        designContext: NovelAiDesignContextSnapshot = NovelAiDesignContextSnapshot()
     ): Pair<NovelAiDesignConversation, NovelAiDesignTurn> =
         mutex.withLock {
             require(userText.isNotBlank()) { "请输入画面内容" }
@@ -102,6 +126,7 @@ class NovelAiDesignConversationRepository(
             val conversation = NovelAiDesignConversation(
                 title = NovelAiDesignConversation.titleFrom(userText),
                 turns = listOf(turn),
+                designContext = designContext,
                 createdAt = now,
                 updatedAt = now
             )
@@ -216,7 +241,13 @@ class NovelAiDesignConversationRepository(
 
     suspend fun switchCurrent(conversationId: String) = mutex.withLock {
         requireConversationLocked(conversationId)
-        saveCurrentLocked(conversationId)
+        synchronized(scrollLock) { openAtBottom += conversationId }
+        try {
+            saveCurrentLocked(conversationId)
+        } catch (error: Throwable) {
+            synchronized(scrollLock) { openAtBottom.remove(conversationId) }
+            throw error
+        }
     }
 
     private suspend fun updateTurn(
@@ -274,6 +305,12 @@ class NovelAiDesignConversationRepository(
         }
         val staleIds = stale.mapTo(mutableSetOf(), NovelAiDesignConversation::id)
         _conversations.value = _conversations.value.filterNot { it.id in staleIds }
+        synchronized(scrollLock) {
+            staleIds.forEach {
+                scrollPositions.remove(it)
+                openAtBottom.remove(it)
+            }
+        }
     }
 
     companion object {

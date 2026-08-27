@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.imageprompt
 
+import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
+import com.example.chatbar.domain.image.NovelAiCharacterPromptSource
 import com.example.chatbar.domain.image.NovelAiDesignConversation
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
@@ -33,6 +35,61 @@ class ImagePromptToolUiStateTest {
                 )
             )
         )
+    }
+
+    @Test
+    fun `regeneration follows current natural language mode while preserving ordinary target`() {
+        val originalTurn = NovelAiDesignTurn(
+            targetImageModel = NovelAiImageModel.V4_5_FULL,
+            naturalLanguageMode = false
+        )
+
+        val natural = novelAiDesignRegenerationMode(
+            originalTurn,
+            NovelAiStudioDraft(
+                selectedModel = NovelAiImageModel.V4_5_FULL,
+                aiDesignNaturalLanguageMode = true
+            )
+        )
+        val ordinary = novelAiDesignRegenerationMode(
+            originalTurn.copy(
+                targetImageModel = NovelAiImageModel.V5_FULL,
+                naturalLanguageMode = true
+            ),
+            NovelAiStudioDraft(
+                selectedModel = NovelAiImageModel.V4_5_FULL,
+                aiDesignNaturalLanguageMode = false
+            )
+        )
+
+        assertTrue(natural.naturalLanguageMode)
+        assertEquals(NovelAiImageModel.V5_FULL, natural.targetImageModel)
+        assertFalse(ordinary.naturalLanguageMode)
+        assertEquals(NovelAiImageModel.V5_FULL, ordinary.targetImageModel)
+    }
+
+    @Test
+    fun `AI design context snapshot is detached from later studio draft changes`() {
+        val original = NovelAiStudioDraft(
+            characters = listOf(NovelAiCharacterPromptDraft(prompt = "first character")),
+            importedCharacterPromptSources = listOf(
+                NovelAiCharacterPromptSource(name = "first card", prompt = "first reference")
+            ),
+            extraRequirement = "first requirement"
+        )
+
+        val snapshot = novelAiDesignContextSnapshot(original)
+        val changed = original.copy(
+            characters = listOf(NovelAiCharacterPromptDraft(prompt = "other conversation")),
+            importedCharacterPromptSources = emptyList(),
+            extraRequirement = "other requirement"
+        )
+
+        assertEquals("first character", snapshot.characterPrompt)
+        assertEquals("first card", snapshot.characterImagePrompts.single().name)
+        assertEquals("first reference", snapshot.characterImagePrompts.single().prompt)
+        assertEquals("first requirement", snapshot.finalPromptRequirement)
+        assertEquals("other conversation", changed.characters.single().prompt)
     }
 
     @Test

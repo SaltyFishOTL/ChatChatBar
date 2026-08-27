@@ -1,9 +1,11 @@
 package com.example.chatbar.ui.imageprompt
 
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -24,6 +26,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -31,7 +34,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -73,6 +78,40 @@ fun NovelAiDesignScreen(
     val listState = rememberLazyListState()
     var showSettings by remember { mutableStateOf(false) }
     var editingExtraRequirement by remember { mutableStateOf(false) }
+    val closeScreen = {
+        viewModel.persistSettingsNow()
+        viewModel.leaveScreen()
+        onBack()
+    }
+    val conversationId = state.conversation?.id
+
+    BackHandler(enabled = editingExtraRequirement) {
+        viewModel.persistSettingsNow()
+        editingExtraRequirement = false
+    }
+    BackHandler(enabled = !editingExtraRequirement, onBack = closeScreen)
+
+    DisposableEffect(conversationId) {
+        onDispose {
+            if (conversationId != null) {
+                viewModel.rememberScrollPosition(
+                    conversationId,
+                    listState.firstVisibleItemIndex,
+                    listState.firstVisibleItemScrollOffset
+                )
+            }
+        }
+    }
+    LaunchedEffect(conversationId, state.composingNew) {
+        val conversation = state.conversation
+        if (conversation != null && !state.composingNew && conversation.turns.isNotEmpty()) {
+            val (index, offset) = viewModel.consumeInitialScrollPosition(
+                conversation.id,
+                conversation.turns.size
+            )
+            listState.scrollToItem(index, offset)
+        }
+    }
 
     LaunchedEffect(state.notice) {
         state.notice?.let { notice ->
@@ -94,23 +133,38 @@ fun NovelAiDesignScreen(
                 CbIconButton(
                     AppIcons.ArrowBack,
                     "返回生图工作室",
-                    {
-                        viewModel.persistSettingsNow()
-                        onBack()
-                    }
+                    closeScreen
                 )
             },
             actions = {
                 CbIconButton(
                     AppIcons.History,
                     "对话历史",
-                    onOpenHistory,
+                    {
+                        conversationId?.let {
+                            viewModel.rememberScrollPosition(
+                                it,
+                                listState.firstVisibleItemIndex,
+                                listState.firstVisibleItemScrollOffset
+                            )
+                        }
+                        onOpenHistory()
+                    },
                     enabled = !state.isGenerating
                 )
                 CbIconButton(
                     AppIcons.NewChat,
                     "新对话",
-                    viewModel::startNewConversation,
+                    {
+                        conversationId?.let {
+                            viewModel.rememberScrollPosition(
+                                it,
+                                listState.firstVisibleItemIndex,
+                                listState.firstVisibleItemScrollOffset
+                            )
+                        }
+                        viewModel.startNewConversation()
+                    },
                     enabled = !state.isGenerating
                 )
                 CbIconButton(
@@ -391,8 +445,18 @@ private fun PromptReplyBubble(
 
 @Composable
 private fun PromptCodeText(text: String) {
+    val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     CbSurface(
-        Modifier.fillMaxWidth(),
+        Modifier
+            .fillMaxWidth()
+            .combinedClickable(
+                onClick = {},
+                onLongClick = {
+                    clipboard.setText(AnnotatedString(text))
+                    Toast.makeText(context, "已复制该 Prompt 模块", Toast.LENGTH_SHORT).show()
+                }
+            ),
         color = ChatBarTheme.colors.surfaceSubtle,
         shape = RoundedCornerShape(ChatBarShape.sm)
     ) {

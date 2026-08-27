@@ -168,6 +168,12 @@ data class NovelAiAccountUiState(
     }
 }
 
+private fun NovelAiStudioDraft.hasSamePromptEditorContent(other: NovelAiStudioDraft): Boolean =
+    stylePrompt == other.stylePrompt &&
+        basePrompt == other.basePrompt &&
+        negativePrompt == other.negativePrompt &&
+        characters == other.characters
+
 data class NovelAiStudioImageImportUiState(
     val loading: Boolean = false,
     val source: ImportedProcessImage? = null,
@@ -179,6 +185,7 @@ data class NovelAiStudioImageImportUiState(
 data class ImagePromptToolUiState(
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val draftLoaded: Boolean = false,
+    val promptEditorRevision: Int = 0,
     val canUndoDraft: Boolean = false,
     val canRedoDraft: Boolean = false,
     val hasHistoryUndo: Boolean = false,
@@ -286,10 +293,17 @@ class ImagePromptToolViewModel : ViewModel() {
             repository.draft.collect { draft ->
                 draft ?: return@collect
                 val latestGuidanceCheckpoint = repository.loadGuidanceCheckpoint()
-                _uiState.update {
-                    it.copy(
+                _uiState.update { state ->
+                    val resetPromptEditors = state.draftLoaded &&
+                        !state.draft.hasSamePromptEditorContent(draft)
+                    state.copy(
                         draft = draft,
                         draftLoaded = true,
+                        promptEditorRevision = if (resetPromptEditors) {
+                            state.promptEditorRevision + 1
+                        } else {
+                            state.promptEditorRevision
+                        },
                         guidanceCheckpoint = latestGuidanceCheckpoint,
                         vibeCacheMisses = countVibeCacheMisses(draft),
                         hasHistoryUndo = repository.loadUndoDraft() != null,

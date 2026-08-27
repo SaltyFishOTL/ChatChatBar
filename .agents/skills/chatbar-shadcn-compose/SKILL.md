@@ -38,6 +38,7 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 - Every multi-line or otherwise large text input must expose standard `CbField(onFullscreenEdit = ...)` entry and reuse `FullscreenTextEditor`; keep screen state source of truth.
 - `CbInput` uses the state-based `TextFieldState` pipeline. Compatibility overloads must preserve text, selection, and IME composition; constrained fields filter through `InputTransformation`, not lossy `onValueChange` rewriting.
 - `FullscreenTextEditor` owns an internal transient text draft. Dismiss/× discards it; confirm/√ commits once. Custom confirm callbacks receive the final `String` or `TextFieldValue`; use `canConfirm` when validity depends on the transient draft.
+- Fullscreen entry/exit must preserve exact `TextFieldValue` selection and cursor, request focus, show the IME for immediate typing, keep status/navigation bars available, and apply status/navigation/IME insets without hiding phone controls.
 - `FullscreenTextEditor` is activity-hosted. When launching it from `CbDialog`, stop composing the dialog while the editor is visible, then restore it on close; the dialog's separate window otherwise covers the editor.
 - Chat keeps its composer above IME and uses explicit bottom anchoring so an already-bottomed timeline rises with the keyboard; historical reading positions must not be forced to the bottom. Do not attach `imeNestedScroll` to the timeline because reaching its end must never open the keyboard.
 

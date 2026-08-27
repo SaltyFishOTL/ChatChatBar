@@ -134,11 +134,19 @@ data class NovelAiDesignTurn(
 )
 
 @Serializable
+data class NovelAiDesignContextSnapshot(
+    val characterPrompt: String = "",
+    val characterImagePrompts: List<NovelAiCharacterPromptSource> = emptyList(),
+    val finalPromptRequirement: String = ""
+)
+
+@Serializable
 data class NovelAiDesignConversation(
     val id: String = UUID.randomUUID().toString(),
     val title: String = "新对话",
     val turns: List<NovelAiDesignTurn> = emptyList(),
     val initialResearch: NovelAiDesignResearchSnapshot? = null,
+    val designContext: NovelAiDesignContextSnapshot = NovelAiDesignContextSnapshot(),
     val createdAt: Long = System.currentTimeMillis(),
     val updatedAt: Long = createdAt
 ) {

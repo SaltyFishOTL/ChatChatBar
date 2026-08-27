@@ -5,6 +5,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiDesignConversation
+import com.example.chatbar.domain.image.NovelAiDesignContextSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignReply
 import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurn
@@ -158,6 +159,29 @@ class NovelAiDesignViewModel : ViewModel() {
         }
     }
 
+    fun leaveScreen() {
+        val state = _uiState.value
+        if (!state.composingNew) return
+        val current = conversationRepository.currentConversation()
+        _uiState.update {
+            it.copy(
+                conversation = current,
+                composingNew = current == null,
+                input = "",
+                progressText = "",
+                reasoningText = "",
+                error = null
+            )
+        }
+    }
+
+    fun rememberScrollPosition(conversationId: String, itemIndex: Int, scrollOffset: Int) {
+        conversationRepository.rememberScrollPosition(conversationId, itemIndex, scrollOffset)
+    }
+
+    fun consumeInitialScrollPosition(conversationId: String, itemCount: Int): Pair<Int, Int> =
+        conversationRepository.consumeInitialScrollPosition(conversationId, itemCount)
+
     fun sendMessage() {
         val state = _uiState.value
         val text = state.input.trim()
@@ -165,6 +189,9 @@ class NovelAiDesignViewModel : ViewModel() {
         val model = state.models.firstOrNull { it.id == state.selectedDesignModelId }
         if (model == null) {
             _uiState.update { it.copy(error = state.modelError ?: "Prompt 设计模型不可用") }
+            return
+        }
+        if (!state.composingNew && state.conversation?.id != conversationRepository.currentConversationId.value) {
             return
         }
         designJob = viewModelScope.launch {
@@ -175,17 +202,22 @@ class NovelAiDesignViewModel : ViewModel() {
                         userText = text,
                         designModelId = model.id,
                         targetImageModel = novelAiDesignTargetModel(state.draft),
-                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
+                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode,
+                        designContext = novelAiDesignContextSnapshot(state.draft)
                     )
                 } else {
                     val conversation = state.conversation
-                    conversation to conversationRepository.appendPendingTurn(
+                    val turn = conversationRepository.appendPendingTurn(
                         conversationId = conversation.id,
                         userText = text,
                         designModelId = model.id,
                         targetImageModel = novelAiDesignTargetModel(state.draft),
                         naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
                     )
+                    val updatedConversation = conversationRepository.conversations.value
+                        .firstOrNull { it.id == conversation.id }
+                        ?: error("AI 设计会话不存在")
+                    updatedConversation to turn
                 }
                 val conversation = pair.first
                 val turn = pair.second
@@ -210,7 +242,7 @@ class NovelAiDesignViewModel : ViewModel() {
                         // 会话已持久化；旧输入清理失败不应阻断本轮设计。
                     }
                 }
-                runTurn(conversation.id, turn.id, model, state.draft)
+                runTurn(conversation.id, turn.id, model)
             } catch (error: CancellationException) {
                 persistedTurn?.let { (conversationId, turnId) ->
                     withContext(NonCancellable) {
@@ -244,6 +276,7 @@ class NovelAiDesignViewModel : ViewModel() {
     fun retryTurn(turnId: String) {
         val state = _uiState.value
         val conversation = state.conversation ?: return
+        if (conversationRepository.currentConversationId.value != conversation.id) return
         val turn = conversation.turns.firstOrNull { it.id == turnId } ?: return
         if (state.isGenerating || turn.status == NovelAiDesignTurnStatus.COMPLETED) return
         val model = state.models.firstOrNull { it.id == state.selectedDesignModelId }
@@ -253,7 +286,6 @@ class NovelAiDesignViewModel : ViewModel() {
         }
         val replacesExistingReply = turn.reply != null
         launchExistingTurn(
-            state = state,
             conversation = conversation,
             turn = turn,
             model = model,
@@ -278,6 +310,7 @@ class NovelAiDesignViewModel : ViewModel() {
     fun regenerateTurn(turnId: String) {
         val state = _uiState.value
         val conversation = state.conversation ?: return
+        if (conversationRepository.currentConversationId.value != conversation.id) return
         val turn = conversation.turns.firstOrNull { it.id == turnId } ?: return
         if (state.isGenerating || conversation.latestRegeneratableTurnId != turnId) return
         val model = state.models.firstOrNull { it.id == state.selectedDesignModelId }
@@ -285,19 +318,18 @@ class NovelAiDesignViewModel : ViewModel() {
             _uiState.update { it.copy(error = state.modelError ?: "Prompt 设计模型不可用") }
             return
         }
+        val regenerationMode = novelAiDesignRegenerationMode(turn, state.draft)
         launchExistingTurn(
-            state = state,
             conversation = conversation,
             turn = turn,
             model = model,
-            targetImageModel = turn.targetImageModel,
-            naturalLanguageMode = turn.naturalLanguageMode,
+            targetImageModel = regenerationMode.targetImageModel,
+            naturalLanguageMode = regenerationMode.naturalLanguageMode,
             progressMessage = "正在重新生成 AI 设计…"
         )
     }
 
     private fun launchExistingTurn(
-        state: NovelAiDesignUiState,
         conversation: NovelAiDesignConversation,
         turn: NovelAiDesignTurn,
         model: ModelConfig,
@@ -328,7 +360,7 @@ class NovelAiDesignViewModel : ViewModel() {
                         error = null
                     )
                 }
-                runTurn(conversation.id, turn.id, model, state.draft)
+                runTurn(conversation.id, turn.id, model)
             } catch (error: CancellationException) {
                 throw error
             } catch (error: Throwable) {
@@ -356,8 +388,7 @@ class NovelAiDesignViewModel : ViewModel() {
     private suspend fun runTurn(
         conversationId: String,
         turnId: String,
-        model: ModelConfig,
-        draft: NovelAiStudioDraft
+        model: ModelConfig
     ) {
         try {
             val conversation = conversationRepository.conversations.value
@@ -370,15 +401,16 @@ class NovelAiDesignViewModel : ViewModel() {
                 .take(turnIndex)
                 .asReversed()
                 .firstNotNullOfOrNull(NovelAiDesignTurn::reply)
-            val characterPrompt = draft.characters.joinToString("\n\n") { it.prompt }
-            val cardPrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt }
+            val designContext = conversation.designContext
+            val characterPrompt = designContext.characterPrompt
+            val cardPrompts = designContext.characterImagePrompts.map { it.name to it.prompt }
             val playerName = settingsRepository.getPlayerSetting().playerName
             val designResult = if (previousReply == null) {
                 promptDesigner.designForPromptToolDetailed(
                     imageDescription = turn.userText,
                     characterPrompt = characterPrompt,
                     characterImagePrompts = cardPrompts,
-                    finalPromptRequirement = draft.extraRequirement,
+                    finalPromptRequirement = designContext.finalPromptRequirement,
                     model = model,
                     playerName = playerName,
                     targetImageModel = turn.targetImageModel,
@@ -393,7 +425,7 @@ class NovelAiDesignViewModel : ViewModel() {
                     characterPrompt = characterPrompt,
                     characterImagePrompts = cardPrompts,
                     initialResearch = conversation.initialResearch ?: NovelAiDesignResearchSnapshot(),
-                    finalPromptRequirement = draft.extraRequirement,
+                    finalPromptRequirement = designContext.finalPromptRequirement,
                     model = model,
                     playerName = playerName,
                     targetImageModel = turn.targetImageModel,
@@ -457,8 +489,10 @@ class NovelAiDesignViewModel : ViewModel() {
 
     fun applyReply(turnId: String) {
         val state = _uiState.value
-        val reply = state.conversation?.turns?.firstOrNull { it.id == turnId }?.reply ?: return
-        val key = "${state.conversation.id}:$turnId"
+        val conversation = state.conversation ?: return
+        if (conversationRepository.currentConversationId.value != conversation.id) return
+        val reply = conversation.turns.firstOrNull { it.id == turnId }?.reply ?: return
+        val key = "${conversation.id}:$turnId"
         if (state.applyingReplyKey != null) return
         viewModelScope.launch {
             _uiState.update { it.copy(applyingReplyKey = key, error = null) }
@@ -552,6 +586,33 @@ class NovelAiDesignViewModel : ViewModel() {
 
 internal fun novelAiDesignTargetModel(draft: NovelAiStudioDraft): NovelAiImageModel =
     if (draft.aiDesignNaturalLanguageMode) NovelAiImageModel.V5_FULL else draft.selectedModel
+
+internal data class NovelAiDesignRegenerationMode(
+    val targetImageModel: NovelAiImageModel,
+    val naturalLanguageMode: Boolean
+)
+
+internal fun novelAiDesignRegenerationMode(
+    turn: NovelAiDesignTurn,
+    draft: NovelAiStudioDraft
+): NovelAiDesignRegenerationMode = if (draft.aiDesignNaturalLanguageMode) {
+    NovelAiDesignRegenerationMode(
+        targetImageModel = NovelAiImageModel.V5_FULL,
+        naturalLanguageMode = true
+    )
+} else {
+    NovelAiDesignRegenerationMode(
+        targetImageModel = turn.targetImageModel,
+        naturalLanguageMode = false
+    )
+}
+
+internal fun novelAiDesignContextSnapshot(draft: NovelAiStudioDraft): NovelAiDesignContextSnapshot =
+    NovelAiDesignContextSnapshot(
+        characterPrompt = draft.characters.joinToString("\n\n") { it.prompt },
+        characterImagePrompts = draft.importedCharacterPromptSources,
+        finalPromptRequirement = draft.extraRequirement
+    )
 
 data class NovelAiDesignHistoryUiState(
     val initialized: Boolean = false,

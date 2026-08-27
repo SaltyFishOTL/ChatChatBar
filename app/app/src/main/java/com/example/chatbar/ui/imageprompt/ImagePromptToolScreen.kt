@@ -120,10 +120,10 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 
 private data class StudioFullscreenEditRequest(
     val title: String,
-    val text: String,
+    val value: TextFieldValue,
     val field: NovelAiPromptFieldKey?,
     val naturalLanguage: Boolean,
-    val onApply: (String) -> Unit
+    val onApply: (TextFieldValue) -> Unit
 )
 
 private data class StudioTagEditTarget(
@@ -200,14 +200,21 @@ fun ImagePromptToolScreen(
         viewModel.persistDraftNow()
         onBack()
     }
-    BackHandler(enabled = fullscreenEdit != null) { fullscreenEdit = null }
+    BackHandler(enabled = fullscreenEdit != null) {
+        fullscreenEdit = null
+        viewModel.restoreDraftPromptAnnotations()
+    }
 
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
     LaunchedEffect(imeVisible) {
         if (!imeVisible) viewModel.clearTagSuggestions()
     }
-    BoxWithConstraints(Modifier.fillMaxSize().imePadding()) {
+    BoxWithConstraints(
+        Modifier
+            .fillMaxSize()
+            .then(if (fullscreenEdit == null) Modifier.imePadding() else Modifier)
+    ) {
         val expandedOutputMaxHeight =
             (maxHeight * 0.5f - ChatBarSpacing.md * 2).coerceAtLeast(0.dp)
         Column(Modifier.fillMaxSize()) {
@@ -289,24 +296,26 @@ fun ImagePromptToolScreen(
             verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)
         ) {
             item {
-                PromptSection(
-                    state = state,
-                    viewModel = viewModel,
-                    onFullscreenEdit = { title, text, field, naturalLanguage, onApply ->
-                        fullscreenEdit = StudioFullscreenEditRequest(
-                            title = title,
-                            text = text,
-                            field = field,
-                            naturalLanguage = naturalLanguage,
-                            onApply = onApply
-                        )
-                    },
-                    onTagEditTarget = { activeTagEditTarget = it },
-                    onTagEditEnd = { field ->
-                        if (activeTagEditTarget?.field == field) activeTagEditTarget = null
-                        viewModel.clearTagSuggestions()
-                    }
-                )
+                key(state.promptEditorRevision) {
+                    PromptSection(
+                        state = state,
+                        viewModel = viewModel,
+                        onFullscreenEdit = { title, value, field, naturalLanguage, onApply ->
+                            fullscreenEdit = StudioFullscreenEditRequest(
+                                title = title,
+                                value = value,
+                                field = field,
+                                naturalLanguage = naturalLanguage,
+                                onApply = onApply
+                            )
+                        },
+                        onTagEditTarget = { activeTagEditTarget = it },
+                        onTagEditEnd = { field ->
+                            if (activeTagEditTarget?.field == field) activeTagEditTarget = null
+                            viewModel.clearTagSuggestions()
+                        }
+                    )
+                }
             }
             item {
                 GenerationSettingsSection(
@@ -318,7 +327,7 @@ fun ImagePromptToolScreen(
             }
             item { Spacer(Modifier.height(ChatBarSpacing.sm)) }
         }
-        CbSurface(
+        if (fullscreenEdit == null) CbSurface(
             modifier = Modifier.fillMaxWidth().navigationBarsPadding(),
             shape = RoundedCornerShape(topStart = ChatBarShape.lg, topEnd = ChatBarShape.lg),
             border = BorderStroke(1.dp, ChatBarTheme.colors.border),
@@ -413,8 +422,8 @@ fun ImagePromptToolScreen(
         fullscreenEdit?.let { request ->
             FullscreenTextEditor(
                 title = request.title,
-                text = request.text,
-                onTextChange = request.onApply,
+                value = request.value,
+                onValueChange = request.onApply,
                 visible = true,
                 onDismiss = {
                     fullscreenEdit = null
@@ -921,14 +930,14 @@ private fun OutputPanel(
                         Row(Modifier.width(112.dp)) {
                             NovelAiImageAction(
                                 AppIcons.Tune,
-                                "复用设置",
+                                "复用",
                                 "复用设置并使用新 Seed",
                                 !state.applyingHistory && !state.isBusy,
                                 Modifier.weight(1f)
                             ) { onApplyRecent(NovelAiHistoryApplyMode.NEW_SEED) }
                             NovelAiImageAction(
-                                AppIcons.Refresh,
-                                "复用 Seed",
+                                AppIcons.Seed,
+                                "Seed",
                                 "仅复用 Seed",
                                 !state.applyingHistory && !state.isBusy,
                                 Modifier.weight(1f)
@@ -1065,7 +1074,7 @@ internal fun ImagePreviewPanel(
 private fun PromptSection(
     state: ImagePromptToolUiState,
     viewModel: ImagePromptToolViewModel,
-    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit,
+    onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit,
     onTagEditTarget: (StudioTagEditTarget) -> Unit,
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit
 ) {
@@ -1105,6 +1114,7 @@ private fun PromptSection(
                 value = draft.stylePrompt,
                 field = styleField,
                 annotations = state.promptAnnotations[styleField].orEmpty(),
+                translationEnabled = translationEnabled,
                 minLines = 3,
                 editorHeight = 104.dp,
                 onValueChange = { viewModel.updateDraft("prompt:style") { draft -> draft.copy(stylePrompt = it) } },
@@ -1119,6 +1129,7 @@ private fun PromptSection(
                 value = draft.basePrompt,
                 field = baseField,
                 annotations = state.promptAnnotations[baseField].orEmpty(),
+                translationEnabled = translationEnabled,
                 naturalLanguage = false,
                 minLines = 3,
                 editorHeight = 150.dp,
@@ -1160,6 +1171,7 @@ private fun PromptSection(
                     value = draft.negativePrompt,
                     field = negativeField,
                     annotations = state.promptAnnotations[negativeField].orEmpty(),
+                    translationEnabled = translationEnabled,
                     minLines = 3,
                     onValueChange = { viewModel.updateDraft("prompt:negative") { draft -> draft.copy(negativePrompt = it) } },
                     onSuggest = viewModel::requestTagSuggestions,
@@ -1196,7 +1208,7 @@ private fun CharacterPromptEditor(
     character: NovelAiCharacterPromptDraft,
     state: ImagePromptToolUiState,
     viewModel: ImagePromptToolViewModel,
-    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit,
+    onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit,
     onTagEditTarget: (StudioTagEditTarget) -> Unit,
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit
 ) {
@@ -1218,6 +1230,7 @@ private fun CharacterPromptEditor(
                 value = character.prompt,
                 field = characterField,
                 annotations = state.promptAnnotations[characterField].orEmpty(),
+                translationEnabled = state.promptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED,
                 minLines = 2,
                 editorHeight = 104.dp,
                 onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character:${character.id}") { it.copy(prompt = value) } },
@@ -1239,6 +1252,7 @@ private fun CharacterPromptEditor(
                     value = character.negativePrompt,
                     field = negativeField,
                     annotations = state.promptAnnotations[negativeField].orEmpty(),
+                    translationEnabled = state.promptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED,
                     minLines = 2,
                     editorHeight = 104.dp,
                     onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character_negative:${character.id}") { it.copy(negativePrompt = value) } },
@@ -1365,6 +1379,7 @@ private fun TagPromptInput(
     value: String,
     field: NovelAiPromptFieldKey,
     annotations: List<NovelAiPromptAnnotation>,
+    translationEnabled: Boolean,
     naturalLanguage: Boolean = false,
     minLines: Int = 1,
     editorHeight: Dp = 150.dp,
@@ -1372,7 +1387,7 @@ private fun TagPromptInput(
     onSuggest: (NovelAiPromptFieldKey, String, Int) -> Unit,
     onTagEditTarget: (StudioTagEditTarget) -> Unit,
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit,
-    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit
+    onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit
 ) {
     var fieldValue by remember(field) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
     var inputGeneration by remember(field) { mutableIntStateOf(0) }
@@ -1394,15 +1409,15 @@ private fun TagPromptInput(
     DisposableEffect(field) {
         onDispose { onTagEditEnd(field) }
     }
-    val applyFullscreenText: (String) -> Unit = { text ->
-        fieldValue = TextFieldValue(text, TextRange(text.length))
-        onValueChange(text)
+    val applyFullscreenValue: (TextFieldValue) -> Unit = { next ->
+        fieldValue = next.copy(composition = null)
+        onValueChange(next.text)
     }
     CbField(
         label,
         modifier = Modifier.fillMaxWidth(),
         onFullscreenEdit = {
-            onFullscreenEdit(label, fieldValue.text, field, naturalLanguage, applyFullscreenText)
+            onFullscreenEdit(label, fieldValue, field, naturalLanguage, applyFullscreenValue)
         }
     ) {
         Box(Modifier.fillMaxWidth()) {
@@ -1424,14 +1439,18 @@ private fun TagPromptInput(
                     singleLine = false,
                     minLines = minLines,
                     expand = true,
-                    textStyle = ChatBarTheme.typography.body.copy(
-                        lineHeight = 25.sp,
-                        lineHeightStyle = LineHeightStyle(
-                            alignment = LineHeightStyle.Alignment.Top,
-                            trim = LineHeightStyle.Trim.None
-                        ),
-                        lineBreak = LineBreak.Paragraph
-                    ),
+                    textStyle = if (translationEnabled) {
+                        ChatBarTheme.typography.body.copy(
+                            lineHeight = 25.sp,
+                            lineHeightStyle = LineHeightStyle(
+                                alignment = LineHeightStyle.Alignment.Top,
+                                trim = LineHeightStyle.Trim.None
+                            ),
+                            lineBreak = LineBreak.Paragraph
+                        )
+                    } else {
+                        ChatBarTheme.typography.body.copy(lineBreak = LineBreak.Paragraph)
+                    },
                     outputTransformation = wrappingTransformation,
                     textOverlay = { layout, scrollOffset ->
                         PromptTranslationOverlay(
@@ -1599,9 +1618,16 @@ private fun StudioMultilineInput(
     value: String,
     minLines: Int,
     onValueChange: (String) -> Unit,
-    onFullscreenEdit: (String, String, NovelAiPromptFieldKey?, Boolean, (String) -> Unit) -> Unit
+    onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit
 ) {
-    CbField(label, onFullscreenEdit = { onFullscreenEdit(label, value, null, false, onValueChange) }) {
+    CbField(label, onFullscreenEdit = {
+        onFullscreenEdit(
+            label,
+            TextFieldValue(value, TextRange(value.length)),
+            null,
+            false
+        ) { onValueChange(it.text) }
+    }) {
         CbInput(value, onValueChange, singleLine = false, minLines = minLines)
     }
 }

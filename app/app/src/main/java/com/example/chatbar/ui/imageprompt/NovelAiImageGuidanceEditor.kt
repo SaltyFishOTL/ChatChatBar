@@ -43,6 +43,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
@@ -463,7 +464,12 @@ fun NovelAiImageGuidanceEditor(
                 )
 
                 Box(
-                    Modifier.weight(1f).fillMaxWidth().background(Color(0xFF111318)).onSizeChanged { canvasSize = it }
+                    Modifier
+                        .weight(1f)
+                        .fillMaxWidth()
+                        .clipToBounds()
+                        .background(Color(0xFF111318))
+                        .onSizeChanged { canvasSize = it }
                 ) {
                     if (source != null) {
                         Canvas(

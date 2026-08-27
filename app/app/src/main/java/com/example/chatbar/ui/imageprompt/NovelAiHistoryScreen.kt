@@ -539,10 +539,10 @@ internal fun HistoryDetailDialog(
                     ) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.FULL)
                     }
-                    NovelAiImageAction(AppIcons.Tune, "复用设置", "复用设置并使用新 Seed", !busy, Modifier.weight(1f)) {
+                    NovelAiImageAction(AppIcons.Tune, "复用", "复用设置并使用新 Seed", !busy, Modifier.weight(1f)) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.NEW_SEED)
                     }
-                    NovelAiImageAction(AppIcons.Refresh, "复用 Seed", "仅复用 Seed", !busy, Modifier.weight(1f)) {
+                    NovelAiImageAction(AppIcons.Seed, "Seed", "仅复用 Seed", !busy, Modifier.weight(1f)) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.SEED_ONLY)
                     }
                     NovelAiImageAction(AppIcons.AddPhotoAlternate, "用作", "用作图像引导", !busy, Modifier.weight(1f)) {

@@ -19,6 +19,7 @@ import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.ExperimentalSerializationApi
@@ -503,7 +504,7 @@ class TagSuggestClient internal constructor(
             .header("User-Agent", TAG_SUGGEST_USER_AGENT)
             .get()
             .build()
-        val responseText = awaitBody(request)
+        val responseText = awaitBodyWithGatewayRetry(request, normalized)
         val candidates = parseResponse(responseText).take(MAX_TAG_CANDIDATES_PER_QUERY)
         cache(cacheKey, candidates)
         return NovelAiTagSearchOutcome(
@@ -532,7 +533,11 @@ class TagSuggestClient internal constructor(
                         .replace(Regex("\\s+"), " ")
                         .trim()
                         .take(MAX_TRANSLATED_TAG_CHARS),
-                    count = obj["count"]?.jsonPrimitive?.longOrNull?.coerceAtLeast(0L) ?: 0L,
+                    count = (obj["count"] ?: obj["post_count"])
+                        ?.jsonPrimitive
+                        ?.longOrNull
+                        ?.coerceAtLeast(0L)
+                        ?: 0L,
                     category = category
                 )
             }.getOrNull()
@@ -560,6 +565,25 @@ class TagSuggestClient internal constructor(
         }
     }
 
+    private suspend fun awaitBodyWithGatewayRetry(request: Request, query: String): String {
+        var lastFailure: IOException? = null
+        repeat(TAG_SUGGEST_GATEWAY_ATTEMPTS) { attempt ->
+            try {
+                return awaitBody(request)
+            } catch (error: TagSuggestHttpException) {
+                if (error.statusCode !in TAG_SUGGEST_RETRYABLE_STATUS_CODES ||
+                    attempt == TAG_SUGGEST_GATEWAY_ATTEMPTS - 1
+                ) {
+                    throw error
+                }
+                lastFailure = error
+                val jitter = query.lowercase(Locale.ROOT).hashCode().toUInt().toLong() % 180L
+                delay(TAG_SUGGEST_GATEWAY_RETRY_DELAY_MS * (attempt + 1) + jitter)
+            }
+        }
+        throw lastFailure ?: IOException("TagSuggest 请求失败")
+    }
+
     private suspend fun awaitBody(request: Request): String = suspendCancellableCoroutine { continuation ->
         val call = client.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
@@ -578,7 +602,7 @@ class TagSuggestClient internal constructor(
                     if (!response.isSuccessful) {
                         if (continuation.isActive) {
                             continuation.resumeWithException(
-                                IOException("TagSuggest HTTP ${response.code}: ${body.take(240)}")
+                                TagSuggestHttpException(response.code, body)
                             )
                         }
                         return
@@ -589,6 +613,11 @@ class TagSuggestClient internal constructor(
         })
     }
 }
+
+private class TagSuggestHttpException(
+    val statusCode: Int,
+    responseBody: String
+) : IOException("TagSuggest HTTP $statusCode: ${responseBody.take(240)}")
 
 class NovelAiTagResearchService(
     private val planner: NovelAiTagSearchPlanner,
@@ -1007,7 +1036,7 @@ private fun String.isValidDanbooruTagName(): Boolean =
 private fun buildTagSuggestClient(): OkHttpClient {
     val dispatcher = Dispatcher().apply {
         maxRequests = MAX_TAG_SEARCH_QUERIES
-        maxRequestsPerHost = MAX_TAG_SEARCH_QUERIES
+        maxRequestsPerHost = MAX_TAG_SUGGEST_REQUESTS_PER_HOST
     }
     return ProxyAwareClient.builder()
         .dispatcher(dispatcher)
@@ -1019,6 +1048,7 @@ private fun buildTagSuggestClient(): OkHttpClient {
 }
 
 internal const val MAX_TAG_SEARCH_QUERIES = 6
+private const val MAX_TAG_SUGGEST_REQUESTS_PER_HOST = 3
 internal const val MAX_TAG_CANDIDATES_PER_QUERY = 8
 internal const val MAX_TOTAL_TAG_CANDIDATES = 24
 private const val MIN_TAG_QUERY_LENGTH = 2
@@ -1030,9 +1060,12 @@ private const val TAG_SEARCH_REQUEST_TIMEOUT_MS = 8_000L
 private const val TAG_SEARCH_BATCH_TIMEOUT_MS = 20_000L
 private const val TAG_SUGGEST_CACHE_TTL_MS = 30 * 60 * 1000L
 private const val TAG_SUGGEST_CACHE_MAX_ENTRIES = 128
+private const val TAG_SUGGEST_GATEWAY_ATTEMPTS = 3
+private const val TAG_SUGGEST_GATEWAY_RETRY_DELAY_MS = 350L
 private const val TAG_SUGGEST_BASE_URL = "https://tagsuggest.zeabur.app/"
 private const val TAG_SUGGEST_USER_AGENT = "ChatBar/1.0 (Android; NovelAI tag research)"
 private const val TAG_SEARCH_ACTION_SEARCH = "search"
 private const val TAG_SEARCH_ACTION_FINISH = "finish"
 private val TAG_SEARCH_ACTION_ALIASES = setOf("search", "query", "lookup", "搜索", "查询")
 private val TAG_SEARCH_FINISH_ACTIONS = setOf("finish", "done", "stop", "结束", "完成")
+private val TAG_SUGGEST_RETRYABLE_STATUS_CODES = setOf(502, 503, 504)
