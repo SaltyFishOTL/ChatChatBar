@@ -10,12 +10,28 @@
       "previewImage": "精细莹润.png"
     },
     {
+      "styleKey": "weimeishouhui",
+      "displayName": "唯美手绘",
+      "description": "由P站 只是一只企鹅 提供",
+      "modelSupport": "BOTH",
+      "prompt": "-6::artist collaboration::,\nsos_adult,ie_(raarami),0.9::ushikani_kassen,starshadowmagician::,1.2::gogalking,wenquangua,Anmi,iris_yi,ryuuzaki_ichi::,0.8::qiandaiyiyu,Skade,::,0.6::ningen_mame::,1.2::gogalking::,1.5::teshima_nari,::,glistening skin, -2::green doll::\n\npainterly anti-flat, soft gradients, ambient occlusion, warm subsurface skin, no cel shading, no flat colors, painterly brushwork, highly detailed, depth of field\n\n",
+      "previewImage": "唯美手绘.png"
+    },
+    {
       "styleKey": "luminous_stroke",
       "displayName": "透光厚涂",
       "description": "由P站 duxingz 提供",
       "modelSupport": "BOTH",
       "prompt": "-2::flat_color::, -2::artist collaboration::, 0.95::feipin_zhanshi(year 2025)::, 1.2::sincos(year 2025)::, 0.25::katsura harufumi::, 0.6::healthyman::, 0.7::lunch_(shin_new)::,\n1.5::masterpiece::, 1.5::best quality::, 2::ultra-detailed::, 2::8k resolution::, amazing quality, absurdres, very aesthetic, amazing, -2::sweat::,",
       "previewImage": "透光厚涂.png"
+    },
+    {
+      "styleKey": "xnqt",
+      "displayName": "细腻浅涂",
+      "description": "由P站 duxingz 提供",
+      "modelSupport": "V5",
+      "prompt": "2::artist collaboration::, 0.5::feipin_zhanshi::, 0.5::sincos::, 0.3::katsura harufumi::, 1.2::healthyman::, 1.1::lunch_(shin_new)::, year 2025,  year 2026,  masterpiece, best quality, ultra-detailed, 8k resolution, amazing quality, absurdres, very aesthetic, amazing, depthness, high complexity, 厚涂,\n\npainterly anti-flat, soft gradients, ambient occlusion, warm subsurface skin, no cel shading, no flat colors, painterly brushwork, highly detailed, depth of field\n\n",
+      "previewImage": "细腻浅涂.png"
     },
     {
       "styleKey": "art",
