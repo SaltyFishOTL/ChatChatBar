@@ -148,6 +148,11 @@ data class NovelAiDesignConversation(
     val hasBlockingTurn: Boolean
         get() = turns.lastOrNull()?.let { it.status != NovelAiDesignTurnStatus.COMPLETED } == true
 
+    val latestRegeneratableTurnId: String?
+        get() = turns.lastOrNull()
+            ?.takeIf { it.status == NovelAiDesignTurnStatus.COMPLETED && it.reply != null }
+            ?.id
+
     companion object {
         fun titleFrom(text: String): String = text
             .lineSequence()

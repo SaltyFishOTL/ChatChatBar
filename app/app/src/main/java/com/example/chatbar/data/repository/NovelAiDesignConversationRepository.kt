@@ -170,7 +170,8 @@ class NovelAiDesignConversationRepository(
         conversationId: String,
         turnId: String,
         reply: NovelAiDesignReply,
-        initialResearch: NovelAiDesignResearchSnapshot? = null
+        initialResearch: NovelAiDesignResearchSnapshot? = null,
+        replaceInitialResearch: Boolean = false
     ) = mutex.withLock {
         val conversation = requireConversationLocked(conversationId)
         val now = nextTimestampLocked()
@@ -190,7 +191,11 @@ class NovelAiDesignConversationRepository(
         saveConversationLocked(
             conversation.copy(
                 turns = turns,
-                initialResearch = conversation.initialResearch ?: initialResearch,
+                initialResearch = if (replaceInitialResearch) {
+                    initialResearch ?: conversation.initialResearch
+                } else {
+                    conversation.initialResearch ?: initialResearch
+                },
                 updatedAt = now
             )
         )

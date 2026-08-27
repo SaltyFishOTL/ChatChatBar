@@ -5,6 +5,8 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.domain.image.DesignedCharacterCenter
 import com.example.chatbar.domain.image.NovelAiCharacterCaption
 import com.example.chatbar.domain.image.NovelAiDesignReply
+import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
+import com.example.chatbar.domain.image.NovelAiDesignTagEvidenceSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiPromptPlan
@@ -136,16 +138,61 @@ class NovelAiDesignConversationRepositoryTest {
         assertEquals("new base", completed?.reply?.plan?.baseCaption)
     }
 
+    @Test
+    fun `regenerating latest first reply replaces reply and initial research`() = runTest {
+        val repository = repository()
+        repository.initialize()
+        val (conversation, turn) = repository.createCurrentConversation(
+            "雨夜拥抱",
+            "designer-a",
+            NovelAiImageModel.V5_FULL
+        )
+        repository.completeTurn(
+            conversation.id,
+            turn.id,
+            NovelAiDesignReply(promptPlan("old base"), NovelAiImageModel.V5_FULL, "designer-a"),
+            initialResearch = research("旧证据")
+        )
+
+        assertEquals(turn.id, repository.currentConversation()?.latestRegeneratableTurnId)
+        repository.markTurnPending(
+            conversation.id,
+            turn.id,
+            "designer-b",
+            NovelAiImageModel.V5_FULL
+        )
+        val pending = repository.currentConversation()?.turns?.single()
+        assertEquals(NovelAiDesignTurnStatus.PENDING, pending?.status)
+        assertEquals("old base", pending?.reply?.plan?.baseCaption)
+
+        repository.completeTurn(
+            conversation.id,
+            turn.id,
+            NovelAiDesignReply(promptPlan("regenerated base"), NovelAiImageModel.V5_FULL, "designer-b"),
+            initialResearch = research("新证据"),
+            replaceInitialResearch = true
+        )
+
+        val regenerated = repository.currentConversation()
+        assertEquals("regenerated base", regenerated?.turns?.single()?.reply?.plan?.baseCaption)
+        assertEquals("新证据", regenerated?.initialResearch?.tagEvidence?.single()?.name)
+        assertEquals(turn.id, regenerated?.latestRegeneratableTurnId)
+    }
+
     private fun repository(): NovelAiDesignConversationRepository =
         NovelAiDesignConversationRepository(
             JsonFileStorage(TestContext(temp.newFolder("files-${System.nanoTime()}")))
         )
 
-    private fun promptPlan() = NovelAiPromptPlan(
-        baseCaption = "new base",
+    private fun promptPlan(baseCaption: String = "new base") = NovelAiPromptPlan(
+        baseCaption = baseCaption,
         characterCaptions = listOf(
             NovelAiCharacterCaption("new character", DesignedCharacterCenter(0.5f, 0.5f))
         )
+    )
+
+    private fun research(name: String) = NovelAiDesignResearchSnapshot(
+        tagEvidence = listOf(NovelAiDesignTagEvidenceSnapshot(query = "雨夜", name = name))
     )
 
     private class TestContext(private val dir: File) : ContextWrapper(null) {

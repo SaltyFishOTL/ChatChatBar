@@ -251,50 +251,98 @@ class NovelAiDesignViewModel : ViewModel() {
             _uiState.update { it.copy(error = state.modelError ?: "Prompt 设计模型不可用") }
             return
         }
+        val replacesExistingReply = turn.reply != null
+        launchExistingTurn(
+            state = state,
+            conversation = conversation,
+            turn = turn,
+            model = model,
+            targetImageModel = if (replacesExistingReply) {
+                turn.targetImageModel
+            } else {
+                novelAiDesignTargetModel(state.draft)
+            },
+            naturalLanguageMode = if (replacesExistingReply) {
+                turn.naturalLanguageMode
+            } else {
+                state.draft.aiDesignNaturalLanguageMode
+            },
+            progressMessage = if (replacesExistingReply) {
+                "正在重试重新生成…"
+            } else {
+                "正在重试 AI 设计…"
+            }
+        )
+    }
+
+    fun regenerateTurn(turnId: String) {
+        val state = _uiState.value
+        val conversation = state.conversation ?: return
+        val turn = conversation.turns.firstOrNull { it.id == turnId } ?: return
+        if (state.isGenerating || conversation.latestRegeneratableTurnId != turnId) return
+        val model = state.models.firstOrNull { it.id == state.selectedDesignModelId }
+        if (model == null) {
+            _uiState.update { it.copy(error = state.modelError ?: "Prompt 设计模型不可用") }
+            return
+        }
+        launchExistingTurn(
+            state = state,
+            conversation = conversation,
+            turn = turn,
+            model = model,
+            targetImageModel = turn.targetImageModel,
+            naturalLanguageMode = turn.naturalLanguageMode,
+            progressMessage = "正在重新生成 AI 设计…"
+        )
+    }
+
+    private fun launchExistingTurn(
+        state: NovelAiDesignUiState,
+        conversation: NovelAiDesignConversation,
+        turn: NovelAiDesignTurn,
+        model: ModelConfig,
+        targetImageModel: NovelAiImageModel,
+        naturalLanguageMode: Boolean,
+        progressMessage: String
+    ) {
+        if (designJob?.isActive == true) return
         designJob = viewModelScope.launch {
             var markedPending = false
             try {
                 conversationRepository.markTurnPending(
                     conversationId = conversation.id,
-                    turnId = turnId,
+                    turnId = turn.id,
                     designModelId = model.id,
-                    targetImageModel = novelAiDesignTargetModel(state.draft),
-                    naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
+                    targetImageModel = targetImageModel,
+                    naturalLanguageMode = naturalLanguageMode
                 )
                 markedPending = true
                 _uiState.update {
                     it.copy(
-                        generatingTurnId = turnId,
-                        progressText = "正在重试 AI 设计…",
+                        generatingTurnId = turn.id,
+                        progressText = progressMessage,
                         reasoningText = "",
+                        appliedReplyKey = it.appliedReplyKey?.takeUnless { key ->
+                            key == "${conversation.id}:${turn.id}"
+                        },
                         error = null
                     )
                 }
-                runTurn(conversation.id, turnId, model, state.draft)
+                runTurn(conversation.id, turn.id, model, state.draft)
             } catch (error: CancellationException) {
-                if (markedPending) {
-                    withContext(NonCancellable) {
-                        conversationRepository.failTurn(
-                            conversationId = conversation.id,
-                            turnId = turnId,
-                            error = "已停止生成，可重试",
-                            cancelled = true
-                        )
-                    }
-                }
                 throw error
             } catch (error: Throwable) {
                 if (markedPending) {
                     conversationRepository.failTurn(
                         conversationId = conversation.id,
-                        turnId = turnId,
+                        turnId = turn.id,
                         error = error.message ?: "AI 设计重试失败"
                     )
                 }
                 _uiState.update { it.copy(error = error.message ?: "AI 设计重试失败") }
             } finally {
                 _uiState.update { current ->
-                    if (current.generatingTurnId == turnId) {
+                    if (current.generatingTurnId == turn.id) {
                         current.copy(generatingTurnId = null, progressText = "", reasoningText = "")
                     } else {
                         current
@@ -317,6 +365,7 @@ class NovelAiDesignViewModel : ViewModel() {
                 ?: error("AI 设计会话不存在")
             val turnIndex = conversation.turns.indexOfFirst { it.id == turnId }
             val turn = conversation.turns.getOrNull(turnIndex) ?: error("AI 设计轮次不存在")
+            val replacesExistingReply = turn.reply != null
             val previousReply = conversation.turns
                 .take(turnIndex)
                 .asReversed()
@@ -367,7 +416,8 @@ class NovelAiDesignViewModel : ViewModel() {
                 conversationId = conversationId,
                 turnId = turnId,
                 reply = reply,
-                initialResearch = if (previousReply == null) designResult.research else null
+                initialResearch = if (previousReply == null) designResult.research else null,
+                replaceInitialResearch = previousReply == null && replacesExistingReply
             )
         } catch (error: CancellationException) {
             withContext(NonCancellable) {

@@ -162,12 +162,17 @@ fun NovelAiDesignScreen(
                         UserDesignBubble(turn.userText)
                         turn.reply?.let { reply ->
                             val key = "${conversation.id}:${turn.id}"
+                            val regenerating = state.generatingTurnId == turn.id
                             PromptReplyBubble(
                                 reply = reply,
                                 modelName = reply.targetImageModel.displayName,
                                 applying = state.applyingReplyKey == key,
                                 applied = state.appliedReplyKey == key,
-                                onApply = { viewModel.applyReply(turn.id) }
+                                regenerating = regenerating,
+                                canRegenerate = conversation.latestRegeneratableTurnId == turn.id &&
+                                    !state.isGenerating && state.modelError == null,
+                                onApply = { viewModel.applyReply(turn.id) },
+                                onRegenerate = { viewModel.regenerateTurn(turn.id) }
                             )
                         }
                         if (state.generatingTurnId == turn.id) {
@@ -316,7 +321,10 @@ private fun PromptReplyBubble(
     modelName: String,
     applying: Boolean,
     applied: Boolean,
-    onApply: () -> Unit
+    regenerating: Boolean,
+    canRegenerate: Boolean,
+    onApply: () -> Unit,
+    onRegenerate: () -> Unit
 ) {
     val plan = reply.plan
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Start) {
@@ -349,18 +357,33 @@ private fun PromptReplyBubble(
                     )
                     PromptCodeText(caption.prompt)
                 }
-                CbButton(
-                    text = when {
-                        applying -> "正在应用"
-                        applied -> "已应用"
-                        else -> "应用到工作室"
-                    },
-                    onClick = onApply,
-                    modifier = Modifier.fillMaxWidth(),
-                    enabled = !applying,
-                    variant = if (applied) ButtonVariant.Secondary else ButtonVariant.Default,
-                    size = ButtonSize.Sm
-                )
+                Row(
+                    Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+                ) {
+                    CbButton(
+                        text = when {
+                            applying -> "正在应用"
+                            applied -> "已应用"
+                            else -> "应用到工作室"
+                        },
+                        onClick = onApply,
+                        modifier = Modifier.weight(1f),
+                        enabled = !applying && !regenerating,
+                        variant = if (applied) ButtonVariant.Secondary else ButtonVariant.Default,
+                        size = ButtonSize.Sm
+                    )
+                    if (canRegenerate || regenerating) {
+                        CbButton(
+                            text = if (regenerating) "重新生成中" else "重新生成",
+                            onClick = onRegenerate,
+                            modifier = Modifier.weight(1f),
+                            enabled = canRegenerate,
+                            variant = ButtonVariant.Outline,
+                            size = ButtonSize.Sm
+                        )
+                    }
+                }
             }
         }
     }
