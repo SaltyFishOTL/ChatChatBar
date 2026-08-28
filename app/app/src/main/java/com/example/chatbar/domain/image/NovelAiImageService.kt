@@ -277,8 +277,15 @@ class NovelAiImageService(
                         put("mask", requireNotNull(imageGuidance.maskBase64) { "Inpaint 缺少蒙版" })
                         put("strength", imageGuidance.imageToImageStrength.coerceIn(0f, 1f))
                         put("noise", imageGuidance.imageToImageNoise.coerceIn(0f, 1f))
-                        put("inpaintImg2ImgStrength", imageGuidance.inpaintStrength.coerceIn(0f, 1f))
+                        val inpaintStrength = imageGuidance.inpaintStrength.coerceIn(0f, 1f)
+                        put("inpaintImg2ImgStrength", inpaintStrength)
                         put("add_original_image", false)
+                        if (inpaintStrength != 1f) {
+                            put("img2img", buildJsonObject {
+                                put("strength", inpaintStrength)
+                                put("color_correct", true)
+                            })
+                        }
                     }
                     NovelAiGenerationAction.TEXT_TO_IMAGE -> Unit
                 }

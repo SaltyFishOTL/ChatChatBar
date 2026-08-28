@@ -1,0 +1,12 @@
+Danbooru Tag 中英文对照表
+
+Source:
+https://github.com/ffdkj/ffdkj-Danbooru_Tag-Chinese-English-Translation-Table
+
+Bundled database version:
+Git blob 3d74447ca001cd2cb7ba59e30aec441614f24551
+Source commit 3049e201002a64702873d7f9f3cc7cb8c45ea325
+Source commit time 2026-08-28T02:35:32Z
+
+The ChatBar project owner confirmed permission to distribute this database in the app.
+Danbooru tag names and metadata remain attributable to their respective upstream sources.

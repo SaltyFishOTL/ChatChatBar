@@ -174,6 +174,27 @@ class NovelAiStudioRequestTest {
         assertEquals("0.1", parameters.getValue("noise").jsonPrimitive.content)
         assertEquals("1.0", parameters.getValue("inpaintImg2ImgStrength").jsonPrimitive.content)
         assertEquals("false", parameters.getValue("add_original_image").jsonPrimitive.content)
+        assertEquals(null, parameters["img2img"])
+    }
+
+    @Test
+    fun `focused inpaint strength uses official nested img2img color correction`() {
+        val parameters = Json.parseToJsonElement(
+            NovelAiImageService().buildRequestBody(
+                prompt = NovelAiPromptPlan("scene", emptyList()),
+                imageSize = NovelAiImageSize(1024, 1024, "Focused Inpainting"),
+                settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),
+                imageGuidance = NovelAiPreparedImageGuidance(
+                    action = NovelAiGenerationAction.INPAINT,
+                    imageBase64 = "source",
+                    maskBase64 = "mask",
+                    inpaintStrength = 0.65f
+                )
+            )
+        ).jsonObject.getValue("parameters").jsonObject
+        val img2img = parameters.getValue("img2img").jsonObject
+        assertEquals("0.65", img2img.getValue("strength").jsonPrimitive.content)
+        assertEquals("true", img2img.getValue("color_correct").jsonPrimitive.content)
     }
 
     @Test

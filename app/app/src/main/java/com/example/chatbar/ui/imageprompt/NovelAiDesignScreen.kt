@@ -588,7 +588,7 @@ private fun NovelAiDesignSettingsDialog(
             }
             CbField(
                 label = "自然语言模式",
-                description = "仅适用于 V5。保留画面规划、TagSuggest、法典和最终 AI 设计；基础区使用中文自然语言，角色区保留英文 Tag、互动语法与独立分区。应用时自动切换 V5。"
+                description = "仅适用于 V5。保留画面规划、Danbooru 词条库、法典和最终 AI 设计；基础区使用中文自然语言，角色区保留英文 Tag、互动语法与独立分区。应用时自动切换 V5。"
             ) {
                 Row(
                     Modifier.fillMaxWidth(),

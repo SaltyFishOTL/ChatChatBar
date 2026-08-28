@@ -27,9 +27,10 @@ import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageCostEstimator
 import com.example.chatbar.domain.image.NovelAiGenerationAction
+import com.example.chatbar.domain.image.NovelAiFocusedInpaintPlan
+import com.example.chatbar.domain.image.NovelAiFocusedInpaintProcessor
 import com.example.chatbar.domain.image.NovelAiImageGuidanceDraft
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
-import com.example.chatbar.domain.image.NovelAiInpaintMaskEncoder
 import com.example.chatbar.domain.image.NovelAiInpaintResultComposer
 import com.example.chatbar.domain.image.NovelAiPreparedImageGuidance
 import com.example.chatbar.domain.image.NovelAiPreparedVibeReference
@@ -73,6 +74,13 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+
+private data class PreparedImageGuidanceResult(
+    val guidance: NovelAiPreparedImageGuidance,
+    val updatedDraft: NovelAiImageGuidanceDraft,
+    val focusedInpaintPlan: NovelAiFocusedInpaintPlan? = null,
+    val focusedInpaintBlendMask: ByteArray? = null
+)
 
 enum class ImagePromptToolPhase {
     IDLE, DESIGNING, READY, GENERATING, STREAMING, SAVING, CANCELLING, FINISHED, FAILED, CANCELLED
@@ -254,7 +262,7 @@ class ImagePromptToolViewModel : ViewModel() {
     private val imageService = app.novelAiImageService
     private val accountService = app.novelAiAccountService
     private val imageStorage = app.novelAiImageStorage
-    private val tagSuggestClient = app.novelAiTagSuggestClient
+    private val danbooruTagCatalog = app.novelAiDanbooruTagCatalog
     private val promptTranslationService = app.novelAiPromptTranslationService
     private val promptTokenCounter = app.novelAiPromptTokenCounter
     private val guidanceAssets = app.novelAiStudioAssetStorage
@@ -922,14 +930,16 @@ class ImagePromptToolViewModel : ViewModel() {
             val historyId = UUID.randomUUID().toString()
             try {
                 val preparedResult = prepareImageGuidance(token, draft, requestSettings.model)
-                val preparedGuidance = preparedResult.first
-                val generationDraft = draft.copy(imageGuidance = preparedResult.second)
+                val preparedGuidance = preparedResult.guidance
+                val generationDraft = draft.copy(imageGuidance = preparedResult.updatedDraft)
+                val requestImageSize = preparedResult.focusedInpaintPlan?.requestSize
+                    ?: requestSettings.imageSize()
                 val images = mutableListOf<ByteArray>()
                 var streamError: String? = null
                 imageService.generate(
                     token,
                     plan,
-                    requestSettings.imageSize(),
+                    requestImageSize,
                     requestSettings,
                     preparedGuidance
                 ).collect { event ->
@@ -945,12 +955,13 @@ class ImagePromptToolViewModel : ViewModel() {
                             )
                         }
                         is NovelAiImageEvent.Final -> {
-                            val finalImage = if (generationDraft.imageGuidance.action == NovelAiGenerationAction.INPAINT) {
+                            val finalImage = if (preparedResult.focusedInpaintPlan != null) {
                                 withContext(Dispatchers.Default) {
                                     NovelAiInpaintResultComposer.compose(
                                         generatedPng = event.image,
                                         baseImage = requireNotNull(generationDraft.imageGuidance.baseImage),
-                                        originalMask = requireNotNull(generationDraft.imageGuidance.maskImage)
+                                        focusedPlan = preparedResult.focusedInpaintPlan,
+                                        blendMaskAlpha = requireNotNull(preparedResult.focusedInpaintBlendMask)
                                     )
                                 }
                             } else {
@@ -1082,14 +1093,14 @@ class ImagePromptToolViewModel : ViewModel() {
             delay(250)
             _uiState.update { it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, loading = true)) }
             try {
-                val result = tagSuggestClient.search(fragment.query)
+                val result = danbooruTagCatalog.search(fragment.query)
                 _uiState.update {
                     it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, candidates = result.candidates.take(8)))
                 }
             } catch (error: Throwable) {
                 if (error is CancellationException) throw error
                 _uiState.update {
-                    it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, error = "补全不可用：${error.message ?: "网络错误"}"))
+                    it.copy(tagSuggestions = NovelAiTagSuggestionState(field = field, error = "补全不可用：${error.message ?: "词条库错误"}"))
                 }
             }
         }
@@ -1224,7 +1235,7 @@ class ImagePromptToolViewModel : ViewModel() {
         token: String,
         draft: NovelAiStudioDraft,
         model: NovelAiImageModel
-    ): Pair<NovelAiPreparedImageGuidance, NovelAiImageGuidanceDraft> = withContext(Dispatchers.IO) {
+    ): PreparedImageGuidanceResult = withContext(Dispatchers.IO) {
         val guidance = draft.imageGuidance
         fun encodedFile(asset: NovelAiStudioAssetRef?): String? = asset?.takeIf(NovelAiStudioAssetRef::isUsable)?.let {
             val file = File(it.path)
@@ -1248,22 +1259,36 @@ class ImagePromptToolViewModel : ViewModel() {
                 encodedById[vibe.id]?.let { vibe.copy(encodedVibe = it) } ?: vibe
             }
         )
-        NovelAiPreparedImageGuidance(
-            action = guidance.action,
-            imageBase64 = encodedFile(guidance.baseImage),
-            maskBase64 = guidance.maskImage?.takeIf(NovelAiStudioAssetRef::isUsable)
-                ?.let(NovelAiInpaintMaskEncoder::encodeApiMaskBase64),
-            imageToImageStrength = guidance.imageToImageStrength,
-            imageToImageNoise = guidance.imageToImageNoise,
-            inpaintStrength = guidance.inpaintStrength,
-            preciseReferenceBase64 = if (effectiveMode == NovelAiReferenceMode.PRECISE) {
-                encodedFile(guidance.preciseReference.asset)
-            } else null,
-            preciseReferenceType = guidance.preciseReference.type,
-            preciseReferenceStrength = guidance.preciseReference.strength,
-            preciseReferenceFidelity = guidance.preciseReference.fidelity,
-            vibes = preparedVibes
-        ) to updated
+        val focusedInpaint = if (guidance.action == NovelAiGenerationAction.INPAINT) {
+            NovelAiFocusedInpaintProcessor.prepare(
+                baseImage = requireNotNull(guidance.baseImage) { "聚焦重绘缺少原图" },
+                originalMask = guidance.maskImage,
+                region = requireNotNull(guidance.focusedInpaintRegion) { "聚焦重绘缺少聚焦区域" },
+                minimumContextPixels = guidance.focusedInpaintMinimumContext
+            )
+        } else {
+            null
+        }
+        PreparedImageGuidanceResult(
+            guidance = NovelAiPreparedImageGuidance(
+                action = guidance.action,
+                imageBase64 = focusedInpaint?.imageBase64 ?: encodedFile(guidance.baseImage),
+                maskBase64 = focusedInpaint?.maskBase64,
+                imageToImageStrength = guidance.imageToImageStrength,
+                imageToImageNoise = guidance.imageToImageNoise,
+                inpaintStrength = guidance.inpaintStrength,
+                preciseReferenceBase64 = if (effectiveMode == NovelAiReferenceMode.PRECISE) {
+                    encodedFile(guidance.preciseReference.asset)
+                } else null,
+                preciseReferenceType = guidance.preciseReference.type,
+                preciseReferenceStrength = guidance.preciseReference.strength,
+                preciseReferenceFidelity = guidance.preciseReference.fidelity,
+                vibes = preparedVibes
+            ),
+            updatedDraft = updated,
+            focusedInpaintPlan = focusedInpaint?.plan,
+            focusedInpaintBlendMask = focusedInpaint?.blendMaskAlpha
+        )
     }
 
     private fun countVibeCacheMisses(draft: NovelAiStudioDraft): Int {

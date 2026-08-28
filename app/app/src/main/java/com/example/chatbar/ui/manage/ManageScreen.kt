@@ -124,10 +124,11 @@ import com.example.chatbar.domain.moment.MomentReliabilityLevel
 import com.example.chatbar.domain.moment.MomentReliabilityState
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateDownloadState
-import com.example.chatbar.domain.update.AppUpdateInfo
+import com.example.chatbar.domain.update.DanbooruCatalogUpdateState
+import com.example.chatbar.domain.update.UpdateCenterCheckResult
 import com.example.chatbar.domain.voice.FishAudioTtsModels
 import com.example.chatbar.domain.update.AppUpdateInstallResult
-import com.example.chatbar.ui.components.AppUpdateDialog
+import com.example.chatbar.ui.components.UpdateCenterDialog
 import com.example.chatbar.ui.components.CbAvatar
 import com.example.chatbar.ui.components.CrashReportDeleteConfirmationDialog
 import com.example.chatbar.ui.components.CreateOpenableDocument
@@ -1583,8 +1584,10 @@ private fun SettingsTab(
     val scope = rememberCoroutineScope()
     val updateManager = ChatBarApp.instance.appUpdateManager
     val updateDownloadState by updateManager.downloadState.collectAsState()
+    val catalogUpdateManager = ChatBarApp.instance.danbooruCatalogUpdateManager
+    val catalogUpdateState by catalogUpdateManager.state.collectAsState()
     var checkingUpdate by remember { mutableStateOf(false) }
-    var updateInfo by remember { mutableStateOf<AppUpdateInfo?>(null) }
+    var updateResult by remember { mutableStateOf<UpdateCenterCheckResult?>(null) }
     var confirmingCrashReportDelete by remember { mutableStateOf(false) }
     val pendingCrashReport by CrashReportManager.pendingReport.collectAsState()
     var momentDebugCardId by rememberSaveable { mutableStateOf<String?>(null) }
@@ -2100,7 +2103,7 @@ private fun SettingsTab(
                 Column(Modifier.weight(1f)) {
                     CbText("Prompt 中文翻译注释", style = ChatBarTheme.typography.label)
                     CbText(
-                        "优先使用 TagSuggest 精确中文名，未命中时使用内置离线词典。注释不进入实际 Prompt。",
+                        "优先使用本地 Danbooru 词条库精确中文名，未命中时使用内置离线词典。注释不进入实际 Prompt。",
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
                     )
@@ -2278,9 +2281,14 @@ private fun SettingsTab(
                 }
             }
         }
-        SettingsSection("应用更新") {
+        SettingsSection("应用与词库更新") {
             CbText(
                 "当前版本：${BuildConfig.VERSION_NAME}",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            CbText(
+                "检查更新会同时检查 ChatBar 应用和 Danbooru 词条库。可分别更新，也可同时下载。",
                 color = ChatBarTheme.colors.mutedForeground,
                 style = ChatBarTheme.typography.caption
             )
@@ -2292,12 +2300,16 @@ private fun SettingsTab(
                         checkingUpdate = true
                         scope.launch {
                             runCatching {
-                                ChatBarApp.instance.appUpdateChecker.checkLatestRelease()
+                                ChatBarApp.instance.updateCenterChecker.check()
                             }.onSuccess { result ->
-                                if (result == null) {
-                                    Toast.makeText(context, "无更新", Toast.LENGTH_SHORT).show()
+                                if (!result.hasVisibleResult) {
+                                    Toast.makeText(
+                                        context,
+                                        "应用和 Danbooru 词条库均为最新",
+                                        Toast.LENGTH_SHORT
+                                    ).show()
                                 } else {
-                                    updateInfo = result
+                                    updateResult = result
                                 }
                             }.onFailure { error ->
                                 Toast.makeText(context, "检查更新失败：${error.message}", Toast.LENGTH_SHORT).show()
@@ -2313,52 +2325,82 @@ private fun SettingsTab(
         }
         Spacer(Modifier.height(80.dp))
     }
-    updateInfo?.let { info ->
-        val visibleDownloadState = remember(updateDownloadState, info) {
-            updateManager.stateFor(info)
-        }
-        AppUpdateDialog(
-            updateInfo = info,
-            downloadState = visibleDownloadState,
-            onDismiss = {
-                if (visibleDownloadState is AppUpdateDownloadState.Downloading) {
-                    updateManager.cancelDownload()
-                }
-                updateInfo = null
-            },
-            onUpdate = {
-                when {
-                    info.apkAsset == null -> {
-                        val releaseUrl = info.releaseUrl.ifBlank { AppUpdateChecker.DEFAULT_RELEASES_URL }
-                        runCatching {
-                            context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)))
-                        }.onFailure {
-                            Toast.makeText(context, "无法打开 GitHub Release 页面", Toast.LENGTH_SHORT).show()
+    updateResult?.let { result ->
+        val appInfo = result.appUpdate
+        val catalogInfo = result.catalogUpdate
+        val visibleAppState = appInfo?.let(updateManager::stateFor) ?: AppUpdateDownloadState.Idle
+        val visibleCatalogState = catalogInfo?.let(catalogUpdateManager::stateFor)
+            ?: DanbooruCatalogUpdateState.Idle
+        UpdateCenterDialog(
+            result = result,
+            appDownloadState = visibleAppState,
+            catalogUpdateState = visibleCatalogState,
+            onDismiss = { updateResult = null },
+            onAppAction = {
+                appInfo?.let { info ->
+                    when {
+                        info.apkAsset == null -> {
+                            val releaseUrl = info.releaseUrl.ifBlank { AppUpdateChecker.DEFAULT_RELEASES_URL }
+                            runCatching {
+                                context.startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(releaseUrl)))
+                            }.onFailure {
+                                Toast.makeText(context, "无法打开 GitHub Release 页面", Toast.LENGTH_SHORT).show()
+                            }
                         }
-                    }
-                    visibleDownloadState is AppUpdateDownloadState.Ready -> {
-                        updateManager.requestInstall(context, info)
-                            .onSuccess { result ->
-                                if (result == AppUpdateInstallResult.PermissionRequired) {
+                        visibleAppState is AppUpdateDownloadState.Downloading -> updateManager.cancelDownload()
+                        visibleAppState is AppUpdateDownloadState.Ready -> {
+                            updateManager.requestInstall(context, info)
+                                .onSuccess { installResult ->
+                                    if (installResult == AppUpdateInstallResult.PermissionRequired) {
+                                        Toast.makeText(
+                                            context,
+                                            "请允许 ChatBar 安装未知应用，返回后再次点“安装应用”",
+                                            Toast.LENGTH_LONG
+                                        ).show()
+                                    }
+                                }
+                                .onFailure { error ->
                                     Toast.makeText(
                                         context,
-                                        "请允许 ChatBar 安装未知应用，返回后再次点“安装更新”",
+                                        "无法安装更新：${error.message}",
                                         Toast.LENGTH_LONG
                                     ).show()
                                 }
-                            }
-                            .onFailure { error ->
-                                Toast.makeText(
-                                    context,
-                                    "无法安装更新：${error.message}",
-                                    Toast.LENGTH_LONG
-                                ).show()
-                            }
+                        }
+                        else -> updateManager.startDownload(info)
                     }
-                    visibleDownloadState !is AppUpdateDownloadState.Downloading -> {
+                }
+            },
+            onCatalogAction = {
+                catalogInfo?.let { info ->
+                    when (visibleCatalogState) {
+                        is DanbooruCatalogUpdateState.Downloading -> catalogUpdateManager.cancelDownload()
+                        is DanbooruCatalogUpdateState.Idle,
+                        is DanbooruCatalogUpdateState.Failed -> catalogUpdateManager.startDownload(info)
+                        else -> Unit
+                    }
+                }
+            },
+            onUpdateAll = {
+                appInfo?.let { info ->
+                    if (info.apkAsset != null &&
+                        visibleAppState !is AppUpdateDownloadState.Downloading &&
+                        visibleAppState !is AppUpdateDownloadState.Ready
+                    ) {
                         updateManager.startDownload(info)
                     }
                 }
+                catalogInfo?.let { info ->
+                    if (visibleCatalogState is DanbooruCatalogUpdateState.Idle ||
+                        visibleCatalogState is DanbooruCatalogUpdateState.Failed
+                    ) {
+                        catalogUpdateManager.startDownload(info)
+                    }
+                }
+            },
+            onCancelAll = {
+                updateManager.cancelDownload()
+                catalogUpdateManager.cancelDownload()
             }
         )
     }

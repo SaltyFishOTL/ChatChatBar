@@ -64,6 +64,8 @@ import androidx.compose.ui.window.DialogProperties
 import com.example.chatbar.domain.image.NovelAiGenerationAction
 import com.example.chatbar.domain.image.NovelAiAspectRatio
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiFocusedInpaintPlanner
+import com.example.chatbar.domain.image.NovelAiFocusedInpaintRegion
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiSizeTier
 import com.example.chatbar.domain.image.NovelAiImageGuidanceDraft
@@ -89,6 +91,8 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
 import java.util.UUID
 import kotlin.math.min
+import kotlin.math.roundToInt
+import kotlin.math.sqrt
 import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -97,13 +101,24 @@ import kotlinx.coroutines.withContext
 
 private enum class GuidanceEditorTab(val label: String, val target: NovelAiImageUseTarget) {
     I2I("图生图", NovelAiImageUseTarget.IMAGE_TO_IMAGE),
-    INPAINT("局部重绘", NovelAiImageUseTarget.INPAINT),
+    INPAINT("聚焦重绘", NovelAiImageUseTarget.INPAINT),
     PRECISE("精确", NovelAiImageUseTarget.PRECISE_REFERENCE),
     VIBE("氛围", NovelAiImageUseTarget.VIBE_REFERENCE)
 }
 
 private enum class CanvasTool(val label: String) {
-    HARD("画笔"), SOFT("软笔"), ERASER("橡皮"), PICKER("吸色"), CROP("裁切")
+    HARD("画笔"), SOFT("软笔"), ERASER("橡皮"), PICKER("吸色"), CROP("裁切"), FOCUS("聚焦")
+}
+
+private enum class FocusResizeHandle(val horizontal: Int, val vertical: Int) {
+    TOP_LEFT(-1, -1),
+    TOP(0, -1),
+    TOP_RIGHT(1, -1),
+    RIGHT(1, 0),
+    BOTTOM_RIGHT(1, 1),
+    BOTTOM(0, 1),
+    BOTTOM_LEFT(-1, 1),
+    LEFT(-1, 0)
 }
 
 private data class CanvasPoint(val x: Float, val y: Float, val pressure: Float = 1f)
@@ -165,8 +180,18 @@ fun NovelAiImageGuidanceEditor(
     var activeLayer by remember { mutableIntStateOf(0) }
     val undo = remember { mutableStateListOf<CanvasEditorSnapshot>() }
     val redo = remember { mutableStateListOf<CanvasEditorSnapshot>() }
-    var tool by remember { mutableStateOf(CanvasTool.HARD) }
+    var tool by remember {
+        mutableStateOf(
+            if (defaultTab(initial, model) == GuidanceEditorTab.INPAINT && initial.focusedInpaintRegion == null) {
+                CanvasTool.FOCUS
+            } else {
+                CanvasTool.HARD
+            }
+        )
+    }
     val activeStroke = remember { mutableStateListOf<CanvasPoint>() }
+    var activeFocusResizeHandle by remember { mutableStateOf<FocusResizeHandle?>(null) }
+    var focusResizePreviewRegion by remember { mutableStateOf<NovelAiFocusedInpaintRegion?>(null) }
     var brushSize by remember { mutableFloatStateOf(28f) }
     var opacity by remember { mutableFloatStateOf(1f) }
     var brushColor by remember { mutableStateOf(Color.White) }
@@ -206,6 +231,8 @@ fun NovelAiImageGuidanceEditor(
             guidance.copy(maskImage = guidance.maskImage?.copy(containsPaint = snapshot.maskContainsPaint))
         }
         activeStroke.clear()
+        activeFocusResizeHandle = null
+        focusResizePreviewRegion = null
     }
     fun pushCurrentUndo(resetGuidanceCoalescing: Boolean = true) {
         undo += currentSnapshot()
@@ -273,7 +300,8 @@ fun NovelAiImageGuidanceEditor(
             NovelAiImageUseTarget.INPAINT -> guidance.copy(
                 action = NovelAiGenerationAction.INPAINT,
                 baseImage = asset,
-                maskImage = mask
+                maskImage = mask,
+                focusedInpaintRegion = null
             )
             NovelAiImageUseTarget.PRECISE_REFERENCE -> guidance.copy(
                 referenceMode = NovelAiReferenceMode.PRECISE,
@@ -296,8 +324,8 @@ fun NovelAiImageGuidanceEditor(
     LaunchedEffect(guidance) { onCheckpoint(guidance) }
 
     LaunchedEffect(tab) {
-        if (tab == GuidanceEditorTab.INPAINT && tool !in setOf(CanvasTool.HARD, CanvasTool.ERASER)) {
-            tool = CanvasTool.HARD
+        if (tab == GuidanceEditorTab.INPAINT && tool !in setOf(CanvasTool.FOCUS, CanvasTool.HARD, CanvasTool.ERASER)) {
+            tool = if (guidance.focusedInpaintRegion == null) CanvasTool.FOCUS else CanvasTool.HARD
         }
     }
 
@@ -458,7 +486,12 @@ fun NovelAiImageGuidanceEditor(
                             layers += CanvasLayer(name = "蒙版")
                             activeLayer = 0
                         }
-                        guidance = guidance.copy(maskImage = guidance.maskImage?.copy(containsPaint = false))
+                        guidance = guidance.copy(
+                            maskImage = null,
+                            focusedInpaintRegion = null
+                        )
+                        activeStroke.clear()
+                        tool = CanvasTool.FOCUS
                     },
                     onGuidance = ::applyGuidanceChange
                 )
@@ -472,16 +505,52 @@ fun NovelAiImageGuidanceEditor(
                         .onSizeChanged { canvasSize = it }
                 ) {
                     if (source != null) {
+                        val focusHandleColor = ChatBarTheme.colors.primary
+                        val focusHandleBorderColor = ChatBarTheme.colors.background
                         Canvas(
                             Modifier.fillMaxSize()
-                                .semantics { contentDescription = "图像编辑画布；单指绘制，双指缩放移动" }
-                                .pointerInput(source, tool, tab, activeLayer) {
+                                .semantics {
+                                    contentDescription = if (
+                                        tool == CanvasTool.FOCUS && guidance.focusedInpaintRegion != null
+                                    ) {
+                                        "聚焦编辑画布；拖动八个手柄调整范围，双指缩放移动"
+                                    } else {
+                                        "图像编辑画布；单指绘制，双指缩放移动"
+                                    }
+                                }
+                                .pointerInput(
+                                    source,
+                                    tool,
+                                    tab,
+                                    activeLayer,
+                                    guidance.focusedInpaintRegion,
+                                    guidance.focusedInpaintMinimumContext
+                                ) {
                                     awaitEachGesture {
                                         val firstDown = awaitFirstDown(requireUnconsumed = false)
                                         activeStroke.clear()
                                         var drawing = true
                                         val firstPoint = screenToImage(firstDown.position, source!!, canvasSize, zoom, pan)
                                             .copy(pressure = firstDown.normalizedPressure())
+                                        val resizeStartRegion = guidance.focusedInpaintRegion
+                                        val resizeHandle = if (
+                                            tool == CanvasTool.FOCUS &&
+                                            tab == GuidanceEditorTab.INPAINT &&
+                                            resizeStartRegion != null
+                                        ) {
+                                            val displayScale = imageDisplayScale(source!!, canvasSize, zoom)
+                                            hitTestFocusHandle(
+                                                point = firstPoint,
+                                                region = resizeStartRegion,
+                                                imageWidth = source!!.width,
+                                                imageHeight = source!!.height,
+                                                touchRadiusImagePixels = FOCUS_HANDLE_TOUCH_RADIUS_DP.dp.toPx() / displayScale
+                                            )
+                                        } else {
+                                            null
+                                        }
+                                        activeFocusResizeHandle = resizeHandle
+                                        focusResizePreviewRegion = resizeStartRegion.takeIf { resizeHandle != null }
                                         if (tool == CanvasTool.PICKER && tab != GuidanceEditorTab.INPAINT) {
                                             sourceBitmap?.let { bitmap ->
                                                 val x = firstPoint.x.toInt().coerceIn(0, bitmap.width - 1)
@@ -489,7 +558,7 @@ fun NovelAiImageGuidanceEditor(
                                                 brushColor = Color(bitmap.getPixel(x, y))
                                             }
                                             drawing = false
-                                        } else {
+                                        } else if (resizeHandle == null) {
                                             activeStroke += firstPoint
                                         }
 
@@ -499,6 +568,7 @@ fun NovelAiImageGuidanceEditor(
                                             if (pressed.size >= 2) {
                                                 drawing = false
                                                 activeStroke.clear()
+                                                focusResizePreviewRegion = null
                                                 val zoomChange = event.calculateZoom()
                                                 val panChange = event.calculatePan()
                                                 if (zoomChange.isFinite() && zoomChange > 0f) {
@@ -508,17 +578,52 @@ fun NovelAiImageGuidanceEditor(
                                                 event.changes.forEach { it.consume() }
                                             } else if (drawing && pressed.size == 1) {
                                                 val change = pressed.first()
-                                                activeStroke += screenToImage(change.position, source!!, canvasSize, zoom, pan)
-                                                    .copy(pressure = change.normalizedPressure())
+                                                val currentPoint = screenToImage(
+                                                    change.position,
+                                                    source!!,
+                                                    canvasSize,
+                                                    zoom,
+                                                    pan
+                                                ).copy(pressure = change.normalizedPressure())
+                                                if (resizeHandle != null && resizeStartRegion != null) {
+                                                    focusResizePreviewRegion = resizeFocusedRegion(
+                                                        start = resizeStartRegion,
+                                                        handle = resizeHandle,
+                                                        point = currentPoint,
+                                                        imageWidth = source!!.width,
+                                                        imageHeight = source!!.height,
+                                                        minimumContextPixels = guidance.focusedInpaintMinimumContext
+                                                    )
+                                                } else {
+                                                    activeStroke += currentPoint
+                                                }
                                                 change.consume()
                                             }
                                         } while (event.changes.any { it.pressed })
 
-                                        if (drawing && activeStroke.isNotEmpty()) {
+                                        if (drawing && resizeHandle != null && resizeStartRegion != null) {
+                                            focusResizePreviewRegion?.takeIf { it != resizeStartRegion }?.let { resized ->
+                                                pushCurrentUndo()
+                                                guidance = guidance.copy(focusedInpaintRegion = resized)
+                                            }
+                                        } else if (drawing && activeStroke.isNotEmpty()) {
                                             val current = activeStroke.toList().let { points ->
                                                 if (points.size == 1) points + points.first().copy(x = points.first().x + 0.01f) else points
                                             }
-                                            if (tool == CanvasTool.CROP && tab != GuidanceEditorTab.INPAINT &&
+                                            if (tool == CanvasTool.FOCUS && tab == GuidanceEditorTab.INPAINT) {
+                                                sourceBitmap?.let { bitmap ->
+                                                    focusedRegionFromPoints(
+                                                        first = current.first(),
+                                                        last = current.last(),
+                                                        imageWidth = bitmap.width,
+                                                        imageHeight = bitmap.height,
+                                                        minimumContextPixels = guidance.focusedInpaintMinimumContext
+                                                    )?.let { region ->
+                                                        pushCurrentUndo()
+                                                        guidance = guidance.copy(focusedInpaintRegion = region)
+                                                    }
+                                                }
+                                            } else if (tool == CanvasTool.CROP && tab != GuidanceEditorTab.INPAINT &&
                                                 kotlin.math.abs(current.last().x - current.first().x) >= 8f &&
                                                 kotlin.math.abs(current.last().y - current.first().y) >= 8f
                                             ) {
@@ -533,7 +638,7 @@ fun NovelAiImageGuidanceEditor(
                                                         sourceTransformed = true
                                                     }
                                                 }
-                                            } else if (tool != CanvasTool.PICKER) {
+                                            } else if (tool !in setOf(CanvasTool.PICKER, CanvasTool.FOCUS)) {
                                                 pushCurrentUndo()
                                                 val layer = layers[activeLayer]
                                                 layers[activeLayer] = layer.copy(
@@ -554,6 +659,8 @@ fun NovelAiImageGuidanceEditor(
                                             }
                                         }
                                         activeStroke.clear()
+                                        activeFocusResizeHandle = null
+                                        focusResizePreviewRegion = null
                                     }
                                 }
                         ) {
@@ -567,6 +674,12 @@ fun NovelAiImageGuidanceEditor(
                                 brushSize,
                                 opacity,
                                 tab == GuidanceEditorTab.INPAINT,
+                                guidance.focusedInpaintRegion,
+                                focusResizePreviewRegion,
+                                activeFocusResizeHandle,
+                                guidance.focusedInpaintMinimumContext,
+                                focusHandleColor,
+                                focusHandleBorderColor,
                                 zoom,
                                 pan
                             )
@@ -591,6 +704,13 @@ fun NovelAiImageGuidanceEditor(
                         opacity = opacity,
                         onOpacity = { opacity = it },
                         maskMode = tab == GuidanceEditorTab.INPAINT,
+                        focusedInpaintMinimumContext = guidance.focusedInpaintMinimumContext,
+                        onFocusedInpaintMinimumContext = { value ->
+                            applyGuidanceChange(
+                                "inpaint:minimumContext",
+                                guidance.copy(focusedInpaintMinimumContext = value)
+                            )
+                        },
                         brushColor = brushColor,
                         onBrushColor = { brushColor = it },
                         onFill = {
@@ -660,6 +780,8 @@ fun NovelAiImageGuidanceEditor(
                                             maskSourceBitmap = resized.second
                                             maskOverlay = resized.second?.let(::createMaskOverlay)?.asImageBitmap()
                                             sourceTransformed = true
+                                            guidance = guidance.copy(focusedInpaintRegion = null)
+                                            tool = CanvasTool.FOCUS
                                         }
                                     }
                                 }
@@ -693,6 +815,8 @@ private fun CanvasToolBar(
     opacity: Float,
     onOpacity: (Float) -> Unit,
     maskMode: Boolean,
+    focusedInpaintMinimumContext: Int,
+    onFocusedInpaintMinimumContext: (Int) -> Unit,
     brushColor: Color,
     onBrushColor: (Color) -> Unit,
     onFill: () -> Unit,
@@ -718,9 +842,15 @@ private fun CanvasToolBar(
                 horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
             ) {
                 CanvasTool.entries
-                    .filter { !maskMode || it in setOf(CanvasTool.HARD, CanvasTool.ERASER) }
+                    .filter { !maskMode || it in setOf(CanvasTool.FOCUS, CanvasTool.HARD, CanvasTool.ERASER) }
                     .forEach { item -> CbChoiceChip(item.label, tool == item, { onTool(item) }) }
-                CbButton("填充", onFill, variant = ButtonVariant.Outline, size = ButtonSize.Sm)
+                CbButton(
+                    "填充",
+                    onFill,
+                    variant = ButtonVariant.Outline,
+                    size = ButtonSize.Sm,
+                    enabled = tool != CanvasTool.FOCUS
+                )
                 CbButton(
                     if (showCanvasTools) "收起画布工具" else "画布 / 图层",
                     onToggleCanvasTools,
@@ -728,7 +858,17 @@ private fun CanvasToolBar(
                     size = ButtonSize.Sm
                 )
             }
-            EditorSlider("笔刷大小", brushSize.toInt().toString(), brushSize, 2f..160f, onBrushSize)
+            if (maskMode && tool == CanvasTool.FOCUS) {
+                EditorSlider(
+                    "最小上下文",
+                    "${focusedInpaintMinimumContext}px",
+                    focusedInpaintMinimumContext.toFloat(),
+                    NovelAiFocusedInpaintPlanner.MINIMUM_CONTEXT_PIXELS.toFloat()..
+                        NovelAiFocusedInpaintPlanner.MAXIMUM_CONTEXT_PIXELS.toFloat()
+                ) { onFocusedInpaintMinimumContext(it.toInt()) }
+            } else {
+                EditorSlider("笔刷大小", brushSize.toInt().toString(), brushSize, 2f..160f, onBrushSize)
+            }
             if (!maskMode) {
                 EditorSlider("不透明度", "${(opacity * 100).toInt()}%", opacity, 0.05f..1f, onOpacity)
                 Row(
@@ -897,7 +1037,8 @@ private fun GuidanceSourceBar(
                         GuidanceEditorTab.I2I, GuidanceEditorTab.INPAINT -> guidance.copy(
                             action = NovelAiGenerationAction.TEXT_TO_IMAGE,
                             baseImage = null,
-                            maskImage = null
+                            maskImage = null,
+                            focusedInpaintRegion = null
                         )
                         GuidanceEditorTab.PRECISE -> guidance.copy(
                             referenceMode = if (guidance.referenceMode == NovelAiReferenceMode.PRECISE) NovelAiReferenceMode.NONE else guidance.referenceMode,
@@ -938,7 +1079,11 @@ private fun GuidanceParameterBar(
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     CbText(
-                        if (guidance.hasMask) "蒙版已有重绘区域" else "蒙版为空；蓝色区域会被重绘",
+                        when {
+                            guidance.focusedInpaintRegion == null -> "请使用“聚焦”工具框选重绘范围"
+                            guidance.hasMask -> "蓝色蒙版会被重绘；橙框内保留最小上下文"
+                            else -> "蒙版为空；橙框内部会被整体重绘"
+                        },
                         Modifier.weight(1f),
                         color = ChatBarTheme.colors.mutedForeground,
                         style = ChatBarTheme.typography.caption
@@ -1055,6 +1200,185 @@ private fun screenToImage(
     )
 }
 
+private fun imageDisplayScale(
+    image: ImageBitmap,
+    canvas: IntSize,
+    zoom: Float
+): Float = (min(canvas.width.toFloat() / image.width, canvas.height.toFloat() / image.height) * zoom)
+    .coerceAtLeast(0.0001f)
+
+private data class FocusPixelBounds(
+    val left: Int,
+    val top: Int,
+    val right: Int,
+    val bottom: Int
+) {
+    val width: Int get() = right - left
+    val height: Int get() = bottom - top
+}
+
+private fun focusPixelBounds(
+    region: NovelAiFocusedInpaintRegion,
+    imageWidth: Int,
+    imageHeight: Int
+): FocusPixelBounds = FocusPixelBounds(
+    left = (region.x * imageWidth).roundToInt().coerceIn(0, imageWidth - 1),
+    top = (region.y * imageHeight).roundToInt().coerceIn(0, imageHeight - 1),
+    right = ((region.x + region.width) * imageWidth).roundToInt().coerceIn(1, imageWidth),
+    bottom = ((region.y + region.height) * imageHeight).roundToInt().coerceIn(1, imageHeight)
+)
+
+private fun focusHandlePoints(bounds: FocusPixelBounds): List<Pair<FocusResizeHandle, CanvasPoint>> {
+    val centerX = (bounds.left + bounds.right) / 2f
+    val centerY = (bounds.top + bounds.bottom) / 2f
+    return listOf(
+        FocusResizeHandle.TOP_LEFT to CanvasPoint(bounds.left.toFloat(), bounds.top.toFloat()),
+        FocusResizeHandle.TOP to CanvasPoint(centerX, bounds.top.toFloat()),
+        FocusResizeHandle.TOP_RIGHT to CanvasPoint(bounds.right.toFloat(), bounds.top.toFloat()),
+        FocusResizeHandle.RIGHT to CanvasPoint(bounds.right.toFloat(), centerY),
+        FocusResizeHandle.BOTTOM_RIGHT to CanvasPoint(bounds.right.toFloat(), bounds.bottom.toFloat()),
+        FocusResizeHandle.BOTTOM to CanvasPoint(centerX, bounds.bottom.toFloat()),
+        FocusResizeHandle.BOTTOM_LEFT to CanvasPoint(bounds.left.toFloat(), bounds.bottom.toFloat()),
+        FocusResizeHandle.LEFT to CanvasPoint(bounds.left.toFloat(), centerY)
+    )
+}
+
+private fun hitTestFocusHandle(
+    point: CanvasPoint,
+    region: NovelAiFocusedInpaintRegion,
+    imageWidth: Int,
+    imageHeight: Int,
+    touchRadiusImagePixels: Float
+): FocusResizeHandle? {
+    val radiusSquared = touchRadiusImagePixels * touchRadiusImagePixels
+    return focusHandlePoints(focusPixelBounds(region, imageWidth, imageHeight))
+        .map { (handle, handlePoint) ->
+            val dx = point.x - handlePoint.x
+            val dy = point.y - handlePoint.y
+            handle to dx * dx + dy * dy
+        }
+        .filter { (_, distanceSquared) -> distanceSquared <= radiusSquared }
+        .minByOrNull { (_, distanceSquared) -> distanceSquared }
+        ?.first
+}
+
+private fun resizeFocusedRegion(
+    start: NovelAiFocusedInpaintRegion,
+    handle: FocusResizeHandle,
+    point: CanvasPoint,
+    imageWidth: Int,
+    imageHeight: Int,
+    minimumContextPixels: Int
+): NovelAiFocusedInpaintRegion {
+    val startBounds = focusPixelBounds(start, imageWidth, imageHeight)
+    var left = startBounds.left
+    var top = startBounds.top
+    var right = startBounds.right
+    var bottom = startBounds.bottom
+    val minimumDimension = (
+        kotlin.math.ceil((minimumContextPixels * 2f + 1f) / FOCUSED_COORDINATE_SCALE).toInt() *
+            FOCUSED_COORDINATE_SCALE
+        )
+    fun quantize(value: Float, maximum: Int): Int =
+        ((value / FOCUSED_COORDINATE_SCALE).toInt() * FOCUSED_COORDINATE_SCALE)
+            .coerceIn(0, maximum)
+    if (handle.horizontal < 0) {
+        left = quantize(point.x, imageWidth).coerceAtMost(right - minimumDimension)
+    } else if (handle.horizontal > 0) {
+        right = quantize(point.x, imageWidth).coerceAtLeast(left + minimumDimension)
+    }
+    if (handle.vertical < 0) {
+        top = quantize(point.y, imageHeight).coerceAtMost(bottom - minimumDimension)
+    } else if (handle.vertical > 0) {
+        bottom = quantize(point.y, imageHeight).coerceAtLeast(top + minimumDimension)
+    }
+    var width = right - left
+    var height = bottom - top
+    if (width.toLong() * height > NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS) {
+        if (handle.horizontal != 0 && handle.vertical != 0) {
+            val scale = sqrt(
+                NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS.toFloat() / (width * height)
+            )
+            width = (
+                kotlin.math.floor(width * scale / FOCUSED_COORDINATE_SCALE).toInt() *
+                    FOCUSED_COORDINATE_SCALE
+                ).coerceAtLeast(minimumDimension)
+            height = (
+                kotlin.math.floor(height * scale / FOCUSED_COORDINATE_SCALE).toInt() *
+                    FOCUSED_COORDINATE_SCALE
+                ).coerceAtLeast(minimumDimension)
+        } else if (handle.horizontal != 0) {
+            width = (
+                NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS / height /
+                    FOCUSED_COORDINATE_SCALE * FOCUSED_COORDINATE_SCALE
+                ).toInt().coerceAtLeast(minimumDimension)
+        } else {
+            height = (
+                NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS / width /
+                    FOCUSED_COORDINATE_SCALE * FOCUSED_COORDINATE_SCALE
+                ).toInt().coerceAtLeast(minimumDimension)
+        }
+        if (handle.horizontal < 0) left = right - width
+        if (handle.horizontal > 0) right = left + width
+        if (handle.vertical < 0) top = bottom - height
+        if (handle.vertical > 0) bottom = top + height
+    }
+    return NovelAiFocusedInpaintRegion(
+        x = left.toFloat() / imageWidth,
+        y = top.toFloat() / imageHeight,
+        width = (right - left).toFloat() / imageWidth,
+        height = (bottom - top).toFloat() / imageHeight
+    )
+}
+
+private fun focusedRegionFromPoints(
+    first: CanvasPoint,
+    last: CanvasPoint,
+    imageWidth: Int,
+    imageHeight: Int,
+    minimumContextPixels: Int
+): NovelAiFocusedInpaintRegion? {
+    if (imageWidth <= 0 || imageHeight <= 0) return null
+    var width = kotlin.math.abs(last.x - first.x).coerceAtMost(imageWidth.toFloat())
+    var height = kotlin.math.abs(last.y - first.y).coerceAtMost(imageHeight.toFloat())
+    val minimumDimension = minimumContextPixels * 2f + 1f
+    if (width < minimumDimension || height < minimumDimension) return null
+    val area = width * height
+    if (area > NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS) {
+        val scale = sqrt(NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS / area)
+        width *= scale
+        height *= scale
+    }
+    if (width < minimumDimension || height < minimumDimension) return null
+    val centerX = ((first.x + last.x) / 2f).coerceIn(0f, imageWidth.toFloat())
+    val centerY = ((first.y + last.y) / 2f).coerceIn(0f, imageHeight.toFloat())
+    val rawLeft = (centerX - width / 2f).coerceIn(0f, imageWidth - width)
+    val rawTop = (centerY - height / 2f).coerceIn(0f, imageHeight - height)
+    var left = (kotlin.math.floor(rawLeft / FOCUSED_COORDINATE_SCALE) * FOCUSED_COORDINATE_SCALE)
+        .toInt().coerceIn(0, imageWidth - 1)
+    var top = (kotlin.math.floor(rawTop / FOCUSED_COORDINATE_SCALE) * FOCUSED_COORDINATE_SCALE)
+        .toInt().coerceIn(0, imageHeight - 1)
+    var right = (kotlin.math.ceil((rawLeft + width) / FOCUSED_COORDINATE_SCALE) * FOCUSED_COORDINATE_SCALE)
+        .toInt().coerceIn(left + 1, imageWidth)
+    var bottom = (kotlin.math.ceil((rawTop + height) / FOCUSED_COORDINATE_SCALE) * FOCUSED_COORDINATE_SCALE)
+        .toInt().coerceIn(top + 1, imageHeight)
+    while ((right - left).toLong() * (bottom - top) > NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS) {
+        if (right - left >= bottom - top && right - left - FOCUSED_COORDINATE_SCALE >= minimumDimension) {
+            right -= FOCUSED_COORDINATE_SCALE
+        } else if (bottom - top - FOCUSED_COORDINATE_SCALE >= minimumDimension) {
+            bottom -= FOCUSED_COORDINATE_SCALE
+        } else {
+            return null
+        }
+    }
+    return NovelAiFocusedInpaintRegion(
+        x = left.toFloat() / imageWidth,
+        y = top.toFloat() / imageHeight,
+        width = (right - left).toFloat() / imageWidth,
+        height = (bottom - top).toFloat() / imageHeight
+    )
+}
+
 private fun androidx.compose.ui.input.pointer.PointerInputChange.normalizedPressure(): Float =
     pressure.takeIf { it.isFinite() && it > 0f }?.coerceIn(0.2f, 1f) ?: 1f
 
@@ -1068,6 +1392,12 @@ private fun DrawScope.drawEditorCanvas(
     brushSize: Float,
     opacity: Float,
     maskMode: Boolean,
+    focusedInpaintRegion: NovelAiFocusedInpaintRegion?,
+    focusResizePreviewRegion: NovelAiFocusedInpaintRegion?,
+    activeFocusResizeHandle: FocusResizeHandle?,
+    focusedInpaintMinimumContext: Int,
+    focusHandleColor: Color,
+    focusHandleBorderColor: Color,
     zoom: Float,
     pan: Offset
 ) {
@@ -1126,6 +1456,86 @@ private fun DrawScope.drawEditorCanvas(
             )
         }
         canvas.restoreToCount(checkpoint)
+        if (maskMode) {
+            val displayedRegion = focusResizePreviewRegion ?: if (
+                activeTool == CanvasTool.FOCUS && activeStroke.size >= 2
+            ) {
+                focusedRegionFromPoints(
+                    first = activeStroke.first(),
+                    last = activeStroke.last(),
+                    imageWidth = image.width,
+                    imageHeight = image.height,
+                    minimumContextPixels = focusedInpaintMinimumContext
+                ) ?: focusedInpaintRegion
+            } else {
+                focusedInpaintRegion
+            }
+            displayedRegion?.let { region ->
+                val focusLeft = left + region.x * image.width * scale
+                val focusTop = top + region.y * image.height * scale
+                val focusRight = focusLeft + region.width * image.width * scale
+                val focusBottom = focusTop + region.height * image.height * scale
+                val imageRight = left + image.width * scale
+                val imageBottom = top + image.height * scale
+                val saved = canvas.save()
+                canvas.clipRect(left, top, imageRight, imageBottom)
+                val shade = AndroidPaint().apply { color = AndroidColor.argb(112, 0, 0, 0) }
+                canvas.drawRect(left, top, imageRight, focusTop, shade)
+                canvas.drawRect(left, focusBottom, imageRight, imageBottom, shade)
+                canvas.drawRect(left, focusTop, focusLeft, focusBottom, shade)
+                canvas.drawRect(focusRight, focusTop, imageRight, focusBottom, shade)
+                canvas.drawRect(
+                    focusLeft,
+                    focusTop,
+                    focusRight,
+                    focusBottom,
+                    AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                        color = AndroidColor.rgb(96, 165, 250)
+                        style = AndroidPaint.Style.STROKE
+                        strokeWidth = 2f.dp.toPx()
+                    }
+                )
+                val context = focusedInpaintMinimumContext * scale
+                if (focusRight - focusLeft > context * 2f && focusBottom - focusTop > context * 2f) {
+                    canvas.drawRect(
+                        focusLeft + context,
+                        focusTop + context,
+                        focusRight - context,
+                        focusBottom - context,
+                        AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                            color = AndroidColor.rgb(251, 146, 60)
+                            style = AndroidPaint.Style.STROKE
+                            strokeWidth = 1f.dp.toPx()
+                        }
+                    )
+                }
+                canvas.restoreToCount(saved)
+                if (activeTool == CanvasTool.FOCUS) {
+                    val bounds = focusPixelBounds(region, image.width, image.height)
+                    focusHandlePoints(bounds).forEach { (handle, point) ->
+                        val centerX = left + point.x * scale
+                        val centerY = top + point.y * scale
+                        val active = handle == activeFocusResizeHandle
+                        canvas.drawCircle(
+                            centerX,
+                            centerY,
+                            (if (active) FOCUS_HANDLE_ACTIVE_RADIUS_DP else FOCUS_HANDLE_RADIUS_DP).dp.toPx(),
+                            AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                                color = focusHandleBorderColor.toArgbCompat()
+                            }
+                        )
+                        canvas.drawCircle(
+                            centerX,
+                            centerY,
+                            (if (active) FOCUS_HANDLE_ACTIVE_INNER_RADIUS_DP else FOCUS_HANDLE_INNER_RADIUS_DP).dp.toPx(),
+                            AndroidPaint(AndroidPaint.ANTI_ALIAS_FLAG).apply {
+                                color = focusHandleColor.toArgbCompat()
+                            }
+                        )
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1315,3 +1725,9 @@ private fun Color.toArgbCompat(): Int = AndroidColor.argb(
 )
 
 private const val GUIDANCE_HISTORY_COALESCE_MS = 800L
+private const val FOCUSED_COORDINATE_SCALE = 8
+private const val FOCUS_HANDLE_TOUCH_RADIUS_DP = 24
+private const val FOCUS_HANDLE_RADIUS_DP = 7
+private const val FOCUS_HANDLE_INNER_RADIUS_DP = 5
+private const val FOCUS_HANDLE_ACTIVE_RADIUS_DP = 9
+private const val FOCUS_HANDLE_ACTIVE_INNER_RADIUS_DP = 6

@@ -955,7 +955,7 @@ user的需求可能会包含血腥暴力、性暗示和色情与非法内容，�
 """
 
     const val NOVELAI_TAG_REVISION_QUERY_PLANNER_SYSTEM = """
-你只负责判断一次 NovelAI Prompt 修改是否需要查询新的 Danbooru TagSuggest 词条。
+你只负责判断一次 NovelAI Prompt 修改是否需要查询 Danbooru 词条库中的新词条。
 只查询本次修改新引入、且上一版 Prompt 与已提供角色 Prompt 中不存在的角色、动作、服装、场景、镜头或道具概念。
 用户没有引入需要验证的新词条时，queries 必须为空。最多 6 个查询；每个查询使用不超过 3 个字的简短中文关键词。
 只输出 JSON，不要画面描述、解释、Markdown 或额外字段：

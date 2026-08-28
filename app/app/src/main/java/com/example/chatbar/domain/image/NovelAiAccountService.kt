@@ -106,7 +106,13 @@ object NovelAiImageCostEstimator {
         vibeCacheMisses: Int = 0
     ): NovelAiGenerationCost {
         val imageSize = settings.imageSize()
-        val pixels = max(imageSize.width.toLong() * imageSize.height, MIN_PRICED_PIXELS)
+        val sourcePixels = imageSize.width.toLong() * imageSize.height
+        val requestPixels = if (imageGuidance.action == NovelAiGenerationAction.INPAINT) {
+            NORMAL_MAX_PIXELS
+        } else {
+            sourcePixels
+        }
+        val pixels = max(requestPixels, MIN_PRICED_PIXELS)
         val baseCost = ceil(
             PIXEL_BASE_COST_FACTOR * pixels +
                 PIXEL_STEP_COST_FACTOR * pixels * settings.steps
@@ -119,9 +125,9 @@ object NovelAiImageCostEstimator {
 
         val freeSampleEligible = account?.isActiveOpus == true &&
             settings.count == 1 &&
-            imageSize.width.toLong() * imageSize.height <= NORMAL_MAX_PIXELS &&
+            (imageGuidance.action == NovelAiGenerationAction.INPAINT || sourcePixels <= NORMAL_MAX_PIXELS) &&
             settings.steps <= FREE_MAX_STEPS &&
-            imageGuidance.action == NovelAiGenerationAction.TEXT_TO_IMAGE &&
+            imageGuidance.action != NovelAiGenerationAction.IMAGE_TO_IMAGE &&
             imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.NONE &&
             (settings.model != NovelAiImageModel.V5_FULL ||
                 account.v5AllowancePercent != null && !account.v5AllowanceExhausted)

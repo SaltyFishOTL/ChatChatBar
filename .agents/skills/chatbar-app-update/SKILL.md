@@ -10,6 +10,7 @@ description: Maintain ChatBar update discovery, GitHub Release Notes retrieval a
 - Release lookup and asset selection: `domain/update/AppUpdateChecker.kt`.
 - Download, APK validation, and install handoff: `domain/update/AppUpdateManager.kt`.
 - Dialog states: `ui/components/AppUpdateDialog.kt`.
+- Manual application/catalog update center: `domain/update/DanbooruCatalogUpdate.kt` and `ui/components/UpdateCenterDialog.kt`.
 - Startup and manual-check callers: `MainActivity.kt` and `ui/manage/ManageScreen.kt`.
 - Android access: `AndroidManifest.xml` and `res/xml/file_paths.xml`.
 - Publishing: `.github/workflows/release.yml`.
@@ -29,6 +30,9 @@ All Kotlin paths are relative to `app/app/src/main/java/com/example/chatbar/` un
 - Keep one active download. Scope UI state to asset URL so stale state cannot control another release.
 - Treat unknown-source approval and installer confirmation as required Android user actions. Never uninstall, clear data, or bypass signature checks.
 - Preserve failure detail in dialog. Do not silently redirect to browser after download or validation failure.
+- Manual check runs application and Danbooru catalog discovery independently. One failure must not suppress the other result. Startup remains application-only.
+- Catalog updates download the complete upstream SQLite file, verify expected size, Git blob SHA, SQLite header, `quick_check`, required columns, row count, and supported categories, then atomically replace the app-private active catalog. Any failure keeps the last-known-good catalog.
+- When both updates exist, `全部更新` starts independent downloads concurrently. Catalog applies automatically after validation; APK installation always remains a separate user/system-confirmed action.
 
 ## Change Workflow
 

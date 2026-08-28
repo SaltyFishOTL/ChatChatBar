@@ -1,13 +1,7 @@
 package com.example.chatbar.domain.image
 
-import com.example.chatbar.data.repository.NovelAiPromptTranslationCacheRepository
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.supervisorScope
-import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.sync.withPermit
 
 enum class NovelAiPromptTranslationSegmentKind {
     TAG,
@@ -281,61 +275,42 @@ object NovelAiPromptWrapPolicy {
 }
 
 class NovelAiPromptTranslationService(
-    private val cacheRepository: NovelAiPromptTranslationCacheRepository,
     private val wordDictionary: NovelAiPromptWordDictionary,
-    private val tagSearchClient: NovelAiTagSearchClient
+    private val tagLookup: NovelAiTagLookup
 ) {
-    private val tagSearchSemaphore = Semaphore(4)
-
     suspend fun immediateTranslations(
         segments: List<NovelAiPromptTranslationSegment>
-    ): Map<String, String> {
-        val persisted = persistedTranslations(segments)
-        return buildMap {
-            putAll(persisted)
-            segments.distinctBy(NovelAiPromptTranslationSegment::cacheKey).forEach { segment ->
-                if (!containsKey(segment.cacheKey)) {
-                    localWordTranslation(segment.lookupText)?.let { put(segment.cacheKey, it) }
-                }
-            }
+    ): Map<String, String> = buildMap {
+        segments.distinctBy(NovelAiPromptTranslationSegment::cacheKey).forEach { segment ->
+            localWordTranslation(segment.lookupText)?.let { put(segment.cacheKey, it) }
         }
-    }
-
-    private suspend fun persistedTranslations(
-        segments: List<NovelAiPromptTranslationSegment>
-    ): Map<String, String> {
-        val distinct = segments.distinctBy(NovelAiPromptTranslationSegment::cacheKey)
-        val cached = cacheRepository.getAll(distinct.map(NovelAiPromptTranslationSegment::cacheKey))
-        return distinct.mapNotNull { segment ->
-            cached[segment.cacheKey]
-                ?.takeIf { it.isReliableChineseTranslationOf(segment.lookupText) }
-                ?.let { segment.cacheKey to it }
-        }.toMap()
     }
 
     suspend fun resolve(segments: List<NovelAiPromptTranslationSegment>): NovelAiPromptTranslationResult {
         if (segments.isEmpty()) return NovelAiPromptTranslationResult(emptyList())
         val distinct = segments.distinctBy(NovelAiPromptTranslationSegment::cacheKey)
-        val cached = persistedTranslations(distinct)
-        val resolutions = supervisorScope {
-            distinct
-                .filterNot { cached.containsKey(it.cacheKey) }
-                .map { segment ->
-                    async { resolveSegment(segment) }
-                }
-                .awaitAll()
+        val tagSegments = distinct.filter { segment ->
+            segment.kind == NovelAiPromptTranslationSegmentKind.TAG &&
+                segment.lookupText.normalizedTagQuery().length in DANBOORU_TAG_QUERY_LENGTH
         }
-        val tagSuggestTranslations = resolutions.mapNotNull { resolution ->
-            resolution.tagSuggestTranslation?.let { resolution.segment.cacheKey to it }
-        }.toMap()
-        if (tagSuggestTranslations.isNotEmpty()) {
-            cacheRepository.putAll(tagSuggestTranslations)
+        val lookupResult = runCatching {
+            tagLookup.exactChineseTranslations(tagSegments.map { it.lookupText })
         }
-        val resolved = cached + resolutions.mapNotNull { resolution ->
-            resolution.translation?.let { resolution.segment.cacheKey to it }
+        lookupResult.exceptionOrNull()?.let { if (it is CancellationException) throw it }
+        val catalogTranslations = lookupResult.getOrDefault(emptyMap())
+        val resolved = distinct.mapNotNull { segment ->
+            val normalizedName = segment.lookupText.normalizedTagQuery().lowercase(Locale.ROOT)
+            val catalogTranslation = if (segment.kind == NovelAiPromptTranslationSegmentKind.TAG) {
+                catalogTranslations[normalizedName]
+                    ?.takeIf { it.isReliableChineseTranslationOf(segment.lookupText) }
+            } else {
+                null
+            }
+            (catalogTranslation ?: localWordTranslation(segment.lookupText))
+                ?.let { segment.cacheKey to it }
         }.toMap()
-        val warning = resolutions.firstNotNullOfOrNull(TagResolution::failureReason)?.let { reason ->
-            "TagSuggest 翻译查询失败，已使用本地词典：$reason"
+        val warning = lookupResult.exceptionOrNull()?.let { error ->
+            "Danbooru 词条库查询失败，已使用内置离线词典：${error.message ?: error::class.java.simpleName}"
         }
         return NovelAiPromptTranslationResult(
             annotations = segments.mapNotNull { segment ->
@@ -345,38 +320,6 @@ class NovelAiPromptTranslationService(
             },
             translations = resolved,
             warning = warning
-        )
-    }
-
-    private suspend fun resolveSegment(segment: NovelAiPromptTranslationSegment): TagResolution {
-        val local = localWordTranslation(segment.lookupText)
-        if (segment.kind != NovelAiPromptTranslationSegmentKind.TAG) {
-            return TagResolution(segment = segment, translation = local)
-        }
-        val query = segment.lookupText.normalizedTagQuery()
-        if (query.length !in TAG_SUGGEST_QUERY_LENGTH) {
-            return TagResolution(segment = segment, translation = local)
-        }
-        return runCatching {
-            tagSearchSemaphore.withPermit {
-                tagSearchClient.search(query).exactChineseTranslation(query)
-            }
-        }.fold(
-            onSuccess = { tagSuggestTranslation ->
-                TagResolution(
-                    segment = segment,
-                    translation = tagSuggestTranslation ?: local,
-                    tagSuggestTranslation = tagSuggestTranslation
-                )
-            },
-            onFailure = { error ->
-                if (error is CancellationException) throw error
-                TagResolution(
-                    segment = segment,
-                    translation = local,
-                    failureReason = error.message ?: error::class.java.simpleName
-                )
-            }
         )
     }
 
@@ -391,13 +334,6 @@ class NovelAiPromptTranslationService(
         return wordDictionary.compose(source, translations)
             .takeIf { it.isReliableChineseTranslationOf(source) }
     }
-
-    private data class TagResolution(
-        val segment: NovelAiPromptTranslationSegment,
-        val translation: String?,
-        val tagSuggestTranslation: String? = null,
-        val failureReason: String? = null
-    )
 
 }
 
@@ -423,4 +359,4 @@ private fun String.isReliableChineseTranslationOf(source: String): Boolean {
     }
 }
 
-private val TAG_SUGGEST_QUERY_LENGTH = 2..80
+private val DANBOORU_TAG_QUERY_LENGTH = 2..80

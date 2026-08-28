@@ -184,7 +184,8 @@ object NovelAiPngMetadataReader {
                 } else null,
                 imageToImageNoise = this["noise"]?.jsonPrimitive?.floatOrNull,
                 inpaintStrength = if (action == NovelAiGenerationAction.INPAINT) {
-                    this["strength"]?.jsonPrimitive?.floatOrNull
+                    this["inpaintImg2ImgStrength"]?.jsonPrimitive?.floatOrNull
+                        ?: this["strength"]?.jsonPrimitive?.floatOrNull
                 } else null,
                 preciseImageBase64 = preciseImage,
                 preciseType = preciseType,

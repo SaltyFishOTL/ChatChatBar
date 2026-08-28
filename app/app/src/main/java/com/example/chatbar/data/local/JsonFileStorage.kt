@@ -377,6 +377,13 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
+    /** 删除不再使用的单例派生数据。 */
+    suspend fun deleteSingleton(entityType: String): Boolean = mutexFor(entityType).withLock {
+        withContext(Dispatchers.IO) {
+            singletonFile(entityType).delete()
+        }
+    }
+
     /**
      * 按条件查询实体
      */

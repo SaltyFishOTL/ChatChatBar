@@ -7,7 +7,7 @@ import kotlinx.serialization.Serializable
 enum class NovelAiGenerationAction(val apiId: String, val displayName: String) {
     TEXT_TO_IMAGE("generate", "文生图"),
     IMAGE_TO_IMAGE("img2img", "图生图"),
-    INPAINT("infill", "局部重绘")
+    INPAINT("infill", "聚焦重绘")
 }
 
 @Serializable
@@ -22,7 +22,7 @@ enum class NovelAiPreciseReferenceType(val wireCaption: String, val displayName:
 
 enum class NovelAiImageUseTarget(val displayName: String) {
     IMAGE_TO_IMAGE("图生图"),
-    INPAINT("局部重绘"),
+    INPAINT("聚焦重绘"),
     PRECISE_REFERENCE("精确参考"),
     VIBE_REFERENCE("氛围参考")
 }
@@ -37,6 +37,19 @@ data class NovelAiStudioAssetRef(
     val containsPaint: Boolean = true
 ) {
     val isUsable: Boolean get() = path.isNotBlank() && width > 0 && height > 0
+}
+
+@Serializable
+data class NovelAiFocusedInpaintRegion(
+    val x: Float,
+    val y: Float,
+    val width: Float,
+    val height: Float
+) {
+    val isValid: Boolean
+        get() = x.isFinite() && y.isFinite() && width.isFinite() && height.isFinite() &&
+            x >= 0f && y >= 0f && width > 0f && height > 0f &&
+            x + width <= 1.0001f && y + height <= 1.0001f
 }
 
 @Serializable
@@ -67,6 +80,8 @@ data class NovelAiImageGuidanceDraft(
     val imageToImageStrength: Float = 0.5f,
     val imageToImageNoise: Float = 0.1f,
     val inpaintStrength: Float = 1f,
+    val focusedInpaintRegion: NovelAiFocusedInpaintRegion? = null,
+    val focusedInpaintMinimumContext: Int = 96,
     val referenceMode: NovelAiReferenceMode = NovelAiReferenceMode.NONE,
     val preciseReference: NovelAiPreciseReferenceDraft = NovelAiPreciseReferenceDraft(),
     val vibes: List<NovelAiVibeReferenceDraft> = emptyList(),
@@ -81,7 +96,7 @@ data class NovelAiImageGuidanceDraft(
     fun summary(model: NovelAiImageModel): String = buildList {
         when (action) {
             NovelAiGenerationAction.IMAGE_TO_IMAGE -> add("图生图")
-            NovelAiGenerationAction.INPAINT -> add("局部重绘")
+            NovelAiGenerationAction.INPAINT -> add("聚焦重绘")
             NovelAiGenerationAction.TEXT_TO_IMAGE -> Unit
         }
         when (effectiveReferenceMode(model)) {
@@ -94,12 +109,24 @@ data class NovelAiImageGuidanceDraft(
 
     fun validationError(model: NovelAiImageModel): String? = when {
         action != NovelAiGenerationAction.TEXT_TO_IMAGE && !hasBaseImage -> "请先选择图生图基图"
-        action == NovelAiGenerationAction.INPAINT && !hasMask -> "请绘制重绘区域"
+        action == NovelAiGenerationAction.INPAINT && focusedInpaintRegion?.isValid != true ->
+            "请使用聚焦工具框选重绘区域"
         action == NovelAiGenerationAction.INPAINT && baseImage != null && maskImage != null &&
-            (baseImage.width != maskImage.width || baseImage.height != maskImage.height) -> "Inpaint 蒙版尺寸必须与基图一致"
+            (baseImage.width != maskImage.width || baseImage.height != maskImage.height) ->
+                "Focused Inpainting 蒙版尺寸必须与基图一致"
+        action == NovelAiGenerationAction.INPAINT && focusedInpaintMinimumContext !in 32..96 ->
+            "Minimum Context 必须在 32–96 像素之间"
+        action == NovelAiGenerationAction.INPAINT && baseImage != null && focusedInpaintRegion != null &&
+            (focusedInpaintRegion.width * baseImage.width <= focusedInpaintMinimumContext * 2 ||
+                focusedInpaintRegion.height * baseImage.height <= focusedInpaintMinimumContext * 2) ->
+                "聚焦区域必须大于 Minimum Context 边界"
+        action == NovelAiGenerationAction.INPAINT && baseImage != null && focusedInpaintRegion != null &&
+            focusedInpaintRegion.width * baseImage.width * focusedInpaintRegion.height * baseImage.height >
+            NovelAiFocusedInpaintPlanner.MAX_FOCUSED_SOURCE_PIXELS ->
+                "聚焦区域超过官方面积上限"
         imageToImageStrength !in 0f..1f -> "图生图 Strength 必须在 0.0–1.0 之间"
         imageToImageNoise !in 0f..1f -> "图生图 Noise 必须在 0.0–1.0 之间"
-        inpaintStrength !in 0f..1f -> "Inpaint Strength 必须在 0.0–1.0 之间"
+        inpaintStrength !in 0f..1f -> "Focused Inpainting Strength 必须在 0.0–1.0 之间"
         effectiveReferenceMode(model) == NovelAiReferenceMode.PRECISE && preciseReference.asset?.isUsable != true ->
             "精确参考图片不可用"
         effectiveReferenceMode(model) == NovelAiReferenceMode.VIBE && vibes.none(NovelAiVibeReferenceDraft::isUsable) ->

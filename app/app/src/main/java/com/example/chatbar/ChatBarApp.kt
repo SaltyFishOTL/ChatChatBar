@@ -19,6 +19,9 @@ import com.example.chatbar.domain.memory.LongTermMemoryAutoMaintenanceCoordinato
 import com.example.chatbar.domain.search.*
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateManager
+import com.example.chatbar.domain.update.DanbooruCatalogUpdateChecker
+import com.example.chatbar.domain.update.DanbooruCatalogUpdateManager
+import com.example.chatbar.domain.update.UpdateCenterChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.voice.*
 import com.example.chatbar.domain.voice.qq.QqVoiceGestureGatewayRegistry
@@ -73,9 +76,6 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiDesignConversationRepository: NovelAiDesignConversationRepository
         private set
-    lateinit var novelAiPromptTranslationCacheRepository: NovelAiPromptTranslationCacheRepository
-        private set
-
     // 领域层服务
     lateinit var chunkingEngine: ChunkingEngine
         private set
@@ -147,7 +147,7 @@ class ChatBarApp : Application() {
         private set
     lateinit var novelAiVibeEncodingService: NovelAiVibeEncodingService
         private set
-    lateinit var novelAiTagSuggestClient: TagSuggestClient
+    lateinit var novelAiDanbooruTagCatalog: DanbooruTagCatalog
         private set
     lateinit var novelAiPromptTranslationService: NovelAiPromptTranslationService
         private set
@@ -178,6 +178,12 @@ class ChatBarApp : Application() {
     lateinit var appUpdateChecker: AppUpdateChecker
         private set
     lateinit var appUpdateManager: AppUpdateManager
+        private set
+    lateinit var danbooruCatalogUpdateChecker: DanbooruCatalogUpdateChecker
+        private set
+    lateinit var danbooruCatalogUpdateManager: DanbooruCatalogUpdateManager
+        private set
+    lateinit var updateCenterChecker: UpdateCenterChecker
         private set
     lateinit var communityService: CommunityService
         private set
@@ -212,8 +218,10 @@ class ChatBarApp : Application() {
         novelAiImageStorage = NovelAiImageStorage(this)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage, novelAiImageStorage)
         novelAiDesignConversationRepository = NovelAiDesignConversationRepository(jsonFileStorage)
-        novelAiPromptTranslationCacheRepository = NovelAiPromptTranslationCacheRepository(jsonFileStorage)
         editorDraftAssetService = EditorDraftAssetService(this)
+        applicationScope.launch {
+            jsonFileStorage.deleteSingleton("novelai_prompt_translation_cache")
+        }
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()
@@ -243,20 +251,19 @@ class ChatBarApp : Application() {
             catalog = novelAiCodexLoad.catalog,
             unavailableReason = novelAiCodexLoad.fatalError.orEmpty()
         )
-        novelAiTagSuggestClient = TagSuggestClient()
+        novelAiDanbooruTagCatalog = DanbooruTagCatalog(this)
         val novelAiPromptWordDictionary = assets.open("novelai_prompt_words.tsv").use(
             NovelAiPromptWordDictionary::fromTsv
         )
         novelAiPromptTranslationService = NovelAiPromptTranslationService(
-            cacheRepository = novelAiPromptTranslationCacheRepository,
             wordDictionary = novelAiPromptWordDictionary,
-            tagSearchClient = novelAiTagSuggestClient
+            tagLookup = novelAiDanbooruTagCatalog
         )
         novelAiPromptDesigner = NovelAiPromptDesigner(
             chatService = streamingChatService,
             tagResearchService = NovelAiTagResearchService(
                 planner = LlmNovelAiTagSearchPlanner(streamingChatService),
-                searchClient = novelAiTagSuggestClient,
+                searchClient = novelAiDanbooruTagCatalog,
                 codexSearcher = novelAiCodexSearchEngine
             ),
             promptPostProcessor = NovelAiPromptPostProcessor(novelAiCodexLoad.catalog.rewriteRules),
@@ -274,6 +281,12 @@ class ChatBarApp : Application() {
         researchBriefSummarizer = LlmResearchBriefSummarizer(streamingChatService)
         appUpdateChecker = AppUpdateChecker()
         appUpdateManager = AppUpdateManager(this, applicationScope)
+        danbooruCatalogUpdateChecker = DanbooruCatalogUpdateChecker(novelAiDanbooruTagCatalog)
+        danbooruCatalogUpdateManager = DanbooruCatalogUpdateManager(
+            scope = applicationScope,
+            catalog = novelAiDanbooruTagCatalog
+        )
+        updateCenterChecker = UpdateCenterChecker(appUpdateChecker, danbooruCatalogUpdateChecker)
 
         ragManager = RagManager(
             chunkingEngine = chunkingEngine,

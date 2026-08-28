@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.image
 
+import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -92,12 +93,12 @@ class NovelAiPromptTranslationTest {
     }
 
     @Test
-    fun `tag suggest query replaces every whitespace run with underscore`() {
+    fun `catalog query replaces every whitespace run with underscore`() {
         assertEquals("red_eyes_glowing", "  red  eyes\tglowing  ".normalizedTagQuery())
     }
 
     @Test
-    fun `tag suggest translation requires exact normalized tag match`() {
+    fun `catalog translation requires exact normalized tag match`() {
         val outcome = NovelAiTagSearchOutcome(
             effectiveQuery = "red_eyes",
             candidates = listOf(
@@ -108,6 +109,38 @@ class NovelAiPromptTranslationTest {
 
         assertEquals("红眼", outcome.exactChineseTranslation("red_eyes"))
         assertNull(outcome.exactChineseTranslation("red_eye"))
+    }
+
+    @Test
+    fun `translation service batches exact catalog lookup and keeps dictionary fallback`() = runTest {
+        val requested = mutableListOf<List<String>>()
+        val lookup = object : NovelAiTagLookup {
+            override suspend fun search(query: String): NovelAiTagSearchOutcome =
+                NovelAiTagSearchOutcome(query, emptyList())
+
+            override suspend fun exactChineseTranslations(names: Collection<String>): Map<String, String> {
+                requested += names.toList()
+                return mapOf("red_eyes" to "红眼")
+            }
+
+            override suspend fun catalogMetadata(): DanbooruCatalogMetadata = DanbooruCatalogMetadata(
+                sourceSha = "version",
+                sourceCommitTime = "",
+                sourceSizeBytes = 1L
+            )
+        }
+        val service = NovelAiPromptTranslationService(
+            wordDictionary = NovelAiPromptWordDictionary.fromTsv("".byteInputStream()),
+            tagLookup = lookup
+        )
+        val segments = NovelAiPromptTranslationParser.parse("red eyes, standing", naturalLanguage = false)
+
+        val result = service.resolve(segments)
+
+        assertEquals(listOf(listOf("red eyes", "standing")), requested)
+        assertEquals("红眼", result.translations[segments[0].cacheKey])
+        assertEquals("站立", result.translations[segments[1].cacheKey])
+        assertNull(result.warning)
     }
 
     @Test

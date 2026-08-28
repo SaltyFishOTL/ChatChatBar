@@ -1,26 +1,18 @@
 package com.example.chatbar.domain.image
 
 import com.example.chatbar.data.local.entity.ModelConfig
-import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.card.extractJsonObjectCandidates
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.NovelAiTagSearchEvidence
 import com.example.chatbar.domain.prompt.NovelAiCodexEvidence
 import com.example.chatbar.domain.prompt.PromptTemplates
-import java.io.IOException
-import java.util.LinkedHashMap
 import java.util.Locale
-import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
-import kotlin.coroutines.resumeWithException
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.Serializable
@@ -29,18 +21,8 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.longOrNull
-import okhttp3.Call
-import okhttp3.Callback
-import okhttp3.Dispatcher
-import okhttp3.HttpUrl
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.OkHttpClient
-import okhttp3.Request
-import okhttp3.Response
 
 @Serializable
 data class NovelAiTagSearchDecision(
@@ -467,158 +449,6 @@ class LlmNovelAiTagSearchPlanner(
     }
 }
 
-class TagSuggestClient internal constructor(
-    private val client: OkHttpClient = buildTagSuggestClient(),
-    private val baseUrl: HttpUrl = TAG_SUGGEST_BASE_URL.toHttpUrl(),
-    private val clockMillis: () -> Long = System::currentTimeMillis
-) : NovelAiTagSearchClient {
-    private data class CacheEntry(
-        val storedAt: Long,
-        val candidates: List<NovelAiTagCandidate>
-    )
-
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-    private val cache = LinkedHashMap<String, CacheEntry>(16, 0.75f, true)
-
-    override suspend fun search(query: String): NovelAiTagSearchOutcome {
-        val normalized = query.normalizeTagSuggestQuery()
-        require(normalized.length in MIN_TAG_QUERY_LENGTH..MAX_TAG_QUERY_LENGTH) {
-            "TagSuggest 查询长度必须在 $MIN_TAG_QUERY_LENGTH..$MAX_TAG_QUERY_LENGTH 之间"
-        }
-        val cacheKey = normalized.lowercase(Locale.ROOT)
-        cached(cacheKey)?.let {
-            return NovelAiTagSearchOutcome(
-                effectiveQuery = normalized,
-                candidates = it,
-                fromCache = true
-            )
-        }
-
-        val url = baseUrl.newBuilder()
-            .addPathSegments("api/tags/suggest")
-            .addQueryParameter("q", normalized)
-            .build()
-        val request = Request.Builder()
-            .url(url)
-            .header("Accept", "application/json")
-            .header("User-Agent", TAG_SUGGEST_USER_AGENT)
-            .get()
-            .build()
-        val responseText = awaitBodyWithGatewayRetry(request, normalized)
-        val candidates = parseResponse(responseText).take(MAX_TAG_CANDIDATES_PER_QUERY)
-        cache(cacheKey, candidates)
-        return NovelAiTagSearchOutcome(
-            effectiveQuery = normalized,
-            candidates = candidates
-        )
-    }
-
-    internal fun parseResponse(raw: String): List<NovelAiTagCandidate> {
-        require(raw.length <= MAX_TAG_SUGGEST_RESPONSE_CHARS) { "TagSuggest 响应过大" }
-        val root = json.parseToJsonElement(raw).jsonObject
-        val results = root["results"]?.jsonArray ?: error("TagSuggest 响应缺少 results")
-        return results.mapNotNull { element ->
-            runCatching {
-                val obj = element.jsonObject
-                val name = obj["name"]?.jsonPrimitive?.contentOrNull.orEmpty().trim()
-                val categoryCode = obj["category"]?.jsonPrimitive?.longOrNull?.toInt()
-                    ?: return@runCatching null
-                val category = NovelAiTagCategory.fromCode(categoryCode)
-                    ?: return@runCatching null
-                if (!name.isValidDanbooruTagName()) return@runCatching null
-                NovelAiTagCandidate(
-                    name = name,
-                    translatedName = obj["cn_name"]?.jsonPrimitive?.contentOrNull
-                        .orEmpty()
-                        .replace(Regex("\\s+"), " ")
-                        .trim()
-                        .take(MAX_TRANSLATED_TAG_CHARS),
-                    count = (obj["count"] ?: obj["post_count"])
-                        ?.jsonPrimitive
-                        ?.longOrNull
-                        ?.coerceAtLeast(0L)
-                        ?: 0L,
-                    category = category
-                )
-            }.getOrNull()
-        }.distinctBy { it.name.lowercase(Locale.ROOT) }
-    }
-
-    private fun cached(key: String): List<NovelAiTagCandidate>? = synchronized(cache) {
-        val entry = cache[key] ?: return@synchronized null
-        if (clockMillis() - entry.storedAt > TAG_SUGGEST_CACHE_TTL_MS) {
-            cache.remove(key)
-            null
-        } else {
-            entry.candidates
-        }
-    }
-
-    private fun cache(key: String, candidates: List<NovelAiTagCandidate>) = synchronized(cache) {
-        cache[key] = CacheEntry(clockMillis(), candidates)
-        while (cache.size > TAG_SUGGEST_CACHE_MAX_ENTRIES) {
-            val eldest = cache.entries.iterator()
-            if (eldest.hasNext()) {
-                eldest.next()
-                eldest.remove()
-            }
-        }
-    }
-
-    private suspend fun awaitBodyWithGatewayRetry(request: Request, query: String): String {
-        var lastFailure: IOException? = null
-        repeat(TAG_SUGGEST_GATEWAY_ATTEMPTS) { attempt ->
-            try {
-                return awaitBody(request)
-            } catch (error: TagSuggestHttpException) {
-                if (error.statusCode !in TAG_SUGGEST_RETRYABLE_STATUS_CODES ||
-                    attempt == TAG_SUGGEST_GATEWAY_ATTEMPTS - 1
-                ) {
-                    throw error
-                }
-                lastFailure = error
-                val jitter = query.lowercase(Locale.ROOT).hashCode().toUInt().toLong() % 180L
-                delay(TAG_SUGGEST_GATEWAY_RETRY_DELAY_MS * (attempt + 1) + jitter)
-            }
-        }
-        throw lastFailure ?: IOException("TagSuggest 请求失败")
-    }
-
-    private suspend fun awaitBody(request: Request): String = suspendCancellableCoroutine { continuation ->
-        val call = client.newCall(request)
-        continuation.invokeOnCancellation { call.cancel() }
-        call.enqueue(object : Callback {
-            override fun onFailure(call: Call, e: IOException) {
-                if (continuation.isActive) continuation.resumeWithException(e)
-            }
-
-            override fun onResponse(call: Call, response: Response) {
-                response.use {
-                    val body = runCatching { response.body?.string().orEmpty() }
-                        .getOrElse { error ->
-                            if (continuation.isActive) continuation.resumeWithException(error)
-                            return
-                        }
-                    if (!response.isSuccessful) {
-                        if (continuation.isActive) {
-                            continuation.resumeWithException(
-                                TagSuggestHttpException(response.code, body)
-                            )
-                        }
-                        return
-                    }
-                    if (continuation.isActive) continuation.resume(body)
-                }
-            }
-        })
-    }
-}
-
-private class TagSuggestHttpException(
-    val statusCode: Int,
-    responseBody: String
-) : IOException("TagSuggest HTTP $statusCode: ${responseBody.take(240)}")
-
 class NovelAiTagResearchService(
     private val planner: NovelAiTagSearchPlanner,
     private val searchClient: NovelAiTagSearchClient,
@@ -708,7 +538,7 @@ class NovelAiTagResearchService(
                 planningTitle,
                 listOf(
                     decisionResult.displayResponse(),
-                    "规划失败：${decisionResult.failureReason.ifBlank { "未知错误" }}；跳过 TagSuggest，继续本地法典召回"
+                    "规划失败：${decisionResult.failureReason.ifBlank { "未知错误" }}；跳过 Danbooru 词条库，继续本地法典召回"
                 ).filter(String::isNotBlank).joinToString("\n")
             )
             val codexResult = retrieveCodex(
@@ -729,9 +559,9 @@ class NovelAiTagResearchService(
             listOf(
                 decisionResult.displayResponse(),
                 if (decision.queries.isEmpty()) {
-                    "画面草案完成；无需 TagSuggest，使用草案召回本地经验模板"
+                    "画面草案完成；无需查询 Danbooru 词条库，使用草案召回本地经验模板"
                 } else {
-                    "画面草案完成；同时使用草案与 ${decision.queries.size} 个检索词召回本地经验模板，并用检索词查询 TagSuggest"
+                    "画面草案完成；同时使用草案与 ${decision.queries.size} 个检索词召回本地经验模板，并查询 Danbooru 词条库"
                 }
             ).filter(String::isNotBlank).joinToString("\n")
         )
@@ -750,16 +580,16 @@ class NovelAiTagResearchService(
             )
         }
 
-        val batchTitle = "TagSuggest 批量搜索"
+        val batchTitle = "Danbooru 词条库批量搜索"
         val statusLock = Any()
         val statuses = decision.queries.map { query ->
-            "- $query → q=${query.normalizeTagSuggestQuery()}｜等待请求"
+            "- $query → q=${query.normalizeDanbooruTagQuery()}｜等待查询"
         }.toMutableList()
         transcript.update(batchTitle, statuses.joinToString("\n"))
         val rawResults = coroutineScope {
             decision.queries.mapIndexed { index, query ->
                 async {
-                    val effectiveQuery = query.normalizeTagSuggestQuery()
+                    val effectiveQuery = query.normalizeDanbooruTagQuery()
                     synchronized(statusLock) {
                         statuses[index] = "- $query → q=$effectiveQuery｜请求中…"
                         transcript.update(batchTitle, statuses.joinToString("\n"))
@@ -823,7 +653,7 @@ class NovelAiTagResearchService(
                 planningTitle,
                 listOf(
                     decisionResult.displayResponse(),
-                    "规划失败：${decisionResult.failureReason.ifBlank { "未知错误" }}；跳过本轮 TagSuggest，继续修改 Prompt"
+                    "规划失败：${decisionResult.failureReason.ifBlank { "未知错误" }}；跳过本轮 Danbooru 词条库查询，继续修改 Prompt"
                 ).filter(String::isNotBlank).joinToString("\n")
             )
             return NovelAiTagResearchResult(
@@ -836,7 +666,7 @@ class NovelAiTagResearchService(
             listOf(
                 decisionResult.displayResponse(),
                 if (decision.queries.isEmpty() || decision.action == TAG_SEARCH_ACTION_FINISH) {
-                    "本轮无需查询新 TagSuggest"
+                    "本轮无需查询 Danbooru 词条库"
                 } else {
                     "本轮需要查询 ${decision.queries.size} 个新词条"
                 }
@@ -850,16 +680,16 @@ class NovelAiTagResearchService(
             )
         }
 
-        val batchTitle = "TagSuggest 批量搜索"
+        val batchTitle = "Danbooru 词条库批量搜索"
         val statusLock = Any()
         val statuses = decision.queries.map { query ->
-            "- $query → q=${query.normalizeTagSuggestQuery()}｜等待请求"
+            "- $query → q=${query.normalizeDanbooruTagQuery()}｜等待查询"
         }.toMutableList()
         transcript.update(batchTitle, statuses.joinToString("\n"))
         val rawResults = coroutineScope {
             decision.queries.mapIndexed { index, query ->
                 async {
-                    val effectiveQuery = query.normalizeTagSuggestQuery()
+                    val effectiveQuery = query.normalizeDanbooruTagQuery()
                     synchronized(statusLock) {
                         statuses[index] = "- $query → q=$effectiveQuery｜请求中…"
                         transcript.update(batchTitle, statuses.joinToString("\n"))
@@ -1016,56 +846,14 @@ private fun String.existingCharacterLookupKey(): String =
         .normalizeTagLookupKey()
         .replace(" ", "")
 
-internal fun String.normalizeTagSuggestQuery(): String {
-    val collapsed = normalizePlannerQuery()
-    val containsCjk = collapsed.any { char ->
-        char.code in 0x3400..0x9FFF || char.code in 0xF900..0xFAFF
-    }
-    return if (containsCjk) {
-        collapsed.replace(" ", "")
-    } else {
-        collapsed.replace(" ", "_")
-    }
-}
-
-private fun String.isValidDanbooruTagName(): Boolean =
-    length in 1..MAX_TAG_NAME_CHARS && none { char ->
-        char.isWhitespace() || char == ',' || char.code !in 0x21..0x7E
-    }
-
-private fun buildTagSuggestClient(): OkHttpClient {
-    val dispatcher = Dispatcher().apply {
-        maxRequests = MAX_TAG_SEARCH_QUERIES
-        maxRequestsPerHost = MAX_TAG_SUGGEST_REQUESTS_PER_HOST
-    }
-    return ProxyAwareClient.builder()
-        .dispatcher(dispatcher)
-        .connectTimeout(TAG_SEARCH_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .readTimeout(TAG_SEARCH_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .writeTimeout(TAG_SEARCH_REQUEST_TIMEOUT_MS, TimeUnit.MILLISECONDS)
-        .retryOnConnectionFailure(false)
-        .build()
-}
-
 internal const val MAX_TAG_SEARCH_QUERIES = 6
-private const val MAX_TAG_SUGGEST_REQUESTS_PER_HOST = 3
 internal const val MAX_TAG_CANDIDATES_PER_QUERY = 8
 internal const val MAX_TOTAL_TAG_CANDIDATES = 24
 private const val MIN_TAG_QUERY_LENGTH = 2
 private const val MAX_TAG_QUERY_LENGTH = 80
-private const val MAX_TAG_NAME_CHARS = 200
-private const val MAX_TRANSLATED_TAG_CHARS = 200
-private const val MAX_TAG_SUGGEST_RESPONSE_CHARS = 200_000
 private const val TAG_SEARCH_REQUEST_TIMEOUT_MS = 8_000L
 private const val TAG_SEARCH_BATCH_TIMEOUT_MS = 20_000L
-private const val TAG_SUGGEST_CACHE_TTL_MS = 30 * 60 * 1000L
-private const val TAG_SUGGEST_CACHE_MAX_ENTRIES = 128
-private const val TAG_SUGGEST_GATEWAY_ATTEMPTS = 3
-private const val TAG_SUGGEST_GATEWAY_RETRY_DELAY_MS = 350L
-private const val TAG_SUGGEST_BASE_URL = "https://tagsuggest.zeabur.app/"
-private const val TAG_SUGGEST_USER_AGENT = "ChatBar/1.0 (Android; NovelAI tag research)"
 private const val TAG_SEARCH_ACTION_SEARCH = "search"
 private const val TAG_SEARCH_ACTION_FINISH = "finish"
 private val TAG_SEARCH_ACTION_ALIASES = setOf("search", "query", "lookup", "搜索", "查询")
 private val TAG_SEARCH_FINISH_ACTIONS = setOf("finish", "done", "stop", "结束", "完成")
-private val TAG_SUGGEST_RETRYABLE_STATUS_CODES = setOf(502, 503, 504)

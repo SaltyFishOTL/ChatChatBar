@@ -1033,7 +1033,7 @@ class NovelAiPromptDesigner(
                         "- query=${result.query} → q=${result.effectiveQuery}"
                     }
                 }
-                .ifBlank { "AI 未调用 TagSuggest" }
+                .ifBlank { "AI 未查询 Danbooru 词条库" }
             val searchOutput = research.queryResults
                 .joinToString("\n\n") { result ->
                     buildString {
@@ -1055,7 +1055,7 @@ class NovelAiPromptDesigner(
                         }
                     }
                 }
-                .ifBlank { "未执行 TagSuggest 搜索" }
+                .ifBlank { "未执行 Danbooru 词条库搜索" }
             val codexInput = buildString {
                 appendLine("画面草案：${research.sceneDescription.ifBlank { "(none)" }}")
                 val queries = research.decisionResults.firstOrNull()?.decision?.queries.orEmpty()
@@ -1091,7 +1091,7 @@ class NovelAiPromptDesigner(
                     output = codexOutput
                 ),
                 NovelAiPromptDebugExchange(
-                    title = "TagSuggest 批量搜索",
+                    title = "Danbooru 词条库批量搜索",
                     input = searchInput,
                     output = searchOutput
                 )

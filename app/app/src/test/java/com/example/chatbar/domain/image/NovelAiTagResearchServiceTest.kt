@@ -18,13 +18,6 @@ import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import okhttp3.HttpUrl.Companion.toHttpUrl
-import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.OkHttpClient
-import okhttp3.Protocol
-import okhttp3.Request
-import okhttp3.Response
-import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
@@ -156,81 +149,11 @@ class NovelAiTagResearchServiceTest {
     }
 
     @Test
-    fun `TagSuggest query normalizes English spaces to underscores and Chinese spaces away`() {
-        assertEquals("from_above", "from above".normalizeTagSuggestQuery())
-        assertEquals("from_above", "from_above".normalizeTagSuggestQuery())
-        assertEquals("初音未来", "初音 未来".normalizeTagSuggestQuery())
-        assertEquals("俯视", "  俯视  ".normalizeTagSuggestQuery())
-    }
-
-    @Test
-    fun `TagSuggest parser accepts only general copyright and character tags`() {
-        val result = TagSuggestClient().parseResponse(
-            """
-            {"results":[
-              {"name":"from_above","cn_name":"俯视","count":100,"category":0},
-              {"name":"vocaloid","cn_name":"VOCALOID","count":90,"category":3},
-              {"name":"hatsune_miku","cn_name":"初音未来","count":80,"category":4},
-              {"name":"some_artist","cn_name":"画师","count":70,"category":1},
-              {"name":"highres","cn_name":"高分辨率","count":60,"category":5},
-              {"name":"bad tag","cn_name":"非法","count":50,"category":0}
-            ]}
-            """.trimIndent()
-        )
-
-        assertEquals(listOf("from_above", "vocaloid", "hatsune_miku"), result.map { it.name })
-        assertEquals(
-            listOf(NovelAiTagCategory.GENERAL, NovelAiTagCategory.COPYRIGHT, NovelAiTagCategory.CHARACTER),
-            result.map { it.category }
-        )
-    }
-
-    @Test
-    fun `TagSuggest sends underscore query and caches for thirty minutes`() = runTest {
-        val requests = AtomicInteger()
-        val sentQueries = mutableListOf<String?>()
-        var now = 0L
-        val httpClient = OkHttpClient.Builder()
-            .addInterceptor { chain ->
-                requests.incrementAndGet()
-                sentQueries += chain.request().url.queryParameter("q")
-                response(
-                    chain.request(),
-                    200,
-                    """{"results":[{"name":"from_above","cn_name":"俯视","count":1,"category":0}]}"""
-                )
-            }
-            .build()
-        val client = TagSuggestClient(
-            client = httpClient,
-            baseUrl = "https://example.test/".toHttpUrl(),
-            clockMillis = { now }
-        )
-
-        val first = client.search("from above")
-        val cached = client.search("FROM ABOVE")
-        now = 30 * 60 * 1000L + 1L
-        val refreshed = client.search("from above")
-
-        assertEquals("from_above", first.effectiveQuery)
-        assertFalse(first.fromCache)
-        assertTrue(cached.fromCache)
-        assertFalse(refreshed.fromCache)
-        assertEquals(listOf("from_above", "from_above"), sentQueries)
-        assertEquals(2, requests.get())
-    }
-
-    @Test
-    fun `TagSuggest exposes 429 and malformed responses as failures`() = runTest {
-        val rateLimited = clientResponding(429, "too many")
-        val malformed = clientResponding(200, "{\"unexpected\":[]}")
-
-        val rateLimitError = runCatching { rateLimited.search("夜景") }.exceptionOrNull()
-        val malformedError = runCatching { malformed.search("夜景") }.exceptionOrNull()
-
-        assertTrue(rateLimitError is IOException)
-        assertTrue(rateLimitError?.message.orEmpty().contains("HTTP 429"))
-        assertTrue(malformedError?.message.orEmpty().contains("缺少 results"))
+    fun `Danbooru query normalizes English spaces to underscores and Chinese spaces away`() {
+        assertEquals("from_above", "from above".normalizeDanbooruTagQuery())
+        assertEquals("from_above", "from_above".normalizeDanbooruTagQuery())
+        assertEquals("初音未来", "初音 未来".normalizeDanbooruTagQuery())
+        assertEquals("俯视", "  俯视  ".normalizeDanbooruTagQuery())
     }
 
     @Test
@@ -259,7 +182,7 @@ class NovelAiTagResearchServiceTest {
         assertEquals(listOf("tag_俯视", "tag_撑伞", "tag_双马尾"), result.evidence.map { it.name })
         assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
         assertTrue(result.transcript.contains("AI 图片画面设计"))
-        assertTrue(result.transcript.contains("TagSuggest 批量搜索"))
+        assertTrue(result.transcript.contains("Danbooru 词条库批量搜索"))
     }
 
     @Test
@@ -484,7 +407,7 @@ class NovelAiTagResearchServiceTest {
     }
 
     @Test
-    fun `empty query plan skips TagSuggest but still recalls codex from scene draft`() = runTest {
+    fun `empty query plan skips Danbooru catalog but still recalls codex from scene draft`() = runTest {
         val planner = StaticPlanner(emptyList(), finish = true)
         var searchCalls = 0
         var codexScene = ""
@@ -511,11 +434,11 @@ class NovelAiTagResearchServiceTest {
         assertEquals(0, searchCalls)
         assertEquals(DEFAULT_SCENE_DESCRIPTION, codexScene)
         assertEquals(DEFAULT_SCENE_DESCRIPTION, result.sceneDescription)
-        assertTrue(result.transcript.contains("无需 TagSuggest"))
+        assertTrue(result.transcript.contains("无需查询 Danbooru 词条库"))
     }
 
     @Test
-    fun `revision research with empty queries skips both TagSuggest and codex`() = runTest {
+    fun `revision research with empty queries skips both Danbooru catalog and codex`() = runTest {
         val planner = StaticPlanner(emptyList(), finish = true)
         var tagCalls = 0
         var codexCalls = 0
@@ -580,20 +503,20 @@ class NovelAiTagResearchServiceTest {
         progress.updatePrelude(
             "【AI 图片画面设计】\nscene + queries\n\n" +
                 "【本地 NovelAI 法典召回】\nreferences\n\n" +
-                "【TagSuggest 批量搜索】\nfound"
+                "【Danbooru 词条库批量搜索】\nfound"
         )
         progress.updateStage("最终 Prompt 设计", "{bad")
         progress.updateStage("JSON 修复", "{good}")
 
         val final = updates.last()
         assertTrue(final.indexOf("AI 图片画面设计") < final.indexOf("本地 NovelAI 法典召回"))
-        assertTrue(final.indexOf("本地 NovelAI 法典召回") < final.indexOf("TagSuggest 批量搜索"))
-        assertTrue(final.indexOf("TagSuggest 批量搜索") < final.indexOf("最终 Prompt 设计"))
+        assertTrue(final.indexOf("本地 NovelAI 法典召回") < final.indexOf("Danbooru 词条库批量搜索"))
+        assertTrue(final.indexOf("Danbooru 词条库批量搜索") < final.indexOf("最终 Prompt 设计"))
         assertTrue(final.indexOf("最终 Prompt 设计") < final.indexOf("JSON 修复"))
     }
 
     @Test
-    fun `moment debug exchanges include batch planning and TagSuggest results`() {
+    fun `moment debug exchanges include batch planning and Danbooru catalog results`() {
         val research = NovelAiTagResearchResult(
             decisionResults = listOf(decisionResult(listOf("俯视", "撑伞"))),
             sceneDescription = DEFAULT_SCENE_DESCRIPTION,
@@ -608,7 +531,7 @@ class NovelAiTagResearchServiceTest {
         val exchanges = NovelAiPromptDesigner.tagResearchDebugExchanges(research)
 
         assertEquals(
-            listOf("自然语言画面设计与检索规划", "本地 NovelAI 法典模糊召回", "TagSuggest 批量搜索"),
+            listOf("自然语言画面设计与检索规划", "本地 NovelAI 法典模糊召回", "Danbooru 词条库批量搜索"),
             exchanges.map { it.title }
         )
         assertTrue(exchanges[0].output.contains("[画面设计 1]"))
@@ -678,7 +601,7 @@ class NovelAiTagResearchServiceTest {
             "顾临川站在画面右侧高楼天台边缘，身体朝向左前方城市，左脚踏在矮墙内侧，右手按住被风扬起的黑色长外套下摆，左手扶着护栏，侧脸望向远处灯火。顾临川穿黑色高领毛衣、深灰长裤和系带短靴，外套敞开但衣物完整。场景为深夜天台，中远景、低机位仰拍，护栏形成前景引导线，人物轮廓被城市霓虹勾亮，背景楼群形成清晰纵深。"
 
         fun outcome(query: String, vararg candidates: NovelAiTagCandidate) =
-            NovelAiTagSearchOutcome(query.normalizeTagSuggestQuery(), candidates.toList())
+            NovelAiTagSearchOutcome(query.normalizeDanbooruTagQuery(), candidates.toList())
 
         fun candidate(name: String, count: Long = 1L) = NovelAiTagCandidate(
             name = name,
@@ -686,21 +609,6 @@ class NovelAiTagResearchServiceTest {
             count = count,
             category = NovelAiTagCategory.GENERAL
         )
-
-        fun clientResponding(code: Int, body: String): TagSuggestClient {
-            val client = OkHttpClient.Builder()
-                .addInterceptor { chain -> response(chain.request(), code, body) }
-                .build()
-            return TagSuggestClient(client, "https://example.test/".toHttpUrl())
-        }
-
-        fun response(request: Request, code: Int, body: String): Response = Response.Builder()
-            .request(request)
-            .protocol(Protocol.HTTP_1_1)
-            .code(code)
-            .message(if (code in 200..299) "OK" else "Error")
-            .body(body.toResponseBody("application/json".toMediaType()))
-            .build()
 
         fun model() = ModelConfig(
             id = "model",

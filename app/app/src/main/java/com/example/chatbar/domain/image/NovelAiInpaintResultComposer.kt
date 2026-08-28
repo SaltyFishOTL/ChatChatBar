@@ -2,7 +2,6 @@ package com.example.chatbar.domain.image
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
-import android.graphics.Color
 import java.io.ByteArrayOutputStream
 import java.io.File
 
@@ -10,37 +9,89 @@ object NovelAiInpaintResultComposer {
     fun compose(
         generatedPng: ByteArray,
         baseImage: NovelAiStudioAssetRef,
-        originalMask: NovelAiStudioAssetRef
+        focusedPlan: NovelAiFocusedInpaintPlan,
+        blendMaskAlpha: ByteArray
     ): ByteArray {
         val generated = BitmapFactory.decodeByteArray(generatedPng, 0, generatedPng.size)
             ?: error("Inpaint 结果无法解码")
         val base = BitmapFactory.decodeFile(File(baseImage.path).absolutePath)
             ?: error("Inpaint 基图无法解码")
-        val mask = BitmapFactory.decodeFile(File(originalMask.path).absolutePath)
-            ?: error("Inpaint 蒙版无法解码")
-        require(generated.width == base.width && generated.height == base.height) {
-            "Inpaint 结果与基图尺寸不一致"
+        require(
+            generated.width == focusedPlan.requestSize.width &&
+                generated.height == focusedPlan.requestSize.height
+        ) {
+            "Focused Inpainting 结果与请求尺寸不一致"
         }
-        require(mask.width == base.width && mask.height == base.height) {
-            "Inpaint 蒙版与基图尺寸不一致"
+        require(blendMaskAlpha.size == focusedPlan.requestSize.width * focusedPlan.requestSize.height) {
+            "Focused Inpainting 羽化蒙版尺寸不一致"
         }
+        require(
+            focusedPlan.sourceWidth == base.width && focusedPlan.sourceHeight == base.height &&
+                focusedPlan.crop.right <= base.width && focusedPlan.crop.bottom <= base.height
+        ) { "Focused Inpainting 聚焦区域与基图不匹配" }
+        val scaledGenerated = NovelAiLanczos3Resampler.resize(
+            generated,
+            focusedPlan.crop.width,
+            focusedPlan.crop.height
+        )
+        val requestBlendMask = Bitmap.createBitmap(
+            focusedPlan.requestSize.width,
+            focusedPlan.requestSize.height,
+            Bitmap.Config.ARGB_8888
+        )
+        val requestMaskPixels = IntArray(blendMaskAlpha.size) { index ->
+            ((blendMaskAlpha[index].toInt() and 0xff) shl 24) or 0x00ffffff
+        }
+        requestBlendMask.setPixels(
+            requestMaskPixels,
+            0,
+            focusedPlan.requestSize.width,
+            0,
+            0,
+            focusedPlan.requestSize.width,
+            focusedPlan.requestSize.height
+        )
+        val scaledBlendMask = NovelAiLanczos3Resampler.resize(
+            requestBlendMask,
+            focusedPlan.crop.width,
+            focusedPlan.crop.height
+        )
         val output = Bitmap.createBitmap(base.width, base.height, Bitmap.Config.ARGB_8888)
         return try {
             val size = base.width * base.height
-            val generatedPixels = IntArray(size)
             val basePixels = IntArray(size)
-            generated.getPixels(generatedPixels, 0, base.width, 0, 0, base.width, base.height)
             base.getPixels(basePixels, 0, base.width, 0, 0, base.width, base.height)
-            val maskPixels = IntArray(size)
-            mask.getPixels(maskPixels, 0, base.width, 0, 0, base.width, base.height)
-            val selection = BooleanArray(size) { index ->
-                val color = maskPixels[index]
-                val intensity = (Color.red(color) + Color.green(color) + Color.blue(color)) / 3
-                Color.alpha(color) >= 128 && intensity >= MASK_THRESHOLD
-            }
-            val weights = inwardFeather(selection, base.width, base.height, FEATHER_RADIUS)
-            val composed = IntArray(size) { index ->
-                blendOpaque(basePixels[index], generatedPixels[index], weights[index])
+            val generatedPixels = IntArray(focusedPlan.crop.width * focusedPlan.crop.height)
+            scaledGenerated.getPixels(
+                generatedPixels,
+                0,
+                focusedPlan.crop.width,
+                0,
+                0,
+                focusedPlan.crop.width,
+                focusedPlan.crop.height
+            )
+            val blendPixels = IntArray(generatedPixels.size)
+            scaledBlendMask.getPixels(
+                blendPixels,
+                0,
+                focusedPlan.crop.width,
+                0,
+                0,
+                focusedPlan.crop.width,
+                focusedPlan.crop.height
+            )
+            val composed = basePixels.copyOf()
+            for (y in 0 until focusedPlan.crop.height) {
+                for (x in 0 until focusedPlan.crop.width) {
+                    val outputIndex = (focusedPlan.crop.top + y) * base.width + focusedPlan.crop.left + x
+                    val generatedIndex = y * focusedPlan.crop.width + x
+                    composed[outputIndex] = composeOfficialPixel(
+                        basePixels[outputIndex],
+                        generatedPixels[generatedIndex],
+                        blendPixels[generatedIndex] ushr 24 and 0xff
+                    )
+                }
             }
             output.setPixels(composed, 0, base.width, 0, 0, base.width, base.height)
             val encoded = ByteArrayOutputStream().use { stream ->
@@ -53,71 +104,36 @@ object NovelAiInpaintResultComposer {
         } finally {
             output.recycle()
             generated.recycle()
+            if (scaledGenerated !== generated) scaledGenerated.recycle()
+            requestBlendMask.recycle()
+            if (scaledBlendMask !== requestBlendMask) scaledBlendMask.recycle()
             base.recycle()
-            mask.recycle()
         }
     }
 
-    private fun inwardFeather(
-        selection: BooleanArray,
-        width: Int,
-        height: Int,
-        radius: Int
-    ): IntArray {
-        val infinite = Int.MAX_VALUE / 4
-        val distance = IntArray(selection.size) { index -> if (selection[index]) infinite else 0 }
-        for (y in 0 until height) {
-            for (x in 0 until width) {
-                val index = y * width + x
-                if (!selection[index]) continue
-                var value = distance[index]
-                if (x > 0) value = minOf(value, distance[index - 1] + CARDINAL_COST)
-                if (y > 0) value = minOf(value, distance[index - width] + CARDINAL_COST)
-                if (x > 0 && y > 0) value = minOf(value, distance[index - width - 1] + DIAGONAL_COST)
-                if (x + 1 < width && y > 0) value = minOf(value, distance[index - width + 1] + DIAGONAL_COST)
-                distance[index] = value
-            }
+    /** Mirrors NovelAI web: destination-out(base, mask), then lighter(generated, mask). */
+    internal fun composeOfficialPixel(base: Int, generated: Int, maskWeight: Int): Int {
+        val baseAlpha = base ushr 24 and 0xff
+        val generatedAlpha = generated ushr 24 and 0xff
+        val mask = maskWeight.coerceIn(0, 255)
+        if (mask <= 0) return base
+        val clearedBaseAlpha = (baseAlpha * (255 - mask) + 127) / 255
+        val appliedGeneratedAlpha = (generatedAlpha * mask + 127) / 255
+        val outputAlpha = (clearedBaseAlpha + appliedGeneratedAlpha).coerceAtMost(255)
+        if (outputAlpha <= 0) return 0
+        fun channel(pixel: Int, shift: Int): Int = pixel ushr shift and 0xff
+        fun composed(shift: Int): Int {
+            val premultiplied = (
+                channel(base, shift) * clearedBaseAlpha +
+                    channel(generated, shift) * appliedGeneratedAlpha +
+                    127
+                ) / 255
+            return ((premultiplied * 255 + outputAlpha / 2) / outputAlpha).coerceIn(0, 255)
         }
-        for (y in height - 1 downTo 0) {
-            for (x in width - 1 downTo 0) {
-                val index = y * width + x
-                if (!selection[index]) continue
-                var value = distance[index]
-                if (x + 1 < width) value = minOf(value, distance[index + 1] + CARDINAL_COST)
-                if (y + 1 < height) value = minOf(value, distance[index + width] + CARDINAL_COST)
-                if (x + 1 < width && y + 1 < height) {
-                    value = minOf(value, distance[index + width + 1] + DIAGONAL_COST)
-                }
-                if (x > 0 && y + 1 < height) {
-                    value = minOf(value, distance[index + width - 1] + DIAGONAL_COST)
-                }
-                distance[index] = value
-            }
-        }
-        val edgeGuardDistance = EDGE_GUARD_PIXELS * CARDINAL_COST
-        val featherDistance = radius * CARDINAL_COST
-        return IntArray(selection.size) { index ->
-            if (!selection[index]) {
-                0
-            } else if (distance[index] >= infinite || distance[index] >= edgeGuardDistance + featherDistance) {
-                255
-            } else {
-                val linear = ((distance[index] - edgeGuardDistance).coerceAtLeast(0)).toFloat() / featherDistance
-                val smooth = linear * linear * linear * (linear * (linear * 6f - 15f) + 10f)
-                (smooth * 255f).toInt().coerceIn(0, 255)
-            }
-        }
-    }
-
-    private fun blendOpaque(base: Int, generated: Int, weight: Int): Int {
-        if (weight <= 0) return Color.rgb(Color.red(base), Color.green(base), Color.blue(base))
-        if (weight >= 255) return Color.rgb(Color.red(generated), Color.green(generated), Color.blue(generated))
-        val inverse = 255 - weight
-        return Color.rgb(
-            (Color.red(base) * inverse + Color.red(generated) * weight + 127) / 255,
-            (Color.green(base) * inverse + Color.green(generated) * weight + 127) / 255,
-            (Color.blue(base) * inverse + Color.blue(generated) * weight + 127) / 255
-        )
+        return (outputAlpha shl 24) or
+            (composed(16) shl 16) or
+            (composed(8) shl 8) or
+            composed(0)
     }
 
     private fun preserveTextChunks(encoded: ByteArray, source: ByteArray): ByteArray {
@@ -174,9 +190,4 @@ object NovelAiInpaintResultComposer {
     private val TEXT_CHUNK_TYPES = setOf("tEXt", "zTXt", "iTXt")
     private const val PNG_SIGNATURE_SIZE = 8
     private const val CHUNK_OVERHEAD = 12
-    private const val MASK_THRESHOLD = 128
-    private const val EDGE_GUARD_PIXELS = 10
-    private const val FEATHER_RADIUS = 32
-    private const val CARDINAL_COST = 3
-    private const val DIAGONAL_COST = 4
 }

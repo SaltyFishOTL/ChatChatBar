@@ -22,7 +22,7 @@ class NovelAiImageGuidanceTest {
     }
 
     @Test
-    fun `inpaint requires painted mask`() {
+    fun `focused inpaint requires focus region but allows empty mask`() {
         val emptyMask = asset.copy(path = "mask.png", containsPaint = false)
         val guidance = NovelAiImageGuidanceDraft(
             action = NovelAiGenerationAction.INPAINT,
@@ -30,8 +30,17 @@ class NovelAiImageGuidanceTest {
             maskImage = emptyMask
         )
 
-        assertEquals("请绘制重绘区域", guidance.validationError(NovelAiImageModel.V4_5_FULL))
-        assertNull(guidance.copy(maskImage = emptyMask.copy(containsPaint = true)).validationError(NovelAiImageModel.V4_5_FULL))
+        assertEquals("请使用聚焦工具框选重绘区域", guidance.validationError(NovelAiImageModel.V4_5_FULL))
+        assertNull(
+            guidance.copy(
+                focusedInpaintRegion = NovelAiFocusedInpaintRegion(
+                    x = 0.25f,
+                    y = 0.25f,
+                    width = 0.5f,
+                    height = 0.5f
+                )
+            ).validationError(NovelAiImageModel.V4_5_FULL)
+        )
     }
 
     @Test

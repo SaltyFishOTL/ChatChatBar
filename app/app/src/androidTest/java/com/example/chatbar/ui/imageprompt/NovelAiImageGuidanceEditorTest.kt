@@ -38,7 +38,7 @@ class NovelAiImageGuidanceEditorTest {
         }
 
         composeTestRule.onNodeWithText("图生图").assertIsDisplayed()
-        composeTestRule.onNodeWithText("局部重绘").assertIsDisplayed()
+        composeTestRule.onNodeWithText("聚焦重绘").assertIsDisplayed()
         composeTestRule.onAllNodesWithText("精确").assertCountEquals(0)
         composeTestRule.onAllNodesWithText("氛围").assertCountEquals(0)
     }
@@ -61,7 +61,7 @@ class NovelAiImageGuidanceEditorTest {
             }
         }
 
-        listOf("图生图", "局部重绘", "精确", "氛围").forEach { label ->
+        listOf("图生图", "聚焦重绘", "精确", "氛围").forEach { label ->
             composeTestRule.onNodeWithText(label).assertIsDisplayed()
         }
     }

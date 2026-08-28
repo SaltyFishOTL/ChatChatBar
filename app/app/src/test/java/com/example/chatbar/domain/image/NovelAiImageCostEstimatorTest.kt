@@ -60,7 +60,7 @@ class NovelAiImageCostEstimatorTest {
     }
 
     @Test
-    fun imageGuidanceDisablesOpusFreeSample() {
+    fun imageToImageDisablesOpusFreeSample() {
         val asset = NovelAiStudioAssetRef(path = "base.png", sha256 = "hash", width = 832, height = 1216)
         val cost = NovelAiImageCostEstimator.estimate(
             settings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL),
@@ -69,6 +69,42 @@ class NovelAiImageCostEstimatorTest {
                 action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
                 baseImage = asset
             )
+        )
+
+        assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
+        assertEquals(20, cost.anlas)
+    }
+
+    @Test
+    fun focusedInpaintingOnLargeSourceUsesOpusFreeSample() {
+        val asset = NovelAiStudioAssetRef(path = "base.png", sha256 = "hash", width = 1024, height = 1536)
+        val mask = NovelAiStudioAssetRef(path = "mask.png", sha256 = "mask", width = 1024, height = 1536)
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(
+                model = NovelAiImageModel.V4_5_FULL,
+                sizeTier = NovelAiSizeTier.LARGE
+            ),
+            account = opus(),
+            imageGuidance = NovelAiImageGuidanceDraft(
+                action = NovelAiGenerationAction.INPAINT,
+                baseImage = asset,
+                maskImage = mask
+            )
+        )
+
+        assertEquals(NovelAiGenerationChargeKind.FREE, cost.kind)
+        assertEquals(0, cost.anlas)
+    }
+
+    @Test
+    fun focusedInpaintingWithoutOpusPricesTheFocusedRequest() {
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(
+                model = NovelAiImageModel.V4_5_FULL,
+                sizeTier = NovelAiSizeTier.WALLPAPER
+            ),
+            account = null,
+            imageGuidance = NovelAiImageGuidanceDraft(action = NovelAiGenerationAction.INPAINT)
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
