@@ -4,6 +4,10 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
+import com.example.chatbar.domain.image.NovelAiHistoryImageDeleteResult
+import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
+import com.example.chatbar.domain.image.NovelAiHistoryDeletionPolicy
+import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.image.NovelAiStudioUndoDraft
@@ -19,8 +23,13 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
-class NovelAiStudioRepository(private val storage: JsonFileStorage) {
+class NovelAiStudioRepository(
+    private val storage: JsonFileStorage,
+    private val imageStorage: NovelAiImageStorage
+) {
     private val _draft = MutableStateFlow<NovelAiStudioDraft?>(null)
     val draft: StateFlow<NovelAiStudioDraft?> = _draft.asStateFlow()
     private val _pendingGuidanceEditorTarget = MutableStateFlow<NovelAiImageUseTarget?>(null)
@@ -28,6 +37,7 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
         _pendingGuidanceEditorTarget.asStateFlow()
     private val draftMutex = Mutex()
     private val undoMutex = Mutex()
+    private val historyMutex = Mutex()
 
     suspend fun initialize() {
         storage.loadAll(HISTORY_ENTITY, NovelAiGenerationHistoryEntry.serializer())
@@ -38,8 +48,16 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
             .also { _draft.value = it }
     }
 
-    suspend fun saveDraft(draft: NovelAiStudioDraft) = draftMutex.withLock {
-        val saved = draft.copy(updatedAt = System.currentTimeMillis())
+    suspend fun saveDraft(
+        draft: NovelAiStudioDraft,
+        overwriteNewer: Boolean = false
+    ) = draftMutex.withLock {
+        val current = _draft.value
+            ?: storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
+        if (!overwriteNewer && current != null && draft.updatedAt < current.updatedAt) {
+            return@withLock
+        }
+        val saved = draft.copy(updatedAt = maxOf(System.currentTimeMillis(), draft.updatedAt))
         storage.saveSingleton(DRAFT_ENTITY, saved, NovelAiStudioDraft.serializer())
         _draft.value = saved
     }
@@ -49,7 +67,9 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
             val current = _draft.value
                 ?: storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
                 ?: NovelAiStudioDraft()
-            val next = transform(current).copy(updatedAt = System.currentTimeMillis())
+            val next = transform(current).copy(
+                updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1L)
+            )
             storage.saveSingleton(DRAFT_ENTITY, next, NovelAiStudioDraft.serializer())
             _draft.value = next
             next
@@ -123,16 +143,78 @@ class NovelAiStudioRepository(private val storage: JsonFileStorage) {
         storage.observeAll(HISTORY_ENTITY, NovelAiGenerationHistoryEntry.serializer())
             .map { entries -> entries.sortedByDescending(NovelAiGenerationHistoryEntry::createdAt) }
 
-    suspend fun saveHistory(entry: NovelAiGenerationHistoryEntry) {
+    suspend fun saveHistory(entry: NovelAiGenerationHistoryEntry) = historyMutex.withLock {
         storage.saveEntity(HISTORY_ENTITY, entry.id, entry, NovelAiGenerationHistoryEntry.serializer())
     }
 
-    suspend fun deleteHistory(id: String) {
+    suspend fun deleteHistory(id: String) = historyMutex.withLock {
         storage.deleteEntity<NovelAiGenerationHistoryEntry>(HISTORY_ENTITY, id)
     }
 
-    suspend fun clearHistory() {
+    suspend fun clearHistory() = historyMutex.withLock {
         storage.deleteAll<NovelAiGenerationHistoryEntry>(HISTORY_ENTITY)
+    }
+
+    suspend fun deleteHistoryImages(
+        selections: List<NovelAiHistoryImageSelection>
+    ): NovelAiHistoryImageDeleteResult = historyMutex.withLock {
+        val uniqueSelections = selections.distinctBy { it.entryId to it.imagePath }
+        require(uniqueSelections.isNotEmpty()) { "未选择历史图片" }
+        val originals = storage.loadAll(HISTORY_ENTITY, NovelAiGenerationHistoryEntry.serializer())
+            .associateBy(NovelAiGenerationHistoryEntry::id)
+        val mutations = NovelAiHistoryDeletionPolicy.apply(originals.values.toList(), uniqueSelections)
+
+        val staged = mutableListOf<com.example.chatbar.domain.image.NovelAiStagedImageDeletion>()
+        try {
+            withContext(Dispatchers.IO) {
+                uniqueSelections.forEach { selection ->
+                    imageStorage.stageImageDelete(selection.imagePath)?.let(staged::add)
+                }
+            }
+            mutations.forEach { (entryId, remaining) ->
+                if (remaining == null) {
+                    storage.deleteEntity<NovelAiGenerationHistoryEntry>(HISTORY_ENTITY, entryId)
+                } else {
+                    storage.saveEntity(
+                        HISTORY_ENTITY,
+                        entryId,
+                        remaining,
+                        NovelAiGenerationHistoryEntry.serializer()
+                    )
+                }
+            }
+        } catch (error: Throwable) {
+            val rollbackFailures = mutableListOf<Throwable>()
+            mutations.keys.forEach { entryId ->
+                originals[entryId]?.let { original ->
+                    runCatching {
+                        storage.saveEntity(
+                            HISTORY_ENTITY,
+                            entryId,
+                            original,
+                            NovelAiGenerationHistoryEntry.serializer()
+                        )
+                    }.exceptionOrNull()?.let(rollbackFailures::add)
+                }
+            }
+            withContext(Dispatchers.IO) {
+                staged.asReversed().forEach { deletion ->
+                    if (!imageStorage.restoreStagedImage(deletion)) {
+                        rollbackFailures += IllegalStateException("图片恢复失败：${deletion.original.name}")
+                    }
+                }
+            }
+            rollbackFailures.forEach(error::addSuppressed)
+            throw error
+        }
+
+        val cleanupFailures = withContext(Dispatchers.IO) {
+            staged.count { !imageStorage.commitStagedImageDelete(it) }
+        }
+        NovelAiHistoryImageDeleteResult(
+            deletedCount = uniqueSelections.size,
+            cleanupFailureCount = cleanupFailures
+        )
     }
 
     companion object {

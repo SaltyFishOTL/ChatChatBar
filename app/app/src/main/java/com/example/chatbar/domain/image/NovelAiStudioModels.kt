@@ -231,6 +231,35 @@ data class NovelAiGenerationHistoryEntry(
     val createdAt: Long = System.currentTimeMillis()
 )
 
+data class NovelAiHistoryImageSelection(
+    val entryId: String,
+    val imagePath: String
+)
+
+data class NovelAiHistoryImageDeleteResult(
+    val deletedCount: Int,
+    val cleanupFailureCount: Int
+)
+
+object NovelAiHistoryDeletionPolicy {
+    fun apply(
+        entries: List<NovelAiGenerationHistoryEntry>,
+        selections: List<NovelAiHistoryImageSelection>
+    ): Map<String, NovelAiGenerationHistoryEntry?> {
+        val originals = entries.associateBy(NovelAiGenerationHistoryEntry::id)
+        return selections.distinctBy { it.entryId to it.imagePath }
+            .groupBy(NovelAiHistoryImageSelection::entryId)
+            .mapValues { (entryId, selected) ->
+                val entry = requireNotNull(originals[entryId]) { "历史批次已不存在" }
+                val selectedPaths = selected.map(NovelAiHistoryImageSelection::imagePath).toSet()
+                val available = entry.images.map(NovelAiGenerationHistoryImage::path).toSet()
+                require(selectedPaths.all(available::contains)) { "历史图片已发生变化，请重新选择" }
+                entry.copy(images = entry.images.filterNot { it.path in selectedPaths })
+                    .takeIf { it.images.isNotEmpty() }
+            }
+    }
+}
+
 fun novelAiHistoryImages(paths: List<String>, baseSeed: Long): List<NovelAiGenerationHistoryImage> =
     paths.mapIndexed { index, path -> NovelAiGenerationHistoryImage(path, baseSeed + index) }
 

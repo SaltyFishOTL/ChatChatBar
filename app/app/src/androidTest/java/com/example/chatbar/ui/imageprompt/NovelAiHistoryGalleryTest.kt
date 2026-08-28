@@ -9,6 +9,7 @@ import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTouchInput
+import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.swipeLeft
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
@@ -37,6 +38,41 @@ class NovelAiHistoryGalleryTest {
 
         composeTestRule.onNodeWithContentDescription("历史图片 2").performClick()
         composeTestRule.runOnIdle { assertEquals(items[1].key, selected.value?.key) }
+    }
+
+    @Test
+    fun galleryLongPressSelectsAndRenumbersInSelectionOrder() {
+        val items = historyItems()
+        val selectedKeys = mutableStateOf<List<String>>(emptyList())
+        composeTestRule.setContent {
+            ChatBarTheme {
+                NovelAiHistoryGallery(
+                    items = items,
+                    onSelect = { item ->
+                        selectedKeys.value = NovelAiHistorySelectionPolicy.toggle(
+                            selectedKeys.value,
+                            item.key
+                        )
+                    },
+                    onLongSelect = { item ->
+                        selectedKeys.value = NovelAiHistorySelectionPolicy.add(
+                            selectedKeys.value,
+                            item.key
+                        )
+                    },
+                    selectionMode = selectedKeys.value.isNotEmpty(),
+                    selectedKeys = selectedKeys.value
+                )
+            }
+        }
+
+        composeTestRule.onNodeWithContentDescription("历史图片 1")
+            .performTouchInput { longClick() }
+        composeTestRule.onNodeWithContentDescription("选中序号 1").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("历史图片 2").performClick()
+        composeTestRule.onNodeWithContentDescription("选中序号 2").assertIsDisplayed()
+        composeTestRule.onNodeWithContentDescription("历史图片 1").performClick()
+        composeTestRule.onNodeWithContentDescription("选中序号 1").assertIsDisplayed()
     }
 
     @Test

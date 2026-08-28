@@ -22,6 +22,17 @@ data class NovelAiHistoryImageItem(
     val key: String get() = "${entry.id}\u0000${image.path}"
 }
 
+object NovelAiHistorySelectionPolicy {
+    fun add(selection: List<String>, key: String): List<String> =
+        if (key in selection) selection else selection + key
+
+    fun toggle(selection: List<String>, key: String): List<String> =
+        if (key in selection) selection - key else selection + key
+
+    fun retain(selection: List<String>, availableKeys: Set<String>): List<String> =
+        selection.filter(availableKeys::contains)
+}
+
 object NovelAiHistoryFilterPolicy {
     fun filter(
         entries: List<NovelAiGenerationHistoryEntry>,

@@ -1,10 +1,22 @@
 package com.example.chatbar.ui.imageprompt
 
+import android.Manifest
+import android.app.Activity
+import android.content.pm.PackageManager
+import android.os.Build
+import android.os.SystemClock
 import android.widget.Toast
+import androidx.activity.compose.BackHandler
+import androidx.activity.result.IntentSenderRequest
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -16,8 +28,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -25,6 +40,7 @@ import androidx.compose.foundation.lazy.grid.itemsIndexed
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -35,16 +51,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.semantics.ProgressBarRangeInfo
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.progressBarRangeInfo
+import androidx.compose.ui.semantics.role
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
+import com.example.chatbar.domain.image.NovelAiGalleryConflictDecision
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
@@ -58,10 +83,13 @@ import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
+import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarShape
@@ -71,6 +99,7 @@ import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import kotlinx.coroutines.delay
 
 private data class PendingHistoryApply(
     val entry: NovelAiGenerationHistoryEntry,
@@ -92,6 +121,31 @@ fun NovelAiHistoryScreen(
     var confirmClear by remember { mutableStateOf(false) }
     var useAsItem by remember { mutableStateOf<NovelAiHistoryImageItem?>(null) }
     var pendingApply by remember { mutableStateOf<PendingHistoryApply?>(null) }
+    var confirmBatchDelete by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val legacyStoragePermissionLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        if (granted) viewModel.prepareBatchExport()
+        else viewModel.reportError("未授予存储权限，无法批量保存图片")
+    }
+    val overwriteAuthorizationLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.StartIntentSenderForResult()
+    ) { result ->
+        viewModel.resumeBatchExportAfterAuthorization(result.resultCode == Activity.RESULT_OK)
+    }
+
+    fun requestBatchExport() {
+        if (
+            Build.VERSION.SDK_INT < Build.VERSION_CODES.Q &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.WRITE_EXTERNAL_STORAGE) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            legacyStoragePermissionLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+        } else {
+            viewModel.prepareBatchExport()
+        }
+    }
 
     LaunchedEffect(state.applied) {
         if (state.applied) {
@@ -105,12 +159,47 @@ fun NovelAiHistoryScreen(
             fullPreviewIndex = null
         }
     }
+    LaunchedEffect(state.notice) {
+        state.notice?.let { notice ->
+            Toast.makeText(context, notice, Toast.LENGTH_LONG).show()
+            viewModel.consumeNotice()
+        }
+    }
+    LaunchedEffect(state.exportAuthorization) {
+        state.exportAuthorization?.let { intentSender ->
+            viewModel.markExportAuthorizationLaunched()
+            runCatching {
+                overwriteAuthorizationLauncher.launch(IntentSenderRequest.Builder(intentSender).build())
+            }.onFailure {
+                viewModel.resumeBatchExportAfterAuthorization(false)
+            }
+        }
+    }
+    LaunchedEffect(state.selectionMode) {
+        if (!state.selectionMode) confirmBatchDelete = false
+    }
+    BackHandler(enabled = state.selectionMode) {
+        when {
+            state.busy -> Unit
+            state.exportPlan != null -> viewModel.resolveExportConflict(null, false)
+            else -> viewModel.clearSelection()
+        }
+    }
 
+    Box(Modifier.fillMaxSize()) {
     Column(Modifier.fillMaxSize().navigationBarsPadding()) {
         CbTopBar(
-            title = "生图历史",
-            navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
+            title = if (state.selectionMode) "已选 ${state.selectedImageKeys.size} 张" else "生图历史",
+            navigation = {
+                CbIconButton(
+                    if (state.selectionMode) AppIcons.Close else AppIcons.ArrowBack,
+                    if (state.selectionMode) "退出多选" else "返回",
+                    if (state.selectionMode) viewModel::clearSelection else onBack,
+                    enabled = !state.busy && state.exportPlan == null
+                )
+            },
             actions = {
+                if (!state.selectionMode) {
                 CbIconButton(
                     AppIcons.Calendar,
                     "按日期筛选",
@@ -137,10 +226,11 @@ fun NovelAiHistoryScreen(
                         tint = ChatBarTheme.colors.destructive
                     )
                 }
+                }
             }
         )
 
-        if (searchExpanded) {
+        if (searchExpanded && !state.selectionMode) {
             Row(
                 Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.sm),
                 verticalAlignment = Alignment.CenterVertically,
@@ -163,7 +253,7 @@ fun NovelAiHistoryScreen(
             }
         }
 
-        state.dateFilter?.let { filter ->
+        state.dateFilter?.takeUnless { state.selectionMode }?.let { filter ->
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -187,7 +277,31 @@ fun NovelAiHistoryScreen(
             state.filteredImages.isEmpty() -> HistoryEmptyState("没有符合筛选条件的图片")
             else -> NovelAiHistoryGallery(
                 items = state.filteredImages,
-                onSelect = { selectedKey = it.key }
+                onSelect = { item ->
+                    if (state.selectionMode) viewModel.toggleSelection(item) else selectedKey = item.key
+                },
+                onLongSelect = { item ->
+                    searchExpanded = false
+                    viewModel.startSelection(item)
+                },
+                selectionMode = state.selectionMode,
+                selectedKeys = state.selectedImageKeys,
+                bottomContentPadding = if (state.selectionMode) 104.dp else ChatBarSpacing.sm
+            )
+        }
+    }
+        if (state.selectionMode) {
+            HistoryBatchActionCard(
+                title = state.batchTitle,
+                busy = state.busy || state.exportPlan != null,
+                onTitleChange = viewModel::updateBatchTitle,
+                onDelete = { confirmBatchDelete = true },
+                onSave = ::requestBatchExport,
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .navigationBarsPadding()
+                    .imePadding()
+                    .padding(horizontal = ChatBarSpacing.md, vertical = ChatBarSpacing.sm)
             )
         }
     }
@@ -206,6 +320,93 @@ fun NovelAiHistoryScreen(
                 showDateFilter = false
             }
         )
+    }
+
+    state.currentExportConflict?.let { conflict ->
+        var applyToRemaining by remember(conflict.key) { mutableStateOf(false) }
+        CbDialog(
+            onDismissRequest = { viewModel.resolveExportConflict(null, false) },
+            title = "发现重名图片",
+            confirm = {
+                CbButton(
+                    "覆盖",
+                    {
+                        viewModel.resolveExportConflict(
+                            NovelAiGalleryConflictDecision.OVERWRITE,
+                            applyToRemaining
+                        )
+                    },
+                    size = com.example.chatbar.ui.kit.ButtonSize.Sm
+                )
+            },
+            dismiss = {
+                Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
+                    CbButton(
+                        "停止",
+                        { viewModel.resolveExportConflict(null, false) },
+                        variant = ButtonVariant.Ghost,
+                        size = com.example.chatbar.ui.kit.ButtonSize.Sm
+                    )
+                    CbButton(
+                        "跳过",
+                        {
+                            viewModel.resolveExportConflict(
+                                NovelAiGalleryConflictDecision.SKIP,
+                                applyToRemaining
+                            )
+                        },
+                        variant = ButtonVariant.Outline,
+                        size = com.example.chatbar.ui.kit.ButtonSize.Sm
+                    )
+                }
+            }
+        ) {
+            CbText(conflict.displayName)
+            if (conflict.duplicateCount > 1) {
+                Spacer(Modifier.height(ChatBarSpacing.xs))
+                CbText(
+                    "图库中有 ${conflict.duplicateCount} 个同名项；覆盖时仅替换最新项。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            Spacer(Modifier.height(ChatBarSpacing.md))
+            Row(
+                Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                CbText("本次导出后续都这样处理", Modifier.weight(1f))
+                CbSwitch(applyToRemaining, { applyToRemaining = it })
+            }
+        }
+    }
+
+    if (confirmBatchDelete && state.selectionMode) {
+        CbDialog(
+            onDismissRequest = { if (!state.busy) confirmBatchDelete = false },
+            title = "删除 ${state.selectedImageKeys.size} 张历史图片？",
+            confirm = {
+                HoldToConfirmDeleteButton(
+                    enabled = !state.busy,
+                    onConfirmed = {
+                        confirmBatchDelete = false
+                        viewModel.deleteSelectedImages()
+                    }
+                )
+            },
+            dismiss = {
+                CbButton(
+                    "取消",
+                    { confirmBatchDelete = false },
+                    enabled = !state.busy,
+                    variant = ButtonVariant.Ghost
+                )
+            },
+            dismissOnBackPress = !state.busy,
+            dismissOnClickOutside = !state.busy
+        ) {
+            CbText("只删除应用内历史与缓存文件；已保存到系统图库的副本不受影响。")
+        }
     }
 
     val selectedIndex = selectedKey?.let { key -> state.filteredImages.indexOfFirst { it.key == key } }
@@ -342,27 +543,189 @@ private fun HistoryEmptyState(text: String) {
 internal fun NovelAiHistoryGallery(
     items: List<NovelAiHistoryImageItem>,
     onSelect: (NovelAiHistoryImageItem) -> Unit,
+    onLongSelect: (NovelAiHistoryImageItem) -> Unit = {},
+    selectionMode: Boolean = false,
+    selectedKeys: List<String> = emptyList(),
+    bottomContentPadding: androidx.compose.ui.unit.Dp = ChatBarSpacing.sm,
     modifier: Modifier = Modifier
 ) {
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 104.dp),
         modifier = modifier.fillMaxSize(),
-        contentPadding = androidx.compose.foundation.layout.PaddingValues(ChatBarSpacing.sm),
+        contentPadding = androidx.compose.foundation.layout.PaddingValues(
+            start = ChatBarSpacing.sm,
+            top = ChatBarSpacing.sm,
+            end = ChatBarSpacing.sm,
+            bottom = bottomContentPadding
+        ),
         horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs),
         verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
     ) {
         itemsIndexed(items, key = { _, item -> item.key }) { index, item ->
-            AsyncImage(
-                model = item.image.path,
-                contentDescription = "历史图片 ${index + 1}",
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
                     .aspectRatio(1f)
                     .clip(RoundedCornerShape(ChatBarShape.sm))
                     .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
-                    .clickable { onSelect(item) },
-                contentScale = ContentScale.Crop
+                    .combinedClickable(
+                        onClick = { onSelect(item) },
+                        onLongClickLabel = "选择历史图片",
+                        onLongClick = { onLongSelect(item) }
+                    )
+            ) {
+                AsyncImage(
+                    model = item.image.path,
+                    contentDescription = "历史图片 ${index + 1}",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Crop
+                )
+                if (selectionMode) {
+                    val selectionIndex = selectedKeys.indexOf(item.key).takeIf { it >= 0 }?.plus(1)
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.TopEnd)
+                            .padding(ChatBarSpacing.xs)
+                            .size(26.dp)
+                            .background(
+                                if (selectionIndex == null) ChatBarTheme.colors.card.copy(alpha = 0.82f)
+                                else ChatBarTheme.colors.primary,
+                                CircleShape
+                            )
+                            .border(
+                                1.dp,
+                                if (selectionIndex == null) ChatBarTheme.colors.border
+                                else ChatBarTheme.colors.primary,
+                                CircleShape
+                            )
+                            .semantics {
+                                contentDescription = selectionIndex?.let { "选中序号 $it" } ?: "未选中"
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        selectionIndex?.let {
+                            CbText(
+                                it.toString(),
+                                color = ChatBarTheme.colors.primaryForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun HistoryBatchActionCard(
+    title: String,
+    busy: Boolean,
+    onTitleChange: (String) -> Unit,
+    onDelete: () -> Unit,
+    onSave: () -> Unit,
+    modifier: Modifier = Modifier
+) {
+    CbSurface(
+        modifier = modifier.fillMaxWidth(),
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+        color = ChatBarTheme.colors.card
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(ChatBarSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
+        ) {
+            CbInput(
+                value = title,
+                onValueChange = onTitleChange,
+                modifier = Modifier.weight(1f),
+                placeholder = "标题",
+                enabled = !busy
             )
+            CbIconButton(
+                AppIcons.Delete,
+                "批量删除选中图片",
+                onDelete,
+                modifier = Modifier.size(48.dp),
+                enabled = !busy,
+                tint = ChatBarTheme.colors.destructive
+            )
+            CbIconButton(
+                AppIcons.Save,
+                "批量保存选中图片",
+                onSave,
+                modifier = Modifier.size(48.dp),
+                enabled = !busy
+            )
+        }
+    }
+}
+
+@Composable
+private fun HoldToConfirmDeleteButton(
+    enabled: Boolean,
+    onConfirmed: () -> Unit
+) {
+    var progress by remember { mutableStateOf(0f) }
+    var holding by remember { mutableStateOf(false) }
+    val colors = ChatBarTheme.colors
+    val durationMillis = 3_000L
+    LaunchedEffect(holding) {
+        if (!holding) {
+            progress = 0f
+            return@LaunchedEffect
+        }
+        val startedAt = SystemClock.uptimeMillis()
+        while (holding) {
+            progress = ((SystemClock.uptimeMillis() - startedAt).toFloat() /
+                durationMillis).coerceIn(0f, 1f)
+            if (progress >= 1f) {
+                holding = false
+                onConfirmed()
+                break
+            }
+            delay(16)
+        }
+    }
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Row(
+            modifier = Modifier
+                .heightIn(min = 48.dp)
+                .clip(RoundedCornerShape(ChatBarShape.sm))
+                .background(if (enabled) colors.destructive else colors.muted)
+                .pointerInput(enabled) {
+                    if (!enabled) return@pointerInput
+                    awaitEachGesture {
+                        val down = awaitFirstDown(requireUnconsumed = false)
+                        down.consume()
+                        holding = true
+                        do {
+                            val event = awaitPointerEvent()
+                            event.changes.forEach { it.consume() }
+                        } while (holding && event.changes.any { it.pressed })
+                        holding = false
+                    }
+                }
+                .semantics {
+                    role = Role.Button
+                    contentDescription = "按住三秒确认删除"
+                    progressBarRangeInfo = ProgressBarRangeInfo(progress, 0f..1f)
+                }
+                .padding(horizontal = ChatBarSpacing.md),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
+        ) {
+            CbIcon(AppIcons.Delete, null, Modifier.size(18.dp), colors.destructiveForeground)
+            CbText(
+                if (progress > 0f) "继续按住" else "按住删除",
+                color = colors.destructiveForeground,
+                style = ChatBarTheme.typography.label
+            )
+        }
+        if (progress > 0f) {
+            Spacer(Modifier.height(ChatBarSpacing.xs))
+            CbProgress(progress, Modifier.width(132.dp))
         }
     }
 }

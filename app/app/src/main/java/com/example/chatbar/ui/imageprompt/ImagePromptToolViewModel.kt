@@ -292,6 +292,13 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update { it.copy(guidanceCheckpoint = guidanceCheckpoint) }
             repository.draft.collect { draft ->
                 draft ?: return@collect
+                val currentState = _uiState.value
+                if (currentState.draftLoaded &&
+                    !currentState.draft.hasSamePromptEditorContent(draft)
+                ) {
+                    draftSaveJob?.cancel()
+                    resetDraftCoalescing()
+                }
                 val latestGuidanceCheckpoint = repository.loadGuidanceCheckpoint()
                 _uiState.update { state ->
                     val resetPromptEditors = state.draftLoaded &&
@@ -352,7 +359,9 @@ class ImagePromptToolViewModel : ViewModel() {
         val transformed = transform(state.draft)
         if (transformed == state.draft) return
         recordDraftChange(state.draft, historyKey)
-        val next = transformed.copy(updatedAt = System.currentTimeMillis())
+        val next = transformed.copy(
+            updatedAt = maxOf(System.currentTimeMillis(), state.draft.updatedAt + 1L)
+        )
         _uiState.update {
             it.copy(
                 draft = next,
@@ -1136,7 +1145,7 @@ class ImagePromptToolViewModel : ViewModel() {
         viewModelScope.launch {
             val previous = repository.loadUndoDraft() ?: return@launch
             val current = _uiState.value.draft
-            repository.saveDraft(previous)
+            repository.saveDraft(previous, overwriteNewer = true)
             repository.clearUndoDraft()
             if (previous != current) recordDraftChange(current, null)
             _uiState.update {

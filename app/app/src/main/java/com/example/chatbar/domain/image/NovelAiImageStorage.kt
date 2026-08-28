@@ -9,6 +9,11 @@ class NovelAiStagedSessionDeletion internal constructor(
     internal val staged: File
 )
 
+class NovelAiStagedImageDeletion internal constructor(
+    internal val original: File,
+    internal val staged: File
+)
+
 class NovelAiImageStorage(private val context: Context) {
     private val root: File get() = File(context.filesDir, "images/generated")
 
@@ -46,6 +51,25 @@ class NovelAiImageStorage(private val context: Context) {
 
     fun commitStagedSessionDelete(deletion: NovelAiStagedSessionDeletion): Boolean =
         !deletion.staged.exists() || deletion.staged.deleteRecursively()
+
+    fun stageImageDelete(path: String): NovelAiStagedImageDeletion? {
+        val file = File(path)
+        val owned = file.canonicalPath.startsWith(root.canonicalPath + File.separator)
+        check(owned) { "拒绝暂存非应用所有图片" }
+        if (!file.exists()) return null
+        val staged = File(file.parentFile, ".delete-${file.name}-${UUID.randomUUID()}")
+        check(file.renameTo(staged)) { "无法暂存图片 ${file.name}" }
+        return NovelAiStagedImageDeletion(file, staged)
+    }
+
+    fun restoreStagedImage(deletion: NovelAiStagedImageDeletion): Boolean =
+        !deletion.staged.exists() || deletion.staged.renameTo(deletion.original)
+
+    fun commitStagedImageDelete(deletion: NovelAiStagedImageDeletion): Boolean {
+        val deleted = !deletion.staged.exists() || deletion.staged.delete()
+        if (deleted) deletion.original.parentFile?.takeIf { it.listFiles().isNullOrEmpty() }?.delete()
+        return deleted
+    }
 
     private fun safeSegment(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }
