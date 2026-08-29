@@ -69,7 +69,7 @@ class ImagePromptToolUiStateTest {
     }
 
     @Test
-    fun `AI design context snapshot is detached from later studio draft changes`() {
+    fun `new AI design context excludes editable prompts from earlier conversations`() {
         val original = NovelAiStudioDraft(
             characters = listOf(NovelAiCharacterPromptDraft(prompt = "first character")),
             importedCharacterPromptSources = listOf(
@@ -85,7 +85,7 @@ class ImagePromptToolUiStateTest {
             extraRequirement = "other requirement"
         )
 
-        assertEquals("first character", snapshot.characterPrompt)
+        assertEquals("", snapshot.characterPrompt)
         assertEquals("first card", snapshot.characterImagePrompts.single().name)
         assertEquals("first reference", snapshot.characterImagePrompts.single().prompt)
         assertEquals("first requirement", snapshot.finalPromptRequirement)

@@ -386,6 +386,15 @@ class ImagePromptToolViewModel : ViewModel() {
         scheduleTokenCount(_uiState.value.draft)
     }
 
+    fun updatePromptDraft(
+        expectedEditorRevision: Int,
+        historyKey: String,
+        transform: (NovelAiStudioDraft) -> NovelAiStudioDraft
+    ) {
+        if (_uiState.value.promptEditorRevision != expectedEditorRevision) return
+        updateDraft(historyKey, transform)
+    }
+
     fun undoDraftChange() {
         val state = _uiState.value
         if (state.applyingHistory || state.isBusy && !state.isGeneratingImage || draftUndo.isEmpty()) return
@@ -822,6 +831,16 @@ class ImagePromptToolViewModel : ViewModel() {
         updateDraft(historyKey) { draft ->
             draft.copy(characters = draft.characters.map { if (it.id == id) transform(it) else it })
         }
+
+    fun updateCharacterPrompt(
+        id: String,
+        expectedEditorRevision: Int,
+        historyKey: String,
+        transform: (NovelAiCharacterPromptDraft) -> NovelAiCharacterPromptDraft
+    ) {
+        if (_uiState.value.promptEditorRevision != expectedEditorRevision) return
+        updateCharacter(id, historyKey, transform)
+    }
 
     fun removeCharacter(id: String) = updateDraft { draft ->
         draft.copy(characters = draft.characters.filterNot { it.id == id })

@@ -609,7 +609,9 @@ internal fun novelAiDesignRegenerationMode(
 
 internal fun novelAiDesignContextSnapshot(draft: NovelAiStudioDraft): NovelAiDesignContextSnapshot =
     NovelAiDesignContextSnapshot(
-        characterPrompt = draft.characters.joinToString("\n\n") { it.prompt },
+        // Editable character prompts may be output applied from another AI-design
+        // conversation. A new conversation must not inherit that conversation's reply.
+        characterPrompt = "",
         characterImagePrompts = draft.importedCharacterPromptSources,
         finalPromptRequirement = draft.extraRequirement
     )

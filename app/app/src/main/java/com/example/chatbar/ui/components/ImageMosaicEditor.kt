@@ -5,6 +5,7 @@ import android.graphics.BitmapFactory
 import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.graphics.Matrix
+import android.widget.Toast
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -23,6 +24,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -46,8 +48,13 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.data.local.ImageMaskPreferences
 import com.example.chatbar.domain.image.FullImagePatchOperation
+import com.example.chatbar.domain.image.ImageMetadataStripper
 import com.example.chatbar.domain.image.transformFullImageAdversarialPatch
 import java.io.File
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.hypot
@@ -59,9 +66,15 @@ private enum class MaskBrushType(val label: String) {
     White("白色")
 }
 
+private data class MosaicUndoSnapshot(
+    val bitmap: Bitmap,
+    val hasVisualChanges: Boolean
+)
+
 @Composable
 internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComplete: (String) -> Unit) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     val preferences = remember { ImageMaskPreferences(context) }
     val source = remember(sourcePath) {
         BitmapFactory.decodeFile(sourcePath)?.copy(Bitmap.Config.ARGB_8888, true)
@@ -77,29 +90,49 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
     var brushType by remember {
         mutableStateOf(MaskBrushType.entries.firstOrNull { it.name == preferences.loadBrushType() } ?: MaskBrushType.Mosaic)
     }
-    val undoStack = remember(sourcePath) { ArrayDeque<Bitmap>() }
+    var hasVisualChanges by remember(sourcePath) { mutableStateOf(false) }
+    var isStrippingMetadata by remember(sourcePath) { mutableStateOf(false) }
+    val undoStack = remember(sourcePath) { ArrayDeque<MosaicUndoSnapshot>() }
+    fun pushUndoSnapshot() {
+        undoStack.addLast(
+            MosaicUndoSnapshot(
+                bitmap.copy(Bitmap.Config.ARGB_8888, true),
+                hasVisualChanges
+            )
+        )
+        if (undoStack.size > 10) undoStack.removeFirst().bitmap.recycle()
+    }
 
-    Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false)) {
+    Dialog(
+        onDismissRequest = { if (!isStrippingMetadata) onDismiss() },
+        properties = DialogProperties(
+            usePlatformDefaultWidth = false,
+            decorFitsSystemWindows = false,
+            dismissOnBackPress = !isStrippingMetadata,
+            dismissOnClickOutside = !isStrippingMetadata
+        )
+    ) {
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
             Row(
                 Modifier.fillMaxWidth().statusBarsPadding().padding(12.dp),
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                CbButton("取消", onDismiss, variant = ButtonVariant.Ghost)
+                CbButton("取消", onDismiss, enabled = !isStrippingMetadata, variant = ButtonVariant.Ghost)
                 CbText("涂抹需要处理的位置", Modifier.weight(1f), style = ChatBarTheme.typography.heading)
                 CbButton("完成", {
                     writeMosaicCopy(File(context.filesDir, "images"), bitmap)?.let(onComplete)
-                })
+                }, enabled = !isStrippingMetadata)
             }
             Box(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
                 Canvas(
-                    Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(sourcePath, canvasSize, brushSizeDp, brushType, bitmap.width, bitmap.height) {
+                    Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(sourcePath, canvasSize, brushSizeDp, brushType, bitmap.width, bitmap.height, isStrippingMetadata) {
+                        if (isStrippingMetadata) return@pointerInput
                         var previousPoint = Offset.Unspecified
                         detectDragGestures(
                             onDragStart = {
-                                undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
-                                if (undoStack.size > 10) undoStack.removeFirst().recycle()
+                                pushUndoSnapshot()
+                                hasVisualChanges = true
                                 previousPoint = mapToBitmap(it, canvasSize, bitmap)
                                 applyBrush(bitmap, previousPoint, brushRadius(bitmap, canvasSize, brushSizeDp), brushType)
                                 revision++
@@ -133,35 +166,86 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                     CbButton(
                         "应用全图 AI 贴片",
                         {
-                            undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
-                            if (undoStack.size > 10) undoStack.removeFirst().recycle()
+                            pushUndoSnapshot()
                             transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Apply)
+                            hasVisualChanges = true
                             revision++
                         },
                         Modifier.weight(1f),
+                        enabled = !isStrippingMetadata,
                         variant = ButtonVariant.Secondary
                     )
                     CbButton(
                         "逆向 AI 贴片",
                         {
-                            undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
-                            if (undoStack.size > 10) undoStack.removeFirst().recycle()
+                            pushUndoSnapshot()
                             transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Restore)
+                            hasVisualChanges = true
                             revision++
                         },
                         Modifier.weight(1f),
+                        enabled = !isStrippingMetadata,
                         variant = ButtonVariant.Outline
                     )
                 }
                 CbButton(
                     "旋转 90°",
                     {
-                        undoStack.addLast(bitmap.copy(Bitmap.Config.ARGB_8888, true))
-                        if (undoStack.size > 10) undoStack.removeFirst().recycle()
+                        pushUndoSnapshot()
                         bitmap = rotateBitmap90(bitmap)
+                        hasVisualChanges = true
                         revision++
                     },
                     Modifier.fillMaxWidth(),
+                    enabled = !isStrippingMetadata,
+                    variant = ButtonVariant.Outline
+                )
+                CbButton(
+                    if (isStrippingMetadata) "正在去除图片元数据…" else "去除图片元数据，但不更改图片",
+                    {
+                        val shouldPreserveCurrentBitmap = hasVisualChanges
+                        val currentBitmap = bitmap
+                        isStrippingMetadata = true
+                        scope.launch {
+                            try {
+                                val outputPath = if (shouldPreserveCurrentBitmap) {
+                                    val snapshot = currentBitmap.copy(Bitmap.Config.ARGB_8888, false)
+                                    try {
+                                        withContext(Dispatchers.IO) {
+                                            writeMosaicCopy(
+                                                directory = File(context.filesDir, "images"),
+                                                bitmap = snapshot,
+                                                filePrefix = "metadata_stripped"
+                                            ) ?: error("无法保存无元数据图片")
+                                        }
+                                    } finally {
+                                        snapshot.recycle()
+                                    }
+                                } else {
+                                    withContext(Dispatchers.IO) {
+                                        ImageMetadataStripper.stripToCopy(
+                                            source = File(sourcePath),
+                                            outputDirectory = File(context.filesDir, "images")
+                                        ).absolutePath
+                                    }
+                                }
+                                Toast.makeText(context, "已生成无元数据副本，图片画面未更改", Toast.LENGTH_SHORT).show()
+                                onComplete(outputPath)
+                            } catch (error: CancellationException) {
+                                throw error
+                            } catch (error: Exception) {
+                                Toast.makeText(
+                                    context,
+                                    "去除图片元数据失败：${error.message ?: "未知错误"}",
+                                    Toast.LENGTH_LONG
+                                ).show()
+                            } finally {
+                                isStrippingMetadata = false
+                            }
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                    enabled = !isStrippingMetadata,
                     variant = ButtonVariant.Outline
                 )
                 CbText(
@@ -184,14 +268,20 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     CbButton("撤销", {
-                        if (undoStack.isNotEmpty()) bitmap = undoStack.removeLast().also { revision++ }
-                    }, Modifier.weight(1f), variant = ButtonVariant.Secondary, enabled = undoStack.isNotEmpty())
+                        if (undoStack.isNotEmpty()) {
+                            val snapshot = undoStack.removeLast()
+                            bitmap = snapshot.bitmap
+                            hasVisualChanges = snapshot.hasVisualChanges
+                            revision++
+                        }
+                    }, Modifier.weight(1f), variant = ButtonVariant.Secondary, enabled = undoStack.isNotEmpty() && !isStrippingMetadata)
                     CbButton("重置", {
-                        undoStack.forEach(Bitmap::recycle)
+                        undoStack.forEach { it.bitmap.recycle() }
                         undoStack.clear()
                         bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
+                        hasVisualChanges = false
                         revision++
-                    }, Modifier.weight(1f), variant = ButtonVariant.Outline)
+                    }, Modifier.weight(1f), variant = ButtonVariant.Outline, enabled = !isStrippingMetadata)
                 }
             }
         }
@@ -271,9 +361,13 @@ private fun DrawScope.drawFittedBitmap(bitmap: Bitmap) {
     drawImage(bitmap.asImageBitmap(), dstOffset = IntOffset(((size.width - width) / 2).toInt(), ((size.height - height) / 2).toInt()), dstSize = IntSize(width, height))
 }
 
-private fun writeMosaicCopy(directory: File, bitmap: Bitmap): String? = runCatching {
+private fun writeMosaicCopy(
+    directory: File,
+    bitmap: Bitmap,
+    filePrefix: String = "mosaic"
+): String? = runCatching {
     directory.mkdirs()
-    val target = File(directory, "mosaic_${System.currentTimeMillis()}.png")
+    val target = File(directory, "${filePrefix}_${System.currentTimeMillis()}.png")
     target.outputStream().use { bitmap.compress(Bitmap.CompressFormat.PNG, 100, it) }
     target.absolutePath
 }.getOrNull()

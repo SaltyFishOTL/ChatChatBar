@@ -1113,11 +1113,16 @@ private fun PromptSection(
                 label = "画风 Prompt",
                 value = draft.stylePrompt,
                 field = styleField,
+                editorRevision = state.promptEditorRevision,
                 annotations = state.promptAnnotations[styleField].orEmpty(),
                 translationEnabled = translationEnabled,
                 minLines = 3,
                 editorHeight = 104.dp,
-                onValueChange = { viewModel.updateDraft("prompt:style") { draft -> draft.copy(stylePrompt = it) } },
+                onValueChange = { value ->
+                    viewModel.updatePromptDraft(state.promptEditorRevision, "prompt:style") { draft ->
+                        draft.copy(stylePrompt = value)
+                    }
+                },
                 onSuggest = viewModel::requestTagSuggestions,
                 onTagEditTarget = onTagEditTarget,
                 onTagEditEnd = onTagEditEnd,
@@ -1128,12 +1133,17 @@ private fun PromptSection(
                 label = "基础 Prompt",
                 value = draft.basePrompt,
                 field = baseField,
+                editorRevision = state.promptEditorRevision,
                 annotations = state.promptAnnotations[baseField].orEmpty(),
                 translationEnabled = translationEnabled,
                 naturalLanguage = false,
                 minLines = 3,
                 editorHeight = 150.dp,
-                onValueChange = { viewModel.updateDraft("prompt:base") { draft -> draft.copy(basePrompt = it) } },
+                onValueChange = { value ->
+                    viewModel.updatePromptDraft(state.promptEditorRevision, "prompt:base") { draft ->
+                        draft.copy(basePrompt = value)
+                    }
+                },
                 onSuggest = viewModel::requestTagSuggestions,
                 onTagEditTarget = onTagEditTarget,
                 onTagEditEnd = onTagEditEnd,
@@ -1170,10 +1180,15 @@ private fun PromptSection(
                     label = "基础负面 Prompt",
                     value = draft.negativePrompt,
                     field = negativeField,
+                    editorRevision = state.promptEditorRevision,
                     annotations = state.promptAnnotations[negativeField].orEmpty(),
                     translationEnabled = translationEnabled,
                     minLines = 3,
-                    onValueChange = { viewModel.updateDraft("prompt:negative") { draft -> draft.copy(negativePrompt = it) } },
+                    onValueChange = { value ->
+                        viewModel.updatePromptDraft(state.promptEditorRevision, "prompt:negative") { draft ->
+                            draft.copy(negativePrompt = value)
+                        }
+                    },
                     onSuggest = viewModel::requestTagSuggestions,
                     onTagEditTarget = onTagEditTarget,
                     onTagEditEnd = onTagEditEnd,
@@ -1229,11 +1244,18 @@ private fun CharacterPromptEditor(
                 label = "角色正向",
                 value = character.prompt,
                 field = characterField,
+                editorRevision = state.promptEditorRevision,
                 annotations = state.promptAnnotations[characterField].orEmpty(),
                 translationEnabled = state.promptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED,
                 minLines = 2,
                 editorHeight = 104.dp,
-                onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character:${character.id}") { it.copy(prompt = value) } },
+                onValueChange = { value ->
+                    viewModel.updateCharacterPrompt(
+                        character.id,
+                        state.promptEditorRevision,
+                        "prompt:character:${character.id}"
+                    ) { it.copy(prompt = value) }
+                },
                 onSuggest = viewModel::requestTagSuggestions,
                 onTagEditTarget = onTagEditTarget,
                 onTagEditEnd = onTagEditEnd,
@@ -1251,11 +1273,18 @@ private fun CharacterPromptEditor(
                     label = "角色负面",
                     value = character.negativePrompt,
                     field = negativeField,
+                    editorRevision = state.promptEditorRevision,
                     annotations = state.promptAnnotations[negativeField].orEmpty(),
                     translationEnabled = state.promptTranslationConsent == NovelAiPromptTranslationConsent.ENABLED,
                     minLines = 2,
                     editorHeight = 104.dp,
-                    onValueChange = { value -> viewModel.updateCharacter(character.id, "prompt:character_negative:${character.id}") { it.copy(negativePrompt = value) } },
+                    onValueChange = { value ->
+                        viewModel.updateCharacterPrompt(
+                            character.id,
+                            state.promptEditorRevision,
+                            "prompt:character_negative:${character.id}"
+                        ) { it.copy(negativePrompt = value) }
+                    },
                     onSuggest = viewModel::requestTagSuggestions,
                     onTagEditTarget = onTagEditTarget,
                     onTagEditEnd = onTagEditEnd,
@@ -1378,6 +1407,7 @@ private fun TagPromptInput(
     label: String,
     value: String,
     field: NovelAiPromptFieldKey,
+    editorRevision: Int,
     annotations: List<NovelAiPromptAnnotation>,
     translationEnabled: Boolean,
     naturalLanguage: Boolean = false,
@@ -1389,8 +1419,10 @@ private fun TagPromptInput(
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit,
     onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit
 ) {
-    var fieldValue by remember(field) { mutableStateOf(TextFieldValue(value, TextRange(value.length))) }
-    var inputGeneration by remember(field) { mutableIntStateOf(0) }
+    var fieldValue by remember(field, editorRevision) {
+        mutableStateOf(TextFieldValue(value, TextRange(value.length)))
+    }
+    var inputGeneration by remember(field, editorRevision) { mutableIntStateOf(0) }
     fun insertTag(tag: String) {
         val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, tag)
         fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
@@ -1400,13 +1432,13 @@ private fun TagPromptInput(
     fun publishEditTarget() {
         onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
     }
-    LaunchedEffect(value) {
+    LaunchedEffect(value, editorRevision) {
         if (value != fieldValue.text) {
             fieldValue = TextFieldValue(value, TextRange(value.length))
             inputGeneration++
         }
     }
-    DisposableEffect(field) {
+    DisposableEffect(field, editorRevision) {
         onDispose { onTagEditEnd(field) }
     }
     val applyFullscreenValue: (TextFieldValue) -> Unit = { next ->
@@ -1417,7 +1449,12 @@ private fun TagPromptInput(
         label,
         modifier = Modifier.fillMaxWidth(),
         onFullscreenEdit = {
-            onFullscreenEdit(label, fieldValue, field, naturalLanguage, applyFullscreenValue)
+            val authoritativeValue = if (fieldValue.text == value) {
+                fieldValue
+            } else {
+                TextFieldValue(value, TextRange(value.length))
+            }
+            onFullscreenEdit(label, authoritativeValue, field, naturalLanguage, applyFullscreenValue)
         }
     ) {
         Box(Modifier.fillMaxWidth()) {
