@@ -1297,7 +1297,9 @@ class ImagePromptToolViewModel : ViewModel() {
                 imageToImageNoise = guidance.imageToImageNoise,
                 inpaintStrength = guidance.inpaintStrength,
                 preciseReferenceBase64 = if (effectiveMode == NovelAiReferenceMode.PRECISE) {
-                    encodedFile(guidance.preciseReference.asset)
+                    guidanceAssets.encodePreciseReference(
+                        requireNotNull(guidance.preciseReference.asset) { "精确参考图片不可用" }
+                    )
                 } else null,
                 preciseReferenceType = guidance.preciseReference.type,
                 preciseReferenceStrength = guidance.preciseReference.strength,

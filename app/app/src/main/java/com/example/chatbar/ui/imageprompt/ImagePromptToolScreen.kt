@@ -395,6 +395,7 @@ fun ImagePromptToolScreen(
                             generationCost.anlas > 0 -> buildString {
                                 append("生成消耗 ${generationCost.anlas} Anlas")
                                 if (generationCost.encodingAnlas > 0) append("（含编码 ${generationCost.encodingAnlas}）")
+                                if (generationCost.extraVibeAnlas > 0) append("（含额外 Vibe ${generationCost.extraVibeAnlas}）")
                             }
                             generationCost.kind == NovelAiGenerationChargeKind.V5_ALLOWANCE -> "生成免费"
                             generationCost.kind == NovelAiGenerationChargeKind.FREE -> "生成免费"

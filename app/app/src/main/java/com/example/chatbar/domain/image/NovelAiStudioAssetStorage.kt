@@ -9,6 +9,7 @@ import android.graphics.Matrix
 import android.media.ExifInterface
 import android.net.Uri
 import android.util.Base64
+import java.io.ByteArrayOutputStream
 import java.io.File
 import java.security.MessageDigest
 import java.util.UUID
@@ -58,6 +59,26 @@ class NovelAiStudioAssetStorage(private val context: Context) {
             saveBitmap(bitmap, "mask").copy(containsPaint = false)
         } finally {
             bitmap.recycle()
+        }
+    }
+
+    fun encodePreciseReference(asset: NovelAiStudioAssetRef): String {
+        require(asset.isUsable) { "精确参考图片不可用" }
+        val source = File(asset.path)
+        require(source.isFile) { "精确参考图片不存在" }
+        val decoded = decodeOriented(source)
+        val targetSize = NovelAiPreciseReferenceWirePolicy.targetSize(decoded.width, decoded.height)
+        val fitted = centerFit(decoded, targetSize.width, targetSize.height)
+        return try {
+            ByteArrayOutputStream().use { output ->
+                check(fitted.compress(Bitmap.CompressFormat.PNG, 100, output)) {
+                    "精确参考 PNG 编码失败"
+                }
+                Base64.encodeToString(output.toByteArray(), Base64.NO_WRAP)
+            }
+        } finally {
+            fitted.recycle()
+            decoded.recycle()
         }
     }
 
@@ -167,6 +188,18 @@ class NovelAiStudioAssetStorage(private val context: Context) {
 
     private fun centerCrop(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
         val scale = maxOf(targetWidth.toFloat() / source.width, targetHeight.toFloat() / source.height)
+        val left = (targetWidth - source.width * scale) / 2f
+        val top = (targetHeight - source.height * scale) / 2f
+        return Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888).also { target ->
+            Canvas(target).apply {
+                drawColor(Color.BLACK)
+                drawBitmap(source, Matrix().apply { setScale(scale, scale); postTranslate(left, top) }, null)
+            }
+        }
+    }
+
+    private fun centerFit(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+        val scale = minOf(targetWidth.toFloat() / source.width, targetHeight.toFloat() / source.height)
         val left = (targetWidth - source.width * scale) / 2f
         val top = (targetHeight - source.height * scale) / 2f
         return Bitmap.createBitmap(targetWidth, targetHeight, Bitmap.Config.ARGB_8888).also { target ->

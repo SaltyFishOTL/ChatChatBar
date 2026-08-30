@@ -95,7 +95,8 @@ enum class NovelAiGenerationChargeKind { FREE, V5_ALLOWANCE, ANLAS }
 data class NovelAiGenerationCost(
     val kind: NovelAiGenerationChargeKind,
     val anlas: Int = 0,
-    val encodingAnlas: Int = 0
+    val encodingAnlas: Int = 0,
+    val extraVibeAnlas: Int = 0
 )
 
 object NovelAiImageCostEstimator {
@@ -136,6 +137,15 @@ object NovelAiImageCostEstimator {
             imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.PRECISE &&
             imageGuidance.preciseReference.asset?.isUsable == true
         ) PRECISE_REFERENCE_COST * settings.count else 0
+        val activeVibeCount = if (
+            imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.VIBE
+        ) {
+            imageGuidance.vibes.count(NovelAiVibeReferenceDraft::isUsable)
+        } else {
+            0
+        }
+        val extraVibeCost = (activeVibeCount - FREE_VIBE_COUNT).coerceAtLeast(0) *
+            EXTRA_VIBE_COST * settings.count
         val encodingCost = vibeCacheMisses.coerceAtLeast(0) * VIBE_ENCODING_COST
         if (freeSampleEligible) {
             return NovelAiGenerationCost(
@@ -144,14 +154,16 @@ object NovelAiImageCostEstimator {
                 } else {
                     NovelAiGenerationChargeKind.FREE
                 },
-                anlas = preciseCost + encodingCost,
-                encodingAnlas = encodingCost
+                anlas = preciseCost + extraVibeCost + encodingCost,
+                encodingAnlas = encodingCost,
+                extraVibeAnlas = extraVibeCost
             )
         }
         return NovelAiGenerationCost(
             kind = NovelAiGenerationChargeKind.ANLAS,
-            anlas = modelCost * settings.count + preciseCost + encodingCost,
-            encodingAnlas = encodingCost
+            anlas = modelCost * settings.count + preciseCost + extraVibeCost + encodingCost,
+            encodingAnlas = encodingCost,
+            extraVibeAnlas = extraVibeCost
         )
     }
 
@@ -164,4 +176,6 @@ object NovelAiImageCostEstimator {
     private const val V5_PRICE_MULTIPLIER = 1.5
     private const val PRECISE_REFERENCE_COST = 5
     private const val VIBE_ENCODING_COST = 2
+    private const val FREE_VIBE_COUNT = 4
+    private const val EXTRA_VIBE_COST = 2
 }

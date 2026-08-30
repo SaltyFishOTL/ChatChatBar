@@ -60,6 +60,41 @@ class NovelAiImageGuidanceTest {
     }
 
     @Test
+    fun `vibe validation follows official sixteen image limit`() {
+        val sixteen = List(16) { index ->
+            NovelAiVibeReferenceDraft(asset = asset.copy(path = "vibe-$index.png"))
+        }
+        val guidance = NovelAiImageGuidanceDraft(
+            referenceMode = NovelAiReferenceMode.VIBE,
+            vibes = sixteen
+        )
+
+        assertNull(guidance.validationError(NovelAiImageModel.V4_5_FULL))
+        assertEquals(
+            "氛围参考最多 16 张",
+            guidance.copy(vibes = sixteen + NovelAiVibeReferenceDraft(asset = asset)).validationError(
+                NovelAiImageModel.V4_5_FULL
+            )
+        )
+    }
+
+    @Test
+    fun `precise reference selects nearest supported large canvas`() {
+        assertEquals(
+            NovelAiImageSize(1024, 1536, "Large Portrait"),
+            NovelAiPreciseReferenceWirePolicy.targetSize(800, 1400)
+        )
+        assertEquals(
+            NovelAiImageSize(1472, 1472, "Large Square"),
+            NovelAiPreciseReferenceWirePolicy.targetSize(900, 1000)
+        )
+        assertEquals(
+            NovelAiImageSize(1536, 1024, "Large Landscape"),
+            NovelAiPreciseReferenceWirePolicy.targetSize(1600, 900)
+        )
+    }
+
+    @Test
     fun `history recipe marks unowned base source as missing`() {
         val draft = NovelAiStudioDraft(
             imageGuidance = NovelAiImageGuidanceDraft(

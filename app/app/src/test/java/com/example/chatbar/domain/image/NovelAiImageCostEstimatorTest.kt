@@ -140,6 +140,31 @@ class NovelAiImageCostEstimatorTest {
         assertEquals(4, cost.encodingAnlas)
     }
 
+    @Test
+    fun fifthAndLaterVibesAddPerOutputCost() {
+        val vibes = List(5) { index ->
+            NovelAiVibeReferenceDraft(
+                asset = NovelAiStudioAssetRef(
+                    path = "vibe-$index.png",
+                    sha256 = "hash-$index",
+                    width = 1024,
+                    height = 1024
+                )
+            )
+        }
+        val cost = NovelAiImageCostEstimator.estimate(
+            settings = NovelAiGenerationSettings(count = 2),
+            account = null,
+            imageGuidance = NovelAiImageGuidanceDraft(
+                referenceMode = NovelAiReferenceMode.VIBE,
+                vibes = vibes
+            )
+        )
+
+        assertEquals(44, cost.anlas)
+        assertEquals(4, cost.extraVibeAnlas)
+    }
+
     private fun opus(
         v5Percent: Double? = null,
         exhausted: Boolean = false

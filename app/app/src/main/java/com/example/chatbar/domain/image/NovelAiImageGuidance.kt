@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.image
 
 import java.util.UUID
+import kotlin.math.abs
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -148,7 +149,7 @@ data class NovelAiImageGuidanceDraft(
     }
 
     companion object {
-        const val MAX_VIBES = 4
+        const val MAX_VIBES = 16
     }
 }
 
@@ -179,6 +180,19 @@ data class NovelAiPreparedImageGuidance(
 object NovelAiPreciseReferenceWirePolicy {
     fun secondaryStrength(fidelity: Float): Float = 1f - fidelity.coerceIn(0f, 1f)
     fun fidelity(secondaryStrength: Float): Float = 1f - secondaryStrength.coerceIn(0f, 1f)
+
+    fun targetSize(sourceWidth: Int, sourceHeight: Int): NovelAiImageSize {
+        require(sourceWidth > 0 && sourceHeight > 0) { "精确参考图片尺寸无效" }
+        val sourceRatio = sourceWidth.toDouble() / sourceHeight
+        return NovelAiAspectRatio.entries
+            .map { aspect ->
+                NovelAiGenerationSettings(
+                    sizeTier = NovelAiSizeTier.LARGE,
+                    aspectRatio = aspect
+                ).imageSize()
+            }
+            .minBy { size -> abs(sourceRatio - size.width.toDouble() / size.height) }
+    }
 }
 
 fun NovelAiImageGuidanceDraft.ownedAssetPaths(): Set<String> = buildSet {
