@@ -130,3 +130,8 @@ data class WorldBookPackage(
     val exportedAt: Long = System.currentTimeMillis(),
     val book: WorldBook
 )
+
+fun WorldBookPackage.validateForImport() {
+    require(schemaVersion == 1) { "不支持的世界书 schemaVersion：$schemaVersion" }
+    require(book.name.isNotBlank()) { "世界书名称不能为空" }
+}

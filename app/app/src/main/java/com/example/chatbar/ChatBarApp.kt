@@ -117,6 +117,10 @@ class ChatBarApp : Application() {
         private set
     lateinit var worldBookTransferService: WorldBookTransferService
         private set
+    lateinit var modelTemplateTransferService: ModelTemplateTransferService
+        private set
+    lateinit var sharedImportCoordinator: SharedImportCoordinator
+        private set
     lateinit var presetCatalogService: PresetCatalogService
         private set
     lateinit var characterSessionService: CharacterSessionService
@@ -391,6 +395,8 @@ class ChatBarApp : Application() {
         worldBookTransferService = WorldBookTransferService(worldBookRepository, transferJson)
         characterCardTransferService = CharacterCardTransferService(this, characterRepository, worldBookRepository, ragRepository, transferJson)
         formatCardTransferService = FormatCardTransferService(formatCardRepository, transferJson)
+        modelTemplateTransferService = ModelTemplateTransferService(modelRepository, transferJson)
+        sharedImportCoordinator = SharedImportCoordinator(this, applicationScope)
         communityService = CommunityService(
             app = this,
             characterRepository = characterRepository,

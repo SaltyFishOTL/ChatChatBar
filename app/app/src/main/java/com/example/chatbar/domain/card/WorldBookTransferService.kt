@@ -42,12 +42,16 @@ class WorldBookTransferService(
         val element = json.parseToJsonElement(rawJson)
         val obj = element.jsonObject
         if (obj["schemaVersion"]?.jsonPrimitive?.intOrNull != null && obj["book"] != null) {
-            return json.decodeFromString(WorldBookPackage.serializer(), rawJson)
+            return json.decodeFromString(WorldBookPackage.serializer(), rawJson).also {
+                it.validateForImport()
+            }
         }
         if (looksLikeUnsupportedLorebook(obj)) {
             error("暂不支持 NovelAI / Agnai / Risu 世界书转换，请先导出为 SillyTavern World Info JSON")
         }
-        return WorldBookPackage(book = parseSillyTavernWorldBook(obj, fallbackName))
+        return WorldBookPackage(book = parseSillyTavernWorldBook(obj, fallbackName)).also {
+            it.validateForImport()
+        }
     }
 
     fun decodeCharacterBook(rawJson: String, fallbackName: String): WorldBook =

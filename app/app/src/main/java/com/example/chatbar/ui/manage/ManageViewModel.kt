@@ -9,21 +9,17 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.EmbeddingConfig
-import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.ModelConfigurationMode
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
-import com.example.chatbar.data.local.entity.ParamValue
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.ThemeMode
 import com.example.chatbar.data.local.entity.normalized
 import com.example.chatbar.domain.appearance.ThemeColorHistoryPolicy
 import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
-import com.example.chatbar.domain.card.SharedImportClassifier
-import com.example.chatbar.domain.card.SharedImportType
 import com.example.chatbar.domain.community.CommunityItem
 import com.example.chatbar.domain.community.CommunityItemType
 import com.example.chatbar.domain.moment.MomentAlarmScheduler
@@ -38,34 +34,13 @@ import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.rag.EmbeddingService
 import java.io.File
-import kotlin.uuid.ExperimentalUuidApi
-import kotlin.uuid.Uuid
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
-
-@Serializable
-private data class ExportedModelTemplate(
-    val schemaVersion: Int = 1,
-    val exportedAt: Long = System.currentTimeMillis(),
-    val displayName: String,
-    val baseUrl: String,
-    val modelName: String,
-    val isMultimodal: Boolean,
-    val templateType: com.example.chatbar.data.local.entity.ModelTemplate,
-    val customParams: Map<String, ParamValue>,
-    val reasoningEffort: String? = null,
-    val enableThinking: Boolean? = null,
-    val maxOutputTokens: Int? = null,
-    val formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
-)
 
 private val characterImportProbeJson = Json {
     ignoreUnknownKeys = true
@@ -110,18 +85,13 @@ class ManageViewModel : ViewModel() {
     private val characterTransfers = ChatBarApp.instance.characterCardTransferService
     private val formatTransfers = ChatBarApp.instance.formatCardTransferService
     private val worldBookTransfers = ChatBarApp.instance.worldBookTransferService
+    private val modelTemplateTransfers = ChatBarApp.instance.modelTemplateTransferService
     private val communityService = ChatBarApp.instance.communityService
     private val presetCatalog = ChatBarApp.instance.presetCatalogService
     private val presetModelCatalog = ChatBarApp.instance.presetModelCatalogService
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
     private val novelAiCredentials = ChatBarApp.instance.novelAiCredentialStore
     private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
-    private val json = Json {
-        ignoreUnknownKeys = true
-        prettyPrint = true
-        encodeDefaults = true
-    }
-
     // 数据流绑定到 Compose State
     val characterCards: StateFlow<List<CharacterCard>> = characterRepository.characters
         .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
@@ -316,38 +286,6 @@ class ManageViewModel : ViewModel() {
         return com.example.chatbar.domain.card.CharacterCardImportRequest(packageData)
     }
 
-    sealed interface SharedImportDecodeResult {
-        data class Character(val request: com.example.chatbar.domain.card.CharacterCardImportRequest) : SharedImportDecodeResult
-        data class Format(val data: com.example.chatbar.domain.card.FormatCardPackage) : SharedImportDecodeResult
-        data class WorldBook(val data: com.example.chatbar.domain.card.WorldBookPackage) : SharedImportDecodeResult
-        data class ModelTemplate(val rawJson: String) : SharedImportDecodeResult
-    }
-
-    /**
-     * 共享导入自动识别类型：PNG 角色卡、ChatBar 角色/格式/世界书/模型模板 JSON、SillyTavern 卡。
-     */
-    suspend fun decodeSharedImport(uri: android.net.Uri, context: Context): SharedImportDecodeResult {
-        val bytes = runCatching {
-            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
-        }.getOrNull() ?: error("文件为空")
-        characterTransfers.decodePng(bytes)?.let {
-            return SharedImportDecodeResult.Character(com.example.chatbar.domain.card.CharacterCardImportRequest(it))
-        }
-        val text = bytes.toString(Charsets.UTF_8)
-        when (SharedImportClassifier.classify(text)) {
-            SharedImportType.WorldBook -> {
-                val fallbackName = uri.lastPathSegment?.substringAfterLast('/')?.substringBeforeLast('.') ?: "导入世界书"
-                return SharedImportDecodeResult.WorldBook(decodeWorldBookImport(text, fallbackName))
-            }
-            SharedImportType.Character -> return SharedImportDecodeResult.Character(decodeCharacterImport(text))
-            SharedImportType.Format -> return SharedImportDecodeResult.Format(decodeFormatImport(text))
-            SharedImportType.ModelTemplate -> return SharedImportDecodeResult.ModelTemplate(text)
-            SharedImportType.Unknown -> Unit
-        }
-        val st = com.example.chatbar.domain.card.SillyTavernCardParser.parseUri(context, uri)
-        val packageData = com.example.chatbar.domain.card.SillyTavernCardMapper.toCharacterCardPackage(st)
-        return SharedImportDecodeResult.Character(com.example.chatbar.domain.card.CharacterCardImportRequest(packageData))
-    }
     suspend fun findCharacterImportConflict(data: com.example.chatbar.domain.card.CharacterCardImportRequest): CharacterCard? {
         val all = characterRepository.getAll()
         data.presetKey
@@ -641,47 +579,18 @@ class ManageViewModel : ViewModel() {
         }
     }
 
-    suspend fun exportModelTemplateJson(id: String): String = withContext(Dispatchers.IO) {
-        val model = modelRepository.getModel(id) ?: error("Model not found")
-        json.encodeToString(
-            ExportedModelTemplate.serializer(),
-            ExportedModelTemplate(
-                displayName = model.displayName,
-                baseUrl = model.baseUrl,
-                modelName = model.modelName,
-                isMultimodal = model.isMultimodal,
-                templateType = model.templateType,
-                customParams = model.customParams,
-                reasoningEffort = model.reasoningEffort,
-                enableThinking = model.enableThinking,
-                maxOutputTokens = model.maxOutputTokens,
-                formatPromptPosition = model.formatPromptPosition
-            )
-        )
+    suspend fun exportModelTemplateJson(id: String): String = modelTemplateTransfers.exportJson(id)
+
+    fun decodeModelTemplateImport(rawJson: String) = modelTemplateTransfers.decode(rawJson)
+
+    suspend fun importModelTemplate(data: com.example.chatbar.domain.card.ModelTemplatePackage): String {
+        val model = modelTemplateTransfers.importNew(data)
+        refreshEffectiveModels()
+        return model.id
     }
 
-    @OptIn(ExperimentalUuidApi::class)
-    suspend fun importModelTemplateJson(rawJson: String): String = withContext(Dispatchers.IO) {
-        val template = json.decodeFromString(ExportedModelTemplate.serializer(), rawJson)
-        val model = ModelConfig(
-            id = Uuid.random().toString(),
-            displayName = "${template.displayName} (Imported Template)",
-            baseUrl = template.baseUrl,
-            apiKey = "",
-            modelName = template.modelName,
-            isMultimodal = template.isMultimodal,
-            visionModelId = null,
-            templateType = template.templateType,
-            customParams = template.customParams,
-            reasoningEffort = template.reasoningEffort,
-            enableThinking = template.enableThinking,
-            maxOutputTokens = template.maxOutputTokens,
-            formatPromptPosition = template.formatPromptPosition,
-            createdAt = System.currentTimeMillis()
-        )
-        modelRepository.saveModel(model)
-        model.id
-    }
+    suspend fun importModelTemplateJson(rawJson: String): String =
+        importModelTemplate(decodeModelTemplateImport(rawJson))
 
     fun deleteEmbeddingConfig(id: String) {
         viewModelScope.launch {

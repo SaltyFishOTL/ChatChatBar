@@ -3,7 +3,7 @@ package com.example.chatbar.domain.card
 import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
-import android.util.Base64
+import java.util.Base64
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.jsonObject
@@ -35,16 +35,17 @@ object SillyTavernCardParser {
             return parseJson(chunk).copy(pngBytes = bytes)
         }
 
-        return parseJson(rawJson).copy(pngBytes = pngBytes)
+        return parseJson(rawJson, pngBytes)
     }
 
-    private fun parseJson(raw: String): SillyTavernCard {
+    fun parseJson(raw: String, pngBytes: ByteArray? = null): SillyTavernCard {
         val doc = json.parseToJsonElement(raw).jsonObject
-        return if (doc.containsKey("spec")) {
+        val parsed = if (doc.containsKey("spec")) {
             parseV2(doc)
         } else {
             parseV1(doc)
         }
+        return parsed.copy(pngBytes = pngBytes)
     }
 
     private fun parseV1(doc: JsonObject): SillyTavernCard = SillyTavernCard(
@@ -125,7 +126,7 @@ object SillyTavernCardParser {
 
     fun extractCharaChunk(pngBytes: ByteArray): String? {
         val b64 = PngTextChunks.extractTextChunk(pngBytes, "Chara", ignoreCase = true) ?: return null
-        return String(Base64.decode(b64, Base64.DEFAULT), Charsets.UTF_8)
+        return String(Base64.getMimeDecoder().decode(b64), Charsets.UTF_8)
     }
 
     private fun JsonObject.string(key: String): String =
@@ -135,7 +136,7 @@ object SillyTavernCardParser {
         val element = this[key] ?: return emptyList()
         return try {
             when (element) {
-                is kotlinx.serialization.json.JsonArray -> element.mapNotNull { it.jsonPrimitive?.content }
+                is kotlinx.serialization.json.JsonArray -> element.map { it.jsonPrimitive.content }
                 else -> {
                     val raw = element.toString().trim()
                     if (raw.startsWith("[") && raw.endsWith("]")) {

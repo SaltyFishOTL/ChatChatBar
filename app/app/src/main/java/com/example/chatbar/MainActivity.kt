@@ -28,7 +28,7 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.lifecycleScope
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.resolveDarkTheme
-import com.example.chatbar.domain.card.SharedImportEventFlow
+import com.example.chatbar.domain.card.SharedImportSource
 import com.example.chatbar.domain.update.AppUpdateChecker
 import com.example.chatbar.domain.update.AppUpdateDownloadState
 import com.example.chatbar.domain.update.AppUpdateInfo
@@ -41,7 +41,6 @@ import com.example.chatbar.utils.diagnostics.CrashReportManager
 import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
-    private val sharedImportEvents = SharedImportEventFlow<Uri>()
     private var currentIntentHandled = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -98,10 +97,7 @@ class MainActivity : ComponentActivity() {
                 ) {
                     if (settingsInitialized) {
                         MainNavigation(
-                            tutorialCompleted = settings.tutorialVersion >= CURRENT_TUTORIAL_VERSION,
-                            sharedImportEvents = sharedImportEvents.events,
-                            onSharedImportClaimed = ::claimSharedImport,
-                            onSharedImportCompleted = ::completeSharedImport
+                            tutorialCompleted = settings.tutorialVersion >= CURRENT_TUTORIAL_VERSION
                         )
                     } else {
                         CbLoadingState(label = "ChatBar")
@@ -199,7 +195,13 @@ class MainActivity : ComponentActivity() {
                 intent.getParcelableExtra(Intent.EXTRA_STREAM)
             }
             if (uri != null) {
-                sharedImportEvents.publish(uri)
+                ChatBarApp.instance.sharedImportCoordinator.enqueue(SharedImportSource.FileUri(uri))
+                currentIntentHandled = true
+                return
+            }
+            intent.getCharSequenceExtra(Intent.EXTRA_TEXT)?.toString()?.takeIf(String::isNotBlank)?.let { text ->
+                ChatBarApp.instance.sharedImportCoordinator.enqueue(SharedImportSource.TextJson(text))
+                currentIntentHandled = true
                 return
             }
         }
@@ -207,7 +209,8 @@ class MainActivity : ComponentActivity() {
             val uri = intent.data
             if (uri != null && isImportableFileUri(uri)) {
                 CrashReportManager.recordBreadcrumb("action", "receive_view_file")
-                sharedImportEvents.publish(uri)
+                ChatBarApp.instance.sharedImportCoordinator.enqueue(SharedImportSource.FileUri(uri))
+                currentIntentHandled = true
                 return
             }
         }
@@ -221,23 +224,11 @@ class MainActivity : ComponentActivity() {
             ?.trim()
             ?.lowercase()
         if (type == null) return true
-        return type == "image/png" ||
+        return type.startsWith("image/") ||
             type == "application/json" ||
             type == "text/json" ||
             type == "text/plain" ||
             type == "application/octet-stream"
-    }
-
-    private fun completeSharedImport(id: Long): Boolean {
-        val completed = sharedImportEvents.complete(id)
-        if (completed) currentIntentHandled = true
-        return completed
-    }
-
-    private fun claimSharedImport(id: Long): Boolean {
-        val claimed = sharedImportEvents.claim(id)
-        if (claimed) currentIntentHandled = true
-        return claimed
     }
 
     private fun handleCommunityAuthCallback(uri: Uri?): Boolean {

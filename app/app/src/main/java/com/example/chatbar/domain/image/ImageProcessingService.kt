@@ -58,6 +58,25 @@ class ImageProcessingService(private val context: Context) {
         }
     }
 
+    suspend fun importFile(path: String, displayName: String): ImportedProcessImage {
+        cleanupStaleWorkFiles()
+        workDirectory.mkdirs()
+        val source = File(path)
+        require(source.isFile) { "共享图片文件不存在" }
+        require(source.length() in 1..MAX_INPUT_BYTES) { "图片为空或超过 100 MB" }
+        val extension = extensionFor(displayName, null)
+        val target = File(workDirectory, "source_${UUID.randomUUID()}.$extension")
+        try {
+            source.inputStream().buffered().use { input ->
+                target.outputStream().buffered().use { output -> input.copyTo(output) }
+            }
+            return inspectImportedImage(target, displayName)
+        } catch (error: Throwable) {
+            target.delete()
+            throw error
+        }
+    }
+
     suspend fun process(
         sourcePath: String,
         operation: FullImagePatchOperation,

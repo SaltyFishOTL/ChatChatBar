@@ -45,6 +45,7 @@ import androidx.compose.foundation.text.input.TextFieldState
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.Stable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -479,6 +480,98 @@ fun FullscreenTextEditor(
     }
 }
 
+@Stable
+class FullscreenTextEditorState internal constructor(
+    internal val textFieldState: TextFieldState
+) {
+    val value: TextFieldValue
+        get() = TextFieldValue(
+            text = textFieldState.text.toString(),
+            selection = textFieldState.selection,
+            composition = textFieldState.composition
+        )
+
+    fun replace(value: TextFieldValue) {
+        textFieldState.edit {
+            replace(0, length, value.text)
+            selection = TextRange(
+                value.selection.start.coerceIn(0, value.text.length),
+                value.selection.end.coerceIn(0, value.text.length)
+            )
+        }
+    }
+}
+
+@Composable
+fun rememberFullscreenTextEditorState(
+    initialValue: TextFieldValue
+): FullscreenTextEditorState {
+    val textFieldState = rememberTextFieldState(
+        initialText = initialValue.text,
+        initialSelection = initialValue.selection
+    )
+    return remember(textFieldState) { FullscreenTextEditorState(textFieldState) }
+}
+
+/**
+ * Opt-in stateful fullscreen editor. Existing String/TextFieldValue overloads keep their original
+ * isolated-draft behavior; feature-specific accessories use this overload only when they need to
+ * observe or replace the transient draft without committing it.
+ */
+@Composable
+fun FullscreenTextEditor(
+    state: FullscreenTextEditorState,
+    title: String,
+    visible: Boolean,
+    onDismiss: () -> Unit,
+    onConfirm: (TextFieldValue) -> Unit,
+    placeholder: String = "输入消息…",
+    images: List<String> = emptyList(),
+    onAddImage: (() -> Unit)? = null,
+    onRemoveImage: ((String) -> Unit)? = null,
+    confirmIcon: ImageVector = AppIcons.Check,
+    confirmEnabled: Boolean = true,
+    canConfirm: (TextFieldValue) -> Boolean = { true },
+    outputTransformation: OutputTransformation? = null,
+    textStyle: TextStyle? = null,
+    textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int, String) -> Unit)? = null,
+    onDraftValueChange: ((TextFieldValue) -> Unit)? = null,
+    topContent: (@Composable ColumnScope.() -> Unit)? = null
+) {
+    if (!visible) return
+    val latestOnDraftValueChange by rememberUpdatedState(onDraftValueChange)
+    val currentValue = state.value
+    LaunchedEffect(state) {
+        if (latestOnDraftValueChange != null) {
+            snapshotFlow { state.value }
+                .distinctUntilChanged()
+                .collect { latestOnDraftValueChange?.invoke(it) }
+        }
+    }
+    FullscreenTextEditorLayout(
+        title = title,
+        onDismiss = onDismiss,
+        onConfirm = { onConfirm(state.value) },
+        confirmIcon = confirmIcon,
+        confirmEnabled = confirmEnabled && canConfirm(currentValue),
+        images = images,
+        onAddImage = onAddImage,
+        onRemoveImage = onRemoveImage,
+        topContent = topContent
+    ) { ctxColors, interactionSource, focused ->
+        CursorAwareFullscreenTextField(
+            state = state.textFieldState,
+            placeholder = placeholder,
+            colors = ctxColors,
+            interactionSource = interactionSource,
+            focused = focused,
+            outputTransformation = outputTransformation,
+            textStyle = textStyle,
+            textOverlay = textOverlay
+        )
+    }
+}
+
 @Composable
 private fun CursorAwareFullscreenTextField(
     state: TextFieldState,
@@ -487,7 +580,9 @@ private fun CursorAwareFullscreenTextField(
     interactionSource: MutableInteractionSource,
     focused: Boolean,
     modifier: Modifier = Modifier,
-    outputTransformation: OutputTransformation? = null
+    outputTransformation: OutputTransformation? = null,
+    textStyle: TextStyle? = null,
+    textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int, String) -> Unit)? = null
 ) {
     val density = LocalDensity.current
     val keyboardController = LocalSoftwareKeyboardController.current
@@ -540,7 +635,7 @@ private fun CursorAwareFullscreenTextField(
                 .focusRequester(focusRequester)
                 .heightIn(min = maxHeight.coerceAtLeast(1.dp)),
             lineLimits = TextFieldLineLimits.MultiLine(),
-            textStyle = ChatBarTheme.typography.body.copy(color = colors.foreground),
+            textStyle = (textStyle ?: ChatBarTheme.typography.body).copy(color = colors.foreground),
             cursorBrush = SolidColor(colors.primary),
             outputTransformation = outputTransformation,
             interactionSource = interactionSource,
@@ -550,6 +645,12 @@ private fun CursorAwareFullscreenTextField(
                 if (state.text.isEmpty() && placeholder.isNotEmpty()) CbText(placeholder, color = colors.mutedForeground)
                 inner()
             }
+        )
+        textOverlay?.invoke(
+            this,
+            textLayoutResult,
+            scrollState.value,
+            state.text.toString()
         )
         CharacterCount(
             length = state.text.length,
@@ -616,6 +717,7 @@ private fun FullscreenTextEditorLayout(
     images: List<String>,
     onAddImage: (() -> Unit)?,
     onRemoveImage: ((String) -> Unit)?,
+    topContent: (@Composable ColumnScope.() -> Unit)? = null,
     textField: @Composable (colors: ChatBarColors, interactionSource: MutableInteractionSource, focused: Boolean) -> Unit
 ) {
     val colors = ChatBarTheme.colors
@@ -632,6 +734,10 @@ private fun FullscreenTextEditorLayout(
         Column(Modifier.fillMaxSize().padding(ChatBarSpacing.lg)) {
             CbText(title, style = ChatBarTheme.typography.title)
             Spacer(Modifier.size(ChatBarSpacing.md))
+            if (topContent != null) {
+                topContent()
+                Spacer(Modifier.size(ChatBarSpacing.md))
+            }
             if (images.isNotEmpty()) {
                 Row(Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(bottom = ChatBarSpacing.md), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
                     images.forEach { path ->

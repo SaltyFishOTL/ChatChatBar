@@ -1,7 +1,6 @@
 package com.example.chatbar
 
 import android.app.Activity
-import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.scaleIn
@@ -21,6 +20,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
@@ -29,6 +29,7 @@ import androidx.navigation3.runtime.NavKey
 import androidx.navigation3.runtime.entryProvider
 import androidx.navigation3.runtime.rememberNavBackStack
 import androidx.navigation3.ui.NavDisplay
+import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.ui.components.BottomNavBar
 import com.example.chatbar.ui.community.CommunityScreen
 import com.example.chatbar.ui.home.HomeScreen
@@ -41,22 +42,19 @@ import com.example.chatbar.ui.manage.ManageScreen
 import com.example.chatbar.ui.moments.MomentsScreen
 import com.example.chatbar.ui.character.CharacterEditScreen
 import com.example.chatbar.data.local.entity.MessageRole
-import com.example.chatbar.domain.card.SharedImportEvent
+import com.example.chatbar.domain.card.SharedImportFocus
 import com.example.chatbar.ui.model.ModelEditScreen
 import com.example.chatbar.ui.format.FormatCardEditScreen
 import com.example.chatbar.ui.worldbook.WorldBookEditScreen
 import com.example.chatbar.ui.tutorial.TutorialScreen
+import com.example.chatbar.ui.shared.SharedImportHost
 import com.example.chatbar.ui.kit.swipeToAdjacentTab
 import com.example.chatbar.utils.diagnostics.CrashReportManager
-import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 
 @Composable
 fun MainNavigation(
-    tutorialCompleted: Boolean,
-    sharedImportEvents: StateFlow<SharedImportEvent<Uri>?>,
-    onSharedImportClaimed: (Long) -> Boolean,
-    onSharedImportCompleted: (Long) -> Boolean
+    tutorialCompleted: Boolean
 ) {
     val initialRoute: NavKey = if (tutorialCompleted) HomeRoute else TutorialRoute(firstLaunch = true)
     val backStack = rememberNavBackStack(initialRoute)
@@ -89,7 +87,11 @@ fun MainNavigation(
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     var lastHomeBackPressAt by remember { mutableLongStateOf(0L) }
-    val sharedImportEvent by sharedImportEvents.collectAsState()
+    val sharedImportCoordinator = ChatBarApp.instance.sharedImportCoordinator
+    val sharedManageViewModel: com.example.chatbar.ui.manage.ManageViewModel = viewModel()
+    val sharedImportQueue by sharedImportCoordinator.queueState.collectAsState()
+    val sharedImageRequest = sharedImportQueue.active?.let { sharedImportCoordinator.currentImageRequest() }
+    var sharedImportFocus by remember { mutableStateOf<SharedImportFocus?>(null) }
 
     fun popBackStack() {
         if (backStack.size > 1) {
@@ -226,9 +228,12 @@ fun MainNavigation(
                     entry<ManageRoute> {
                         ManageScreen(
                             onNavigate = { route -> pushRoute(route as NavKey) },
-                            sharedImportEvent = sharedImportEvent,
-                            onSharedImportClaimed = onSharedImportClaimed,
-                            onSharedImportCompleted = onSharedImportCompleted,
+                            viewModel = sharedManageViewModel,
+                            sharedImportFocus = sharedImportFocus,
+                            onSharedImportFocusConsumed = { queueId ->
+                                sharedImportFocus = null
+                                sharedImportCoordinator.acknowledgeCompleted(queueId)
+                            },
                             onSwipePastFirstTab = { showRootAt(currentRootIndex - 1) }
                         )
                     }
@@ -236,7 +241,12 @@ fun MainNavigation(
                         ImagePromptToolScreen(
                             onBack = ::popBackStack,
                             onOpenHistory = { pushRoute(NovelAiHistoryRoute) },
-                            onOpenAiDesign = { pushRoute(NovelAiDesignRoute) }
+                            onOpenAiDesign = { pushRoute(NovelAiDesignRoute) },
+                            sharedImageRequest = sharedImageRequest,
+                            onSharedImageImported = sharedImportCoordinator::completeImageHandoff,
+                            onSharedImageFailed = { queueId, message ->
+                                sharedImportCoordinator.fail(queueId, message)
+                            }
                         )
                     }
                     entry<NovelAiHistoryRoute> {
@@ -302,6 +312,18 @@ fun MainNavigation(
             )
         }
     }
+    SharedImportHost(
+        coordinator = sharedImportCoordinator,
+        enabled = tutorialCompleted,
+        viewModel = sharedManageViewModel,
+        onFocus = { focus ->
+            sharedImportFocus = focus
+            showRoot(ManageRoute)
+        },
+        onOpenImage = {
+            if (backStack.lastOrNull() != ImagePromptToolRoute) pushRoute(ImagePromptToolRoute)
+        }
+    )
 }
 
 const val CURRENT_TUTORIAL_VERSION = 1

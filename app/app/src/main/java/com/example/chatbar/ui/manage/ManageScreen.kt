@@ -1,7 +1,6 @@
 package com.example.chatbar.ui.manage
 
 import com.example.chatbar.ui.kit.AppIcons
-import com.example.chatbar.ui.manage.ManageViewModel.SharedImportDecodeResult
 
 import android.content.Intent
 import android.graphics.Bitmap
@@ -36,6 +35,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.foundation.text.input.InputTransformation
@@ -107,7 +107,8 @@ import com.example.chatbar.domain.appearance.ThemeColorHsv
 import com.example.chatbar.domain.card.CharacterCardImportRequest
 import com.example.chatbar.domain.card.CharacterCardPngExportOptions
 import com.example.chatbar.domain.card.CharacterCardPngRenderer
-import com.example.chatbar.domain.card.SharedImportEvent
+import com.example.chatbar.domain.card.SharedImportFocus
+import com.example.chatbar.domain.card.SharedImportSection
 import com.example.chatbar.domain.card.FormatCardPackage
 import com.example.chatbar.domain.card.WorldBookPackage
 import com.example.chatbar.domain.community.CommunityItem
@@ -164,7 +165,6 @@ import java.util.Locale
 import java.util.UUID
 import kotlin.math.roundToInt
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -183,9 +183,8 @@ fun ManageScreen(
     onNavigate: (Any) -> Unit,
     modifier: Modifier = Modifier,
     viewModel: ManageViewModel = viewModel(),
-    sharedImportEvent: SharedImportEvent<Uri>? = null,
-    onSharedImportClaimed: (Long) -> Boolean = { false },
-    onSharedImportCompleted: (Long) -> Boolean = { false },
+    sharedImportFocus: SharedImportFocus? = null,
+    onSharedImportFocusConsumed: (Long) -> Unit = {},
     onSwipePastFirstTab: () -> Unit = {}
 ) {
     val characters by viewModel.characterCards.collectAsState()
@@ -249,57 +248,23 @@ fun ManageScreen(
     var pendingFormatImport by remember { mutableStateOf<Pair<FormatCardPackage, FormatCard?>?>(null) }
     var pendingWorldBookImport by remember { mutableStateOf<Pair<WorldBookPackage, WorldBook?>?>(null) }
     var pendingCharacterChatId by remember { mutableStateOf<String?>(null) }
+    var localSharedImportFocus by remember { mutableStateOf<SharedImportFocus?>(null) }
+    fun consumeSharedImportFocus() {
+        val focus = localSharedImportFocus ?: return
+        localSharedImportFocus = null
+        onSharedImportFocusConsumed(focus.queueId)
+    }
 
-    LaunchedEffect(sharedImportEvent?.id) {
-        val importEvent = sharedImportEvent ?: return@LaunchedEffect
-        if (!onSharedImportClaimed(importEvent.id)) return@LaunchedEffect
-        try {
-            when (val result = viewModel.decodeSharedImport(importEvent.value, context)) {
-                is SharedImportDecodeResult.Character -> {
-                    val data = result.request
-                    val conflict = viewModel.findCharacterImportConflict(data)
-                    if (conflict == null) {
-                        viewModel.importCharacterAsNew(data)
-                        message = "角色卡已导入，文档 RAG 待重建。"
-                    } else {
-                        pendingCharacterImport = data to conflict
-                        tab = 0
-                    }
-                }
-                is SharedImportDecodeResult.Format -> {
-                    val conflict = viewModel.findFormatNameConflict(result.data.name)
-                    if (conflict == null) {
-                        viewModel.importFormatAsNew(result.data)
-                        message = "格式卡已导入。"
-                    } else {
-                        pendingFormatImport = result.data to conflict
-                        tab = 1
-                    }
-                }
-                is SharedImportDecodeResult.WorldBook -> {
-                    val conflict = viewModel.findWorldBookNameConflict(result.data.book.name)
-                    if (conflict == null) {
-                        viewModel.importWorldBookAsNew(result.data)
-                        message = "世界书已导入。"
-                    } else {
-                        pendingWorldBookImport = result.data to conflict
-                        tab = 2
-                    }
-                }
-                is SharedImportDecodeResult.ModelTemplate -> {
-                    viewModel.importModelTemplateJson(result.rawJson)
-                    viewModel.refreshAll()
-                    message = "模型模板已导入，请编辑并填写 API Key。"
-                    tab = 3
-                }
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (error: Throwable) {
-            message = "导入失败：${error.message}"
-        } finally {
-            onSharedImportCompleted(importEvent.id)
+    LaunchedEffect(sharedImportFocus?.queueId) {
+        val focus = sharedImportFocus ?: return@LaunchedEffect
+        localSharedImportFocus = focus
+        tab = when (focus.section) {
+            SharedImportSection.CHARACTER -> 0
+            SharedImportSection.FORMAT -> 1
+            SharedImportSection.WORLD_BOOK -> 2
+            SharedImportSection.MODEL -> 3
         }
+        message = focus.message
     }
 
     val exportCharacter = rememberLauncherForActivityResult(CreateOpenableDocument("image/png")) { uri ->
@@ -474,7 +439,12 @@ fun ManageScreen(
                         val data = viewModel.recoverCharacterPreset(entry)
                         val conflict = viewModel.findCharacterImportConflict(data)
                         if (conflict == null) viewModel.importCharacterAsNew(data) else pendingCharacterImport = data to conflict
-                    } }, ::openDraft, { pendingDraftClear = it })
+                    } }, ::openDraft, { pendingDraftClear = it },
+                        focusedId = localSharedImportFocus
+                            ?.takeIf { it.section == SharedImportSection.CHARACTER }
+                            ?.itemId,
+                        onFocusApplied = ::consumeSharedImportFocus
+                    )
                     1 -> FormatTab(formats, editorDrafts.filter { it.entityType == EditorDraftType.FORMAT_CARD }, settings.defaultFormatCardId, formatPresets, viewModel::formatHasUpdate, { onNavigate(FormatCardEditRoute(it)) }, { id ->
                         deleteTarget = DeleteTarget.Format(id, formats.firstOrNull { it.id == id }?.name ?: "未命名格式")
                     }, viewModel::setFormatCardDefault, viewModel::duplicateFormatCard, { card ->
@@ -484,7 +454,12 @@ fun ManageScreen(
                         val data = viewModel.recoverFormatPreset(entry)
                         val conflict = viewModel.findFormatNameConflict(data.name)
                         if (conflict == null) viewModel.importFormatAsNew(data) else pendingFormatImport = data to conflict
-                    } }, ::openDraft, { pendingDraftClear = it })
+                    } }, ::openDraft, { pendingDraftClear = it },
+                        focusedId = localSharedImportFocus
+                            ?.takeIf { it.section == SharedImportSection.FORMAT }
+                            ?.itemId,
+                        onFocusApplied = ::consumeSharedImportFocus
+                    )
                     2 -> WorldBookTab(
                         worldBooks, editorDrafts.filter { it.entityType == EditorDraftType.WORLD_BOOK }, worldBookPresets, viewModel::worldBookHasUpdate,
                         onEdit = { onNavigate(WorldBookEditRoute(it)) },
@@ -504,7 +479,11 @@ fun ManageScreen(
                             if (conflict == null) viewModel.importWorldBookAsNew(data) else pendingWorldBookImport = data to conflict
                         } },
                         onOpenDraft = ::openDraft,
-                        onDiscardDraft = { pendingDraftClear = it }
+                        onDiscardDraft = { pendingDraftClear = it },
+                        focusedId = localSharedImportFocus
+                            ?.takeIf { it.section == SharedImportSection.WORLD_BOOK }
+                            ?.itemId,
+                        onFocusApplied = ::consumeSharedImportFocus
                     )
                     3 -> ModelsTab(
                         models, settings.defaultModelId, settings.defaultImageModelId, modelPresets, embeddingModel, retrievalModel,
@@ -522,7 +501,11 @@ fun ManageScreen(
                         onDeleteEmbedding = { id -> deleteTarget = DeleteTarget.Embedding(id, embeddingModel?.displayName ?: "未命名向量模型") },
                         onAddEmbedding = { editEmbedding = null; showEmbedding = true },
                         onEditRetrieval = { showRetrieval = true },
-                        onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") }
+                        onDeleteRetrieval = { deleteTarget = DeleteTarget.Retrieval(retrievalModel?.displayName ?: "检索规划模型") },
+                        focusedId = localSharedImportFocus
+                            ?.takeIf { it.section == SharedImportSection.MODEL }
+                            ?.itemId,
+                        onFocusApplied = ::consumeSharedImportFocus
                     )
                     4 -> SettingsTab(
                         settingsSaveRequest, settings, player, characters, models, effectiveModels, auxiliaryTextModels, retrievalModel, formats, modelErrors, apiTestStatus, novelAiConfigured, fishAudioConfigured, momentsReliability, momentDebug, momentSchedulePreview,
@@ -1136,11 +1119,25 @@ private fun CharacterTab(
     onStart: (String) -> Unit,
     onRecover: (PresetEntry) -> Unit,
     onOpenDraft: (EditorDraft) -> Unit,
-    onDiscardDraft: (EditorDraft) -> Unit
+    onDiscardDraft: (EditorDraft) -> Unit,
+    focusedId: String? = null,
+    onFocusApplied: () -> Unit = {}
 ) {
     var menuCard by remember { mutableStateOf<CharacterCard?>(null) }
     var showPresets by remember { mutableStateOf(false) }
-    LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val listState = rememberLazyListState()
+    val newDrafts = drafts.filter { it.isNew }
+    LaunchedEffect(focusedId, cards.map { it.id }, importProgress, modelUsable, showPresets, presets.size, newDrafts.size) {
+        val cardIndex = cards.indexOfFirst { it.id == focusedId }
+        if (focusedId != null && cardIndex >= 0) {
+            val prefix = (if (importProgress != null) 1 else 0) +
+                (if (!modelUsable) 1 else 0) + newDrafts.size + 1 +
+                (if (showPresets) presets.size else 0)
+            listState.animateScrollToItem(prefix + cardIndex)
+            onFocusApplied()
+        }
+    }
+    LazyColumn(state = listState, contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         importProgress?.let { msg ->
             item {
                 CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.primary.copy(alpha = 0.08f)) {
@@ -1161,7 +1158,7 @@ private fun CharacterTab(
                 )
             }
         }
-        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+        items(newDrafts, key = { "draft-${it.id}" }) { draft ->
             EntityRow(
                 title = draft.title,
                 subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
@@ -1255,13 +1252,25 @@ private fun FormatTab(
     onExport: (FormatCard) -> Unit,
     onRecover: (PresetEntry) -> Unit,
     onOpenDraft: (EditorDraft) -> Unit,
-    onDiscardDraft: (EditorDraft) -> Unit
+    onDiscardDraft: (EditorDraft) -> Unit,
+    focusedId: String? = null,
+    onFocusApplied: () -> Unit = {}
 ) {
     var menuCard by remember { mutableStateOf<FormatCard?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultFormatId = defaultFormatId
-    LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+    val listState = rememberLazyListState()
+    val newDrafts = drafts.filter { it.isNew }
+    LaunchedEffect(focusedId, cards.map { it.id }, showPresets, presets.size, newDrafts.size) {
+        val cardIndex = cards.indexOfFirst { it.id == focusedId }
+        if (focusedId != null && cardIndex >= 0) {
+            val prefix = newDrafts.size + 1 + if (showPresets) presets.size else 0
+            listState.animateScrollToItem(prefix + cardIndex)
+            onFocusApplied()
+        }
+    }
+    LazyColumn(state = listState, contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(newDrafts, key = { "draft-${it.id}" }) { draft ->
             EntityRow(
                 title = draft.title,
                 subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
@@ -1327,12 +1336,24 @@ private fun WorldBookTab(
     onExportSt: (WorldBook) -> Unit,
     onRecover: (PresetEntry) -> Unit,
     onOpenDraft: (EditorDraft) -> Unit,
-    onDiscardDraft: (EditorDraft) -> Unit
+    onDiscardDraft: (EditorDraft) -> Unit,
+    focusedId: String? = null,
+    onFocusApplied: () -> Unit = {}
 ) {
     var menuBook by remember { mutableStateOf<WorldBook?>(null) }
     var showPresets by remember { mutableStateOf(false) }
-    LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        items(drafts.filter { it.isNew }, key = { "draft-${it.id}" }) { draft ->
+    val listState = rememberLazyListState()
+    val newDrafts = drafts.filter { it.isNew }
+    LaunchedEffect(focusedId, books.map { it.id }, showPresets, presets.size, newDrafts.size) {
+        val bookIndex = books.indexOfFirst { it.id == focusedId }
+        if (focusedId != null && bookIndex >= 0) {
+            val prefix = newDrafts.size + 1 + if (showPresets) presets.size else 0
+            listState.animateScrollToItem(prefix + bookIndex)
+            onFocusApplied()
+        }
+    }
+    LazyColumn(state = listState, contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        items(newDrafts, key = { "draft-${it.id}" }) { draft ->
             EntityRow(
                 title = draft.title,
                 subtitle = "未完成新建草稿 · ${draftTimeLabel(draft.updatedAt)}",
@@ -1428,13 +1449,24 @@ private fun ModelsTab(
     onDeleteEmbedding: (String) -> Unit,
     onAddEmbedding: () -> Unit,
     onEditRetrieval: () -> Unit,
-    onDeleteRetrieval: () -> Unit
+    onDeleteRetrieval: () -> Unit,
+    focusedId: String? = null,
+    onFocusApplied: () -> Unit = {}
 ) {
     var menuModel by remember { mutableStateOf<ModelConfig?>(null) }
     var showPresets by remember { mutableStateOf(false) }
     val effectiveDefaultModelId = defaultModelId ?: models.firstOrNull()?.id
     val effectiveDefaultImageModelId = defaultImageModelId ?: effectiveDefaultModelId
-    LazyColumn(contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+    val listState = rememberLazyListState()
+    LaunchedEffect(focusedId, models.map { it.id }, showPresets, presets.size) {
+        val modelIndex = models.indexOfFirst { it.id == focusedId }
+        if (focusedId != null && modelIndex >= 0) {
+            val prefix = 2 + if (showPresets) presets.size else 0
+            listState.animateScrollToItem(prefix + modelIndex)
+            onFocusApplied()
+        }
+    }
+    LazyColumn(state = listState, contentPadding = PaddingValues(16.dp, 12.dp, 16.dp, 88.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
         item { CbButton(if (showPresets) "收起内置模型" else "恢复内置模型", { showPresets = !showPresets }, variant = ButtonVariant.Outline) }
         if (showPresets) items(presets, key = { it.presetKey }) { preset ->
             val importedCount = models.count { it.sourcePresetKey != null }

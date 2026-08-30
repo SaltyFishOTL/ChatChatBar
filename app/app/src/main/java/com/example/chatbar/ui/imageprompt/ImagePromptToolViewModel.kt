@@ -416,7 +416,26 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun importImage(uri: Uri) {
-        if (_uiState.value.isBusy || _uiState.value.applyingHistory) return
+        launchImageImport(import = { imageProcessingService.importImage(uri) })
+    }
+
+    fun importSharedImage(path: String, displayName: String, onResult: (Result<Unit>) -> Unit) {
+        launchImageImport(
+            import = { imageProcessingService.importFile(path, displayName) },
+            onResult = onResult,
+            showError = false
+        )
+    }
+
+    private fun launchImageImport(
+        import: suspend () -> ImportedProcessImage,
+        onResult: (Result<Unit>) -> Unit = {},
+        showError: Boolean = true
+    ) {
+        if (_uiState.value.isBusy || _uiState.value.applyingHistory) {
+            onResult(Result.failure(IllegalStateException("生图工作室正忙，请稍后重试")))
+            return
+        }
         imageImportJob?.cancel()
         imageImportJob = viewModelScope.launch {
             _uiState.update {
@@ -427,7 +446,7 @@ class ImagePromptToolViewModel : ViewModel() {
             }
             try {
                 val (source, metadata) = withContext(Dispatchers.IO) {
-                    val imported = imageProcessingService.importImage(uri)
+                    val imported = import()
                     imported to NovelAiPngMetadataReader.readStudio(imported.path)
                 }
                 _uiState.update {
@@ -438,16 +457,19 @@ class ImagePromptToolViewModel : ViewModel() {
                         )
                     )
                 }
+                onResult(Result.success(Unit))
             } catch (error: CancellationException) {
                 _uiState.update { it.copy(imageImport = NovelAiStudioImageImportUiState()) }
+                onResult(Result.failure(error))
                 throw error
             } catch (error: Throwable) {
                 _uiState.update {
                     it.copy(
                         imageImport = NovelAiStudioImageImportUiState(),
-                        error = "导入图片失败：${error.message ?: "未知错误"}"
+                        error = if (showError) "导入图片失败：${error.message ?: "未知错误"}" else null
                     )
                 }
+                onResult(Result.failure(error))
             }
         }.also { job -> job.invokeOnCompletion { imageImportJob = null } }
     }
@@ -614,11 +636,30 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun importGuidanceImage(uri: Uri, target: NovelAiImageUseTarget) {
-        launchGuidanceImport(target) { tier, fit -> guidanceAssets.importUri(uri, tier, fit) }
+        launchGuidanceImport(
+            target = target,
+            copy = { tier, fit -> guidanceAssets.importUri(uri, tier, fit) }
+        )
     }
 
     fun useImage(path: String, target: NovelAiImageUseTarget) {
-        launchGuidanceImport(target) { tier, fit -> guidanceAssets.copyExisting(path, tier, fit) }
+        launchGuidanceImport(
+            target = target,
+            copy = { tier, fit -> guidanceAssets.copyExisting(path, tier, fit) }
+        )
+    }
+
+    fun useSharedImage(
+        path: String,
+        target: NovelAiImageUseTarget,
+        onResult: (Result<Unit>) -> Unit
+    ) {
+        launchGuidanceImport(
+            target = target,
+            copy = { tier, fit -> guidanceAssets.copyExisting(path, tier, fit) },
+            onResult = onResult,
+            showError = false
+        )
     }
 
     fun consumeGuidanceEditorRequest() = repository.consumeGuidanceEditorRequest()
@@ -728,20 +769,31 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private fun launchGuidanceImport(
         target: NovelAiImageUseTarget,
-        copy: (com.example.chatbar.domain.image.NovelAiSizeTier, Boolean) -> NovelAiStudioAssetRef
+        copy: (com.example.chatbar.domain.image.NovelAiSizeTier, Boolean) -> NovelAiStudioAssetRef,
+        onResult: (Result<Unit>) -> Unit = {},
+        showError: Boolean = true
     ) {
         val snapshot = _uiState.value
-        if (snapshot.isBusy || snapshot.applyingHistory) return
+        if (snapshot.isBusy || snapshot.applyingHistory) {
+            onResult(Result.failure(IllegalStateException("生图工作室正忙，请稍后重试")))
+            return
+        }
         if (snapshot.draft.selectedModel == NovelAiImageModel.V5_FULL &&
             target in setOf(NovelAiImageUseTarget.PRECISE_REFERENCE, NovelAiImageUseTarget.VIBE_REFERENCE)
         ) {
-            _uiState.update { it.copy(error = "V5 Full 暂不支持精确参考或氛围参考") }
+            _uiState.update {
+                it.copy(error = if (showError) "V5 Full 暂不支持精确参考或氛围参考" else null)
+            }
+            onResult(Result.failure(IllegalArgumentException("V5 Full 暂不支持精确参考或氛围参考")))
             return
         }
         if (target == NovelAiImageUseTarget.VIBE_REFERENCE &&
             snapshot.draft.imageGuidance.vibes.size >= NovelAiImageGuidanceDraft.MAX_VIBES
         ) {
-            _uiState.update { it.copy(error = "氛围参考已满；请进入图像引导管理") }
+            _uiState.update {
+                it.copy(error = if (showError) "氛围参考已满；请进入图像引导管理" else null)
+            }
+            onResult(Result.failure(IllegalStateException("氛围参考已满；请进入图像引导管理")))
             return
         }
         viewModelScope.launch {
@@ -790,13 +842,19 @@ class ImagePromptToolViewModel : ViewModel() {
                         error = null
                     )
                 }
+                onResult(Result.success(Unit))
             } catch (error: CancellationException) {
                 _uiState.update { it.copy(guidanceBusy = false) }
+                onResult(Result.failure(error))
                 throw error
             } catch (error: Throwable) {
                 _uiState.update {
-                    it.copy(guidanceBusy = false, error = "图像引导导入失败：${error.message ?: "未知错误"}")
+                    it.copy(
+                        guidanceBusy = false,
+                        error = if (showError) "图像引导导入失败：${error.message ?: "未知错误"}" else null
+                    )
                 }
+                onResult(Result.failure(error))
             }
         }
     }

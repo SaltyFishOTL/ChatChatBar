@@ -1,6 +1,5 @@
 package com.example.chatbar.domain.card
 
-import android.util.Base64
 import android.util.Log
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.WorldBook
@@ -14,6 +13,7 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import java.util.UUID
+import java.util.Base64
 
 object SillyTavernCardMapper {
 
@@ -93,7 +93,7 @@ object SillyTavernCardMapper {
             images = if (st.pngBytes != null) {
                 mapOf("card-avatar" to PackagedImage(
                     fileName = "card.png",
-                    data = Base64.encodeToString(st.pngBytes, Base64.NO_WRAP)
+                    data = Base64.getEncoder().encodeToString(st.pngBytes)
                 ))
             } else emptyMap(),
             worldBooks = listOfNotNull(characterBook)

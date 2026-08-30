@@ -16,6 +16,12 @@ import org.junit.Test
 
 class ImagePromptToolUiStateTest {
     @Test
+    fun `fullscreen prompt session rejects an external editor revision`() {
+        assertTrue(isStudioFullscreenPromptSessionCurrent(12, 12))
+        assertFalse(isStudioFullscreenPromptSessionCurrent(12, 13))
+    }
+
+    @Test
     fun `natural language AI design always targets V5`() {
         assertEquals(
             NovelAiImageModel.V5_FULL,

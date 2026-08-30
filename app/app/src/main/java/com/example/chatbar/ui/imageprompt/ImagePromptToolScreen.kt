@@ -76,6 +76,8 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import kotlin.math.roundToInt
 import com.example.chatbar.data.local.entity.NovelAiPromptTranslationConsent
+import com.example.chatbar.domain.card.SharedImageDestination
+import com.example.chatbar.domain.card.SharedImageImportRequest
 import com.example.chatbar.domain.image.NovelAiAspectRatio
 import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
@@ -113,6 +115,7 @@ import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import com.example.chatbar.ui.kit.rememberFullscreenTextEditorState
 import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
 import com.example.chatbar.ui.kit.ChatBarElevation
@@ -123,6 +126,7 @@ private data class StudioFullscreenEditRequest(
     val value: TextFieldValue,
     val field: NovelAiPromptFieldKey?,
     val naturalLanguage: Boolean,
+    val editorRevision: Int,
     val onApply: (TextFieldValue) -> Unit
 )
 
@@ -131,11 +135,19 @@ private data class StudioTagEditTarget(
     val insert: (String) -> Unit
 )
 
+internal fun isStudioFullscreenPromptSessionCurrent(
+    openedEditorRevision: Int,
+    currentEditorRevision: Int
+): Boolean = openedEditorRevision == currentEditorRevision
+
 @Composable
 fun ImagePromptToolScreen(
     onBack: () -> Unit,
     onOpenHistory: () -> Unit,
     onOpenAiDesign: () -> Unit,
+    sharedImageRequest: SharedImageImportRequest? = null,
+    onSharedImageImported: (Long) -> Boolean = { false },
+    onSharedImageFailed: (Long, String) -> Boolean = { _, _ -> false },
     viewModel: ImagePromptToolViewModel = viewModel()
 ) {
     val state by viewModel.uiState.collectAsStateWithLifecycle()
@@ -156,6 +168,7 @@ fun ImagePromptToolScreen(
     var useAsPath by remember { mutableStateOf<String?>(null) }
     var pendingRecentApply by remember { mutableStateOf<NovelAiHistoryApplyMode?>(null) }
     var activeTagEditTarget by remember { mutableStateOf<StudioTagEditTarget?>(null) }
+    var claimedSharedImage by remember { mutableStateOf<Pair<Long, Int>?>(null) }
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         if (uri != null) {
             showImageTools = true
@@ -183,6 +196,12 @@ fun ImagePromptToolScreen(
         viewModel.beginGuidanceEditor()
         showGuidanceEditor = true
     }
+    val closeFullscreenEdit: () -> Unit = {
+        fullscreenEdit = null
+        activeTagEditTarget = null
+        viewModel.clearTagSuggestions()
+        viewModel.restoreDraftPromptAnnotations()
+    }
     LaunchedEffect(Unit) { viewModel.refreshAccountUsage() }
     LaunchedEffect(state.promptTranslationNotice) {
         state.promptTranslationNotice?.let { notice ->
@@ -196,19 +215,73 @@ fun ImagePromptToolScreen(
             viewModel.consumeGuidanceEditorRequest()
         }
     }
+    LaunchedEffect(
+        sharedImageRequest?.queueId,
+        sharedImageRequest?.attempt,
+        state.draftLoaded,
+        state.isBusy,
+        state.applyingHistory
+    ) {
+        val request = sharedImageRequest
+        if (request == null) {
+            claimedSharedImage = null
+            return@LaunchedEffect
+        }
+        if (!state.draftLoaded || state.isBusy || state.applyingHistory) return@LaunchedEffect
+        val key = request.queueId to request.attempt
+        if (claimedSharedImage == key) return@LaunchedEffect
+        claimedSharedImage = key
+        val finish: (Result<Unit>) -> Unit = { result ->
+            result.fold(
+                onSuccess = { onSharedImageImported(request.queueId) },
+                onFailure = { error ->
+                    onSharedImageFailed(
+                        request.queueId,
+                        error.message ?: "共享图片导入失败"
+                    )
+                }
+            )
+        }
+        when (request.destination) {
+            SharedImageDestination.GUIDANCE -> viewModel.useSharedImage(
+                request.path,
+                NovelAiImageUseTarget.IMAGE_TO_IMAGE,
+                finish
+            )
+            SharedImageDestination.TOOLS -> {
+                showImageTools = true
+                viewModel.importSharedImage(request.path, request.displayName, finish)
+            }
+        }
+    }
+    LaunchedEffect(state.promptEditorRevision, fullscreenEdit?.editorRevision) {
+        val request = fullscreenEdit
+        if (request?.field != null && !isStudioFullscreenPromptSessionCurrent(
+                request.editorRevision,
+                state.promptEditorRevision
+            )
+        ) {
+            closeFullscreenEdit()
+            Toast.makeText(context, "Prompt 已由外部更新，旧全屏草稿已丢弃", Toast.LENGTH_SHORT).show()
+        }
+    }
     BackHandler(enabled = fullscreenEdit == null && previewPath == null && !showGuidanceEditor) {
         viewModel.persistDraftNow()
         onBack()
     }
+    BackHandler(
+        enabled = sharedImageRequest != null && fullscreenEdit == null && previewPath == null && !showGuidanceEditor
+    ) {
+        Toast.makeText(context, "共享图片仍在等待安全导入", Toast.LENGTH_SHORT).show()
+    }
     BackHandler(enabled = fullscreenEdit != null) {
-        fullscreenEdit = null
-        viewModel.restoreDraftPromptAnnotations()
+        closeFullscreenEdit()
     }
 
     val density = LocalDensity.current
     val imeVisible = WindowInsets.ime.getBottom(density) > 0
-    LaunchedEffect(imeVisible) {
-        if (!imeVisible) viewModel.clearTagSuggestions()
+    LaunchedEffect(imeVisible, fullscreenEdit) {
+        if (!imeVisible && fullscreenEdit == null) viewModel.clearTagSuggestions()
     }
     BoxWithConstraints(
         Modifier
@@ -301,11 +374,14 @@ fun ImagePromptToolScreen(
                         state = state,
                         viewModel = viewModel,
                         onFullscreenEdit = { title, value, field, naturalLanguage, onApply ->
+                            activeTagEditTarget = null
+                            viewModel.clearTagSuggestions()
                             fullscreenEdit = StudioFullscreenEditRequest(
                                 title = title,
                                 value = value,
                                 field = field,
                                 naturalLanguage = naturalLanguage,
+                                editorRevision = state.promptEditorRevision,
                                 onApply = onApply
                             )
                         },
@@ -421,16 +497,37 @@ fun ImagePromptToolScreen(
         }
         }
         fullscreenEdit?.let { request ->
-            FullscreenTextEditor(
-                title = request.title,
-                value = request.value,
-                onValueChange = request.onApply,
-                visible = true,
-                onDismiss = {
-                    fullscreenEdit = null
-                    viewModel.restoreDraftPromptAnnotations()
+            key(request.field, request.editorRevision) {
+                if (request.field == null) {
+                    FullscreenTextEditor(
+                        title = request.title,
+                        value = request.value,
+                        onValueChange = request.onApply,
+                        visible = true,
+                        onDismiss = closeFullscreenEdit
+                    )
+                } else {
+                    StudioFullscreenPromptEditor(
+                        request = request,
+                        currentEditorRevision = state.promptEditorRevision,
+                        translationEnabled = state.promptTranslationConsent ==
+                            NovelAiPromptTranslationConsent.ENABLED,
+                        annotations = state.promptAnnotations[request.field].orEmpty(),
+                        suggestions = state.tagSuggestions.takeIf { it.field == request.field }
+                            ?: NovelAiTagSuggestionState(field = request.field),
+                        viewModel = viewModel,
+                        onDismiss = closeFullscreenEdit,
+                        onStaleSession = {
+                            closeFullscreenEdit()
+                            Toast.makeText(
+                                context,
+                                "Prompt 已由外部更新，旧全屏草稿已丢弃",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
                 }
-            )
+            }
         }
     }
 
@@ -813,6 +910,174 @@ private fun PromptTokenBudgetRow(symbol: String, count: Int?, limit: Int, loadin
 }
 
 @Composable
+private fun StudioFullscreenPromptEditor(
+    request: StudioFullscreenEditRequest,
+    currentEditorRevision: Int,
+    translationEnabled: Boolean,
+    annotations: List<NovelAiPromptAnnotation>,
+    suggestions: NovelAiTagSuggestionState,
+    viewModel: ImagePromptToolViewModel,
+    onDismiss: () -> Unit,
+    onStaleSession: () -> Unit
+) {
+    val field = request.field ?: return
+    val editorState = rememberFullscreenTextEditorState(request.value)
+    var lastTranslationText by remember { mutableStateOf<String?>(null) }
+    var suppressSuggestionFor by remember { mutableStateOf<Pair<String, Int>?>(null) }
+    val wrappingTransformation = promptTagWrappingOutputTransformation(request.naturalLanguage)
+    val editorTextStyle = promptEditorTextStyle(translationEnabled)
+    val visibleAnnotations = annotations.filter { annotation ->
+        annotation.matches(editorState.value.text)
+    }
+
+    FullscreenTextEditor(
+        state = editorState,
+        title = request.title,
+        visible = true,
+        onDismiss = onDismiss,
+        onConfirm = { value ->
+            if (!isStudioFullscreenPromptSessionCurrent(
+                    request.editorRevision,
+                    currentEditorRevision
+                )
+            ) {
+                onStaleSession()
+            } else {
+                request.onApply(value.copy(composition = null))
+                onDismiss()
+            }
+        },
+        confirmEnabled = isStudioFullscreenPromptSessionCurrent(
+            request.editorRevision,
+            currentEditorRevision
+        ),
+        outputTransformation = wrappingTransformation,
+        textStyle = editorTextStyle,
+        textOverlay = { layout, scrollOffset, rawText ->
+            PromptTranslationOverlay(
+                layout = layout,
+                annotations = visibleAnnotations.filter { it.matches(rawText) },
+                scrollOffsetPx = scrollOffset
+            )
+        },
+        onDraftValueChange = { value ->
+            if (lastTranslationText != value.text) {
+                lastTranslationText = value.text
+                if (translationEnabled) {
+                    viewModel.requestFullscreenPromptAnnotations(
+                        field = field,
+                        text = value.text,
+                        naturalLanguage = request.naturalLanguage
+                    )
+                }
+            }
+            val suggestionKey = value.text to value.selection.end
+            if (suppressSuggestionFor == suggestionKey) {
+                suppressSuggestionFor = null
+            } else {
+                viewModel.requestTagSuggestions(field, value.text, value.selection.end)
+            }
+        },
+        topContent = {
+            FullscreenTagSuggestionBar(
+                suggestions = suggestions,
+                onInsertTag = { candidate ->
+                    val current = editorState.value
+                    val inserted = NovelAiTagCompletion.insert(
+                        current.text,
+                        current.selection.end,
+                        candidate
+                    )
+                    val next = TextFieldValue(
+                        text = inserted.text,
+                        selection = TextRange(inserted.cursor)
+                    )
+                    suppressSuggestionFor = next.text to next.selection.end
+                    editorState.replace(next)
+                    viewModel.clearTagSuggestions()
+                }
+            )
+        }
+    )
+}
+
+@Composable
+private fun FullscreenTagSuggestionBar(
+    suggestions: NovelAiTagSuggestionState,
+    onInsertTag: (String) -> Unit
+) {
+    CbSurface(
+        modifier = Modifier.fillMaxWidth().height(48.dp),
+        color = ChatBarTheme.colors.card,
+        shape = RoundedCornerShape(ChatBarShape.lg),
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+        elevation = ChatBarElevation.xhigh
+    ) {
+        Row(
+            modifier = Modifier.fillMaxSize().padding(horizontal = ChatBarSpacing.sm),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            TagSuggestionContent(
+                suggestions = suggestions,
+                modifier = Modifier.weight(1f),
+                onInsertTag = onInsertTag
+            )
+        }
+    }
+}
+
+@Composable
+private fun TagSuggestionContent(
+    suggestions: NovelAiTagSuggestionState,
+    modifier: Modifier = Modifier,
+    onInsertTag: (String) -> Unit
+) {
+    when {
+        suggestions.loading -> CbText(
+            "预测中…",
+            modifier,
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        suggestions.error != null -> CbText(
+            suggestions.error,
+            modifier,
+            color = ChatBarTheme.colors.destructive,
+            style = ChatBarTheme.typography.caption,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        suggestions.candidates.isEmpty() -> CbText(
+            "输入 Tag 获取预测",
+            modifier,
+            color = ChatBarTheme.colors.mutedForeground,
+            style = ChatBarTheme.typography.caption
+        )
+        else -> LazyRow(
+            modifier = modifier,
+            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
+        ) {
+            items(
+                suggestions.candidates,
+                key = { candidate -> candidate.name }
+            ) { candidate ->
+                CbButton(
+                    text = buildString {
+                        append(candidate.name)
+                        if (candidate.translatedName.isNotBlank()) {
+                            append(" · ${candidate.translatedName}")
+                        }
+                    },
+                    onClick = { onInsertTag(candidate.name) },
+                    size = ButtonSize.Xs,
+                    variant = ButtonVariant.Outline
+                )
+            }
+        }
+    }
+}
+
+@Composable
 private fun OutputPanel(
     state: ImagePromptToolUiState,
     onToggle: () -> Unit,
@@ -863,47 +1128,11 @@ private fun OutputPanel(
                     )
                 }
                 if (compactTagSuggestions != null) {
-                    when {
-                        compactTagSuggestions.loading -> CbText(
-                            "预测中…",
-                            Modifier.weight(1f),
-                            color = ChatBarTheme.colors.mutedForeground,
-                            style = ChatBarTheme.typography.caption
-                        )
-                        compactTagSuggestions.error != null -> CbText(
-                            compactTagSuggestions.error,
-                            Modifier.weight(1f),
-                            color = ChatBarTheme.colors.destructive,
-                            style = ChatBarTheme.typography.caption,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        compactTagSuggestions.candidates.isEmpty() -> CbText(
-                            "输入 Tag 获取预测",
-                            Modifier.weight(1f),
-                            color = ChatBarTheme.colors.mutedForeground,
-                            style = ChatBarTheme.typography.caption
-                        )
-                        else -> LazyRow(
-                            modifier = Modifier.weight(1f),
-                            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)
-                        ) {
-                            items(
-                                compactTagSuggestions.candidates,
-                                key = { candidate -> candidate.name }
-                            ) { candidate ->
-                                CbButton(
-                                    text = buildString {
-                                        append(candidate.name)
-                                        if (candidate.translatedName.isNotBlank()) append(" · ${candidate.translatedName}")
-                                    },
-                                    onClick = { onInsertTag(candidate.name) },
-                                    size = ButtonSize.Xs,
-                                    variant = ButtonVariant.Outline
-                                )
-                            }
-                        }
-                    }
+                    TagSuggestionContent(
+                        suggestions = compactTagSuggestions,
+                        modifier = Modifier.weight(1f),
+                        onInsertTag = onInsertTag
+                    )
                 } else {
                     if (expanded || selectedRecent == null) {
                         Row(
@@ -1404,6 +1633,21 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
 }
 
 @Composable
+private fun promptEditorTextStyle(translationEnabled: Boolean): TextStyle =
+    if (translationEnabled) {
+        ChatBarTheme.typography.body.copy(
+            lineHeight = 25.sp,
+            lineHeightStyle = LineHeightStyle(
+                alignment = LineHeightStyle.Alignment.Top,
+                trim = LineHeightStyle.Trim.None
+            ),
+            lineBreak = LineBreak.Paragraph
+        )
+    } else {
+        ChatBarTheme.typography.body.copy(lineBreak = LineBreak.Paragraph)
+    }
+
+@Composable
 private fun TagPromptInput(
     label: String,
     value: String,
@@ -1477,18 +1721,7 @@ private fun TagPromptInput(
                     singleLine = false,
                     minLines = minLines,
                     expand = true,
-                    textStyle = if (translationEnabled) {
-                        ChatBarTheme.typography.body.copy(
-                            lineHeight = 25.sp,
-                            lineHeightStyle = LineHeightStyle(
-                                alignment = LineHeightStyle.Alignment.Top,
-                                trim = LineHeightStyle.Trim.None
-                            ),
-                            lineBreak = LineBreak.Paragraph
-                        )
-                    } else {
-                        ChatBarTheme.typography.body.copy(lineBreak = LineBreak.Paragraph)
-                    },
+                    textStyle = promptEditorTextStyle(translationEnabled),
                     outputTransformation = wrappingTransformation,
                     textOverlay = { layout, scrollOffset ->
                         PromptTranslationOverlay(
