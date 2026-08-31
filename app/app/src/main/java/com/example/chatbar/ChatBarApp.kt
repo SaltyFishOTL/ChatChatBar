@@ -58,6 +58,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var saveSlotRepository: SaveSlotRepository
         private set
+    lateinit var saveSlotPackageStorage: SaveSlotPackageStorage
+        private set
     lateinit var settingsRepository: SettingsRepository
         private set
     lateinit var ragRepository: RagRepository
@@ -209,7 +211,8 @@ class ChatBarApp : Application() {
         chatRepository = ChatRepository(jsonFileStorage)
         modelRepository = ModelRepository(jsonFileStorage)
         formatCardRepository = FormatCardRepository(jsonFileStorage)
-        saveSlotRepository = SaveSlotRepository(jsonFileStorage)
+        saveSlotPackageStorage = SaveSlotPackageStorage(this)
+        saveSlotRepository = SaveSlotRepository(jsonFileStorage, saveSlotPackageStorage)
         settingsRepository = SettingsRepository(jsonFileStorage)
         momentRepository = MomentRepository(jsonFileStorage)
         voiceMessageRepository = VoiceMessageRepository(jsonFileStorage)
@@ -472,6 +475,7 @@ class ChatBarApp : Application() {
             settingsRepository.initialize()
             voiceMessageRepository.initialize()
             fishAudioStorage.cleanupPartialFiles()
+            saveSlotPackageStorage.cleanupPartialFiles()
             fishAudioStorage.cleanupOrphanFiles(
                 voiceMessageRepository.voices.value.mapTo(mutableSetOf()) { it.audioPath }
             )

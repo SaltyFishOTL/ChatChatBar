@@ -16,6 +16,7 @@ import com.example.chatbar.domain.card.CharacterCardImageUpdater
 import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
+import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
@@ -94,6 +95,7 @@ import kotlinx.coroutines.yield
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
+import java.io.PushbackInputStream
 import java.util.Locale
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -217,6 +219,12 @@ data class MessageFormatRepairState(
     val previewContent: String
 )
 
+data class SaveSlotOperationState(
+    val busy: Boolean = false,
+    val status: String? = null,
+    val cancellable: Boolean = false
+)
+
 data class DebugMessageOrderMove(
     val messageId: String,
     val fromPosition: Int,
@@ -297,6 +305,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _messages = MutableStateFlow<List<ChatMessage>>(emptyList())
     val messages: StateFlow<List<ChatMessage>> = _messages.asStateFlow()
+    private val _hasOlderMessages = MutableStateFlow(false)
+    val hasOlderMessages: StateFlow<Boolean> = _hasOlderMessages.asStateFlow()
+    private val _hasNewerMessages = MutableStateFlow(false)
+    val hasNewerMessages: StateFlow<Boolean> = _hasNewerMessages.asStateFlow()
+    private val _messagePageLoading = MutableStateFlow(false)
+    val messagePageLoading: StateFlow<Boolean> = _messagePageLoading.asStateFlow()
     private val _voicePlacements = MutableStateFlow<Map<String, List<VoiceMessagePlacement>>>(emptyMap())
     val voicePlacements: StateFlow<Map<String, List<VoiceMessagePlacement>>> =
         _voicePlacements.asStateFlow()
@@ -374,6 +388,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private val _availableSaveSlots = MutableStateFlow<List<SaveSlotSummary>>(emptyList())
     val availableSaveSlots: StateFlow<List<SaveSlotSummary>> = _availableSaveSlots.asStateFlow()
+    private val _saveSlotOperation = MutableStateFlow(SaveSlotOperationState())
+    val saveSlotOperation: StateFlow<SaveSlotOperationState> = _saveSlotOperation.asStateFlow()
+    private var saveSlotOperationJob: Job? = null
 
     private val _ragMemoryChunks = MutableStateFlow<List<VectorChunk>>(emptyList())
     val ragMemoryChunks: StateFlow<List<VectorChunk>> = _ragMemoryChunks.asStateFlow()
@@ -413,6 +430,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val imagePromptPreferenceMutationMutex = Mutex()
     private val imagePromptPreferenceSaveSequence = AtomicLong()
     private val messageRefreshSequence = AtomicLong()
+    private val messagePageMutex = Mutex()
+    private val messageWindowAnchorId = AtomicReference<String?>(null)
 
     private data class PlaceholderRenderContext(
         val playerName: String?,
@@ -424,7 +443,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         observeMemoryManualMaintenance()
         observeMemorySourceRepairProgress()
         loadSessionData()
-        refreshConfigurations()
         observeSessionChanges()
         observeCharacterCardChanges()
         observeSettingsChanges()
@@ -614,7 +632,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     _session.value = updatedSession
                     updateEffectiveAudiobookMode()
                     if (modelChanged) {
-                        refreshConfigurations()
+                        refreshModelStatus(updatedSession)
                     }
                     if (
                         modelChanged ||
@@ -634,6 +652,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
                 _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
                 updateEffectiveAudiobookMode(settings)
+                refreshModelStatus()
                 refreshVoiceGenerationAvailability()
             }
         }
@@ -667,22 +686,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             _contextWindowSize.value = settings.defaultContextWindowSize.coerceAtLeast(0)
             _chatBubbleFontScale.value = settings.chatBubbleFontScale
             _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
+            val modelStatus = modelResolver.status(s?.modelId, settings)
+            _modelConfigurationErrors.value = modelStatus.errors
+            _isModelUsable.value = modelStatus.isUsable
             updateEffectiveAudiobookMode(settings)
             refreshVoiceGenerationAvailability()
             if (s != null) {
-                ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.activateSession(sessionId)
+                ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.selectSession(sessionId)
                 val card = characterRepository.getById(s.characterCardId)
                 _characterCard.value = card
                 _isArchived.value = card == null
-                refreshMessages()
-                refreshSaveSlots()
-                _longTermMemoryUiState.value = runCatching { loadLongTermMemoryUiState() }
-                    .getOrElse { error ->
-                        LongTermMemoryUiState(
-                            loading = false,
-                            error = error.message ?: "长期记忆读取失败"
-                        )
-                    }
+                val savedAnchor = chatRepository.getScrollPosition(sessionId)?.anchorMessageId
+                messageWindowAnchorId.set(savedAnchor)
+                replaceMessagesFromRepository(savedAnchor)
             }
         }
     }
@@ -713,15 +729,115 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    private suspend fun replaceMessagesFromRepository() {
+    private suspend fun replaceMessagesFromRepository(anchorMessageId: String? = null) {
         val sequence = messageRefreshSequence.incrementAndGet()
-        val refreshed = chatRepository.getMessages(sessionId)
+        val anchor = anchorMessageId
+            ?: messageWindowAnchorId.get()
+            ?: _messages.value.lastOrNull()?.id
+        val page = chatRepository.getInitialMessagePage(sessionId, anchor)
         if (sequence == messageRefreshSequence.get()) {
             _messages.value = filterRegenerationTargetMessage(
-                messages = refreshed,
+                messages = page.messages,
                 regeneratingMessageId = hiddenRegenerationMessageId.get()
             )
+            _hasOlderMessages.value = page.hasOlder
+            _hasNewerMessages.value = page.hasNewer
         }
+    }
+
+    private suspend fun refreshModelStatus(session: ChatSession? = _session.value) {
+        val status = modelResolver.status(session?.modelId, settingsRepository.getAppSettings())
+        _modelConfigurationErrors.value = status.errors
+        _isModelUsable.value = status.isUsable
+    }
+
+    fun updateMessageWindowAnchor(messageId: String?) {
+        if (messageId != null) messageWindowAnchorId.set(messageId)
+    }
+
+    suspend fun loadSourceTurnWindow(sourceTurnId: String): String? {
+        val messageId = chatRepository.getFirstMessageIdForSourceTurn(sessionId, sourceTurnId)
+            ?: return null
+        messageWindowAnchorId.set(messageId)
+        replaceMessagesFromRepository(messageId)
+        return messageId
+    }
+
+    fun loadOlderMessages() {
+        if (!_hasOlderMessages.value || _messagePageLoading.value) return
+        viewModelScope.launch {
+            messagePageMutex.withLock {
+                if (!_hasOlderMessages.value) return@withLock
+                val boundary = _messages.value.firstOrNull()?.id ?: return@withLock
+                _messagePageLoading.value = true
+                try {
+                    val page = chatRepository.getOlderMessagePage(sessionId, boundary)
+                    val merged = (page.messages + _messages.value)
+                        .distinctBy(ChatMessage::id)
+                        .sortedWith(ChatMessage.TimelineComparator)
+                    val trimmed = trimMessageWindow(merged, keepOlder = true)
+                    _messages.value = filterRegenerationTargetMessage(
+                        trimmed,
+                        hiddenRegenerationMessageId.get()
+                    )
+                    _hasOlderMessages.value = page.hasOlder
+                    _hasNewerMessages.value = page.hasNewer || trimmed.size < merged.size
+                } finally {
+                    _messagePageLoading.value = false
+                }
+            }
+        }
+    }
+
+    fun loadNewerMessages() {
+        if (!_hasNewerMessages.value || _messagePageLoading.value) return
+        viewModelScope.launch {
+            messagePageMutex.withLock {
+                if (!_hasNewerMessages.value) return@withLock
+                val boundary = _messages.value.lastOrNull()?.id ?: return@withLock
+                _messagePageLoading.value = true
+                try {
+                    val page = chatRepository.getNewerMessagePage(sessionId, boundary)
+                    val merged = (_messages.value + page.messages)
+                        .distinctBy(ChatMessage::id)
+                        .sortedWith(ChatMessage.TimelineComparator)
+                    val trimmed = trimMessageWindow(merged, keepOlder = false)
+                    _messages.value = filterRegenerationTargetMessage(
+                        trimmed,
+                        hiddenRegenerationMessageId.get()
+                    )
+                    _hasOlderMessages.value = page.hasOlder || trimmed.size < merged.size
+                    _hasNewerMessages.value = page.hasNewer
+                } finally {
+                    _messagePageLoading.value = false
+                }
+            }
+        }
+    }
+
+    private fun trimMessageWindow(
+        messages: List<ChatMessage>,
+        keepOlder: Boolean
+    ): List<ChatMessage> {
+        if (messages.isEmpty()) return messages
+        val groups = ChatContextGroupPolicy.groups(messages).map { it.messages }
+        if (groups.size <= com.example.chatbar.data.repository.ChatRepository.MAX_WINDOW_TURNS) {
+            return messages
+        }
+        val kept = if (keepOlder) {
+            groups.take(com.example.chatbar.data.repository.ChatRepository.MAX_WINDOW_TURNS)
+        } else {
+            groups.takeLast(com.example.chatbar.data.repository.ChatRepository.MAX_WINDOW_TURNS)
+        }
+        return kept.flatten()
+    }
+
+    private fun selectNeighborWindowAnchor(removedMessageId: String) {
+        val current = _messages.value
+        val index = current.indexOfFirst { it.id == removedMessageId }
+        if (index < 0) return
+        val neighbor = current.getOrNull(index + 1) ?: current.getOrNull(index - 1)
+        messageWindowAnchorId.set(neighbor?.id)
     }
 
     internal suspend fun previewDebugMessageOrderRepair(): DebugMessageOrderRepairPreview {
@@ -1097,7 +1213,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 longTermMemoryService.refreshForCurrentConditions(sessionId)
                 loadLongTermMemoryUiState()
             }
-                .onSuccess { _longTermMemoryUiState.value = it }
+                .onSuccess {
+                    _longTermMemoryUiState.value = it
+                    longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                        sessionId,
+                        MemoryMaintenanceTrigger.SESSION_LOADED
+                    )
+                }
                 .onFailure {
                     _longTermMemoryUiState.value = _longTermMemoryUiState.value.copy(
                         loading = false,
@@ -1644,7 +1766,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             try {
                 AiBackgroundWorkManager.run(sessionId) {
                 val prompt = promptOverride ?: novelAiPromptDesigner.design(
-                    chatRepository.getMessages(sessionId),
+                    chatRepository.getInitialMessagePage(sessionId, anchorMessageId).messages,
                     anchorMessageId,
                     card!!,
                     model!!,
@@ -2342,8 +2464,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 images = userMsgImages
             )
             if (persistUserMessage) {
-                chatRepository.addMessage(userMsg)
-                refreshMessages()
+                val persistedUserMessage = chatRepository.addMessage(userMsg)
+                messageWindowAnchorId.set(persistedUserMessage.id)
+                replaceMessagesFromRepository(persistedUserMessage.id)
                 if (currentSession.longTermMemoryEnabled) {
                     longTermMemoryAutoMaintenanceCoordinator.enqueue(
                         sessionId,
@@ -2352,23 +2475,28 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
             }
 
-            val allMsgs = chatRepository.getMessages(sessionId)
-                .filterNot { it.id == alternativeTargetMessageId }
+            val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
+            val boundaryView = if (currentSession.longTermMemoryEnabled) {
+                runCatching { longTermMemoryService.promptView(sessionId) }.getOrNull()
+            } else {
+                null
+            }
+            val allMsgs = chatRepository.getContextCandidateMessages(
+                sessionId = sessionId,
+                recentTurnCount = effectiveContextWindowSize + 6,
+                includeSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
+            ).filterNot { it.id == alternativeTargetMessageId }
             ragMemoryMutationMutex.withLock {
                 ChatBarApp.instance.ragRepository.pruneChatMemory(
                     sessionId = sessionId,
-                    liveMessageIds = allMsgs.mapTo(mutableSetOf()) { it.id }
+                    liveMessageIds = chatRepository.getMessageIds(sessionId)
                 )
             }
-            val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
             var contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextToWholeTurns(
                 allMsgs,
                 contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
             )
             if (currentSession.longTermMemoryEnabled) {
-                val boundaryView = runCatching {
-                    longTermMemoryService.promptView(sessionId)
-                }.getOrNull()
                 contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextAfterArchive(
                     allMessages = allMsgs,
                     directContext = contextMsgs,
@@ -2398,7 +2526,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val ragSourcePlan = RagSourcePlan.create(
                 documentCount = charCard.customDocuments.size,
                 indexedDocumentCount = indexedDocumentCount,
-                messageGroupCount = contextWindowManager.messageGroupCount(allMsgs),
+                messageGroupCount = chatRepository.getMessageTurnCount(sessionId),
                 contextWindowSize = effectiveContextWindowSize,
                 documentRecallCount = appSettings.docRagTopK,
                 memoryRecallCount = appSettings.memoryRagTopK
@@ -2965,7 +3093,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             alternativeTargetMessageId?.let { targetId ->
                                 hiddenRegenerationMessageId.compareAndSet(targetId, null)
                             }
-                            replaceMessagesFromRepository()
+                            messageWindowAnchorId.set(persistedAssistantMessage.id)
+                            replaceMessagesFromRepository(persistedAssistantMessage.id)
                             _streamingMessage.value = null
                             if (appSettings.automaticFormatCheckEnabled) {
                                 persistedAssistantMessage = performMessageFormatRepair(
@@ -3152,8 +3281,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun deleteMessage(messageId: String) {
         viewModelScope.launch {
             fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-            val currentMessages = chatRepository.getMessages(sessionId)
-            val deletedMessage = currentMessages.firstOrNull { it.id == messageId }
+            val deletedMessage = chatRepository.getMessage(messageId, sessionId)
+            selectNeighborWindowAnchor(messageId)
 
             deletedMessage
                 ?.images
@@ -3222,6 +3351,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
             if (remaining.isEmpty() && message.content.isBlank()) {
+                selectNeighborWindowAnchor(messageId)
                 chatRepository.deleteMessage(messageId, sessionId)
                 _messages.value = _messages.value.filterNot { it.id == messageId }
                 refreshMessages()
@@ -3340,7 +3470,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
         val messageId = updatedMessage.id
         val repository = ChatBarApp.instance.ragRepository
-        val allMessages = chatRepository.getMessages(sessionId)
+        val contextSize = effectiveContextWindowSize()
+        val recentAndTurn = chatRepository.getContextCandidateMessages(
+            sessionId = sessionId,
+            recentTurnCount = contextSize + 8,
+            includeSourceTurnIds = setOfNotNull(updatedMessage.sourceTurnId)
+        )
+        val allMessages = if (recentAndTurn.any { it.id == messageId }) {
+            recentAndTurn
+        } else {
+            (recentAndTurn + chatRepository.getInitialMessagePage(sessionId, messageId).messages)
+                .distinctBy(ChatMessage::id)
+                .sortedWith(ChatMessage.TimelineComparator)
+        }
         val renderContext = placeholderRenderContext()
         val renderedMessages = allMessages.renderWith(renderContext)
         val turn = ChatMemoryIndexPolicy.buildTurns(renderedMessages)
@@ -3350,7 +3492,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return
         }
         val activeIds = contextWindowManager
-            .getRecentMessages(allMessages, effectiveContextWindowSize())
+            .getRecentMessages(allMessages, contextSize)
             .mapTo(mutableSetOf()) { it.id }
         if (turn.messageIds.any { it in activeIds }) {
             repository.deleteSupersededAutomaticChatMemory(
@@ -3393,7 +3535,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (!ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) return
 
         val remainingTurnMessage = deletedMessage.sourceTurnId?.let { sourceTurnId ->
-            chatRepository.getMessages(sessionId).firstOrNull { it.sourceTurnId == sourceTurnId }
+            chatRepository.getMessagesForSourceTurn(sessionId, sourceTurnId).firstOrNull()
         }
         if (remainingTurnMessage != null) {
             refreshMemoryAfterMessageEdit(remainingTurnMessage)
@@ -3444,7 +3586,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun isMessageInActiveContextWindow(messageId: String): Boolean {
         val contextWindowSize = effectiveContextWindowSize()
-        val messages = chatRepository.getMessages(sessionId)
+        val messages = chatRepository.getContextCandidateMessages(
+            sessionId,
+            recentTurnCount = contextWindowSize + 4
+        )
         return contextWindowManager.getRecentMessages(messages, contextWindowSize).any { it.id == messageId }
     }
 
@@ -3452,13 +3597,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         contextWindowSize: Int,
         embeddingConfig: EmbeddingConfig
     ) {
-        val allMessages = chatRepository.getMessages(sessionId)
+        val allMessages = chatRepository.getContextCandidateMessages(
+            sessionId,
+            recentTurnCount = contextWindowSize + 8
+        )
         ChatBarApp.instance.ragRepository.pruneChatMemory(
             sessionId = sessionId,
-            liveMessageIds = allMessages.mapTo(mutableSetOf()) { it.id }
+            liveMessageIds = chatRepository.getMessageIds(sessionId)
         )
+        if (chatRepository.getMessageTurnCount(sessionId) <= contextWindowSize) return
         val activeMessages = contextWindowManager.getRecentMessages(allMessages, contextWindowSize)
-        if (activeMessages.size == allMessages.size) return
         val activeIds = activeMessages.map { it.id }.toSet()
         val currentAutomaticChunks = ChatBarApp.instance.ragRepository
             .getAllChunksForSession(sessionId)
@@ -3504,11 +3652,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun clearHistoryAndMemory() {
         viewModelScope.launch {
             // 1. 删除所有聊天消息
-            val msgs = chatRepository.getMessages(sessionId)
-            msgs.forEach { message ->
+            chatRepository.forEachMessage(sessionId) { message ->
                 message.images.forEach { deleteDisposableChatImage(it) }
-                chatRepository.deleteMessage(message.id, sessionId)
             }
+            fishAudioCoordinator.cancelAndJoinForSession(sessionId)
+            voiceMessageRepository.deleteForSession(sessionId).forEach { voice ->
+                ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
+            }
+            chatRepository.deleteMessagesForSession(sessionId)
             chatRepository.deleteScrollPosition(sessionId)
             
             // 2. 清空 RAG 向量库对应的 CHAT_MEMORY 类型
@@ -3551,16 +3702,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (_isResponding.value || _isArchived.value) return
 
         viewModelScope.launch {
-            val currentMessages = chatRepository.getMessages(sessionId)
-            val selectedMessage = currentMessages.firstOrNull { it.id == messageId } ?: return@launch
+            val currentMessages = _messages.value
+            val selectedMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            val nearbyMessages = chatRepository.getInitialMessagePage(sessionId, messageId).messages
             val targetMessage = when {
                 selectedMessage.role == MessageRole.ASSISTANT && selectedMessage.displayContent.isNotBlank() -> {
                     selectedMessage
                 }
                 selectedMessage.isRetryableGenerationError() -> {
-                    val targetId = regenerationTargetAssistantMessageId(currentMessages, selectedMessage.id)
+                    val targetId = regenerationTargetAssistantMessageId(nearbyMessages, selectedMessage.id)
                         ?: return@launch
-                    currentMessages.firstOrNull { it.id == targetId } ?: return@launch
+                    nearbyMessages.firstOrNull { it.id == targetId } ?: return@launch
                 }
                 else -> return@launch
             }
@@ -3647,75 +3799,117 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 创建当前对话的存档
      */
-    fun createSaveSlot(name: String, description: String?) {
-        viewModelScope.launch {
-            val curSession = _session.value ?: return@launch
-            val messagesList = _messages.value
-            val packaged = packageSaveSlotImages(curSession, messagesList)
-            val packagedVoices = packageSaveSlotAudioRefs(
-                voiceMessageRepository.listForSession(sessionId)
-            )
-            
-            // 获取当前的向量记忆库快照
-            val vectorChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
-            val memorySnapshot = longTermMemoryService.snapshot(sessionId)
-
-            val saveSlot = SaveSlot.create(
-                sessionId = sessionId,
-                name = name,
-                description = description,
-                messages = packaged.messages,
-                vectorChunks = vectorChunks
-            )
-            // 覆盖当前的设定值
-            val activePlayerSetting = curSession.playerSetting
-            val activePlayerName = curSession.playerName
-            val activeSuppSetting = curSession.supplementarySetting
-            
-            val finalizedSlot = saveSlot.copy(
-                playerSetting = activePlayerSetting,
-                playerName = activePlayerName,
-                supplementarySetting = activeSuppSetting,
-                modelId = curSession.modelId,
-                imageModelId = curSession.imageModelId,
-                novelAiImageModel = curSession.novelAiImageModel,
-                formatCardId = curSession.formatCardId,
-                replyLength = curSession.replyLength,
-                replyLanguage = curSession.replyLanguage,
-                roleplayStyle = curSession.roleplayStyle,
-                chatBackground = packaged.chatBackground,
-                audiobookModeEnabled = curSession.audiobookModeEnabled,
-                voiceLanguage = curSession.voiceLanguage,
-                longTermMemoryEnabled = curSession.longTermMemoryEnabled,
-                longTermMemory = curSession.longTermMemory,
-                longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
-                nextSourceTurnOrder = curSession.nextSourceTurnOrder,
-                sourceTurnTombstones = curSession.sourceTurnTombstones,
-                nextTimelineTurn = curSession.nextTimelineTurn,
-                timelineTombstones = curSession.timelineTombstones,
-                memoryLimitChars = curSession.memoryLimitChars,
-                memorySnapshot = memorySnapshot,
-                contextWindowSize = curSession.contextWindowSize,
-                extraWorldBookIds = curSession.extraWorldBookIds,
-                timedWorldInfo = curSession.timedWorldInfo,
-                imageResources = packaged.resources,
-                voiceMessages = packagedVoices.voices,
-                audioResources = packagedVoices.resources
-            )
-
-            saveSlotRepository.save(finalizedSlot)
-            refreshSaveSlots()
+    fun createSaveSlot(
+        name: String,
+        description: String?,
+        imagePolicy: SaveSlotImagePolicy = SaveSlotImagePolicy.NONE,
+        includeAudio: Boolean = true
+    ) {
+        if (saveSlotOperationJob?.isActive == true) return
+        saveSlotOperationJob = viewModelScope.launch {
+            var packagedSlot: SaveSlot? = null
+            try {
+                _saveSlotOperation.value = SaveSlotOperationState(
+                    busy = true,
+                    status = "正在准备存档…",
+                    cancellable = true
+                )
+                val curSession = _session.value ?: error("当前会话尚未加载")
+                val memorySnapshot = longTermMemoryService.snapshot(sessionId)
+                val voices = if (includeAudio) {
+                    voiceMessageRepository.listForSession(sessionId)
+                } else {
+                    emptyList()
+                }
+                val baseSlot = SaveSlot.create(
+                    sessionId = sessionId,
+                    name = NamePolicy.normalize(name),
+                    description = description?.trim()?.takeIf(String::isNotBlank)
+                ).copy(
+                    schemaVersion = com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION,
+                    playerSetting = curSession.playerSetting,
+                    playerName = curSession.playerName,
+                    supplementarySetting = curSession.supplementarySetting,
+                    modelId = curSession.modelId,
+                    imageModelId = curSession.imageModelId,
+                    novelAiImageModel = curSession.novelAiImageModel,
+                    formatCardId = curSession.formatCardId,
+                    replyLength = curSession.replyLength,
+                    replyLanguage = curSession.replyLanguage,
+                    roleplayStyle = curSession.roleplayStyle,
+                    chatBackground = curSession.chatBackground,
+                    audiobookModeEnabled = curSession.audiobookModeEnabled,
+                    voiceLanguage = curSession.voiceLanguage,
+                    longTermMemoryEnabled = curSession.longTermMemoryEnabled,
+                    longTermMemory = curSession.longTermMemory,
+                    longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
+                    nextSourceTurnOrder = curSession.nextSourceTurnOrder,
+                    sourceTurnTombstones = curSession.sourceTurnTombstones,
+                    nextTimelineTurn = curSession.nextTimelineTurn,
+                    timelineTombstones = curSession.timelineTombstones,
+                    memoryLimitChars = curSession.memoryLimitChars,
+                    memorySnapshot = memorySnapshot,
+                    contextWindowSize = curSession.contextWindowSize,
+                    extraWorldBookIds = curSession.extraWorldBookIds,
+                    timedWorldInfo = curSession.timedWorldInfo,
+                    imagePolicy = imagePolicy,
+                    includeAudio = includeAudio
+                )
+                packagedSlot = ChatBarApp.instance.saveSlotPackageStorage.createPackage(
+                    baseSlot = baseSlot,
+                    imagePolicy = imagePolicy,
+                    includeAudio = includeAudio,
+                    messageSource = { emit -> chatRepository.forEachMessage(sessionId, action = emit) },
+                    ragSource = { emit ->
+                        ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
+                    },
+                    voices = voices,
+                    onProgress = { status ->
+                        _saveSlotOperation.value = SaveSlotOperationState(true, status, true)
+                    }
+                )
+                saveSlotRepository.save(packagedSlot)
+                refreshSaveSlots()
+                _saveSlotOperation.value = SaveSlotOperationState(status = "存档已创建。")
+            } catch (error: Throwable) {
+                packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
+                if (error is CancellationException) {
+                    _saveSlotOperation.value = SaveSlotOperationState(status = "已取消创建存档。")
+                    throw error
+                }
+                _saveSlotOperation.value = SaveSlotOperationState(
+                    status = "创建失败：${error.message ?: error::class.simpleName}"
+                )
+            }
         }
+    }
+
+    fun cancelSaveSlotOperation() {
+        saveSlotOperationJob?.cancel()
     }
 
     /**
      * 读取存档并覆盖当前对话状态
      */
     fun loadSaveSlot(summary: SaveSlotSummary) {
-        viewModelScope.launch {
-            val curSession = _session.value ?: return@launch
+        if (saveSlotOperationJob?.isActive == true) return
+        saveSlotOperationJob = viewModelScope.launch {
+          try {
+            _saveSlotOperation.value = SaveSlotOperationState(
+                busy = true,
+                status = "正在读取存档…",
+                cancellable = true
+            )
+            val curSession = _session.value ?: error("当前会话尚未加载")
             fishAudioCoordinator.cancelAndJoinForSession(sessionId)
             val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
+            if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
+                slot.packageRef != null
+            ) {
+                loadPackagedSaveSlot(curSession, slot)
+                _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                return@launch
+            }
             val materializedImages = materializeSaveSlotImages(slot)
             val materializedAudio = try {
                 materializeSaveSlotAudio(materializedImages.slot)
@@ -3805,7 +3999,91 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .filterNot { it in preservedAudio }
                 .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
             loadSessionData()
+            _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+          } catch (error: Throwable) {
+            if (error is CancellationException) {
+                _saveSlotOperation.value = SaveSlotOperationState(status = "已取消读档。")
+                throw error
+            }
+            _saveSlotOperation.value = SaveSlotOperationState(
+                status = "读档失败：${error.message ?: error::class.simpleName}"
+            )
+          }
         }
+    }
+
+    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot) {
+        val currentImages = linkedSetOf<String>()
+        chatRepository.forEachMessage(sessionId) { message -> currentImages += message.images }
+        curSession.chatBackground?.let(currentImages::add)
+        val currentVoices = voiceMessageRepository.listForSession(sessionId)
+        val packageStorage = ChatBarApp.instance.saveSlotPackageStorage
+        packageStorage.openReader(slot).use { reader ->
+            var messagesCommitted = false
+            try {
+                _saveSlotOperation.value = SaveSlotOperationState(true, "正在校验存档…", true)
+                reader.validate()
+                val restoredBackground = reader.materializeBackground()
+                _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复语音…", true)
+                val restoredVoices = reader.restoreVoices(
+                    targetSessionId = sessionId,
+                    fishAudioStorage = ChatBarApp.instance.fishAudioStorage
+                )
+                _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复消息…", true)
+                chatRepository.replaceMessagesForSessionStreaming(sessionId) { emit ->
+                    reader.streamMessages(sessionId, emit)
+                }
+                messagesCommitted = true
+                _saveSlotOperation.value = SaveSlotOperationState(true, "正在提交会话状态…", false)
+                withContext(NonCancellable) {
+                    voiceMessageRepository.restoreForSession(sessionId, restoredVoices)
+                    ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
+                        reader.streamRag(sessionId, emit)
+                    }
+                    val messageState = chatRepository.getSession(sessionId) ?: curSession
+                    chatRepository.updateSession(
+                        messageState.copy(
+                            playerSetting = slot.playerSetting,
+                            playerName = slot.playerName,
+                            supplementarySetting = slot.supplementarySetting,
+                            modelId = slot.modelId,
+                            imageModelId = slot.imageModelId,
+                            novelAiImageModel = slot.novelAiImageModel,
+                            formatCardId = slot.formatCardId,
+                            replyLength = slot.replyLength,
+                            replyLanguage = slot.replyLanguage,
+                            roleplayStyle = slot.roleplayStyle,
+                            chatBackground = restoredBackground,
+                            audiobookModeEnabled = slot.audiobookModeEnabled,
+                            voiceLanguage = slot.voiceLanguage,
+                            longTermMemoryEnabled = slot.longTermMemoryEnabled,
+                            longTermMemory = slot.longTermMemory,
+                            longTermMemoryUpdatedThroughMessageId = slot.longTermMemoryUpdatedThroughMessageId,
+                            nextSourceTurnOrder = slot.nextSourceTurnOrder,
+                            sourceTurnTombstones = slot.sourceTurnTombstones,
+                            nextTimelineTurn = slot.nextTimelineTurn,
+                            timelineTombstones = slot.timelineTombstones,
+                            memoryLimitChars = slot.memoryLimitChars,
+                            contextWindowSize = slot.contextWindowSize ?: curSession.contextWindowSize,
+                            extraWorldBookIds = slot.extraWorldBookIds,
+                            timedWorldInfo = slot.timedWorldInfo
+                        )
+                    )
+                    longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot)
+                }
+            } catch (error: Throwable) {
+                if (!messagesCommitted) {
+                    reader.cleanupCreatedFiles(ChatBarApp.instance.fishAudioStorage)
+                }
+                throw error
+            }
+
+            currentImages.forEach(::deleteDisposableChatImage)
+            currentVoices.map(GeneratedVoiceMessage::audioPath)
+                .filterNot { it in reader.createdAudioPaths }
+                .forEach(ChatBarApp.instance.fishAudioStorage::deleteIfOwned)
+        }
+        loadSessionData()
     }
 
     /**
@@ -3819,42 +4097,47 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     suspend fun exportSaveSlotJson(slotId: String, output: OutputStream) = withContext(Dispatchers.IO) {
-        val slot = saveSlotRepository.getById(slotId) ?: error("存档不存在")
-        val packaged = packageSaveSlotImageRefs(
-            chatBackground = slot.chatBackground,
-            messages = slot.messages,
-            existingResources = slot.imageResources
-        )
-        val portable = slot.copy(
-            chatBackground = packaged.chatBackground,
-            messages = packaged.messages,
-            imageResources = packaged.resources
-        )
-        val packagedVoices = packageSaveSlotAudioRefs(
-            voices = slot.voiceMessages,
-            existingResources = slot.audioResources
-        )
-        SaveSlotJsonTransfer.write(
-            portable.copy(
-                voiceMessages = packagedVoices.voices,
-                audioResources = packagedVoices.resources
-            ),
-            output
-        )
+        val summary = saveSlotRepository.getSummaryById(slotId) ?: error("存档不存在")
+        if (summary.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION) {
+            val slot = saveSlotRepository.getById(slotId) ?: error("存档不存在")
+            require(slot.packageRef != null) { "存档包引用缺失" }
+            ChatBarApp.instance.saveSlotPackageStorage.export(slot, output)
+        } else {
+            // 旧存档已经把可移植资源内联在 JSON 中；原样流复制，不物化 Base64 字符串。
+            saveSlotRepository.exportLegacyRaw(slotId, output)
+        }
     }
 
     suspend fun importSaveSlotJson(input: InputStream): SaveSlot {
-        val decoded = withContext(Dispatchers.IO) {
-            SaveSlotJsonTransfer.read(input)
-        }
-        validateSaveSlotImport(decoded)
         val currentNames = saveSlotRepository.getBySessionId(sessionId).map { it.name }
-        val requestedName = decoded.name.ifBlank { "导入存档" }
-        val importedName = if (currentNames.any { NamePolicy.isSame(it, requestedName) }) {
-            NamePolicy.nextCopyName(requestedName, currentNames)
-        } else {
-            NamePolicy.normalize(requestedName)
+        fun importedName(requested: String): String {
+            val candidate = requested.ifBlank { "导入存档" }
+            return if (currentNames.any { NamePolicy.isSame(it, candidate) }) {
+                NamePolicy.nextCopyName(candidate, currentNames)
+            } else {
+                NamePolicy.normalize(candidate)
+            }
         }
+        val source = PushbackInputStream(input.buffered(), 4)
+        if (ChatBarApp.instance.saveSlotPackageStorage.isPackageStream(source)) {
+            val imported = ChatBarApp.instance.saveSlotPackageStorage.importPackage(
+                input = source,
+                targetSessionId = sessionId,
+                targetName = ::importedName
+            ).slot
+            try {
+                saveSlotRepository.save(imported)
+            } catch (error: Throwable) {
+                ChatBarApp.instance.saveSlotPackageStorage.delete(imported)
+                throw error
+            }
+            _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
+            return imported
+        }
+
+        val decoded = withContext(Dispatchers.IO) { SaveSlotJsonTransfer.read(source) }
+        validateSaveSlotImport(decoded)
+        val requestedName = decoded.name.ifBlank { "导入存档" }
         val importedVoiceResources = linkedMapOf<String, SaveSlotAudioResource>()
         val importedVoices = decoded.voiceMessages.map { voice ->
             val newVoiceId = UUID.randomUUID().toString()
@@ -3875,7 +4158,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val imported = decoded.copy(
             id = UUID.randomUUID().toString(),
             sessionId = sessionId,
-            name = importedName,
+            name = importedName(requestedName),
             messages = decoded.messages.map { it.copy(sessionId = sessionId) },
             voiceMessages = importedVoices,
             audioResources = importedVoiceResources,
@@ -3885,86 +4168,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         saveSlotRepository.save(imported)
         _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
         return imported
-    }
-
-    private data class PackagedSaveSlotImages(
-        val chatBackground: String?,
-        val messages: List<ChatMessage>,
-        val resources: Map<String, SaveSlotImageResource>
-    )
-
-    private data class PackagedSaveSlotAudio(
-        val voices: List<GeneratedVoiceMessage>,
-        val resources: Map<String, SaveSlotAudioResource>
-    )
-
-    private suspend fun packageSaveSlotAudioRefs(
-        voices: List<GeneratedVoiceMessage>,
-        existingResources: Map<String, SaveSlotAudioResource> = emptyMap()
-    ): PackagedSaveSlotAudio = withContext(Dispatchers.IO) {
-        val resources = linkedMapOf<String, SaveSlotAudioResource>().apply {
-            putAll(existingResources)
-        }
-        val packagedVoices = voices.map { voice ->
-            if (voice.id in resources) {
-                voice.copy(audioPath = voice.id)
-            } else {
-                val file = File(voice.audioPath)
-                if (!file.isFile) {
-                    error("语音文件不存在，无法写入存档：${voice.id}")
-                } else {
-                    resources[voice.id] = SaveSlotAudioResource(
-                        fileName = file.name.ifBlank { "${voice.id}.mp3" },
-                        data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
-                    )
-                    voice.copy(audioPath = voice.id)
-                }
-            }
-        }
-        PackagedSaveSlotAudio(packagedVoices, resources)
-    }
-
-    private suspend fun packageSaveSlotImages(
-        session: ChatSession,
-        messages: List<ChatMessage>
-    ): PackagedSaveSlotImages = packageSaveSlotImageRefs(
-        chatBackground = session.chatBackground,
-        messages = messages
-    )
-
-    private suspend fun packageSaveSlotImageRefs(
-        chatBackground: String?,
-        messages: List<ChatMessage>,
-        existingResources: Map<String, SaveSlotImageResource> = emptyMap()
-    ): PackagedSaveSlotImages = withContext(Dispatchers.IO) {
-        val resources = linkedMapOf<String, SaveSlotImageResource>().apply { putAll(existingResources) }
-        val resourceIdsByPath = linkedMapOf<String, String>()
-
-        fun packageImage(path: String?, preferredId: String): String? {
-            val sourcePath = path?.takeIf(String::isNotBlank) ?: return null
-            resourceIdsByPath[sourcePath]?.let { return it }
-            val file = File(sourcePath)
-            if (!file.isFile) return sourcePath
-            val resourceId = uniqueResourceId(preferredId, resources.keys)
-            resources[resourceId] = SaveSlotImageResource(
-                fileName = file.name.ifBlank { "$resourceId.jpg" },
-                data = Base64.encodeToString(file.readBytes(), Base64.NO_WRAP)
-            )
-            resourceIdsByPath[sourcePath] = resourceId
-            return resourceId
-        }
-
-        PackagedSaveSlotImages(
-            chatBackground = packageImage(chatBackground, "chat-background"),
-            messages = messages.mapIndexed { messageIndex, message ->
-                message.copy(
-                    images = message.images.mapIndexed { imageIndex, path ->
-                        packageImage(path, "message-$messageIndex-image-$imageIndex") ?: path
-                    }
-                )
-            },
-            resources = resources
-        )
     }
 
     private data class MaterializedSaveSlotImages(
@@ -3990,7 +4193,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 slot = slot.copy(
                     chatBackground = slot.chatBackground?.let { pathsByResourceId[it] ?: it },
                     messages = slot.messages.map { message ->
-                        message.copy(images = message.images.map { pathsByResourceId[it] ?: it })
+                        message.copy(
+                            images = message.images.map { pathsByResourceId[it] ?: it },
+                            generatedImageMetadata = message.generatedImageMetadata.map { metadata ->
+                                metadata.copy(
+                                    imagePath = pathsByResourceId[metadata.imagePath] ?: metadata.imagePath
+                                )
+                            }
+                        )
                     }
                 ),
                 createdPaths = createdFiles.map(File::getAbsolutePath)
@@ -4077,14 +4287,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             emptyList()
         }
         require(missingAudio.isEmpty()) { "存档缺少语音资源：${missingAudio.joinToString()}" }
-    }
-
-    private fun uniqueResourceId(preferredId: String, usedIds: Set<String>): String {
-        val base = preferredId.ifBlank { "image" }
-        if (base !in usedIds) return base
-        var index = 2
-        while ("$base-$index" in usedIds) index++
-        return "$base-$index"
     }
 
     private fun deleteDisposableChatImage(path: String): Boolean {

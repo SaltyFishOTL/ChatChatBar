@@ -64,6 +64,7 @@ import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.PlayerSetting
 import com.example.chatbar.data.local.entity.SaveSlotSummary
+import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.DEFAULT_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.DEFAULT_MEMORY_LIMIT_CHARS
@@ -125,6 +126,7 @@ fun ChatSettingsDialog(
     val defaultImageModelId by viewModel.effectiveDefaultImageModelId.collectAsState()
     val defaultFormatId by viewModel.effectiveDefaultFormatCardId.collectAsState()
     val slots by viewModel.availableSaveSlots.collectAsState()
+    val saveSlotOperation by viewModel.saveSlotOperation.collectAsState()
     val ragChunks by viewModel.ragMemoryChunks.collectAsState()
     val ragStatus by viewModel.ragMemoryStatus.collectAsState()
     val ragBusy by viewModel.ragMemoryBusy.collectAsState()
@@ -151,6 +153,8 @@ fun ChatSettingsDialog(
     var extraWorldBookIds by remember { mutableStateOf(session?.extraWorldBookIds ?: emptyList()) }
     var slotName by remember { mutableStateOf("") }
     var slotDescription by remember { mutableStateOf("") }
+    var slotImagePolicy by remember { mutableStateOf(SaveSlotImagePolicy.NONE) }
+    var slotIncludeAudio by remember { mutableStateOf(true) }
     var deleteSlot by remember { mutableStateOf<SaveSlotSummary?>(null) }
     var archiveStatus by remember { mutableStateOf<String?>(null) }
     var exportSlotId by remember { mutableStateOf<String?>(null) }
@@ -163,7 +167,7 @@ fun ChatSettingsDialog(
     val backgroundPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
         uri?.let { viewModel.copyUriToLocalFile(it) { path -> background = path } }
     }
-    val exportSaveSlot = rememberLauncherForActivityResult(CreateOpenableDocument("application/json")) { uri ->
+    val exportSaveSlot = rememberLauncherForActivityResult(CreateOpenableDocument("application/octet-stream")) { uri ->
         val slotId = exportSlotId.also { exportSlotId = null }
         if (uri != null && slotId != null) {
             scope.launch {
@@ -192,10 +196,13 @@ fun ChatSettingsDialog(
             }
         }
     }
-    LaunchedEffect(Unit) {
-        viewModel.refreshConfigurations()
-        viewModel.refreshRagMemoryChunks()
-        viewModel.refreshLongTermMemory()
+    LaunchedEffect(tab) {
+        when (tab) {
+            0 -> viewModel.refreshConfigurations()
+            1 -> viewModel.refreshLongTermMemory()
+            2 -> viewModel.refreshRagMemoryChunks()
+            3 -> viewModel.refreshSaveSlots()
+        }
     }
     LaunchedEffect(session) {
         session?.let {
@@ -379,18 +386,36 @@ fun ChatSettingsDialog(
                             onName = { slotName = it },
                             description = slotDescription,
                             onDescription = { slotDescription = it },
-                            status = archiveStatus,
+                            imagePolicy = slotImagePolicy,
+                            onImagePolicy = { slotImagePolicy = it },
+                            includeAudio = slotIncludeAudio,
+                            onIncludeAudio = { slotIncludeAudio = it },
+                            status = archiveStatus ?: saveSlotOperation.status,
+                            busy = saveSlotOperation.busy,
+                            cancellable = saveSlotOperation.cancellable,
                             onCreate = {
-                                viewModel.createSaveSlot(slotName, slotDescription)
+                                archiveStatus = null
+                                viewModel.createSaveSlot(
+                                    slotName,
+                                    slotDescription,
+                                    slotImagePolicy,
+                                    slotIncludeAudio
+                                )
                                 slotName = ""; slotDescription = ""
-                                archiveStatus = "存档已创建。"
                             },
+                            onCancel = viewModel::cancelSaveSlotOperation,
                             onImport = { importSaveSlot.launch(arrayOf("*/*")) },
-                            onLoad = { viewModel.loadSaveSlot(it); onDismiss() },
+                            onLoad = {
+                                archiveStatus = null
+                                viewModel.loadSaveSlot(it)
+                            },
                             onDelete = { deleteSlot = it },
                             onExport = { slot ->
                                 exportSlotId = slot.id
-                                exportSaveSlot.launch("${safeArchiveFileName(renderSessionText(slot.name))}.json")
+                                val extension = if (slot.schemaVersion >= 8) "cbsave" else "json"
+                                exportSaveSlot.launch(
+                                    "${safeArchiveFileName(renderSessionText(slot.name))}.$extension"
+                                )
                             },
                             renderText = ::renderSessionText
                         )
@@ -1815,8 +1840,15 @@ private fun SavesContent(
     onName: (String) -> Unit,
     description: String,
     onDescription: (String) -> Unit,
+    imagePolicy: SaveSlotImagePolicy,
+    onImagePolicy: (SaveSlotImagePolicy) -> Unit,
+    includeAudio: Boolean,
+    onIncludeAudio: (Boolean) -> Unit,
     status: String?,
+    busy: Boolean,
+    cancellable: Boolean,
     onCreate: () -> Unit,
+    onCancel: () -> Unit,
     onImport: () -> Unit,
     onLoad: (SaveSlotSummary) -> Unit,
     onDelete: (SaveSlotSummary) -> Unit,
@@ -1829,12 +1861,52 @@ private fun SavesContent(
                 CbText("创建存档", style = ChatBarTheme.typography.heading)
                 CbField("名称") { CbInput(name, onName, placeholder = "大战前夕") }
                 CbField("备注") { CbInput(description, onDescription, placeholder = "可选") }
+                CbField("图片") {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CbChoiceChip(
+                            "不保存",
+                            imagePolicy == SaveSlotImagePolicy.NONE,
+                            { if (!busy) onImagePolicy(SaveSlotImagePolicy.NONE) },
+                            Modifier.weight(1f)
+                        )
+                        CbChoiceChip(
+                            "压缩",
+                            imagePolicy == SaveSlotImagePolicy.COMPRESSED,
+                            { if (!busy) onImagePolicy(SaveSlotImagePolicy.COMPRESSED) },
+                            Modifier.weight(1f)
+                        )
+                        CbChoiceChip(
+                            "原图",
+                            imagePolicy == SaveSlotImagePolicy.ORIGINAL,
+                            { if (!busy) onImagePolicy(SaveSlotImagePolicy.ORIGINAL) },
+                            Modifier.weight(1f)
+                        )
+                    }
+                }
+                Row(
+                    Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        CbText("保存生成语音", style = ChatBarTheme.typography.label)
+                        CbText(
+                            "图片默认不保存；消息中的图片位置仍会保留。",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
+                    CbSwitch(includeAudio, onIncludeAudio, enabled = !busy)
+                }
                 status?.let {
                     CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
                 }
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CbButton("创建", onCreate, enabled = name.isNotBlank())
-                    CbButton("导入 JSON", onImport, variant = ButtonVariant.Outline)
+                    CbButton("创建", onCreate, enabled = name.isNotBlank() && !busy)
+                    CbButton("导入存档", onImport, variant = ButtonVariant.Outline, enabled = !busy)
+                    if (busy && cancellable) {
+                        CbButton("取消", onCancel, variant = ButtonVariant.Ghost)
+                    }
                 }
             }
         }
@@ -1848,6 +1920,7 @@ private fun SavesContent(
                 items(slots, key = { it.id }) { slot ->
                     SaveSlotItem(
                         slot = slot,
+                        enabled = !busy,
                         onLoad = { onLoad(slot) },
                         onExport = { onExport(slot) },
                         onDelete = { onDelete(slot) },
@@ -1986,6 +2059,7 @@ private fun RagMemoryChunkCard(
 @Composable
 fun SaveSlotItem(
     slot: SaveSlotSummary,
+    enabled: Boolean = true,
     onLoad: () -> Unit,
     onExport: () -> Unit,
     onDelete: () -> Unit,
@@ -2003,12 +2077,23 @@ fun SaveSlotItem(
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
+                CbText(
+                    "图片：${slot.imagePolicy.displayLabel()}（${slot.imageCount}） · 语音：${if (slot.includeAudio) "保存 ${slot.audioCount}" else "不保存"}",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
             }
-            CbIconButton(AppIcons.Restore, "读档", onLoad, tint = ChatBarTheme.colors.primary)
-            CbIconButton(AppIcons.Export, "导出 JSON", onExport, tint = ChatBarTheme.colors.primary)
-            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive)
+            CbIconButton(AppIcons.Restore, "读档", onLoad, tint = ChatBarTheme.colors.primary, enabled = enabled)
+            CbIconButton(AppIcons.Export, "导出存档", onExport, tint = ChatBarTheme.colors.primary, enabled = enabled)
+            CbIconButton(AppIcons.Delete, "删除", onDelete, tint = ChatBarTheme.colors.destructive, enabled = enabled)
         }
     }
+}
+
+private fun SaveSlotImagePolicy.displayLabel(): String = when (this) {
+    SaveSlotImagePolicy.NONE -> "不保存"
+    SaveSlotImagePolicy.COMPRESSED -> "压缩"
+    SaveSlotImagePolicy.ORIGINAL -> "原图"
 }
 
 @Composable

@@ -45,6 +45,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -83,6 +84,7 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.core.content.ContextCompat
 import coil.compose.AsyncImage
+import coil.memory.MemoryCache
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.DebugConfig
 import com.example.chatbar.data.local.entity.ChatMessage
@@ -104,9 +106,14 @@ import com.example.chatbar.domain.image.parseNovelAiBatchSize
 import com.example.chatbar.ui.components.ChatBubble
 import com.example.chatbar.ui.components.ChatBubbleCharacterAvatar
 import com.example.chatbar.ui.components.ChatBubbleSegmentAction
+import com.example.chatbar.ui.components.ChatImageRenderRuntime
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
+import com.example.chatbar.ui.components.LocalChatImageRenderRuntime
 import com.example.chatbar.ui.components.NovelAiImageRegenerationDialog
+import com.example.chatbar.ui.components.chatImageMemoryCacheKey
+import com.example.chatbar.ui.components.createChatImageLoader
+import com.example.chatbar.ui.components.isOmittedSaveSlotImage
 import com.example.chatbar.ui.components.TypingIndicator
 import com.example.chatbar.ui.components.saveImageToGallery
 import com.example.chatbar.ui.components.shareImage
@@ -137,6 +144,8 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
 import java.io.File
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 
@@ -174,6 +183,9 @@ fun ChatScreen(
     val audiobookModeEnabled by viewModel.audiobookModeEnabled.collectAsState()
     val modelConfigurationErrors by viewModel.modelConfigurationErrors.collectAsState()
     val messages by viewModel.messages.collectAsState()
+    val hasOlderMessages by viewModel.hasOlderMessages.collectAsState()
+    val hasNewerMessages by viewModel.hasNewerMessages.collectAsState()
+    val messagePageLoading by viewModel.messagePageLoading.collectAsState()
     val isResponding by viewModel.isResponding.collectAsState()
     val streamingMessage by viewModel.streamingMessage.collectAsState()
     val timelineMessages = remember(messages, streamingMessage) {
@@ -203,6 +215,20 @@ fun ChatScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     val clipboardManager = LocalClipboardManager.current
     val rootView = LocalView.current
+    val chatImageLoader = remember(context, sessionId) { createChatImageLoader(context) }
+    var activeChatImagePaths by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
+    var retainedChatImagePaths by remember(sessionId) { mutableStateOf<Set<String>>(emptySet()) }
+    val chatImageLastSeen = remember(sessionId) { mutableMapOf<String, Long>() }
+    var previousViewportFirst by remember(sessionId) { mutableStateOf(0) }
+
+    DisposableEffect(chatImageLoader) {
+        onDispose {
+            activeChatImagePaths = emptySet()
+            retainedChatImagePaths = emptySet()
+            chatImageLastSeen.clear()
+            chatImageLoader.shutdown()
+        }
+    }
 
     DisposableEffect(viewModel, sessionId, lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -885,6 +911,102 @@ fun ChatScreen(
             }
         }
     }
+    LaunchedEffect(
+        listState,
+        messages,
+        hasOlderMessages,
+        hasNewerMessages,
+        messagePageLoading,
+        initialScrollDone
+    ) {
+        snapshotFlow {
+            val layout = listState.layoutInfo
+            val visible = layout.visibleItemsInfo
+                .map { it.index }
+                .filter { it in messages.indices }
+            Triple(
+                visible.minOrNull() ?: -1,
+                visible.maxOrNull() ?: -1,
+                listState.isScrollInProgress
+            )
+        }.collectLatest { (observedFirst, observedLast, scrolling) ->
+            if (observedFirst < 0 || observedLast < 0 || !initialScrollDone) return@collectLatest
+            messages.getOrNull(observedFirst)?.let { message ->
+                viewModel.updateMessageWindowAnchor(message.id)
+            }
+            val directionForward = observedFirst >= previousViewportFirst
+            previousViewportFirst = observedFirst
+            if (scrolling) return@collectLatest
+            delay(200)
+            if (listState.isScrollInProgress) return@collectLatest
+
+            val visibleIndexes = listState.layoutInfo.visibleItemsInfo
+                .map { it.index }
+                .filter { it in messages.indices }
+            val first = visibleIndexes.minOrNull() ?: return@collectLatest
+            val last = visibleIndexes.maxOrNull() ?: return@collectLatest
+            if (!messagePageLoading) {
+                when {
+                    first <= 2 && hasOlderMessages -> viewModel.loadOlderMessages()
+                    last >= messages.lastIndex - 2 && hasNewerMessages ->
+                        viewModel.loadNewerMessages()
+                }
+            }
+
+            val visibleCount = (last - first + 1).coerceAtLeast(1)
+            val loadBefore = if (directionForward) (visibleCount + 1) / 2 else visibleCount
+            val loadAfter = if (directionForward) visibleCount else (visibleCount + 1) / 2
+            val loadStart = (first - loadBefore).coerceAtLeast(0)
+            val loadEnd = (last + loadAfter).coerceAtMost(messages.lastIndex)
+            val center = (first + last) / 2f
+            val candidates = (loadStart..loadEnd)
+                .flatMap { index ->
+                    messages[index].images.map { path -> path to kotlin.math.abs(index - center) }
+                }
+                .filter { (path, _) -> !isOmittedSaveSlotImage(path) && File(path).isFile }
+                .sortedBy { it.second }
+                .map { it.first }
+                .distinct()
+                .take(12)
+                .toSet()
+            activeChatImagePaths = candidates
+
+            val retainStart = (first - visibleCount * 2).coerceAtLeast(0)
+            val retainEnd = (last + visibleCount * 2).coerceAtMost(messages.lastIndex)
+            retainedChatImagePaths = (retainStart..retainEnd)
+                .flatMap { messages[it].images }
+                .filterNot(::isOmittedSaveSlotImage)
+                .toSet()
+            val now = android.os.SystemClock.uptimeMillis()
+            candidates.forEach { chatImageLastSeen[it] = now }
+            chatImageLastSeen
+                .filter { (path, seenAt) ->
+                    path !in retainedChatImagePaths && now - seenAt >= 10_000L
+                }
+                .keys
+                .toList()
+                .forEach { path ->
+                    chatImageLoader.memoryCache?.remove(
+                        MemoryCache.Key(chatImageMemoryCacheKey(path))
+                    )
+                    chatImageLastSeen.remove(path)
+                }
+        }
+    }
+    LaunchedEffect(retainedChatImagePaths, activeChatImagePaths) {
+        delay(10_000L)
+        val now = android.os.SystemClock.uptimeMillis()
+        chatImageLastSeen
+            .filter { (path, seenAt) ->
+                path !in retainedChatImagePaths && now - seenAt >= 10_000L
+            }
+            .keys
+            .toList()
+            .forEach { path ->
+                chatImageLoader.memoryCache?.remove(MemoryCache.Key(chatImageMemoryCacheKey(path)))
+                chatImageLastSeen.remove(path)
+            }
+    }
     LaunchedEffect(isAtBottom, imeBottomPx) {
         if (imeBottomPx == 0) imeBottomAnchor = isAtBottom
     }
@@ -998,6 +1120,12 @@ fun ChatScreen(
                     contentScale = ContentScale.Crop
                 )
             }
+            CompositionLocalProvider(
+                LocalChatImageRenderRuntime provides ChatImageRenderRuntime(
+                    imageLoader = chatImageLoader,
+                    activePaths = activeChatImagePaths
+                )
+            ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier
@@ -1154,6 +1282,7 @@ fun ChatScreen(
                         CbSurface(color = ChatBarTheme.colors.card, shape = RoundedCornerShape(10.dp, 10.dp, 10.dp, 3.dp)) { TypingIndicator() }
                     }
                 }
+            }
             }
             Box(
                 Modifier
@@ -1338,8 +1467,14 @@ fun ChatScreen(
         onClearHistory = { clearConfirm = true },
         onJumpToSource = { sourceTurnId ->
             settingsOpen = false
-            messages.indexOfFirst { it.sourceTurnId == sourceTurnId }.takeIf { it >= 0 }?.let { index ->
-                scope.launch { listState.animateScrollToItem(index) }
+            scope.launch {
+                val messageId = viewModel.loadSourceTurnWindow(sourceTurnId) ?: return@launch
+                val index = viewModel.messages.value.indexOfFirst { it.id == messageId }
+                if (index >= 0) {
+                    withFrameNanos { }
+                    snapshotFlow { listState.layoutInfo.totalItemsCount }.first { it > index }
+                    listState.animateScrollToItem(index)
+                }
             }
         }
     )
@@ -1401,6 +1536,12 @@ fun ChatScreen(
         }
     }
     expandedImageIndex?.let { initialIndex ->
+        CompositionLocalProvider(
+            LocalChatImageRenderRuntime provides ChatImageRenderRuntime(
+                imageLoader = chatImageLoader,
+                activePaths = null
+            )
+        ) {
         ImagePreviewDialog(
             items = previewImages,
             initialIndex = initialIndex,
@@ -1422,6 +1563,7 @@ fun ChatScreen(
                 }
             }) else null
         )
+        }
     }
     screenshotPreviewPath?.let { path ->
         ChatLongScreenshotPreviewDialog(

@@ -70,7 +70,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - On regeneration, persist the replacement before deleting the previous file. Preserve the old record/file on failure.
 - Cancel and join message/session batches before repository or file deletion so completed network work cannot resurrect deleted voices.
 - Clean stale `.part` and unreferenced owned audio without touching external files.
-- Keep SaveSlot voice metadata and Base64 audio restoration transactional. Keep character-card package compatibility for older versions.
+- SaveSlot v8 writes voice metadata as JSONL and copies each audio file through a bounded stream; restore through `FishAudioStorage.restoreArchivedAudioStream`, remap globally owned voice IDs, and delete newly materialized files if pre-commit work fails. Base64 restoration is legacy schema 1–7 compatibility only. Keep character-card package compatibility for older versions.
 
 ## Concurrency, Progress, and Playback
 

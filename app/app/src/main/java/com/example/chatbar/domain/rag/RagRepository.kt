@@ -92,6 +92,43 @@ class RagRepository(private val storage: JsonFileStorage) {
         }
     }
 
+    /** 逐块读取会话 RAG，供大型存档流式写出。 */
+    suspend fun forEachChunkForSession(
+        sessionId: String,
+        action: suspend (VectorChunk) -> Unit
+    ) {
+        storage.forEachUncached(
+            entityType = ENTITY_TYPE,
+            serializer = VectorChunk.serializer(),
+            predicate = { chunk ->
+                chunk.sourceType == ChunkSourceType.CHAT_MEMORY && chunk.sourceId == sessionId
+            },
+            action = action
+        )
+    }
+
+    /** 原子切换当前会话 RAG；新块逐条写入暂存目录。 */
+    suspend fun replaceChunksForSessionStreaming(
+        sessionId: String,
+        producer: suspend (emit: suspend (VectorChunk) -> Unit) -> Unit
+    ) {
+        storage.replaceWhereStreamingUncached(
+            entityType = ENTITY_TYPE,
+            serializer = VectorChunk.serializer(),
+            predicate = { chunk ->
+                chunk.sourceType == ChunkSourceType.CHAT_MEMORY && chunk.sourceId == sessionId
+            }
+        ) { emit ->
+            producer { chunk ->
+                val normalized = chunk.copy(
+                    sourceType = ChunkSourceType.CHAT_MEMORY,
+                    sourceId = sessionId
+                )
+                emit(normalized.id, normalized)
+            }
+        }
+    }
+
     /** 新T块保存成功后清理同来源旧自动块；手动块和长期记忆旧块不受影响。 */
     suspend fun deleteSupersededAutomaticChatMemory(
         sessionId: String,

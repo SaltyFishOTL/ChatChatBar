@@ -26,6 +26,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -37,6 +38,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -61,6 +63,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.MessageRole
@@ -79,6 +84,7 @@ import com.example.chatbar.domain.voice.VoicePlaybackState
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbSurface
+import com.example.chatbar.ui.kit.CbSpinner
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
 import io.noties.markwon.AbstractMarkwonPlugin
@@ -811,9 +817,11 @@ private fun CharacterChatAvatar(
     ) {
         if (avatarFile != null) {
             if (exportMode) {
-                val bitmap = remember(avatarFile.absolutePath) {
-                    BitmapFactory.decodeFile(avatarFile.absolutePath)?.asImageBitmap()
+                val androidBitmap = remember(avatarFile.absolutePath) {
+                    decodeSampledBitmap(avatarFile.absolutePath, 128)
                 }
+                DisposableEffect(androidBitmap) { onDispose { androidBitmap?.recycle() } }
+                val bitmap = remember(androidBitmap) { androidBitmap?.asImageBitmap() }
                 if (bitmap != null) {
                     Image(
                         bitmap = bitmap,
@@ -1282,6 +1290,11 @@ private fun MessageImage(
     onImageLongPress: ((String) -> Unit)?
 ) {
     val imageRatio = remember(imagePath) { imageAspectRatio(imagePath) }
+    val runtime = LocalChatImageRenderRuntime.current
+    val context = LocalContext.current
+    val imageLoader = runtime.imageLoader ?: context.imageLoader
+    val omitted = isOmittedSaveSlotImage(imagePath)
+    val shouldLoad = !omitted && runtime.shouldLoad(imagePath)
     val imageModifier = Modifier
         .fillMaxWidth()
         .padding(bottom = 8.dp)
@@ -1291,8 +1304,27 @@ private fun MessageImage(
             if (selected) it.border(1.5.dp, ChatBarTheme.colors.primary, RoundedCornerShape(8.dp)) else it
         }
     Box {
-        if (exportMode) {
-            val bitmap = remember(imagePath) { BitmapFactory.decodeFile(imagePath)?.asImageBitmap() }
+        if (omitted) {
+            CbSurface(
+                modifier = imageModifier,
+                color = ChatBarTheme.colors.muted,
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Box(Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    CbText(
+                        "存档未包含此图片",
+                        modifier = Modifier.padding(16.dp),
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+            }
+        } else if (exportMode) {
+            val androidBitmap = remember(imagePath) { decodeSampledBitmap(imagePath, 1024) }
+            DisposableEffect(androidBitmap) {
+                onDispose { androidBitmap?.recycle() }
+            }
+            val bitmap = remember(androidBitmap) { androidBitmap?.asImageBitmap() }
             if (bitmap != null) {
                 Image(
                     bitmap = bitmap,
@@ -1314,10 +1346,19 @@ private fun MessageImage(
                     )
                 }
             }
-        } else {
-            AsyncImage(
-                model = File(imagePath),
-                contentDescription = "消息图片",
+        } else if (shouldLoad) {
+            val request = remember(imagePath, context) {
+                ImageRequest.Builder(context)
+                    .data(File(imagePath))
+                    .memoryCacheKey(chatImageMemoryCacheKey(imagePath))
+                    .diskCachePolicy(CachePolicy.DISABLED)
+                    .networkCachePolicy(CachePolicy.DISABLED)
+                    .crossfade(false)
+                    .build()
+            }
+            var imageReady by remember(imagePath) { mutableStateOf(false) }
+            var imageFailed by remember(imagePath) { mutableStateOf(false) }
+            Box(
                 modifier = imageModifier.combinedClickable(
                     enabled = selectionMode || onImageClick != null || onImageLongPress != null,
                     onClick = {
@@ -1330,11 +1371,89 @@ private fun MessageImage(
                     onLongClick = {
                         if (!selectionMode) onImageLongPress?.invoke(imagePath)
                     }
-                ),
-                contentScale = ContentScale.Fit
+                )
+            ) {
+                AsyncImage(
+                    model = request,
+                    imageLoader = imageLoader,
+                    contentDescription = "消息图片",
+                    modifier = Modifier.fillMaxSize(),
+                    onLoading = {
+                        imageReady = false
+                        imageFailed = false
+                    },
+                    onSuccess = {
+                        imageReady = true
+                        imageFailed = false
+                    },
+                    onError = {
+                        imageReady = false
+                        imageFailed = true
+                    },
+                    contentScale = ContentScale.Fit
+                )
+                if (!imageReady) {
+                    MessageImageLoadStatus(
+                        label = if (imageFailed) "图片加载失败" else "图片加载中",
+                        animate = !imageFailed,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
+            }
+        } else {
+            MessageImageLoadStatus(
+                label = "图片等待加载",
+                animate = true,
+                modifier = imageModifier,
             )
         }
     }
+}
+
+@Composable
+private fun MessageImageLoadStatus(
+    label: String,
+    animate: Boolean,
+    modifier: Modifier = Modifier
+) {
+    CbSurface(
+        modifier = modifier,
+        color = ChatBarTheme.colors.muted,
+        shape = RoundedCornerShape(8.dp)
+    ) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(12.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.Center
+        ) {
+            if (animate) {
+                CbSpinner(Modifier.size(24.dp))
+                Spacer(Modifier.height(8.dp))
+            }
+            CbText(
+                label,
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+        }
+    }
+}
+
+private fun decodeSampledBitmap(path: String, maxEdge: Int): android.graphics.Bitmap? {
+    val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+    BitmapFactory.decodeFile(path, bounds)
+    if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return null
+    var sample = 1
+    while (bounds.outWidth / sample > maxEdge || bounds.outHeight / sample > maxEdge) {
+        sample *= 2
+    }
+    return BitmapFactory.decodeFile(
+        path,
+        BitmapFactory.Options().apply {
+            inSampleSize = sample
+            inPreferredConfig = android.graphics.Bitmap.Config.RGB_565
+        }
+    )
 }
 
 @Composable

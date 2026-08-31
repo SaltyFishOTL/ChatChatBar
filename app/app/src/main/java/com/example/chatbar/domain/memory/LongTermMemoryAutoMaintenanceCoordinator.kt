@@ -101,6 +101,11 @@ class LongTermMemoryAutoMaintenanceCoordinator(
         enqueue(sessionId, MemoryMaintenanceTrigger.SESSION_LOADED)
     }
 
+    /** 只建立当前会话归属；重型维护由用户进入记忆页或新消息事件触发。 */
+    fun selectSession(sessionId: String) {
+        currentSessionId.set(sessionId)
+    }
+
     /** Explicit session deletion cancels application-owned memory work before data removal. */
     suspend fun cancelAndJoinForSession(sessionId: String) {
         currentSessionId.compareAndSet(sessionId, null)

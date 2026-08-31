@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBarsPadding
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
@@ -33,6 +34,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import coil.compose.AsyncImage
+import coil.imageLoader
+import coil.memory.MemoryCache
+import coil.request.CachePolicy
+import coil.request.ImageRequest
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -195,13 +200,14 @@ fun ImagePreviewDialog(
             HorizontalPager(
                 state = pagerState,
                 modifier = Modifier.fillMaxSize(),
+                beyondViewportPageCount = 0,
                 key = { page ->
                     items.getOrNull(page)?.let { item ->
                         item.messageId + "\u0000" + item.path
                     } ?: RemovedImagePreviewItemKey(page)
                 }
             ) { page ->
-                items.getOrNull(page)?.let { item ->
+                items.getOrNull(page)?.takeIf { page == pagerState.currentPage }?.let { item ->
                     ZoomablePreviewImage(
                         path = editedPaths[item.path] ?: item.path,
                         onLongPress = { showImageActions = true }
@@ -237,8 +243,27 @@ private fun ZoomablePreviewImage(path: String, onLongPress: () -> Unit) {
         scale = nextScale
         offset = if (nextScale == 1f) Offset.Zero else offset + panChange
     }
+    val context = LocalContext.current
+    val runtime = LocalChatImageRenderRuntime.current
+    val imageLoader = runtime.imageLoader ?: context.imageLoader
+    val cacheKey = remember(path) { "chat-preview:$path" }
+    val request = remember(path, context) {
+        val metrics = context.resources.displayMetrics
+        ImageRequest.Builder(context)
+            .data(File(path))
+            .size(metrics.widthPixels.coerceAtLeast(1), metrics.heightPixels.coerceAtLeast(1))
+            .memoryCacheKey(cacheKey)
+            .diskCachePolicy(CachePolicy.DISABLED)
+            .networkCachePolicy(CachePolicy.DISABLED)
+            .crossfade(false)
+            .build()
+    }
+    DisposableEffect(imageLoader, cacheKey) {
+        onDispose { imageLoader.memoryCache?.remove(MemoryCache.Key(cacheKey)) }
+    }
     AsyncImage(
-        model = File(path),
+        model = request,
+        imageLoader = imageLoader,
         contentDescription = "查看大图",
         modifier = Modifier
             .fillMaxSize()

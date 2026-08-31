@@ -2,7 +2,9 @@ package com.example.chatbar.domain.voice
 
 import android.content.Context
 import android.media.MediaMetadataRetriever
+import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -135,8 +137,19 @@ class FishAudioStorage(private val context: Context) {
         sessionId: String,
         resourceId: String,
         data: ByteArray
-    ): FishAudioStoredAudio = withContext(Dispatchers.IO) {
+    ): FishAudioStoredAudio {
         require(data.isNotEmpty()) { "存档语音资源为空" }
+        return ByteArrayInputStream(data).use { input ->
+            restoreArchivedAudioStream(sessionId, resourceId, input)
+        }
+    }
+
+    /** 从存档包流式恢复音频；不把完整音频读入 ByteArray。 */
+    suspend fun restoreArchivedAudioStream(
+        sessionId: String,
+        resourceId: String,
+        input: InputStream
+    ): FishAudioStoredAudio = withContext(Dispatchers.IO) {
         val directory = File(root, safeSegment(sessionId)).also(File::mkdirs)
         val finalFile = File(
             directory,
@@ -144,7 +157,20 @@ class FishAudioStorage(private val context: Context) {
         )
         val tempFile = File(directory, ".${finalFile.name}.${UUID.randomUUID()}.part")
         try {
-            tempFile.writeBytes(data)
+            var received = 0L
+            input.buffered().use { source ->
+                tempFile.outputStream().buffered().use { output ->
+                    val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
+                    while (true) {
+                        currentCoroutineContext().ensureActive()
+                        val count = source.read(buffer)
+                        if (count < 0) break
+                        output.write(buffer, 0, count)
+                        received += count
+                    }
+                }
+            }
+            require(received > 0L) { "存档语音资源为空" }
             val duration = readDuration(tempFile)
             require(duration > 0L) { "存档语音资源无法解析" }
             moveReplacing(tempFile, finalFile)

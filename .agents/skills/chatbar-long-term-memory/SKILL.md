@@ -18,6 +18,7 @@ Preserve timeline coverage and user data across every layer. Treat memory change
 
 - Persisted models: data/local/entity/LongTermMemory.kt, ChatMessage.kt, ChatSession.kt, AppSettings.kt, SaveSlot.kt.
 - Storage: data/repository/MemoryRepository.kt, ChatRepository.kt.
+- SaveSlot snapshot transport: domain/chat/SaveSlotPackageStorage.kt. v8 keeps only the current memory snapshot in the manifest; histories, running tasks, and coordinator state remain excluded.
 - Core behavior: domain/memory/LongTermMemoryService.kt, MemoryHeadUpdatePolicy.kt, MemoryBackfillPolicy.kt, MemoryCompressionDecisionPolicy.kt, MemoryRegenerationPolicy.kt, MemoryModelPreflightPolicy.kt, MemoryAiGateway.kt, MemoryAiFailurePolicy.kt, and focused policies under domain/memory/.
 - App-owned maintenance: domain/memory/LongTermMemoryAutoMaintenanceCoordinator.kt. Episode grouping owner: MemoryEpisodeBatchPolicy.kt. Semantic source evidence owner: MemorySourceFingerprint.kt.
 - Historical source repair: domain/memory/MemorySourceRepairPolicy.kt and MemorySourceRepairProgress.kt.
@@ -55,6 +56,7 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 - Compare source meaning with `sourceFingerprints`; numeric `orderKey` and `updatedAt` are excluded. Preserve legacy hashes only for safe one-time migration and structural compatibility.
 - After explicit historical message-order repair or undo, run source-mutation detection only; never start AI repair automatically. Order repair may change `orderKey` but must preserve source identity, message content, images, and timestamps.
 - Automatic Archive→HEAD, manual gap-backfill, and explicit source-repair model calls belong to the application coordinator; page ViewModels only observe coordinator progress. Use per-session demand versions so work arriving during a pass or runner shutdown cannot be lost. Page destruction must not cancel work. Only current session receives new automatic work.
+- Opening chat selects coordinator ownership but does not enqueue `SESSION_LOADED`; opening the long-term-memory page may enqueue it after state loads. Persisted user/reply/delete events still enqueue automatic work. Keep direct-context loading bounded to recent complete turns plus every pending source-turn ID required by memory safety.
 - Explicit session deletion is different from page/session switching: reject new coordinator work, cancel and join every application-owned memory job for that session, then remove persisted session and memory data.
 - Treat compression choices as immediate persisted state transitions. Hide the pending choice before coordinator continuation; page ViewModels must not own the follow-up model task.
 - Full regeneration resets derived memory only, seeds eligible raw sources through `MemoryRegenerationPolicy`, then reuses coordinator-owned backfill, compression decisions, progress, pause/retry, and final HEAD rebuild. Do not create a second Archive generation loop.

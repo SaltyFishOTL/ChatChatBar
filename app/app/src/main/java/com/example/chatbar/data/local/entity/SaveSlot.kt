@@ -47,6 +47,12 @@ data class SaveSlot(
     val voiceMessages: List<GeneratedVoiceMessage> = emptyList(),
     val audioResources: Map<String, SaveSlotAudioResource> = emptyMap(),
     val vectorChunks: List<VectorChunk> = emptyList(), // 记忆状态
+    /** v8：图片写入策略。旧存档默认视为包含原图。 */
+    val imagePolicy: SaveSlotImagePolicy = SaveSlotImagePolicy.ORIGINAL,
+    /** v8：是否把本地生成语音写入存档包。 */
+    val includeAudio: Boolean = true,
+    /** v8：大型正文与媒体所在的流式包。null 表示旧版内联 JSON。 */
+    val packageRef: SaveSlotPackageRef? = null,
     val createdAt: Long
 ) {
     companion object {
@@ -76,7 +82,12 @@ data class SaveSlotSummary(
     val name: String,
     val description: String?,
     val messageCount: Int,
-    val createdAt: Long
+    val createdAt: Long,
+    val schemaVersion: Int = 1,
+    val imagePolicy: SaveSlotImagePolicy = SaveSlotImagePolicy.ORIGINAL,
+    val imageCount: Int = 0,
+    val includeAudio: Boolean = true,
+    val audioCount: Int = 0
 )
 
 fun SaveSlot.toSummary(): SaveSlotSummary = SaveSlotSummary(
@@ -84,8 +95,30 @@ fun SaveSlot.toSummary(): SaveSlotSummary = SaveSlotSummary(
     sessionId = sessionId,
     name = name,
     description = description,
-    messageCount = messages.size,
-    createdAt = createdAt
+    messageCount = packageRef?.messageCount ?: messages.size,
+    createdAt = createdAt,
+    schemaVersion = schemaVersion,
+    imagePolicy = imagePolicy,
+    imageCount = packageRef?.imageCount ?: imageResources.size,
+    includeAudio = includeAudio,
+    audioCount = packageRef?.audioCount ?: audioResources.size
+)
+
+@Serializable
+enum class SaveSlotImagePolicy {
+    NONE,
+    COMPRESSED,
+    ORIGINAL
+}
+
+@Serializable
+data class SaveSlotPackageRef(
+    val fileName: String,
+    val messageCount: Int = 0,
+    val imageCount: Int = 0,
+    val audioCount: Int = 0,
+    val ragChunkCount: Int = 0,
+    val byteLength: Long = 0L
 )
 
 @Serializable
