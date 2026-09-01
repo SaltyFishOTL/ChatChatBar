@@ -149,7 +149,8 @@ jobs:
           CHATBAR_VERSION_NAME: ${{ steps.version.outputs.versionName }}
         run: |
           chmod +x gradlew
-          ./gradlew test assembleRelease --no-daemon --stacktrace
+          ./gradlew test --no-daemon --stacktrace
+          ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare release asset
         run: |
