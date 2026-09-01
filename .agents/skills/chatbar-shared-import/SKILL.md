@@ -28,7 +28,7 @@ All Kotlin paths are relative to `app/app/src/main/java/com/example/chatbar/`.
 - High-confidence resources import automatically. Character, format, and world-book name conflicts retain overwrite/new/cancel; model templates always create a new model with empty API key.
 - Unknown text/JSON exposes four explicit strict decoders. Decoder failure remains visible without consuming the queue item.
 - Delete staged content only after resource persistence or destination-owned image copy succeeds. Cancellation/failure advances FIFO without affecting later items.
-- Shared image guidance defaults to Image-to-Image and opens guidance editing after durable draft save. Image tools copy into their owned processing area. Busy Studio waits; shared import must not cancel generation.
+- Shared image guidance creates one generation-fitted base copy plus one natural-dimension reference copy, loads them into Image-to-Image/Focused Inpainting, Precise, and Vibe source slots, defaults active action to Image-to-Image, and opens guidance editing after durable draft save. The three source groups remain independently replaceable and clearable. Image tools copy into their owned processing area. Busy Studio waits; shared import must not cancel generation.
 - Completed resource imports navigate to the matching management tab and scroll to the new or overwritten item before acknowledging the queue item.
 
 ## Verification Focus

@@ -75,6 +75,7 @@ import com.example.chatbar.domain.image.NovelAiPreciseReferenceType
 import com.example.chatbar.domain.image.NovelAiReferenceMode
 import com.example.chatbar.domain.image.NovelAiStudioAssetRef
 import com.example.chatbar.domain.image.NovelAiVibeReferenceDraft
+import com.example.chatbar.domain.image.withoutImageSource
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -255,7 +256,7 @@ fun NovelAiImageGuidanceEditor(
         lastGuidanceHistoryAt = now
     }
     fun currentTabState() = CanvasTabState(
-        assetPath = targetAsset?.path,
+        assetPath = assetFor(tab, guidance)?.path,
         maskPath = guidance.maskImage?.path.takeIf { tab == GuidanceEditorTab.INPAINT },
         snapshot = currentSnapshot(),
         undo = undo.toList(),
@@ -268,6 +269,24 @@ fun NovelAiImageGuidanceEditor(
         zoom = zoom,
         pan = pan
     )
+    fun clearCurrentSource() {
+        val nextGuidance = guidance.withoutImageSource(tab.target)
+        if (nextGuidance == guidance) return
+        pushCurrentUndo()
+        guidance = nextGuidance
+        sourceBitmap = null
+        source = null
+        maskSourceBitmap = null
+        maskOverlay = null
+        layers.clear()
+        layers += CanvasLayer(name = if (tab == GuidanceEditorTab.INPAINT) "蒙版" else "图层 1")
+        activeLayer = 0
+        activeStroke.clear()
+        zoom = 1f
+        pan = Offset.Zero
+        sourceTransformed = false
+        tabStates[tab] = currentTabState()
+    }
     fun restoreTabState(state: CanvasTabState) {
         restoreSnapshot(state.snapshot, restoreGuidance = false)
         undo.replaceAll(state.undo)
@@ -468,6 +487,7 @@ fun NovelAiImageGuidanceEditor(
                     guidance = guidance,
                     model = model,
                     onPickImage = onPickImage,
+                    onClearImage = ::clearCurrentSource,
                     onGuidance = ::applyGuidanceChange
                 )
                 GuidanceParameterBar(
@@ -971,6 +991,7 @@ private fun GuidanceSourceBar(
     guidance: NovelAiImageGuidanceDraft,
     model: NovelAiImageModel,
     onPickImage: (NovelAiImageUseTarget) -> Unit,
+    onClearImage: () -> Unit,
     onGuidance: (String, NovelAiImageGuidanceDraft) -> Unit
 ) {
     val active = when (tab) {
@@ -1005,7 +1026,9 @@ private fun GuidanceSourceBar(
                     buildString {
                         append(detail)
                         asset?.takeIf(NovelAiStudioAssetRef::isUsable)?.let { append(" · ${it.width}×${it.height}") }
-                        if (tab == GuidanceEditorTab.VIBE) append(" · ${guidance.vibes.count(NovelAiVibeReferenceDraft::isUsable)}/4 张")
+                        if (tab == GuidanceEditorTab.VIBE) {
+                            append(" · ${guidance.vibes.count(NovelAiVibeReferenceDraft::isUsable)}/${NovelAiImageGuidanceDraft.MAX_VIBES} 张")
+                        }
                     },
                     color = if (active) ChatBarTheme.colors.primary else ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
@@ -1032,24 +1055,7 @@ private fun GuidanceSourceBar(
                 enabled = tab != GuidanceEditorTab.VIBE || guidance.vibes.size < NovelAiImageGuidanceDraft.MAX_VIBES
             )
             if (sourceAvailable) {
-                CbButton("清空", {
-                    onGuidance("source:${tab.name}:clear", when (tab) {
-                        GuidanceEditorTab.I2I, GuidanceEditorTab.INPAINT -> guidance.copy(
-                            action = NovelAiGenerationAction.TEXT_TO_IMAGE,
-                            baseImage = null,
-                            maskImage = null,
-                            focusedInpaintRegion = null
-                        )
-                        GuidanceEditorTab.PRECISE -> guidance.copy(
-                            referenceMode = if (guidance.referenceMode == NovelAiReferenceMode.PRECISE) NovelAiReferenceMode.NONE else guidance.referenceMode,
-                            preciseReference = guidance.preciseReference.copy(asset = null)
-                        )
-                        GuidanceEditorTab.VIBE -> guidance.copy(
-                            referenceMode = if (guidance.referenceMode == NovelAiReferenceMode.VIBE) NovelAiReferenceMode.NONE else guidance.referenceMode,
-                            vibes = emptyList()
-                        )
-                    })
-                }, size = ButtonSize.Sm, variant = ButtonVariant.Destructive)
+                CbButton("清空", onClearImage, size = ButtonSize.Sm, variant = ButtonVariant.Destructive)
             }
         }
     }

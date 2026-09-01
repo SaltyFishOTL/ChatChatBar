@@ -95,6 +95,34 @@ class NovelAiImageGuidanceTest {
     }
 
     @Test
+    fun `shared guidance loads base precise and vibe sources independently`() {
+        val baseAsset = asset.copy(path = "fitted.png", sha256 = "fitted")
+        val referenceAsset = asset.copy(path = "natural.png", sha256 = "natural")
+
+        val shared = NovelAiImageGuidanceDraft().withSharedImageSources(baseAsset, referenceAsset)
+
+        assertEquals(NovelAiGenerationAction.IMAGE_TO_IMAGE, shared.action)
+        assertEquals(baseAsset, shared.baseImage)
+        assertEquals(referenceAsset, shared.preciseReference.asset)
+        assertEquals(referenceAsset, shared.vibes.single().asset)
+
+        val withoutPrecise = shared.withoutImageSource(NovelAiImageUseTarget.PRECISE_REFERENCE)
+        assertNull(withoutPrecise.preciseReference.asset)
+        assertEquals(baseAsset, withoutPrecise.baseImage)
+        assertEquals(referenceAsset, withoutPrecise.vibes.single().asset)
+
+        val withoutVibe = shared.withoutImageSource(NovelAiImageUseTarget.VIBE_REFERENCE)
+        assertTrue(withoutVibe.vibes.isEmpty())
+        assertEquals(baseAsset, withoutVibe.baseImage)
+        assertEquals(referenceAsset, withoutVibe.preciseReference.asset)
+
+        val withoutBase = shared.withoutImageSource(NovelAiImageUseTarget.IMAGE_TO_IMAGE)
+        assertNull(withoutBase.baseImage)
+        assertEquals(referenceAsset, withoutBase.preciseReference.asset)
+        assertEquals(referenceAsset, withoutBase.vibes.single().asset)
+    }
+
+    @Test
     fun `history recipe marks unowned base source as missing`() {
         val draft = NovelAiStudioDraft(
             imageGuidance = NovelAiImageGuidanceDraft(

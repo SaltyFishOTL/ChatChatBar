@@ -55,6 +55,7 @@ import com.example.chatbar.domain.image.novelAiHistoryImages
 import com.example.chatbar.domain.image.ownedAssetPaths
 import com.example.chatbar.domain.image.NovelAiPngMetadataReader
 import com.example.chatbar.domain.image.toRecipe
+import com.example.chatbar.domain.image.withSharedImageSources
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.util.UUID
@@ -651,14 +652,14 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun useSharedImage(
         path: String,
-        target: NovelAiImageUseTarget,
         onResult: (Result<Unit>) -> Unit
     ) {
         launchGuidanceImport(
-            target = target,
+            target = NovelAiImageUseTarget.IMAGE_TO_IMAGE,
             copy = { tier, fit -> guidanceAssets.copyExisting(path, tier, fit) },
             onResult = onResult,
-            showError = false
+            showError = false,
+            populateReferenceSources = true
         )
     }
 
@@ -771,7 +772,8 @@ class ImagePromptToolViewModel : ViewModel() {
         target: NovelAiImageUseTarget,
         copy: (com.example.chatbar.domain.image.NovelAiSizeTier, Boolean) -> NovelAiStudioAssetRef,
         onResult: (Result<Unit>) -> Unit = {},
-        showError: Boolean = true
+        showError: Boolean = true,
+        populateReferenceSources: Boolean = false
     ) {
         val snapshot = _uiState.value
         if (snapshot.isBusy || snapshot.applyingHistory) {
@@ -798,13 +800,24 @@ class ImagePromptToolViewModel : ViewModel() {
         }
         viewModelScope.launch {
             _uiState.update { it.copy(guidanceBusy = true, error = null) }
+            var primaryAsset: NovelAiStudioAssetRef? = null
+            var referenceAsset: NovelAiStudioAssetRef? = null
+            var draftSaved = false
             try {
                 val fit = target == NovelAiImageUseTarget.IMAGE_TO_IMAGE || target == NovelAiImageUseTarget.INPAINT
                 val asset = withContext(Dispatchers.IO) { copy(snapshot.draft.activeSettings.sizeTier, fit) }
+                    .also { primaryAsset = it }
+                referenceAsset = if (populateReferenceSources) {
+                    withContext(Dispatchers.IO) { copy(snapshot.draft.activeSettings.sizeTier, false) }
+                } else {
+                    null
+                }
                 val mask = if (target == NovelAiImageUseTarget.INPAINT) {
                     withContext(Dispatchers.IO) { guidanceAssets.createEmptyMask(asset.width, asset.height) }
                 } else null
-                val nextGuidance = when (target) {
+                val nextGuidance = if (referenceAsset != null) {
+                    snapshot.draft.imageGuidance.withSharedImageSources(asset, requireNotNull(referenceAsset))
+                } else when (target) {
                     NovelAiImageUseTarget.IMAGE_TO_IMAGE -> snapshot.draft.imageGuidance.copy(
                         action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
                         baseImage = asset,
@@ -827,6 +840,7 @@ class ImagePromptToolViewModel : ViewModel() {
                 var nextDraft = snapshot.draft.copy(imageGuidance = nextGuidance, updatedAt = System.currentTimeMillis())
                 if (fit) nextDraft = nextDraft.withActiveSettings(matchSettingsToAsset(nextDraft.activeSettings, asset))
                 repository.saveDraft(nextDraft)
+                draftSaved = true
                 repository.clearGuidanceCheckpoint()
                 if (nextDraft != snapshot.draft) recordDraftChange(snapshot.draft, null)
                 cleanupGuidanceAssets(nextDraft)
@@ -844,10 +858,12 @@ class ImagePromptToolViewModel : ViewModel() {
                 }
                 onResult(Result.success(Unit))
             } catch (error: CancellationException) {
+                if (!draftSaved) discardGuidanceAssets(primaryAsset, referenceAsset)
                 _uiState.update { it.copy(guidanceBusy = false) }
                 onResult(Result.failure(error))
                 throw error
             } catch (error: Throwable) {
+                if (!draftSaved) discardGuidanceAssets(primaryAsset, referenceAsset)
                 _uiState.update {
                     it.copy(
                         guidanceBusy = false,
@@ -856,6 +872,12 @@ class ImagePromptToolViewModel : ViewModel() {
                 }
                 onResult(Result.failure(error))
             }
+        }
+    }
+
+    private suspend fun discardGuidanceAssets(vararg assets: NovelAiStudioAssetRef?) {
+        withContext(NonCancellable + Dispatchers.IO) {
+            assets.filterNotNull().distinctBy(NovelAiStudioAssetRef::path).forEach(guidanceAssets::deleteIfOwned)
         }
     }
 

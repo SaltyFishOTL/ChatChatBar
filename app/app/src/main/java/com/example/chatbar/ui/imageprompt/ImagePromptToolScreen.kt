@@ -245,7 +245,6 @@ fun ImagePromptToolScreen(
         when (request.destination) {
             SharedImageDestination.GUIDANCE -> viewModel.useSharedImage(
                 request.path,
-                NovelAiImageUseTarget.IMAGE_TO_IMAGE,
                 finish
             )
             SharedImageDestination.TOOLS -> {

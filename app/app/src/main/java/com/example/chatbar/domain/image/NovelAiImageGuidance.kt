@@ -153,6 +153,61 @@ data class NovelAiImageGuidanceDraft(
     }
 }
 
+fun NovelAiImageGuidanceDraft.withSharedImageSources(
+    baseAsset: NovelAiStudioAssetRef,
+    referenceAsset: NovelAiStudioAssetRef
+): NovelAiImageGuidanceDraft {
+    val matchingVibe = vibes.indexOfFirst { vibe ->
+        val existing = vibe.asset ?: return@indexOfFirst false
+        referenceAsset.sha256.isNotBlank() && existing.sha256 == referenceAsset.sha256
+    }
+    require(matchingVibe >= 0 || vibes.size < NovelAiImageGuidanceDraft.MAX_VIBES) {
+        "氛围参考已满；请进入图像引导管理"
+    }
+    val updatedVibes = if (matchingVibe >= 0) {
+        vibes.mapIndexed { index, vibe ->
+            if (index == matchingVibe) vibe.copy(asset = referenceAsset, encodedVibe = null) else vibe
+        }
+    } else {
+        vibes + NovelAiVibeReferenceDraft(asset = referenceAsset)
+    }
+    return copy(
+        action = NovelAiGenerationAction.IMAGE_TO_IMAGE,
+        baseImage = baseAsset,
+        maskImage = null,
+        focusedInpaintRegion = null,
+        preciseReference = preciseReference.copy(asset = referenceAsset),
+        vibes = updatedVibes
+    )
+}
+
+fun NovelAiImageGuidanceDraft.withoutImageSource(target: NovelAiImageUseTarget): NovelAiImageGuidanceDraft =
+    when (target) {
+        NovelAiImageUseTarget.IMAGE_TO_IMAGE,
+        NovelAiImageUseTarget.INPAINT -> copy(
+            action = NovelAiGenerationAction.TEXT_TO_IMAGE,
+            baseImage = null,
+            maskImage = null,
+            focusedInpaintRegion = null
+        )
+        NovelAiImageUseTarget.PRECISE_REFERENCE -> copy(
+            referenceMode = if (referenceMode == NovelAiReferenceMode.PRECISE) {
+                NovelAiReferenceMode.NONE
+            } else {
+                referenceMode
+            },
+            preciseReference = preciseReference.copy(asset = null)
+        )
+        NovelAiImageUseTarget.VIBE_REFERENCE -> copy(
+            referenceMode = if (referenceMode == NovelAiReferenceMode.VIBE) {
+                NovelAiReferenceMode.NONE
+            } else {
+                referenceMode
+            },
+            vibes = emptyList()
+        )
+    }
+
 data class NovelAiPreparedVibeReference(
     val encoding: String,
     val informationExtracted: Float,
