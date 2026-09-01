@@ -6,6 +6,7 @@ import android.graphics.Canvas as AndroidCanvas
 import android.graphics.Paint
 import android.graphics.Matrix
 import android.widget.Toast
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectDragGestures
@@ -15,9 +16,13 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -35,24 +40,33 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
 import com.example.chatbar.ui.kit.CbChoiceChip
+import com.example.chatbar.ui.kit.CbDialog
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbSlider
+import com.example.chatbar.ui.kit.CbSurface
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.data.local.ImageMaskPreferences
-import com.example.chatbar.domain.image.FullImagePatchOperation
+import com.example.chatbar.domain.image.ImageProcessingService
+import com.example.chatbar.domain.image.ImportedProcessImage
+import com.example.chatbar.domain.image.ProcessImageKind
+import com.example.chatbar.domain.image.ProcessedImage
+import com.example.chatbar.domain.image.ProcessedImageOperation
 import com.example.chatbar.domain.image.ImageMetadataStripper
-import com.example.chatbar.domain.image.transformFullImageAdversarialPatch
 import java.io.File
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlin.math.ceil
@@ -76,6 +90,7 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val preferences = remember { ImageMaskPreferences(context) }
+    val processingService = remember { ImageProcessingService(context.applicationContext) }
     val source = remember(sourcePath) {
         BitmapFactory.decodeFile(sourcePath)?.copy(Bitmap.Config.ARGB_8888, true)
     }
@@ -92,7 +107,29 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
     }
     var hasVisualChanges by remember(sourcePath) { mutableStateOf(false) }
     var isStrippingMetadata by remember(sourcePath) { mutableStateOf(false) }
+    var inspection by remember(sourcePath) { mutableStateOf<ImportedProcessImage?>(null) }
+    var inspectionError by remember(sourcePath) { mutableStateOf<String?>(null) }
+    var isProcessingApng by remember(sourcePath) { mutableStateOf(false) }
+    var processingProgress by remember(sourcePath) { mutableFloatStateOf(0f) }
+    var processingError by remember(sourcePath) { mutableStateOf<String?>(null) }
+    var processingResult by remember(sourcePath) { mutableStateOf<ProcessedImage?>(null) }
+    var processingJob by remember(sourcePath) { mutableStateOf<Job?>(null) }
     val undoStack = remember(sourcePath) { ArrayDeque<MosaicUndoSnapshot>() }
+    val busy = isStrippingMetadata || isProcessingApng
+    val editingAllowed = inspection?.kind == ProcessImageKind.STATIC
+
+    LaunchedEffect(sourcePath) {
+        inspection = null
+        inspectionError = null
+        runCatching {
+            withContext(Dispatchers.IO) { processingService.inspectFile(sourcePath) }
+        }.onSuccess {
+            inspection = it
+        }.onFailure {
+            inspectionError = "读取图片类型失败：${it.message ?: "未知错误"}"
+        }
+    }
+
     fun pushUndoSnapshot() {
         undoStack.addLast(
             MosaicUndoSnapshot(
@@ -103,13 +140,69 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
         if (undoStack.size > 10) undoStack.removeFirst().bitmap.recycle()
     }
 
-    Dialog(
-        onDismissRequest = { if (!isStrippingMetadata) onDismiss() },
+    fun startApngOperation() {
+        val currentInspection = inspection ?: return
+        if (busy || currentInspection.kind == ProcessImageKind.OTHER_APNG) return
+        processingError = null
+        processingProgress = 0f
+        processingJob = scope.launch {
+            isProcessingApng = true
+            try {
+                val result = when (currentInspection.kind) {
+                    ProcessImageKind.STATIC -> {
+                        val snapshot = bitmap.copy(Bitmap.Config.ARGB_8888, false)
+                        try {
+                            withContext(Dispatchers.IO) {
+                                processingService.createApngDisguise(snapshot) { processingProgress = it }
+                            }
+                        } finally {
+                            snapshot.recycle()
+                        }
+                    }
+
+                    ProcessImageKind.GIF -> withContext(Dispatchers.IO) {
+                        processingService.createApngDisguise(sourcePath) { processingProgress = it }
+                    }
+
+                    ProcessImageKind.CHATBAR_DISGUISE_APNG -> withContext(Dispatchers.IO) {
+                        processingService.restoreApngDisguise(sourcePath) { processingProgress = it }
+                    }
+
+                    ProcessImageKind.OTHER_APNG -> error("仅支持还原由 ChatBar 生成的 APNG 伪装图")
+                }
+                processingResult = result
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Throwable) {
+                processingError = error.message ?: "APNG 处理失败"
+            } finally {
+                isProcessingApng = false
+                processingJob = null
+            }
+        }
+    }
+
+    processingResult?.let { result ->
+        ApngProcessingResultDialog(
+            result = result,
+            sourcePath = sourcePath,
+            truthBitmap = bitmap,
+            sourceKind = inspection?.kind ?: ProcessImageKind.STATIC,
+            onDismiss = { processingResult = null },
+            onUseResult = {
+                processingResult = null
+                onComplete(result.path)
+            }
+        )
+    }
+
+    if (processingResult == null) Dialog(
+        onDismissRequest = { if (!busy) onDismiss() },
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             decorFitsSystemWindows = false,
-            dismissOnBackPress = !isStrippingMetadata,
-            dismissOnClickOutside = !isStrippingMetadata
+            dismissOnBackPress = !busy,
+            dismissOnClickOutside = !busy
         )
     ) {
         Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background)) {
@@ -118,16 +211,16 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
                 verticalAlignment = Alignment.CenterVertically
             ) {
-                CbButton("取消", onDismiss, enabled = !isStrippingMetadata, variant = ButtonVariant.Ghost)
+                CbButton("取消", onDismiss, enabled = !busy, variant = ButtonVariant.Ghost)
                 CbText("涂抹需要处理的位置", Modifier.weight(1f), style = ChatBarTheme.typography.heading)
                 CbButton("完成", {
                     writeMosaicCopy(File(context.filesDir, "images"), bitmap)?.let(onComplete)
-                }, enabled = !isStrippingMetadata)
+                }, enabled = editingAllowed && !busy)
             }
             Box(Modifier.weight(1f).fillMaxWidth().background(Color.Black)) {
                 Canvas(
-                    Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(sourcePath, canvasSize, brushSizeDp, brushType, bitmap.width, bitmap.height, isStrippingMetadata) {
-                        if (isStrippingMetadata) return@pointerInput
+                    Modifier.fillMaxSize().onSizeChanged { canvasSize = it }.pointerInput(sourcePath, canvasSize, brushSizeDp, brushType, bitmap.width, bitmap.height, editingAllowed, busy) {
+                        if (!editingAllowed || busy) return@pointerInput
                         var previousPoint = Offset.Unspecified
                         detectDragGestures(
                             onDragStart = {
@@ -159,33 +252,32 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         CbChoiceChip(type.label, brushType == type, {
                             brushType = type
                             preferences.saveBrushType(type.name)
-                        }, Modifier.weight(1f))
+                        }, Modifier.weight(1f), enabled = editingAllowed && !busy)
                     }
                 }
-                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CbButton(
-                        "应用全图 AI 贴片",
-                        {
-                            pushUndoSnapshot()
-                            transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Apply)
-                            hasVisualChanges = true
-                            revision++
-                        },
-                        Modifier.weight(1f),
-                        enabled = !isStrippingMetadata,
-                        variant = ButtonVariant.Secondary
-                    )
-                    CbButton(
-                        "逆向 AI 贴片",
-                        {
-                            pushUndoSnapshot()
-                            transformFullImageAdversarialPatch(bitmap, FullImagePatchOperation.Restore)
-                            hasVisualChanges = true
-                            revision++
-                        },
-                        Modifier.weight(1f),
-                        enabled = !isStrippingMetadata,
-                        variant = ButtonVariant.Outline
+                CbButton(
+                    when {
+                        isProcessingApng -> "停止处理"
+                        inspection?.kind == ProcessImageKind.CHATBAR_DISGUISE_APNG -> "逆向还原"
+                        else -> "APNG伪装"
+                    },
+                    {
+                        if (isProcessingApng) {
+                            processingJob?.cancel(CancellationException("用户停止 APNG 处理"))
+                        } else {
+                            startApngOperation()
+                        }
+                    },
+                    Modifier.fillMaxWidth(),
+                    enabled = inspection != null && inspection?.kind != ProcessImageKind.OTHER_APNG && !isStrippingMetadata,
+                    variant = ButtonVariant.Secondary
+                )
+                if (isProcessingApng) {
+                    CbProgress(processingProgress)
+                    CbText(
+                        "正在${if (inspection?.canRestoreApng == true) "还原" else "生成"} APNG… ${(processingProgress * 100).toInt()}%",
+                        color = ChatBarTheme.colors.primary,
+                        style = ChatBarTheme.typography.caption
                     )
                 }
                 CbButton(
@@ -197,7 +289,7 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         revision++
                     },
                     Modifier.fillMaxWidth(),
-                    enabled = !isStrippingMetadata,
+                    enabled = editingAllowed && !busy,
                     variant = ButtonVariant.Outline
                 )
                 CbButton(
@@ -245,14 +337,23 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         }
                     },
                     Modifier.fillMaxWidth(),
-                    enabled = !isStrippingMetadata,
+                    enabled = editingAllowed && !busy,
                     variant = ButtonVariant.Outline
                 )
                 CbText(
-                    "AI 贴片会对全图加入色度扰动；逆向操作用于还原由本工具加入的贴片。压缩或缩放会降低还原效果。",
+                    when (inspection?.kind) {
+                        ProcessImageKind.STATIC -> "APNG伪装会生成品牌 Logo 封面；支持动画的查看器点开后显示当前编辑画面。"
+                        ProcessImageKind.GIF -> "GIF 会完整保留帧、时序和循环；为避免丢失动画，涂抹、旋转和去元数据已禁用。"
+                        ProcessImageKind.CHATBAR_DISGUISE_APNG -> "已识别 ChatBar APNG伪装；逆向还原会移除 Logo，静态输出 PNG，动态输出无伪装 APNG。"
+                        ProcessImageKind.OTHER_APNG -> "此 APNG 缺少有效 ChatBar 标记，不能伪装或逆向还原。"
+                        null -> inspectionError ?: "正在检查图片类型…"
+                    },
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.label
                 )
+                processingError?.let { error ->
+                    CbText(error, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+                }
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
                     CbText("笔刷 ${brushSizeDp.toInt()}dp", style = ChatBarTheme.typography.label)
                     CbSlider(
@@ -263,7 +364,8 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                         },
                         valueRange = 16f..72f,
                         modifier = Modifier.weight(1f),
-                        contentDescription = "笔刷尺寸"
+                        contentDescription = "笔刷尺寸",
+                        enabled = editingAllowed && !busy
                     )
                 }
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -274,16 +376,116 @@ internal fun ImageMosaicEditor(sourcePath: String, onDismiss: () -> Unit, onComp
                             hasVisualChanges = snapshot.hasVisualChanges
                             revision++
                         }
-                    }, Modifier.weight(1f), variant = ButtonVariant.Secondary, enabled = undoStack.isNotEmpty() && !isStrippingMetadata)
+                    }, Modifier.weight(1f), variant = ButtonVariant.Secondary, enabled = editingAllowed && undoStack.isNotEmpty() && !busy)
                     CbButton("重置", {
                         undoStack.forEach { it.bitmap.recycle() }
                         undoStack.clear()
                         bitmap = source.copy(Bitmap.Config.ARGB_8888, true)
                         hasVisualChanges = false
                         revision++
-                    }, Modifier.weight(1f), variant = ButtonVariant.Outline, enabled = !isStrippingMetadata)
+                    }, Modifier.weight(1f), variant = ButtonVariant.Outline, enabled = editingAllowed && !busy)
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ApngProcessingResultDialog(
+    result: ProcessedImage,
+    sourcePath: String,
+    truthBitmap: Bitmap,
+    sourceKind: ProcessImageKind,
+    onDismiss: () -> Unit,
+    onUseResult: () -> Unit
+) {
+    val context = LocalContext.current
+    val isDisguise = result.operation == ProcessedImageOperation.APNG_DISGUISE
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = if (isDisguise) "APNG伪装已生成" else "逆向还原完成",
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismiss = { CbButton("继续编辑", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = { CbButton("使用结果", onUseResult) }
+    ) {
+        Column(
+            Modifier
+                .heightIn(max = 540.dp)
+                .verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            if (isDisguise) {
+                ApngPreviewCard("聊天默认画面") {
+                    AsyncImage(
+                        model = File(result.path),
+                        contentDescription = "APNG Logo 封面",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+                ApngPreviewCard("点开后内容") {
+                    if (sourceKind == ProcessImageKind.GIF) {
+                        AsyncImage(
+                            model = File(sourcePath),
+                            contentDescription = "APNG 真图动画模拟",
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    } else {
+                        Image(
+                            bitmap = truthBitmap.asImageBitmap(),
+                            contentDescription = "APNG 真图画面模拟",
+                            modifier = Modifier.fillMaxWidth().heightIn(max = 220.dp),
+                            contentScale = ContentScale.Fit
+                        )
+                    }
+                }
+            } else {
+                ApngPreviewCard("还原结果") {
+                    AsyncImage(
+                        model = File(result.path),
+                        contentDescription = "APNG 还原结果",
+                        modifier = Modifier.fillMaxWidth().heightIn(max = 280.dp),
+                        contentScale = ContentScale.Fit
+                    )
+                }
+            }
+            val formatLabel = if (isDisguise || result.isAnimated) "APNG" else "PNG"
+            CbText(
+                "${result.width} × ${result.height} · ${result.frameCount} 个真图帧 · $formatLabel",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            if (result.isAnimated) {
+                CbText(
+                    "ChatBar 仅显示动画默认帧；实际播放效果由 QQ 等目标应用决定。",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    "保存到相册",
+                    { saveImageToGallery(context = context, path = result.path) },
+                    Modifier.weight(1f)
+                )
+                CbButton(
+                    "直接分享",
+                    { shareImage(context, result.path) },
+                    Modifier.weight(1f),
+                    variant = ButtonVariant.Secondary
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun ApngPreviewCard(title: String, content: @Composable () -> Unit) {
+    CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+        Column(Modifier.fillMaxWidth().padding(10.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            CbText(title, style = ChatBarTheme.typography.label)
+            content()
         }
     }
 }

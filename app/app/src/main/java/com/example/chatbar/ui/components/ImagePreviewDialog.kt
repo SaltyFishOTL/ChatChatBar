@@ -125,7 +125,7 @@ fun ImagePreviewDialog(
                 "分享图片",
                 {
                     showImageActions = false
-                    shareImage(context, actionPath)
+                    shareFromImageLongPress(context, actionPath)
                 },
                 modifier = Modifier.fillMaxWidth(),
                 variant = ButtonVariant.Secondary

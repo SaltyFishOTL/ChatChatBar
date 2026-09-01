@@ -138,7 +138,8 @@ fun CbChoiceChip(
     text: String,
     selected: Boolean,
     onClick: () -> Unit,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true
 ) {
     val colors = ChatBarTheme.colors
     val bg by animateColorAsState(if (selected) colors.primaryAlpha else colors.surfaceElevated, animationSpec = tween(ChatBarMotion.normal), label = "chipBg")
@@ -146,10 +147,11 @@ fun CbChoiceChip(
     val textColor by animateColorAsState(if (selected) colors.primary else colors.foreground, animationSpec = tween(ChatBarMotion.normal), label = "chipText")
     Box(
         modifier = modifier
+            .alpha(if (enabled) 1f else 0.5f)
             .heightIn(min = 40.dp)
             .background(bg, RoundedCornerShape(ChatBarShape.sm))
             .border(1.dp, borderColor, RoundedCornerShape(ChatBarShape.sm))
-            .selectable(selected = selected, role = Role.RadioButton, onClick = onClick)
+            .selectable(selected = selected, enabled = enabled, role = Role.RadioButton, onClick = onClick)
             .padding(horizontal = ChatBarSpacing.md, vertical = 9.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -259,7 +261,8 @@ fun CbSlider(
     modifier: Modifier = Modifier,
     steps: Int = 0,
     contentDescription: String? = null,
-    trackBrush: Brush? = null
+    trackBrush: Brush? = null,
+    enabled: Boolean = true
 ) {
     var widthPx by remember { mutableFloatStateOf(1f) }
     val currentOnValueChange by rememberUpdatedState(onValueChange)
@@ -281,6 +284,7 @@ fun CbSlider(
     val fraction = ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start)).coerceIn(0f, 1f)
     Box(
         modifier = modifier
+            .alpha(if (enabled) 1f else 0.5f)
             .fillMaxWidth()
             .heightIn(min = 48.dp)
             .onSizeChanged { widthPx = it.width.toFloat() }
@@ -292,12 +296,14 @@ fun CbSlider(
                 )
                 if (contentDescription != null) this.contentDescription = contentDescription
                 setProgress { target ->
+                    if (!enabled) return@setProgress false
                     currentOnValueChange(snappedValue(target))
                     true
                 }
             }
-            .focusable()
-            .pointerInput(widthPx, valueRange, steps) {
+            .focusable(enabled = enabled)
+            .pointerInput(widthPx, valueRange, steps, enabled) {
+                if (!enabled) return@pointerInput
                 detectHorizontalDragGestures(
                     onDragStart = { offset -> currentOnValueChange(valueFromX(offset.x)) },
                     onHorizontalDrag = { change, _ ->

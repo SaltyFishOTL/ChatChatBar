@@ -10,6 +10,7 @@ import android.os.Environment
 import android.provider.MediaStore
 import android.widget.Toast
 import androidx.core.content.FileProvider
+import com.example.chatbar.domain.image.ApngDisguiseCodec
 import java.io.File
 
 fun shareImage(context: Context, path: String, chooserTitle: String = "分享图片") {
@@ -36,7 +37,40 @@ fun shareImage(context: Context, path: String, chooserTitle: String = "分享图
     }
 }
 
-fun saveImageToGallery(context: Context, path: String, displayName: String? = null) {
+fun shareFromImageLongPress(context: Context, path: String) {
+    val sourceFile = File(path)
+    if (!sourceFile.exists()) {
+        Toast.makeText(context, "图片文件不存在", Toast.LENGTH_SHORT).show()
+        return
+    }
+    if (!shouldShareAsFile(sourceFile)) {
+        shareImage(context, path)
+        return
+    }
+    try {
+        val uri = FileProvider.getUriForFile(
+            context,
+            "${context.packageName}.fileprovider",
+            sourceFile
+        )
+        val shareIntent = Intent(Intent.ACTION_SEND).apply {
+            type = "application/octet-stream"
+            putExtra(Intent.EXTRA_STREAM, uri)
+            putExtra(Intent.EXTRA_TITLE, sourceFile.name)
+            clipData = ClipData.newUri(context.contentResolver, "ChatBar file", uri)
+            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        }
+        context.startActivity(Intent.createChooser(shareIntent, "分享文件"))
+    } catch (error: Exception) {
+        Toast.makeText(context, "文件分享失败: ${error.message}", Toast.LENGTH_SHORT).show()
+    }
+}
+
+fun saveImageToGallery(
+    context: Context,
+    path: String,
+    displayName: String? = null
+) {
     try {
         val sourceFile = File(path)
         if (!sourceFile.exists()) {
@@ -68,7 +102,12 @@ fun saveImageToGallery(context: Context, path: String, displayName: String? = nu
             dir.mkdirs()
             val target = File(dir, fileName)
             sourceFile.copyTo(target, overwrite = true)
-            MediaScannerConnection.scanFile(context, arrayOf(target.absolutePath), null, null)
+            MediaScannerConnection.scanFile(
+                context,
+                arrayOf(target.absolutePath),
+                arrayOf(imageMimeType(target)),
+                null
+            )
             Toast.makeText(context, "已保存到 Pictures/ChatBar", Toast.LENGTH_SHORT).show()
         }
     } catch (error: Exception) {
@@ -80,5 +119,20 @@ private fun imageMimeType(file: File): String = when (file.extension.lowercase()
     "jpg", "jpeg" -> "image/jpeg"
     "webp" -> "image/webp"
     "gif" -> "image/gif"
+    "apng" -> "image/png"
     else -> "image/png"
 }
+
+internal fun shouldShareAsFile(file: File): Boolean {
+    val extension = file.extension.lowercase()
+    if (extension == "apng" || extension == "gif") return true
+    return ApngDisguiseCodec.containsAnimationControl(file) || file.hasGifSignature()
+}
+
+private fun File.hasGifSignature(): Boolean = runCatching {
+    inputStream().buffered().use { input ->
+        val signature = ByteArray(6)
+        input.read(signature) == signature.size &&
+            (signature.contentEquals("GIF87a".toByteArray()) || signature.contentEquals("GIF89a".toByteArray()))
+    }
+}.getOrDefault(false)

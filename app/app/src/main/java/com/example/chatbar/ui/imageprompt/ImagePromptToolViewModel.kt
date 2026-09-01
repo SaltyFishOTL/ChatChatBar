@@ -20,8 +20,6 @@ import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.ImageProcessingService
 import com.example.chatbar.domain.image.ImportedProcessImage
-import com.example.chatbar.domain.image.ProcessedImage
-import com.example.chatbar.domain.image.FullImagePatchOperation
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageModel
@@ -186,9 +184,7 @@ private fun NovelAiStudioDraft.hasSamePromptEditorContent(other: NovelAiStudioDr
 data class NovelAiStudioImageImportUiState(
     val loading: Boolean = false,
     val source: ImportedProcessImage? = null,
-    val metadata: NovelAiStudioPngMetadata? = null,
-    val toolBusy: Boolean = false,
-    val toolResult: ProcessedImage? = null
+    val metadata: NovelAiStudioPngMetadata? = null
 )
 
 data class ImagePromptToolUiState(
@@ -237,7 +233,7 @@ data class ImagePromptToolUiState(
         ImagePromptToolPhase.SAVING,
         ImagePromptToolPhase.CANCELLING
     )
-    val isBusy: Boolean get() = isDesigning || isGeneratingImage || imageImport.loading || imageImport.toolBusy || guidanceBusy
+    val isBusy: Boolean get() = isDesigning || isGeneratingImage || imageImport.loading || guidanceBusy
     val selectedRecentHistoryItem: NovelAiRecentHistoryItem?
         get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
     val canImportCharacterCard: Boolean get() = draftLoaded && !isBusy && !applyingHistory
@@ -544,34 +540,6 @@ class ImagePromptToolViewModel : ViewModel() {
     fun clearImportedImage() {
         imageImportJob?.cancel()
         _uiState.update { it.copy(imageImport = NovelAiStudioImageImportUiState()) }
-    }
-
-    fun restoreImportedPatch() {
-        val source = _uiState.value.imageImport.source ?: return
-        if (_uiState.value.isBusy) return
-        imageImportJob = viewModelScope.launch {
-            _uiState.update { state ->
-                state.copy(imageImport = state.imageImport.copy(toolBusy = true, toolResult = null), error = null)
-            }
-            try {
-                val result = withContext(Dispatchers.IO) {
-                    imageProcessingService.process(source.path, FullImagePatchOperation.Restore)
-                }
-                _uiState.update { state ->
-                    state.copy(imageImport = state.imageImport.copy(toolBusy = false, toolResult = result))
-                }
-            } catch (error: CancellationException) {
-                _uiState.update { state -> state.copy(imageImport = state.imageImport.copy(toolBusy = false)) }
-                throw error
-            } catch (error: Throwable) {
-                _uiState.update { state ->
-                    state.copy(
-                        imageImport = state.imageImport.copy(toolBusy = false),
-                        error = "还原贴片失败：${error.message ?: "未知错误"}"
-                    )
-                }
-            }
-        }.also { job -> job.invokeOnCompletion { imageImportJob = null } }
     }
 
     fun reverseImportedPrompt() {

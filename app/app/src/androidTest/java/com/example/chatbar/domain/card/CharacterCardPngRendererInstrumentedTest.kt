@@ -1,14 +1,10 @@
 package com.example.chatbar.domain.card
 
 import android.content.Context
-import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.chatbar.data.local.entity.CharacterCard
-import com.example.chatbar.domain.image.FullImagePatchOperation
-import com.example.chatbar.domain.image.transformFullImageAdversarialPatch
-import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -18,25 +14,21 @@ class CharacterCardPngRendererInstrumentedTest {
     private val context: Context = ApplicationProvider.getApplicationContext()
 
     @Test
-    fun render_patchOptionTransformsFinalPixelsAndKeepsPngMetadataWritable() {
-        val card = CharacterCard.create("贴片角色")
-        val plain = decode(CharacterCardPngRenderer.render(context, card, CharacterCardPngExportOptions(sizePx = 1024)))
-        val patchedBytes = CharacterCardPngRenderer.render(
+    fun render_plainPngKeepsMetadataWritable() {
+        val card = CharacterCard.create("普通角色")
+        val pngBytes = CharacterCardPngRenderer.render(
             context,
             card,
-            CharacterCardPngExportOptions(sizePx = 1024, applyFullImagePatch = true)
+            CharacterCardPngExportOptions(sizePx = 1024)
         )
-        val patched = decode(patchedBytes)
-        val expected = plain.copy(Bitmap.Config.ARGB_8888, true)
+        val bitmap = requireNotNull(BitmapFactory.decodeByteArray(pngBytes, 0, pngBytes.size))
 
         try {
-            transformFullImageAdversarialPatch(expected, FullImagePatchOperation.Apply)
-            assertEquals(expected.width, patched.width)
-            assertEquals(expected.height, patched.height)
-            assertArrayEquals(expected.readPixels(), patched.readPixels())
+            assertEquals(1024, bitmap.width)
+            assertEquals(1024, bitmap.height)
 
             val withMetadata = PngTextChunks.insertTextChunk(
-                patchedBytes,
+                pngBytes,
                 PngTextChunks.CHATBAR_CHARACTER_KEYWORD,
                 "payload"
             )
@@ -45,16 +37,7 @@ class CharacterCardPngRendererInstrumentedTest {
                 PngTextChunks.extractTextChunk(withMetadata, PngTextChunks.CHATBAR_CHARACTER_KEYWORD)
             )
         } finally {
-            plain.recycle()
-            patched.recycle()
-            expected.recycle()
+            bitmap.recycle()
         }
-    }
-
-    private fun decode(bytes: ByteArray): Bitmap =
-        requireNotNull(BitmapFactory.decodeByteArray(bytes, 0, bytes.size))
-
-    private fun Bitmap.readPixels(): IntArray = IntArray(width * height).also { pixels ->
-        getPixels(pixels, 0, width, 0, 0, width, height)
     }
 }

@@ -617,9 +617,7 @@ fun ImagePromptToolScreen(
             source = importedSource,
             metadata = importedMetadata,
             loading = state.imageImport.loading,
-            toolBusy = state.imageImport.toolBusy,
             busy = state.isBusy,
-            toolResultPath = state.imageImport.toolResult?.path,
             designStatus = state.designStatus,
             isDesigning = state.isDesigning,
             onDismiss = { showImageTools = false },
@@ -627,9 +625,7 @@ fun ImagePromptToolScreen(
             onRemoveImage = viewModel::clearImportedImage,
             onParseMetadata = { showMetadataSelection = true },
             onMosaic = { importedSource?.let { importedEditorPath = it.path } },
-            onRestorePatch = viewModel::restoreImportedPatch,
-            onReversePrompt = viewModel::reverseImportedPrompt,
-            onOpenResult = { path -> importedPreviewPath = path }
+            onReversePrompt = viewModel::reverseImportedPrompt
         )
     }
 
@@ -658,9 +654,7 @@ private fun StudioImageToolsDialog(
     source: com.example.chatbar.domain.image.ImportedProcessImage?,
     metadata: NovelAiStudioPngMetadata?,
     loading: Boolean,
-    toolBusy: Boolean,
     busy: Boolean,
-    toolResultPath: String?,
     designStatus: String,
     isDesigning: Boolean,
     onDismiss: () -> Unit,
@@ -668,9 +662,7 @@ private fun StudioImageToolsDialog(
     onRemoveImage: () -> Unit,
     onParseMetadata: () -> Unit,
     onMosaic: () -> Unit,
-    onRestorePatch: () -> Unit,
-    onReversePrompt: () -> Unit,
-    onOpenResult: (String) -> Unit
+    onReversePrompt: () -> Unit
 ) {
     CbDialog(
         onDismissRequest = onDismiss,
@@ -716,23 +708,18 @@ private fun StudioImageToolsDialog(
                     onParseMetadata
                 )
                 NovelAiImageAction(AppIcons.Edit, "打码", "打开打码工具", !busy, Modifier.weight(1f), onMosaic)
-                NovelAiImageAction(AppIcons.Restore, "去贴片", "逆向还原 AI 贴片", !busy, Modifier.weight(1f), onRestorePatch)
                 NovelAiImageAction(AppIcons.Search, "反推 Prompt", "使用多模态 AI 反推提示词", !busy, Modifier.weight(1f), onReversePrompt)
             }
-            if (toolBusy || isDesigning) {
+            if (isDesigning) {
                 Spacer(Modifier.height(ChatBarSpacing.sm))
                 CbText(
-                    if (toolBusy) "正在还原贴片…" else designStatus.ifBlank { "正在反推提示词…" },
+                    designStatus.ifBlank { "正在反推提示词…" },
                     color = ChatBarTheme.colors.primary,
                     style = ChatBarTheme.typography.caption
                 )
             } else if (designStatus == "反推完成") {
                 Spacer(Modifier.height(ChatBarSpacing.sm))
                 CbText("反推完成；基础与角色正向 Prompt 已更新，可在工作室撤销还原。", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.caption)
-            }
-            toolResultPath?.let { path ->
-                Spacer(Modifier.height(ChatBarSpacing.sm))
-                CbButton("查看还原结果", { onOpenResult(path) }, Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
             }
             CbButton("移除当前图片", onRemoveImage, Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost, enabled = !busy)
         }
