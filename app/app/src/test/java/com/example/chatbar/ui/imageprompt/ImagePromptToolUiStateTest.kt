@@ -175,4 +175,32 @@ class ImagePromptToolUiStateTest {
         assertFalse(ready.copy(applyingHistory = true).canImportCharacterCard)
     }
 
+    @Test
+    fun `draft sync preserves active task phase`() {
+        val activePhases = listOf(
+            ImagePromptToolPhase.DESIGNING,
+            ImagePromptToolPhase.GENERATING,
+            ImagePromptToolPhase.STREAMING,
+            ImagePromptToolPhase.SAVING,
+            ImagePromptToolPhase.CANCELLING
+        )
+
+        activePhases.forEach { phase ->
+            assertEquals(phase, phase.afterDraftSync(basePromptIsBlank = false))
+            assertEquals(phase, phase.afterDraftSync(basePromptIsBlank = true))
+        }
+    }
+
+    @Test
+    fun `draft sync refreshes readiness outside active task`() {
+        assertEquals(
+            ImagePromptToolPhase.IDLE,
+            ImagePromptToolPhase.FINISHED.afterDraftSync(basePromptIsBlank = true)
+        )
+        assertEquals(
+            ImagePromptToolPhase.READY,
+            ImagePromptToolPhase.FAILED.afterDraftSync(basePromptIsBlank = false)
+        )
+    }
+
 }

@@ -85,6 +85,16 @@ enum class ImagePromptToolPhase {
     IDLE, DESIGNING, READY, GENERATING, STREAMING, SAVING, CANCELLING, FINISHED, FAILED, CANCELLED
 }
 
+internal fun ImagePromptToolPhase.afterDraftSync(basePromptIsBlank: Boolean): ImagePromptToolPhase =
+    when (this) {
+        ImagePromptToolPhase.DESIGNING,
+        ImagePromptToolPhase.GENERATING,
+        ImagePromptToolPhase.STREAMING,
+        ImagePromptToolPhase.SAVING,
+        ImagePromptToolPhase.CANCELLING -> this
+        else -> if (basePromptIsBlank) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
+    }
+
 data class NovelAiPromptFieldKey(val kind: String, val characterId: String? = null)
 
 data class NovelAiTagSuggestionState(
@@ -320,7 +330,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         vibeCacheMisses = countVibeCacheMisses(draft),
                         hasHistoryUndo = repository.loadUndoDraft() != null,
                         selectedCharacterCardId = draft.importedCharacterCardId,
-                        phase = if (draft.basePrompt.isBlank()) ImagePromptToolPhase.IDLE else ImagePromptToolPhase.READY
+                        phase = state.phase.afterDraftSync(draft.basePrompt.isBlank())
                     )
                 }
                 scheduleTokenCount(draft)
