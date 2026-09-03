@@ -471,7 +471,7 @@ private fun ApngProcessingResultDialog(
                 )
                 CbButton(
                     "直接分享",
-                    { shareImage(context, result.path) },
+                    { shareFromImageLongPress(context, result.path) },
                     Modifier.weight(1f),
                     variant = ButtonVariant.Secondary
                 )
