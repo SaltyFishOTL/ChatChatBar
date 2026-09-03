@@ -153,7 +153,6 @@ class StreamingChatService(
         private val JSON_MEDIA_TYPE = "application/json; charset=utf-8".toMediaType()
         private const val CONNECT_TIMEOUT = 30L
         private const val READ_TIMEOUT = 120L // SSE 需要较长读取超时
-        private const val IMAGE_DESCRIPTION_OUTPUT_TOKENS = 500
         private const val FINISH_REASON_GRACE_MILLIS = 250L
     }
 
@@ -526,7 +525,7 @@ class StreamingChatService(
             messages = messages,
             modelConfig = modelConfig.forImageDescriptionRequest(),
             stream = false,
-            maxTokens = IMAGE_DESCRIPTION_OUTPUT_TOKENS
+            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS
         )
 
         val request = Request.Builder()
@@ -579,7 +578,7 @@ class StreamingChatService(
                 )
             ),
             modelConfig = modelConfig.forImageDescriptionRequest(),
-            maxTokens = IMAGE_DESCRIPTION_OUTPUT_TOKENS,
+            maxTokens = PromptTemplates.IMAGE_DESCRIPTION_MAX_TOKENS,
             onDelta = onDelta
         )
         return compactImageDescription(raw)
@@ -902,7 +901,6 @@ class StreamingChatService(
         return text
             .replace(Regex("\\s+"), " ")
             .trim()
-            .take(220)
     }
 
     data class DeltaResult(
