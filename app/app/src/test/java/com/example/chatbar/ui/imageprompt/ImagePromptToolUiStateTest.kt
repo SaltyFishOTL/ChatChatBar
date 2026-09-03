@@ -2,12 +2,19 @@ package com.example.chatbar.ui.imageprompt
 
 import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiCharacterPromptSource
+import com.example.chatbar.domain.image.DesignedCharacterCenter
 import com.example.chatbar.domain.image.NovelAiDesignConversation
+import com.example.chatbar.domain.image.NovelAiDesignReply
+import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
+import com.example.chatbar.domain.image.NovelAiDesignTagEvidenceSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiCharacterCaption
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
+import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -15,6 +22,85 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ImagePromptToolUiStateTest {
+    @Test
+    fun `AI design attachment captures only ordered positive prompts`() {
+        val draft = NovelAiStudioDraft(
+            stylePrompt = "artist:style",
+            basePrompt = "2girls, beach",
+            characters = listOf(
+                NovelAiCharacterPromptDraft(prompt = "first", negativePrompt = "first negative"),
+                NovelAiCharacterPromptDraft(prompt = "second", negativePrompt = "second negative")
+            ),
+            negativePrompt = "base negative"
+        )
+
+        assertEquals(
+            NovelAiPositivePromptSnapshot("2girls, beach", listOf("first", "second")),
+            novelAiDesignPromptAttachment(draft)
+        )
+        assertEquals(null, novelAiDesignPromptAttachmentError(draft, NovelAiImageModel.V5_FULL))
+    }
+
+    @Test
+    fun `AI design attachment rejects incomplete or over-limit studio prompt`() {
+        assertTrue(
+            novelAiDesignPromptAttachmentError(
+                NovelAiStudioDraft(basePrompt = " "),
+                NovelAiImageModel.V4_5_FULL
+            ).orEmpty().contains("基础 Prompt")
+        )
+        assertTrue(
+            novelAiDesignPromptAttachmentError(
+                NovelAiStudioDraft(
+                    basePrompt = "scene",
+                    characters = listOf(NovelAiCharacterPromptDraft(prompt = ""))
+                ),
+                NovelAiImageModel.V4_5_FULL
+            ).orEmpty().contains("空角色 Prompt")
+        )
+        assertTrue(
+            novelAiDesignPromptAttachmentError(
+                NovelAiStudioDraft(
+                    basePrompt = "scene",
+                    characters = List(7) { NovelAiCharacterPromptDraft(prompt = "role $it") }
+                ),
+                NovelAiImageModel.V4_5_FULL
+            ).orEmpty().contains("最多支持 6 个")
+        )
+    }
+
+    @Test
+    fun `attached prompt overrides old reply and resets old research lineage`() {
+        val oldPlan = designPlan("old reply")
+        val attached = NovelAiPositivePromptSnapshot("attached base", listOf("attached role"))
+        val revisedPlan = designPlan("revised attachment")
+        val initialResearch = NovelAiDesignResearchSnapshot(
+            tagEvidence = listOf(NovelAiDesignTagEvidenceSnapshot(query = "old", name = "old evidence"))
+        )
+        val conversation = NovelAiDesignConversation(
+            initialResearch = initialResearch,
+            turns = listOf(
+                NovelAiDesignTurn(
+                    reply = NovelAiDesignReply(oldPlan),
+                    status = NovelAiDesignTurnStatus.COMPLETED
+                ),
+                NovelAiDesignTurn(
+                    attachedStudioPrompt = attached,
+                    reply = NovelAiDesignReply(revisedPlan),
+                    status = NovelAiDesignTurnStatus.COMPLETED
+                ),
+                NovelAiDesignTurn(userText = "继续修改")
+            )
+        )
+
+        assertEquals("attached base", conversation.revisionBaselineFor(1)?.baseCaption)
+        assertTrue(conversation.revisionResearchFor(1).tagEvidence.isEmpty())
+        assertEquals("revised attachment", conversation.revisionBaselineFor(2)?.baseCaption)
+        assertTrue(conversation.revisionResearchFor(2).tagEvidence.isEmpty())
+        assertEquals(oldPlan, conversation.copy(turns = conversation.turns.take(1) + NovelAiDesignTurn()).revisionBaselineFor(1))
+        assertEquals(initialResearch, conversation.copy(turns = conversation.turns.take(1) + NovelAiDesignTurn()).revisionResearchFor(1))
+    }
+
     @Test
     fun `fullscreen prompt session rejects an external editor revision`() {
         assertTrue(isStudioFullscreenPromptSessionCurrent(12, 12))
@@ -179,6 +265,7 @@ class ImagePromptToolUiStateTest {
     fun `draft sync preserves active task phase`() {
         val activePhases = listOf(
             ImagePromptToolPhase.DESIGNING,
+            ImagePromptToolPhase.APPLYING_PROMPT,
             ImagePromptToolPhase.GENERATING,
             ImagePromptToolPhase.STREAMING,
             ImagePromptToolPhase.SAVING,
@@ -202,5 +289,12 @@ class ImagePromptToolUiStateTest {
             ImagePromptToolPhase.FAILED.afterDraftSync(basePromptIsBlank = false)
         )
     }
+
+    private fun designPlan(base: String) = NovelAiPromptPlan(
+        baseCaption = base,
+        characterCaptions = listOf(
+            NovelAiCharacterCaption("role", DesignedCharacterCenter(0.5f, 0.5f))
+        )
+    )
 
 }

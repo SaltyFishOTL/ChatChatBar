@@ -242,6 +242,44 @@ private fun rememberControlledTextFieldState(
 }
 
 @Composable
+fun rememberCbTextFieldState(
+    value: TextFieldValue,
+    onValueChange: (TextFieldValue) -> Unit
+): TextFieldState = rememberControlledTextFieldState(value, onValueChange)
+
+@Composable
+fun rememberCbTextFieldState(
+    value: String,
+    onValueChange: (TextFieldValue) -> Unit
+): TextFieldState {
+    val state = rememberTextFieldState(
+        initialText = value,
+        initialSelection = TextRange(value.length)
+    )
+    val latestValue by rememberUpdatedState(value)
+    val latestOnValueChange by rememberUpdatedState(onValueChange)
+
+    LaunchedEffect(state) {
+        snapshotFlow {
+            TextFieldValue(
+                text = state.text.toString(),
+                selection = state.selection,
+                composition = state.composition
+            )
+        }.distinctUntilChanged().collect(latestOnValueChange)
+    }
+    LaunchedEffect(value) {
+        if (state.text.toString() != latestValue) {
+            state.edit {
+                replace(0, length, latestValue)
+                selection = TextRange(latestValue.length)
+            }
+        }
+    }
+    return state
+}
+
+@Composable
 private fun StateBasedCbInput(
     state: TextFieldState,
     modifier: Modifier,
@@ -360,6 +398,41 @@ fun CbInput(
     textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int) -> Unit)? = null
 ) {
     val state = rememberControlledTextFieldState(value, onValueChange)
+    StateBasedCbInput(
+        state = state,
+        modifier = modifier,
+        placeholder = placeholder,
+        enabled = enabled,
+        singleLine = singleLine,
+        minLines = minLines,
+        expand = expand,
+        isError = false,
+        keyboardOptions = KeyboardOptions.Default,
+        inputTransformation = inputTransformation,
+        outputTransformation = outputTransformation,
+        secure = false,
+        fixedMultilineHeight = null,
+        onFocusChanged = onFocusChanged,
+        textStyle = textStyle,
+        textOverlay = textOverlay
+    )
+}
+
+@Composable
+fun CbInput(
+    state: TextFieldState,
+    modifier: Modifier = Modifier,
+    placeholder: String = "",
+    enabled: Boolean = true,
+    singleLine: Boolean = false,
+    minLines: Int = 1,
+    expand: Boolean = false,
+    inputTransformation: InputTransformation? = null,
+    outputTransformation: OutputTransformation? = null,
+    onFocusChanged: ((Boolean) -> Unit)? = null,
+    textStyle: TextStyle? = null,
+    textOverlay: (@Composable BoxScope.(TextLayoutResult?, Int) -> Unit)? = null
+) {
     StateBasedCbInput(
         state = state,
         modifier = modifier,

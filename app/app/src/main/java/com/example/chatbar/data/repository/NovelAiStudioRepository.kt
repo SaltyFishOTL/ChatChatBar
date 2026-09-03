@@ -15,6 +15,7 @@ import com.example.chatbar.domain.image.NovelAiGuidanceEditorCheckpoint
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.applyDesignedPromptPlan
+import com.example.chatbar.domain.image.applyReversePromptPlan
 import com.example.chatbar.domain.image.applyHistoryRecipe
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -36,6 +37,7 @@ class NovelAiStudioRepository(
     val pendingGuidanceEditorTarget: StateFlow<NovelAiImageUseTarget?> =
         _pendingGuidanceEditorTarget.asStateFlow()
     private val draftMutex = Mutex()
+    private val draftStateLock = Any()
     private val undoMutex = Mutex()
     private val historyMutex = Mutex()
 
@@ -43,43 +45,90 @@ class NovelAiStudioRepository(
         storage.loadAll(HISTORY_ENTITY, NovelAiGenerationHistoryEntry.serializer())
     }
 
-    suspend fun loadDraft(): NovelAiStudioDraft = draftMutex.withLock {
-        (storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer()) ?: NovelAiStudioDraft())
-            .also { _draft.value = it }
-    }
-
-    suspend fun saveDraft(
-        draft: NovelAiStudioDraft,
-        overwriteNewer: Boolean = false
-    ) = draftMutex.withLock {
-        val current = _draft.value
-            ?: storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
-        if (!overwriteNewer && current != null && draft.updatedAt < current.updatedAt) {
-            return@withLock
+    suspend fun loadDraft(): NovelAiStudioDraft {
+        synchronized(draftStateLock) {
+            _draft.value?.let { return it }
         }
-        val saved = draft.copy(updatedAt = maxOf(System.currentTimeMillis(), draft.updatedAt))
-        storage.saveSingleton(DRAFT_ENTITY, saved, NovelAiStudioDraft.serializer())
-        _draft.value = saved
-    }
-
-    suspend fun updateDraft(transform: (NovelAiStudioDraft) -> NovelAiStudioDraft): NovelAiStudioDraft =
-        draftMutex.withLock {
-            val current = _draft.value
-                ?: storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
+        return draftMutex.withLock {
+            synchronized(draftStateLock) {
+                _draft.value?.let { return@withLock it }
+            }
+            val loaded = storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
                 ?: NovelAiStudioDraft()
-            val next = transform(current).copy(
-                updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1L)
-            )
-            storage.saveSingleton(DRAFT_ENTITY, next, NovelAiStudioDraft.serializer())
-            _draft.value = next
-            next
+            synchronized(draftStateLock) {
+                _draft.value ?: loaded.also { _draft.value = it }
+            }
         }
+    }
+
+    fun stageDraft(
+        resetPromptEditors: Boolean = false,
+        transform: (NovelAiStudioDraft) -> NovelAiStudioDraft
+    ): NovelAiStudioDraft = synchronized(draftStateLock) {
+        val current = checkNotNull(_draft.value) { "NovelAI Studio draft is not loaded" }
+        val transformed = transform(current)
+        if (transformed == current) return@synchronized current
+        val revision = current.contentRevision + 1L
+        transformed.copy(
+            contentRevision = revision,
+            promptContentRevision = if (resetPromptEditors) {
+                revision
+            } else {
+                current.promptContentRevision
+            },
+            updatedAt = maxOf(System.currentTimeMillis(), current.updatedAt + 1L)
+        ).also { _draft.value = it }
+    }
+
+    suspend fun flushLatestDraft(): NovelAiStudioDraft {
+        if (_draft.value == null) loadDraft()
+        return draftMutex.withLock {
+            while (true) {
+                val snapshot = synchronized(draftStateLock) {
+                    checkNotNull(_draft.value) { "NovelAI Studio draft is not loaded" }
+                }
+                storage.saveSingleton(DRAFT_ENTITY, snapshot, NovelAiStudioDraft.serializer())
+                val latest = synchronized(draftStateLock) {
+                    checkNotNull(_draft.value)
+                }
+                if (latest.contentRevision == snapshot.contentRevision) return@withLock latest
+            }
+            error("unreachable")
+        }
+    }
+
+    suspend fun updateDraft(
+        resetPromptEditors: Boolean = false,
+        transform: (NovelAiStudioDraft) -> NovelAiStudioDraft
+    ): NovelAiStudioDraft {
+        val before = synchronized(draftStateLock) {
+            checkNotNull(_draft.value) { "NovelAI Studio draft is not loaded" }
+        }
+        val next = stageDraft(resetPromptEditors, transform)
+        return try {
+            flushLatestDraft()
+            next
+        } catch (error: Throwable) {
+            synchronized(draftStateLock) {
+                if (_draft.value?.contentRevision == next.contentRevision) {
+                    _draft.value = before
+                }
+            }
+            throw error
+        }
+    }
 
     suspend fun applyDesignedPrompt(
         plan: NovelAiPromptPlan,
         targetImageModel: NovelAiImageModel
-    ): NovelAiStudioDraft = updateDraft { current ->
+    ): NovelAiStudioDraft = updateDraft(resetPromptEditors = true) { current ->
         current.applyDesignedPromptPlan(plan, targetImageModel)
+    }
+
+    suspend fun applyReversePrompt(
+        plan: NovelAiPromptPlan
+    ): NovelAiStudioDraft = updateDraft(resetPromptEditors = true) { current ->
+        current.applyReversePromptPlan(plan)
     }
 
     suspend fun saveUndoDraft(draft: NovelAiStudioDraft) = undoMutex.withLock {
@@ -129,8 +178,9 @@ class NovelAiStudioRepository(
         val current = loadDraft()
         saveUndoDraft(current)
         return try {
-            current.applyHistoryRecipe(entry.recipe, image.seed, mode).also {
-                saveDraft(it)
+            updateDraft(resetPromptEditors = true) { latest ->
+                latest.applyHistoryRecipe(entry.recipe, image.seed, mode)
+            }.also {
                 clearGuidanceCheckpoint()
             }
         } catch (error: Throwable) {

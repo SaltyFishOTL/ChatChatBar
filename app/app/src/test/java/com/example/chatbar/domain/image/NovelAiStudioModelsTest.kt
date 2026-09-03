@@ -9,6 +9,29 @@ import org.junit.Test
 
 class NovelAiStudioModelsTest {
     @Test
+    fun `legacy AI design turn decodes without prompt attachment`() {
+        val turn = Json.decodeFromString(
+            NovelAiDesignTurn.serializer(),
+            """{"userText":"legacy request"}"""
+        )
+
+        assertEquals("legacy request", turn.userText)
+        assertNull(turn.attachedStudioPrompt)
+    }
+
+    @Test
+    fun `legacy studio draft decodes with zero content revisions`() {
+        val draft = Json.decodeFromString(
+            NovelAiStudioDraft.serializer(),
+            """{"basePrompt":"legacy","characters":[]}"""
+        )
+
+        assertEquals("legacy", draft.basePrompt)
+        assertEquals(0L, draft.contentRevision)
+        assertEquals(0L, draft.promptContentRevision)
+    }
+
+    @Test
     fun `size matrix and wallpaper square normalization match studio contract`() {
         assertEquals(512 to 768, NovelAiGenerationSettings(sizeTier = NovelAiSizeTier.SMALL).imageSize().let { it.width to it.height })
         assertEquals(
@@ -266,6 +289,47 @@ class NovelAiStudioModelsTest {
         assertEquals(NovelAiImageModel.V5_FULL, applied.selectedModel)
         assertEquals(41, applied.activeSettings.steps)
         assertTrue(applied.aiDesignNaturalLanguageMode)
+        assertNull(applied.conversionSnapshot)
+    }
+
+    @Test
+    fun `reverse plan replaces exact positive roles while preserving style and matching negatives`() {
+        val first = NovelAiCharacterPromptDraft(
+            id = "first",
+            prompt = "old first",
+            negativePrompt = "first negative"
+        )
+        val second = NovelAiCharacterPromptDraft(
+            id = "second",
+            prompt = "old second",
+            negativePrompt = "second negative"
+        )
+        val original = NovelAiStudioDraft(
+            stylePrompt = "saved style",
+            basePrompt = "old base",
+            characters = listOf(first, second),
+            negativePrompt = "saved base negative",
+            conversionSnapshot = NovelAiPositivePromptSnapshot("old snapshot")
+        )
+
+        val applied = original.applyReversePromptPlan(
+            NovelAiPromptPlan(
+                baseCaption = "new base",
+                characterCaptions = listOf(
+                    NovelAiCharacterCaption(
+                        prompt = "new first",
+                        center = DesignedCharacterCenter(0.5f, 0.5f)
+                    )
+                )
+            )
+        )
+
+        assertEquals("saved style", applied.stylePrompt)
+        assertEquals("saved base negative", applied.negativePrompt)
+        assertEquals("new base", applied.basePrompt)
+        assertEquals(listOf("first"), applied.characters.map { it.id })
+        assertEquals(listOf("new first"), applied.characters.map { it.prompt })
+        assertEquals(listOf("first negative"), applied.characters.map { it.negativePrompt })
         assertNull(applied.conversionSnapshot)
     }
 

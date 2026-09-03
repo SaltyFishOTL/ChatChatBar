@@ -7,10 +7,10 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.image.NovelAiDesignConversation
 import com.example.chatbar.domain.image.NovelAiDesignContextSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignReply
-import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
 import java.util.concurrent.atomic.AtomicLong
@@ -31,6 +31,7 @@ data class NovelAiDesignUiState(
     val conversation: NovelAiDesignConversation? = null,
     val composingNew: Boolean = true,
     val input: String = "",
+    val attachedStudioPrompt: NovelAiPositivePromptSnapshot? = null,
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val models: List<ModelConfig> = emptyList(),
     val selectedDesignModelId: String? = null,
@@ -103,7 +104,8 @@ class NovelAiDesignViewModel : ViewModel() {
                     if (state.composingNew && !pointerChanged) state else state.copy(
                         conversation = current,
                         composingNew = current == null,
-                        input = if (pointerChanged) "" else state.input
+                        input = if (pointerChanged) "" else state.input,
+                        attachedStudioPrompt = if (pointerChanged) null else state.attachedStudioPrompt
                     )
                 }
             }
@@ -145,6 +147,27 @@ class NovelAiDesignViewModel : ViewModel() {
 
     fun updateInput(value: String) = _uiState.update { it.copy(input = value, error = null) }
 
+    fun toggleStudioPromptAttachment() {
+        val state = _uiState.value
+        if (state.isGenerating) return
+        if (state.attachedStudioPrompt != null) {
+            _uiState.update { it.copy(attachedStudioPrompt = null, error = null) }
+            return
+        }
+        val targetModel = novelAiDesignTargetModel(state.draft)
+        val error = novelAiDesignPromptAttachmentError(state.draft, targetModel)
+        if (error != null) {
+            _uiState.update { it.copy(error = error) }
+            return
+        }
+        _uiState.update {
+            it.copy(
+                attachedStudioPrompt = novelAiDesignPromptAttachment(state.draft),
+                error = null
+            )
+        }
+    }
+
     fun startNewConversation() {
         if (_uiState.value.isGenerating) return
         _uiState.update {
@@ -152,6 +175,7 @@ class NovelAiDesignViewModel : ViewModel() {
                 composingNew = true,
                 conversation = null,
                 input = "",
+                attachedStudioPrompt = null,
                 progressText = "",
                 reasoningText = "",
                 error = null
@@ -168,6 +192,7 @@ class NovelAiDesignViewModel : ViewModel() {
                 conversation = current,
                 composingNew = current == null,
                 input = "",
+                attachedStudioPrompt = null,
                 progressText = "",
                 reasoningText = "",
                 error = null
@@ -203,7 +228,8 @@ class NovelAiDesignViewModel : ViewModel() {
                         designModelId = model.id,
                         targetImageModel = novelAiDesignTargetModel(state.draft),
                         naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode,
-                        designContext = novelAiDesignContextSnapshot(state.draft)
+                        designContext = novelAiDesignContextSnapshot(state.draft),
+                        attachedStudioPrompt = state.attachedStudioPrompt
                     )
                 } else {
                     val conversation = state.conversation
@@ -212,7 +238,8 @@ class NovelAiDesignViewModel : ViewModel() {
                         userText = text,
                         designModelId = model.id,
                         targetImageModel = novelAiDesignTargetModel(state.draft),
-                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode
+                        naturalLanguageMode = state.draft.aiDesignNaturalLanguageMode,
+                        attachedStudioPrompt = state.attachedStudioPrompt
                     )
                     val updatedConversation = conversationRepository.conversations.value
                         .firstOrNull { it.id == conversation.id }
@@ -227,6 +254,7 @@ class NovelAiDesignViewModel : ViewModel() {
                         composingNew = false,
                         conversation = conversation,
                         input = "",
+                        attachedStudioPrompt = null,
                         generatingTurnId = turn.id,
                         progressText = "正在准备 AI 设计…",
                         reasoningText = "",
@@ -397,15 +425,12 @@ class NovelAiDesignViewModel : ViewModel() {
             val turnIndex = conversation.turns.indexOfFirst { it.id == turnId }
             val turn = conversation.turns.getOrNull(turnIndex) ?: error("AI 设计轮次不存在")
             val replacesExistingReply = turn.reply != null
-            val previousReply = conversation.turns
-                .take(turnIndex)
-                .asReversed()
-                .firstNotNullOfOrNull(NovelAiDesignTurn::reply)
+            val revisionBaseline = conversation.revisionBaselineFor(turnIndex)
             val designContext = conversation.designContext
             val characterPrompt = designContext.characterPrompt
             val cardPrompts = designContext.characterImagePrompts.map { it.name to it.prompt }
             val playerName = settingsRepository.getPlayerSetting().playerName
-            val designResult = if (previousReply == null) {
+            val designResult = if (revisionBaseline == null) {
                 promptDesigner.designForPromptToolDetailed(
                     imageDescription = turn.userText,
                     characterPrompt = characterPrompt,
@@ -420,11 +445,11 @@ class NovelAiDesignViewModel : ViewModel() {
                 )
             } else {
                 val plan = promptDesigner.reviseForPromptTool(
-                    previousPlan = previousReply.plan,
+                    previousPlan = revisionBaseline,
                     modificationRequest = turn.userText,
                     characterPrompt = characterPrompt,
                     characterImagePrompts = cardPrompts,
-                    initialResearch = conversation.initialResearch ?: NovelAiDesignResearchSnapshot(),
+                    initialResearch = conversation.revisionResearchFor(turnIndex),
                     finalPromptRequirement = designContext.finalPromptRequirement,
                     model = model,
                     playerName = playerName,
@@ -435,7 +460,7 @@ class NovelAiDesignViewModel : ViewModel() {
                 )
                 com.example.chatbar.domain.image.NovelAiPromptToolDesignResult(
                     plan = plan,
-                    research = conversation.initialResearch ?: NovelAiDesignResearchSnapshot()
+                    research = conversation.revisionResearchFor(turnIndex)
                 )
             }
             val reply = NovelAiDesignReply(
@@ -448,8 +473,8 @@ class NovelAiDesignViewModel : ViewModel() {
                 conversationId = conversationId,
                 turnId = turnId,
                 reply = reply,
-                initialResearch = if (previousReply == null) designResult.research else null,
-                replaceInitialResearch = previousReply == null && replacesExistingReply
+                initialResearch = if (revisionBaseline == null) designResult.research else null,
+                replaceInitialResearch = revisionBaseline == null && replacesExistingReply
             )
         } catch (error: CancellationException) {
             withContext(NonCancellable) {
@@ -615,6 +640,23 @@ internal fun novelAiDesignContextSnapshot(draft: NovelAiStudioDraft): NovelAiDes
         characterImagePrompts = draft.importedCharacterPromptSources,
         finalPromptRequirement = draft.extraRequirement
     )
+
+internal fun novelAiDesignPromptAttachment(draft: NovelAiStudioDraft): NovelAiPositivePromptSnapshot =
+    NovelAiPositivePromptSnapshot(
+        basePrompt = draft.basePrompt,
+        characterPrompts = draft.characters.map { it.prompt }
+    )
+
+internal fun novelAiDesignPromptAttachmentError(
+    draft: NovelAiStudioDraft,
+    targetImageModel: NovelAiImageModel
+): String? = when {
+    draft.basePrompt.isBlank() -> "当前工作室基础 Prompt 为空，无法附加"
+    draft.characters.any { it.prompt.isBlank() } -> "当前工作室存在空角色 Prompt，请先补全或删除"
+    draft.characters.size > targetImageModel.maxCharacters ->
+        "当前工作室有 ${draft.characters.size} 个角色 Prompt，${targetImageModel.displayName} 最多支持 ${targetImageModel.maxCharacters} 个"
+    else -> null
+}
 
 data class NovelAiDesignHistoryUiState(
     val initialized: Boolean = false,

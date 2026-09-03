@@ -295,7 +295,7 @@ class NovelAiHistoryViewModel : ViewModel() {
                     )
                 }
                 repository.saveUndoDraft(current)
-                repository.saveDraft(current.copy(imageGuidance = guidance))
+                repository.updateDraft { latest -> latest.copy(imageGuidance = guidance) }
                 repository.clearGuidanceCheckpoint()
                 repository.requestGuidanceEditor(target)
             }.onSuccess {

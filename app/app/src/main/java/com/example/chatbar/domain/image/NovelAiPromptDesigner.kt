@@ -427,6 +427,7 @@ class NovelAiPromptDesigner(
             "自然语言 Prompt 仅支持 NovelAI Diffusion V5 Full"
         }
         val sourceImages = imageBase64s.filter(String::isNotBlank)
+        val imageProgress = NovelAiImageUnderstandingProgress(onContentDelta)
         val understoodImages = if (sourceImages.isEmpty()) {
             ImageUnderstandingResult()
         } else {
@@ -435,9 +436,10 @@ class NovelAiPromptDesigner(
                 generationModel = model,
                 requireUnderstanding = true,
                 announceDirect = true,
-                onStatus = { status -> onContentDelta(status) },
-                onDescriptionText = { _, text -> onContentDelta(text) }
+                onStatus = { status -> imageProgress.updateStatus(status) },
+                onDescriptionText = { index, text -> imageProgress.updateDescription(index, text) }
             ) ?: if (model.isMultimodal) {
+                imageProgress.updateStatus("当前模型支持多模态，直接使用上传图片")
                 ImageUnderstandingResult(directImageBase64s = sourceImages)
             } else {
                 error("当前模型不支持多模态，且未配置可用的视觉模型，无法反推图片")
@@ -511,7 +513,11 @@ class NovelAiPromptDesigner(
             }
             add(userMessage)
         }
-        val progress = NovelAiPromptProgress(onContentDelta)
+        val progress = NovelAiPromptProgress(
+            onProgress = onContentDelta,
+            initialProgress = imageProgress.snapshot()
+        )
+        val reasoningProgress = NovelAiPromptProgress(onReasoningDelta)
         val research = tagResearchService.research(
             taskInput = userPrompt,
             characterPrompts = characterImagePrompts,
@@ -533,18 +539,20 @@ class NovelAiPromptDesigner(
             ),
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_DESIGN_STAGE, text) },
-            onReasoningDelta = onReasoningDelta
+            onReasoningDelta = { text -> reasoningProgress.updateStage(PROMPT_DESIGN_STAGE, text) }
         )
+        var finalRawResponse = raw
         val designed = parseOrRepair(
             raw = raw,
             model = model,
             onContentDelta = { text -> progress.updateStage(PROMPT_REPAIR_STAGE, text) },
-            onReasoningDelta = onReasoningDelta,
+            onReasoningDelta = { text -> reasoningProgress.updateStage(PROMPT_REPAIR_STAGE, text) },
             repairSystemPrompt = if (naturalLanguageMode) {
                 PromptTemplates.NOVELAI_IMAGE_NATURAL_LANGUAGE_PROMPT_REPAIR_SYSTEM_V5
             } else {
                 PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
-            }
+            },
+            onFinalResponse = { response -> finalRawResponse = response }
         )
         return NovelAiPromptToolDesignResult(
             plan = convert(
@@ -554,7 +562,8 @@ class NovelAiPromptDesigner(
             research = NovelAiDesignResearchSnapshot.from(
                 tagEvidence = research.evidence,
                 codexEvidence = research.codexEvidence
-            )
+            ),
+            rawResponse = finalRawResponse
         )
     }
 
@@ -694,9 +703,13 @@ class NovelAiPromptDesigner(
         model: ModelConfig,
         onContentDelta: (String) -> Unit,
         onReasoningDelta: (String) -> Unit,
-        repairSystemPrompt: String = PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM
+        repairSystemPrompt: String = PromptTemplates.NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM,
+        onFinalResponse: (String) -> Unit = {}
     ): DesignedImagePrompt {
-        parse(raw)?.let { return it }
+        parse(raw)?.let {
+            onFinalResponse(raw)
+            return it
+        }
         onContentDelta(WAITING_FOR_AI_TEXT)
         val repaired = streamCompletion(
             messages = listOf(
@@ -710,7 +723,10 @@ class NovelAiPromptDesigner(
             onContentDelta = onContentDelta,
             onReasoningDelta = onReasoningDelta
         )
-        return parse(repaired) ?: error("对话 AI 返回的生图 Prompt JSON 无法解析，原始内容: ${raw.take(500)}")
+        val parsed = parse(repaired)
+            ?: error("对话 AI 返回的生图 Prompt JSON 无法解析，原始内容: ${raw.take(500)}")
+        onFinalResponse(repaired)
+        return parsed
     }
 
     private suspend fun parseOrRepairDebug(
@@ -1151,7 +1167,8 @@ class NovelAiPromptDesigner(
 }
 
 internal class NovelAiPromptProgress(
-    private val onProgress: (String) -> Unit
+    private val onProgress: (String) -> Unit,
+    private val initialProgress: String = ""
 ) {
     private var prelude = ""
     private val completedStages = mutableListOf<String>()
@@ -1173,6 +1190,7 @@ internal class NovelAiPromptProgress(
     private fun emit() {
         onProgress(
             buildList {
+                initialProgress.takeIf(String::isNotBlank)?.let(::add)
                 prelude.takeIf(String::isNotBlank)?.let(::add)
                 addAll(completedStages)
                 if (activeTitle.isNotBlank()) add("【$activeTitle】\n$activeText")
@@ -1184,6 +1202,36 @@ internal class NovelAiPromptProgress(
         completedStages += "【$activeTitle】\n$activeText"
         activeTitle = ""
         activeText = ""
+    }
+}
+
+internal class NovelAiImageUnderstandingProgress(
+    private val onProgress: (String) -> Unit
+) {
+    private var status = ""
+    private val descriptions = linkedMapOf<Int, String>()
+
+    fun updateStatus(text: String) {
+        status = text.trimEnd()
+        emit()
+    }
+
+    fun updateDescription(index: Int, text: String) {
+        descriptions[index] = text.trimEnd()
+        emit()
+    }
+
+    fun snapshot(): String = buildString {
+        if (status.isNotBlank()) append(status)
+        descriptions.toSortedMap().forEach { (index, text) ->
+            if (isNotEmpty()) appendLine().appendLine()
+            if (descriptions.size > 1) appendLine("图片 ${index + 1}")
+            append(text)
+        }
+    }.trimEnd().takeIf(String::isNotBlank)?.let { "【图片理解】\n$it" }.orEmpty()
+
+    private fun emit() {
+        snapshot().takeIf(String::isNotBlank)?.let(onProgress)
     }
 }
 

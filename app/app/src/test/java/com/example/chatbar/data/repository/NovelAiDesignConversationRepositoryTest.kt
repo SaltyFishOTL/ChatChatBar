@@ -10,6 +10,7 @@ import com.example.chatbar.domain.image.NovelAiDesignTagEvidenceSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiPromptPlan
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -43,6 +44,50 @@ class NovelAiDesignConversationRepositoryTest {
         assertEquals(NovelAiImageModel.V5_FULL, turn.targetImageModel)
         assertTrue(turn.naturalLanguageMode)
         assertTrue(repository.history().isEmpty())
+    }
+
+    @Test
+    fun `prompt attachment persists for create append retry and reload`() = runTest {
+        val storage = JsonFileStorage(TestContext(temp.newFolder("attachment-files")))
+        val repository = NovelAiDesignConversationRepository(storage)
+        repository.initialize()
+        val firstAttachment = NovelAiPositivePromptSnapshot(
+            basePrompt = "1girl, rainy street",
+            characterPrompts = listOf("girl, black hair", "boy, white hair")
+        )
+        val (conversation, firstTurn) = repository.createCurrentConversation(
+            userText = "改成夜景",
+            designModelId = "designer",
+            targetImageModel = NovelAiImageModel.V5_FULL,
+            attachedStudioPrompt = firstAttachment
+        )
+        repository.completeTurn(
+            conversation.id,
+            firstTurn.id,
+            NovelAiDesignReply(promptPlan(), NovelAiImageModel.V5_FULL, "designer")
+        )
+        val secondAttachment = NovelAiPositivePromptSnapshot("2girls, beach", listOf("first", "second"))
+        val secondTurn = repository.appendPendingTurn(
+            conversationId = conversation.id,
+            userText = "改成黄昏",
+            designModelId = "designer",
+            targetImageModel = NovelAiImageModel.V5_FULL,
+            attachedStudioPrompt = secondAttachment
+        )
+        repository.failTurn(conversation.id, secondTurn.id, "failed")
+        repository.markTurnPending(
+            conversation.id,
+            secondTurn.id,
+            "designer-2",
+            NovelAiImageModel.V5_FULL
+        )
+
+        val reloaded = NovelAiDesignConversationRepository(storage)
+        reloaded.initialize()
+        val turns = reloaded.currentConversation()?.turns.orEmpty()
+
+        assertEquals(firstAttachment, turns[0].attachedStudioPrompt)
+        assertEquals(secondAttachment, turns[1].attachedStudioPrompt)
     }
 
     @Test

@@ -9,6 +9,7 @@ import com.example.chatbar.domain.image.NovelAiDesignResearchSnapshot
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -110,13 +111,15 @@ class NovelAiDesignConversationRepository(
         designModelId: String,
         targetImageModel: NovelAiImageModel,
         naturalLanguageMode: Boolean = false,
-        designContext: NovelAiDesignContextSnapshot = NovelAiDesignContextSnapshot()
+        designContext: NovelAiDesignContextSnapshot = NovelAiDesignContextSnapshot(),
+        attachedStudioPrompt: NovelAiPositivePromptSnapshot? = null
     ): Pair<NovelAiDesignConversation, NovelAiDesignTurn> =
         mutex.withLock {
             require(userText.isNotBlank()) { "请输入画面内容" }
             val now = nextTimestampLocked()
             val turn = NovelAiDesignTurn(
                 userText = userText.trim(),
+                attachedStudioPrompt = attachedStudioPrompt,
                 designModelId = designModelId,
                 targetImageModel = targetImageModel,
                 naturalLanguageMode = naturalLanguageMode,
@@ -153,7 +156,8 @@ class NovelAiDesignConversationRepository(
         userText: String,
         designModelId: String,
         targetImageModel: NovelAiImageModel,
-        naturalLanguageMode: Boolean = false
+        naturalLanguageMode: Boolean = false,
+        attachedStudioPrompt: NovelAiPositivePromptSnapshot? = null
     ): NovelAiDesignTurn = mutex.withLock {
         require(userText.isNotBlank()) { "请输入修改需求" }
         val conversation = requireConversationLocked(conversationId)
@@ -161,6 +165,7 @@ class NovelAiDesignConversationRepository(
         val now = nextTimestampLocked()
         val turn = NovelAiDesignTurn(
             userText = userText.trim(),
+            attachedStudioPrompt = attachedStudioPrompt,
             designModelId = designModelId,
             targetImageModel = targetImageModel,
             naturalLanguageMode = naturalLanguageMode,

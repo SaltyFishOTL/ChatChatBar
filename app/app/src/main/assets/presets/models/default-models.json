@@ -7,11 +7,11 @@
       "modelKey": "DeepseekV4P",
       "displayName": "DS4P",
       "modelName": "deepseek-ai/DeepSeek-V4-Pro",
-      "visionModelKey": "vision",
+      "visionModelKey": "Kimi2.6",
       "templateType": "OPENAI",
       "customParams": {
         "enable_thinking": { "type": "boolean", "value": true },
-        "thinking_budget": { "type": "number", "value": 1024.0 },
+        "reasoning_effort": { "type": "string", "value": "high" },
         "max_tokens": { "type": "number", "value": 40960.0 }
       }
     },
@@ -19,7 +19,7 @@
       "modelKey": "DeepseekV3.2",
       "displayName": "DS3.2",
       "modelName": "deepseek-ai/DeepSeek-V3.2",
-      "visionModelKey": "vision",
+      "visionModelKey": "Kimi2.6",
       "templateType": "OPENAI",
       "customParams": {
         "enable_thinking": {
@@ -40,7 +40,7 @@
       "modelKey": "GLM5.1",
       "displayName": "GLM5.1",
       "modelName": "Pro/zai-org/GLM-5.1",
-      "visionModelKey": "vision",
+      "visionModelKey": "Kimi2.6",
       "templateType": "OPENAI",
       "customParams": {
         "enable_thinking": {
@@ -75,28 +75,6 @@
         "max_tokens": {
           "type": "number",
           "value": 40960.0
-        }
-      }
-    },
-    {
-      "modelKey": "vision",
-      "displayName": "视觉模型Qwen3.5",
-      "modelName": "Qwen/Qwen3.5-9B",
-      "selectableForChat": false,
-      "isMultimodal": true,
-      "templateType": "OPENAI",
-      "customParams": {
-        "enable_thinking": {
-          "type": "boolean",
-          "value": true
-        },
-        "thinking_budget": {
-          "type": "number",
-          "value": 1024.0
-        },
-        "max_tokens": {
-          "type": "number",
-          "value": 4096.0
         }
       }
     }

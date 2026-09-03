@@ -123,6 +123,7 @@ data class NovelAiDesignReply(
 data class NovelAiDesignTurn(
     val id: String = UUID.randomUUID().toString(),
     val userText: String = "",
+    val attachedStudioPrompt: NovelAiPositivePromptSnapshot? = null,
     val designModelId: String = "",
     val targetImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val naturalLanguageMode: Boolean = false,
@@ -161,6 +162,19 @@ data class NovelAiDesignConversation(
             ?.takeIf { it.status == NovelAiDesignTurnStatus.COMPLETED && it.reply != null }
             ?.id
 
+    fun revisionBaselineFor(turnIndex: Int): NovelAiPromptPlan? {
+        val turn = turns.getOrNull(turnIndex) ?: return null
+        return turn.attachedStudioPrompt?.toPromptPlan()
+            ?: turns.take(turnIndex).asReversed().firstNotNullOfOrNull { it.reply?.plan }
+    }
+
+    fun revisionResearchFor(turnIndex: Int): NovelAiDesignResearchSnapshot =
+        if (turns.take(turnIndex + 1).any { it.attachedStudioPrompt != null }) {
+            NovelAiDesignResearchSnapshot()
+        } else {
+            initialResearch ?: NovelAiDesignResearchSnapshot()
+        }
+
     companion object {
         fun titleFrom(text: String): String = text
             .lineSequence()
@@ -179,5 +193,6 @@ data class NovelAiDesignCurrentState(
 
 data class NovelAiPromptToolDesignResult(
     val plan: NovelAiPromptPlan,
-    val research: NovelAiDesignResearchSnapshot
+    val research: NovelAiDesignResearchSnapshot,
+    val rawResponse: String = ""
 )

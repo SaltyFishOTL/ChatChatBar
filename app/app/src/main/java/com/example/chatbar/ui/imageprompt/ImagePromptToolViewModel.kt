@@ -64,6 +64,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -82,12 +83,14 @@ private data class PreparedImageGuidanceResult(
 )
 
 enum class ImagePromptToolPhase {
-    IDLE, DESIGNING, READY, GENERATING, STREAMING, SAVING, CANCELLING, FINISHED, FAILED, CANCELLED
+    IDLE, DESIGNING, APPLYING_PROMPT, READY, GENERATING, STREAMING, SAVING, CANCELLING,
+    FINISHED, FAILED, CANCELLED
 }
 
 internal fun ImagePromptToolPhase.afterDraftSync(basePromptIsBlank: Boolean): ImagePromptToolPhase =
     when (this) {
         ImagePromptToolPhase.DESIGNING,
+        ImagePromptToolPhase.APPLYING_PROMPT,
         ImagePromptToolPhase.GENERATING,
         ImagePromptToolPhase.STREAMING,
         ImagePromptToolPhase.SAVING,
@@ -185,12 +188,6 @@ data class NovelAiAccountUiState(
     }
 }
 
-private fun NovelAiStudioDraft.hasSamePromptEditorContent(other: NovelAiStudioDraft): Boolean =
-    stylePrompt == other.stylePrompt &&
-        basePrompt == other.basePrompt &&
-        negativePrompt == other.negativePrompt &&
-        characters == other.characters
-
 data class NovelAiStudioImageImportUiState(
     val loading: Boolean = false,
     val source: ImportedProcessImage? = null,
@@ -200,7 +197,7 @@ data class NovelAiStudioImageImportUiState(
 data class ImagePromptToolUiState(
     val draft: NovelAiStudioDraft = NovelAiStudioDraft(),
     val draftLoaded: Boolean = false,
-    val promptEditorRevision: Int = 0,
+    val promptEditorRevision: Long = 0L,
     val canUndoDraft: Boolean = false,
     val canRedoDraft: Boolean = false,
     val hasHistoryUndo: Boolean = false,
@@ -214,6 +211,9 @@ data class ImagePromptToolUiState(
     val designStatus: String = "",
     val reasoningStream: String = "",
     val resultStream: String = "",
+    val reversePromptReply: String = "",
+    val reversePromptCandidate: NovelAiPromptPlan? = null,
+    val reversePromptStopping: Boolean = false,
     val imagePreview: ByteArray? = null,
     val completedPreviews: List<ByteArray> = emptyList(),
     val imagePaths: List<String> = emptyList(),
@@ -243,7 +243,8 @@ data class ImagePromptToolUiState(
         ImagePromptToolPhase.SAVING,
         ImagePromptToolPhase.CANCELLING
     )
-    val isBusy: Boolean get() = isDesigning || isGeneratingImage || imageImport.loading || guidanceBusy
+    val isBusy: Boolean get() = isDesigning || phase == ImagePromptToolPhase.APPLYING_PROMPT ||
+        isGeneratingImage || imageImport.loading || guidanceBusy
     val selectedRecentHistoryItem: NovelAiRecentHistoryItem?
         get() = recentHistoryItems.firstOrNull { it.image.path == selectedOutputPath }
     val canImportCharacterCard: Boolean get() = draftLoaded && !isBusy && !applyingHistory
@@ -309,23 +310,17 @@ class ImagePromptToolViewModel : ViewModel() {
                 draft ?: return@collect
                 val currentState = _uiState.value
                 if (currentState.draftLoaded &&
-                    !currentState.draft.hasSamePromptEditorContent(draft)
+                    currentState.promptEditorRevision != draft.promptContentRevision
                 ) {
                     draftSaveJob?.cancel()
                     resetDraftCoalescing()
                 }
                 val latestGuidanceCheckpoint = repository.loadGuidanceCheckpoint()
                 _uiState.update { state ->
-                    val resetPromptEditors = state.draftLoaded &&
-                        !state.draft.hasSamePromptEditorContent(draft)
                     state.copy(
                         draft = draft,
                         draftLoaded = true,
-                        promptEditorRevision = if (resetPromptEditors) {
-                            state.promptEditorRevision + 1
-                        } else {
-                            state.promptEditorRevision
-                        },
+                        promptEditorRevision = draft.promptContentRevision,
                         guidanceCheckpoint = latestGuidanceCheckpoint,
                         vibeCacheMisses = countVibeCacheMisses(draft),
                         hasHistoryUndo = repository.loadUndoDraft() != null,
@@ -367,25 +362,27 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun updateDraft(
         historyKey: String? = null,
+        resetPromptEditors: Boolean = false,
         transform: (NovelAiStudioDraft) -> NovelAiStudioDraft
     ) {
         val state = _uiState.value
         if (!state.draftLoaded || state.applyingHistory || state.isBusy && !state.isGeneratingImage) return
-        val transformed = transform(state.draft)
-        if (transformed == state.draft) return
-        recordDraftChange(state.draft, historyKey)
-        val next = transformed.copy(
-            updatedAt = maxOf(System.currentTimeMillis(), state.draft.updatedAt + 1L)
-        )
+        val current = repository.draft.value ?: state.draft
+        val transformed = transform(current)
+        if (transformed == current) return
+        recordDraftChange(current, historyKey)
+        val next = repository.stageDraft(resetPromptEditors) { transformed }
         _uiState.update {
             it.copy(
                 draft = next,
+                promptEditorRevision = next.promptContentRevision,
                 canUndoDraft = draftUndo.isNotEmpty(),
                 canRedoDraft = draftRedo.isNotEmpty(),
                 vibeCacheMisses = countVibeCacheMisses(next),
                 phase = if (state.isGeneratingImage) state.phase
                 else if (next.basePrompt.isBlank()) ImagePromptToolPhase.IDLE
                 else ImagePromptToolPhase.READY,
+                tagSuggestions = if (resetPromptEditors) NovelAiTagSuggestionState() else it.tagSuggestions,
                 error = null
             )
         }
@@ -394,12 +391,12 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun updatePromptDraft(
-        expectedEditorRevision: Int,
+        expectedEditorRevision: Long,
         historyKey: String,
         transform: (NovelAiStudioDraft) -> NovelAiStudioDraft
     ) {
         if (_uiState.value.promptEditorRevision != expectedEditorRevision) return
-        updateDraft(historyKey, transform)
+        updateDraft(historyKey, transform = transform)
     }
 
     fun undoDraftChange() {
@@ -448,6 +445,12 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     imageImport = NovelAiStudioImageImportUiState(loading = true),
+                    designStatus = "",
+                    reasoningStream = "",
+                    resultStream = "",
+                    reversePromptReply = "",
+                    reversePromptCandidate = null,
+                    reversePromptStopping = false,
                     error = null
                 )
             }
@@ -490,7 +493,9 @@ class ImagePromptToolViewModel : ViewModel() {
                 embedded.preciseImageBase64
             ).all { it.isNullOrBlank() }
         ) {
-            updateDraft { draft -> draft.applyImportedMetadata(metadata, selection) }
+            updateDraft(resetPromptEditors = true) { draft ->
+                draft.applyImportedMetadata(metadata, selection)
+            }
             clearImportedImage()
             return
         }
@@ -524,18 +529,19 @@ class ImagePromptToolViewModel : ViewModel() {
                         }
                     )
                 )
-                repository.saveDraft(applied)
+                val saved = repository.updateDraft(resetPromptEditors = true) { applied }
                 repository.clearGuidanceCheckpoint()
-                if (applied != current) recordDraftChange(current, null)
-                cleanupGuidanceAssets(applied)
+                if (saved != current) recordDraftChange(current, null)
+                cleanupGuidanceAssets(saved)
                 _uiState.update {
                     it.copy(
-                        draft = applied,
+                        draft = saved,
+                        promptEditorRevision = saved.promptContentRevision,
                         canUndoDraft = draftUndo.isNotEmpty(),
                         canRedoDraft = draftRedo.isNotEmpty(),
                         guidanceCheckpoint = null,
                         guidanceBusy = false,
-                        vibeCacheMisses = countVibeCacheMisses(applied),
+                        vibeCacheMisses = countVibeCacheMisses(saved),
                         imageImport = NovelAiStudioImageImportUiState()
                     )
                 }
@@ -549,7 +555,17 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun clearImportedImage() {
         imageImportJob?.cancel()
-        _uiState.update { it.copy(imageImport = NovelAiStudioImageImportUiState()) }
+        _uiState.update {
+            it.copy(
+                imageImport = NovelAiStudioImageImportUiState(),
+                designStatus = "",
+                reasoningStream = "",
+                resultStream = "",
+                reversePromptReply = "",
+                reversePromptCandidate = null,
+                reversePromptStopping = false
+            )
+        }
     }
 
     fun reverseImportedPrompt() {
@@ -568,14 +584,19 @@ class ImagePromptToolViewModel : ViewModel() {
                     phase = ImagePromptToolPhase.DESIGNING,
                     designStatus = "正在反推 NovelAI 提示词",
                     reasoningStream = "",
-                    resultStream = "",
+                    resultStream = "【准备图片】\n正在读取并转换图片…",
+                    reversePromptStopping = false,
                     error = null
                 )
             }
             try {
-                val imageBase64 = ImageFileEncoder.encodeToJpegBase64(source.path)
+                val imageBase64 = withContext(Dispatchers.IO) {
+                    ImageFileEncoder.encodeToJpegBase64(source.path)
+                }
+                val preparationProgress = "【准备图片】\n图片已准备，开始反推 Prompt"
+                _uiState.update { it.copy(resultStream = preparationProgress) }
                 val playerName = settingsRepository.getPlayerSetting().playerName
-                val plan = promptDesigner.designForPromptTool(
+                val result = promptDesigner.designForPromptToolDetailed(
                     imageDescription = "",
                     characterPrompt = "",
                     characterImagePrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt },
@@ -587,23 +608,127 @@ class ImagePromptToolViewModel : ViewModel() {
                     targetImageModel = draft.selectedModel,
                     referenceImageInstruction = PromptTemplates.novelAiImageReversePromptUser(draft.selectedModel.displayName),
                     excludeStyle = false,
-                    onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } },
+                    onContentDelta = { text ->
+                        _uiState.update {
+                            it.copy(resultStream = listOf(preparationProgress, text.trim())
+                                .filter(String::isNotBlank)
+                                .joinToString("\n\n"))
+                        }
+                    },
                     onReasoningDelta = { text -> _uiState.update { it.copy(reasoningStream = text) } }
                 )
-                updateDraftAfterDesign(
-                    mergeAiPlan(draft, plan).copy(conversionSnapshot = null)
-                )
-                _uiState.update { it.copy(designStatus = "反推完成") }
+                coroutineContext.ensureActive()
+                _uiState.update {
+                    it.copy(
+                        phase = if (it.draft.basePrompt.isBlank()) {
+                            ImagePromptToolPhase.IDLE
+                        } else {
+                            ImagePromptToolPhase.READY
+                        },
+                        designStatus = "反推完成，等待确认",
+                        reversePromptReply = result.rawResponse,
+                        reversePromptCandidate = result.plan,
+                        reversePromptStopping = false,
+                        error = null
+                    )
+                }
             } catch (error: Throwable) {
                 if (error is CancellationException) {
-                    _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLED) }
+                    _uiState.update {
+                        it.copy(
+                            phase = ImagePromptToolPhase.CANCELLED,
+                            designStatus = if (it.reversePromptCandidate == null) {
+                                "反推已取消，可重试"
+                            } else {
+                                "反推已取消；已保留上次结果"
+                            },
+                            reversePromptStopping = false
+                        )
+                    }
                     throw error
                 }
                 _uiState.update {
-                    it.copy(phase = ImagePromptToolPhase.FAILED, error = "提示词反推失败：${error.message ?: "未知错误"}")
+                    it.copy(
+                        phase = ImagePromptToolPhase.FAILED,
+                        designStatus = if (it.reversePromptCandidate == null) {
+                            "反推失败，可重试"
+                        } else {
+                            "反推失败；已保留上次结果"
+                        },
+                        reversePromptStopping = false,
+                        error = "提示词反推失败：${error.message ?: "未知错误"}"
+                    )
                 }
             }
         }.also { job -> job.invokeOnCompletion { designJob = null } }
+    }
+
+    fun cancelReversePrompt() {
+        val job = designJob?.takeIf { it.isActive } ?: return
+        _uiState.update {
+            it.copy(
+                designStatus = "正在停止反推…",
+                reversePromptStopping = true
+            )
+        }
+        job.cancel(CancellationException("用户取消反推"))
+    }
+
+    fun applyReversePromptCandidate(onApplied: () -> Unit = {}) {
+        val state = _uiState.value
+        val candidate = state.reversePromptCandidate ?: return
+        if (state.isBusy || state.applyingHistory) return
+        val before = state.draft
+        viewModelScope.launch {
+            _uiState.update {
+                it.copy(
+                    phase = ImagePromptToolPhase.APPLYING_PROMPT,
+                    designStatus = "正在应用反推结果…",
+                    error = null
+                )
+            }
+            runCatching {
+                repository.applyReversePrompt(candidate)
+            }.onSuccess { applied ->
+                if (applied != before) recordDraftChange(before, null)
+                resetDraftCoalescing()
+                _uiState.update {
+                    it.copy(
+                        draft = applied,
+                        promptEditorRevision = applied.promptContentRevision,
+                        phase = if (applied.basePrompt.isBlank()) {
+                            ImagePromptToolPhase.IDLE
+                        } else {
+                            ImagePromptToolPhase.READY
+                        },
+                        canUndoDraft = draftUndo.isNotEmpty(),
+                        canRedoDraft = draftRedo.isNotEmpty(),
+                        designStatus = "反推结果已应用",
+                        reasoningStream = "",
+                        resultStream = "",
+                        reversePromptReply = "",
+                        reversePromptCandidate = null,
+                        reversePromptStopping = false,
+                        tagSuggestions = NovelAiTagSuggestionState(),
+                        error = null
+                    )
+                }
+                scheduleTokenCount(applied)
+                onApplied()
+            }.onFailure { error ->
+                _uiState.update {
+                    it.copy(
+                        phase = if (it.draft.basePrompt.isBlank()) {
+                            ImagePromptToolPhase.IDLE
+                        } else {
+                            ImagePromptToolPhase.READY
+                        },
+                        designStatus = "应用失败，可重试",
+                        error = "应用反推结果失败：${error.message ?: "未知错误"}"
+                    )
+                }
+            }
+        }
     }
 
     fun selectImageModel(model: NovelAiImageModel) {
@@ -682,17 +807,17 @@ class ImagePromptToolViewModel : ViewModel() {
             next = next.withActiveSettings(matchSettingsToAsset(next.activeSettings, asset))
         }
         viewModelScope.launch {
-            repository.saveDraft(next)
+            val saved = repository.updateDraft { next }
             repository.clearGuidanceCheckpoint()
-            if (next != current) recordDraftChange(current, null)
-            cleanupGuidanceAssets(next)
+            if (saved != current) recordDraftChange(current, null)
+            cleanupGuidanceAssets(saved)
             _uiState.update {
                 it.copy(
-                    draft = next,
+                    draft = saved,
                     canUndoDraft = draftUndo.isNotEmpty(),
                     canRedoDraft = draftRedo.isNotEmpty(),
                     guidanceCheckpoint = null,
-                    vibeCacheMisses = countVibeCacheMisses(next),
+                    vibeCacheMisses = countVibeCacheMisses(saved),
                     error = null
                 )
             }
@@ -817,20 +942,20 @@ class ImagePromptToolViewModel : ViewModel() {
                 }
                 var nextDraft = snapshot.draft.copy(imageGuidance = nextGuidance, updatedAt = System.currentTimeMillis())
                 if (fit) nextDraft = nextDraft.withActiveSettings(matchSettingsToAsset(nextDraft.activeSettings, asset))
-                repository.saveDraft(nextDraft)
+                val saved = repository.updateDraft { nextDraft }
                 draftSaved = true
                 repository.clearGuidanceCheckpoint()
-                if (nextDraft != snapshot.draft) recordDraftChange(snapshot.draft, null)
-                cleanupGuidanceAssets(nextDraft)
+                if (saved != snapshot.draft) recordDraftChange(snapshot.draft, null)
+                cleanupGuidanceAssets(saved)
                 repository.requestGuidanceEditor(target)
                 _uiState.update {
                     it.copy(
-                        draft = nextDraft,
+                        draft = saved,
                         canUndoDraft = draftUndo.isNotEmpty(),
                         canRedoDraft = draftRedo.isNotEmpty(),
                         guidanceCheckpoint = null,
                         guidanceBusy = false,
-                        vibeCacheMisses = countVibeCacheMisses(nextDraft),
+                        vibeCacheMisses = countVibeCacheMisses(saved),
                         error = null
                     )
                 }
@@ -892,7 +1017,7 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun updateCharacterPrompt(
         id: String,
-        expectedEditorRevision: Int,
+        expectedEditorRevision: Long,
         historyKey: String,
         transform: (NovelAiCharacterPromptDraft) -> NovelAiCharacterPromptDraft
     ) {
@@ -925,7 +1050,7 @@ class ImagePromptToolViewModel : ViewModel() {
                 )
             }
         }
-        updateDraft { draft ->
+        updateDraft(resetPromptEditors = true) { draft ->
             draft.importCharacterCardPromptSources(
                 cardId = cardId,
                 cardStylePrompt = card.defaultImagePrompt,
@@ -935,37 +1060,9 @@ class ImagePromptToolViewModel : ViewModel() {
         _uiState.update { it.copy(selectedCharacterCardId = cardId) }
     }
 
-    private fun mergeAiPlan(draft: NovelAiStudioDraft, plan: NovelAiPromptPlan): NovelAiStudioDraft {
-        val merged = buildList {
-            plan.characterCaptions.forEachIndexed { index, caption ->
-                val old = draft.characters.getOrNull(index)
-                add((old ?: NovelAiCharacterPromptDraft()).copy(prompt = caption.prompt))
-            }
-            addAll(draft.characters.drop(plan.characterCaptions.size))
-        }
-        return draft.copy(basePrompt = plan.baseCaption, characters = merged)
-    }
-
-    private fun updateDraftAfterDesign(draft: NovelAiStudioDraft) {
-        val current = _uiState.value.draft
-        if (draft != current) recordDraftChange(current, null)
-        _uiState.update {
-            it.copy(
-                draft = draft,
-                canUndoDraft = draftUndo.isNotEmpty(),
-                canRedoDraft = draftRedo.isNotEmpty(),
-                phase = ImagePromptToolPhase.READY,
-                designStatus = "完成",
-                error = null
-            )
-        }
-        scheduleDraftSave()
-        scheduleTokenCount(draft)
-    }
-
     fun generateImage() {
         if (_uiState.value.isBusy || imageJob?.isActive == true) return
-        val draft = _uiState.value.draft
+        val draft = repository.draft.value ?: _uiState.value.draft
         val configured = draft.activeSettings
         configured.validationError(draft.characters.size)?.let { message ->
             _uiState.update { it.copy(error = message) }
@@ -1233,18 +1330,19 @@ class ImagePromptToolViewModel : ViewModel() {
         viewModelScope.launch {
             val previous = repository.loadUndoDraft() ?: return@launch
             val current = _uiState.value.draft
-            repository.saveDraft(previous, overwriteNewer = true)
+            val restored = repository.updateDraft(resetPromptEditors = true) { previous }
             repository.clearUndoDraft()
-            if (previous != current) recordDraftChange(current, null)
+            if (restored != current) recordDraftChange(current, null)
             _uiState.update {
                 it.copy(
-                    draft = previous,
+                    draft = restored,
+                    promptEditorRevision = restored.promptContentRevision,
                     canUndoDraft = draftUndo.isNotEmpty(),
                     canRedoDraft = draftRedo.isNotEmpty(),
                     hasHistoryUndo = false
                 )
             }
-            scheduleTokenCount(previous)
+            scheduleTokenCount(restored)
         }
     }
 
@@ -1256,31 +1354,32 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     fun cancelActiveTask() {
+        if (_uiState.value.isDesigning) {
+            cancelReversePrompt()
+        }
         if (_uiState.value.isGeneratingImage) {
             _uiState.update { it.copy(phase = ImagePromptToolPhase.CANCELLING) }
         }
-        designJob?.cancel(CancellationException("用户取消"))
         imageJob?.cancel(CancellationException("用户取消"))
         imageImportJob?.cancel(CancellationException("用户取消"))
     }
 
     fun dismissError() = _uiState.update { it.copy(error = null) }
 
-    fun positivePromptForClipboard(): String = _uiState.value.draft.copyPositivePrompt()
+    fun positivePromptForClipboard(): String =
+        (repository.draft.value ?: _uiState.value.draft).copyPositivePrompt()
 
     fun persistDraftNow() {
         draftSaveJob?.cancel()
-        val draft = _uiState.value.draft
-        draftSaveJob = viewModelScope.launch { repository.saveDraft(draft) }
+        draftSaveJob = viewModelScope.launch { repository.flushLatestDraft() }
     }
 
     fun openAiDesign(onPersisted: () -> Unit) {
         if (_uiState.value.isBusy || _uiState.value.applyingHistory) return
         draftSaveJob?.cancel()
-        val draft = _uiState.value.draft
         draftSaveJob = viewModelScope.launch {
             try {
-                repository.saveDraft(draft)
+                repository.flushLatestDraft()
                 onPersisted()
             } catch (error: CancellationException) {
                 throw error
@@ -1428,10 +1527,11 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     private fun applyDraftHistoryState(draft: NovelAiStudioDraft) {
-        val restored = draft.copy(updatedAt = System.currentTimeMillis())
+        val restored = repository.stageDraft(resetPromptEditors = true) { draft }
         _uiState.update {
             it.copy(
                 draft = restored,
+                promptEditorRevision = restored.promptContentRevision,
                 canUndoDraft = draftUndo.isNotEmpty(),
                 canRedoDraft = draftRedo.isNotEmpty(),
                 vibeCacheMisses = countVibeCacheMisses(restored),
@@ -1450,10 +1550,9 @@ class ImagePromptToolViewModel : ViewModel() {
     private fun scheduleDraftSave() {
         if (!_uiState.value.draftLoaded) return
         draftSaveJob?.cancel()
-        val draft = _uiState.value.draft
         draftSaveJob = viewModelScope.launch {
             delay(400)
-            repository.saveDraft(draft)
+            repository.flushLatestDraft()
         }
     }
 
@@ -1750,8 +1849,7 @@ class ImagePromptToolViewModel : ViewModel() {
     }
 
     override fun onCleared() {
-        val finalDraft = _uiState.value.draft
-        app.applicationScope.launch { repository.saveDraft(finalDraft) }
+        app.applicationScope.launch { repository.flushLatestDraft() }
         draftSaveJob?.cancel()
         tagJob?.cancel()
         promptTranslationJob?.cancel()

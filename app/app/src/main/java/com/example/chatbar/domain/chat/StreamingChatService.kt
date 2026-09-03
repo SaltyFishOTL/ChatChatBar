@@ -511,9 +511,13 @@ class StreamingChatService(
         val url = "$baseUrl/chat/completions"
 
         val messages = listOf(
+            ChatApiMessage.text(
+                role = "system",
+                content = PromptTemplates.IMAGE_DESCRIPTION_PROMPT
+            ),
             ChatApiMessage.withImage(
                 role = "user",
-                text = PromptTemplates.IMAGE_DESCRIPTION_PROMPT,
+                text = "",
                 imageBase64 = imageBase64
             )
         )
@@ -564,9 +568,13 @@ class StreamingChatService(
     ): String {
         val raw = completeTextStreaming(
             messages = listOf(
+                ChatApiMessage.text(
+                    role = "system",
+                    content = PromptTemplates.IMAGE_DESCRIPTION_PROMPT
+                ),
                 ChatApiMessage.withImage(
                     role = "user",
-                    text = PromptTemplates.IMAGE_DESCRIPTION_PROMPT,
+                    text = "",
                     imageBase64 = imageBase64
                 )
             ),

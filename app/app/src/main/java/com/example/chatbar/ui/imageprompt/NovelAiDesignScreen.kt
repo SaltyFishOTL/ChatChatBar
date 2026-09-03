@@ -46,6 +46,7 @@ import com.example.chatbar.domain.image.NovelAiDesignConversation
 import com.example.chatbar.domain.image.NovelAiDesignReply
 import com.example.chatbar.domain.image.NovelAiDesignTurn
 import com.example.chatbar.domain.image.NovelAiDesignTurnStatus
+import com.example.chatbar.domain.image.NovelAiPositivePromptSnapshot
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -213,7 +214,7 @@ fun NovelAiDesignScreen(
                         Modifier.fillMaxWidth(),
                         verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
                     ) {
-                        UserDesignBubble(turn.userText)
+                        UserDesignBubble(turn)
                         turn.reply?.let { reply ->
                             val key = "${conversation.id}:${turn.id}"
                             val regenerating = state.generatingTurnId == turn.id
@@ -273,11 +274,13 @@ fun NovelAiDesignScreen(
 
         DesignComposer(
             input = state.input,
+            attachedStudioPrompt = state.attachedStudioPrompt,
             onInput = viewModel::updateInput,
             generating = state.isGenerating,
             enabled = state.initialized && state.selectedDesignModelId != null &&
                 state.modelError == null && state.conversation?.hasBlockingTurn != true,
             onSend = viewModel::sendMessage,
+            onToggleAttachment = viewModel::toggleStudioPromptAttachment,
             onCancel = viewModel::cancelGeneration
         )
     }
@@ -357,14 +360,68 @@ private fun EmptyDesignConversation(
 }
 
 @Composable
-private fun UserDesignBubble(text: String) {
+private fun UserDesignBubble(turn: NovelAiDesignTurn) {
+    var attachmentExpanded by remember(turn.id) { mutableStateOf(false) }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
         CbSurface(
             Modifier.widthIn(max = 320.dp),
             color = ChatBarTheme.colors.primaryAlpha,
             shape = RoundedCornerShape(ChatBarShape.lg, ChatBarShape.lg, ChatBarShape.xs, ChatBarShape.lg)
         ) {
-            CbText(text, Modifier.padding(ChatBarSpacing.md))
+            Column(
+                Modifier.padding(ChatBarSpacing.md),
+                verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+            ) {
+                CbText(turn.userText)
+                turn.attachedStudioPrompt?.let { attachment ->
+                    SentStudioPromptAttachment(
+                        attachment = attachment,
+                        expanded = attachmentExpanded,
+                        onToggleExpanded = { attachmentExpanded = !attachmentExpanded }
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SentStudioPromptAttachment(
+    attachment: NovelAiPositivePromptSnapshot,
+    expanded: Boolean,
+    onToggleExpanded: () -> Unit
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.card,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border),
+        shape = RoundedCornerShape(ChatBarShape.sm)
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(ChatBarSpacing.sm),
+            verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                CbText(
+                    studioPromptAttachmentSummary(attachment),
+                    Modifier.weight(1f),
+                    style = ChatBarTheme.typography.caption
+                )
+                CbButton(
+                    if (expanded) "收起" else "查看",
+                    onToggleExpanded,
+                    variant = ButtonVariant.Ghost,
+                    size = ButtonSize.Xs
+                )
+            }
+            if (expanded) {
+                CbText("基础 Prompt", style = ChatBarTheme.typography.label)
+                PromptCodeText(attachment.basePrompt)
+                attachment.characterPrompts.forEachIndexed { index, prompt ->
+                    CbText("角色 Prompt ${index + 1}", style = ChatBarTheme.typography.label)
+                    PromptCodeText(prompt)
+                }
+            }
         }
     }
 }
@@ -513,39 +570,111 @@ private fun FailedDesignBubble(message: String, onRetry: () -> Unit, enabled: Bo
 @Composable
 private fun DesignComposer(
     input: String,
+    attachedStudioPrompt: NovelAiPositivePromptSnapshot?,
     onInput: (String) -> Unit,
     generating: Boolean,
     enabled: Boolean,
     onSend: () -> Unit,
+    onToggleAttachment: () -> Unit,
     onCancel: () -> Unit
 ) {
-    Row(
+    Column(
         Modifier
             .fillMaxWidth()
             .background(ChatBarTheme.colors.card)
             .navigationBarsPadding()
             .padding(ChatBarSpacing.sm),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+        verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
     ) {
-        CbInput(
-            value = input,
-            onValueChange = onInput,
-            modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 112.dp),
-            placeholder = if (enabled) "描述画面或提出修改需求…" else "请先重试上一条需求",
-            enabled = enabled && !generating,
-            singleLine = false,
-            minLines = 1
-        )
-        CbIconButton(
-            imageVector = if (generating) AppIcons.Close else AppIcons.Send,
-            contentDescription = if (generating) "停止 AI 设计" else "发送",
-            onClick = if (generating) onCancel else onSend,
-            enabled = generating || enabled && input.isNotBlank(),
-            tint = if (generating) ChatBarTheme.colors.destructive else ChatBarTheme.colors.primary
-        )
+        attachedStudioPrompt?.let { attachment ->
+            PendingStudioPromptAttachment(attachment, onToggleAttachment)
+        }
+        Row(
+            Modifier.fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+        ) {
+            CbIconButton(
+                imageVector = AppIcons.Article,
+                contentDescription = if (attachedStudioPrompt == null) {
+                    "附上当前工作室 Prompt"
+                } else {
+                    "移除当前工作室 Prompt"
+                },
+                onClick = onToggleAttachment,
+                enabled = enabled && !generating,
+                tint = if (attachedStudioPrompt == null) {
+                    ChatBarTheme.colors.mutedForeground
+                } else {
+                    ChatBarTheme.colors.primary
+                }
+            )
+            CbInput(
+                value = input,
+                onValueChange = onInput,
+                modifier = Modifier.weight(1f).heightIn(min = 44.dp, max = 112.dp),
+                placeholder = when {
+                    !enabled -> "请先重试上一条需求"
+                    attachedStudioPrompt != null -> "输入对当前 Prompt 的修改需求…"
+                    else -> "描述画面或提出修改需求…"
+                },
+                enabled = enabled && !generating,
+                singleLine = false,
+                minLines = 1
+            )
+            CbIconButton(
+                imageVector = if (generating) AppIcons.Close else AppIcons.Send,
+                contentDescription = if (generating) "停止 AI 设计" else "发送",
+                onClick = if (generating) onCancel else onSend,
+                enabled = generating || enabled && input.isNotBlank(),
+                tint = if (generating) ChatBarTheme.colors.destructive else ChatBarTheme.colors.primary
+            )
+        }
     }
 }
+
+@Composable
+private fun PendingStudioPromptAttachment(
+    attachment: NovelAiPositivePromptSnapshot,
+    onRemove: () -> Unit
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.primaryAlpha,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.primary.copy(alpha = 0.35f)),
+        shape = RoundedCornerShape(ChatBarShape.sm)
+    ) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = ChatBarSpacing.md, end = ChatBarSpacing.xs),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f).padding(vertical = ChatBarSpacing.sm)) {
+                CbText(
+                    studioPromptAttachmentSummary(attachment),
+                    style = ChatBarTheme.typography.label
+                )
+                CbText(
+                    "不含画风与负面 Prompt",
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
+            CbIconButton(
+                AppIcons.Close,
+                "移除当前工作室 Prompt",
+                onRemove,
+                tint = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
+}
+
+private fun studioPromptAttachmentSummary(attachment: NovelAiPositivePromptSnapshot): String =
+    if (attachment.characterPrompts.isEmpty()) {
+        "已附上当前工作室 Prompt · 基础"
+    } else {
+        "已附上当前工作室 Prompt · 基础 + ${attachment.characterPrompts.size} 角色"
+    }
 
 @Composable
 private fun NovelAiDesignSettingsDialog(

@@ -141,6 +141,16 @@ data class NovelAiPositivePromptSnapshot(
     val characterPrompts: List<String> = emptyList()
 )
 
+fun NovelAiPositivePromptSnapshot.toPromptPlan(): NovelAiPromptPlan = NovelAiPromptPlan(
+    baseCaption = basePrompt,
+    characterCaptions = characterPrompts.mapIndexed { index, prompt ->
+        NovelAiCharacterCaption(
+            prompt = prompt,
+            center = NovelAiPromptDesigner.fallbackCenter(index, characterPrompts.size)
+        )
+    }
+)
+
 @Serializable
 data class NovelAiStudioDraft(
     val stylePrompt: String = "",
@@ -163,6 +173,8 @@ data class NovelAiStudioDraft(
     val aiPanelExpanded: Boolean = false,
     val conversionSnapshot: NovelAiPositivePromptSnapshot? = null,
     val imageGuidance: NovelAiImageGuidanceDraft = NovelAiImageGuidanceDraft(),
+    val contentRevision: Long = 0L,
+    val promptContentRevision: Long = 0L,
     val updatedAt: Long = System.currentTimeMillis()
 ) {
     val activeSettings: NovelAiGenerationSettings
@@ -214,6 +226,17 @@ fun NovelAiStudioDraft.applyDesignedPromptPlan(
     },
     selectedModel = targetImageModel,
     naturalLanguageMode = false,
+    conversionSnapshot = null
+)
+
+fun NovelAiStudioDraft.applyReversePromptPlan(
+    plan: NovelAiPromptPlan
+): NovelAiStudioDraft = copy(
+    basePrompt = plan.baseCaption,
+    characters = plan.characterCaptions.mapIndexed { index, caption ->
+        val old = characters.getOrNull(index)
+        (old ?: NovelAiCharacterPromptDraft()).copy(prompt = caption.prompt)
+    },
     conversionSnapshot = null
 )
 

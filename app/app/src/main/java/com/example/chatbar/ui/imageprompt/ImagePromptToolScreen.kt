@@ -42,7 +42,6 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -115,6 +114,7 @@ import com.example.chatbar.ui.kit.CbSwitch
 import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import com.example.chatbar.ui.kit.rememberCbTextFieldState
 import com.example.chatbar.ui.kit.rememberFullscreenTextEditorState
 import com.example.chatbar.ui.kit.ChatBarShape
 import com.example.chatbar.ui.kit.ChatBarSpacing
@@ -126,7 +126,7 @@ private data class StudioFullscreenEditRequest(
     val value: TextFieldValue,
     val field: NovelAiPromptFieldKey?,
     val naturalLanguage: Boolean,
-    val editorRevision: Int,
+    val editorRevision: Long,
     val onApply: (TextFieldValue) -> Unit
 )
 
@@ -136,8 +136,8 @@ private data class StudioTagEditTarget(
 )
 
 internal fun isStudioFullscreenPromptSessionCurrent(
-    openedEditorRevision: Int,
-    currentEditorRevision: Int
+    openedEditorRevision: Long,
+    currentEditorRevision: Long
 ): Boolean = openedEditorRevision == currentEditorRevision
 
 @Composable
@@ -619,13 +619,26 @@ fun ImagePromptToolScreen(
             loading = state.imageImport.loading,
             busy = state.isBusy,
             designStatus = state.designStatus,
+            resultStream = state.resultStream,
+            reasoningStream = state.reasoningStream,
+            reversePromptReply = state.reversePromptReply,
+            hasReversePromptCandidate = state.reversePromptCandidate != null,
+            reversePromptStopping = state.reversePromptStopping,
             isDesigning = state.isDesigning,
-            onDismiss = { showImageTools = false },
+            onDismiss = {
+                if (state.isDesigning) viewModel.cancelReversePrompt()
+                showImageTools = false
+            },
             onPickImage = { imagePicker.launch(arrayOf("image/*")) },
             onRemoveImage = viewModel::clearImportedImage,
             onParseMetadata = { showMetadataSelection = true },
             onMosaic = { importedSource?.let { importedEditorPath = it.path } },
-            onReversePrompt = viewModel::reverseImportedPrompt
+            onReversePrompt = viewModel::reverseImportedPrompt,
+            onCancelReversePrompt = viewModel::cancelReversePrompt,
+            onRetryReversePrompt = viewModel::reverseImportedPrompt,
+            onApplyReversePrompt = {
+                viewModel.applyReversePromptCandidate { showImageTools = false }
+            }
         )
     }
 
@@ -656,18 +669,57 @@ private fun StudioImageToolsDialog(
     loading: Boolean,
     busy: Boolean,
     designStatus: String,
+    resultStream: String,
+    reasoningStream: String,
+    reversePromptReply: String,
+    hasReversePromptCandidate: Boolean,
+    reversePromptStopping: Boolean,
     isDesigning: Boolean,
     onDismiss: () -> Unit,
     onPickImage: () -> Unit,
     onRemoveImage: () -> Unit,
     onParseMetadata: () -> Unit,
     onMosaic: () -> Unit,
-    onReversePrompt: () -> Unit
+    onReversePrompt: () -> Unit,
+    onCancelReversePrompt: () -> Unit,
+    onRetryReversePrompt: () -> Unit,
+    onApplyReversePrompt: () -> Unit
 ) {
+    val canRetry = source != null && !busy && designStatus.isNotBlank()
     CbDialog(
         onDismissRequest = onDismiss,
         title = "图片工具",
-        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
+        confirm = when {
+            isDesigning -> {
+                {
+                    CbButton(
+                        if (reversePromptStopping) "正在停止" else "停止反推",
+                        onCancelReversePrompt,
+                        enabled = !reversePromptStopping,
+                        variant = ButtonVariant.Destructive,
+                        size = ButtonSize.Sm
+                    )
+                }
+            }
+            hasReversePromptCandidate && !busy -> {
+                {
+                    Row(horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)) {
+                        CbButton(
+                            "重试",
+                            onRetryReversePrompt,
+                            variant = ButtonVariant.Outline,
+                            size = ButtonSize.Sm
+                        )
+                        CbButton("应用", onApplyReversePrompt, size = ButtonSize.Sm)
+                    }
+                }
+            }
+            canRetry -> {
+                { CbButton("重试", onRetryReversePrompt, size = ButtonSize.Sm) }
+            }
+            else -> null
+        },
+        dismiss = { CbButton("返回", onDismiss, variant = ButtonVariant.Ghost, size = ButtonSize.Sm) }
     ) {
         Column(
             Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState())
@@ -710,19 +762,74 @@ private fun StudioImageToolsDialog(
                 NovelAiImageAction(AppIcons.Edit, "打码", "打开打码工具", !busy, Modifier.weight(1f), onMosaic)
                 NovelAiImageAction(AppIcons.Search, "反推 Prompt", "使用多模态 AI 反推提示词", !busy, Modifier.weight(1f), onReversePrompt)
             }
-            if (isDesigning) {
+            if (isDesigning || designStatus.isNotBlank() || resultStream.isNotBlank() || reasoningStream.isNotBlank()) {
+                Spacer(Modifier.height(ChatBarSpacing.sm))
+                ReversePromptStreamPanel(
+                    status = designStatus,
+                    resultStream = resultStream,
+                    reasoningStream = reasoningStream,
+                    finalReply = reversePromptReply,
+                    isDesigning = isDesigning
+                )
+            }
+            if (!isDesigning && hasReversePromptCandidate) {
                 Spacer(Modifier.height(ChatBarSpacing.sm))
                 CbText(
-                    designStatus.ifBlank { "正在反推提示词…" },
+                    "结果尚未写入工作室。检查完整 AI 回复后选择重试或应用。",
                     color = ChatBarTheme.colors.primary,
                     style = ChatBarTheme.typography.caption
                 )
-            } else if (designStatus == "反推完成") {
-                Spacer(Modifier.height(ChatBarSpacing.sm))
-                CbText("反推完成；基础与角色正向 Prompt 已更新，可在工作室撤销还原。", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.caption)
             }
             CbButton("移除当前图片", onRemoveImage, Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost, enabled = !busy)
         }
+        }
+    }
+}
+
+@Composable
+private fun ReversePromptStreamPanel(
+    status: String,
+    resultStream: String,
+    reasoningStream: String,
+    finalReply: String,
+    isDesigning: Boolean
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.surfaceSubtle,
+        border = BorderStroke(1.dp, ChatBarTheme.colors.border)
+    ) {
+        Column(
+            Modifier.fillMaxWidth().padding(ChatBarSpacing.md),
+            verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.sm)
+        ) {
+            CbText(
+                status.ifBlank { if (isDesigning) "正在反推提示词…" else "反推流程" },
+                color = ChatBarTheme.colors.primary,
+                style = ChatBarTheme.typography.label
+            )
+            if (!isDesigning && finalReply.isNotBlank()) {
+                CbText("完整 AI 回复", style = ChatBarTheme.typography.label)
+                CbText(finalReply, style = ChatBarTheme.typography.caption)
+                if (resultStream.isNotBlank()) CbDivider()
+            }
+            if (resultStream.isNotBlank()) {
+                if (!isDesigning && finalReply.isNotBlank()) {
+                    CbText("全流程记录", style = ChatBarTheme.typography.label)
+                }
+                CbText(resultStream, style = ChatBarTheme.typography.caption)
+            } else if (isDesigning) {
+                CbText("等待流程输出…", color = ChatBarTheme.colors.mutedForeground)
+            }
+            if (reasoningStream.isNotBlank()) {
+                CbDivider()
+                CbText("模型思考", style = ChatBarTheme.typography.label)
+                CbText(
+                    reasoningStream,
+                    color = ChatBarTheme.colors.mutedForeground,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
         }
     }
 }
@@ -898,7 +1005,7 @@ private fun PromptTokenBudgetRow(symbol: String, count: Int?, limit: Int, loadin
 @Composable
 private fun StudioFullscreenPromptEditor(
     request: StudioFullscreenEditRequest,
-    currentEditorRevision: Int,
+    currentEditorRevision: Long,
     translationEnabled: Boolean,
     annotations: List<NovelAiPromptAnnotation>,
     suggestions: NovelAiTagSuggestionState,
@@ -1373,15 +1480,17 @@ private fun PromptSection(
                 )
             }
             draft.characters.forEachIndexed { index, character ->
-                CharacterPromptEditor(
-                    index,
-                    character,
-                    state,
-                    viewModel,
-                    onFullscreenEdit,
-                    onTagEditTarget,
-                    onTagEditEnd
-                )
+                key(character.id) {
+                    CharacterPromptEditor(
+                        index,
+                        character,
+                        state,
+                        viewModel,
+                        onFullscreenEdit,
+                        onTagEditTarget,
+                        onTagEditEnd
+                    )
+                }
             }
             CbButton("添加角色 Prompt", viewModel::addCharacter, variant = ButtonVariant.Outline)
             CollapsibleHeader(
@@ -1638,7 +1747,7 @@ private fun TagPromptInput(
     label: String,
     value: String,
     field: NovelAiPromptFieldKey,
-    editorRevision: Int,
+    editorRevision: Long,
     annotations: List<NovelAiPromptAnnotation>,
     translationEnabled: Boolean,
     naturalLanguage: Boolean = false,
@@ -1650,38 +1759,43 @@ private fun TagPromptInput(
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit,
     onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit
 ) {
-    var fieldValue by remember(field, editorRevision) {
-        mutableStateOf(TextFieldValue(value, TextRange(value.length)))
-    }
-    var inputGeneration by remember(field, editorRevision) { mutableIntStateOf(0) }
+    val fieldState = rememberCbTextFieldState(
+        value = value,
+        onValueChange = { next ->
+            if (next.text != value) onValueChange(next.text)
+            onSuggest(field, next.text, next.selection.end)
+        }
+    )
     fun insertTag(tag: String) {
-        val inserted = NovelAiTagCompletion.insert(fieldValue.text, fieldValue.selection.end, tag)
-        fieldValue = TextFieldValue(inserted.text, TextRange(inserted.cursor))
+        val currentText = fieldState.text.toString()
+        val inserted = NovelAiTagCompletion.insert(currentText, fieldState.selection.end, tag)
+        fieldState.edit {
+            replace(0, length, inserted.text)
+            selection = TextRange(inserted.cursor)
+        }
         onValueChange(inserted.text)
         onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
     }
     fun publishEditTarget() {
         onTagEditTarget(StudioTagEditTarget(field, ::insertTag))
     }
-    LaunchedEffect(value, editorRevision) {
-        if (value != fieldValue.text) {
-            fieldValue = TextFieldValue(value, TextRange(value.length))
-            inputGeneration++
-        }
-    }
     DisposableEffect(field, editorRevision) {
         onDispose { onTagEditEnd(field) }
     }
     val applyFullscreenValue: (TextFieldValue) -> Unit = { next ->
-        fieldValue = next.copy(composition = null)
+        fieldState.edit {
+            replace(0, length, next.text)
+            selection = next.selection
+        }
         onValueChange(next.text)
     }
     CbField(
         label,
         modifier = Modifier.fillMaxWidth(),
         onFullscreenEdit = {
-            val authoritativeValue = if (fieldValue.text == value) {
-                fieldValue
+            val currentText = fieldState.text.toString()
+            val authoritativeValue = if (currentText == value) {
+                TextFieldValue(currentText, fieldState.selection, fieldState.composition)
             } else {
                 TextFieldValue(value, TextRange(value.length))
             }
@@ -1690,37 +1804,28 @@ private fun TagPromptInput(
     ) {
         Box(Modifier.fillMaxWidth()) {
             val visibleAnnotations = annotations.filter { annotation ->
-                annotation.matches(fieldValue.text)
+                annotation.matches(fieldState.text.toString())
             }
             val wrappingTransformation = promptTagWrappingOutputTransformation(naturalLanguage)
-            key(inputGeneration) {
-                CbInput(
-                    value = fieldValue,
-                    onValueChange = { next ->
-                        val textChanged = next.text != fieldValue.text
-                        fieldValue = next
-                        if (textChanged) onValueChange(next.text)
-                        onSuggest(field, next.text, next.selection.end)
-                        publishEditTarget()
-                    },
-                    modifier = Modifier.height(editorHeight),
-                    singleLine = false,
-                    minLines = minLines,
-                    expand = true,
-                    textStyle = promptEditorTextStyle(translationEnabled),
-                    outputTransformation = wrappingTransformation,
-                    textOverlay = { layout, scrollOffset ->
-                        PromptTranslationOverlay(
-                            layout = layout,
-                            annotations = visibleAnnotations,
-                            scrollOffsetPx = scrollOffset
-                        )
-                    },
-                    onFocusChanged = { isFocused ->
-                        if (isFocused) publishEditTarget() else onTagEditEnd(field)
-                    }
-                )
-            }
+            CbInput(
+                state = fieldState,
+                modifier = Modifier.height(editorHeight),
+                singleLine = false,
+                minLines = minLines,
+                expand = true,
+                textStyle = promptEditorTextStyle(translationEnabled),
+                outputTransformation = wrappingTransformation,
+                textOverlay = { layout, scrollOffset ->
+                    PromptTranslationOverlay(
+                        layout = layout,
+                        annotations = visibleAnnotations,
+                        scrollOffsetPx = scrollOffset
+                    )
+                },
+                onFocusChanged = { isFocused ->
+                    if (isFocused) publishEditTarget() else onTagEditEnd(field)
+                }
+            )
         }
     }
 }
