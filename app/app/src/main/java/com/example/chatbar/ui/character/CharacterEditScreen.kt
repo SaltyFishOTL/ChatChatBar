@@ -97,6 +97,7 @@ import androidx.compose.ui.window.PopupProperties
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.DocumentInfo
@@ -104,6 +105,9 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
+import com.example.chatbar.domain.card.CharacterSectionImportPolicy
+import com.example.chatbar.domain.card.CharacterSectionSelection
+import com.example.chatbar.domain.card.CharacterTextSection
 import com.example.chatbar.domain.draft.CharacterOpenModalKind
 import com.example.chatbar.domain.draft.CharacterOpenModalState
 import com.example.chatbar.domain.image.ImageCropFractionRect
@@ -130,6 +134,7 @@ import com.example.chatbar.ui.home.CharacterAvatar
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.ButtonSize
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbCheckbox
 import com.example.chatbar.ui.kit.CbChoiceChip
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
@@ -211,6 +216,7 @@ fun CharacterEditScreen(
     val autoFillResearchSourceMode by viewModel.autoFillResearchSourceMode.collectAsState()
     val rewriteResearchSourceMode by viewModel.rewriteResearchSourceMode.collectAsState()
     val availableWorldBooks by viewModel.availableWorldBooks.collectAsState()
+    val availableCharacterCards by viewModel.availableCharacterCards.collectAsState()
     val context = LocalContext.current
 
     var editCharacter by remember { mutableStateOf<CharacterInfo?>(null) }
@@ -241,6 +247,7 @@ fun CharacterEditScreen(
     var showWorldBookEntryDialog by remember { mutableStateOf(false) }
     var pendingCoverImageGeneration by remember { mutableStateOf<PendingCoverImageGeneration?>(null) }
     var showExitDialog by remember { mutableStateOf(false) }
+    var showCharacterImportDialog by remember { mutableStateOf(false) }
 
     fun requestExit() {
         if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
@@ -583,6 +590,20 @@ fun CharacterEditScreen(
             }
             if (viewModel.editMode == CharacterEditMode.STRUCTURED) {
                 Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    CbButton(
+                        "导入其他角色卡角色",
+                        { showCharacterImportDialog = true },
+                        modifier = Modifier.fillMaxWidth(),
+                        enabled = availableCharacterCards.isNotEmpty(),
+                        variant = ButtonVariant.Outline
+                    )
+                    if (availableCharacterCards.isEmpty()) {
+                        CbText(
+                            "暂无其他可导入的分段角色卡。",
+                            color = ChatBarTheme.colors.mutedForeground,
+                            style = ChatBarTheme.typography.caption
+                        )
+                    }
                     CbButton(
                         "一键转换自由模式",
                         {
@@ -1086,6 +1107,23 @@ fun CharacterEditScreen(
             }
         )
     }
+    if (showCharacterImportDialog) {
+        CharacterCardCharacterImportDialog(
+            cards = availableCharacterCards,
+            onDismiss = { showCharacterImportDialog = false },
+            onImport = { sourceCardId, selections ->
+                val result = viewModel.importCharacterCardCharacters(sourceCardId, selections)
+                if (result != null) {
+                    Toast.makeText(
+                        context,
+                        "已新建 ${result.createdCount} 个角色，更新 ${result.updatedCount} 个角色",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    showCharacterImportDialog = false
+                }
+            }
+        )
+    }
     if (showWorldBookEntryDialog) {
         WorldBookEntryDialog(
             original = editWorldBookEntryIndex?.let { viewModel.worldBookEntries.getOrNull(it) },
@@ -1259,6 +1297,108 @@ fun CharacterEditScreen(
                 CbSpinner()
                 Spacer(Modifier.height(12.dp))
                 CbText(indexingStatus ?: "正在保存…", color = ChatBarTheme.colors.mutedForeground)
+            }
+        }
+    }
+}
+
+@Composable
+private fun CharacterCardCharacterImportDialog(
+    cards: List<CharacterCard>,
+    onDismiss: () -> Unit,
+    onImport: (String, List<CharacterSectionSelection>) -> Unit
+) {
+    var selectedCardId by remember(cards) { mutableStateOf(cards.firstOrNull()?.id) }
+    val selectedCard = cards.firstOrNull { it.id == selectedCardId }
+    val availableSections = selectedCard?.characters.orEmpty().associate { character ->
+        character.id to CharacterSectionImportPolicy.transferableSections.filter { section ->
+            CharacterSectionImportPolicy.sectionValue(character, section).isNotBlank()
+        }.toSet()
+    }
+    var selectedSections by remember(selectedCardId) { mutableStateOf(availableSections) }
+    val selectedCount = selectedSections.values.count { it.isNotEmpty() }
+
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "导入其他角色卡角色",
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = {
+            CbButton(
+                "导入 $selectedCount 个角色",
+                {
+                    selectedCardId?.let { cardId ->
+                        onImport(
+                            cardId,
+                            selectedSections.mapNotNull { (characterId, sections) ->
+                                sections.takeIf { it.isNotEmpty() }?.let {
+                                    CharacterSectionSelection(characterId, it)
+                                }
+                            }
+                        )
+                    }
+                },
+                enabled = selectedCardId != null && selectedCount > 0
+            )
+        }
+    ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 520.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            CbText(
+                "选择角色及要覆盖的分段。空分段、头像和语音不会复制；来源角色卡不会修改。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            CbField("来源角色卡") {
+                CbSelect(
+                    value = selectedCard,
+                    options = cards,
+                    optionLabel = { it.name },
+                    onValueChange = { selectedCardId = it.id },
+                    placeholder = "选择分段角色卡"
+                )
+            }
+            selectedCard?.characters.orEmpty().filter { it.name.isNotBlank() }.forEach { character ->
+                val sections = availableSections[character.id].orEmpty()
+                if (sections.isNotEmpty()) {
+                    val selected = selectedSections[character.id].orEmpty()
+                    CbSurface(Modifier.fillMaxWidth()) {
+                        Column(Modifier.fillMaxWidth().padding(10.dp)) {
+                            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                CbCheckbox(
+                                    checked = selected.containsAll(sections),
+                                    onCheckedChange = { checked ->
+                                        selectedSections = selectedSections + (character.id to if (checked) sections else emptySet())
+                                    },
+                                    contentDescription = "选择${character.name}全部分段"
+                                )
+                                CbText(character.name, style = ChatBarTheme.typography.heading)
+                            }
+                            sections.forEach { section ->
+                                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                                    CbCheckbox(
+                                        checked = section in selected,
+                                        onCheckedChange = { checked ->
+                                            val next = if (checked) selected + section else selected - section
+                                            selectedSections = selectedSections + (character.id to next)
+                                        },
+                                        contentDescription = "选择${character.name}的${section.label}"
+                                    )
+                                    Column(Modifier.weight(1f)) {
+                                        CbText(section.label, style = ChatBarTheme.typography.label)
+                                        CbText(
+                                            CharacterSectionImportPolicy.sectionValue(character, section),
+                                            color = ChatBarTheme.colors.mutedForeground,
+                                            style = ChatBarTheme.typography.caption,
+                                            maxLines = 1
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

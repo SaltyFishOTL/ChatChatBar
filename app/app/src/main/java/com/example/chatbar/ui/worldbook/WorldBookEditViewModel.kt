@@ -9,6 +9,8 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
@@ -17,6 +19,8 @@ import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.card.CharacterSectionImportPolicy
+import com.example.chatbar.domain.card.WorldBookCharacterImportResult
 import com.example.chatbar.domain.draft.WorldBookEntryModalState
 import com.example.chatbar.domain.draft.hasMeaningfulEntryData
 import com.example.chatbar.domain.draft.materialize
@@ -100,6 +104,7 @@ class WorldBookEditViewModel(
     routeDraftId: String
 ) : ViewModel() {
     private val repository = ChatBarApp.instance.worldBookRepository
+    private val characterRepository = ChatBarApp.instance.characterRepository
     private val draftRepository = ChatBarApp.instance.editorDraftRepository
     private val settingsRepository = ChatBarApp.instance.settingsRepository
     private val modelResolver = ChatBarApp.instance.effectiveModelResolver
@@ -114,6 +119,9 @@ class WorldBookEditViewModel(
 
     private val _worldBook = MutableStateFlow<WorldBook?>(null)
     val worldBook: StateFlow<WorldBook?> = _worldBook.asStateFlow()
+
+    private val _availableCharacterCards = MutableStateFlow<List<CharacterCard>>(emptyList())
+    val availableCharacterCards: StateFlow<List<CharacterCard>> = _availableCharacterCards.asStateFlow()
 
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
@@ -163,7 +171,16 @@ class WorldBookEditViewModel(
 
     init {
         load()
+        loadCharacterCards()
         refreshAiModels()
+    }
+
+    private fun loadCharacterCards() {
+        viewModelScope.launch {
+            _availableCharacterCards.value = characterRepository.getAll().filter { card ->
+                card.editMode == CharacterEditMode.STRUCTURED && card.characters.any { it.name.isNotBlank() }
+            }
+        }
     }
 
     val emptyContentCount: Int
@@ -762,6 +779,38 @@ class WorldBookEditViewModel(
     fun addEntry(entry: WorldBookEntry) {
         entries.add(entry)
         scheduleDraftSave()
+    }
+
+    fun importCharacterCardCharacters(
+        sourceCardId: String,
+        characterIds: Set<String>
+    ): WorldBookCharacterImportResult? {
+        val source = _availableCharacterCards.value.firstOrNull { it.id == sourceCardId } ?: return null
+        val selected = source.characters.filter { it.id in characterIds }
+        if (selected.isEmpty()) return null
+        val result = CharacterSectionImportPolicy.importIntoWorldBook(entries.toList(), selected)
+        entries.clear()
+        entries.addAll(result.entries)
+        scheduleDraftSave()
+        return result
+    }
+
+    fun clearImportedCharacterSections(
+        sourceCardId: String,
+        characterIds: Set<String>,
+        onResult: (Result<Unit>) -> Unit
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val source = characterRepository.getById(sourceCardId) ?: error("原角色卡已不存在")
+                val cleared = CharacterSectionImportPolicy.clearWorldBookImportedSections(source, characterIds)
+                characterRepository.update(cleared)
+                _availableCharacterCards.value = characterRepository.getAll().filter { card ->
+                    card.editMode == CharacterEditMode.STRUCTURED && card.characters.any { it.name.isNotBlank() }
+                }
+            }
+            onResult(result)
+        }
     }
 
     fun updateEntry(index: Int, entry: WorldBookEntry) {

@@ -35,6 +35,7 @@ import androidx.compose.ui.unit.dp
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
+import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.data.local.entity.WorldBookSelectiveLogic
@@ -67,6 +68,12 @@ import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
 
+private data class PendingCharacterSourceClear(
+    val sourceCardId: String,
+    val characterIds: Set<String>,
+    val summary: String
+)
+
 @Composable
 fun WorldBookEditScreen(
     worldBookId: String?,
@@ -83,6 +90,8 @@ fun WorldBookEditScreen(
     var showTutorial by remember { mutableStateOf(false) }
     var descriptionFullscreen by remember { mutableStateOf(false) }
     var aiOperation by remember { mutableStateOf<WorldBookAiOperation?>(null) }
+    var showCharacterImport by remember { mutableStateOf(false) }
+    var pendingCharacterSourceClear by remember { mutableStateOf<PendingCharacterSourceClear?>(null) }
     var pendingReferenceDocumentPick by remember {
         mutableStateOf<((Result<CharacterReferenceDocument>) -> Unit)?>(null)
     }
@@ -93,6 +102,8 @@ fun WorldBookEditScreen(
     val fillAiState by viewModel.fillAiState.collectAsState()
     val createAiFormState by viewModel.createAiFormState.collectAsState()
     val fillAiFormState by viewModel.fillAiFormState.collectAsState()
+    val availableCharacterCards by viewModel.availableCharacterCards.collectAsState()
+    val context = LocalContext.current
     val referenceDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         val callback = pendingReferenceDocumentPick
         pendingReferenceDocumentPick = null
@@ -206,6 +217,16 @@ fun WorldBookEditScreen(
                     enabled = viewModel.emptyContentCount > 0 && !createAiState.isGenerating && !fillAiState.isGenerating
                 )
             }
+            CbButton(
+                "导入角色卡角色",
+                { showCharacterImport = true },
+                modifier = Modifier.fillMaxWidth(),
+                variant = ButtonVariant.Outline,
+                enabled = availableCharacterCards.isNotEmpty()
+            )
+            if (availableCharacterCards.isEmpty()) {
+                CbText("暂无可导入的分段角色卡。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
             if (viewModel.emptyContentCount == 0) {
                 CbText("没有正文为空的条目，AI 填充内容暂不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             }
@@ -235,6 +256,61 @@ fun WorldBookEditScreen(
         visible = descriptionFullscreen,
         onDismiss = { descriptionFullscreen = false }
     )
+
+    if (showCharacterImport) {
+        WorldBookCharacterImportDialog(
+            cards = availableCharacterCards,
+            onDismiss = { showCharacterImport = false },
+            onImport = { sourceCardId, characterIds ->
+                val result = viewModel.importCharacterCardCharacters(sourceCardId, characterIds)
+                if (result != null) {
+                    val summary = "已新建 ${result.createdCount} 个词条，更新 ${result.updatedCount} 个词条。"
+                    pendingCharacterSourceClear = PendingCharacterSourceClear(sourceCardId, characterIds, summary)
+                    showCharacterImport = false
+                }
+            }
+        )
+    }
+
+    pendingCharacterSourceClear?.let { pending ->
+        CbDialog(
+            onDismissRequest = { pendingCharacterSourceClear = null },
+            title = "导入成功",
+            dismissOnClickOutside = false,
+            dismiss = {
+                CbButton("保留原角色信息", { pendingCharacterSourceClear = null }, variant = ButtonVariant.Ghost)
+            },
+            confirm = {
+                CbButton(
+                    "清空对应角色信息",
+                    {
+                        viewModel.clearImportedCharacterSections(
+                            pending.sourceCardId,
+                            pending.characterIds
+                        ) { result ->
+                            Toast.makeText(
+                                context,
+                                result.fold(
+                                    onSuccess = { "原角色卡对应分段已清空" },
+                                    onFailure = { "清空失败：${it.message}" }
+                                ),
+                                Toast.LENGTH_LONG
+                            ).show()
+                        }
+                        pendingCharacterSourceClear = null
+                    },
+                    variant = ButtonVariant.Destructive
+                )
+            }
+        ) {
+            CbText(pending.summary, color = ChatBarTheme.colors.foreground)
+            Spacer(Modifier.height(8.dp))
+            CbText(
+                "世界书内容已加入当前草稿，仍需点击保存。若清空，原角色卡会立即保留姓名、简介、角色 Prompt、头像与语音，并清空其余分段。",
+                color = ChatBarTheme.colors.mutedForeground
+            )
+        }
+    }
 
     if (showTutorial) {
         WorldBookTutorialDialog(onDismiss = { showTutorial = false })
@@ -364,6 +440,63 @@ fun WorldBookEditScreen(
 }
 
 private enum class WorldBookAiOperation { CREATE, FILL }
+
+@Composable
+private fun WorldBookCharacterImportDialog(
+    cards: List<CharacterCard>,
+    onDismiss: () -> Unit,
+    onImport: (String, Set<String>) -> Unit
+) {
+    var selectedCardId by remember(cards) { mutableStateOf(cards.firstOrNull()?.id) }
+    val selectedCard = cards.firstOrNull { it.id == selectedCardId }
+    var selectedCharacterIds by remember(selectedCardId) {
+        mutableStateOf(selectedCard?.characters.orEmpty().filter { it.name.isNotBlank() }.map { it.id }.toSet())
+    }
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = "导入角色卡角色",
+        dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
+        confirm = {
+            CbButton(
+                "导入",
+                { selectedCardId?.let { onImport(it, selectedCharacterIds) } },
+                enabled = selectedCardId != null && selectedCharacterIds.isNotEmpty()
+            )
+        }
+    ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 480.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            CbField("来源角色卡") {
+                CbSelect(
+                    value = selectedCard,
+                    options = cards,
+                    optionLabel = { it.name },
+                    onValueChange = { selectedCardId = it.id },
+                    placeholder = "选择分段角色卡"
+                )
+            }
+            selectedCard?.characters.orEmpty().filter { it.name.isNotBlank() }.forEach { character ->
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    CbCheckbox(
+                        checked = character.id in selectedCharacterIds,
+                        onCheckedChange = { checked ->
+                            selectedCharacterIds = if (checked) selectedCharacterIds + character.id else selectedCharacterIds - character.id
+                        },
+                        contentDescription = "选择${character.name}"
+                    )
+                    Column(Modifier.weight(1f)) {
+                        CbText(character.name, style = ChatBarTheme.typography.label)
+                        character.profile.takeIf { it.isNotBlank() }?.let {
+                            CbText(it, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption, maxLines = 1)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
 
 private data class WorldBookAiModelOption(val id: String?, val label: String)
 

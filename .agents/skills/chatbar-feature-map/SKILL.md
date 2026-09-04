@@ -19,6 +19,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 
 - App wiring and navigation: app/app/src/main/java/com/example/chatbar/ChatBarApp.kt, Navigation.kt, NavigationKeys.kt.
 - Character card edit UI: ui/character/CharacterEditScreen.kt, CharacterEditViewModel.kt. Renaming a card name also rewrites bound session titles via `ChatRepository.rewriteSessionTitlesForCharacterCard`.
+- Structured character transfer into another character card or a World Book: domain/card/CharacterSectionImportPolicy.kt plus the character/world-book edit screens and ViewModels.
 - Character-card AI auto-fill, rewrite, image-to-appearance fill, diff, apply, cover, or per-character avatar: use chatbar-character-card-ai.
 - Chat prompt composition, stable/dynamic/tail cache layers, history roles, previous-turn hot zone, World Book/RAG/Archive/HEAD order, or prompt-delivery diagnosis: use chatbar-prompt-pipeline.
 - Format-card editing, ordered user tools, request-only user-message suffixes, drafts, or transfer: data/local/entity/FormatCard.kt, domain/card/FormatCardUserToolPolicy.kt, ui/format/FormatCardEditScreen.kt, and FormatCardEditViewModel.kt; use chatbar-prompt-pipeline for final API placement.

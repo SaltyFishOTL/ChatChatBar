@@ -34,6 +34,9 @@ import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
+import com.example.chatbar.domain.card.CharacterCardCharacterImportResult
+import com.example.chatbar.domain.card.CharacterSectionImportPolicy
+import com.example.chatbar.domain.card.CharacterSectionSelection
 import com.example.chatbar.domain.card.CharacterPlaceholderPolicy
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.card.CharacterAutoFillDraft
@@ -332,6 +335,9 @@ class CharacterEditViewModel(
     private val _availableWorldBooks = MutableStateFlow<List<com.example.chatbar.data.local.entity.WorldBook>>(emptyList())
     val availableWorldBooks: StateFlow<List<com.example.chatbar.data.local.entity.WorldBook>> = _availableWorldBooks.asStateFlow()
 
+    private val _availableCharacterCards = MutableStateFlow<List<CharacterCard>>(emptyList())
+    val availableCharacterCards: StateFlow<List<CharacterCard>> = _availableCharacterCards.asStateFlow()
+
     var name by mutableStateOf("")
     var botName by mutableStateOf("")
     var greeting by mutableStateOf("")
@@ -460,6 +466,11 @@ class CharacterEditViewModel(
     private fun loadCharacterCard() {
         viewModelScope.launch {
             _availableWorldBooks.value = worldBookRepository.getAll()
+            _availableCharacterCards.value = characterRepository.getAll().filter { card ->
+                card.id != characterId &&
+                    card.editMode == CharacterEditMode.STRUCTURED &&
+                    card.characters.any { it.name.isNotBlank() }
+            }
             val draft = draftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, characterId)
             if (characterId != null) {
                 val card = characterRepository.getById(characterId)
@@ -2253,6 +2264,23 @@ class CharacterEditViewModel(
     fun addWorldBookEntry(entry: WorldBookEntry) {
         worldBookEntries.add(entry)
         scheduleDraftSave()
+    }
+
+    fun importCharacterCardCharacters(
+        sourceCardId: String,
+        selections: List<CharacterSectionSelection>
+    ): CharacterCardCharacterImportResult? {
+        val source = _availableCharacterCards.value.firstOrNull { it.id == sourceCardId } ?: return null
+        val result = CharacterSectionImportPolicy.importIntoCharacterCard(
+            currentCharacters = charactersList.toList(),
+            sourceCharacters = source.characters,
+            selections = selections
+        )
+        if (result.createdCount + result.updatedCount == 0) return null
+        charactersList.clear()
+        charactersList.addAll(result.characters)
+        scheduleDraftSave()
+        return result
     }
 
     fun updateWorldBookEntry(index: Int, entry: WorldBookEntry) {
