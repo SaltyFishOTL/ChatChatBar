@@ -38,6 +38,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
@@ -79,6 +80,66 @@ fun CbSwitch(
                 .size(20.dp)
                 .background(if (checked) colors.primaryForeground else colors.card, CircleShape)
         )
+    }
+}
+
+@Composable
+fun CbCheckbox(
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit,
+    modifier: Modifier = Modifier,
+    enabled: Boolean = true,
+    contentDescription: String? = null
+) {
+    var focused by remember { mutableStateOf(false) }
+    val colors = ChatBarTheme.colors
+    val fill by animateColorAsState(
+        if (checked) colors.primary else Color.Transparent,
+        animationSpec = tween(ChatBarMotion.normal),
+        label = "checkboxFill"
+    )
+    val outline by animateColorAsState(
+        when {
+            focused -> colors.ring
+            checked -> colors.primary
+            else -> colors.border
+        },
+        animationSpec = tween(ChatBarMotion.normal),
+        label = "checkboxOutline"
+    )
+    Box(
+        modifier = modifier
+            .alpha(if (enabled) 1f else 0.5f)
+            .size(48.dp)
+            .semantics {
+                if (contentDescription != null) this.contentDescription = contentDescription
+            }
+            .onFocusChanged { focused = it.isFocused }
+            .toggleable(
+                value = checked,
+                enabled = enabled,
+                role = Role.Checkbox,
+                onValueChange = onCheckedChange
+            )
+            .focusable(enabled),
+        contentAlignment = Alignment.Center
+    ) {
+        Box(
+            Modifier
+                .size(20.dp)
+                .background(fill, RoundedCornerShape(ChatBarShape.sm))
+                .border(if (focused) 2.dp else 1.dp, outline, RoundedCornerShape(ChatBarShape.sm)),
+            contentAlignment = Alignment.Center
+        ) {
+            if (checked) {
+                CbIcon(
+                    imageVector = AppIcons.Check,
+                    contentDescription = null,
+                    modifier = Modifier.size(14.dp),
+                    tint = colors.primaryForeground
+                )
+            }
+        }
     }
 }
 

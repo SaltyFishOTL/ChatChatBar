@@ -1,8 +1,11 @@
 package com.example.chatbar.ui.worldbook
 
+import android.net.Uri
 import android.widget.Toast
 import androidx.activity.compose.BackHandler
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -20,6 +23,7 @@ import androidx.compose.foundation.text.input.InputTransformation
 import androidx.compose.foundation.text.input.byValue
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,18 +32,29 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chatbar.data.local.entity.CharacterResearchSourceMode
+import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.data.local.entity.WorldBookSelectiveLogic
 import com.example.chatbar.domain.draft.WorldBookEntryModalState
+import com.example.chatbar.domain.draft.hasMeaningfulEntryData
+import com.example.chatbar.domain.search.CharacterReferenceDocument
+import com.example.chatbar.domain.search.CharacterResearchOptions
+import com.example.chatbar.domain.search.ManualResearchUrlValidation
+import com.example.chatbar.domain.search.usesManualUrls
+import com.example.chatbar.domain.search.validateManualResearchUrls
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbCheckbox
 import com.example.chatbar.ui.kit.CbDialog
 import com.example.chatbar.ui.kit.CbDivider
 import com.example.chatbar.ui.kit.CbField
 import com.example.chatbar.ui.kit.CbIconButton
 import com.example.chatbar.ui.kit.CbInput
+import com.example.chatbar.ui.kit.CbProgress
 import com.example.chatbar.ui.kit.CbScaffold
 import com.example.chatbar.ui.kit.CbSelect
 import com.example.chatbar.ui.kit.CbSurface
@@ -67,6 +82,27 @@ fun WorldBookEditScreen(
     var showExitDialog by remember { mutableStateOf(false) }
     var showTutorial by remember { mutableStateOf(false) }
     var descriptionFullscreen by remember { mutableStateOf(false) }
+    var aiOperation by remember { mutableStateOf<WorldBookAiOperation?>(null) }
+    var pendingReferenceDocumentPick by remember {
+        mutableStateOf<((Result<CharacterReferenceDocument>) -> Unit)?>(null)
+    }
+    val aiModels by viewModel.aiModels.collectAsState()
+    val aiDefaultModelId by viewModel.aiDefaultModelId.collectAsState()
+    val aiResearchMode by viewModel.aiResearchSourceMode.collectAsState()
+    val createAiState by viewModel.createAiState.collectAsState()
+    val fillAiState by viewModel.fillAiState.collectAsState()
+    val createAiFormState by viewModel.createAiFormState.collectAsState()
+    val fillAiFormState by viewModel.fillAiFormState.collectAsState()
+    val referenceDocumentPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
+        val callback = pendingReferenceDocumentPick
+        pendingReferenceDocumentPick = null
+        if (uri != null && callback != null) viewModel.readReferenceDocument(uri, callback)
+    }
+
+    fun pickReferenceDocument(callback: (Result<CharacterReferenceDocument>) -> Unit) {
+        pendingReferenceDocumentPick = callback
+        referenceDocumentPicker.launch(arrayOf("text/*", "application/json", "application/octet-stream"))
+    }
 
     fun requestExit() {
         if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
@@ -154,6 +190,25 @@ fun WorldBookEditScreen(
                 CbText("条目 (${viewModel.entries.size})", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
                 CbButton("添加条目", { viewModel.openEntryDialog(null) }, variant = ButtonVariant.Ghost)
             }
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(
+                    "AI 创建条目",
+                    { aiOperation = WorldBookAiOperation.CREATE },
+                    modifier = Modifier.weight(1f),
+                    variant = ButtonVariant.Outline,
+                    enabled = !createAiState.isGenerating && !fillAiState.isGenerating
+                )
+                CbButton(
+                    "AI 填充内容（${viewModel.emptyContentCount}）",
+                    { aiOperation = WorldBookAiOperation.FILL },
+                    modifier = Modifier.weight(1f),
+                    variant = ButtonVariant.Outline,
+                    enabled = viewModel.emptyContentCount > 0 && !createAiState.isGenerating && !fillAiState.isGenerating
+                )
+            }
+            if (viewModel.emptyContentCount == 0) {
+                CbText("没有正文为空的条目，AI 填充内容暂不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            }
             viewModel.entries.forEachIndexed { index, entry ->
                 CbSurface(Modifier.fillMaxWidth().clickable { viewModel.openEntryDialog(index) }) {
                     Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -183,6 +238,56 @@ fun WorldBookEditScreen(
 
     if (showTutorial) {
         WorldBookTutorialDialog(onDismiss = { showTutorial = false })
+    }
+
+    aiOperation?.let { operation ->
+        WorldBookAiDialog(
+            operation = operation,
+            createState = createAiState,
+            fillState = fillAiState,
+            formState = if (operation == WorldBookAiOperation.CREATE) createAiFormState else fillAiFormState,
+            onFormStateChange = if (operation == WorldBookAiOperation.CREATE) {
+                viewModel::updateCreateAiForm
+            } else {
+                viewModel::updateFillAiForm
+            },
+            targetCount = viewModel.emptyContentCount,
+            models = aiModels,
+            defaultModelId = aiDefaultModelId,
+            researchMode = aiResearchMode,
+            onResearchModeChange = viewModel::setAiResearchSourceMode,
+            onPickDocument = ::pickReferenceDocument,
+            onGenerate = { request, modelId, document, options, resume ->
+                when (operation) {
+                    WorldBookAiOperation.CREATE -> viewModel.generateCreateCandidates(request, modelId, document, options, resume)
+                    WorldBookAiOperation.FILL -> viewModel.generateFillCandidates(request, modelId, document, options, resume)
+                }
+            },
+            onCancel = viewModel::cancelAiGeneration,
+            onToggleCandidate = { id ->
+                when (operation) {
+                    WorldBookAiOperation.CREATE -> viewModel.toggleCreateCandidate(id)
+                    WorldBookAiOperation.FILL -> viewModel.toggleFillCandidate(id)
+                }
+            },
+            onSelectAll = { selected ->
+                when (operation) {
+                    WorldBookAiOperation.CREATE -> viewModel.selectAllCreateCandidates(selected)
+                    WorldBookAiOperation.FILL -> viewModel.selectAllFillCandidates(selected)
+                }
+            },
+            onApply = {
+                when (operation) {
+                    WorldBookAiOperation.CREATE -> viewModel.applyCreateCandidates()
+                    WorldBookAiOperation.FILL -> viewModel.applyFillCandidates()
+                }
+                aiOperation = null
+            },
+            onDismiss = {
+                if (createAiState.isGenerating || fillAiState.isGenerating) viewModel.cancelAiGeneration()
+                aiOperation = null
+            }
+        )
     }
 
     viewModel.entryModalState?.let { state ->
@@ -258,6 +363,368 @@ fun WorldBookEditScreen(
     }
 }
 
+private enum class WorldBookAiOperation { CREATE, FILL }
+
+private data class WorldBookAiModelOption(val id: String?, val label: String)
+
+@Composable
+private fun WorldBookAiDialog(
+    operation: WorldBookAiOperation,
+    createState: WorldBookCreateUiState,
+    fillState: WorldBookFillUiState,
+    formState: WorldBookAiFormUiState,
+    onFormStateChange: (WorldBookAiFormUiState) -> Unit,
+    targetCount: Int,
+    models: List<ModelConfig>,
+    defaultModelId: String?,
+    researchMode: CharacterResearchSourceMode,
+    onResearchModeChange: (CharacterResearchSourceMode) -> Unit,
+    onPickDocument: (((Result<CharacterReferenceDocument>) -> Unit) -> Unit),
+    onGenerate: (String, String?, CharacterReferenceDocument?, CharacterResearchOptions, Boolean) -> Unit,
+    onCancel: () -> Unit,
+    onToggleCandidate: (String) -> Unit,
+    onSelectAll: (Boolean) -> Unit,
+    onApply: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    var referenceDocumentError by remember(operation) { mutableStateOf<String?>(null) }
+    var requestFullscreen by remember(operation) { mutableStateOf(false) }
+    val request = formState.request
+    val manualUrlsText = formState.manualUrlsText
+    val referenceDocument = formState.referenceDocument
+    val selectedModelId = formState.selectedModelId
+    if (requestFullscreen) {
+        FullscreenTextEditor(
+            title = if (operation == WorldBookAiOperation.CREATE) "编辑创建需求" else "编辑填充要求",
+            text = request,
+            onTextChange = { onFormStateChange(formState.copy(request = it)) },
+            visible = true,
+            onDismiss = { requestFullscreen = false }
+        )
+        return
+    }
+
+    val modelOptions = remember(models, defaultModelId) {
+        val defaultLabel = models.firstOrNull { it.id == defaultModelId }?.displayName
+        listOf(WorldBookAiModelOption(null, defaultLabel?.let { "默认模型：$it" } ?: "默认模型")) +
+            models.map { WorldBookAiModelOption(it.id, it.displayName.ifBlank { it.modelName }) }
+    }
+    val selectedModel = modelOptions.firstOrNull { it.id == selectedModelId } ?: modelOptions.first()
+    val manualValidation = remember(manualUrlsText) { validateManualResearchUrls(manualUrlsText) }
+    val options = CharacterResearchOptions(
+        mode = researchMode,
+        urls = if (researchMode.usesManualUrls()) manualValidation.urls else emptyList()
+    )
+    val isCreate = operation == WorldBookAiOperation.CREATE
+    val busy = if (isCreate) createState.isGenerating else fillState.isGenerating
+    val candidatesCount = if (isCreate) createState.candidates.size else fillState.candidates.size
+    val previewReady = if (isCreate) createState.isComplete else fillState.isComplete
+    val selectedIds = if (isCreate) createState.selectedIds else fillState.selectedIds
+    val status = if (isCreate) createState.statusText else fillState.statusText
+    val error = if (isCreate) createState.error else fillState.error
+    val warning = if (isCreate) createState.warning else fillState.warning
+    val progressLines = if (isCreate) createState.progressLines else fillState.progressLines
+    val outputs = if (isCreate) createState.outputs else fillState.outputs
+    val debug = if (isCreate) createState.researchDebug else fillState.researchDebug
+    val hasCheckpoint = if (isCreate) createState.checkpoint != null else fillState.checkpoint != null
+    val manualReady = !researchMode.usesManualUrls() || (manualValidation.isValid && manualValidation.urls.isNotEmpty())
+    val inputReady = if (isCreate) {
+        request.isNotBlank() || referenceDocument != null || options.urls.isNotEmpty()
+    } else {
+        targetCount > 0
+    }
+
+    CbDialog(
+        onDismissRequest = onDismiss,
+        title = if (isCreate) "AI 创建世界书条目" else "AI 填充世界书内容",
+        modifier = Modifier.heightIn(max = 760.dp),
+        dismissOnClickOutside = !busy,
+        dismissOnBackPress = !busy,
+        dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost, enabled = !busy) },
+        confirm = {
+            if (!busy && previewReady && candidatesCount > 0) {
+                CbButton(
+                    if (isCreate) "应用所选条目" else "应用所选正文",
+                    onApply,
+                    enabled = selectedIds.isNotEmpty()
+                )
+            }
+        }
+    ) {
+        Column(
+            Modifier.fillMaxWidth().heightIn(max = 590.dp).verticalScroll(rememberScrollState()),
+            verticalArrangement = Arrangement.spacedBy(12.dp)
+        ) {
+            CbText(
+                if (isCreate) "每批最多创建 5 条，AI 自动判断是否继续；单次最多 50 条。" else "只处理当前正文为空的 $targetCount 个条目，每批最多 5 条。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
+            )
+            CbField("本次使用模型") {
+                CbSelect(
+                    value = selectedModel,
+                    options = modelOptions,
+                    optionLabel = WorldBookAiModelOption::label,
+                    onValueChange = { onFormStateChange(formState.copy(selectedModelId = it.id)) },
+                    enabled = !busy,
+                    placeholder = "选择模型"
+                )
+            }
+            WorldBookResearchSourceSelector(
+                mode = researchMode,
+                onModeChange = onResearchModeChange,
+                manualUrlsText = manualUrlsText,
+                onManualUrlsTextChange = {
+                    onFormStateChange(formState.copy(manualUrlsText = it))
+                },
+                validation = manualValidation,
+                busy = busy
+            )
+            CbField(
+                if (isCreate) "世界书需求" else "填充要求（可选）",
+                description = if (isCreate) "说明需要覆盖的世界、主题、玩法和边界。" else "留空时根据条目名称、触发词和资料直接填写。",
+                onFullscreenEdit = { requestFullscreen = true }
+            ) {
+                CbInput(
+                    request,
+                    { onFormStateChange(formState.copy(request = it)) },
+                    placeholder = if (isCreate) "例如：为某作品规划地点、组织、能力体系和关键人物条目……" else "例如：优先采用原作设定，正文简洁且适合直接注入……",
+                    singleLine = false,
+                    minLines = 4,
+                    enabled = !busy
+                )
+            }
+            CbField("参考文档") {
+                WorldBookReferenceDocumentPanel(
+                    document = referenceDocument,
+                    error = referenceDocumentError,
+                    busy = busy,
+                    onPick = {
+                        onPickDocument { result ->
+                            result.fold(
+                                onSuccess = {
+                                    onFormStateChange(formState.copy(referenceDocument = it))
+                                    referenceDocumentError = null
+                                },
+                                onFailure = { referenceDocumentError = it.message ?: "读取参考文档失败" }
+                            )
+                        }
+                    },
+                    onClear = {
+                        onFormStateChange(formState.copy(referenceDocument = null))
+                        referenceDocumentError = null
+                    }
+                )
+            }
+
+            if (busy) {
+                CbProgress(0.35f, Modifier.fillMaxWidth())
+                CbButton("取消生成", onCancel, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
+            } else {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    CbButton(
+                        if (candidatesCount == 0) "生成候选" else "重新生成",
+                        { onGenerate(request, selectedModel.id, referenceDocument, options, false) },
+                        modifier = Modifier.weight(1f),
+                        enabled = inputReady && manualReady,
+                        variant = ButtonVariant.Secondary
+                    )
+                    if (hasCheckpoint && error != null) {
+                        CbButton(
+                            "继续生成",
+                            { onGenerate(request, selectedModel.id, referenceDocument, options, true) },
+                            modifier = Modifier.weight(1f),
+                            enabled = inputReady && manualReady,
+                            variant = ButtonVariant.Outline
+                        )
+                    }
+                }
+            }
+
+            status.takeIf(String::isNotBlank)?.let {
+                CbText(it, color = ChatBarTheme.colors.mutedForeground)
+            }
+            error?.let { CbText(it, color = ChatBarTheme.colors.destructive) }
+            warning.takeIf(String::isNotBlank)?.let { CbText(it, color = ChatBarTheme.colors.warning) }
+            if (progressLines.isNotEmpty()) {
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        CbText("流程进度", style = ChatBarTheme.typography.heading)
+                        progressLines.takeLast(10).forEach { CbText(it, style = ChatBarTheme.typography.caption) }
+                    }
+                }
+            }
+            debug?.takeIf { it.hasContent() }?.let { research ->
+                CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        CbText("资料状态", style = ChatBarTheme.typography.heading)
+                        research.plan?.let { plan ->
+                            CbText(
+                                if (plan.needSearch) "搜索：${plan.queries.joinToString("、") { it.query }}" else "本批无需百科搜索",
+                                color = ChatBarTheme.colors.mutedForeground,
+                                style = ChatBarTheme.typography.caption
+                            )
+                        }
+                        CbText("来源 ${research.sources.size} · 资料简报 ${if (research.brief?.hasContent() == true) "已完成" else "未完成"}", style = ChatBarTheme.typography.caption)
+                    }
+                }
+            }
+
+            if (previewReady && candidatesCount > 0) {
+                CbDivider()
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    CbText("候选预览（$candidatesCount）", style = ChatBarTheme.typography.heading)
+                    CbButton(
+                        if (selectedIds.size == candidatesCount) "取消全选" else "全选",
+                        { onSelectAll(selectedIds.size != candidatesCount) },
+                        variant = ButtonVariant.Ghost
+                    )
+                }
+                if (isCreate) {
+                    createState.candidates.forEach { candidate ->
+                        WorldBookCandidateRow(
+                            id = candidate.candidateId,
+                            title = candidate.name,
+                            subtitle = candidate.keys.joinToString("、"),
+                            content = "",
+                            checked = candidate.candidateId in selectedIds,
+                            onToggle = onToggleCandidate
+                        )
+                    }
+                } else {
+                    fillState.candidates.forEach { candidate ->
+                        WorldBookCandidateRow(
+                            id = candidate.targetId,
+                            title = candidate.name.ifBlank { "未命名条目" },
+                            subtitle = candidate.keys.joinToString("、"),
+                            content = candidate.content,
+                            checked = candidate.targetId in selectedIds,
+                            onToggle = onToggleCandidate
+                        )
+                    }
+                }
+            }
+
+            outputs.asReversed().forEach { output ->
+                CbSurface(Modifier.fillMaxWidth(), color = ChatBarTheme.colors.muted) {
+                    Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        CbText(output.title, style = ChatBarTheme.typography.heading)
+                        CbText(output.text, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun WorldBookResearchSourceSelector(
+    mode: CharacterResearchSourceMode,
+    onModeChange: (CharacterResearchSourceMode) -> Unit,
+    manualUrlsText: String,
+    onManualUrlsTextChange: (String) -> Unit,
+    validation: ManualResearchUrlValidation,
+    busy: Boolean
+) {
+    CbField("资料来源", description = mode.worldBookSourceDescription()) {
+        CbSelect(
+            value = mode,
+            options = CharacterResearchSourceMode.entries,
+            optionLabel = CharacterResearchSourceMode::worldBookSourceLabel,
+            onValueChange = onModeChange,
+            enabled = !busy,
+            placeholder = "选择资料来源"
+        )
+    }
+    if (mode.usesManualUrls()) {
+        CbField("指定网址", description = "每行一个完整 HTTP(S) 地址，最多 5 个。") {
+            CbInput(
+                manualUrlsText,
+                onManualUrlsTextChange,
+                placeholder = "https://example.com/page",
+                singleLine = false,
+                minLines = 3,
+                enabled = !busy,
+                isError = validation.errors.isNotEmpty()
+            )
+        }
+        validation.errors.forEach { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
+        if (validation.hasCleartextHttp) {
+            CbText("HTTP 未加密，页面内容可能被中途篡改。", color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption)
+        }
+    }
+}
+
+@Composable
+private fun WorldBookReferenceDocumentPanel(
+    document: CharacterReferenceDocument?,
+    error: String?,
+    busy: Boolean,
+    onPick: () -> Unit,
+    onClear: () -> Unit
+) {
+    CbSurface(
+        Modifier.fillMaxWidth(),
+        color = ChatBarTheme.colors.muted,
+        border = BorderStroke(1.dp, if (error == null) ChatBarTheme.colors.border else ChatBarTheme.colors.destructive)
+    ) {
+        Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            CbText(document?.fileName ?: "未选择文档", style = ChatBarTheme.typography.heading)
+            document?.let {
+                CbText("${it.content.length} 字符；仅本次生成使用，不会保存到世界书。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                if (it.content.length > WORLD_BOOK_REFERENCE_DOCUMENT_WARNING_CHARS) {
+                    CbText("文档超过 100 万字符，临时向量化可能耗时较长。", color = ChatBarTheme.colors.warning, style = ChatBarTheme.typography.caption)
+                }
+            }
+            CbText("支持 TXT、MD、JSON，最多 500 万字符。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                CbButton(if (document == null) "选择文档" else "更换文档", onPick, modifier = Modifier.weight(1f), enabled = !busy, variant = ButtonVariant.Outline)
+                if (document != null) CbButton("移除", onClear, enabled = !busy, variant = ButtonVariant.Ghost)
+            }
+            error?.let { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
+        }
+    }
+}
+
+@Composable
+private fun WorldBookCandidateRow(
+    id: String,
+    title: String,
+    subtitle: String,
+    content: String,
+    checked: Boolean,
+    onToggle: (String) -> Unit
+) {
+    CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
+        Row(Modifier.fillMaxWidth().padding(8.dp), verticalAlignment = Alignment.Top) {
+            CbCheckbox(
+                checked = checked,
+                onCheckedChange = { onToggle(id) },
+                contentDescription = "选择候选：$title"
+            )
+            Column(Modifier.weight(1f).padding(top = 6.dp, end = 8.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                CbText(title, style = ChatBarTheme.typography.heading)
+                CbText(subtitle.ifBlank { "无触发词" }, color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+                content.takeIf(String::isNotBlank)?.let { CbText(it) }
+            }
+        }
+    }
+}
+
+private fun CharacterResearchSourceMode.worldBookSourceLabel(): String = when (this) {
+    CharacterResearchSourceMode.NONE -> "不联网"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH -> "百科搜索"
+    CharacterResearchSourceMode.MANUAL_URLS -> "指定网址"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS -> "百科搜索 + 指定网址"
+}
+
+private fun CharacterResearchSourceMode.worldBookSourceDescription(): String = when (this) {
+    CharacterResearchSourceMode.NONE -> "不联网；仍可使用上传参考文档。"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH -> "AI 规划萌娘百科/Wikipedia 搜索；可叠加参考文档。"
+    CharacterResearchSourceMode.MANUAL_URLS -> "只读取指定页面；可叠加参考文档。"
+    CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH_AND_MANUAL_URLS -> "百科搜索与指定页面合并整理；可叠加参考文档。"
+}
+
 @Composable
 private fun ToggleRow(label: String, value: Boolean, onValue: (Boolean) -> Unit) {
     Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.SpaceBetween) {
@@ -274,6 +741,7 @@ private fun WorldBookEntryEditDialog(
     onSave: () -> Unit
 ) {
     var contentFullscreen by remember(state.editingIndex) { mutableStateOf(false) }
+    val canSave = state.hasMeaningfulEntryData()
     if (contentFullscreen) {
         FullscreenTextEditor(
             title = "编辑条目内容",
@@ -291,10 +759,17 @@ private fun WorldBookEntryEditDialog(
         modifier = Modifier.heightIn(max = 760.dp),
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
         confirm = {
-            CbButton("保存", onSave, enabled = state.content.isNotBlank())
+            CbButton("保存", onSave, enabled = canSave)
         }
     ) {
         Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            if (!canSave) {
+                CbText(
+                    "名称、主触发词和正文不能同时为空。",
+                    color = ChatBarTheme.colors.destructive,
+                    style = ChatBarTheme.typography.caption
+                )
+            }
             CbField("条目名称") { CbInput(state.name, { onStateChange(state.copy(name = it)) }) }
             CbField("主触发词", description = "多个用英文逗号分隔。") { CbInput(state.keys, { onStateChange(state.copy(keys = it)) }) }
             CbField("二级触发词") { CbInput(state.secondary, { onStateChange(state.copy(secondary = it)) }) }

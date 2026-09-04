@@ -27,7 +27,7 @@ import com.example.chatbar.domain.voice.*
 import com.example.chatbar.domain.voice.qq.QqVoiceGestureGatewayRegistry
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferCoordinator
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferNotificationManager
-import com.example.chatbar.domain.worldbook.WorldBookEngine
+import com.example.chatbar.domain.worldbook.*
 import com.example.chatbar.utils.diagnostics.CrashReportManager
 import com.example.chatbar.data.security.FishAudioCredentialStore
 import com.example.chatbar.data.security.NovelAiCredentialStore
@@ -180,6 +180,10 @@ class ChatBarApp : Application() {
     lateinit var researchBriefSummarizer: LlmResearchBriefSummarizer
         private set
     lateinit var characterResearchService: CharacterResearchService
+        private set
+    lateinit var worldBookResearchService: WorldBookResearchService
+        private set
+    lateinit var worldBookAiService: WorldBookAiService
         private set
     lateinit var appUpdateChecker: AppUpdateChecker
         private set
@@ -375,13 +379,26 @@ class ChatBarApp : Application() {
             vectorSearch = vectorSearchEngine,
             embeddingConfigProvider = { effectiveModelResolver.embeddingModel() }
         )
+        val manualWebPageRetriever = HttpManualWebPageRetriever()
         characterResearchService = CharacterResearchService(
             settingsProvider = { settingsRepository.getAppSettings() },
             planner = characterResearchPlanner,
             backend = searchBackend,
             summarizer = researchBriefSummarizer,
             referenceDocumentRetriever = characterReferenceDocumentRetriever,
-            manualWebPageRetriever = HttpManualWebPageRetriever()
+            manualWebPageRetriever = manualWebPageRetriever
+        )
+        worldBookResearchService = WorldBookResearchService(
+            settingsProvider = { settingsRepository.getAppSettings() },
+            chatService = streamingChatService,
+            backend = searchBackend,
+            referenceRetriever = characterReferenceDocumentRetriever,
+            manualRetriever = manualWebPageRetriever
+        )
+        worldBookAiService = WorldBookAiService(
+            modelResolver = effectiveModelResolver,
+            chatService = streamingChatService,
+            researchService = worldBookResearchService
         )
         characterAutoFillService = CharacterAutoFillService(
             effectiveModelResolver,

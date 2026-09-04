@@ -16,6 +16,11 @@ data class CharacterReferenceDocument(
     val content: String
 )
 
+class PreparedReferenceDocumentIndex internal constructor(
+    internal val embeddingConfig: EmbeddingConfig?,
+    internal val chunks: List<VectorChunk>
+)
+
 interface CharacterReferenceDocumentRetriever {
     suspend fun retrieve(
         documents: List<CharacterReferenceDocument>,
@@ -39,6 +44,21 @@ class RagCharacterReferenceDocumentRetriever(
         topK: Int,
         onStatus: (String) -> Unit
     ): List<SearchHit> {
+        val prepared = prepare(documents, onStatus)
+        val query = buildCharacterReferenceDocumentQuery(userInput, currentCard)
+        return searchPrepared(
+            prepared = prepared,
+            query = query,
+            topK = topK,
+            statusText = "正在匹配用户要求与角色卡已有内容",
+            onStatus = onStatus
+        )
+    }
+
+    suspend fun prepare(
+        documents: List<CharacterReferenceDocument>,
+        onStatus: (String) -> Unit = {}
+    ): PreparedReferenceDocumentIndex {
         val candidates = documents.flatMapIndexed { documentIndex, document ->
             chunkingEngine.chunkDocument(
                 content = document.content,
@@ -54,11 +74,12 @@ class RagCharacterReferenceDocumentRetriever(
                 )
             }
         }
-        if (candidates.isEmpty()) return emptyList()
+        if (candidates.isEmpty()) {
+            return PreparedReferenceDocumentIndex(null, emptyList())
+        }
 
         val embeddingConfig = embeddingConfigProvider()
             ?: error("未配置全局嵌入模型，无法检索参考文档")
-        val query = buildCharacterReferenceDocumentQuery(userInput, currentCard)
         onStatus("正在向量化参考文档：${candidates.size} 张卡片")
         val embeddings = candidates.chunked(EMBEDDING_BATCH_SIZE).flatMap { batch ->
             embeddingService.getEmbeddings(batch.map(ReferenceDocumentChunk::content), embeddingConfig)
@@ -81,11 +102,27 @@ class RagCharacterReferenceDocumentRetriever(
             )
         }
 
-        onStatus("正在匹配用户要求与角色卡已有内容")
-        val queryEmbedding = embeddingService.getEmbedding(query, embeddingConfig)
+        return PreparedReferenceDocumentIndex(embeddingConfig, vectorChunks)
+    }
+
+    suspend fun searchPrepared(
+        prepared: PreparedReferenceDocumentIndex,
+        query: String,
+        topK: Int = CHARACTER_REFERENCE_DOCUMENT_TOP_K,
+        statusText: String = "正在匹配参考文档",
+        onStatus: (String) -> Unit = {}
+    ): List<SearchHit> {
+        if (prepared.chunks.isEmpty()) return emptyList()
+        val embeddingConfig = requireNotNull(prepared.embeddingConfig) {
+            "参考文档索引缺少嵌入模型配置"
+        }
+        val safeQuery = query.trim().ifBlank { "世界观、人物、地点、组织、规则与历史" }
+            .take(MAX_REFERENCE_DOCUMENT_QUERY_CHARS)
+        onStatus(statusText)
+        val queryEmbedding = embeddingService.getEmbedding(safeQuery, embeddingConfig)
         val ranked = vectorSearch.search(
             query = queryEmbedding,
-            chunks = vectorChunks,
+            chunks = prepared.chunks,
             topK = topK.coerceAtLeast(1),
             threshold = -1f
         )
@@ -100,7 +137,7 @@ class RagCharacterReferenceDocumentRetriever(
                 content = chunk.content,
                 rawContent = chunk.content,
                 score = vectorSearch.cosineSimilarity(queryEmbedding, chunk.embedding).toDouble(),
-                query = query
+                query = safeQuery
             )
         }
     }

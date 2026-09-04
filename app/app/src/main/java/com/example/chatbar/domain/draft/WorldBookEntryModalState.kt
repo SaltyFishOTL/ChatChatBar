@@ -3,6 +3,7 @@ package com.example.chatbar.domain.draft
 import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.local.entity.WorldBookPosition
 import com.example.chatbar.data.local.entity.WorldBookSelectiveLogic
+import java.util.UUID
 import kotlinx.serialization.Serializable
 
 @Serializable
@@ -66,3 +67,37 @@ data class WorldBookEntryModalState(
             )
     }
 }
+
+fun WorldBookEntryModalState.hasMeaningfulEntryData(): Boolean =
+    name.isNotBlank() || keys.isNotBlank() || content.isNotBlank()
+
+fun WorldBookEntryModalState.materialize(
+    existing: WorldBookEntry?,
+    idFactory: () -> String = { UUID.randomUUID().toString() }
+): WorldBookEntry = (existing ?: WorldBookEntry(id = originalEntryId ?: idFactory())).copy(
+    name = name,
+    keys = keys.split(",").map(String::trim).filter(String::isNotBlank),
+    secondaryKeys = secondary.split(",").map(String::trim).filter(String::isNotBlank),
+    selective = secondary.isNotBlank(),
+    selectiveLogic = logic,
+    content = content,
+    insertionOrder = order.toIntOrNull() ?: 100,
+    position = position,
+    enabled = enabled,
+    constant = constant,
+    useRegex = useRegex,
+    matchWholeWords = wholeWords,
+    caseSensitive = caseSensitive,
+    ignoreBudget = ignoreBudget,
+    excludeRecursion = excludeRecursion,
+    preventRecursion = preventRecursion,
+    delayUntilRecursion = delayUntilRecursion,
+    probability = probability.toIntOrNull()?.coerceIn(0, 100) ?: 100,
+    group = group,
+    groupWeight = groupWeight.toIntOrNull()?.coerceAtLeast(0) ?: 100,
+    scanDepth = scanDepth.toIntOrNull()?.coerceAtLeast(0),
+    sticky = sticky.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+    cooldown = cooldown.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+    delay = delay.toIntOrNull()?.coerceAtLeast(0) ?: 0,
+    outletName = outlet
+)

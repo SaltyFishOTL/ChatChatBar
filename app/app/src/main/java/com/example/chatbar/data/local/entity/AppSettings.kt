@@ -45,6 +45,8 @@ data class AppSettings(
         CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
     val characterRewriteResearchSourceMode: CharacterResearchSourceMode =
         CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
+    val worldBookAiResearchSourceMode: CharacterResearchSourceMode =
+        CharacterResearchSourceMode.ENCYCLOPEDIA_SEARCH,
     val webSearchMaxResultsPerQuery: Int = 1,
     val novelAiImageModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val novelAiImageAspectRatio: String = "",

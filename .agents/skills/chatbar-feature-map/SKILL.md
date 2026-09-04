@@ -47,7 +47,7 @@ Use this as a first-hop map. Read a specific skill or listed files, then search 
 - App update checks, release APK download, system installer handoff, or release publishing: use chatbar-app-update.
 - Import/export/card packages: domain/card/CardTransferModels.kt, CharacterCardTransferService.kt, CharacterPlaceholderPolicy.kt, CharacterCardPngRenderer.kt, SillyTavernCardParser.kt, SillyTavernCardMapper.kt; SAF export contract in ui/components/CreateOpenableDocument.kt; export UI in ManageScreen.kt. Use chatbar-shared-import for external ACTION_SEND/ACTION_VIEW/text routing, content detection, FIFO staging, conflicts, unknown-type recovery, and shared-image handoff.
 - Persistence/entities: data/local/entity/, data/local/JsonFileStorage.kt, related repository under data/repository/.
-- World books: data/local/entity/WorldBook*.kt, CharacterEditScreen.kt, CharacterEditViewModel.kt.
+- World books: data/local/entity/WorldBook*.kt, ui/worldbook/WorldBookEditScreen.kt, WorldBookEditViewModel.kt. World-book AI creation/fill uses domain/worldbook/WorldBookAiService.kt, domain/search/WorldBookResearchService.kt, reusable reference-document indexing in CharacterReferenceDocumentRetriever.kt, and PromptTemplates.kt.
 - Tutorial/help: ui/tutorial/TutorialScreen.kt.
 
 All abbreviated source paths are relative to app/app/src/main/java/com/example/chatbar/.
