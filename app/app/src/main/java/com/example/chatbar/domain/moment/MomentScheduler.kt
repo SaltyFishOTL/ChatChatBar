@@ -174,7 +174,10 @@ class MomentScheduler(
                     latestPost = latestPost,
                     model = model,
                     imageModel = imageModel,
-                    novelAiImageModel = session.resolvedNovelAiImageModel(settings.novelAiImageModel),
+                    novelAiImageModel = session.resolvedNovelAiImageModel(
+                        characterDefault = card.defaultNovelAiImageModel,
+                        globalDefault = settings.novelAiImageModel
+                    ),
                     scheduledAt = task.scheduledAt,
                     finalPromptRequirement = settings.imagePromptToolPreference,
                     playerName = playerName,

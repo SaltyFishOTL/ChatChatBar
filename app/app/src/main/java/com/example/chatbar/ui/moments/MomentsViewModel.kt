@@ -150,14 +150,18 @@ class MomentsViewModel : ViewModel() {
         viewModelScope.launch {
             val outcome = runCatching {
                 repository.initialize()
+                characterRepository.initialize()
                 settingsRepository.initialize()
                 val source = repository.getPost(postId) ?: error("原朋友圈不存在")
                 require(!source.isPlaceholder && source.imagePath == imagePath) { "原朋友圈图片已发生变化" }
                 val token = novelAiCredentials.load() ?: error("NovelAI Token 未配置")
                 val appSettings = settingsRepository.getAppSettings()
+                val card = characterRepository.getById(source.characterCardId)
                 val novelAiImageModel = chatRepository.getSession(source.sessionId)
-                    ?.resolvedNovelAiImageModel(appSettings.novelAiImageModel)
-                    ?: appSettings.novelAiImageModel
+                    ?.resolvedNovelAiImageModel(
+                        characterDefault = card?.defaultNovelAiImageModel,
+                        globalDefault = appSettings.novelAiImageModel
+                    ) ?: card?.defaultNovelAiImageModel ?: appSettings.novelAiImageModel
                 val prompt = draft.toPromptPlan()
                 val imageSize = draft.imageSize()
                 val imageBytes = AiBackgroundWorkManager.run("moments_image_regenerate_$postId") {
@@ -240,8 +244,10 @@ class MomentsViewModel : ViewModel() {
                 val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
                 val settings = settingsRepository.getAppSettings()
                 val session = chatRepository.getSession(post.sessionId)
-                val novelAiImageModel = session?.resolvedNovelAiImageModel(settings.novelAiImageModel)
-                    ?: settings.novelAiImageModel
+                val novelAiImageModel = session?.resolvedNovelAiImageModel(
+                    characterDefault = card.defaultNovelAiImageModel,
+                    globalDefault = settings.novelAiImageModel
+                ) ?: card.defaultNovelAiImageModel ?: settings.novelAiImageModel
                 val globalPlayerName = settingsRepository.getPlayerSetting().playerName
                     .takeIf(String::isNotBlank)
                 val playerName = session?.playerName?.takeIf(String::isNotBlank) ?: globalPlayerName
@@ -408,7 +414,10 @@ class MomentsViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        novelAiImageModel = session.resolvedNovelAiImageModel(settings.novelAiImageModel),
+                        novelAiImageModel = session.resolvedNovelAiImageModel(
+                            characterDefault = card.defaultNovelAiImageModel,
+                            globalDefault = settings.novelAiImageModel
+                        ),
                         scheduledAt = placeholder.scheduledAt,
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,

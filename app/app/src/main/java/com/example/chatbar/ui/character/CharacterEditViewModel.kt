@@ -52,6 +52,7 @@ import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageSize
 import com.example.chatbar.domain.image.NovelAiImageSizePolicy
 import com.example.chatbar.domain.image.NovelAiPromptPlan
@@ -366,6 +367,7 @@ class CharacterEditViewModel(
     var mesExample by mutableStateOf("")
     var creatorNotes by mutableStateOf("")
     var momentsEnabled by mutableStateOf(true)
+    var defaultNovelAiImageModel by mutableStateOf<NovelAiImageModel?>(null)
     val charactersList = mutableStateListOf<CharacterInfo>()
     private val freeformAvatarPromptDrafts = mutableStateMapOf<String, String>()
     val documentsList = mutableStateListOf<DocumentInfo>()
@@ -2355,6 +2357,7 @@ class CharacterEditViewModel(
         mesExample = card.mesExample
         creatorNotes = card.creatorNotes
         momentsEnabled = card.momentsEnabled
+        defaultNovelAiImageModel = card.defaultNovelAiImageModel
         charactersList.clear()
         charactersList.addAll(card.characters.filterNot(CharacterPlaceholderPolicy::isEmpty))
         documentsList.clear()
@@ -2427,6 +2430,7 @@ class CharacterEditViewModel(
                 mesExample = mesExample,
                 creatorNotes = creatorNotes,
                 momentsEnabled = momentsEnabled,
+                defaultNovelAiImageModel = defaultNovelAiImageModel,
                 worldBookIds = selectedWorldBookIds.distinct(),
                 characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
                 customDocuments = documentsList.toList()
@@ -2440,6 +2444,7 @@ class CharacterEditViewModel(
             basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
             systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
             creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
+            defaultNovelAiImageModel != null ||
             documentsList.isNotEmpty() || charactersList.any { it.hasEditorContent() }
 
     private fun CharacterInfo.hasEditorContent(): Boolean = !CharacterPlaceholderPolicy.isEmpty(this)
@@ -2469,6 +2474,7 @@ class CharacterEditViewModel(
             mesExample = mesExample,
             creatorNotes = creatorNotes,
             momentsEnabled = momentsEnabled,
+            defaultNovelAiImageModel = defaultNovelAiImageModel,
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,
@@ -2498,6 +2504,7 @@ class CharacterEditViewModel(
             mesExample = mesExample,
             creatorNotes = creatorNotes,
             momentsEnabled = momentsEnabled,
+            defaultNovelAiImageModel = defaultNovelAiImageModel,
             worldBookIds = selectedWorldBookIds.distinct(),
             characterBook = null,
             boundWorldBookId = null,

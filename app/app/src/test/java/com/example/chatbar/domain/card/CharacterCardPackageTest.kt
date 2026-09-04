@@ -3,6 +3,7 @@ package com.example.chatbar.domain.card
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.PresetManifest
 import com.example.chatbar.data.local.entity.PresetType
+import com.example.chatbar.domain.image.NovelAiImageModel
 import java.io.File
 import java.util.Base64
 import kotlinx.serialization.json.Json
@@ -23,6 +24,7 @@ class CharacterCardPackageTest {
             card = PackagedCharacterCard(
                 name = "测试卡",
                 botName = "第一行\n第二行",
+                defaultNovelAiImageModel = NovelAiImageModel.V5_FULL,
                 avatarResourceId = "avatar",
                 characters = listOf(PackagedCharacter(name = "角色"))
             ),
@@ -38,13 +40,13 @@ class CharacterCardPackageTest {
         assertFalse(encoded.contains("createdAt"))
         assertFalse(encoded.contains("updatedAt"))
         assertFalse(encoded.contains("pendingSpeakerRenameTasks"))
-        assertTrue(encoded.contains("\"schemaVersion\":7"))
+        assertTrue(encoded.contains("\"schemaVersion\":8"))
         assertEquals(packageData, json.decodeFromString(CharacterCardPackage.serializer(), encoded))
     }
 
     @Test
     fun legacyPackageSchemasDefaultBotNameToBlank() {
-        (3..6).forEach { schemaVersion ->
+        (3..7).forEach { schemaVersion ->
             val packageData = json.decodeFromString(
                 CharacterCardPackage.serializer(),
                 """{"schemaVersion":$schemaVersion,"card":{"name":"旧角色卡"}}"""
@@ -53,6 +55,7 @@ class CharacterCardPackageTest {
             packageData.validateForImport()
 
             assertEquals("", packageData.card.botName)
+            assertEquals(null, packageData.card.defaultNovelAiImageModel)
         }
     }
 

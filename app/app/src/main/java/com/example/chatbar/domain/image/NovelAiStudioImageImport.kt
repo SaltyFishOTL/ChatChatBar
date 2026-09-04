@@ -90,6 +90,9 @@ fun NovelAiStudioDraft.applyImportedMetadata(
     if (selection.generationSettings && metadata.settings.hasAny) {
         val imported = metadata.settings
         val targetModel = imported.model ?: result.selectedModel
+        if (imported.model != null) {
+            result = result.copy(followDefaultNovelAiImageModel = false)
+        }
         val current = when (targetModel) {
             NovelAiImageModel.V4_5_FULL -> result.v45Settings
             NovelAiImageModel.V5_FULL -> result.v5Settings

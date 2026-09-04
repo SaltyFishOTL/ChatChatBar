@@ -4,11 +4,12 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.domain.image.NovelAiImageModel
 import kotlinx.serialization.Serializable
 
 @Serializable
 data class CharacterCardPackage(
-    val schemaVersion: Int = 7,
+    val schemaVersion: Int = 8,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
@@ -30,6 +31,7 @@ data class PackagedCharacterCard(
     val freeformCharacterText: String = "",
     val defaultImagePrompt: String = "",
     val defaultImageNegativePrompt: String = "",
+    val defaultNovelAiImageModel: NovelAiImageModel? = null,
     val systemPrompt: String = "",
     val postHistoryInstructions: String = "",
     val mesExample: String = "",
@@ -77,7 +79,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion in 3..7) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..8) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     require(card.name.isNotBlank()) { "角色卡名称不能为空" }
     require(card.characters.all { it.name.isNotBlank() }) { "人物名称不能为空" }
     require(documents.all { it.fileName.isNotBlank() && it.fileType.isNotBlank() }) { "文档名称和类型不能为空" }

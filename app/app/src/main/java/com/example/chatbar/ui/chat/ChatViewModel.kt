@@ -1796,8 +1796,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val finalPromptRequirement = initialPreference
             val card = currentSession?.let { characterRepository.getById(it.characterCardId) }
             val settings = settingsRepository.getAppSettings()
-            val targetImageModel = currentSession?.resolvedNovelAiImageModel(settings.novelAiImageModel)
-                ?: settings.novelAiImageModel
+            val targetImageModel = currentSession?.resolvedNovelAiImageModel(
+                characterDefault = card?.defaultNovelAiImageModel,
+                globalDefault = settings.novelAiImageModel
+            ) ?: card?.defaultNovelAiImageModel ?: settings.novelAiImageModel
             val model = currentSession?.let { modelResolver.resolveImageModel(it.imageModelId, settings) }
             val modelUsable = model?.hasConfiguredAuthentication(settings) == true
             val imageRatioError = NovelAiImageSizePolicy.validationError(settings.novelAiImageAspectRatio)

@@ -164,6 +164,8 @@ data class NovelAiStudioDraft(
     val extraRequirement: String = "",
     val aiDesignModelId: String? = null,
     val aiDesignNaturalLanguageMode: Boolean = false,
+    /** true 时跟随已导入角色卡与全局配置；selectedModel 缓存当前生效值。 */
+    val followDefaultNovelAiImageModel: Boolean = false,
     val selectedModel: NovelAiImageModel = NovelAiImageModel.V4_5_FULL,
     val v45Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V4_5_FULL),
     val v5Settings: NovelAiGenerationSettings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL),
@@ -224,6 +226,7 @@ fun NovelAiStudioDraft.applyDesignedPromptPlan(
     characters = plan.characterCaptions.map { caption ->
         NovelAiCharacterPromptDraft(prompt = caption.prompt, negativePrompt = "")
     },
+    followDefaultNovelAiImageModel = false,
     selectedModel = targetImageModel,
     naturalLanguageMode = false,
     conversionSnapshot = null
@@ -301,6 +304,7 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         basePrompt = recipe.basePrompt,
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
+        followDefaultNovelAiImageModel = false,
         selectedModel = recipe.settings.model,
         conversionSnapshot = null,
         imageGuidance = recipe.imageGuidance.restoredFromHistory()
@@ -310,6 +314,7 @@ fun NovelAiStudioDraft.applyHistoryRecipe(
         basePrompt = recipe.basePrompt,
         characters = recipe.characters,
         negativePrompt = recipe.negativePrompt,
+        followDefaultNovelAiImageModel = false,
         selectedModel = recipe.settings.model,
         conversionSnapshot = null,
         imageGuidance = recipe.imageGuidance.restoredFromHistory()

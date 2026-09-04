@@ -1,6 +1,7 @@
 package com.example.chatbar.data.local.entity
 
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiImageModelResolution
 import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
@@ -32,7 +33,7 @@ data class ChatSession(
     val displayTitleOverride: String? = null,
     val modelId: String? = null,
     val imageModelId: String? = null,
-    /** null 表示跟随全局 NovelAI 生图模型。 */
+    /** null 表示跟随角色卡与全局 NovelAI 生图模型。 */
     val novelAiImageModel: NovelAiImageModel? = null,
     val formatCardId: String? = null,
     @Serializable(with = ReplyLengthSerializer::class)
@@ -77,8 +78,14 @@ data class ChatSession(
     val createdAt: Long,
     val updatedAt: Long
 ) {
-    fun resolvedNovelAiImageModel(globalDefault: NovelAiImageModel): NovelAiImageModel =
-        novelAiImageModel ?: globalDefault
+    fun resolvedNovelAiImageModel(
+        characterDefault: NovelAiImageModel?,
+        globalDefault: NovelAiImageModel
+    ): NovelAiImageModel = NovelAiImageModelResolution.resolve(
+        explicitOverride = novelAiImageModel,
+        characterDefault = characterDefault,
+        globalDefault = globalDefault
+    )
 
     companion object {
         @OptIn(ExperimentalUuidApi::class)

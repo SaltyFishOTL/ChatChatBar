@@ -323,7 +323,8 @@ fun ChatSettingsDialog(
                         "参数与设定" -> SettingsContent(
                             modelId, { modelId = it }, defaultModelId, models,
                             imageModelId, { imageModelId = it }, defaultImageModelId,
-                            novelAiImageModel, { novelAiImageModel = it }, globalAppSettings.novelAiImageModel,
+                            novelAiImageModel, { novelAiImageModel = it },
+                            characterCard?.defaultNovelAiImageModel ?: globalAppSettings.novelAiImageModel,
                             formatId, { formatId = it }, defaultFormatId, formats,
                             worldBooks, characterCard?.worldBookIds.orEmpty(), extraWorldBookIds, { extraWorldBookIds = it },
                             replyLength,
@@ -502,7 +503,7 @@ private fun SettingsContent(
     modelId: String?, onModel: (String?) -> Unit, defaultModelId: String?, models: List<ModelConfig>,
     imageModelId: String?, onImageModel: (String?) -> Unit, defaultImageModelId: String?,
     novelAiImageModel: NovelAiImageModel?, onNovelAiImageModel: (NovelAiImageModel?) -> Unit,
-    globalNovelAiImageModel: NovelAiImageModel,
+    inheritedNovelAiImageModel: NovelAiImageModel,
     formatId: String?, onFormat: (String?) -> Unit, defaultFormatId: String?, formats: List<FormatCard>,
     worldBooks: List<WorldBook>, inheritedWorldBookIds: List<String>, extraWorldBookIds: List<String>, onExtraWorldBookIds: (List<String>) -> Unit,
     length: String,
@@ -579,7 +580,7 @@ private fun SettingsContent(
             )
         }
         val novelAiModelOptions = listOf(
-            NovelAiImageModelOption(null, "跟随全局（${globalNovelAiImageModel.displayName}）")
+            NovelAiImageModelOption(null, "跟随角色卡/全局（${inheritedNovelAiImageModel.displayName}）")
         ) + NovelAiImageModel.entries.map { model ->
             NovelAiImageModelOption(model, model.displayName)
         }

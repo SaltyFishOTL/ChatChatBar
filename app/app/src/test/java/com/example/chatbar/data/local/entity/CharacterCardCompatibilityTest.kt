@@ -1,5 +1,6 @@
 package com.example.chatbar.data.local.entity
 
+import com.example.chatbar.domain.image.NovelAiImageModel
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -20,11 +21,30 @@ class CharacterCardCompatibilityTest {
 
         assertEquals("", card.botName)
         assertEquals("旧卡", card.effectiveBotName)
+        assertEquals(null, card.defaultNovelAiImageModel)
         assertTrue(card.pendingSpeakerRenameTasks.isEmpty())
         assertTrue(
             !json.encodeToString(CharacterCard.serializer(), card)
                 .contains("pendingSpeakerRenameTasks")
         )
+    }
+
+    @Test
+    fun defaultNovelAiImageModelRoundTrips() {
+        val card = CharacterCard(
+            id = "card",
+            name = "测试卡",
+            defaultNovelAiImageModel = NovelAiImageModel.V5_FULL,
+            createdAt = 1,
+            updatedAt = 2
+        )
+
+        val restored = json.decodeFromString(
+            CharacterCard.serializer(),
+            json.encodeToString(CharacterCard.serializer(), card)
+        )
+
+        assertEquals(NovelAiImageModel.V5_FULL, restored.defaultNovelAiImageModel)
     }
 
     @Test
