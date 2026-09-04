@@ -158,18 +158,17 @@ class PromptAssemblerCharacterModeTest {
                 botName = "Bot\nName",
                 basicSetting = "稳定角色设定：${'$'}botname"
             ).copy(postHistoryInstructions = "尾部规则：{{char}}"),
-            longTermMemory = "冻结前记忆",
-            hasHistoryMessages = true,
-            hasPreviousTurn = true
+            longTermMemory = "冻结前记忆"
         )
 
         assertTrue(layers.stablePrefixCacheable)
-        assertTrue(layers.stableSystemPrompt.contains("稳定角色设定：Bot\nName"))
-        assertFalse(layers.stableSystemPrompt.contains("【长期记忆】"))
-        assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
+        assertTrue(layers.coreSystemPrompt.contains("【核心指令】"))
+        assertTrue(layers.stableContextSystemPrompt.contains("稳定角色设定：Bot\nName"))
+        assertFalse(layers.stableContextSystemPrompt.contains("【长期记忆】"))
+        assertFalse(layers.stableContextSystemPrompt.contains("【核心指令】"))
         assertTrue(layers.dynamicSystemPrompt.contains("冻结前记忆"))
         assertTrue(layers.tailSystemPrompt.contains("尾部规则：Bot\nName"))
-        assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
+        assertFalse(layers.tailSystemPrompt.contains("【上一轮】"))
     }
 
     @Test fun rendersFormatCardPlaceholdersAndOutletsForFinalUserMessage() {
@@ -216,10 +215,26 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(prompt.contains("稳定角色设定"))
     }
 
-    @Test fun cacheLayersOmitHistoryHeadingsWhenGroupsAreEmpty() {
+    @Test fun customCoreAndPostHistoryKeepOriginalPlaceholderSemantics() {
+        val layers = assembler.assembleCachePromptLayers(
+            characterCard = card().copy(
+                systemPrompt = "自定义核心\n{{original}}",
+                postHistoryInstructions = "自定义尾部\n{{original}}"
+            )
+        )
+
+        assertTrue(layers.coreSystemPrompt.contains("自定义核心"))
+        assertTrue(layers.coreSystemPrompt.length > "【核心指令】\n自定义核心".length)
+        assertTrue(layers.tailSystemPrompt.contains("自定义尾部"))
+        assertTrue(layers.tailSystemPrompt.length > "【后置指令】\n自定义尾部".length)
+        assertFalse(layers.coreSystemPrompt.contains("{{original}}"))
+        assertFalse(layers.tailSystemPrompt.contains("{{original}}"))
+    }
+
+    @Test fun cacheLayersLeaveHistoryHeadingsToMessageAssembly() {
         val layers = assembler.assembleCachePromptLayers(characterCard = card())
 
-        assertFalse(layers.stableSystemPrompt.contains("【聊天记录】"))
+        assertFalse(layers.stableContextSystemPrompt.contains("【聊天记录】"))
         assertFalse(layers.tailSystemPrompt.contains("【上一轮】"))
     }
 
@@ -230,7 +245,7 @@ class PromptAssemblerCharacterModeTest {
         )
 
         assertFalse(layers.stablePrefixCacheable)
-        assertTrue(layers.stableSystemPrompt.contains("动态场景"))
+        assertTrue(layers.stableContextSystemPrompt.contains("动态场景"))
         assertTrue(layers.dynamicSystemPrompt.isBlank())
     }
 
@@ -256,9 +271,7 @@ class PromptAssemblerCharacterModeTest {
                     metadata = mapOf("timelineStart" to "8", "timelineEnd" to "8")
                 )
             ),
-            memoryHeadAndTimeline = "【HEAD｜当前状态｜截至 T30】\nhead\n【时间线约束】\nconstraint",
-            hasHistoryMessages = true,
-            hasPreviousTurn = true
+            memoryHeadAndTimeline = "【HEAD｜当前状态｜截至 T30】\nhead\n【时间线约束】\nconstraint"
         )
         val dynamic = layers.dynamicSystemPrompt
 
@@ -280,8 +293,8 @@ class PromptAssemblerCharacterModeTest {
         assertTrue(memoryNote < memoryCard)
         assertTrue(memoryNote == dynamic.lastIndexOf(PromptTemplates.RAG_CHAT_MEMORY_USAGE_NOTE.trim()))
         assertFalse(dynamic.contains("[召回自 T8]"))
-        assertTrue(layers.stableSystemPrompt.endsWith("【聊天记录】"))
-        assertTrue(layers.tailSystemPrompt.endsWith("【上一轮】"))
+        assertFalse(layers.stableContextSystemPrompt.contains("【聊天记录】"))
+        assertFalse(layers.tailSystemPrompt.contains("【上一轮】"))
     }
 
     @Test fun documentOnlyRagSkipsChatMemoryUsageNote() {
@@ -295,9 +308,7 @@ class PromptAssemblerCharacterModeTest {
                     sourceLabel = "document",
                     content = "document-recalled"
                 )
-            ),
-            hasHistoryMessages = true,
-            hasPreviousTurn = true
+            )
         )
 
         assertTrue(layers.dynamicSystemPrompt.contains("document-recalled"))

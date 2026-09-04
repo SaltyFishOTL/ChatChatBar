@@ -7,6 +7,21 @@ object PromptCacheKeyFactory {
     fun cacheKey(stableSystemPrompt: String): String =
         "chatbar-${sha256(stableSystemPrompt).take(48)}"
 
+    fun cacheKey(stablePrefixMessages: List<ChatApiMessage>): String {
+        val framedPrefix = buildString {
+            stablePrefixMessages.forEach { message ->
+                val content = message.content.toString()
+                append(message.role.length)
+                append(':')
+                append(message.role)
+                append(content.length)
+                append(':')
+                append(content)
+            }
+        }
+        return cacheKey(framedPrefix)
+    }
+
     private fun sha256(value: String): String = MessageDigest
         .getInstance("SHA-256")
         .digest(value.toByteArray(Charsets.UTF_8))

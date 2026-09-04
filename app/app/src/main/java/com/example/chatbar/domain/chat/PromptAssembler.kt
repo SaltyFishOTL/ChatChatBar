@@ -9,7 +9,8 @@ import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 
 data class PromptCachePromptLayers(
-    val stableSystemPrompt: String,
+    val coreSystemPrompt: String,
+    val stableContextSystemPrompt: String,
     val dynamicSystemPrompt: String,
     val tailSystemPrompt: String,
     val stablePrefixCacheable: Boolean
@@ -30,6 +31,7 @@ internal fun resolveFormatCardForRequest(
 }
 
 private enum class PromptLayer {
+    CORE,
     STABLE,
     DYNAMIC,
     TAIL
@@ -83,8 +85,8 @@ class PromptAssembler {
     }
 
     /**
-     * 稳定设定在前，动态资料靠近末尾，后置指令与上一轮位于最终热区。
-     * 稳定区含动态 World Book outlet 时，完整 system prompt 退回动态层。
+     * 核心任务与稳定角色资料分开，供调用方在两者之间插入 CCB 握手。
+     * 动态资料和后置指令保持独立；稳定区含动态 World Book outlet 时禁用稳定前缀缓存。
      */
     fun assembleCachePromptLayers(
         characterCard: CharacterCard,
@@ -99,9 +101,7 @@ class PromptAssembler {
         memoryArchive: String? = null,
         memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
-        worldBookOutlets: Map<String, String> = emptyMap(),
-        hasHistoryMessages: Boolean = false,
-        hasPreviousTurn: Boolean = false
+        worldBookOutlets: Map<String, String> = emptyMap()
     ): PromptCachePromptLayers {
         val sections = collectSections(
             characterCard = characterCard,
@@ -117,15 +117,20 @@ class PromptAssembler {
             memoryHeadAndTimeline = memoryHeadAndTimeline,
             worldBookPrompt = worldBookPrompt
         )
+        val coreRaw = renderSections(sections.filter { it.layer == PromptLayer.CORE })
         val stableRaw = renderSections(sections.filter { it.layer == PromptLayer.STABLE })
-            .appendHeadingIf(hasHistoryMessages, PromptTemplates.SECTION_CHAT_HISTORY)
         val dynamicRaw = renderSections(sections.filter { it.layer == PromptLayer.DYNAMIC })
         val tailRaw = renderSections(sections.filter { it.layer == PromptLayer.TAIL })
-            .appendHeadingIf(hasPreviousTurn, PromptTemplates.SECTION_PREVIOUS_TURN)
 
-        if (OUTLET_TOKEN_REGEX.containsMatchIn(stableRaw)) {
+        if (OUTLET_TOKEN_REGEX.containsMatchIn(coreRaw) || OUTLET_TOKEN_REGEX.containsMatchIn(stableRaw)) {
             return PromptCachePromptLayers(
-                stableSystemPrompt = renderLayer(
+                coreSystemPrompt = renderLayer(
+                    coreRaw,
+                    playerName,
+                    characterCard.effectiveBotName,
+                    worldBookOutlets
+                ),
+                stableContextSystemPrompt = renderLayer(
                     stableRaw,
                     playerName,
                     characterCard.effectiveBotName,
@@ -148,7 +153,13 @@ class PromptAssembler {
         }
 
         return PromptCachePromptLayers(
-            stableSystemPrompt = renderLayer(
+            coreSystemPrompt = renderLayer(
+                coreRaw,
+                playerName,
+                characterCard.effectiveBotName,
+                worldBookOutlets
+            ),
+            stableContextSystemPrompt = renderLayer(
                 stableRaw,
                 playerName,
                 characterCard.effectiveBotName,
@@ -237,7 +248,7 @@ class PromptAssembler {
         }.trim()
         addSection(PromptLayer.STABLE, PromptTemplates.SECTION_PLAYER, personal)
         addSection(
-            PromptLayer.STABLE,
+            PromptLayer.CORE,
             PromptTemplates.SECTION_CORE,
             resolveSystemPrompt(characterCard)
         )
@@ -266,13 +277,6 @@ class PromptAssembler {
 
     private fun renderSections(sections: List<PromptSection>): String = sections.joinToString("\n\n") {
         if (it.title == null) it.content else "【${it.title}】\n${it.content}"
-    }
-
-    private fun String.appendHeadingIf(condition: Boolean, title: String): String {
-        if (!condition) return this
-        return listOf(this, "【$title】")
-            .filter(String::isNotBlank)
-            .joinToString("\n\n")
     }
 
     private fun buildReplyConstraints(replyLength: Int, replyLanguage: String?): String {
