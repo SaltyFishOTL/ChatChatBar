@@ -59,6 +59,22 @@
       "previewImage": "油光可爱.png"
     },
     {
+      "styleKey": "xiaoxia",
+      "displayName": "精致像素",
+      "description": "由p站 xincen 提供",
+      "modelSupport": "BOTH",
+      "prompt": "year 2026, year 2025, year 2024, best quality,best illustration,incredible detail,high complexity,1.3::,pastel color::,-1::artist collaboration::,blender (medium),10::pixel art::,0.5::artist:happoubi_jin,artist:ie (raarami),artist:sos adult::,1.3::spoken heart,sound text::,flexible,heart,motion blur,motion lines,",
+      "previewImage": "精致像素.png"
+    },
+    {
+      "styleKey": "lululong",
+      "displayName": "精细纹理",
+      "description": "由p站 露露 龙 提供",
+      "modelSupport": "BOTH",
+      "prompt": "-5::multiple views::,-4::artist collaboration，卡通::,3::illustration，blue gk::,2.5::3d game cg::,1.3::artist:alp::，2::lunch_(shin_new)::，1.5::hintobento::,1.2::hermityy，happoubi jin::,0.5::mamimi_(mamamimi)::,0.8::enarane::,1.2::binggong asylum::,0.9::ssr_(azmr2828),mendou_kusai::,1.4::sushispin,konya karasue,::,0.6::dishwasher1910,::,::1.4::ame (uten cancel),ohisashiburi,yoneyama mai::, ,4::lunch_(shin_new)，近景特写::,3.5::sakimichan::,1.5::mx2j::,1.3::modare::，year2024, year2025, masterpiece, amazing quality, absurdres, best quality, high detail,beautiful detailed,very aesthetic, Sound，heart， 2::semi-sheer, fine nylon texture, realistic fabric sheen, visible leg contour::,",
+      "previewImage": "精细纹理.png"
+    },
+    {
       "styleKey": "luminous_moist",
       "displayName": "莹润光影",
       "description": "高完成度的数字厚涂",

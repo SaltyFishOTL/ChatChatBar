@@ -7,10 +7,16 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 
-private const val MAX_RESEARCH_ITEMS = 10
+private const val MAX_RESEARCH_QUERIES = 30
+private const val RESEARCH_QUERY_BATCH_SIZE = 10
 private const val MAX_EFFECTIVE_RESULTS_PER_QUERY = 1
 private const val FIRST_PASS_EXCERPT_CHARS = 1200
 private const val FINAL_EXCERPT_CHARS = 4000
+
+private data class ResearchCleaningBatch(
+    val queries: List<CharacterResearchQuery>,
+    val sources: List<ResearchSource>
+)
 
 class CharacterResearchService(
     private val settingsProvider: suspend () -> AppSettings,
@@ -54,7 +60,7 @@ class CharacterResearchService(
             onStatus("未启用外部资料，直接开始生成")
             return@withContext null
         }
-        val maxResearchItems = MAX_RESEARCH_ITEMS
+        val maxResearchQueries = MAX_RESEARCH_QUERIES
         val maxResults = if (encyclopediaEnabled) {
             settingsProvider().webSearchMaxResultsPerQuery.coerceIn(1, MAX_EFFECTIVE_RESULTS_PER_QUERY)
         } else {
@@ -71,7 +77,7 @@ class CharacterResearchService(
                 userInput = userInput,
                 currentCard = currentCard,
                 modelConfig = modelConfig,
-                maxQueries = maxResearchItems,
+                maxQueries = maxResearchQueries,
                 onStatus = onStatus,
                 onRawText = { text -> onVisibleOutput("research-plan", "搜索规划输出", text) }
             )
@@ -79,14 +85,25 @@ class CharacterResearchService(
             referenceDocuments.isNotEmpty() -> CharacterResearchPlanResult(plan = referenceDocumentPlan())
             else -> CharacterResearchPlanResult()
         }
-        val plan = planResult.plan ?: when {
+        val resolvedPlan = planResult.plan ?: when {
             encyclopediaEnabled ->
-                fallbackPlan(userInput, currentCard, maxResearchItems, planResult.failureReason)
+                fallbackPlan(userInput, currentCard, maxResearchQueries, planResult.failureReason)
                     ?: manualUrlPlan(manualUrls).copy(needSearch = false)
                         .takeIf { manualUrlsEnabled }
                     ?: referenceDocumentPlan().takeIf { referenceDocuments.isNotEmpty() }
             referenceDocuments.isNotEmpty() -> referenceDocumentPlan()
             else -> null
+        }
+        val plan = resolvedPlan?.let { resolved ->
+            if (encyclopediaEnabled) {
+                val cappedQueries = resolved.queries.take(maxResearchQueries)
+                resolved.copy(
+                    needSearch = resolved.needSearch && cappedQueries.isNotEmpty(),
+                    queries = cappedQueries
+                )
+            } else {
+                resolved
+            }
         }
         if (plan == null) {
             onStatus("资料规划失败，且没有可用来源，直接开始生成")
@@ -124,7 +141,7 @@ class CharacterResearchService(
         }
 
         val queries = if (encyclopediaEnabled && plan.needSearch) {
-            plan.queries.take(maxResearchItems)
+            plan.queries.take(maxResearchQueries)
         } else {
             emptyList()
         }
@@ -207,54 +224,76 @@ class CharacterResearchService(
                 emptyList()
             }
 
-            val webHits = if (queries.isNotEmpty()) withTimeoutOrNull(35_000L) {
-                queries.flatMapIndexed { index, query ->
-                    onStatus("正在搜索百科 ${index + 1}/${queries.size}：${query.query.statusSnippet(120)}")
-                    runCatching {
-                        val queryHits = backend.search(
-                            SearchBackendQuery(
-                                query = query.query,
-                                maxResults = maxResults
+            val queryBatches = queries.chunked(RESEARCH_QUERY_BATCH_SIZE)
+            val webSources = queryBatches.flatMapIndexed { batchIndex, batchQueries ->
+                val batchNumber = batchIndex + 1
+                val batchCount = queryBatches.size
+                val webHits = withTimeoutOrNull(35_000L) {
+                    batchQueries.flatMapIndexed { index, query ->
+                        val globalIndex = batchIndex * RESEARCH_QUERY_BATCH_SIZE + index + 1
+                        onStatus(
+                            "正在搜索百科 $globalIndex/${queries.size}（第 $batchNumber/$batchCount 轮）：" +
+                                query.query.statusSnippet(120)
+                        )
+                        runCatching {
+                            val queryHits = backend.search(
+                                SearchBackendQuery(
+                                    query = query.query,
+                                    maxResults = maxResults
+                                )
+                            ).map { it.copy(query = query.query) }
+                            onStatus("百科搜索完成 $globalIndex/${queries.size}：命中 ${queryHits.size} 条")
+                            queryHits
+                        }.getOrElse { error ->
+                            onStatus(
+                                "百科搜索失败 $globalIndex/${queries.size}：" +
+                                    (error.message ?: error::class.java.simpleName)
                             )
-                        ).map { it.copy(query = query.query) }
-                        onStatus("百科搜索完成 ${index + 1}/${queries.size}：命中 ${queryHits.size} 条")
-                        queryHits
-                    }.getOrElse { error ->
-                        onStatus("百科搜索失败 ${index + 1}/${queries.size}：${error.message ?: error::class.java.simpleName}")
-                        emptyList()
+                            emptyList()
+                        }
                     }
                 }
-            }.orEmpty() else emptyList()
-
-            val firstPassWebSources = ResearchCleaner.toResearchSources(
-                hits = webHits,
-                extracts = emptyList(),
-                maxSources = maxResearchItems,
-                maxExcerptChars = FIRST_PASS_EXCERPT_CHARS
-            )
-            val extracts = if (firstPassWebSources.isEmpty()) {
-                emptyList()
-            } else {
-                onStatus("正在抽取百科正文：${firstPassWebSources.size} 个来源")
-                runCatching {
-                    backend.extract(
-                        urls = firstPassWebSources.map { it.url },
-                        maxPages = maxResearchItems
-                    )
-                }.getOrElse { error ->
-                    onStatus("百科正文抽取失败，改用搜索摘要：${error.message ?: error::class.java.simpleName}")
+                if (webHits == null) {
+                    onStatus("百科搜索第 $batchNumber/$batchCount 轮超时，继续处理已完成轮次")
                     emptyList()
+                } else {
+                    val firstPassWebSources = ResearchCleaner.toResearchSources(
+                        hits = webHits,
+                        extracts = emptyList(),
+                        maxSources = batchQueries.size,
+                        maxExcerptChars = FIRST_PASS_EXCERPT_CHARS
+                    )
+                    val extracts = if (firstPassWebSources.isEmpty()) {
+                        emptyList()
+                    } else {
+                        onStatus(
+                            "正在抽取百科正文（第 $batchNumber/$batchCount 轮）：" +
+                                "${firstPassWebSources.size} 个来源"
+                        )
+                        runCatching {
+                            backend.extract(
+                                urls = firstPassWebSources.map { it.url },
+                                maxPages = batchQueries.size
+                            )
+                        }.getOrElse { error ->
+                            onStatus(
+                                "百科正文抽取失败，改用搜索摘要：" +
+                                    (error.message ?: error::class.java.simpleName)
+                            )
+                            emptyList()
+                        }
+                    }
+                    ResearchCleaner.toResearchSources(
+                        hits = webHits,
+                        extracts = extracts,
+                        maxSources = batchQueries.size,
+                        maxExcerptChars = FINAL_EXCERPT_CHARS
+                    )
                 }
             }
-            val webSources = ResearchCleaner.toResearchSources(
-                hits = webHits,
-                extracts = extracts,
-                maxSources = maxResearchItems,
-                maxExcerptChars = FINAL_EXCERPT_CHARS
-            )
-            (documentSources + manualPageSources + webSources).mapIndexed { index, source ->
-                source.copy(sourceId = "S${index + 1}")
-            }
+            (documentSources + manualPageSources + webSources)
+                .distinctBy { ResearchCleaner.canonicalUrl(it.url) }
+                .mapIndexed { index, source -> source.copy(sourceId = "S${index + 1}") }
         }
         if (sources.isEmpty()) {
             if (referenceDocuments.isNotEmpty()) {
@@ -268,53 +307,83 @@ class CharacterResearchService(
         }
         publish(ResearchDebugSnapshot(plan = plan, sources = sources))
 
-        onStatus("正在清洗并压缩外部资料：${sources.size} 个来源")
-        val summaryResult = runCatching {
-            summarizer.summarize(
-                request = userInput,
-                currentCard = currentCard,
-                plan = plan,
-                sources = sources,
-                modelConfig = modelConfig,
-                onStatus = onStatus,
-                onRawText = { text -> onVisibleOutput("research-brief", "资料整理输出", text) }
-            )
-        }.getOrElse { error ->
-            ResearchBriefResult(failureReason = error.message ?: error::class.java.simpleName)
-        }
-        val summarizedBrief = summaryResult.brief
-            ?.takeIf { it.hasSummaryText() }
-            ?.copy(sources = emptyList())
-        val brief = if (summarizedBrief != null) {
-            if (summaryResult.failureReason.isNotBlank()) {
-                onStatus("AI 资料整理未成功结构化，直接采用 AI 原文作为整理结果")
+        val cleaningBatches = buildCleaningBatches(plan, queries, sources)
+        val batchBriefs = mutableListOf<ResearchBrief>()
+        val batchFailures = mutableListOf<String>()
+        val batchRawPreviews = mutableListOf<String>()
+        cleaningBatches.forEachIndexed { index, batch ->
+            val batchNumber = index + 1
+            val batchCount = cleaningBatches.size
+            val batchLabel = if (batchCount == 1) "" else "（第 $batchNumber/$batchCount 轮）"
+            onStatus("正在清洗并压缩外部资料$batchLabel：${batch.sources.size} 个来源")
+            val summaryResult = runCatching {
+                summarizer.summarize(
+                    request = userInput,
+                    currentCard = currentCard,
+                    plan = plan.copy(queries = batch.queries),
+                    sources = batch.sources,
+                    modelConfig = modelConfig,
+                    onStatus = onStatus,
+                    onRawText = { text ->
+                        onVisibleOutput(
+                            if (batchCount == 1) "research-brief" else "research-brief-$batchNumber",
+                            if (batchCount == 1) "资料整理输出" else "资料整理 $batchNumber/$batchCount",
+                            text
+                        )
+                    }
+                )
+            }.getOrElse { error ->
+                ResearchBriefResult(failureReason = error.message ?: error::class.java.simpleName)
             }
-            summarizedBrief
-        } else {
-            if (summaryResult.failureReason.isNotBlank()) {
-                onStatus("外部资料压缩失败：${summaryResult.failureReason.statusSnippet(120)}")
+            val summarizedBrief = summaryResult.brief
+                ?.takeIf { it.hasSummaryText() }
+                ?.copy(sources = emptyList())
+            val batchBrief = if (summarizedBrief != null) {
+                if (summaryResult.failureReason.isNotBlank()) {
+                    onStatus("AI 资料整理${batchLabel}未成功结构化，直接采用 AI 原文作为整理结果")
+                }
+                summarizedBrief
+            } else {
+                if (summaryResult.failureReason.isNotBlank()) {
+                    onStatus(
+                        "外部资料压缩${batchLabel}失败：" +
+                            summaryResult.failureReason.statusSnippet(120)
+                    )
+                }
+                onStatus("AI资料整理${batchLabel}不可用，使用清洗正文兜底摘要")
+                ResearchCleaner.fallbackBrief(
+                    plan.reason,
+                    batch.queries.map { it.query } + if (referenceDocuments.isNotEmpty() && index == 0) {
+                        listOf("上传参考文档 RAG")
+                    } else {
+                        emptyList()
+                    },
+                    batch.sources
+                )
             }
-            onStatus("AI资料整理不可用，使用清洗正文兜底摘要")
-            ResearchCleaner.fallbackBrief(
-                plan.reason,
-                plan.queries.map { it.query } + if (referenceDocuments.isNotEmpty()) {
-                    listOf("上传参考文档 RAG")
-                } else {
-                    emptyList()
-                },
-                sources
-            )
+            batchBrief?.let(batchBriefs::add)
+            summaryResult.failureReason.takeIf(String::isNotBlank)?.let { failure ->
+                batchFailures += if (batchCount == 1) failure else "第 $batchNumber/$batchCount 轮：$failure"
+            }
+            summaryResult.rawResponsePreview.takeIf {
+                summaryResult.failureReason.isNotBlank() && it.isNotBlank()
+            }?.let { preview ->
+                batchRawPreviews += if (batchCount == 1) preview else "【第 $batchNumber/$batchCount 轮】\n$preview"
+            }
         }
+        val brief = combineBriefs(
+            plan = plan,
+            referenceDocumentsIncluded = referenceDocuments.isNotEmpty(),
+            briefs = batchBriefs
+        )
         if (brief?.hasContent() == true) {
             publish(
                 ResearchDebugSnapshot(
                     plan = plan,
-                    sources = if (summarizedBrief != null) emptyList() else sources,
+                    sources = brief.sources,
                     brief = brief,
-                    briefFailureReason = summaryResult.failureReason,
-                    briefRawResponsePreview = summaryResult.rawResponsePreview
-                        .takeIf { summaryResult.failureReason.isNotBlank() }
-                        .orEmpty()
+                    briefFailureReason = batchFailures.joinToString("；"),
+                    briefRawResponsePreview = batchRawPreviews.joinToString("\n\n")
                 )
             )
             onStatus("外部资料已整理，开始生成")
@@ -323,6 +392,49 @@ class CharacterResearchService(
         }
         brief
     }
+
+    private fun buildCleaningBatches(
+        plan: CharacterResearchPlan,
+        activeQueries: List<CharacterResearchQuery>,
+        sources: List<ResearchSource>
+    ): List<ResearchCleaningBatch> {
+        if (activeQueries.size <= RESEARCH_QUERY_BATCH_SIZE) {
+            return listOf(ResearchCleaningBatch(queries = plan.queries, sources = sources))
+        }
+        val activeQueryKeys = activeQueries.map { normalizedQueryKey(it.query) }.toSet()
+        val supplementalSources = sources.filter { normalizedQueryKey(it.query) !in activeQueryKeys }
+        return activeQueries.chunked(RESEARCH_QUERY_BATCH_SIZE).mapIndexedNotNull { index, batchQueries ->
+            val batchQueryKeys = batchQueries.map { normalizedQueryKey(it.query) }.toSet()
+            val batchSources = buildList {
+                if (index == 0) addAll(supplementalSources)
+                addAll(sources.filter { normalizedQueryKey(it.query) in batchQueryKeys })
+            }
+            batchSources.takeIf { it.isNotEmpty() }?.let {
+                ResearchCleaningBatch(queries = batchQueries, sources = it)
+            }
+        }
+    }
+
+    private fun combineBriefs(
+        plan: CharacterResearchPlan,
+        referenceDocumentsIncluded: Boolean,
+        briefs: List<ResearchBrief>
+    ): ResearchBrief? {
+        if (briefs.isEmpty()) return null
+        return ResearchBrief(
+            reason = plan.reason,
+            queries = (
+                plan.queries.map(CharacterResearchQuery::query) +
+                    if (referenceDocumentsIncluded) listOf("上传参考文档 RAG") else emptyList()
+                ).distinct(),
+            facts = briefs.flatMap(ResearchBrief::facts).distinct(),
+            notes = briefs.flatMap(ResearchBrief::notes).distinct(),
+            sources = briefs.flatMap(ResearchBrief::sources).distinctBy(ResearchSource::sourceId)
+        )
+    }
+
+    private fun normalizedQueryKey(query: String): String =
+        query.trim().lowercase().replace(Regex("\\s+"), " ")
 
     private fun manualUrlPlan(urls: List<String>): CharacterResearchPlan = CharacterResearchPlan(
         needSearch = true,

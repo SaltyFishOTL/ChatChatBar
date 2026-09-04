@@ -115,7 +115,8 @@ class CharacterRewriteService(
             messages = messages,
             modelConfig = model,
             maxTokens = 7000,
-            thinkingBudget = 512
+            thinkingBudget = 512,
+            readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         ).collect { event ->
             when (event) {
                 is StreamEvent.Delta -> {
@@ -158,7 +159,8 @@ class CharacterRewriteService(
             ),
             modelConfig = model,
             maxTokens = 7000,
-            thinkingBudget = 256
+            thinkingBudget = 256,
+            readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         )
         return parseGeneratedDraft(repaired)
             ?: error("AI 自动改写结果不是可解析 JSON：${raw.take(500)}")

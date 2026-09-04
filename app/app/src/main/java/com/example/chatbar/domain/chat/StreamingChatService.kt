@@ -594,7 +594,8 @@ class StreamingChatService(
         thinkingBudget: Int? = null,
         disableThinking: Boolean = false,
         isolatedTaskParameters: Boolean = false,
-        responseFormatJson: Boolean = false
+        responseFormatJson: Boolean = false,
+        readTimeoutSeconds: Long? = null
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -616,7 +617,10 @@ class StreamingChatService(
             .post(requestBody.toRequestBody(JSON_MEDIA_TYPE))
             .build()
 
-        val call = client.newCall(request)
+        val requestClient = readTimeoutSeconds
+            ?.let { timeout -> client.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).build() }
+            ?: client
+        val call = requestClient.newCall(request)
         continuation.invokeOnCancellation { call.cancel() }
         call.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
@@ -687,7 +691,8 @@ class StreamingChatService(
         onReasoningDelta: (String) -> Unit = {},
         disableThinking: Boolean = false,
         isolatedTaskParameters: Boolean = false,
-        responseFormatJson: Boolean = false
+        responseFormatJson: Boolean = false,
+        readTimeoutSeconds: Long? = null
     ): String = suspendCancellableCoroutine { continuation ->
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
@@ -741,7 +746,10 @@ class StreamingChatService(
             }
         }
 
-        val eventSource = EventSources.createFactory(client).newEventSource(
+        val requestClient = readTimeoutSeconds
+            ?.let { timeout -> client.newBuilder().readTimeout(timeout, TimeUnit.SECONDS).build() }
+            ?: client
+        val eventSource = EventSources.createFactory(requestClient).newEventSource(
             request,
             object : EventSourceListener() {
                 override fun onEvent(

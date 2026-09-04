@@ -131,7 +131,8 @@ class CharacterAutoFillService(
             ),
             modelConfig = model,
             maxTokens = 6000,
-            thinkingBudget = 512
+            thinkingBudget = 512,
+            readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         )
         val draft = parseGeneratedDraft(raw) ?: repairDraft(raw, model)
         draft.constrainedToTargets(currentCard)
@@ -205,7 +206,8 @@ class CharacterAutoFillService(
             messages = messages,
             modelConfig = model,
             maxTokens = 6000,
-            thinkingBudget = 512
+            thinkingBudget = 512,
+            readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         ).collect { event ->
             when (event) {
                 is StreamEvent.Delta -> {
@@ -243,7 +245,8 @@ class CharacterAutoFillService(
             ),
             modelConfig = model,
             maxTokens = 6000,
-            thinkingBudget = 256
+            thinkingBudget = 256,
+            readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         )
         return parseGeneratedDraft(repaired)
             ?: error("AI 自动填充结果不是可解析 JSON：${raw.take(500)}")

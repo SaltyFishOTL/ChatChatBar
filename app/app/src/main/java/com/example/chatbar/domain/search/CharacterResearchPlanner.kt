@@ -3,6 +3,7 @@ package com.example.chatbar.domain.search
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.domain.card.CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
 import com.example.chatbar.domain.card.extractJsonObjectCandidates
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamingChatService
@@ -55,11 +56,12 @@ class CharacterResearchPlanner(
                     )
                 ),
                 modelConfig = modelConfig,
-                maxTokens = 300,
+                maxTokens = 1200,
                 enableThinking = false,
                 maxThinkingTokens = 64,
                 thinkingBudget = 64,
                 reasoningEffort = "low",
+                readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS,
                 onDelta = { chunk ->
                     visibleText.append(chunk)
                     onRawText(visibleText.toString())

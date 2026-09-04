@@ -278,28 +278,42 @@ class CharacterResearchServiceTest {
     }
 
     @Test
-    fun `research uses fixed ten item cap and one result per query`() = runTest {
+    fun `research asks planner for up to thirty queries`() = runTest {
+        val planner = FakePlanner()
+        val service = service(
+            settings = AppSettings(webSearchEnabled = true),
+            planner = planner
+        )
+
+        service.research("request", card(), model())
+
+        assertEquals(30, planner.lastMaxQueries)
+    }
+
+    @Test
+    fun `research uses fixed thirty query cap and one result per query`() = runTest {
         val backend = FakeSearchBackend()
         val service = service(
             settings = AppSettings(webSearchEnabled = true),
-            planner = MultiQueryPlanner(queryCount = 25),
+            planner = MultiQueryPlanner(queryCount = 35),
             backend = backend
         )
 
         val brief = service.research("request", card(), model())
 
         requireNotNull(brief)
-        assertEquals((1..10).map { "q$it" }, backend.searchCalls.map { it.query })
+        assertEquals((1..30).map { "q$it" }, backend.searchCalls.map { it.query })
+        assertEquals((1..30).map { "q$it" }, brief.queries)
         assertTrue(backend.searchCalls.all { it.maxResults == 1 })
     }
 
     @Test
-    fun `research sends up to ten sources to summarizer then replaces them with brief`() = runTest {
+    fun `research cleans more than ten queries in batches of ten then combines briefs`() = runTest {
         val backend = DistinctSearchBackend()
         val summarizer = FakeSummarizer()
         val service = service(
             settings = AppSettings(webSearchEnabled = true),
-            planner = MultiQueryPlanner(queryCount = 12),
+            planner = MultiQueryPlanner(queryCount = 25),
             backend = backend,
             summarizer = summarizer
         )
@@ -307,12 +321,16 @@ class CharacterResearchServiceTest {
         val brief = service.research("request", card(), model())
 
         requireNotNull(brief)
-        assertEquals(10, backend.searchCalls.size)
-        assertEquals(10, backend.extractCalls.single().size)
-        assertEquals(listOf(10), backend.extractMaxPagesCalls)
-        assertEquals(10, summarizer.lastSources.size)
-        assertTrue(summarizer.lastSources.all { it.excerpt.length > 900 })
-        assertTrue(summarizer.lastSources.last().excerpt.contains("stable fact 10"))
+        assertEquals(25, backend.searchCalls.size)
+        assertEquals(listOf(10, 10, 5), backend.extractCalls.map { it.size })
+        assertEquals(listOf(10, 10, 5), backend.extractMaxPagesCalls)
+        assertEquals(listOf(10, 10, 5), summarizer.sourceBatches.map { it.size })
+        assertEquals(
+            listOf((1..10).map { "q$it" }, (11..20).map { "q$it" }, (21..25).map { "q$it" }),
+            summarizer.queryBatches
+        )
+        assertTrue(summarizer.sourceBatches.flatten().all { it.excerpt.length > 900 })
+        assertEquals(listOf("compressed fact"), brief.facts)
         assertTrue(brief.sources.isEmpty())
     }
 
@@ -664,6 +682,7 @@ class CharacterResearchServiceTest {
 
     private class FakePlanner : CharacterResearchPlanProvider {
         var calls: Int = 0
+        var lastMaxQueries: Int = 0
         override suspend fun plan(
             userInput: String,
             currentCard: CharacterCard,
@@ -673,6 +692,7 @@ class CharacterResearchServiceTest {
             onRawText: (String) -> Unit
         ): CharacterResearchPlanResult {
             calls += 1
+            lastMaxQueries = maxQueries
             onRawText("{\"needSearch\":true}")
             return CharacterResearchPlanResult(
                 plan = CharacterResearchPlan(
@@ -826,6 +846,8 @@ class CharacterResearchServiceTest {
     ) : ResearchBriefSummarizer {
         var calls: Int = 0
         var lastSources: List<ResearchSource> = emptyList()
+        val sourceBatches = mutableListOf<List<ResearchSource>>()
+        val queryBatches = mutableListOf<List<String>>()
         override suspend fun summarize(
             request: String,
             currentCard: CharacterCard,
@@ -837,6 +859,8 @@ class CharacterResearchServiceTest {
         ): ResearchBriefResult {
             calls += 1
             lastSources = sources
+            sourceBatches += sources
+            queryBatches += plan.queries.map { it.query }
             onRawText("{\"facts\":[\"compressed fact\"]}")
             return if (returnNull) {
                 ResearchBriefResult(
