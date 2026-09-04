@@ -54,7 +54,7 @@ class NovelAiStudioRepository(
                 _draft.value?.let { return@withLock it }
             }
             val loaded = storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
-                ?: NovelAiStudioDraft()
+                ?: NovelAiStudioDraft(followDefaultNovelAiImageModel = true)
             synchronized(draftStateLock) {
                 _draft.value ?: loaded.also { _draft.value = it }
             }

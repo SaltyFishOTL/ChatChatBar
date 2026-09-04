@@ -24,7 +24,7 @@ class CharacterFishAudioSerializationTest {
     }
 
     @Test
-    fun `character package v7 preserves private voice snapshot`() {
+    fun `character package v8 preserves private voice snapshot`() {
         val binding = FishAudioVoiceBinding(
             referenceId = "voice-1",
             title = "私有音色",
@@ -49,7 +49,7 @@ class CharacterFishAudioSerializationTest {
             json.encodeToString(CharacterCardPackage.serializer(), packageData)
         )
 
-        assertEquals(7, decoded.schemaVersion)
+        assertEquals(8, decoded.schemaVersion)
         assertEquals(binding, decoded.card.characters.single().fishAudioVoice)
     }
 }

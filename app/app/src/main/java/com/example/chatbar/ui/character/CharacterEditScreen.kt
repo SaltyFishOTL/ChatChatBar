@@ -114,6 +114,7 @@ import com.example.chatbar.domain.image.ImageCropFractionRect
 import com.example.chatbar.domain.image.ImageCropOffset
 import com.example.chatbar.domain.image.ImageCropSize
 import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
+import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiStyleModelFilter
 import com.example.chatbar.domain.image.NovelAiStylePreset
 import com.example.chatbar.domain.image.clampCropOffset
@@ -164,6 +165,11 @@ import java.util.Locale
 private data class PendingImagePick(
     val cropTarget: CharacterImageCropTarget?,
     val onImage: (String) -> Unit
+)
+
+private data class DefaultNovelAiImageModelOption(
+    val model: NovelAiImageModel?,
+    val label: String
 )
 
 private data class PendingImageCrop(
@@ -502,6 +508,21 @@ fun CharacterEditScreen(
                     )
                 }
                 CbSwitch(viewModel.momentsEnabled, { viewModel.momentsEnabled = it })
+            }
+            CbField(
+                "默认 NAI 模型",
+                description = "朋友圈、聊天与生图工作室未单独指定模型时使用；留空则跟随全局系统配置。"
+            ) {
+                val options = listOf(DefaultNovelAiImageModelOption(null, "跟随全局")) +
+                    NovelAiImageModel.entries.map { model ->
+                        DefaultNovelAiImageModelOption(model, model.displayName)
+                    }
+                CbSelect(
+                    value = options.first { it.model == viewModel.defaultNovelAiImageModel },
+                    options = options,
+                    optionLabel = DefaultNovelAiImageModelOption::label,
+                    onValueChange = { viewModel.defaultNovelAiImageModel = it.model }
+                )
             }
             CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。", onFullscreenEdit = {
                 fullscreenField = "基本设定" to viewModel.basicSetting; fullscreenOnChange = { viewModel.basicSetting = it }
@@ -1812,6 +1833,7 @@ private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = 
     append(viewModel.mesExample).append('|')
     append(viewModel.creatorNotes).append('|')
     append(viewModel.momentsEnabled).append('|')
+    append(viewModel.defaultNovelAiImageModel?.name.orEmpty()).append('|')
     append(viewModel.charactersList.joinToString("\u001e") {
         listOf(
             it.id,

@@ -135,6 +135,11 @@ private data class StudioTagEditTarget(
     val insert: (String) -> Unit
 )
 
+private data class StudioNovelAiModelOption(
+    val value: NovelAiImageModel?,
+    val label: String
+)
+
 internal fun isStudioFullscreenPromptSessionCurrent(
     openedEditorRevision: Long,
     currentEditorRevision: Long
@@ -395,6 +400,7 @@ fun ImagePromptToolScreen(
             item {
                 GenerationSettingsSection(
                     state.draft.activeSettings,
+                    state.draft.selectedModel.takeUnless { state.draft.followDefaultNovelAiImageModel },
                     state.draft.advancedExpanded,
                     guidanceSummary,
                     viewModel
@@ -1623,6 +1629,7 @@ private fun CharacterPromptEditor(
 @Composable
 private fun GenerationSettingsSection(
     settings: NovelAiGenerationSettings,
+    modelOverride: NovelAiImageModel?,
     advancedExpanded: Boolean,
     guidanceSummary: String,
     viewModel: ImagePromptToolViewModel
@@ -1630,7 +1637,20 @@ private fun GenerationSettingsSection(
     Column(Modifier.fillMaxWidth().padding(horizontal = ChatBarSpacing.md)) {
         SectionCard("生成设置") {
             CbField("模型") {
-                CbSelect(settings.model, NovelAiImageModel.entries, { it.displayName }, viewModel::selectImageModel)
+                val options = listOf(
+                    StudioNovelAiModelOption(
+                        value = null,
+                        label = "跟随角色卡/全局（${settings.model.displayName}）"
+                    )
+                ) + NovelAiImageModel.entries.map { model ->
+                    StudioNovelAiModelOption(model, model.displayName)
+                }
+                CbSelect(
+                    value = options.first { it.value == modelOverride },
+                    options = options,
+                    optionLabel = StudioNovelAiModelOption::label,
+                    onValueChange = { viewModel.selectImageModel(it.value) }
+                )
             }
             if (guidanceSummary.isNotBlank()) {
                 CbText(

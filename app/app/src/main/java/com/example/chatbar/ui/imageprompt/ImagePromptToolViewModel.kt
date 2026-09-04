@@ -23,6 +23,7 @@ import com.example.chatbar.domain.image.ImportedProcessImage
 import com.example.chatbar.domain.image.ImageFileEncoder
 import com.example.chatbar.domain.image.NovelAiImageEvent
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiImageModelResolution
 import com.example.chatbar.domain.image.NovelAiImageCostEstimator
 import com.example.chatbar.domain.image.NovelAiGenerationAction
 import com.example.chatbar.domain.image.NovelAiFocusedInpaintPlan
@@ -731,8 +732,23 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
-    fun selectImageModel(model: NovelAiImageModel) {
-        updateDraft { draft -> draft.copy(selectedModel = model) }
+    fun selectImageModel(model: NovelAiImageModel?) {
+        val state = _uiState.value
+        val draft = repository.draft.value ?: state.draft
+        val characterDefault = state.characterCards
+            .firstOrNull { it.id == draft.importedCharacterCardId }
+            ?.defaultNovelAiImageModel
+        val effective = NovelAiImageModelResolution.resolve(
+            explicitOverride = model,
+            characterDefault = characterDefault,
+            globalDefault = settingsRepository.currentAppSettings.novelAiImageModel
+        )
+        updateDraft { current ->
+            current.copy(
+                followDefaultNovelAiImageModel = model == null,
+                selectedModel = effective
+            )
+        }
     }
 
     fun updateImageGuidance(transform: (NovelAiImageGuidanceDraft) -> NovelAiImageGuidanceDraft) {
@@ -1051,11 +1067,19 @@ class ImagePromptToolViewModel : ViewModel() {
             }
         }
         updateDraft(resetPromptEditors = true) { draft ->
-            draft.importCharacterCardPromptSources(
+            val imported = draft.importCharacterCardPromptSources(
                 cardId = cardId,
                 cardStylePrompt = card.defaultImagePrompt,
                 sources = sources
             )
+            if (draft.followDefaultNovelAiImageModel) {
+                imported.copy(
+                    selectedModel = card.defaultNovelAiImageModel
+                        ?: settingsRepository.currentAppSettings.novelAiImageModel
+                )
+            } else {
+                imported
+            }
         }
         _uiState.update { it.copy(selectedCharacterCardId = cardId) }
     }
@@ -1780,8 +1804,42 @@ class ImagePromptToolViewModel : ViewModel() {
     private fun observeModelConfiguration() {
         viewModelScope.launch {
             settingsRepository.initialize()
-            combine(settingsRepository.appSettings, repository.draft) { settings, draft -> settings to draft }
-                .collect { (settings, draft) ->
+            characterRepository.initialize()
+            combine(
+                settingsRepository.appSettings,
+                repository.draft,
+                characterRepository.characters
+            ) { settings, draft, cards -> Triple(settings, draft, cards) }
+                .collect { (settings, draft, cards) ->
+                if (draft != null && draft.followDefaultNovelAiImageModel) {
+                    val currentCardDefault = draft.importedCharacterCardId
+                        ?.let { cardId -> cards.firstOrNull { it.id == cardId } }
+                        ?.defaultNovelAiImageModel
+                    val effective = NovelAiImageModelResolution.resolve(
+                        explicitOverride = null,
+                        characterDefault = currentCardDefault,
+                        globalDefault = settings.novelAiImageModel
+                    )
+                    if (draft.selectedModel != effective) {
+                        repository.stageDraft { current ->
+                            if (!current.followDefaultNovelAiImageModel) {
+                                current
+                            } else {
+                                val latestCardDefault = current.importedCharacterCardId
+                                    ?.let { cardId -> cards.firstOrNull { it.id == cardId } }
+                                    ?.defaultNovelAiImageModel
+                                current.copy(
+                                    selectedModel = NovelAiImageModelResolution.resolve(
+                                        explicitOverride = null,
+                                        characterDefault = latestCardDefault,
+                                        globalDefault = settings.novelAiImageModel
+                                    )
+                                )
+                            }
+                        }
+                        repository.flushLatestDraft()
+                    }
+                }
                 val models = modelResolver.availableChatModels(settings)
                 val defaultModel = modelResolver.defaultImageModel(settings)
                 val explicitModelId = draft?.aiDesignModelId

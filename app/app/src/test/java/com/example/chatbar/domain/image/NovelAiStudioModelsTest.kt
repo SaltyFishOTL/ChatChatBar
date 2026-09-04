@@ -29,6 +29,7 @@ class NovelAiStudioModelsTest {
         assertEquals("legacy", draft.basePrompt)
         assertEquals(0L, draft.contentRevision)
         assertEquals(0L, draft.promptContentRevision)
+        assertFalse(draft.followDefaultNovelAiImageModel)
     }
 
     @Test
@@ -169,6 +170,7 @@ class NovelAiStudioModelsTest {
         val full = current.applyHistoryRecipe(recipe, 99L, NovelAiHistoryApplyMode.FULL)
         assertEquals("history base", full.basePrompt)
         assertEquals(NovelAiImageModel.V5_FULL, full.selectedModel)
+        assertFalse(full.followDefaultNovelAiImageModel)
         assertEquals(NovelAiSeedMode.FIXED, full.activeSettings.seedMode)
         assertEquals(99L, full.activeSettings.seed)
         assertTrue(full.naturalLanguageMode)
@@ -180,6 +182,7 @@ class NovelAiStudioModelsTest {
         val seedOnly = current.applyHistoryRecipe(recipe, 99L, NovelAiHistoryApplyMode.SEED_ONLY)
         assertEquals("current base", seedOnly.basePrompt)
         assertEquals(NovelAiImageModel.V4_5_FULL, seedOnly.selectedModel)
+        assertFalse(seedOnly.followDefaultNovelAiImageModel)
         assertEquals(99L, seedOnly.activeSettings.seed)
     }
 
@@ -238,6 +241,7 @@ class NovelAiStudioModelsTest {
         assertEquals(listOf("new character"), applied.characters.map { it.prompt })
         assertTrue(applied.characters.all { it.negativePrompt.isEmpty() })
         assertEquals(NovelAiImageModel.V5_FULL, applied.selectedModel)
+        assertFalse(applied.followDefaultNovelAiImageModel)
         assertEquals(42, applied.activeSettings.steps)
         assertEquals(original.importedCharacterPromptSources, applied.importedCharacterPromptSources)
         assertEquals("saved requirement", applied.extraRequirement)

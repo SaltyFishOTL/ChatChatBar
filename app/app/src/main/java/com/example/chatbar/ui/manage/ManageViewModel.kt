@@ -703,7 +703,10 @@ class ManageViewModel : ViewModel() {
                         latestPost = latestPost,
                         model = model,
                         imageModel = imageModel,
-                        novelAiImageModel = session.resolvedNovelAiImageModel(settings.novelAiImageModel),
+                        novelAiImageModel = session.resolvedNovelAiImageModel(
+                            characterDefault = card.defaultNovelAiImageModel,
+                            globalDefault = settings.novelAiImageModel
+                        ),
                         scheduledAt = System.currentTimeMillis(),
                         finalPromptRequirement = settings.imagePromptToolPreference,
                         playerName = playerName,
