@@ -48,7 +48,6 @@ object FormatCardUserToolPolicy {
                 val tool = tools[index]
                 when (tool.type) {
                     FormatCardUserToolType.STRONG_PROMPT_SUFFIX -> {
-                        add(tool.text)
                         index += 1
                     }
 
@@ -71,6 +70,14 @@ object FormatCardUserToolPolicy {
             }
         }
         return PromptTemplates.appendUserToolSuffixBlock(userContent, fragments)
+    }
+
+    fun strongPromptSystemSuffix(tools: List<FormatCardUserToolConfig>): String {
+        if (tools.isEmpty()) return ""
+        requireValid(tools)
+        return tools
+            .filter { it.type == FormatCardUserToolType.STRONG_PROMPT_SUFFIX }
+            .joinToString("\n\n") { it.text }
     }
 
     private fun validateRandomNumber(

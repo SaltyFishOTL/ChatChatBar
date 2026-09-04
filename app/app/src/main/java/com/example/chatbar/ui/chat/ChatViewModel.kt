@@ -92,6 +92,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.yield
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -106,32 +108,91 @@ import kotlin.coroutines.coroutineContext
 private class UserStoppedResponseGenerationException : CancellationException("用户停止生成")
 private const val CHAT_VIEW_MODEL_TAG = "ChatViewModel"
 
-internal fun appendCurrentUserAndRequirementsSystemMessages(
+internal fun buildCcbStablePrefixMessages(
+    coreSystemPrompt: String,
+    stableContextSystemPrompt: String,
+    positionedRequirementsSystemPrompt: String,
+    formatPromptPosition: FormatPromptPosition,
+    hasHistoryMessages: Boolean
+): List<ChatApiMessage> = buildList {
+    add(
+        ChatApiMessage.text(
+            role = "system",
+            content = joinPromptParts(
+                coreSystemPrompt,
+                PromptTemplates.CCB_CREATOR_IDENTITY_SYSTEM_PROMPT
+            )
+        )
+    )
+    add(
+        ChatApiMessage.text(
+            role = "assistant",
+            content = PromptTemplates.CCB_FIRST_ACK_ASSISTANT_PROMPT.trimIndent().trim()
+        )
+    )
+    add(
+        ChatApiMessage.text(
+            role = "user",
+            content = PromptTemplates.CCB_CREATIVE_CONTRACT_USER_PROMPT.trimIndent().trim()
+        )
+    )
+    add(
+        ChatApiMessage.text(
+            role = "assistant",
+            content = PromptTemplates.CCB_CONTRACT_CONFIRMATION_ASSISTANT_PROMPT.trimIndent().trim()
+        )
+    )
+    stableContextSystemPrompt.takeIf(String::isNotBlank)?.let { stableContext ->
+        add(ChatApiMessage.text(role = "system", content = stableContext))
+    }
+    add(
+        ChatApiMessage.text(
+            role = "assistant",
+            content = PromptTemplates.CCB_CONTEXT_APPROVAL_ASSISTANT_PROMPT.trimIndent().trim()
+        )
+    )
+    val startRequirementsAndHistoryHeading = joinPromptParts(
+        positionedRequirementsSystemPrompt.takeIf { formatPromptPosition.includesStart }.orEmpty(),
+        PromptTemplates.sectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
+            .takeIf { hasHistoryMessages }
+            .orEmpty()
+    )
+    startRequirementsAndHistoryHeading.takeIf(String::isNotBlank)?.let { prompt ->
+        add(ChatApiMessage.text(role = "system", content = prompt))
+    }
+}
+
+internal fun buildCcbFinalTailSystemPrompt(
+    postHistorySystemPrompt: String,
+    positionedRequirementsSystemPrompt: String,
+    formatPromptPosition: FormatPromptPosition
+): String = joinPromptParts(
+    postHistorySystemPrompt,
+    PromptTemplates.CCB_CONTINUATION_SYSTEM_PROMPT,
+    positionedRequirementsSystemPrompt.takeIf { formatPromptPosition.includesEnd }.orEmpty()
+)
+
+internal fun appendCurrentUserAndStrongPromptSystemMessage(
     messages: MutableList<ChatApiMessage>,
     userMessage: ChatApiMessage,
-    requirementsSystemPrompt: String,
-    formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
+    strongPromptSystemSuffix: String
 ) {
     require(userMessage.role == "user")
     messages.add(userMessage)
-    if (formatPromptPosition.includesEnd && requirementsSystemPrompt.isNotBlank()) {
+    if (strongPromptSystemSuffix.isNotBlank()) {
         messages.add(
             ChatApiMessage.text(
                 role = "system",
-                content = requirementsSystemPrompt
+                content = strongPromptSystemSuffix
             )
         )
     }
 }
 
-internal fun buildOpeningSystemPrompt(
-    requirementsSystemPrompt: String,
-    stableSystemPrompt: String,
-    formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
-): String = listOf(
-    requirementsSystemPrompt.takeIf { formatPromptPosition.includesStart }.orEmpty(),
-    stableSystemPrompt
-).filter(String::isNotBlank).joinToString("\n\n")
+private fun joinPromptParts(vararg parts: String): String = parts
+    .map { it.trimIndent().trim() }
+    .filter(String::isNotBlank)
+    .joinToString("\n\n")
 
 internal fun filterRegenerationTargetMessage(
     messages: List<ChatMessage>,
@@ -2792,6 +2853,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 earlierHistoryMessages = promptMessageGroups.historyMessages
                             )
                     )
+                val positionedRequirementsSystemPrompt = joinPromptParts(
+                    requirementsSystemPrompt,
+                    PromptTemplates.replyTailSystemPrompt(
+                        replyLength = replyLength,
+                        roleplaySpeakerFormatEnabled = _assistantSegmentedBubblesEnabled.value,
+                        characterNames = charCard.characters.map { it.name }
+                    )
+                )
                 fun assemblePromptLayers() =
                     promptAssembler.assembleCachePromptLayers(
                         characterCard = charCard,
@@ -2805,9 +2874,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         memoryArchive = null,
                         memoryHeadAndTimeline = null,
                         worldBookPrompt = wbPrompt,
-                        worldBookOutlets = wbOutlets,
-                        hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty(),
-                        hasPreviousTurn = promptMessageGroups.previousTurnMessages.isNotEmpty()
+                        worldBookOutlets = wbOutlets
                     )
                 val memoryView = if (currentSession.longTermMemoryEnabled) {
                     longTermMemoryService.promptView(sessionId).also { view ->
@@ -2821,23 +2888,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val renderedMemoryArchive = memoryView?.archive?.let(renderSessionText)
                 val renderedMemoryHeadAndTimeline = memoryView?.headAndTimeline?.let(renderSessionText)
                 val promptLayers = assemblePromptLayers()
-                val openingSystemPrompt = buildOpeningSystemPrompt(
-                    requirementsSystemPrompt = requirementsSystemPrompt,
-                    stableSystemPrompt = promptLayers.stableSystemPrompt,
-                    formatPromptPosition = modelConfig.formatPromptPosition
+                val stablePrefixMessages = buildCcbStablePrefixMessages(
+                    coreSystemPrompt = promptLayers.coreSystemPrompt,
+                    stableContextSystemPrompt = promptLayers.stableContextSystemPrompt,
+                    positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
+                    formatPromptPosition = modelConfig.formatPromptPosition,
+                    hasHistoryMessages = promptMessageGroups.historyMessages.isNotEmpty()
                 )
-                val promptSystemDebug = listOf(
-                    openingSystemPrompt,
-                    promptLayers.dynamicSystemPrompt,
-                    renderedMemoryArchive.orEmpty(),
-                    renderedMemoryHeadAndTimeline.orEmpty(),
-                    promptLayers.tailSystemPrompt
-                ).filter(String::isNotBlank).joinToString("\n\n")
-                val promptCacheKey = openingSystemPrompt
-                    .takeIf { promptLayers.stablePrefixCacheable && it.isNotBlank() }
+                val promptCacheKey = stablePrefixMessages
+                    .takeIf { promptLayers.stablePrefixCacheable && it.isNotEmpty() }
                     ?.let(PromptCacheKeyFactory::cacheKey)
 
-                val apiMessages = mutableListOf<ChatApiMessage>()
+                val apiMessages = stablePrefixMessages.toMutableList()
 
                 suspend fun addContextMessage(
                     msg: ChatMessage,
@@ -2878,10 +2940,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                 }
 
-                // 1. 按模型配置决定首条 System 是否包含本轮格式要求，随后为固定设定和较早聊天记录。
-                openingSystemPrompt.takeIf(String::isNotBlank)?.let { openingPrompt ->
-                    apiMessages.add(ChatApiMessage.text("system", openingPrompt))
-                }
+                // 1. CCB 多段握手和稳定资料已写入缓存前缀；随后加入较早聊天记录。
                 for (msg in promptMessageGroups.historyMessages) {
                     addContextMessage(
                         msg = msg,
@@ -2897,19 +2956,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerName = activePlayerNameOrNull,
                     botName = charCard.effectiveBotName
                 ).forEach(apiMessages::add)
-                promptLayers.tailSystemPrompt.takeIf(String::isNotBlank)?.let { tailPrompt ->
-                    apiMessages.add(ChatApiMessage.text("system", tailPrompt))
-                }
-                apiMessages.add(
-                    ChatApiMessage.text(
-                        role = "system",
-                        content = PromptTemplates.replyTailSystemPrompt(
-                            replyLength = replyLength,
-                            roleplaySpeakerFormatEnabled = _assistantSegmentedBubblesEnabled.value,
-                            characterNames = charCard.characters.map { it.name }
+                if (promptMessageGroups.previousTurnMessages.isNotEmpty()) {
+                    apiMessages.add(
+                        ChatApiMessage.text(
+                            role = "system",
+                            content = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
                         )
                     )
-                )
+                }
                 for (msg in promptMessageGroups.previousTurnMessages) {
                     addContextMessage(
                         msg = msg,
@@ -2917,7 +2971,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
 
-                // 3. 本次用户输入；按模型配置决定其后是否追加本轮格式要求 System 消息。
+                apiMessages.add(
+                    ChatApiMessage.text(
+                        role = "system",
+                        content = buildCcbFinalTailSystemPrompt(
+                            postHistorySystemPrompt = promptLayers.tailSystemPrompt,
+                            positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
+                            formatPromptPosition = modelConfig.formatPromptPosition
+                        )
+                    )
+                )
+
+                // 3. 本次用户输入；仅格式卡强提示词工具可在其后追加 System 消息。
                 val currentUserContent: String?
                 val currentUserImages: List<String>
                 val shouldAddUserPrompt: Boolean = when {
@@ -2947,6 +3012,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         userContent = currentUserContent,
                         tools = activeFormatCard?.userTools.orEmpty()
                     )
+                    val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
+                        activeFormatCard?.userTools.orEmpty()
+                    )
                     val currentUserApiMessage = if (
                         currentUserImages.isNotEmpty() &&
                         modelConfig.isMultimodal
@@ -2969,16 +3037,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         null
                     }
                     currentUserApiMessage?.let { userMessage ->
-                        appendCurrentUserAndRequirementsSystemMessages(
+                        appendCurrentUserAndStrongPromptSystemMessage(
                             messages = apiMessages,
                             userMessage = userMessage,
-                            requirementsSystemPrompt = requirementsSystemPrompt,
-                            formatPromptPosition = modelConfig.formatPromptPosition
+                            strongPromptSystemSuffix = strongPromptSystemSuffix
                         )
                     }
                 }
 
                 ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
+                val promptSystemDebug = apiMessages
+                    .asSequence()
+                    .filter { it.role == "system" }
+                    .mapNotNull { (it.content as? JsonPrimitive)?.contentOrNull }
+                    .filter(String::isNotBlank)
+                    .joinToString("\n\n")
 
                 // 8. 开启流式响应
                 var accumulatedText = ""

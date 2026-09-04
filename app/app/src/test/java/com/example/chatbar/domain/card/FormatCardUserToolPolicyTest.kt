@@ -40,22 +40,32 @@ class FormatCardUserToolPolicyTest {
             """
             用户消息
             {
-            强提示 A
             下一轮按顺序使用随机数：12；34；
-            强提示 B
             下一轮使用随机数：-2
             }
             """.trimIndent(),
             rendered
+        )
+        assertEquals(
+            "强提示 A\n\n强提示 B",
+            FormatCardUserToolPolicy.strongPromptSystemSuffix(
+                listOf(strong("强提示 A"), random("1", "2"), strong("强提示 B"))
+            )
         )
     }
 
     @Test
     fun strongSuffixPreservesMultilineTextExactly() {
         assertEquals(
-            "消息\n{\n第一行\n  第二行  \n}",
+            "消息",
             FormatCardUserToolPolicy.appendRequestSuffix(
                 "消息",
+                listOf(strong("第一行\n  第二行  "))
+            )
+        )
+        assertEquals(
+            "第一行\n  第二行  ",
+            FormatCardUserToolPolicy.strongPromptSystemSuffix(
                 listOf(strong("第一行\n  第二行  "))
             )
         )

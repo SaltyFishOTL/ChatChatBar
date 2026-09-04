@@ -130,7 +130,7 @@ fun ModelEditScreen(
             }
             CbField(
                 label = "格式提示词位置",
-                description = "控制每轮格式与长度要求放在请求开头、末尾或两端。"
+                description = "控制每轮格式与长度要求放在聊天历史前、用户输入前或两处。"
             ) {
                 CbSelect(
                     value = viewModel.formatPromptPosition,
@@ -198,9 +198,9 @@ private fun SectionTitle(text: String) {
 }
 
 private fun formatPromptPositionLabel(position: FormatPromptPosition): String = when (position) {
-    FormatPromptPosition.START -> "格式放在开头"
-    FormatPromptPosition.END -> "格式放在结尾"
-    FormatPromptPosition.BOTH -> "格式放在开头和结尾"
+    FormatPromptPosition.START -> "格式放在聊天历史前"
+    FormatPromptPosition.END -> "格式放在用户输入前"
+    FormatPromptPosition.BOTH -> "聊天历史前和用户输入前"
 }
 
 @Composable
