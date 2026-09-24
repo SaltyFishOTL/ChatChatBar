@@ -246,11 +246,15 @@ class NovelAiImageService(
         val normalizedPrompt = NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt)
         val effectivePrompt = NovelAiV5TextPromptPolicy.apply(normalizedPrompt, settings.model)
         val negative = effectivePrompt.effectiveNegativePrompt.trim()
+        val useCoordinates = settings.useCharacterPositions && effectivePrompt.characterCaptions.isNotEmpty()
+        fun requestCenter(caption: NovelAiCharacterCaption) = if (useCoordinates) {
+            NovelAiCharacterPositionPolicy.normalize(caption.center, settings.model)
+        } else caption.center
         val characterCaptions = buildJsonArray {
             effectivePrompt.characterCaptions.forEach { caption ->
                 add(buildJsonObject {
                     put("char_caption", caption.prompt)
-                    put("centers", centerArray(caption.center))
+                    put("centers", centerArray(requestCenter(caption)))
                 })
             }
         }
@@ -259,7 +263,7 @@ class NovelAiImageService(
                 put("base_caption", effectivePrompt.baseCaption)
                 put("char_captions", characterCaptions)
             })
-            put("use_coords", false)
+            put("use_coords", useCoordinates)
             put("use_order", true)
         }
         val v4NegativePrompt = buildJsonObject {
@@ -269,13 +273,13 @@ class NovelAiImageService(
                     effectivePrompt.characterCaptions.forEach { caption ->
                         add(buildJsonObject {
                             put("char_caption", caption.negativePrompt)
-                            put("centers", centerArray(caption.center))
+                            put("centers", centerArray(requestCenter(caption)))
                         })
                     }
                 })
             })
             put("legacy_uc", false)
-            put("use_coords", false)
+            put("use_coords", useCoordinates)
             put("use_order", true)
         }
         val requestModel = if (imageGuidance.action == NovelAiGenerationAction.INPAINT) {
@@ -303,7 +307,7 @@ class NovelAiImageService(
                 put("noise_schedule", "karras")
                 put("legacy", false)
                 put("legacy_uc", false)
-                put("use_coords", false)
+                put("use_coords", useCoordinates)
                 put("legacy_v3_extend", false)
                 put("autoSmea", false)
                 put("sm", false)

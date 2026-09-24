@@ -1,5 +1,8 @@
 package com.example.chatbar.ui.imageprompt
 
+import com.example.chatbar.domain.image.toPromptPlan
+import com.example.chatbar.domain.image.DesignedCharacterCenter
+import com.example.chatbar.domain.image.NovelAiCharacterPositionPolicy
 import com.example.chatbar.domain.image.effectiveBasePrompt
 
 import android.net.Uri
@@ -1553,21 +1556,19 @@ class ImagePromptToolViewModel : ViewModel() {
         }
     }
 
-    private fun NovelAiStudioDraft.toPromptPlan(): NovelAiPromptPlan {
-        val count = characters.size
-        return NovelAiPromptPlan(
-            baseCaption = effectiveBasePrompt(),
-            stylePrompt = stylePrompt,
-            characterCaptions = characters.mapIndexed { index, character ->
-                NovelAiCharacterCaption(
-                    prompt = character.prompt,
-                    center = NovelAiPromptDesigner.fallbackCenter(index, count),
-                    negativePrompt = character.negativePrompt
-                )
-            },
-            sizePreset = NovelAiImageSizePreset.PORTRAIT,
-            negativePrompt = negativePrompt
-        )
+    fun updateCharacterPositions(
+        openedDraft: NovelAiStudioDraft,
+        enabled: Boolean,
+        centers: Map<String, DesignedCharacterCenter>
+    ) = updateDraft { current ->
+        if (current.characters != openedDraft.characters || current.selectedModel != openedDraft.selectedModel ||
+            current.activeSettings.useCharacterPositions != openedDraft.activeSettings.useCharacterPositions
+        ) return@updateDraft current
+        current.copy(characters = current.characters.map { character ->
+            character.copy(center = centers[character.id]?.let {
+                NovelAiCharacterPositionPolicy.normalize(it, current.selectedModel)
+            } ?: character.center)
+        }).withActiveSettings(current.activeSettings.copy(useCharacterPositions = enabled))
     }
 
     private suspend fun prepareImageGuidance(

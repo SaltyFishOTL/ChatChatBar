@@ -84,6 +84,7 @@ import com.example.chatbar.domain.image.NovelAiCharacterPromptDraft
 import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiGenerationAction
 import com.example.chatbar.domain.image.NovelAiImageSize
+import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.image.NovelAiGenerationChargeKind
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
 import com.example.chatbar.domain.image.NovelAiImageModel
@@ -172,6 +173,7 @@ fun ImagePromptToolScreen(
     var showImageTools by remember { mutableStateOf(false) }
     var showGenerationOptions by remember { mutableStateOf(false) }
     var sizeEditorSettings by remember { mutableStateOf<NovelAiGenerationSettings?>(null) }
+    var positionEditorDraft by remember { mutableStateOf<NovelAiStudioDraft?>(null) }
     var showGuidanceEditor by remember { mutableStateOf(false) }
     var guidancePickTarget by remember { mutableStateOf<NovelAiImageUseTarget?>(null) }
     var stagedGuidanceAsset by remember {
@@ -405,6 +407,7 @@ fun ImagePromptToolScreen(
                     PromptSection(
                         state = state,
                         viewModel = viewModel,
+                        onEditPositions = { positionEditorDraft = state.draft },
                         onFullscreenEdit = { title, value, field, naturalLanguage, onApply ->
                             activeTagEditTarget = null
                             viewModel.clearTagSuggestions()
@@ -653,6 +656,23 @@ fun ImagePromptToolScreen(
                 }
             }
         }
+    }
+
+    positionEditorDraft?.let { openedDraft ->
+        val sourceUnchanged = state.draft.characters == openedDraft.characters &&
+            state.draft.selectedModel == openedDraft.selectedModel &&
+            state.draft.activeSettings.useCharacterPositions == openedDraft.activeSettings.useCharacterPositions
+        LaunchedEffect(sourceUnchanged) {
+            if (!sourceUnchanged) positionEditorDraft = null
+        }
+        if (sourceUnchanged) NovelAiCharacterPositionDialog(
+            draft = openedDraft,
+            onDismiss = { positionEditorDraft = null },
+            onConfirm = { enabled, centers ->
+                viewModel.updateCharacterPositions(openedDraft, enabled, centers)
+                positionEditorDraft = null
+            }
+        )
     }
 
     sizeEditorSettings?.let { openedSettings ->
@@ -1469,6 +1489,7 @@ internal fun ImagePreviewPanel(
 private fun PromptSection(
     state: ImagePromptToolUiState,
     viewModel: ImagePromptToolViewModel,
+    onEditPositions: () -> Unit,
     onFullscreenEdit: (String, TextFieldValue, NovelAiPromptFieldKey?, Boolean, (TextFieldValue) -> Unit) -> Unit,
     onTagEditTarget: (StudioTagEditTarget) -> Unit,
     onTagEditEnd: (NovelAiPromptFieldKey) -> Unit
@@ -1618,6 +1639,14 @@ private fun PromptSection(
                     color = ChatBarTheme.colors.mutedForeground,
                     style = ChatBarTheme.typography.caption
                 )
+            }
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                CbText(
+                    "角色位置 · ${if (draft.activeSettings.useCharacterPositions) "自定义" else "AI 自动"}",
+                    Modifier.weight(1f), style = ChatBarTheme.typography.label
+                )
+                CbIconButton(AppIcons.Edit, "编辑角色位置", onEditPositions,
+                    enabled = draft.characters.isNotEmpty() && state.draftLoaded && !state.isBusy)
             }
             draft.characters.forEachIndexed { index, character ->
                 key(character.id) {

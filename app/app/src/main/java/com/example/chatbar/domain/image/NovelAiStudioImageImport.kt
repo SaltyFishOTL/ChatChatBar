@@ -2,7 +2,8 @@ package com.example.chatbar.domain.image
 
 data class NovelAiImportedCharacterPrompt(
     val prompt: String = "",
-    val negativePrompt: String = ""
+    val negativePrompt: String = "",
+    val center: DesignedCharacterCenter? = null
 )
 
 data class NovelAiImportedGenerationSettings(
@@ -15,12 +16,13 @@ data class NovelAiImportedGenerationSettings(
     val cfgRescale: Float? = null,
     val sampler: NovelAiSampler? = null,
     val customWidth: Int? = null,
-    val customHeight: Int? = null
+    val customHeight: Int? = null,
+    val useCharacterPositions: Boolean? = null
 ) {
     val hasAny: Boolean
         get() = model != null || sizeTier != null || aspectRatio != null || count != null ||
             steps != null || guidance != null || cfgRescale != null || sampler != null ||
-            customWidth != null || customHeight != null
+            customWidth != null || customHeight != null || useCharacterPositions != null
 }
 
 data class NovelAiImportedImageGuidance(
@@ -76,7 +78,8 @@ fun NovelAiStudioDraft.applyImportedMetadata(
             metadata.characters.map { character ->
                 NovelAiCharacterPromptDraft(
                     prompt = character.prompt,
-                    negativePrompt = character.negativePrompt
+                    negativePrompt = character.negativePrompt,
+                    center = character.center
                 )
             }
         } else {
@@ -112,7 +115,8 @@ fun NovelAiStudioDraft.applyImportedMetadata(
                 steps = imported.steps ?: current.steps,
                 guidance = imported.guidance ?: current.guidance,
                 cfgRescale = imported.cfgRescale ?: current.cfgRescale,
-                sampler = imported.sampler ?: current.sampler
+                sampler = imported.sampler ?: current.sampler,
+                useCharacterPositions = imported.useCharacterPositions ?: current.useCharacterPositions
             )
         )
     }

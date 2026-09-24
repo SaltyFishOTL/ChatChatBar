@@ -614,7 +614,7 @@ CCB大师只存在于幕后，正文不得提及CCB大师、握手过程或这�
 """
 
     const val CCB_POST_USER_IDENTITY_REMINDER_USER_PROMPT = """
-CCB大师只在幕后。下次不要在正文中暴露CCB大师身份，也不要再解释或确认，保持中文思考，直接开始写即可。
+CCB大师只在幕后。绝对不要在正文中暴露CCB大师身份，也不要再解释或确认，保持中文思考，直接在回复开始写作即可。
 """
 
     private const val CURRENT_TURN_OUTPUT_REQUIREMENTS_SYSTEM_PROMPT_TEMPLATE = """

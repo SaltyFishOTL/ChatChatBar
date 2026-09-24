@@ -9,6 +9,7 @@ import java.util.zip.InflaterInputStream
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.floatOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
@@ -114,11 +115,16 @@ object NovelAiPngMetadataReader {
         val hasCharacters = positiveCharacters != null || negativeCharacters != null
         val characterCount = maxOf(positiveCharacters?.size ?: 0, negativeCharacters?.size ?: 0)
         val characters = List(characterCount) { index ->
+            val center = positiveCharacters?.getOrNull(index)?.jsonObjectOrNull()
+                ?.get("centers")?.jsonArrayOrNull()?.firstOrNull()?.jsonObjectOrNull()
+            val x = center?.get("x")?.jsonPrimitive?.floatOrNull
+            val y = center?.get("y")?.jsonPrimitive?.floatOrNull
             NovelAiImportedCharacterPrompt(
                 prompt = positiveCharacters?.getOrNull(index)?.jsonObjectOrNull()
                     ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty(),
                 negativePrompt = negativeCharacters?.getOrNull(index)?.jsonObjectOrNull()
-                    ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty()
+                    ?.get("char_caption")?.jsonPrimitive?.contentOrNull.orEmpty(),
+                center = if (x != null && y != null && x in 0f..1f && y in 0f..1f) DesignedCharacterCenter(x, y) else null
             )
         }
         val matchedSize = matchStudioSize(width, height)
@@ -165,6 +171,9 @@ object NovelAiPngMetadataReader {
             characters = characters,
             hasCharacterPrompts = hasCharacters,
             settings = NovelAiImportedGenerationSettings(
+                useCharacterPositions = this["v4_prompt"]?.jsonObjectOrNull()
+                    ?.get("use_coords")?.jsonPrimitive?.booleanOrNull
+                    ?: this["use_coords"]?.jsonPrimitive?.booleanOrNull ?: false,
                 model = modelText.toNovelAiModelOrNull(),
                 sizeTier = matchedSize?.first,
                 aspectRatio = matchedSize?.second,
