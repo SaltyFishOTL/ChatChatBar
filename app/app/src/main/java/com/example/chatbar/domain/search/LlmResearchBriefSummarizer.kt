@@ -51,10 +51,6 @@ class LlmResearchBriefSummarizer(
                     ChatApiMessage.text("user", summaryUserPrompt(request, plan, sources))
                 ),
                 modelConfig = modelConfig,
-                enableThinking = false,
-                maxThinkingTokens = 128,
-                thinkingBudget = 128,
-                reasoningEffort = "low",
                 readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS,
                 onDelta = { chunk ->
                     visibleText.append(chunk)

@@ -1313,7 +1313,9 @@ class ImagePromptToolViewModel : ViewModel() {
                 cardNegativePrompt = card.defaultImageNegativePrompt,
                 sources = sources
             )
-            if (draft.followDefaultNovelAiImageModel) {
+            val configured = if (card.defaultNovelAiImageModel != null) {
+                imported.copy(selectedModel = card.defaultNovelAiImageModel, followDefaultNovelAiImageModel = false)
+            } else if (draft.followDefaultNovelAiImageModel) {
                 imported.copy(
                     selectedModel = card.defaultNovelAiImageModel
                         ?: settingsRepository.currentAppSettings.novelAiImageModel
@@ -1321,6 +1323,7 @@ class ImagePromptToolViewModel : ViewModel() {
             } else {
                 imported
             }
+            card.defaultImageGenerationSettings?.let { configured.withActiveSettings(it.applyTo(configured.activeSettings)) } ?: configured
         }
         _uiState.update { it.copy(selectedCharacterCardId = cardId) }
     }
@@ -1796,14 +1799,16 @@ class ImagePromptToolViewModel : ViewModel() {
         val strengths = guidance.copy(vibes = usableVibes).effectiveVibeStrengths()
         val encodedById = mutableMapOf<String, String>()
         val preparedVibes = usableVibes.mapIndexed { index, vibe ->
-            val encoding = vibe.encodedVibe?.takeIf(String::isNotBlank) ?: vibe.asset?.let { asset ->
+            val encoding = vibe.encodedVibe?.takeIf(String::isNotBlank)?.let {
+                com.example.chatbar.domain.image.NovelAiInlinePayloadStore(ChatBarApp.instance.filesDir).resolve(it)
+            } ?: vibe.asset?.let { asset ->
                 vibeEncoder.resolve(token, asset, model, vibe.informationExtracted).also { encodedById[vibe.id] = it }
             } ?: error("氛围参考缺少原图或编码")
             NovelAiPreparedVibeReference(encoding, vibe.informationExtracted, strengths[index])
         }
         val updated = if (encodedById.isEmpty()) guidance else guidance.copy(
             vibes = guidance.vibes.map { vibe ->
-                encodedById[vibe.id]?.let { vibe.copy(encodedVibe = it) } ?: vibe
+                encodedById[vibe.id]?.let { vibe.copy(encodedVibe = com.example.chatbar.domain.image.NovelAiInlinePayloadStore(ChatBarApp.instance.filesDir).retain(it)) } ?: vibe
             }
         )
         val focusedInpaint = if (guidance.action == NovelAiGenerationAction.INPAINT) {

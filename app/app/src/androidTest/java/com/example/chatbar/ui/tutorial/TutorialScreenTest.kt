@@ -5,6 +5,7 @@ import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
+import androidx.compose.ui.test.performScrollTo
 import com.example.chatbar.ui.kit.ChatBarTheme
 import org.junit.Assert.assertTrue
 import org.junit.Rule
@@ -48,7 +49,7 @@ class TutorialScreenTest {
         composeTestRule.onNodeWithText("欢迎来到进阶教程").assertIsDisplayed()
         composeTestRule.onNodeWithText("下一步").performClick()
         composeTestRule.onNodeWithText("会话列表的长按操作").assertIsDisplayed()
-        composeTestRule.onNodeWithText("置顶与删除").assertIsDisplayed()
+        composeTestRule.onNodeWithText("改名、置顶与删除").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -65,7 +66,7 @@ class TutorialScreenTest {
 
         composeTestRule.onNodeWithText("朋友圈与社区").assertIsDisplayed()
         composeTestRule.onNodeWithText(
-            "长按动态文字，选择“编辑文字”可修改并保存正文，选择“复制文字”可复制完整正文。"
-        ).assertIsDisplayed()
+            "点击动态右上角编辑按钮，或长按文字选择“编辑朋友圈”，可修改文案、切换所属角色卡的人物与头像；选择“复制文字”可复制完整正文。"
+        ).performScrollTo().assertIsDisplayed()
     }
 }

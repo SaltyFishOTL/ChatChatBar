@@ -10,6 +10,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.semantics.SemanticsProperties
+import androidx.compose.ui.test.*
 import androidx.compose.ui.test.SemanticsMatcher
 import androidx.compose.ui.test.assert
 import androidx.compose.ui.test.assertTextEquals
@@ -30,6 +31,8 @@ import org.junit.Test
 class CbInputStateTest {
     @get:Rule
     val composeTestRule = createAndroidComposeRule<ComponentActivity>()
+
+    private fun input(tag: String) = composeTestRule.onNode(hasSetTextAction() and (hasTestTag(tag) or hasAnyAncestor(hasTestTag(tag))), useUnmergedTree = true)
 
     @Test
     fun textSelectionAndExternalClearRoundTrip() {
@@ -53,8 +56,8 @@ class CbInputStateTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("state-input").performTextInput("（）")
-        composeTestRule.onNodeWithTag("state-input").performTextInputSelection(TextRange(1))
+        input("state-input").performTextInput("（）")
+        input("state-input").performTextInputSelection(TextRange(1))
         composeTestRule.runOnIdle {
             assertEquals("（）", observed.text)
             assertEquals(TextRange(1), observed.selection)
@@ -83,7 +86,7 @@ class CbInputStateTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("digits-input").performTextInput("a1b2")
+        input("digits-input").performTextInput("a1b2")
         composeTestRule.runOnIdle { assertEquals("12", observed) }
     }
 
@@ -100,7 +103,7 @@ class CbInputStateTest {
             }
         }
 
-        composeTestRule.onNodeWithTag("secure-input").assert(
+        input("secure-input").assert(
             SemanticsMatcher.expectValue(SemanticsProperties.Password, Unit)
         )
     }
@@ -122,7 +125,7 @@ class CbInputStateTest {
                 }
             }
         }
-        val field = composeTestRule.onNodeWithTag("number")
+        val field = input("number")
         field.performClick()
         field.performTextClearance()
         field.assertTextEquals("")
@@ -131,7 +134,7 @@ class CbInputStateTest {
         field.assertTextEquals("23")
         composeTestRule.runOnIdle { assertEquals(23, observed) }
         field.performTextClearance()
-        composeTestRule.onNodeWithTag("other").performClick()
+        input("other").performClick()
         field.assertTextEquals("23")
     }
 
@@ -151,7 +154,7 @@ class CbInputStateTest {
                 )
             }
         }
-        val field = composeTestRule.onNodeWithTag("decimal")
+        val field = input("decimal")
         field.performClick()
         field.performTextReplacement("1.")
         field.assertTextEquals("1.")

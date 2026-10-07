@@ -65,7 +65,9 @@ class PresetCatalogService(
 
     suspend fun characterPackage(entry: PresetEntry): CharacterCardPackage {
         require(entry.type == PresetType.CHARACTER)
-        return characterTransfers.decode(readAsset(entry.file))
+        val packaged = characterTransfers.decode(readAsset(entry.file))
+        return resolvePresetCharacterDependencies(packaged, entry, manifest.entries,
+            loadWorldBook = { worldBookPackage(it) }, loadFormat = { formatPackage(it) })
     }
 
     suspend fun formatPackage(entry: PresetEntry): FormatCardPackage {

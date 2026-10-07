@@ -76,3 +76,6 @@ powershell -ExecutionPolicy Bypass -File .\ci.ps1 -SkipAssemble
 ```
 
 If an Android device is connected, use `chatbar-emulator-test` data-preserving install flow.
+
+- CharacterCard.defaultImageGenerationSettings is user-owned, persisted through drafts/import/export and untouched by AI merge. Its collapsed advanced editor includes model/sampler/steps/CFG/rescale/V+. Cover/avatar requests apply it; avatar retry signatures include effective model and profile so stale completed images cannot satisfy changed settings.
+- Character PNG export and preset dependency restoration are mapped in chatbar-character-card-transfer.

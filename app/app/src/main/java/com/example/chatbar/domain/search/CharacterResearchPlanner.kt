@@ -62,10 +62,6 @@ class CharacterResearchPlanner(
                     )
                 ),
                 modelConfig = modelConfig,
-                enableThinking = false,
-                maxThinkingTokens = 64,
-                thinkingBudget = 64,
-                reasoningEffort = "low",
                 readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS,
                 onDelta = { chunk ->
                     visibleText.append(chunk)

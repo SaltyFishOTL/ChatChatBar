@@ -43,7 +43,7 @@ class ChatApiMessageTest {
     }
 
     @Test
-    fun `image description request disables thinking params`() {
+    fun `image description request preserves selected model params`() {
         val model = modelConfig(
             customParams = mapOf(
                 "enable_thinking" to ParamValue.BooleanValue(true),
@@ -58,13 +58,7 @@ class ChatApiMessageTest {
 
         val sanitized = model.forImageDescriptionRequest()
 
-        assertEquals(ParamValue.BooleanValue(false), sanitized.customParams["enable_thinking"])
-        assertFalse(sanitized.customParams.containsKey("thinking_budget"))
-        assertFalse(sanitized.customParams.containsKey("max_thinking_tokens"))
-        assertFalse(sanitized.customParams.containsKey("reasoning_effort"))
-        assertEquals(ParamValue.NumberValue(0.7), sanitized.customParams["temperature"])
-        assertEquals(false, sanitized.enableThinking)
-        assertNull(sanitized.reasoningEffort)
+        assertEquals(model, sanitized)
     }
 
     @Test

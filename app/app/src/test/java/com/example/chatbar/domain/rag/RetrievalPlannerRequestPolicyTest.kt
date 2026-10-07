@@ -14,7 +14,7 @@ import org.junit.Test
 
 class RetrievalPlannerRequestPolicyTest {
     @Test
-    fun supportedModel_disablesThinkingAndDropsInheritedReasoningParameters() {
+    fun supportedModel_preservesConfiguredReasoningParameters() {
         val body = requestBody(
             model = model(
                 supportsDisableThinking = true,
@@ -23,13 +23,13 @@ class RetrievalPlannerRequestPolicyTest {
             )
         )
 
-        assertEquals(false, body.getValue("enable_thinking").jsonPrimitive.boolean)
-        assertFalse(body.containsKey("reasoning_effort"))
-        assertFalse(body.containsKey("thinking_budget"))
+        assertEquals(true, body.getValue("enable_thinking").jsonPrimitive.boolean)
+        assertEquals("high", body.getValue("reasoning_effort").jsonPrimitive.content)
+        assertEquals("1024", body.getValue("thinking_budget").jsonPrimitive.content)
     }
 
     @Test
-    fun unsupportedModel_doesNotInheritOrInventThinkingParameters() {
+    fun unsupportedDisableThinking_preservesExplicitConfiguration() {
         val body = requestBody(
             model = model(
                 supportsDisableThinking = false,
@@ -38,9 +38,9 @@ class RetrievalPlannerRequestPolicyTest {
             )
         )
 
-        assertFalse(body.containsKey("enable_thinking"))
-        assertFalse(body.containsKey("reasoning_effort"))
-        assertFalse(body.containsKey("thinking_budget"))
+        assertEquals(true, body.getValue("enable_thinking").jsonPrimitive.boolean)
+        assertEquals("high", body.getValue("reasoning_effort").jsonPrimitive.content)
+        assertEquals("1024", body.getValue("thinking_budget").jsonPrimitive.content)
     }
 
     private fun requestBody(model: ModelConfig) = model.forRetrievalPlannerRequest().let { requestModel ->
@@ -49,8 +49,7 @@ class RetrievalPlannerRequestPolicyTest {
                 messages = listOf(ChatApiMessage.text("user", "plan")),
                 modelConfig = requestModel,
                 stream = false,
-                disableThinking = shouldExplicitlyDisableRetrievalPlannerThinking(requestModel),
-                isolatedTaskParameters = true
+                disableThinking = shouldExplicitlyDisableRetrievalPlannerThinking(requestModel)
             )
         ).jsonObject
     }

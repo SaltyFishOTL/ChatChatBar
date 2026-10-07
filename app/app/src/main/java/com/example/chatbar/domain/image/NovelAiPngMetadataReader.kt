@@ -113,6 +113,7 @@ object NovelAiPngMetadataReader {
             steps = imported.steps ?: 28,
             guidance = imported.guidance ?: 6f,
             cfgRescale = imported.cfgRescale ?: 0f,
+            varietyPlus = imported.varietyPlus ?: false,
             sampler = imported.sampler ?: NovelAiSampler.EULER_ANCESTRAL,
             useCharacterPositions = imported.useCharacterPositions ?: false
         )
@@ -313,6 +314,9 @@ object NovelAiPngMetadataReader {
                 steps = this["steps"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..50 },
                 guidance = this["scale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 1f..10f },
                 cfgRescale = this["cfg_rescale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 0f..1f },
+                varietyPlus = if (containsKey("skip_cfg_above_sigma")) {
+                    (this["skip_cfg_above_sigma"]?.jsonPrimitive?.floatOrNull ?: 0f) > 0f
+                } else null,
                 sampler = this["sampler"]?.jsonPrimitive?.contentOrNull?.let { sampler ->
                     NovelAiSampler.entries.firstOrNull { it.apiId.equals(sampler, ignoreCase = true) }
                 }

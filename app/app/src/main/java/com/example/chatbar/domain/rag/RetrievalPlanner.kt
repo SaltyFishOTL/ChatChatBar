@@ -37,7 +37,7 @@ class RetrievalPlanner(
     ): RetrievalPlanResult = withAiTaskRun(Dispatchers.IO) {
         val requestModel = modelConfig.forRetrievalPlannerRequest()
         var rawResponse = ""
-        val result = withTimeoutOrNull(15_000L) {
+        val result = withTimeoutOrNull(120_000L) {
             runCatching {
                 rawResponse = chatService.completeText(
                     taskContext = AiTaskContext(AiTaskKind.RETRIEVAL_PLAN, AiTaskStage.PLAN),
@@ -53,8 +53,7 @@ class RetrievalPlanner(
                         )
                     ),
                     modelConfig = requestModel,
-                    disableThinking = shouldExplicitlyDisableRetrievalPlannerThinking(requestModel),
-                    isolatedTaskParameters = true
+                    disableThinking = shouldExplicitlyDisableRetrievalPlannerThinking(requestModel)
                 )
                 val plan = parsePlan(rawResponse)
                 if (plan == null) {
@@ -115,13 +114,10 @@ class RetrievalPlanner(
 
 }
 
-internal fun ModelConfig.forRetrievalPlannerRequest(): ModelConfig = copy(
-    reasoningEffort = null,
-    enableThinking = null
-)
+internal fun ModelConfig.forRetrievalPlannerRequest(): ModelConfig = this
 
 internal fun shouldExplicitlyDisableRetrievalPlannerThinking(model: ModelConfig): Boolean =
-    model.supportsDisableThinking || model.baseUrl.contains("siliconflow", ignoreCase = true)
+    false
 
 private fun String.removeMarkdownFence(): String {
     return trim()

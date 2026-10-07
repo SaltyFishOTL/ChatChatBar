@@ -289,9 +289,6 @@ class WorldBookResearchService(
                 )
             ),
             modelConfig = model,
-            enableThinking = false,
-            reasoningEffort = "low",
-            isolatedTaskParameters = true,
             onDelta = { chunk ->
                 visible.append(chunk)
                 onVisibleOutput("research-plan", "世界书搜索规划输出", visible.toString())
@@ -496,9 +493,6 @@ class WorldBookResearchService(
                     )
                 ),
                 modelConfig = model,
-                enableThinking = false,
-                reasoningEffort = "low",
-                isolatedTaskParameters = true,
                 onDelta = { chunk ->
                     visible.append(chunk)
                     onVisibleOutput(

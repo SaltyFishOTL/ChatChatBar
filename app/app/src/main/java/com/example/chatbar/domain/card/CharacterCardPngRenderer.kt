@@ -22,6 +22,8 @@ import kotlin.math.max
 import kotlin.math.roundToInt
 
 data class CharacterCardPngExportOptions(
+    /** Export-only cover; never stored on the character card or in its package. */
+    val coverImagePath: String? = null,
     val sizePx: Int = 1536,
     val gradientHeight: Float = 0.42f,
     val gradientStrength: Float = 0.72f,
@@ -49,11 +51,19 @@ object CharacterCardPngRenderer {
         val size = normalized.sizePx
         val bitmap = Bitmap.createBitmap(size, size, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bitmap)
-        val background = card.chatBackground
+        val sourcePath = normalized.coverImagePath ?: card.chatBackground
+        val background = sourcePath
             ?.takeIf(String::isNotBlank)
             ?.let(::File)
             ?.takeIf(File::isFile)
-            ?.let { BitmapFactory.decodeFile(it.absolutePath) }
+            ?.let { file ->
+                val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                BitmapFactory.decodeFile(file.absolutePath, bounds)
+                var sample = 1
+                while (bounds.outWidth / sample > size * 2 || bounds.outHeight / sample > size * 2) sample *= 2
+                BitmapFactory.decodeFile(file.absolutePath, BitmapFactory.Options().apply { inSampleSize = sample })
+            }
+        require(normalized.coverImagePath == null || background != null) { "所选导出图片无法读取，请重新选择" }
 
         if (background != null) {
             drawCover(canvas, background, size, normalized)

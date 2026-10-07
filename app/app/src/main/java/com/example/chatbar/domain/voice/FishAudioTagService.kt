@@ -4,7 +4,6 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.StreamEvent
 import com.example.chatbar.domain.chat.StreamingChatService
-import com.example.chatbar.domain.chat.withoutOutputTokenLimit
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.AiTaskStage
@@ -149,8 +148,7 @@ class FishAudioTagService(
                 chatService.streamText(
                     taskContext = taskContext,
                     messages = messages,
-                    modelConfig = modelConfig.withoutOutputTokenLimit(),
-                    disableThinking = true
+                    modelConfig = modelConfig
                 ).collect { event ->
                     when (event) {
                         is StreamEvent.Delta -> {

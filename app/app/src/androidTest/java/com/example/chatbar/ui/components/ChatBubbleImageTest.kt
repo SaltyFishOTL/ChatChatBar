@@ -2,6 +2,7 @@ package com.example.chatbar.ui.components
 
 import android.graphics.Bitmap
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.longClick
 import androidx.compose.ui.test.onNodeWithContentDescription
@@ -126,7 +127,7 @@ class ChatBubbleImageTest {
             }
         }
 
-        composeTestRule.onNodeWithContentDescription("助手消息")
+        composeTestRule.onNodeWithText("长按测试", useUnmergedTree = true)
             .performTouchInput { longClick() }
 
         assertTrue(longPressed)

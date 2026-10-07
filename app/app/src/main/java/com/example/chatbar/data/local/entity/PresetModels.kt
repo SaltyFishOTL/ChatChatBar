@@ -14,7 +14,8 @@ data class PresetEntry(
     val version: Int,
     val file: String,
     val displayName: String,
-    val worldBookPresetKeys: List<String> = emptyList()
+    val worldBookPresetKeys: List<String> = emptyList(),
+    val defaultFormatPresetKey: String? = null
 )
 
 @Serializable

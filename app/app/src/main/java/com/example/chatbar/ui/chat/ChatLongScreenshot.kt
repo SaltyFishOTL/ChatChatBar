@@ -22,6 +22,10 @@ import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.platform.ComposeView
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.ViewCompositionStrategy
+import androidx.lifecycle.LifecycleOwner
+import androidx.lifecycle.setViewTreeLifecycleOwner
+import androidx.savedstate.SavedStateRegistryOwner
+import androidx.savedstate.setViewTreeSavedStateRegistryOwner
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -117,6 +121,8 @@ private fun createLongScreenshotComposeView(
     request: ChatLongScreenshotRequest
 ): ComposeView =
     ComposeView(activity).apply {
+        setViewTreeLifecycleOwner(activity as? LifecycleOwner)
+        setViewTreeSavedStateRegistryOwner(activity as? SavedStateRegistryOwner)
         translationX = -request.widthPx * 2f
         setViewCompositionStrategy(ViewCompositionStrategy.DisposeOnDetachedFromWindow)
         setContent {

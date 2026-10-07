@@ -1893,7 +1893,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     seed = seed,
                     count = batchSize,
                     model = targetImageModel
-                )
+                ).let { card?.defaultImageGenerationSettings?.applyTo(it) ?: it }
                 val requestBody = novelAiImageService.buildRequestBody(prompt, imageSize, generationSettings)
                 com.example.chatbar.utils.DebugLogManager.recordCompleted(
                     sessionId = sessionId,

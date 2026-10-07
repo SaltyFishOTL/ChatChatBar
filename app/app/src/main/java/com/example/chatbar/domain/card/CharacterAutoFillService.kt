@@ -137,7 +137,6 @@ class CharacterAutoFillService(
                 userPrompt.toChatApiMessage(imageContext.directImageBase64s)
             ),
             modelConfig = model,
-            thinkingBudget = 512,
             readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         )
         val draft = parseGeneratedDraft(raw) ?: repairDraft(raw, model)
@@ -212,7 +211,6 @@ class CharacterAutoFillService(
             taskContext = AiTaskContext(AiTaskKind.CHARACTER_FILL, AiTaskStage.GENERATE),
             messages = messages,
             modelConfig = model,
-            thinkingBudget = 512,
             readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         ).collect { event ->
             when (event) {
@@ -259,7 +257,6 @@ class CharacterAutoFillService(
                     ChatApiMessage.text("user", raw)
                 ),
                 modelConfig = model,
-                thinkingBudget = 256,
                 readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
             )
         } catch (error: ModelResponseTruncatedException) {

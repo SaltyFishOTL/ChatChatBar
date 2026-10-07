@@ -34,7 +34,6 @@ class MessageFormatRepairService(
             )
         ),
         modelConfig = modelConfig,
-        disableThinking = true,
         readTimeoutSeconds = FORMAT_REPAIR_READ_TIMEOUT_SECONDS
     )
 

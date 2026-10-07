@@ -42,12 +42,13 @@ class FormatCardTransferService(
         return copy
     }
 
-    /** 角色卡携带的共享格式卡：内容一致才复用，冲突时保留双方。 */
+    /** 恢复预制依赖时保留已有用户编辑；普通导入仅复用内容相同的格式卡。 */
     suspend fun importCharacterDefault(packageData: FormatCardPackage): FormatCard {
         packageData.validateForImport()
         return repository.getAll().firstOrNull {
-            NamePolicy.isSame(it.name, packageData.name) &&
-                it.content == packageData.content && it.userTools == packageData.userTools
+            (packageData.sourcePresetKey != null && it.sourcePresetKey == packageData.sourcePresetKey) ||
+                (NamePolicy.isSame(it.name, packageData.name) &&
+                    it.content == packageData.content && it.userTools == packageData.userTools)
         } ?: importNew(packageData)
     }
 

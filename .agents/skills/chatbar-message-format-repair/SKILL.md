@@ -27,7 +27,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Let an unset format-repair model follow the default chat model.
 - Treat an explicitly selected missing model ID as invalid configuration; do not silently replace it.
 - Offer all configured auxiliary text models, including models hidden from the normal chat selector.
-- Force repair requests to disable thinking and ignore reasoning deltas.
+- Preserve the selected repair model thinking/effort parameters; reasoning deltas never enter the replacement text.
 - Send only applicable format rules and the full assistant message. Do not inherit ordinary chat context.
 - Treat an exact trimmed `[[CHATBAR_FORMAT_OK]]` response as unchanged and keep any possible streamed marker prefix out of the message preview.
 - Skip automatic repair when no format rule exists. Make manual unavailability visible.

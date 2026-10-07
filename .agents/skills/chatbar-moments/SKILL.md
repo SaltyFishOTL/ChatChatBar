@@ -24,10 +24,8 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Global `momentsEnabled` defaults false. When off, hide root 朋友圈 Tab and do not generate.
 - Global `momentsImagesEnabled` defaults true (auto image generation). When off, or when NovelAI Token/image model is unavailable, posts are text-only and generated with the pure-text prompt.
 - Character `momentsEnabled` defaults true. Existing persisted characters with explicit false stay disabled.
-- AI judges only current timing/progress suitability. Do not judge whether character owns a phone or can post.
 - Active gate: session has user/AI exchange within 48 hours.
-- Progress gate: if previous moment exists, judge whether latest state has enough new progress.
-- Judge phase sends only long-term memory, previous moment, and latest message.
+- Generation has no repetition/progress judgment request. Historical checkpoint decisions and draft.shouldPost cannot veto valid nonblank text; scheduling switches, activity gate and daily limits remain unchanged.
 - Generation phase sends role/card info excluding opening greetings, long-term memory, previous moment, and recent 3 full messages. Do not truncate message bodies.
 - Multi-character card: moment AI chooses sender; no comment/reply simulation for other roles in MCP version.
 - Moments are front-end immersion only. Do not enter chat mainline, write long-term memory, add comments, or add transfer-to-chat entry.
@@ -58,9 +56,9 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 
 ## Prompt Rules
 
-- completeMomentText receives MOMENT_JUDGE/JUDGE or MOMENT_GENERATION explicitly; debug calls use the same contexts. Judge and generation requests share the enclosing AiTaskRun. Typed stream errors stop parsing; failed generation remains a visible failure/placeholder through existing orchestration.
+- Active completeMomentText calls use MOMENT_GENERATION; debug follows the same generation-only path. Legacy judge helpers/checkpoint fields remain decodable but are not invoked. Typed stream errors stop parsing; failed generation remains a visible failure/placeholder through existing orchestration.
 
-- Moment judge/copy resolves `session.modelId > global default chat`; image research/design resolves `session.imageModelId > global default image`. Scheduler, debug, retry and on-demand image entry points use this order and retain selected model parameters/thinking. Only the NovelAI rendering model has a character-card default. Existing resolver behavior for stale IDs remains in effect.
+- Moment copy resolves `session.modelId > global default chat`; image research/design resolves `session.imageModelId > global default image`. Scheduler, debug, retry and on-demand image entry points use this order and retain selected model parameters/thinking. Only the NovelAI rendering model has a character-card default. Existing resolver behavior for stale IDs remains in effect.
 - Debug generation must expose full AI inputs and outputs.
 - Moment copy: 0-60 Chinese characters, short, private, suggestive, like an accidental life fragment. Do not recap chat logs.
 - Text-only posts (image gen off or no token) use `PromptTemplates.momentGenerationTextSystemPrompt` and target ~40-90 Chinese characters; `MomentGenerationService` picks the prompt and the `compactMomentText` hard cap (`IMAGE_MOMENT_MAX_LENGTH=60` / `TEXT_ONLY_MOMENT_MAX_LENGTH=150`) based on an internal `textOnlyPost` flag. Keep the hard cap well above the prompt's requested range so it only catches AI that does not follow instructions; never tune the hard cap to the target range (that would clip normal output). The pure-text prompt still emits a hidden `imageBrief` so on-demand image design can reuse `designForMoment`.
@@ -73,7 +71,7 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Do not add `NOVELAI_IMAGE_PROMPT_MOMENT_TEMPLATE` or feature-specific NovelAI system prompts.
 - If moments need visual guidance, add only small modifiers: photo style, private/life-slice feeling, composition, candid/low-angle/door-gap/mirror/distant/phone snapshot when suitable.
 - Text/image generation failure should create a visible placeholder moment with failure reason and retry action; do not hide primary failure with a success-looking fallback.
-- Failed placeholders persist completed generation checkpoints. Retry resumes after completed judge, draft, and NovelAI Prompt-design phases instead of repeating them.
+- Failed placeholders persist completed generation checkpoints. Retry resumes completed draft and NovelAI Prompt-design phases; old judge results are ignored.
 - Generated images persist full `GeneratedImageMetadata`. Regeneration reuses `NovelAiImageRegenerationDialog`, exposes editable main/character/negative prompts, preserves original dimensions, and always requests a new seed.
 - New moment images use `NovelAiImageSizePolicy.resolve(global novelAiImageAspectRatio, SQUARE)` across scheduled generation, checkpoint retry, debug, and on-demand generation. Pass the setting into `MomentGenerationService`; reject invalid nonblank ratios visibly. Blank settings retain the original square default; AI-chosen presets do not override this policy. Existing-image regeneration retains its original dimensions unless the user edits them; timeline thumbnails remain square crops, and full preview shows the original image.
 - Moment generation, retry, debug, on-demand generation, and regeneration resolve the NovelAI model as `ChatSession.novelAiImageModel` > `CharacterCard.defaultNovelAiImageModel` > global `AppSettings.novelAiImageModel`.
@@ -111,3 +109,5 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Run `.\gradlew.bat test` for policy, prompt assembly, repository, scheduler, or parsing changes.
 - Run `powershell -ExecutionPolicy Bypass -File .\ci.ps1 -SkipAssemble` for UI, navigation, background alarm, Android API, or shared behavior changes.
 - Add/update JVM tests around `PromptTemplates`, `MomentPolicy`, scheduler limits, repository likes/delete, and debug input assembly when touched.
+
+- Scheduled/debug/on-demand/regenerated images apply optional card defaultImageGenerationSettings after resolving the session/card/global model, preserving size and seed policy. Offline repetition/checkpoint regression: MomentGenerationRegressionTest.

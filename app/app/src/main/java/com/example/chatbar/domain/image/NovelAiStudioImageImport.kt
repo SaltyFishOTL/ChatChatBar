@@ -14,6 +14,7 @@ data class NovelAiImportedGenerationSettings(
     val steps: Int? = null,
     val guidance: Float? = null,
     val cfgRescale: Float? = null,
+    val varietyPlus: Boolean? = null,
     val sampler: NovelAiSampler? = null,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
@@ -21,7 +22,7 @@ data class NovelAiImportedGenerationSettings(
 ) {
     val hasAny: Boolean
         get() = model != null || sizeTier != null || aspectRatio != null || count != null ||
-            steps != null || guidance != null || cfgRescale != null || sampler != null ||
+            steps != null || guidance != null || cfgRescale != null || varietyPlus != null || sampler != null ||
             customWidth != null || customHeight != null || useCharacterPositions != null
 }
 
@@ -126,6 +127,7 @@ fun NovelAiStudioDraft.applyImportedMetadata(
                 steps = imported.steps ?: current.steps,
                 guidance = imported.guidance ?: current.guidance,
                 cfgRescale = imported.cfgRescale ?: current.cfgRescale,
+                varietyPlus = imported.varietyPlus ?: current.varietyPlus,
                 sampler = imported.sampler ?: current.sampler,
                 useCharacterPositions = imported.useCharacterPositions ?: current.useCharacterPositions
             )

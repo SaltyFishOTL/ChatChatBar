@@ -121,6 +121,19 @@ class FormatCardTransferServiceTest {
     private fun newService(): FormatCardTransferService = FormatCardTransferService(newRepository(), json)
 
     @Test
+    fun presetDependencyRestoresOnceAndKeepsExistingEdits() = runTest {
+        val repository = newRepository()
+        val service = FormatCardTransferService(repository, json)
+        val dependency = FormatCardPackage(name = "preset", content = "original", sourcePresetKey = "test-format")
+        val restored = service.importCharacterDefault(dependency)
+        assertEquals("test-format", restored.sourcePresetKey)
+        repository.save(restored.copy(content = "user edit"))
+        assertEquals(restored.id, service.importCharacterDefault(dependency).id)
+        assertEquals("user edit", repository.getById(restored.id)?.content)
+        assertEquals(1, repository.getAll().size)
+    }
+
+    @Test
     fun characterBindingReusesExactContentAndPreservesLocalConflictsAndDefault() = runTest {
         val repository = newRepository()
         val service = FormatCardTransferService(repository, json)

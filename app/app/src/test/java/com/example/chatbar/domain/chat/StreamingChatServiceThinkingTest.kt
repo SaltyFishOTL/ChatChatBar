@@ -119,14 +119,14 @@ class StreamingChatServiceThinkingTest {
     }
 
     @Test
-    fun `image description converts configured effort to none`() {
+    fun `image description preserves configured effort`() {
         val model = dynamicModel().copy(
             customParams = mapOf("reasoning_effort" to ParamValue.StringValue("high"))
         ).forImageDescriptionRequest()
         val body = Json.parseToJsonElement(StreamingChatService().buildRequestBody(
             listOf(ChatApiMessage.text("user", "image")), model, false
         )).jsonObject
-        assertEquals("none", body.getValue("reasoning_effort").jsonPrimitive.content)
+        assertEquals("high", body.getValue("reasoning_effort").jsonPrimitive.content)
         assertTrue(ThinkingRequestPolicy.legacyKeys.none { it in body })
     }
 
@@ -168,7 +168,7 @@ class StreamingChatServiceThinkingTest {
     }
 
     @Test
-    fun `memory compression planner uses isolated unlimited non json request`() {
+    fun `memory compression planner preserves configured sampling in non json request`() {
         val model = ModelConfig(
             id = "model",
             displayName = "Model",
@@ -189,21 +189,20 @@ class StreamingChatServiceThinkingTest {
                 modelConfig = model,
                 stream = false,
                 disableThinking = shouldDisableMemoryThinking(model),
-                isolatedTaskParameters = true,
                 responseFormatJson = false
             )
         ).jsonObject
 
         assertFalse(body.containsKey("max_tokens"))
         assertFalse(body.containsKey("max_completion_tokens"))
-        assertEquals(false, body.getValue("enable_thinking").jsonPrimitive.boolean)
-        assertFalse(body.containsKey("temperature"))
-        assertFalse(body.containsKey("thinking_budget"))
+        assertFalse(body.containsKey("enable_thinking"))
+        assertEquals("0.8", body.getValue("temperature").jsonPrimitive.content)
+        assertEquals("512", body.getValue("thinking_budget").jsonPrimitive.content)
         assertFalse(body.containsKey("response_format"))
     }
 
     @Test
-    fun `memory compression planner never inherits configured thinking`() {
+    fun `memory compression planner inherits configured thinking`() {
         val model = ModelConfig(
             id = "model",
             displayName = "Model",
@@ -222,13 +221,12 @@ class StreamingChatServiceThinkingTest {
                 modelConfig = model,
                 stream = false,
                 disableThinking = shouldDisableMemoryThinking(model),
-                isolatedTaskParameters = true,
                 responseFormatJson = false
             )
         ).jsonObject
 
-        assertFalse(body.containsKey("enable_thinking"))
-        assertFalse(body.containsKey("reasoning_effort"))
+        assertEquals(true, body.getValue("enable_thinking").jsonPrimitive.boolean)
+        assertEquals("high", body.getValue("reasoning_effort").jsonPrimitive.content)
     }
 
     @Test

@@ -1921,7 +1921,13 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
         }
     }
     CbField("Sampler") {
-        CbSelect(settings.sampler, NovelAiSampler.entries, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+        CbSelect(settings.sampler, settings.model.samplers, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+    }
+    if (settings.model.supportsVarietyPlus) {
+        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            CbText("V+ · Variety+", modifier = Modifier.weight(1f))
+            CbSwitch(settings.varietyPlus, { value -> viewModel.updateGenerationSettings { it.copy(varietyPlus = value) } })
+        }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
         CbText("随机 Seed", Modifier.weight(1f))

@@ -86,8 +86,6 @@ class CharacterAppearanceImageService(
                 )
             ),
             modelConfig = analysisModel,
-            disableThinking = true,
-            isolatedTaskParameters = true,
             responseFormatJson = true
         )
         val draft = parseDraft(raw, json)

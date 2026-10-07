@@ -301,7 +301,10 @@ class LongTermMemoryScopedCommitTest {
         message("u0", sessionId, MessageRole.USER, "s0", 0, 10),
         message("a0", sessionId, MessageRole.ASSISTANT, "s0", 0, 20),
         message("u1", sessionId, MessageRole.USER, "s1", 1, 30),
-        message("a1", sessionId, MessageRole.ASSISTANT, "s1", 1, 40)
+        message("a1", sessionId, MessageRole.ASSISTANT, "s1", 1, 40),
+        // Current turn is protected separately from the configured previous-turn window.
+        message("u2", sessionId, MessageRole.USER, "s2", 2, 50),
+        message("a2", sessionId, MessageRole.ASSISTANT, "s2", 2, 60)
     )
 
     private fun message(

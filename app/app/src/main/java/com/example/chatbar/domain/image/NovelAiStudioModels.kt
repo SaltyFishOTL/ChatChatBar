@@ -13,7 +13,17 @@ enum class NovelAiImageModel(
     val tokenizerKind: NovelAiTokenizerKind
 ) {
     V4_5_FULL("nai-diffusion-4-5-full", "V4.5 Full", 6, 512, NovelAiTokenizerKind.T5),
-    V5_FULL("nai-diffusion-5-full", "V5 Full", 22, 1471, NovelAiTokenizerKind.QWEN)
+    V5_FULL("nai-diffusion-5-full", "V5 Full", 22, 1471, NovelAiTokenizerKind.QWEN);
+
+    val supportsVarietyPlus: Boolean get() = this == V4_5_FULL
+    val samplers: List<NovelAiSampler> get() = when (this) {
+        V4_5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
+            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M,
+            NovelAiSampler.DPM_PLUS_PLUS_SDE)
+        V5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
+            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M_SDE,
+            NovelAiSampler.DPM_PLUS_PLUS_2M, NovelAiSampler.DPM_PLUS_PLUS_SDE)
+    }
 }
 
 enum class NovelAiTokenizerKind { T5, QWEN }
@@ -25,6 +35,7 @@ enum class NovelAiSampler(val apiId: String, val displayName: String) {
     DPM_PLUS_PLUS_2S_ANCESTRAL("k_dpmpp_2s_ancestral", "DPM++ 2S Ancestral"),
     DPM_PLUS_PLUS_2M("k_dpmpp_2m", "DPM++ 2M"),
     DPM_PLUS_PLUS_SDE("k_dpmpp_sde", "DPM++ SDE"),
+    DPM_PLUS_PLUS_2M_SDE("k_dpmpp_2m_sde", "DPM++ 2M SDE"),
     DDIM("ddim_v3", "DDIM")
 }
 
@@ -53,6 +64,7 @@ data class NovelAiGenerationSettings(
     val seed: Long = 0L,
     val sampler: NovelAiSampler = NovelAiSampler.EULER_ANCESTRAL,
     val cfgRescale: Float = 0f,
+    val varietyPlus: Boolean = false,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
     val useCharacterPositions: Boolean = false
@@ -61,6 +73,7 @@ data class NovelAiGenerationSettings(
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)
 
     fun normalized(): NovelAiGenerationSettings = copy(
+        sampler = sampler.takeIf { it in model.samplers } ?: NovelAiSampler.EULER_ANCESTRAL,
         aspectRatio = if (sizeTier == NovelAiSizeTier.WALLPAPER && aspectRatio == NovelAiAspectRatio.SQUARE) {
             NovelAiAspectRatio.PORTRAIT
         } else {
@@ -103,6 +116,7 @@ data class NovelAiGenerationSettings(
         steps !in 1..50 -> "Steps 必须在 1–50 之间"
         guidance !in 1f..10f -> "Guidance 必须在 1.0–10.0 之间"
         cfgRescale !in 0f..1f -> "CFG Rescale 必须在 0.0–1.0 之间"
+        sampler !in model.samplers -> "当前模型不支持所选 Sampler"
         seedMode == NovelAiSeedMode.FIXED && seed !in MIN_SEED..maxAllowedBaseSeed -> "当前数量下 Seed 必须在 $MIN_SEED–$maxAllowedBaseSeed 之间"
         characterCount > model.maxCharacters -> "${model.displayName} 最多支持 ${model.maxCharacters} 个角色；当前 $characterCount 个"
         else -> null

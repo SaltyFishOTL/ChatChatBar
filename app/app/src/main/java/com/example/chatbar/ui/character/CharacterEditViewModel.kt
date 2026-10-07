@@ -378,6 +378,7 @@ class CharacterEditViewModel(
     var creatorNotes by mutableStateOf("")
     var momentsEnabled by mutableStateOf(true)
     var defaultNovelAiImageModel by mutableStateOf<NovelAiImageModel?>(null)
+    var defaultImageGenerationSettings by mutableStateOf<com.example.chatbar.domain.image.NovelAiCharacterImageSettings?>(null)
     val charactersList = mutableStateListOf<CharacterInfo>()
     private val freeformAvatarPromptDrafts = mutableStateMapOf<String, String>()
     val documentsList = mutableStateListOf<DocumentInfo>()
@@ -1291,7 +1292,8 @@ class CharacterEditViewModel(
             negativePrompt = defaultImageNegativePrompt
         )
         val imageSize = CharacterAvatarImagePolicy.imageSize
-        val signature = "$characterId\n${plan.baseCaption}\n${plan.effectiveNegativePrompt}\n${imageSize.width}x${imageSize.height}"
+        val signature = "$characterId\n${plan.baseCaption}\n${plan.effectiveNegativePrompt}\n${imageSize.width}x${imageSize.height}" +
+            "\n${defaultNovelAiImageModel ?: settingsRepository.currentAppSettings.novelAiImageModel}\n$defaultImageGenerationSettings"
         val resumeState = _avatarImageState.value.takeIf {
             it.error != null && it.characterId == characterId && it.sourceSignature == signature
         }
@@ -1333,8 +1335,8 @@ class CharacterEditViewModel(
                         imageSize = imageSize,
                         settings = NovelAiGenerationSettings.legacy(
                             seed = seed,
-                            model = appSettings.novelAiImageModel
-                        )
+                            model = card.defaultNovelAiImageModel ?: appSettings.novelAiImageModel
+                        ).let { card.defaultImageGenerationSettings?.applyTo(it) ?: it }
                     ).collect { event ->
                         if (generationToken != avatarImageGenerationToken) return@collect
                         when (event) {
@@ -1603,8 +1605,8 @@ class CharacterEditViewModel(
                         imageSize = imageSize,
                         settings = NovelAiGenerationSettings.legacy(
                             seed = seed,
-                            model = settings.novelAiImageModel
-                        )
+                            model = card.defaultNovelAiImageModel ?: settings.novelAiImageModel
+                        ).let { card.defaultImageGenerationSettings?.applyTo(it) ?: it }
                     ).collect { event ->
                         when (event) {
                             is NovelAiImageEvent.Intermediate -> {
@@ -2423,6 +2425,7 @@ class CharacterEditViewModel(
         creatorNotes = card.creatorNotes
         momentsEnabled = card.momentsEnabled
         defaultNovelAiImageModel = card.defaultNovelAiImageModel
+        defaultImageGenerationSettings = card.defaultImageGenerationSettings
         charactersList.clear()
         charactersList.addAll(card.characters.filterNot(CharacterPlaceholderPolicy::isEmpty))
         documentsList.clear()
@@ -2497,6 +2500,7 @@ class CharacterEditViewModel(
                 creatorNotes = creatorNotes,
                 momentsEnabled = momentsEnabled,
                 defaultNovelAiImageModel = defaultNovelAiImageModel,
+                defaultImageGenerationSettings = defaultImageGenerationSettings,
                 worldBookIds = selectedWorldBookIds.distinct(),
                 defaultFormatCardId = selectedDefaultFormatCardId,
                 characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
@@ -2511,7 +2515,7 @@ class CharacterEditViewModel(
             basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
             systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
             creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
-            defaultNovelAiImageModel != null || selectedDefaultFormatCardId != null ||
+            defaultNovelAiImageModel != null || defaultImageGenerationSettings != null || selectedDefaultFormatCardId != null ||
             documentsList.isNotEmpty() || charactersList.any { it.hasEditorContent() }
 
     private fun CharacterInfo.hasEditorContent(): Boolean = !CharacterPlaceholderPolicy.isEmpty(this)
@@ -2542,6 +2546,7 @@ class CharacterEditViewModel(
             creatorNotes = creatorNotes,
             momentsEnabled = momentsEnabled,
             defaultNovelAiImageModel = defaultNovelAiImageModel,
+            defaultImageGenerationSettings = defaultImageGenerationSettings,
             worldBookIds = selectedWorldBookIds.distinct(),
             defaultFormatCardId = selectedDefaultFormatCardId,
             characterBook = null,
@@ -2573,6 +2578,7 @@ class CharacterEditViewModel(
             creatorNotes = creatorNotes,
             momentsEnabled = momentsEnabled,
             defaultNovelAiImageModel = defaultNovelAiImageModel,
+            defaultImageGenerationSettings = defaultImageGenerationSettings,
             worldBookIds = selectedWorldBookIds.distinct(),
             defaultFormatCardId = selectedDefaultFormatCardId,
             characterBook = null,

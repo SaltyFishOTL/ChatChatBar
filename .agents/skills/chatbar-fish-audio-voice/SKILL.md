@@ -51,7 +51,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 
 - Generate tags only for assistant `DIALOGUE` and `THOUGHT` segments with one unique speaker match and a bound voice.
 - Resolve `voiceTagModelId = null` to the current session model. Treat an explicit stale model as disabled; never fall back.
-- Call the shared streaming text service with thinking disabled. Keep prompts in `PromptTemplates`.
+- Call the shared streaming text service with the selected model thinking/effort/output parameters intact. Keep prompts in `PromptTemplates`.
 - Translation/tag requests apply withoutOutputTokenLimit, omit both output-token aliases and configured maxOutputTokens, and keep the existing batch cancel action. Server-reported truncation still fails the batch before TTS; no partial-JSON/plain-text fallback.
 - Treat `ChatSession.voiceLanguage = null` as original-language synthesis. When configured, translate each target through the resolved voice tag model before tag generation; audiobook mode still translates but skips tags.
 - Validate translation JSON IDs, duplicates, omissions, unknown IDs, unknown fields, and blank results. Never fall back to original text after translation failure.

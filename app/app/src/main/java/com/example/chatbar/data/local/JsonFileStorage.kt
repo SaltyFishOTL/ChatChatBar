@@ -180,7 +180,7 @@ class JsonFileStorage(private val context: Context) {
             val entities = mutableMapOf<String, T>()
             dir.listFiles { f -> f.extension == "json" }?.forEach { file ->
                 try {
-                    val entity = file.inputStream().buffered().use { input ->
+                    val entity = openSerializedInput(file).use { input ->
                         json.decodeFromStream(serializer, input)
                     }
                     entities[file.nameWithoutExtension] = entity
@@ -208,7 +208,7 @@ class JsonFileStorage(private val context: Context) {
                 .orEmpty()
                 .mapNotNull { file ->
                     runCatching {
-                        file.inputStream().buffered().use { input ->
+                        openSerializedInput(file).use { input ->
                             transform(json.decodeFromStream(serializer, input))
                         }
                     }.getOrNull()
@@ -263,7 +263,7 @@ class JsonFileStorage(private val context: Context) {
                 .orEmpty()
                 .forEach { file ->
                     val entity = try {
-                        file.inputStream().buffered().use { input ->
+                        openSerializedInput(file).use { input ->
                             json.decodeFromStream(serializer, input)
                         }
                     } catch (_: Exception) {
@@ -314,7 +314,7 @@ class JsonFileStorage(private val context: Context) {
                 .orEmpty()
                 .mapNotNull { file ->
                     runCatching {
-                        file.inputStream().buffered().use { input ->
+                        openSerializedInput(file).use { input ->
                             transform(json.decodeFromStream(serializer, input))
                         }
                     }.getOrNull()
@@ -334,7 +334,7 @@ class JsonFileStorage(private val context: Context) {
                 val file = entityFile(entityType, id)
                 if (!file.isFile) return@mapNotNull null
                 runCatching {
-                    file.inputStream().buffered().use { input ->
+                    openSerializedInput(file).use { input ->
                         json.decodeFromStream(serializer, input)
                     }
                 }.getOrNull()
@@ -657,18 +657,26 @@ class JsonFileStorage(private val context: Context) {
         return (result as? SingletonReadResult.Valid)?.value
     }
 
+    private fun openSerializedInput(file: File): InputStream {
+        val largeStudioData = file.parentFile?.name == "novelai_generation_history" ||
+            file.nameWithoutExtension in setOf("novelai_studio_draft", "novelai_studio_history_undo", "novelai_studio_guidance_checkpoint")
+        return if (largeStudioData && file.isFile) {
+            com.example.chatbar.domain.image.NovelAiInlinePayloadStore(context.filesDir).openCompactJson(file)
+        } else Files.newInputStream(file.toPath()).buffered()
+    }
+
+    @OptIn(ExperimentalSerializationApi::class)
     private fun <T : Any> readSingleton(file: File, serializer: KSerializer<T>): SingletonReadResult<T> {
-        val content = try {
-            Files.newInputStream(file.toPath()).bufferedReader(Charsets.UTF_8).use { it.readText() }
+        return try {
+            openSerializedInput(file).use { input ->
+                SingletonReadResult.Valid(json.decodeFromStream(serializer, input))
+            }
         } catch (_: NoSuchFileException) {
             return SingletonReadResult.Missing
         } catch (error: IOException) {
             return SingletonReadResult.ReadError(error)
         } catch (error: SecurityException) {
             return SingletonReadResult.ReadError(IOException("无法访问本地文件", error))
-        }
-        return try {
-            SingletonReadResult.Valid(json.decodeFromString(serializer, content))
         } catch (error: SerializationException) {
             SingletonReadResult.Corrupt(error)
         } catch (error: IllegalArgumentException) {

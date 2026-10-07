@@ -206,7 +206,7 @@ class MomentsViewModel : ViewModel() {
                             settings = NovelAiGenerationSettings.legacy(
                                 seed = seed,
                                 model = novelAiImageModel
-                            )
+                            ).let { card?.defaultImageGenerationSettings?.applyTo(it) ?: it }
                         ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Final -> finalImage = event.image
@@ -329,7 +329,7 @@ class MomentsViewModel : ViewModel() {
                             settings = NovelAiGenerationSettings.legacy(
                                 seed = seed,
                                 model = novelAiImageModel
-                            )
+                            ).let { card.defaultImageGenerationSettings?.applyTo(it) ?: it }
                         ).collect { event ->
                             when (event) {
                                 is NovelAiImageEvent.Final -> finalImage = event.image

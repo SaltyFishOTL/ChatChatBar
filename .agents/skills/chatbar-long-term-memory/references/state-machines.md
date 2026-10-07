@@ -154,7 +154,7 @@ IDLE / PAUSED / ERROR
 
 ## Budget Compression
 
-- Before every tier compression, request one plain-text selection instruction from the same candidate children and forced IDs. Planner prompt targets at most 50 characters, omits output-token limits, clears inherited thinking settings, disables thinking where supported, and exposes no reasoning. Do not program-check its length, persist it, or treat it as evidence.
+- Before every tier compression, request one plain-text selection instruction from the same candidate children and forced IDs. Planner prompt targets at most 50 characters, inherits configured output/thinking parameters without task-owned limits, and exposes no reasoning. Do not program-check its length, persist it, or treat it as evidence.
 - Planner and final compressor each receive five output attempts. Truncation/empty/invalid output consumes one output attempt; transient request failures use a separate three-request budget. All stages omit output-token limits on every attempt; provider-reported truncation remains an output failure. Authentication, non-retryable HTTP errors, and cancellation stop immediately.
 - Send planner output and original children to the compression request. Compression prompt targets one plain, objective 60–300-character causal/state summary; program accepts 50–400. Reject per-child retelling, ornate scene description, and non-shrinking output.
 

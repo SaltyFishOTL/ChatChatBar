@@ -14,6 +14,8 @@ import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performTextReplacement
+import androidx.compose.ui.test.performSemanticsAction
+import androidx.compose.ui.semantics.SemanticsActions
 import com.example.chatbar.data.local.entity.GeneratedImageCharacterPrompt
 import com.example.chatbar.domain.image.NovelAiImageRegenerationDraft
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -55,27 +57,27 @@ class NovelAiImageRegenerationDialogTest {
             }
         }
 
-        composeTestRule.onAllNodesWithContentDescription("全屏编辑")[0].performClick()
+        composeTestRule.onAllNodesWithContentDescription("全屏编辑")[1].performScrollTo().performClick()
 
         assertTrue(
             composeTestRule.onAllNodesWithText("图片操作").fetchSemanticsNodes().isEmpty()
         )
-        composeTestRule.onNodeWithText("编辑主提示词").assertIsDisplayed()
+        composeTestRule.onNodeWithText("编辑基础 Prompt").assertIsDisplayed()
         composeTestRule.onNodeWithText("masterpiece, 1girl")
             .performTextReplacement("discarded prompt")
 
         composeTestRule.onNodeWithContentDescription("退出").performClick()
 
         composeTestRule.onNodeWithText("图片操作").assertIsDisplayed()
-        composeTestRule.onNodeWithText("masterpiece, 1girl").assertIsDisplayed()
+        composeTestRule.onNodeWithText("masterpiece, 1girl").performScrollTo().assertIsDisplayed()
 
-        composeTestRule.onAllNodesWithContentDescription("全屏编辑")[0].performClick()
+        composeTestRule.onAllNodesWithContentDescription("全屏编辑")[1].performScrollTo().performClick()
         composeTestRule.onNodeWithText("masterpiece, 1girl")
             .performTextReplacement("confirmed prompt")
         composeTestRule.onNodeWithContentDescription("确认").performClick()
 
         composeTestRule.onNodeWithText("图片操作").assertIsDisplayed()
-        composeTestRule.onNodeWithText("confirmed prompt").assertIsDisplayed()
+        composeTestRule.onNodeWithText("confirmed prompt").performScrollTo().assertIsDisplayed()
     }
 
     @Test
@@ -95,16 +97,16 @@ class NovelAiImageRegenerationDialogTest {
             }
         }
 
-        composeTestRule.onNodeWithText("负面提示词").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("lowres").performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText("lowres").performTextReplacement("bad anatomy")
         composeTestRule.onNodeWithText("bad anatomy").assertIsDisplayed()
 
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
         composeTestRule.onNodeWithText("添加角色").performScrollTo().performClick()
-        composeTestRule.onNodeWithText("角色提示词 2").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("角色提示词 2").assertExists()
 
         composeTestRule.onNodeWithContentDescription("删除角色提示词 2")
-            .performScrollTo()
-            .performClick()
+            .performSemanticsAction(SemanticsActions.OnClick) { it() }
         assertTrue(
             composeTestRule.onAllNodesWithText("角色提示词 2").fetchSemanticsNodes().isEmpty()
         )

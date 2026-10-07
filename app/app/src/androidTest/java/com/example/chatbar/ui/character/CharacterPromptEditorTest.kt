@@ -49,7 +49,8 @@ class CharacterPromptEditorTest {
         reopened[reopened.fetchSemanticsNodes().lastIndex].performScrollTo().performClick()
         rule.onNodeWithText("blue eyes").performTextReplacement("green eyes, long hair")
         rule.onNodeWithContentDescription("确认").performClick()
-        rule.onNodeWithText("保存").performClick()
+        androidx.test.espresso.Espresso.closeSoftKeyboard()
+        rule.onNodeWithText("保存").assertIsEnabled().performClick()
         rule.runOnIdle { assertEquals(initial.copy(imagePrompt = "green eyes, long hair"), saved) }
     }
 }

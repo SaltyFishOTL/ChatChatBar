@@ -1,0 +1,7 @@
+// Invoke only with the NovelAiStudioLargeLoadTest/NovelAiInlinePayloadStoreTest filters.
+allprojects {
+    tasks.withType(Test).configureEach {
+        maxHeapSize = '256m'
+        systemProperty 'chatbar.largeMemoryRegression', 'true'
+    }
+}

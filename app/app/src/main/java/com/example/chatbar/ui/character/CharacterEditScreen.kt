@@ -8,6 +8,8 @@ import com.example.chatbar.ui.components.NovelAiFullscreenTagEditor
 import androidx.compose.ui.text.input.TextFieldValue
 
 import com.example.chatbar.ui.kit.AppIcons
+import com.example.chatbar.ChatBarApp
+import com.example.chatbar.ui.kit.CbSlider
 
 import android.app.Activity
 import android.content.Context
@@ -588,21 +590,6 @@ fun CharacterEditScreen(
                 }
                 CbSwitch(viewModel.momentsEnabled, { viewModel.momentsEnabled = it })
             }
-            CbField(
-                "默认 NAI 模型",
-                description = "朋友圈、聊天与生图工作室未单独指定模型时使用；留空则跟随全局系统配置。"
-            ) {
-                val options = listOf(DefaultNovelAiImageModelOption(null, "跟随全局")) +
-                    NovelAiImageModel.entries.map { model ->
-                        DefaultNovelAiImageModelOption(model, model.displayName)
-                    }
-                CbSelect(
-                    value = options.first { it.model == viewModel.defaultNovelAiImageModel },
-                    options = options,
-                    optionLabel = DefaultNovelAiImageModelOption::label,
-                    onValueChange = { viewModel.defaultNovelAiImageModel = it.model }
-                )
-            }
             CbField("基本设定", description = "世界观、扮演要求等共同设定；两种编辑模式均会生效。", onFullscreenEdit = {
                 fullscreenField = "基本设定" to viewModel.basicSetting; fullscreenOnChange = { viewModel.basicSetting = it }
             }) {
@@ -656,6 +643,48 @@ fun CharacterEditScreen(
                         singleLine = false,
                         minLines = 3
                     )
+                }
+            }
+            var imageAdvancedExpanded by remember { mutableStateOf(false) }
+            CbButton(if (imageAdvancedExpanded) "收起高级设置" else "高级设置", { imageAdvancedExpanded = !imageAdvancedExpanded }, variant = ButtonVariant.Ghost)
+            if (imageAdvancedExpanded) {
+            CbField(
+                "默认 NAI 模型",
+                description = "朋友圈、聊天与生图工作室未单独指定模型时使用；留空则跟随全局系统配置。"
+            ) {
+                val options = listOf(DefaultNovelAiImageModelOption(null, "跟随全局")) +
+                    NovelAiImageModel.entries.map { model ->
+                        DefaultNovelAiImageModelOption(model, model.displayName)
+                    }
+                CbSelect(
+                    value = options.first { it.model == viewModel.defaultNovelAiImageModel },
+                    options = options,
+                    optionLabel = DefaultNovelAiImageModelOption::label,
+                    onValueChange = { viewModel.defaultNovelAiImageModel = it.model }
+                )
+            }
+                val imageModel = viewModel.defaultNovelAiImageModel ?: ChatBarApp.instance.settingsRepository.currentAppSettings.novelAiImageModel
+                val imageSettings = viewModel.defaultImageGenerationSettings ?: com.example.chatbar.domain.image.NovelAiCharacterImageSettings()
+                CbField("Sampler") {
+                    CbSelect(imageSettings.sampler.takeIf { it in imageModel.samplers } ?: imageModel.samplers.first(), imageModel.samplers, { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
+                }
+                CbField("Steps · ${imageSettings.steps}") {
+                    CbSlider(imageSettings.steps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48)
+                }
+                CbField("CFG · ${imageSettings.guidance}") {
+                    CbSlider(imageSettings.guidance, { viewModel.defaultImageGenerationSettings = imageSettings.copy(guidance = it) }, valueRange = 1f..10f)
+                }
+                CbField("CFG Rescale · ${imageSettings.cfgRescale}") {
+                    CbSlider(imageSettings.cfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f)
+                }
+                if (imageModel.supportsVarietyPlus) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        CbText("V+ · Variety+", Modifier.weight(1f))
+                        CbSwitch(imageSettings.varietyPlus, { viewModel.defaultImageGenerationSettings = imageSettings.copy(varietyPlus = it) })
+                    }
+                }
+                if (viewModel.defaultImageGenerationSettings != null) {
+                    CbButton("恢复默认生图参数", { viewModel.defaultImageGenerationSettings = null }, variant = ButtonVariant.Ghost)
                 }
             }
             CbField(
@@ -1601,7 +1630,7 @@ internal fun NovelAiStylePresetGallery(
                     )
                 }
                 LazyRow(
-                    modifier = Modifier.fillMaxWidth(),
+                    modifier = Modifier.fillMaxWidth().testTag("novel-ai-style-preview-row"),
                     contentPadding = PaddingValues(horizontal = 1.dp),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
@@ -1960,6 +1989,7 @@ private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = 
     append(viewModel.mesExample).append('|')
     append(viewModel.creatorNotes).append('|')
     append(viewModel.momentsEnabled).append('|')
+    append(viewModel.defaultImageGenerationSettings.toString())
     append(viewModel.defaultNovelAiImageModel?.name.orEmpty()).append('|')
     append(viewModel.charactersList.joinToString("\u001e") {
         listOf(

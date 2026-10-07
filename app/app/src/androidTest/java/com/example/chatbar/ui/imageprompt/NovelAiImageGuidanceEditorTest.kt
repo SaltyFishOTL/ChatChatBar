@@ -1,6 +1,8 @@
 package com.example.chatbar.ui.imageprompt
 
 import androidx.activity.ComponentActivity
+import androidx.compose.ui.test.hasText
+import androidx.compose.ui.test.hasClickAction
 import androidx.compose.ui.test.assertCountEquals
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -37,7 +39,7 @@ class NovelAiImageGuidanceEditorTest {
             }
         }
 
-        composeTestRule.onNodeWithText("图生图").assertIsDisplayed()
+        composeTestRule.onNode(hasText("图生图") and hasClickAction()).assertIsDisplayed()
         composeTestRule.onNodeWithText("聚焦重绘").assertIsDisplayed()
         composeTestRule.onAllNodesWithText("精确").assertCountEquals(0)
         composeTestRule.onAllNodesWithText("氛围").assertCountEquals(0)
@@ -62,7 +64,7 @@ class NovelAiImageGuidanceEditorTest {
         }
 
         listOf("图生图", "聚焦重绘", "精确", "氛围").forEach { label ->
-            composeTestRule.onNodeWithText(label).assertIsDisplayed()
+            composeTestRule.onNode(hasText(label) and hasClickAction()).assertIsDisplayed()
         }
     }
 

@@ -422,6 +422,7 @@ fun ManageScreen(
             ) {
                 when (tab) {
                     0 -> CharacterTab(characters, editorDrafts.filter { it.entityType == EditorDraftType.CHARACTER_CARD }, characterPresets, viewModel::characterHasUpdate, viewModel::characterCommunityUpdate, modelUsable, modelErrors.firstOrNull(), importProgress, { card ->
+                        characterExportOptions = CharacterCardPngExportOptions()
                         pendingCharacterExport = card
                     }, { id ->
                         val card = characters.firstOrNull { it.id == id }
@@ -700,14 +701,47 @@ private fun CharacterPngExportDialog(
     onExport: () -> Unit
 ) {
     val normalized = options.normalized()
-    val backgroundFile = card.chatBackground?.let(::File)?.takeIf(File::isFile)
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    var importingCover by remember { mutableStateOf(false) }
+    val chooseCover = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) scope.launch {
+            importingCover = true
+            var file: File? = null
+            try {
+                file = withContext(Dispatchers.IO) {
+                    File.createTempFile("character-export-", ".image", context.cacheDir).also { target ->
+                        try {
+                            context.contentResolver.openInputStream(uri).use { input ->
+                                requireNotNull(input) { "无法读取所选图片" }
+                                target.outputStream().use { output -> input.copyTo(output) }
+                            }
+                            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                            BitmapFactory.decodeFile(target.absolutePath, bounds)
+                            require(bounds.outWidth > 0 && bounds.outHeight > 0) { "所选文件不是有效图片" }
+                        } catch (error: Throwable) {
+                            target.delete()
+                            throw error
+                        }
+                    }
+                }
+                onOptionsChange(normalized.copy(coverImagePath = file.absolutePath, cropCenterX = 0.5f, cropCenterY = 0.5f, cropZoom = 1f))
+            } catch (error: Exception) {
+                file?.delete()
+                Toast.makeText(context, error.message ?: "读取图片失败", Toast.LENGTH_LONG).show()
+            } finally {
+                importingCover = false
+            }
+        }
+    }
+    val backgroundFile = (normalized.coverImagePath ?: card.chatBackground)?.let(::File)?.takeIf(File::isFile)
     var showBackgroundCrop by remember(card.id) { mutableStateOf(false) }
     CbDialog(
         onDismissRequest = onDismiss,
         title = "导出角色卡 PNG",
         modifier = Modifier.heightIn(max = 780.dp),
         dismiss = { CbButton("取消", onDismiss, variant = ButtonVariant.Ghost) },
-        confirm = { CbButton("导出 PNG", onExport) }
+        confirm = { CbButton("导出 PNG", onExport, enabled = !importingCover) }
     ) {
         Column(
             Modifier
@@ -716,6 +750,10 @@ private fun CharacterPngExportDialog(
             verticalArrangement = Arrangement.spacedBy(14.dp)
         ) {
             CharacterPngPreview(card, normalized)
+            CbButton("从文件选择导出图片", { chooseCover.launch(arrayOf("image/*")) }, enabled = !importingCover, variant = ButtonVariant.Outline)
+            if (normalized.coverImagePath != null) {
+                CbButton("使用角色卡背景图", { onOptionsChange(normalized.copy(coverImagePath = null, cropCenterX = 0.5f, cropCenterY = 0.5f, cropZoom = 1f)) }, variant = ButtonVariant.Ghost)
+            }
             if (backgroundFile == null) {
                 CbText("未设置默认聊天背景，当前预览使用品牌底色。", color = ChatBarTheme.colors.warning, style = ChatBarTheme.typography.caption)
             } else {
@@ -777,8 +815,8 @@ private fun CharacterPngExportDialog(
 
 @Composable
 private fun CharacterPngPreview(card: CharacterCard, options: CharacterCardPngExportOptions) {
-    val backgroundFile = remember(card.chatBackground) {
-        card.chatBackground?.let(::File)?.takeIf(File::isFile)
+    val backgroundFile = remember(card.chatBackground, options.coverImagePath) {
+        (options.coverImagePath ?: card.chatBackground)?.let(::File)?.takeIf(File::isFile)
     }
     val density = LocalDensity.current
     var sourceSize by remember(backgroundFile) { mutableStateOf<ImageCropSize?>(null) }

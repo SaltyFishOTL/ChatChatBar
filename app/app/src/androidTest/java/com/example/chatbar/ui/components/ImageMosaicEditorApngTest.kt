@@ -36,7 +36,7 @@ class ImageMosaicEditorApngTest {
     }
 
     @Test
-    fun chatBarDisguiseAutomaticallySwitchesPrimaryActionToRestore() = runBlocking {
+    fun chatBarDisguiseAutomaticallySwitchesPrimaryActionToRestore(): Unit = runBlocking {
         val source = writePng("editor-restore-source.png", 0xff506070.toInt())
         val disguise = ImageProcessingService(composeRule.activity).createApngDisguise(source.absolutePath)
 
@@ -52,11 +52,11 @@ class ImageMosaicEditorApngTest {
         showEditor(gif)
         composeRule.waitForText("GIF 会完整保留帧、时序和循环；为避免丢失动画，涂抹、旋转和去元数据已禁用。")
         composeRule.onNodeWithText("完成").assertIsNotEnabled()
-        composeRule.onNodeWithText("旋转 90°").performScrollTo().assertIsNotEnabled()
+        composeRule.onNodeWithText("旋转 90°").assertIsNotEnabled()
     }
 
     @Test
-    fun otherApngDisablesDisguiseAndFlatteningEdits() = runBlocking {
+    fun otherApngDisablesDisguiseAndFlatteningEdits(): Unit = runBlocking {
         val gif = writeGif()
         val service = ImageProcessingService(composeRule.activity)
         val disguise = service.createApngDisguise(gif.absolutePath)

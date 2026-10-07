@@ -317,7 +317,9 @@ class NovelAiImageService(
                 put("sm_dyn", false)
                 put("dynamic_thresholding", false)
                 put("cfg_rescale", settings.cfgRescale)
-                put("skip_cfg_above_sigma", JsonNull)
+                if (settings.model.supportsVarietyPlus) {
+                    if (settings.varietyPlus) put("skip_cfg_above_sigma", 58) else put("skip_cfg_above_sigma", JsonNull)
+                }
                 put("deliberate_euler_ancestral_bug", false)
                 put("prefer_brownian", true)
                 put("stream", "msgpack")
@@ -326,7 +328,9 @@ class NovelAiImageService(
                 if (enhance != null) {
                     require(imageGuidance.action == NovelAiGenerationAction.IMAGE_TO_IMAGE && settings.count == 1)
                     require(!enhance.upscaledEnhance || settings.model == NovelAiImageModel.V5_FULL)
-                    enhance.sourceParameters.forEach { (key, value) -> put(key, value) }
+                    enhance.sourceParameters.forEach { (key, value) ->
+                        if (key != "skip_cfg_above_sigma" || settings.model.supportsVarietyPlus) put(key, value)
+                    }
                     put("upscaled_enhance", enhance.upscaledEnhance)
                     put("color_correct", false)
                     put("extra_noise_seed", (settings.seed - 1L) and 0xffff_ffffL)

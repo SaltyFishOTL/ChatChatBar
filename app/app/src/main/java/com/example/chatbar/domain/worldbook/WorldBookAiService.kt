@@ -359,7 +359,6 @@ class WorldBookAiService(
                 ChatApiMessage.text("user", userPrompt)
             ),
             modelConfig = model,
-            isolatedTaskParameters = true,
             onDelta = { chunk ->
                 visible.append(chunk)
                 val text = visible.toString()

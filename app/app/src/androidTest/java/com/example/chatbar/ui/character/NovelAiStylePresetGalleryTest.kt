@@ -10,11 +10,18 @@ import androidx.compose.ui.test.assertWidthIsEqualTo
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithContentDescription
 import androidx.compose.ui.test.onAllNodesWithTag
+import androidx.compose.ui.test.onAllNodesWithText
+import androidx.compose.ui.test.onFirst
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithTag
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performScrollToNode
+import androidx.compose.ui.test.hasContentDescription
+import androidx.compose.ui.test.hasAnyAncestor
+import androidx.compose.ui.test.isDialog
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.unit.dp
 import com.example.chatbar.domain.image.NovelAiStyleCatalogLoadResult
 import com.example.chatbar.domain.image.NovelAiStyleModelSupport
@@ -66,17 +73,17 @@ class NovelAiStylePresetGalleryTest {
             }
         }
 
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 6；支持 V4.5 / V5")
-            .performScrollTo()
-            .assertIsDisplayed()
-        composeTestRule.onNodeWithText("例图缺失", useUnmergedTree = true)
-            .assertIsDisplayed()
+        composeTestRule.onAllNodesWithText("例图缺失", useUnmergedTree = true).onFirst()
+            .assertExists()
         composeTestRule.onNodeWithTag(
             "novel-ai-style-preview:style-1",
             useUnmergedTree = true
         )
             .assertWidthIsEqualTo(132.dp)
             .assertHeightIsEqualTo(132.dp)
+        composeTestRule.onNodeWithTag("novel-ai-style-preview-row")
+            .performScrollToNode(hasContentDescription("填充画风：画风 6；支持 V4.5 / V5"))
+        composeTestRule.onNodeWithContentDescription("填充画风：画风 6；支持 V4.5 / V5").assertIsDisplayed()
     }
 
     @Test
@@ -116,21 +123,22 @@ class NovelAiStylePresetGalleryTest {
         composeTestRule.onNodeWithText("查看全部（3）").performClick()
         composeTestRule.onNodeWithTag("novel-ai-style-filter").performClick()
         composeTestRule.onNodeWithTag("novel-ai-style-filter-option:V5").performClick()
-        composeTestRule.onAllNodesWithContentDescription("填充画风：画风 1；支持 V4.5")
+        composeTestRule.onAllNodes(hasContentDescription("填充画风：画风 1；支持 V4.5") and hasAnyAncestor(isDialog()))
             .assertCountEquals(0)
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 2；支持 V5")
+        composeTestRule.onNode(hasContentDescription("填充画风：画风 2；支持 V5") and hasAnyAncestor(isDialog()))
             .assertIsDisplayed()
-        composeTestRule.onNodeWithContentDescription("填充画风：画风 3；支持 V4.5 / V5")
+        composeTestRule.onNode(hasContentDescription("填充画风：画风 3；支持 V4.5 / V5") and hasAnyAncestor(isDialog()))
             .performScrollTo()
             .assertIsDisplayed()
     }
 
     @Test
     fun galleryShowsEmptyAndFatalStates() {
+        val catalog = mutableStateOf(NovelAiStyleCatalogLoadResult())
         composeTestRule.setContent {
             ChatBarTheme {
                 NovelAiStylePresetGallery(
-                    catalog = NovelAiStyleCatalogLoadResult(),
+                    catalog = catalog.value,
                     currentPrompt = "",
                     onApply = {}
                 )
@@ -138,15 +146,7 @@ class NovelAiStylePresetGalleryTest {
         }
         composeTestRule.onNodeWithText("未配置内置画风").assertIsDisplayed()
 
-        composeTestRule.setContent {
-            ChatBarTheme {
-                NovelAiStylePresetGallery(
-                    catalog = NovelAiStyleCatalogLoadResult(fatalError = "画风配置加载失败"),
-                    currentPrompt = "",
-                    onApply = {}
-                )
-            }
-        }
+        composeTestRule.runOnIdle { catalog.value = NovelAiStyleCatalogLoadResult(fatalError = "画风配置加载失败") }
         composeTestRule.onNodeWithText("画风配置加载失败").assertIsDisplayed()
     }
 

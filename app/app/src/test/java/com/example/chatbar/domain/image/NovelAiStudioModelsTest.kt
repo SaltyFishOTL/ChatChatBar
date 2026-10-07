@@ -173,7 +173,8 @@ class NovelAiStudioModelsTest {
             stylePrompt = "style", basePrompt = "scene", extraPrompt = "extra",
             negativePrompt = "stale", characters = listOf(NovelAiCharacterPromptDraft(negativePrompt = "role negative")),
             importedCharacterCardId = "card",
-            importedCharacterPromptSources = listOf(NovelAiCharacterPromptSource("name", "reference"))
+            importedCharacterPromptSources = listOf(NovelAiCharacterPromptSource("name", "reference")),
+            updatedAt = 1L
         )
         val restored = draft.clearPrompts("  card negative  ")
         assertEquals(draft.clearPrompts().copy(negativePrompt = "card negative"), restored)

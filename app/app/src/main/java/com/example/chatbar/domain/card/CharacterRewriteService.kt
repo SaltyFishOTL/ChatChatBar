@@ -120,7 +120,6 @@ class CharacterRewriteService(
             taskContext = AiTaskContext(AiTaskKind.CHARACTER_REWRITE, AiTaskStage.GENERATE),
             messages = messages,
             modelConfig = model,
-            thinkingBudget = 512,
             readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         ).collect { event ->
             when (event) {
@@ -165,7 +164,6 @@ class CharacterRewriteService(
                 )
             ),
             modelConfig = model,
-            thinkingBudget = 256,
             readTimeoutSeconds = CHARACTER_CARD_AI_READ_TIMEOUT_SECONDS
         )
         return parseGeneratedDraft(repaired)

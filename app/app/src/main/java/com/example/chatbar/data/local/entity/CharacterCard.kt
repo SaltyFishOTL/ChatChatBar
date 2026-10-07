@@ -29,6 +29,7 @@ data class CharacterCard(
     val defaultImageNegativePrompt: String = "",
     /** null 表示跟随全局 NovelAI 生图模型。 */
     val defaultNovelAiImageModel: NovelAiImageModel? = null,
+    val defaultImageGenerationSettings: com.example.chatbar.domain.image.NovelAiCharacterImageSettings? = null,
     val systemPrompt: String = "",
     val postHistoryInstructions: String = "",
     val mesExample: String = "",

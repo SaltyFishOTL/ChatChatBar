@@ -44,7 +44,7 @@ Use chatbar-prompt-pipeline when changing general prompt layering or final messa
 
 ## Critical Review Checks
 
-- MemoryAiGateway omits output-token limits for every stage and retry; isolated requests ignore configured output limits.
+- MemoryAiGateway inherits the selected model parameters at every stage and retry, including compression planning; it adds no task-owned token/thinking limit and keeps explicit model limits.
 - MemoryAiGateway declares separate MEMORY_EPISODE, MEMORY_COMPRESSION_PLAN, MEMORY_COMPRESSION and MEMORY_HEAD contexts; correction attempts use REPAIR. AiTaskRun groups retry attempts and compression planning/summary. Refusal/filter and cancellation bypass retryMemoryAiOutput immediately; existing transport/output budgets apply only to other failures.
 
 - Distinguish durable facts from current eligibility. Context changes may hide work; they must not erase missing-memory facts.

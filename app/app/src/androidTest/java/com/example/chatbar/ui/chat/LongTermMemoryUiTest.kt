@@ -10,6 +10,7 @@ import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
+import androidx.compose.ui.test.performScrollTo
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performTextReplacement
 import com.example.chatbar.data.local.entity.MemoryAuthor
@@ -516,34 +517,29 @@ class LongTermMemoryUiTest {
         composeTestRule.onNodeWithText("旧快照仍有效").assertIsDisplayed()
         composeTestRule.onNodeWithText(
             "后台正在追赶较新的剧情轮；当前聊天继续使用上方截至点的有效状态。"
-        ).assertIsDisplayed()
+        ).performScrollTo().assertIsDisplayed()
     }
 
     @Test
     fun headAndEpisodeEditSaveIndependently() {
         var savedHead: MemoryHead? = null
+        var showHead by mutableStateOf(true)
+        var savedBody = ""
         val head = MemoryHead(throughSourceTurnId = "s0", location = "old")
         composeTestRule.setContent {
             ChatBarTheme {
-                MemoryHeadPage(uiState(episode(), head = head), onEditHead = { savedHead = it })
+                if (showHead) MemoryHeadPage(uiState(episode(), head = head).copy(headPresent = true), onEditHead = { savedHead = it })
+                else MemoryTierEditor(state = uiState(episode()), tier = MemoryTier.EPISODE,
+                    onEditNode = { _, body -> savedBody = body },
+                    onRegenerateNode = { _, _ -> Result.success("regenerated from source") },
+                    onOpenNodeEditor = { _, _, _ -> })
             }
         }
         composeTestRule.onNodeWithText("old").performTextReplacement("new")
-        composeTestRule.onNodeWithText("保存当前状态").performClick()
+        composeTestRule.onNodeWithText("保存当前状态").performScrollTo().performClick()
         composeTestRule.runOnIdle { assertEquals("new", savedHead?.location) }
 
-        var savedBody = ""
-        composeTestRule.setContent {
-            ChatBarTheme {
-                MemoryTierEditor(
-                    state = uiState(episode()),
-                    tier = MemoryTier.EPISODE,
-                    onEditNode = { _, body -> savedBody = body },
-                    onRegenerateNode = { _, _ -> Result.success("regenerated from source") },
-                    onOpenNodeEditor = { _, _, _ -> }
-                )
-            }
-        }
+        composeTestRule.runOnIdle { showHead = false }
         composeTestRule.onNodeWithText("当前内容已保存到Checkpoint。").assertIsDisplayed()
         composeTestRule.onNodeWithText("episode event").performTextReplacement("edited event")
         composeTestRule.onNodeWithText("有未保存修改，离开此页面会丢失。").assertIsDisplayed()
