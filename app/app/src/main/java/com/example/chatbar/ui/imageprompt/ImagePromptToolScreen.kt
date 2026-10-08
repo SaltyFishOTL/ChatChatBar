@@ -749,6 +749,10 @@ fun ImagePromptToolScreen(
             resultStream = state.resultStream,
             reasoningStream = state.reasoningStream,
             reversePromptReply = state.reversePromptReply,
+            sceneDescription = state.reverseSceneDescription,
+            naturalLanguage = state.draft.aiDesignNaturalLanguageMode,
+            onSceneDescriptionChange = viewModel::updateReverseSceneDescription,
+            onConfirmScene = viewModel::confirmReverseSceneDescription,
             hasReversePromptCandidate = state.reversePromptCandidate != null,
             reversePromptStopping = state.reversePromptStopping,
             isDesigning = state.isDesigning,
@@ -808,7 +812,7 @@ fun ImagePromptToolScreen(
 }
 
 @Composable
-private fun StudioImageToolsDialog(
+internal fun StudioImageToolsDialog(
     source: com.example.chatbar.domain.image.ImportedProcessImage?,
     metadata: NovelAiStudioPngMetadata?,
     loading: Boolean,
@@ -817,6 +821,10 @@ private fun StudioImageToolsDialog(
     resultStream: String,
     reasoningStream: String,
     reversePromptReply: String,
+    sceneDescription: String?,
+    naturalLanguage: Boolean,
+    onSceneDescriptionChange: (String) -> Unit,
+    onConfirmScene: () -> Unit,
     hasReversePromptCandidate: Boolean,
     reversePromptStopping: Boolean,
     isDesigning: Boolean,
@@ -832,6 +840,17 @@ private fun StudioImageToolsDialog(
     onApplyReversePrompt: () -> Unit
 ) {
     val canRetry = source != null && !busy && designStatus.isNotBlank()
+    var sceneFullscreen by remember(source?.path) { mutableStateOf(false) }
+    if (sceneFullscreen && sceneDescription != null) {
+        FullscreenTextEditor(
+            title = "确认场景描述",
+            value = TextFieldValue(sceneDescription),
+            onValueChange = { onSceneDescriptionChange(it.text) },
+            visible = true,
+            onDismiss = { sceneFullscreen = false }
+        )
+        return
+    }
     CbDialog(
         onDismissRequest = onDismiss,
         title = "图片工具",
@@ -859,6 +878,9 @@ private fun StudioImageToolsDialog(
                         CbButton("应用", onApplyReversePrompt, size = ButtonSize.Sm)
                     }
                 }
+            }
+            sceneDescription != null && !busy -> {
+                { CbButton("确认并继续", onConfirmScene, enabled = sceneDescription.isNotBlank(), size = ButtonSize.Sm) }
             }
             canRetry -> {
                 { CbButton("重试", onRetryReversePrompt, size = ButtonSize.Sm) }
@@ -909,6 +931,16 @@ private fun StudioImageToolsDialog(
                 NovelAiImageAction(AppIcons.Search, "反推 Prompt", "使用多模态 AI 反推提示词", !busy, Modifier.weight(1f), onReversePrompt)
             }
             CbButton("增强 / 放大", onPostProcess, Modifier.fillMaxWidth(), enabled = !busy, variant = ButtonVariant.Outline)
+            CbText(if (naturalLanguage) "反推模式：自然语言 · V5" else "反推模式：结构化 Tag", style = ChatBarTheme.typography.caption)
+            if (sceneDescription != null && !isDesigning) {
+                CbField(
+                    "确认场景描述",
+                    description = "修正人物、动作与环境后，点击确认并继续。后续检索以此描述为准。",
+                    onFullscreenEdit = { sceneFullscreen = true }
+                ) {
+                    CbInput(sceneDescription, onSceneDescriptionChange, singleLine = false, minLines = 4)
+                }
+            }
             if (isDesigning || designStatus.isNotBlank() || resultStream.isNotBlank() || reasoningStream.isNotBlank()) {
                 Spacer(Modifier.height(ChatBarSpacing.sm))
                 ReversePromptStreamPanel(

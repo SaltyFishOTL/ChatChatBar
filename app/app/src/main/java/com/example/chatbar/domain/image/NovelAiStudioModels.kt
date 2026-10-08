@@ -275,8 +275,11 @@ fun NovelAiStudioDraft.applyDesignedPromptPlan(
 )
 
 fun NovelAiStudioDraft.applyReversePromptPlan(
-    plan: NovelAiPromptPlan
+    plan: NovelAiPromptPlan,
+    targetImageModel: NovelAiImageModel? = null
 ): NovelAiStudioDraft = copy(
+    selectedModel = targetImageModel ?: selectedModel,
+    followDefaultNovelAiImageModel = if (targetImageModel != null) false else followDefaultNovelAiImageModel,
     basePrompt = plan.baseCaption,
     extraPrompt = "",
     characters = plan.characterCaptions.mapIndexed { index, caption ->

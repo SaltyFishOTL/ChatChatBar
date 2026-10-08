@@ -26,6 +26,58 @@ import org.junit.Test
 @OptIn(ExperimentalCoroutinesApi::class)
 class NovelAiTagResearchServiceTest {
     @Test
+    fun `reverse recognition returns scene without searching until confirmation`() = runTest {
+        var searches = 0
+        val codexScenes = mutableListOf<String>()
+        val service = NovelAiTagResearchService(
+            planner = StaticPlanner(listOf("撑伞")),
+            searchClient = LambdaClient { query -> searches++; outcome(query) },
+            codexSearcher = NovelAiCodexSearcher { _, scene, _ ->
+                codexScenes += scene
+                NovelAiCodexSearchResult()
+            }
+        )
+        val designer = NovelAiPromptDesigner(StreamingChatService { false }, service)
+        val recognized = designer.describeReferenceImage(
+            imageBase64 = "synthetic-image",
+            model = model().copy(isMultimodal = true),
+            targetImageModel = NovelAiImageModel.V5_FULL
+        )
+        assertEquals(DEFAULT_SCENE_DESCRIPTION, recognized)
+        assertEquals(0, searches)
+        assertTrue(codexScenes.isEmpty())
+
+        val corrected = "用户修正：单人坐在室内窗边，没有雨伞。"
+        val result = service.research(
+            taskInput = corrected, characterPrompts = emptyList(), imageBase64s = emptyList(),
+            model = model(), existingSceneDescription = corrected
+        )
+        assertEquals(corrected, result.sceneDescription)
+        assertEquals(listOf(corrected), codexScenes)
+        assertEquals(1, searches)
+        assertFalse(result.sceneFromPlanner)
+    }
+
+    @Test
+    fun `natural reverse application switches target and preserves generation state`() {
+        val draft = NovelAiStudioDraft(
+            stylePrompt = "style", negativePrompt = "negative",
+            characters = listOf(NovelAiCharacterPromptDraft(prompt = "old", negativePrompt = "role negative"))
+        )
+        val applied = draft.applyReversePromptPlan(
+            NovelAiPromptPlan("窗边人物", listOf(NovelAiCharacterCaption("角色描述", DesignedCharacterCenter(0.5f, 0.5f)))),
+            NovelAiImageModel.V5_FULL
+        )
+        assertEquals(NovelAiImageModel.V5_FULL, applied.selectedModel)
+        assertFalse(applied.followDefaultNovelAiImageModel)
+        assertEquals("窗边人物", applied.basePrompt)
+        assertEquals(draft.stylePrompt, applied.stylePrompt)
+        assertEquals(draft.negativePrompt, applied.negativePrompt)
+        assertEquals("role negative", applied.characters.single().negativePrompt)
+        assertEquals(draft.imageGuidance, applied.imageGuidance)
+    }
+
+    @Test
     fun `planner parses scene draft and deduplicated queries capped at six`() {
         val decision = planner().parseDecision(
             """

@@ -241,6 +241,8 @@ data class ImagePromptToolUiState(
     val reasoningStream: String = "",
     val resultStream: String = "",
     val reversePromptReply: String = "",
+    val reverseSceneDescription: String? = null,
+    val reversePromptTargetModel: NovelAiImageModel? = null,
     val reversePromptCandidate: NovelAiPromptPlan? = null,
     val reversePromptStopping: Boolean = false,
     val imagePreview: ByteArray? = null,
@@ -491,6 +493,8 @@ class ImagePromptToolViewModel : ViewModel() {
             _uiState.update {
                 it.copy(
                     imageImport = NovelAiStudioImageImportUiState(loading = true),
+                    reverseSceneDescription = null,
+                    reversePromptTargetModel = null,
                     postProcess = NovelAiPostProcessState(),
                     designStatus = "",
                     reasoningStream = "",
@@ -787,6 +791,7 @@ class ImagePromptToolViewModel : ViewModel() {
 
     fun clearImportedImage() {
         if (_uiState.value.postProcess.busy) return
+        cancelReversePrompt()
         imageImportJob?.cancel()
         _uiState.update {
             it.copy(
@@ -796,13 +801,27 @@ class ImagePromptToolViewModel : ViewModel() {
                 reasoningStream = "",
                 resultStream = "",
                 reversePromptReply = "",
+                reverseSceneDescription = null,
+                reversePromptTargetModel = null,
                 reversePromptCandidate = null,
                 reversePromptStopping = false
             )
         }
     }
 
-    fun reverseImportedPrompt() {
+    fun reverseImportedPrompt() = runReversePrompt(null)
+
+    fun updateReverseSceneDescription(text: String) {
+        if (_uiState.value.isBusy) return
+        _uiState.update { it.copy(reverseSceneDescription = text, reversePromptCandidate = null, reversePromptReply = "") }
+    }
+
+    fun confirmReverseSceneDescription() {
+        val scene = _uiState.value.reverseSceneDescription?.takeIf(String::isNotBlank) ?: return
+        runReversePrompt(scene)
+    }
+
+    private fun runReversePrompt(confirmedScene: String?) {
         val snapshot = _uiState.value
         val source = snapshot.imageImport.source ?: return
         if (snapshot.isBusy) return
@@ -812,35 +831,56 @@ class ImagePromptToolViewModel : ViewModel() {
             return
         }
         val draft = snapshot.draft
+        val targetModel = novelAiDesignTargetModel(draft)
         designJob = viewModelScope.launch {
             _uiState.update {
                 it.copy(
                     phase = ImagePromptToolPhase.DESIGNING,
-                    designStatus = "正在反推 NovelAI 提示词",
+                    designStatus = if (confirmedScene == null) "正在识别图片场景" else "正在反推 NovelAI 提示词",
                     reasoningStream = "",
-                    resultStream = "【准备图片】\n正在读取并转换图片…",
+                    resultStream = if (confirmedScene == null) "【准备图片】\n正在读取并转换图片…" else "正在准备已确认的场景…",
                     reversePromptStopping = false,
+                    reverseSceneDescription = confirmedScene ?: snapshot.reverseSceneDescription,
                     error = null
                 )
             }
             try {
-                val imageBase64 = withContext(Dispatchers.IO) {
-                    ImageFileEncoder.encodeToJpegBase64(source.path)
-                }
-                val preparationProgress = "【准备图片】\n图片已准备，开始反推 Prompt"
-                _uiState.update { it.copy(resultStream = preparationProgress) }
                 val playerName = settingsRepository.getPlayerSetting().playerName
+                if (confirmedScene == null) {
+                    val imageBase64 = withContext(Dispatchers.IO) { ImageFileEncoder.encodeToJpegBase64(source.path) }
+                    val scene = promptDesigner.describeReferenceImage(
+                        imageBase64 = imageBase64,
+                        model = model,
+                        targetImageModel = targetModel,
+                        characterImagePrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt },
+                        playerName = playerName,
+                        onContentDelta = { text -> _uiState.update { it.copy(resultStream = text) } }
+                    )
+                    coroutineContext.ensureActive()
+                    check(_uiState.value.imageImport.source?.path == source.path) { "输入图片已更换" }
+                    _uiState.update { it.copy(
+                        phase = ImagePromptToolPhase.READY,
+                        reverseSceneDescription = scene,
+                        reversePromptCandidate = null,
+                        reversePromptReply = "",
+                        designStatus = "请确认或修改场景描述，再继续反推",
+                        resultStream = ""
+                    ) }
+                    return@launch
+                }
+                val preparationProgress = "【场景已确认】\n依据确认后的描述检索并生成 Prompt"
                 val result = promptDesigner.designForPromptToolDetailed(
                     imageDescription = "",
                     characterPrompt = "",
                     characterImagePrompts = draft.importedCharacterPromptSources.map { it.name to it.prompt },
-                    imageBase64s = listOf(imageBase64),
+                    confirmedSceneDescription = confirmedScene,
                     referenceImageProvided = true,
                     model = model,
                     playerName = playerName,
                     finalPromptRequirement = draft.extraRequirement,
-                    targetImageModel = draft.selectedModel,
-                    referenceImageInstruction = PromptTemplates.novelAiImageReversePromptUser(draft.selectedModel.displayName),
+                    targetImageModel = targetModel,
+                    naturalLanguageMode = draft.aiDesignNaturalLanguageMode,
+                    referenceImageInstruction = PromptTemplates.novelAiImageReversePromptUser(targetModel.displayName),
                     excludeStyle = false,
                     onContentDelta = { text ->
                         _uiState.update {
@@ -852,6 +892,7 @@ class ImagePromptToolViewModel : ViewModel() {
                     onReasoningDelta = { text -> _uiState.update { it.copy(reasoningStream = text) } }
                 )
                 coroutineContext.ensureActive()
+                check(_uiState.value.imageImport.source?.path == source.path) { "输入图片已更换" }
                 _uiState.update {
                     it.copy(
                         phase = if (it.draft.basePrompt.isBlank()) {
@@ -862,6 +903,7 @@ class ImagePromptToolViewModel : ViewModel() {
                         designStatus = "反推完成，等待确认",
                         reversePromptReply = result.rawResponse,
                         reversePromptCandidate = result.plan,
+                        reversePromptTargetModel = targetModel,
                         reversePromptStopping = false,
                         error = null
                     )
@@ -922,7 +964,7 @@ class ImagePromptToolViewModel : ViewModel() {
                 )
             }
             runCatching {
-                repository.applyReversePrompt(candidate)
+                repository.applyReversePrompt(candidate, state.reversePromptTargetModel)
             }.onSuccess { applied ->
                 if (applied != before) recordDraftChange(before, null)
                 resetDraftCoalescing()
@@ -938,6 +980,8 @@ class ImagePromptToolViewModel : ViewModel() {
                         canUndoDraft = draftUndo.isNotEmpty(),
                         canRedoDraft = draftRedo.isNotEmpty(),
                         designStatus = "反推结果已应用",
+                        reverseSceneDescription = null,
+                        reversePromptTargetModel = null,
                         reasoningStream = "",
                         resultStream = "",
                         reversePromptReply = "",

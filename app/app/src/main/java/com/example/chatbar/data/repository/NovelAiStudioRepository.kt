@@ -141,9 +141,10 @@ class NovelAiStudioRepository(
     }
 
     suspend fun applyReversePrompt(
-        plan: NovelAiPromptPlan
+        plan: NovelAiPromptPlan,
+        targetImageModel: com.example.chatbar.domain.image.NovelAiImageModel? = null
     ): NovelAiStudioDraft = updateDraft(resetPromptEditors = true) { current ->
-        current.applyReversePromptPlan(plan)
+        current.applyReversePromptPlan(plan, targetImageModel)
     }
 
     suspend fun saveUndoDraft(draft: NovelAiStudioDraft) = undoMutex.withLock {

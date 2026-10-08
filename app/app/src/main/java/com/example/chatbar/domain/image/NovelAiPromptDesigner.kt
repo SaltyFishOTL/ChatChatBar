@@ -420,6 +420,36 @@ class NovelAiPromptDesigner(
         onReasoningDelta = onReasoningDelta
     ).plan
 
+    suspend fun describeReferenceImage(
+        imageBase64: String,
+        model: ModelConfig,
+        targetImageModel: NovelAiImageModel,
+        characterImagePrompts: List<Pair<String, String>> = emptyList(),
+        playerName: String? = null,
+        onContentDelta: (String) -> Unit = {}
+    ): String = withAiTaskRun {
+        require(imageBase64.isNotBlank()) { "请先选择图片" }
+        val understood = imageUnderstandingServiceProvider()?.prepare(
+            imageBase64s = listOf(imageBase64),
+            generationModel = model,
+            requireUnderstanding = true,
+            announceDirect = true,
+            onStatus = onContentDelta,
+            onDescriptionText = { _, text -> onContentDelta(text) }
+        ) ?: if (model.isMultimodal) {
+            ImageUnderstandingResult(directImageBase64s = listOf(imageBase64))
+        } else error("当前模型不支持图片，请配置关联视觉模型")
+        understood.descriptions.joinToString("\n\n").takeIf(String::isNotBlank)
+            ?: tagResearchService.planSceneOnly(
+                taskInput = PromptTemplates.novelAiImageReversePromptUser(targetImageModel.displayName),
+                characterPrompts = characterImagePrompts,
+                imageBase64s = understood.directImageBase64s,
+                model = model,
+                playerName = playerName,
+                onProgress = onContentDelta
+            ).sceneDescription
+    }
+
     suspend fun designForPromptToolDetailed(
         imageDescription: String,
         characterPrompt: String,
@@ -434,15 +464,19 @@ class NovelAiPromptDesigner(
         referenceImageInstruction: String? = null,
         excludeStyle: Boolean = true,
         naturalLanguageMode: Boolean = false,
+        confirmedSceneDescription: String? = null,
         onContentDelta: (String) -> Unit = {},
         onReasoningDelta: (String) -> Unit = {}
     ): NovelAiPromptToolDesignResult = withAiTaskRun() {
         require(!naturalLanguageMode || targetImageModel == NovelAiImageModel.V5_FULL) {
             "自然语言 Prompt 仅支持 NovelAI Diffusion V5 Full"
         }
-        val sourceImages = imageBase64s.filter(String::isNotBlank)
+        require(confirmedSceneDescription == null || confirmedSceneDescription.isNotBlank()) { "请填写场景描述" }
+        val sourceImages = if (confirmedSceneDescription == null) imageBase64s.filter(String::isNotBlank) else emptyList()
         val imageProgress = NovelAiImageUnderstandingProgress(onContentDelta)
-        val understoodImages = if (sourceImages.isEmpty()) {
+        val understoodImages = if (confirmedSceneDescription != null) {
+            ImageUnderstandingResult(descriptions = listOf(confirmedSceneDescription))
+        } else if (sourceImages.isEmpty()) {
             ImageUnderstandingResult()
         } else {
             imageUnderstandingServiceProvider()?.prepare(
@@ -464,7 +498,7 @@ class NovelAiPromptDesigner(
             imageDescription = imageDescription,
             characterPrompt = characterPrompt
         )
-        require(request.isNotBlank() || sourceImages.isNotEmpty()) { "请输入图片描述、角色提示词或上传图片" }
+        require(request.isNotBlank() || sourceImages.isNotEmpty() || confirmedSceneDescription != null) { "请输入图片描述、角色提示词或上传图片" }
         val systemPrompt = if (naturalLanguageMode) {
             PromptTemplates.novelAiImageNaturalLanguagePromptCoreSystem(playerName, botName)
         } else {
