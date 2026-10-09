@@ -20,6 +20,6 @@ object CharacterAvatarImagePolicy {
         ),
         characterCaptions = emptyList(),
         sizePreset = NovelAiImageSizePreset.SQUARE,
-        negativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(negativePrompt)
+        negativePrompt = PromptTemplates.novelAiCharacterAvatarNegativePrompt(negativePrompt)
     )
 }

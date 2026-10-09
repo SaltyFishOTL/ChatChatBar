@@ -74,8 +74,9 @@ data class NovelAiCodexEvidence(
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
  *
  * ### 2. 角色卡、图片理解与角色头像
- * - 头像 NovelAI 固定组成：`CHARACTER_AVATAR_NAI_COMPOSITION_TAGS`、
- *   `novelAiCharacterAvatarPositivePrompt`
+ * - 头像 NovelAI 专用正负词：`CHARACTER_AVATAR_NAI_POSITIVE_PROMPT`、
+ *   `CHARACTER_AVATAR_NAI_NEGATIVE_PROMPT`、`novelAiCharacterAvatarPositivePrompt`、
+ *   `novelAiCharacterAvatarNegativePrompt`
  * - 通用图片理解：`IMAGE_DESCRIPTION_PROMPT`、`indexedImageDescription`
  * - 角色卡 NovelAI 默认值/规则：`DEFAULT_CHARACTER_NAI_STYLE_PROMPT`、
  *   `DEFAULT_CHARACTER_NAI_NEGATIVE_PROMPT`、`CHARACTER_IMAGE_NAI_PROMPT_GUIDE`
@@ -777,13 +778,25 @@ ${'$'}username没有输入新内容，仅要求你继续生成。请严格遵守
 
     // region 角色卡、图片理解与角色头像
 
-    const val CHARACTER_AVATAR_NAI_COMPOSITION_TAGS = "portrait, upper body"
+    // 头像专用正面词，追加在画风与角色描述之后。
+    const val CHARACTER_AVATAR_NAI_POSITIVE_PROMPT = "3::portrait, upper body::, face, -1::nsfw::, simple background"
+
+    // 头像专用负面词，追加在角色卡负面词（未设置时使用默认负面词）之后。
+    const val CHARACTER_AVATAR_NAI_NEGATIVE_PROMPT = "multiple views, split screen, collage, reference sheet, character sheet, inset, extreme close-up, eye focus, cropped head, out of frame"
 
     fun novelAiCharacterAvatarPositivePrompt(vararg sources: String): String =
-        (sources.asList() + CHARACTER_AVATAR_NAI_COMPOSITION_TAGS)
+        (sources.asList() + CHARACTER_AVATAR_NAI_POSITIVE_PROMPT)
             .map { it.trim().trim(',').trim() }
             .filter(String::isNotEmpty)
             .joinToString(", ")
+
+    fun novelAiCharacterAvatarNegativePrompt(
+        cardNegativePrompt: String,
+        avatarNegativePrompt: String = CHARACTER_AVATAR_NAI_NEGATIVE_PROMPT
+    ): String = listOf(effectiveCharacterNaiNegativePrompt(cardNegativePrompt), avatarNegativePrompt)
+        .map { it.trim().trim(',').trim() }
+        .filter(String::isNotEmpty)
+        .joinToString(", ")
 
     const val IMAGE_DESCRIPTION_PROMPT = """
 你负责用完全自然的中文将图片内容转为文字信息输出。此阶段禁止生成 Danbooru tag、Prompt、权重语法、画师、画风、质量词或负面词。

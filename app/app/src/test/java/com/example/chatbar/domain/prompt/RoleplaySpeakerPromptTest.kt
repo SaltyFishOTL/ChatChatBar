@@ -58,21 +58,23 @@ class RoleplaySpeakerPromptTest {
     }
 
     @Test
-    fun avatarCompositionTags_remainApprovedValue() {
+    fun avatarPositivePrompt_emptySourcesUseConfiguredTemplate() {
         assertEquals(
-            "portrait, upper body",
-            PromptTemplates.CHARACTER_AVATAR_NAI_COMPOSITION_TAGS
+            PromptTemplates.CHARACTER_AVATAR_NAI_POSITIVE_PROMPT.trim().trim(',').trim(),
+            PromptTemplates.novelAiCharacterAvatarPositivePrompt("", " , ")
         )
     }
 
     @Test
     fun avatarPositivePrompt_usesOnlyProvidedSourcesAndApprovedComposition() {
         assertEquals(
-            "style tags, character tags, portrait, upper body",
+            listOf("style tags", "character tags", PromptTemplates.CHARACTER_AVATAR_NAI_POSITIVE_PROMPT.trim().trim(',').trim())
+                .filter(String::isNotEmpty).joinToString(", "),
             PromptTemplates.novelAiCharacterAvatarPositivePrompt(" style tags ", "character tags")
         )
         assertEquals(
-            "manual full prompt, portrait, upper body",
+            listOf("manual full prompt", PromptTemplates.CHARACTER_AVATAR_NAI_POSITIVE_PROMPT.trim().trim(',').trim())
+                .filter(String::isNotEmpty).joinToString(", "),
             PromptTemplates.novelAiCharacterAvatarPositivePrompt("manual full prompt,")
         )
     }

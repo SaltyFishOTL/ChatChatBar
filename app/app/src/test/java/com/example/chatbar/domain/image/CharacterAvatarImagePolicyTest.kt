@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.image
 
+import com.example.chatbar.domain.prompt.PromptTemplates
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -14,12 +15,26 @@ class CharacterAvatarImagePolicyTest {
         )
 
         assertEquals(
-            "very aesthetic, anime screencap, 1girl, silver hair, blue-gray eyes, portrait, upper body",
+            PromptTemplates.novelAiCharacterAvatarPositivePrompt(
+                "very aesthetic, anime screencap,", "1girl, silver hair, blue-gray eyes"
+            ),
             plan.baseCaption
         )
         assertTrue(plan.characterCaptions.isEmpty())
         assertEquals(NovelAiImageSizePreset.SQUARE, plan.sizePreset)
-        assertEquals("lowres", plan.negativePrompt)
+        assertEquals(PromptTemplates.novelAiCharacterAvatarNegativePrompt("lowres"), plan.negativePrompt)
+    }
+
+    @Test
+    fun `avatar negative appends dedicated terms without replacing card negative`() {
+        assertEquals("card negative, avatar negative", PromptTemplates.novelAiCharacterAvatarNegativePrompt(
+            "card negative", " , avatar negative, "
+        ))
+        assertEquals("card negative", PromptTemplates.novelAiCharacterAvatarNegativePrompt("card negative", ""))
+        assertEquals(
+            PromptTemplates.effectiveCharacterNaiNegativePrompt("") + ", avatar negative",
+            PromptTemplates.novelAiCharacterAvatarNegativePrompt("", "avatar negative")
+        )
     }
 
     @Test
