@@ -33,6 +33,10 @@
             android:foregroundServiceType="dataSync"
             android:exported="false" />
         <service
+            android:name=".domain.backup.LocalDataTransferForegroundService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
+        <service
             android:name=".domain.voice.qq.QqVoiceTransferService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
@@ -74,6 +78,7 @@
                 <data android:mimeType="image/*" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/vnd.chatbar.backup" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="text/json" />
             </intent-filter>
@@ -83,6 +88,7 @@
                 <data android:mimeType="image/*" />
                 <data android:mimeType="application/json" />
                 <data android:mimeType="application/octet-stream" />
+                <data android:mimeType="application/vnd.chatbar.backup" />
                 <data android:mimeType="text/plain" />
                 <data android:mimeType="text/json" />
             </intent-filter>

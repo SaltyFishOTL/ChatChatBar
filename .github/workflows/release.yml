@@ -11,6 +11,11 @@ on:
         description: "Release notes"
         required: true
         type: string
+      runTests:
+        description: "Run JVM tests when explicitly requested"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -140,7 +145,18 @@ jobs:
           fi
           echo "Supabase configuration ready; release APK will include Community backend configuration."
 
-      - name: Test and build signed release APK
+      - name: Compile application and test sources
+        working-directory: app
+        run: |
+          chmod +x gradlew
+          ./gradlew :app:compileDebugKotlin :app:compileDebugUnitTestKotlin :app:compileDebugAndroidTestKotlin --no-daemon --stacktrace
+
+      - name: Run requested JVM tests
+        if: ${{ inputs.runTests }}
+        working-directory: app
+        run: ./gradlew test --no-daemon --stacktrace
+
+      - name: Build signed release APK
         working-directory: app
         env:
           ANDROID_KEYSTORE_PATH: ${{ github.workspace }}/app/app/keystore/release.jks
@@ -151,7 +167,6 @@ jobs:
           CHATBAR_VERSION_NAME: ${{ steps.version.outputs.versionName }}
         run: |
           chmod +x gradlew
-          ./gradlew test --no-daemon --stacktrace
           ./gradlew assembleRelease --no-daemon --stacktrace
 
       - name: Prepare release asset

@@ -236,57 +236,59 @@ class DanbooruTagCatalog(
         sourceCommitTime: String,
         validation: DanbooruCatalogValidation
     ): DanbooruCatalogMetadata = withContext(Dispatchers.IO) {
-        val preparedIndex = openReadOnly(stagedFile).use { database ->
-            completionIndexes.prepare(validation.sourceSha, database, validation.tableName)
-        }
-        currentCoroutineContext().ensureActive()
-        mutex.withLock {
-            val directory = catalogDirectory()
-            directory.mkdirsOrThrow()
-            val activeFile = activeDatabaseFile()
-            val manifestFile = installedManifestFile()
-            val backupFile = File(directory, "$ACTIVE_DATABASE_NAME.backup")
-            val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
-            val metadata = DanbooruCatalogMetadata(
-                sourceSha = validation.sourceSha,
-                sourceCommitTime = sourceCommitTime,
-                sourceSizeBytes = validation.sourceSizeBytes,
-                rowCount = validation.rowCount,
-                tableName = validation.tableName
-            )
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val preparedIndex = openReadOnly(stagedFile).use { database ->
+                completionIndexes.prepare(validation.sourceSha, database, validation.tableName)
+            }
+            currentCoroutineContext().ensureActive()
+            mutex.withLock {
+                val directory = catalogDirectory()
+                directory.mkdirsOrThrow()
+                val activeFile = activeDatabaseFile()
+                val manifestFile = installedManifestFile()
+                val backupFile = File(directory, "$ACTIVE_DATABASE_NAME.backup")
+                val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
+                val metadata = DanbooruCatalogMetadata(
+                    sourceSha = validation.sourceSha,
+                    sourceCommitTime = sourceCommitTime,
+                    sourceSizeBytes = validation.sourceSizeBytes,
+                    rowCount = validation.rowCount,
+                    tableName = validation.tableName
+                )
 
-            openCatalog?.database?.close()
-            openCatalog = null
-            backupFile.delete()
-            backupManifest.delete()
-            var replacementStarted = false
-            try {
-                if (activeFile.exists()) copyReplacing(activeFile, backupFile)
-                if (manifestFile.exists()) copyReplacing(manifestFile, backupManifest)
-                replacementStarted = true
-                moveReplacing(stagedFile, activeFile)
-                writeManifestAtomically(manifestFile, metadata)
-                val database = openReadOnly(activeFile)
-                openCatalog = OpenCatalog(database, metadata)
-                completionIndexes.acquire(preparedIndex, metadata.sourceSha).close()
-                synchronized(cache) { cache.clear() }
-                _completionVersion.value = metadata.sourceSha
-                backupFile.delete()
-                backupManifest.delete()
-                metadata
-            } catch (error: Throwable) {
                 openCatalog?.database?.close()
                 openCatalog = null
-                if (replacementStarted) {
-                    activeFile.delete()
-                    manifestFile.delete()
-                    if (backupFile.exists()) moveReplacing(backupFile, activeFile)
-                    if (backupManifest.exists()) moveReplacing(backupManifest, manifestFile)
+                backupFile.delete()
+                backupManifest.delete()
+                var replacementStarted = false
+                try {
+                    if (activeFile.exists()) copyReplacing(activeFile, backupFile)
+                    if (manifestFile.exists()) copyReplacing(manifestFile, backupManifest)
+                    replacementStarted = true
+                    moveReplacing(stagedFile, activeFile)
+                    writeManifestAtomically(manifestFile, metadata)
+                    val database = openReadOnly(activeFile)
+                    openCatalog = OpenCatalog(database, metadata)
+                    completionIndexes.acquire(preparedIndex, metadata.sourceSha).close()
+                    synchronized(cache) { cache.clear() }
+                    _completionVersion.value = metadata.sourceSha
+                    backupFile.delete()
+                    backupManifest.delete()
+                    metadata
+                } catch (error: Throwable) {
+                    openCatalog?.database?.close()
+                    openCatalog = null
+                    if (replacementStarted) {
+                        activeFile.delete()
+                        manifestFile.delete()
+                        if (backupFile.exists()) moveReplacing(backupFile, activeFile)
+                        if (backupManifest.exists()) moveReplacing(backupManifest, manifestFile)
+                    }
+                    runCatching { ensureReadyLocked() }
+                    throw error
+                } finally {
+                    stagedFile.delete()
                 }
-                runCatching { ensureReadyLocked() }
-                throw error
-            } finally {
-                stagedFile.delete()
             }
         }
     }
@@ -347,53 +349,55 @@ class DanbooruTagCatalog(
     }
 
     private fun installBundledLocked(metadata: DanbooruCatalogMetadata) {
-        val directory = catalogDirectory()
-        val staged = File(directory, BUNDLED_PART_NAME)
-        val active = activeDatabaseFile()
-        val manifest = installedManifestFile()
-        val backup = File(directory, "$ACTIVE_DATABASE_NAME.backup")
-        val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
-        staged.delete()
-        backup.delete()
-        backupManifest.delete()
-        var replacementStarted = false
-        try {
-            app.assets.open(BUNDLED_DATABASE_ASSET).use { assetInput ->
-                GZIPInputStream(assetInput.buffered()).use { input ->
-                    FileOutputStream(staged).buffered().use { output -> input.copyTo(output) }
-                }
-            }
-            if (metadata.sourceSizeBytes > 0L && staged.length() != metadata.sourceSizeBytes) {
-                throw IOException("内置 Danbooru 词条库大小不匹配")
-            }
-            if (metadata.sourceSha.isNotBlank() &&
-                !gitBlobSha(staged).equals(metadata.sourceSha, ignoreCase = true)
-            ) {
-                throw IOException("内置 Danbooru 词条库完整性校验失败")
-            }
-            val structure = validateStructure(staged)
-            val installed = metadata.copy(
-                sourceSizeBytes = staged.length(),
-                rowCount = structure.rowCount,
-                tableName = structure.tableName
-            )
-            if (active.exists()) copyReplacing(active, backup)
-            if (manifest.exists()) copyReplacing(manifest, backupManifest)
-            replacementStarted = true
-            moveReplacing(staged, active)
-            writeManifestAtomically(manifest, installed)
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val directory = catalogDirectory()
+            val staged = File(directory, BUNDLED_PART_NAME)
+            val active = activeDatabaseFile()
+            val manifest = installedManifestFile()
+            val backup = File(directory, "$ACTIVE_DATABASE_NAME.backup")
+            val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
+            staged.delete()
             backup.delete()
             backupManifest.delete()
-        } catch (error: Throwable) {
-            if (replacementStarted) {
-                active.delete()
-                manifest.delete()
-                if (backup.exists()) moveReplacing(backup, active)
-                if (backupManifest.exists()) moveReplacing(backupManifest, manifest)
+            var replacementStarted = false
+            try {
+                app.assets.open(BUNDLED_DATABASE_ASSET).use { assetInput ->
+                    GZIPInputStream(assetInput.buffered()).use { input ->
+                        FileOutputStream(staged).buffered().use { output -> input.copyTo(output) }
+                    }
+                }
+                if (metadata.sourceSizeBytes > 0L && staged.length() != metadata.sourceSizeBytes) {
+                    throw IOException("内置 Danbooru 词条库大小不匹配")
+                }
+                if (metadata.sourceSha.isNotBlank() &&
+                    !gitBlobSha(staged).equals(metadata.sourceSha, ignoreCase = true)
+                ) {
+                    throw IOException("内置 Danbooru 词条库完整性校验失败")
+                }
+                val structure = validateStructure(staged)
+                val installed = metadata.copy(
+                    sourceSizeBytes = staged.length(),
+                    rowCount = structure.rowCount,
+                    tableName = structure.tableName
+                )
+                if (active.exists()) copyReplacing(active, backup)
+                if (manifest.exists()) copyReplacing(manifest, backupManifest)
+                replacementStarted = true
+                moveReplacing(staged, active)
+                writeManifestAtomically(manifest, installed)
+                backup.delete()
+                backupManifest.delete()
+            } catch (error: Throwable) {
+                if (replacementStarted) {
+                    active.delete()
+                    manifest.delete()
+                    if (backup.exists()) moveReplacing(backup, active)
+                    if (backupManifest.exists()) moveReplacing(backupManifest, manifest)
+                }
+                throw error
+            } finally {
+                staged.delete()
             }
-            throw error
-        } finally {
-            staged.delete()
         }
     }
 
@@ -522,23 +526,27 @@ class DanbooruTagCatalog(
     }
 
     private fun writeManifestAtomically(file: File, metadata: DanbooruCatalogMetadata) {
-        val staged = File(file.parentFile, ".${file.name}.part")
-        try {
-            staged.writeText(json.encodeToString(DanbooruCatalogMetadata.serializer(), metadata), Charsets.UTF_8)
-            moveReplacing(staged, file)
-        } finally {
-            staged.delete()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val staged = File(file.parentFile, ".${file.name}.part")
+            try {
+                staged.writeText(json.encodeToString(DanbooruCatalogMetadata.serializer(), metadata), Charsets.UTF_8)
+                moveReplacing(staged, file)
+            } finally {
+                staged.delete()
+            }
         }
     }
 
     private fun cleanupRecoveryFiles(directory: File) {
-        File(directory, BUNDLED_PART_NAME).delete()
-        val active = activeDatabaseFile()
-        val manifest = installedManifestFile()
-        val backup = File(directory, "$ACTIVE_DATABASE_NAME.backup")
-        val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
-        if (!active.exists() && backup.exists()) moveReplacing(backup, active) else backup.delete()
-        if (!manifest.exists() && backupManifest.exists()) moveReplacing(backupManifest, manifest) else backupManifest.delete()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            File(directory, BUNDLED_PART_NAME).delete()
+            val active = activeDatabaseFile()
+            val manifest = installedManifestFile()
+            val backup = File(directory, "$ACTIVE_DATABASE_NAME.backup")
+            val backupManifest = File(directory, "$INSTALLED_MANIFEST_NAME.backup")
+            if (!active.exists() && backup.exists()) moveReplacing(backup, active) else backup.delete()
+            if (!manifest.exists() && backupManifest.exists()) moveReplacing(backupManifest, manifest) else backupManifest.delete()
+        }
     }
 
     private fun cached(key: String, version: String): List<NovelAiTagCandidate>? = synchronized(cache) {

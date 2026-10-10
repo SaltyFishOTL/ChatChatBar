@@ -4200,11 +4200,17 @@ class LongTermMemoryService internal constructor(
     }
 
     private suspend fun <T> stateLock(sessionId: String, block: suspend () -> T): T =
-        stateMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            stateMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        }
 
     private suspend fun <T> archiveLock(sessionId: String, block: suspend () -> T): T =
-        archiveMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            archiveMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        }
 
     private suspend fun <T> headLock(sessionId: String, block: suspend () -> T): T =
-        headMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            headMutexes.getOrPut(sessionId) { Mutex() }.withLock { block() }
+        }
 }

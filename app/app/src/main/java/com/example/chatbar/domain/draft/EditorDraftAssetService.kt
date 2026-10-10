@@ -20,10 +20,12 @@ class EditorDraftAssetService(private val context: Context) {
 
     suspend fun writeDocumentToDraft(draftSessionId: String, fileName: String, content: String): String =
         withContext(Dispatchers.IO) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val file = uniqueDraftFile(draftSessionId, fileName)
             file.writeText(content)
             file.absolutePath
         }
+    }
 
     suspend fun copyDocumentToDraft(draftSessionId: String, uri: Uri, fileName: String): String =
         copyUriToDraft(draftSessionId, uri, fileName)
@@ -33,14 +35,17 @@ class EditorDraftAssetService(private val context: Context) {
 
     suspend fun stageExistingFile(draftSessionId: String, path: String, fallbackName: String): String =
         withContext(Dispatchers.IO) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val source = File(path)
             val file = uniqueDraftFile(draftSessionId, source.name.takeIf { it.isNotBlank() } ?: fallbackName)
             if (source.exists()) source.copyTo(file, overwrite = true) else file.writeText("")
             file.absolutePath
         }
+    }
 
     suspend fun materializeCharacterAssets(card: CharacterCard): CharacterCard =
         withContext(Dispatchers.IO) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             card.copy(
                 avatar = materializeFile(card.avatar, "images"),
                 chatBackground = materializeFile(card.chatBackground, "images"),
@@ -52,16 +57,21 @@ class EditorDraftAssetService(private val context: Context) {
                 }
             )
         }
+    }
 
     suspend fun deleteDraft(draftSessionId: String) = withContext(Dispatchers.IO) {
-        draftDir(draftSessionId).deleteRecursively()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            draftDir(draftSessionId).deleteRecursively()
+        }
     }
 
     suspend fun deleteFiles(paths: Iterable<String>) = withContext(Dispatchers.IO) {
-        paths.distinct().forEach { path ->
-            runCatching {
-                val file = File(path)
-                if (file.exists()) file.delete()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            paths.distinct().forEach { path ->
+                runCatching {
+                    val file = File(path)
+                    if (file.exists()) file.delete()
+                }
             }
         }
     }
@@ -75,6 +85,7 @@ class EditorDraftAssetService(private val context: Context) {
 
     private suspend fun copyUriToDraft(draftSessionId: String, uri: Uri, fileName: String): String =
         withContext(Dispatchers.IO) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val file = uniqueDraftFile(draftSessionId, fileName)
             val input = context.contentResolver.openInputStream(uri) ?: error("无法读取所选文件")
             input.use { inputStream ->
@@ -83,17 +94,20 @@ class EditorDraftAssetService(private val context: Context) {
             check(file.exists() && file.length() > 0L) { "草稿文件复制失败" }
             file.absolutePath
         }
+    }
 
     private fun materializeFile(path: String?, dirName: String): String? {
-        if (!isDraftAsset(path)) return path
-        val source = File(path!!)
-        check(source.isFile && source.length() > 0L) {
-            "草稿资源文件不存在或为空：${source.name}"
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            if (!isDraftAsset(path)) return path
+            val source = File(path!!)
+            check(source.isFile && source.length() > 0L) {
+                "草稿资源文件不存在或为空：${source.name}"
+            }
+            val targetDir = File(context.filesDir, dirName).also { if (!it.exists()) it.mkdirs() }
+            val target = uniqueFile(targetDir, source.name)
+            source.copyTo(target, overwrite = true)
+            return target.absolutePath
         }
-        val targetDir = File(context.filesDir, dirName).also { if (!it.exists()) it.mkdirs() }
-        val target = uniqueFile(targetDir, source.name)
-        source.copyTo(target, overwrite = true)
-        return target.absolutePath
     }
 
     private fun uniqueDraftFile(draftSessionId: String, fileName: String): File =

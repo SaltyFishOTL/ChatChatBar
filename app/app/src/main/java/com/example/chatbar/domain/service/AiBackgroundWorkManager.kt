@@ -52,7 +52,8 @@ object AiBackgroundWorkManager {
         val generation: Long,
         val ready: CompletableDeferred<Unit>,
         val protection: ProtectionSignal,
-        val networkGuard: NetworkGuard
+        val networkGuard: NetworkGuard,
+        val maintenanceAccess: java.io.Closeable
     )
 
     private class ProtectionSignal {
@@ -210,7 +211,8 @@ object AiBackgroundWorkManager {
                     generation = ++nextGeneration,
                     ready = CompletableDeferred(),
                     protection = protection,
-                    networkGuard = NetworkGuard(context, protection, requireValidatedInternet)
+                    networkGuard = NetworkGuard(context, protection, requireValidatedInternet),
+                    maintenanceAccess = com.example.chatbar.domain.backup.LocalDataMaintenance.enter()
                 ).also { currentLease = it }
             } else {
                 checkNotNull(currentLease)
@@ -318,6 +320,7 @@ object AiBackgroundWorkManager {
                 cancelForegroundNotificationIfIdle()
                 return
             }
+            finished.maintenanceAccess.close()
             releasingLeases[finished.generation] = finished
             finished
         }

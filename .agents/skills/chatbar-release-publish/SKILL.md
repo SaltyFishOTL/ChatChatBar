@@ -13,7 +13,7 @@ Treat “更新” as authorization to publish every current ChatBar workspace c
 2. Before version lookup, tests, staging, commit, push, or release, audit every completed task and pending/unpushed change for project-skill relevance. Read the affected `.agents/skills` files, update stale skills, and create a compact skill only when a stable new area lacks one. Finish and validate skill changes before continuing; never postpone this audit until commit review.
 3. Inspect all tracked, staged, and untracked changes. Check for accidental secrets or generated junk; stop only for real data or credential risk.
 4. Resolve the immediately previous stable Release tag from remote GitHub Releases, then determine the next unused patch version. Never reuse a tag.
-5. Run `.\gradlew.bat test` and `powershell -ExecutionPolicy Bypass -File .\ci.ps1 -SkipAssemble` from `app/`. Fix in-scope failures before publishing.
+5. Compile application and test sources from `app/` with `:app:compileDebugKotlin :app:compileDebugUnitTestKotlin :app:compileDebugAndroidTestKotlin`. The release workflow separates source compilation, optional JVM tests, and signed APK assembly; its `runTests` input defaults to false. Use AGENTS.md for test authorization.
 6. Stage everything with `git add -A`. Review the staged diff, then create one concise Chinese commit covering the update.
 7. Build a Release coverage checklist from the complete range `<previous-stable-tag>..HEAD`:
    - List every non-release commit in chronological order and inspect its diff; do not infer scope from only the latest commit, current dirty workspace, or commit subjects.
@@ -33,6 +33,7 @@ Treat “更新” as authorization to publish every current ChatBar workspace c
 10. Dispatch `.github/workflows/release.yml` with:
    - `versionName`: next unused version without `v`.
    - `releaseNotes`: load the exact Markdown file from step 8.
+   - `runTests`: true only for an explicitly requested JVM test run; otherwise false.
 11. Monitor workflow through completion. On failure, inspect the failed job, fix the cause, commit and push the fix, then dispatch an unused version if a tag was already created.
 12. Recheck the final published tag range against the coverage checklist, then run `python .agents/skills/chatbar-release-publish/scripts/verify_release.py --repo SaltyFishOTL/ChatChatBar --version <version>`. Completion requires all gates:
     - workflow succeeded and stable tag exists;
@@ -47,6 +48,8 @@ Treat “更新” as authorization to publish every current ChatBar workspace c
 Report version, commit, workflow result, Release URL, APK asset, exact user-facing notes, and verification result.
 
 ## Client Reality Check
+
+On Windows, gh may report an invalid login when it cannot connect through the registry-configured system proxy. Compare Git/Python connectivity before changing credentials; propagate the existing system HTTP/HTTPS proxy into the release child process when gh does not inherit it.
 
 GitHub Release body existence does not prove the app can display it. When the app reports empty notes:
 

@@ -22,6 +22,8 @@ Keep archive size independent from peak app memory. Treat SaveSlot as a cross-st
 
 All abbreviated source paths are under `app/app/src/main/java/com/example/chatbar/`.
 
+Whole-app .cbbackup is independent; use chatbar-app-backup. It preserves existing SaveSlots and all memory histories without changing the current-only SaveSlot snapshot contract. SaveSlot create/import/load and session copy hold LocalDataMaintenance across complete transactions.
+
 ## Package Contract
 
 - Schema 8 uses a ZIP `.cbsave`: `manifest.json`, line-delimited `messages.jsonl`, `rag.jsonl`, optional `voices.jsonl`, and media beneath `media/images/` or `media/audio/`.

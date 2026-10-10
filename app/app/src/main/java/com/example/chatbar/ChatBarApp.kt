@@ -24,6 +24,8 @@ import com.example.chatbar.domain.update.DanbooruCatalogUpdateManager
 import com.example.chatbar.domain.update.UpdateCenterChecker
 import com.example.chatbar.domain.community.CommunityPreviewCache
 import com.example.chatbar.domain.voice.*
+import com.example.chatbar.domain.backup.AppBackupBootstrap
+import com.example.chatbar.domain.backup.AppBackupService
 import com.example.chatbar.domain.voice.qq.QqVoiceGestureGatewayRegistry
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferCoordinator
 import com.example.chatbar.domain.voice.qq.QqVoiceTransferNotificationManager
@@ -36,7 +38,10 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -47,6 +52,13 @@ class ChatBarApp : Application() {
     val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     val streamingStopRequested = MutableStateFlow(false)
     private val persistentInitializationMutex = Mutex()
+    val backupStartupError = MutableStateFlow<String?>(null)
+    val backupStartupNotice = MutableStateFlow<String?>(null)
+    val backupStartupReady = MutableStateFlow(false)
+    val dependenciesReady = MutableStateFlow(false)
+    private var backupRestoreActive = false
+    lateinit var appBackupService: AppBackupService
+        private set
     
     // 存储与数据仓库
     lateinit var jsonFileStorage: JsonFileStorage
@@ -219,6 +231,26 @@ class ChatBarApp : Application() {
     override fun onCreate() {
         super.onCreate()
         instance = this
+        applicationScope.launch {
+            try {
+                backupRestoreActive = AppBackupBootstrap.applyPending(this@ChatBarApp)
+                backupStartupNotice.value = AppBackupBootstrap.recoveryNotice
+                withContext(Dispatchers.Main) {
+                    initializeDependencies()
+                    dependenciesReady.value = true
+                    if (!backupRestoreActive) backupStartupReady.value = true
+                }
+            } catch (error: Exception) {
+                if (backupRestoreActive) {
+                    failBackupInitialization(error)
+                } else {
+                    backupStartupError.value = "存档恢复未完成。原数据或回滚备份已保留，请关闭并重新打开 APP 重试。\n" + error.message
+                }
+            }
+        }
+    }
+
+    private fun initializeDependencies() {
         CrashReportManager.initialize(this)
 
         // 1. 初始化文件存储
@@ -243,10 +275,10 @@ class ChatBarApp : Application() {
         novelAiImageStorage = NovelAiImageStorage(this)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage, novelAiImageStorage)
         novelAiDesignConversationRepository = NovelAiDesignConversationRepository(jsonFileStorage)
-        editorDraftAssetService = EditorDraftAssetService(this)
-        applicationScope.launch {
-            jsonFileStorage.deleteSingleton("novelai_prompt_translation_cache")
+        appBackupService = AppBackupService(this, applicationScope) {
+            persistentInitializationMutex.withLock { novelAiStudioRepository.flushLatestDraft() }
         }
+        editorDraftAssetService = EditorDraftAssetService(this)
 
         // 3. 初始化 RAG 服务和其它引擎
         chunkingEngine = ChunkingEngine()
@@ -448,9 +480,11 @@ class ChatBarApp : Application() {
             json = transferJson
         )
         applicationScope.launch {
+            backupStartupReady.filter { it }.first()
             communityService.monitorEnabledStatus()
         }
         applicationScope.launch {
+            backupStartupReady.filter { it }.first()
             communityService.enabled.collect { enabled ->
                 if (enabled) {
                     runCatching {
@@ -500,14 +534,25 @@ class ChatBarApp : Application() {
         persistentInitializationMutex.withLock {
             try {
                 initializePersistentStateLocked()
+                if (backupRestoreActive) {
+                    AppBackupBootstrap.initializationSucceeded(this@ChatBarApp)
+                    backupRestoreActive = false
+                    backupStartupReady.value = true
+                    backupStartupNotice.value = "全量存档恢复成功。通知、电池和无障碍等系统授权需要在新机重新确认。"
+                }
+                momentScheduler.kick("startup")
             } catch (error: JsonFileStorage.SingletonReadException) {
                 // JsonFileStorage publishes a safe UI error; do not log JSON/credentials from its cause.
                 Log.e(TAG, error.message.orEmpty())
+                if (backupRestoreActive) failBackupInitialization(error)
+            } catch (error: Exception) {
+                if (backupRestoreActive) failBackupInitialization(error) else throw error
             }
         }
     }
 
     private suspend fun initializePersistentStateLocked() {
+        jsonFileStorage.deleteSingleton("novelai_prompt_translation_cache")
         deletionCoordinator.resumePending()
         CharacterSpeakerMigration(jsonFileStorage, characterRepository).run()
         speakerTagHistoryService.resumePending()
@@ -541,7 +586,15 @@ class ChatBarApp : Application() {
                 studioUndo?.imageGuidance?.ownedAssetPaths().orEmpty() +
                 studioGuidanceCheckpoint?.ownedAssetPaths().orEmpty()
         )
-        momentScheduler.kick("startup")
+    }
+
+    private fun failBackupInitialization(error: Exception) {
+        val rolledBack = runCatching { AppBackupBootstrap.initializationFailed(this) }.isSuccess
+        backupStartupError.value = if (rolledBack) {
+            "恢复初始化失败，已回滚原数据。请关闭并重新打开 APP。\n" + error.message
+        } else {
+            "恢复初始化失败，回滚尚未完成。原数据备份已保留，请关闭并重新打开 APP 重试。"
+        }
     }
     
     companion object {

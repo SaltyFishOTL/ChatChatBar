@@ -32,7 +32,7 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 
 ## Fullscreen and IME Insets
 
-- Settings use `SettingsBrowser.kt`: eight global categories, six session parameter categories, metadata-only search, explicit per-category scroll state, and bounded `SettingsDetails` editors. Keep stable entry IDs and `searchItems` for fields inside a detail group. `SettingsSwitch` provides a labeled 48dp target; credentials use non-saveable secure input state. Drafts remain outside category composition and rebase only untouched fields with `rememberSettingDraft`.
+- Settings use `SettingsBrowser.kt`: nine global categories (including 数据迁移), six session parameter categories, metadata-only search, explicit per-category scroll state, and bounded `SettingsDetails` editors. Keep stable entry IDs and `searchItems` for fields inside a detail group. `SettingsSwitch` provides a labeled 48dp target; credentials use non-saveable secure input state. Drafts remain outside category composition and rebase only untouched fields with `rememberSettingDraft`.
 
 - Every screen must keep actionable content above gesture/navigation controls and IME. Apply navigation-bar and IME insets to scrolling or bottom-action region, including Android three-button navigation.
 - `SettingsSwitch` owns input and accessibility on its 48dp wrapper. Its `CbSwitch` uses a null callback for visual-only rendering without a nested pointer handler; `enabled = false` alone still installs a handler and can block the wrapper's taps.

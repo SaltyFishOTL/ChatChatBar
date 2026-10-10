@@ -18,6 +18,7 @@ Use `chatbar-model-request-runtime` for shared auxiliary-model resolution or SSE
 - Tagging and orchestration: `domain/voice/FishAudioTagService.kt`, `FishAudioGenerationCoordinator.kt`, `domain/prompt/PromptTemplates.kt`.
 - Anchors and persistence: `domain/voice/VoiceAnchorPolicy.kt`, `data/local/entity/FishAudioEntities.kt`, `data/repository/VoiceMessageRepository.kt`, `domain/voice/FishAudioStorage.kt`.
 - Playback: `domain/voice/VoicePlaybackController.kt`.
+- QQ services respect ChatBarApp.backupStartupReady; stale notification actions during startup promote then exit with a retry message.
 - QQ voice experiment: `domain/voice/qq/`, `AndroidManifest.xml`, and `res/xml/qq_voice_accessibility_service.xml`.
 - Chat and character UI: `ui/chat/ChatScreen.kt`, `ChatViewModel.kt`, `ui/components/ChatBubble.kt`, `ui/character/CharacterEditScreen.kt`, `CharacterEditViewModel.kt`.
 - Save/restore and deletion: `data/local/entity/SaveSlot.kt`, `domain/deletion/DeletionCoordinator.kt`.
@@ -32,7 +33,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Preserve generated voice history after character deletion, card replacement, speaker-tag edits, or later voice changes. Historical records use generation-time character, voice, and Fish-model snapshots.
 - Keep original bubble text in `GeneratedVoiceMessage.sourceText` for anchors and store the tag-free translated/original synthesis snapshot in `synthesisText`; old records fall back to `sourceText`.
 - Delete voices only with their owning message/session, explicit voice deletion, or failed replacement cleanup.
-- Keep Fish API keys in Android Keystore. Never serialize, export, log, or save blank credentials.
+- Keep Fish keys in Android Keystore; card/SaveSlot exports omit keys. Whole-app .cbbackup is the explicit exception: readForBackup refuses undecryptable ciphertext; replaceFromBackup reencrypts with destination Keystore. Never log credentials or save blank values.
 - Gate new voice selection and generation on a configured Fish key. Keep existing local voice playback and deletion available without the key.
 
 ## API and Voice Binding
@@ -52,7 +53,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Generate tags only for assistant `DIALOGUE` and `THOUGHT` segments with one unique speaker match and a bound voice.
 - Resolve `voiceTagModelId = null` to the current session model. Treat an explicit stale model as disabled; never fall back.
 - Call the shared streaming text service with the selected model thinking/effort/output parameters intact. Keep prompts in `PromptTemplates`.
-- Translation/tag requests apply withoutOutputTokenLimit, omit both output-token aliases and configured maxOutputTokens, and keep the existing batch cancel action. Server-reported truncation still fails the batch before TTS; no partial-JSON/plain-text fallback.
+- Translation/tag requests retain explicit selected-model output limits and the existing batch cancel action. Server-reported truncation still fails the batch before TTS; no partial-JSON/plain-text fallback.
 - Treat `ChatSession.voiceLanguage = null` as original-language synthesis. When configured, translate each target through the resolved voice tag model before tag generation; audiobook mode still translates but skips tags.
 - Validate translation JSON IDs, duplicates, omissions, unknown IDs, unknown fields, and blank results. Never fall back to original text after translation failure.
 - Validate strict JSON IDs, duplicates, omissions, unknown IDs, tag syntax, and unchanged spoken text separately.

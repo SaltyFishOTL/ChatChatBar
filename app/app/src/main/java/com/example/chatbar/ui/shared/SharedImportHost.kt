@@ -55,6 +55,9 @@ fun SharedImportHost(
             if (!coordinator.claimReady(current.id)) return@collect
             runCatching {
                 when (val inspection = ready.inspection) {
+                    SharedImportInspection.Backup -> com.example.chatbar.ChatBarApp.instance.appBackupService.requestImport(
+                        ready.staged.path
+                    ) { coordinator.cancel(current.id) }
                     is SharedImportInspection.Character -> {
                         val conflict = viewModel.findCharacterImportConflict(inspection.request)
                         if (conflict == null) {
@@ -103,6 +106,7 @@ fun SharedImportHost(
     }
 
     if (!enabled || active == null) return
+    if ((active.state as? SharedImportQueueItemState.Processing)?.inspection == SharedImportInspection.Backup) return
 
     LaunchedEffect(active.id, active.state is SharedImportQueueItemState.Completed) {
         val completed = active.state as? SharedImportQueueItemState.Completed ?: return@LaunchedEffect
@@ -299,7 +303,7 @@ private suspend fun persistImport(
     queueId: Long,
     inspection: SharedImportInspection,
     overwriteId: String?
-): SharedImportFocus = when (inspection) {
+): SharedImportFocus = com.example.chatbar.domain.backup.LocalDataMaintenance.access { when (inspection) {
     is SharedImportInspection.Character -> {
         val card = if (overwriteId == null) {
             viewModel.importCharacterAsNew(inspection.request)
@@ -334,5 +338,6 @@ private suspend fun persistImport(
         SharedImportFocus(queueId, SharedImportSection.MODEL, id, "模型模板已导入，请编辑并填写 API Key。")
     }
     is SharedImportInspection.Image,
+    SharedImportInspection.Backup,
     is SharedImportInspection.Unknown -> error("该共享内容不能作为资源导入")
-}
+} }

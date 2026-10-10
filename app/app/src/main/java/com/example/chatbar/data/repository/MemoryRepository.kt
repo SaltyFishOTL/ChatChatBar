@@ -60,35 +60,39 @@ class MemoryRepository(private val storage: JsonFileStorage) {
         deleteRevisionIds: List<String> = emptyList(),
         deleteTransactionIds: List<String> = emptyList()
     ) {
-        val journal = MemoryCommitJournal(
-            id = MemoryCommitJournal.newId(),
-            sessionId = nextState.sessionId,
-            expectedStateRevision = expectedStateRevision,
-            nodes = nodes,
-            revisions = revisions,
-            transactions = transactions,
-            deleteNodeIds = deleteNodeIds,
-            deleteRevisionIds = deleteRevisionIds,
-            deleteTransactionIds = deleteTransactionIds,
-            nextState = nextState
-        )
-        storage.saveEntity(JOURNAL_TYPE, journal.id, journal, MemoryCommitJournal.serializer())
-        applyJournal(journal)
-        storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val journal = MemoryCommitJournal(
+                id = MemoryCommitJournal.newId(),
+                sessionId = nextState.sessionId,
+                expectedStateRevision = expectedStateRevision,
+                nodes = nodes,
+                revisions = revisions,
+                transactions = transactions,
+                deleteNodeIds = deleteNodeIds,
+                deleteRevisionIds = deleteRevisionIds,
+                deleteTransactionIds = deleteTransactionIds,
+                nextState = nextState
+            )
+            storage.saveEntity(JOURNAL_TYPE, journal.id, journal, MemoryCommitJournal.serializer())
+            applyJournal(journal)
+            storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
+        }
     }
 
     private suspend fun recoverJournals(sessionId: String) {
-        val journals = storage.query(JOURNAL_TYPE, MemoryCommitJournal.serializer()) {
-            it.sessionId == sessionId
-        }.sortedBy { it.createdAt }
-        for (journal in journals) {
-            val current = storage.loadEntity(STATE_TYPE, sessionId, MemorySessionState.serializer())
-            when (current?.revision) {
-                journal.expectedStateRevision,
-                journal.nextState.revision -> applyJournal(journal)
-                else -> Unit
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val journals = storage.query(JOURNAL_TYPE, MemoryCommitJournal.serializer()) {
+                it.sessionId == sessionId
+            }.sortedBy { it.createdAt }
+            for (journal in journals) {
+                val current = storage.loadEntity(STATE_TYPE, sessionId, MemorySessionState.serializer())
+                when (current?.revision) {
+                    journal.expectedStateRevision,
+                    journal.nextState.revision -> applyJournal(journal)
+                    else -> Unit
+                }
+                storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
             }
-            storage.deleteEntity<MemoryCommitJournal>(JOURNAL_TYPE, journal.id)
         }
     }
 

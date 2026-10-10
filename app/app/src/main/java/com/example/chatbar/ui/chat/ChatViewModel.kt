@@ -2514,923 +2514,925 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (_isResponding.value && !respondingAlreadyStarted) return
 
         val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
-            if (!respondingAlreadyStarted) {
-                _isResponding.value = true
-            }
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                if (!respondingAlreadyStarted) {
+                    _isResponding.value = true
+                }
 
-            // 1. 获取全局与会话设定
-            val cachedSession = _session.value ?: return@launch
-            val currentSession = chatRepository.getSession(sessionId) ?: cachedSession
-            _session.value = currentSession
-            val charCard = characterRepository.getById(currentSession.characterCardId)
-            if (charCard == null) {
-                _characterCard.value = null
-                _isArchived.value = true
-                _isResponding.value = false
-                return@launch
-            }
-            _characterCard.value = charCard
-            val appSettings = settingsRepository.getAppSettings()
-            val activeFormatCard = resolveFormatCardForRequest(
-                sessionFormatCardId = currentSession.formatCardId,
-                defaultFormatCardId = appSettings.defaultFormatCardId,
-                availableCards = formatCardRepository.getAll()
-            )
-            FormatCardUserToolPolicy.firstValidationError(activeFormatCard?.userTools.orEmpty())
-                ?.let { error ->
-                    addSystemMessage("用户工具配置无效：$error")
+                // 1. 获取全局与会话设定
+                val cachedSession = _session.value ?: return@launch
+                val currentSession = chatRepository.getSession(sessionId) ?: cachedSession
+                _session.value = currentSession
+                val charCard = characterRepository.getById(currentSession.characterCardId)
+                if (charCard == null) {
+                    _characterCard.value = null
+                    _isArchived.value = true
                     _isResponding.value = false
                     return@launch
                 }
-            val playerSettingObj = settingsRepository.getPlayerSetting()
-            val activePlayerSetting = currentSession.playerSetting?.takeIf { it.isNotBlank() }
-                ?: playerSettingObj.globalPersona
-            val activePlayerName = currentSession.playerName?.takeIf { it.isNotBlank() }
-                ?: playerSettingObj.playerName
-            val activePlayerNameOrNull = activePlayerName.takeIf { it.isNotBlank() }
-            val renderSessionText: (String) -> String = { text ->
-                PlaceholderRenderer.render(text, activePlayerNameOrNull, charCard.effectiveBotName)
-            }
-
-            // 确定要使用的 LLM 模型
-            val configurationStatus = modelResolver.status(currentSession.modelId, appSettings)
-            val modelConfig = modelResolver.resolveChatModel(currentSession.modelId, appSettings)
-                ?: run {
-                    addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "未找到可用模型配置"}")
-                    _isResponding.value = false
-                    return@launch
-                }
-            if (
-                !isModelAuthenticationConfigured(
-                    baseUrl = modelConfig.baseUrl,
-                    apiKey = modelConfig.apiKey,
-                    allowCleartextModelApi = appSettings.allowCleartextModelApi
+                _characterCard.value = charCard
+                val appSettings = settingsRepository.getAppSettings()
+                val activeFormatCard = resolveFormatCardForRequest(
+                    sessionFormatCardId = currentSession.formatCardId,
+                    defaultFormatCardId = appSettings.defaultFormatCardId,
+                    availableCards = formatCardRepository.getAll()
                 )
-            ) {
-                addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "API Key 未配置"}")
-                _isResponding.value = false
-                return@launch
-            }
-
-            // 确定是否要用 Embedding 做 RAG 检索
-            startStreamingForegroundWork()
-            val generationJob = coroutineContext[Job]
-            var interruptedReplyDraft: ChatMessage? = null
-            var assistantReplyPersisted = false
-            val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
-                generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
-            }
-            try {
-            AiBackgroundWorkManager.awaitForegroundProtection()
-            val embeddingConfig = modelResolver.embeddingModel(appSettings)
-
-            // 2. 多模态图片处理 (如果是纯文本模型但附带了图片，则先调用视觉模型生成图片描述)
-            val resumedUserMessage = if (resumeLatestUser) {
-                chatRepository.getRecentMessages(sessionId, 1).lastOrNull()
-                    ?.takeIf { it.role == MessageRole.USER }
-            } else null
-            var finalUserContent = resumedUserMessage?.displayContent ?: content
-            val userMsgImages = mutableListOf<String>()
-            userMsgImages.addAll(resumedUserMessage?.images.orEmpty())
-
-            if (imagePaths.isNotEmpty()) {
-                userMsgImages.addAll(imagePaths)
-                
-                if (!modelConfig.isMultimodal) {
-                    try {
-                        val imageUnderstanding = imageUnderstandingService.prepare(
-                            imageBase64s = listOf(encodeImageToBase64(imagePaths.first())),
-                            generationModel = modelConfig,
-                            requireUnderstanding = false,
-                            onStatus = { addSystemMessage(it) }
-                        )
-                        if (imageUnderstanding.descriptions.isNotEmpty()) {
-                            finalUserContent += "\n[用户附图描述: ${imageUnderstanding.descriptions.joinToString("\n")}]"
-                        } else if (!imageUnderstanding.unavailableReason.isNullOrBlank()) {
-                            addSystemMessage("${imageUnderstanding.unavailableReason}，将作为无图消息发送。")
-                        }
-                    } catch (e: Exception) {
-                        addSystemMessage("图片解析失败: ${e.message}。将作为无图消息发送。")
+                FormatCardUserToolPolicy.firstValidationError(activeFormatCard?.userTools.orEmpty())
+                    ?.let { error ->
+                        addSystemMessage("用户工具配置无效：$error")
+                        _isResponding.value = false
+                        return@launch
                     }
+                val playerSettingObj = settingsRepository.getPlayerSetting()
+                val activePlayerSetting = currentSession.playerSetting?.takeIf { it.isNotBlank() }
+                    ?: playerSettingObj.globalPersona
+                val activePlayerName = currentSession.playerName?.takeIf { it.isNotBlank() }
+                    ?: playerSettingObj.playerName
+                val activePlayerNameOrNull = activePlayerName.takeIf { it.isNotBlank() }
+                val renderSessionText: (String) -> String = { text ->
+                    PlaceholderRenderer.render(text, activePlayerNameOrNull, charCard.effectiveBotName)
                 }
-            }
 
-            // 3. 将用户消息存入仓库并更新 UI
-            val userMsg = resumedUserMessage ?: ChatMessage.create(
-                sessionId = sessionId,
-                role = MessageRole.USER,
-                content = finalUserContent,
-                images = userMsgImages
-            )
-            if (persistUserMessage) {
-                val persistedUserMessage = chatRepository.addMessage(userMsg)
-                messageWindowAnchorId.set(persistedUserMessage.id)
-                replaceMessagesFromRepository(persistedUserMessage.id)
-                if (currentSession.longTermMemoryEnabled) {
-                    longTermMemoryAutoMaintenanceCoordinator.enqueue(
-                        sessionId,
-                        MemoryMaintenanceTrigger.USER_MESSAGE_PERSISTED
+                // 确定要使用的 LLM 模型
+                val configurationStatus = modelResolver.status(currentSession.modelId, appSettings)
+                val modelConfig = modelResolver.resolveChatModel(currentSession.modelId, appSettings)
+                    ?: run {
+                        addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "未找到可用模型配置"}")
+                        _isResponding.value = false
+                        return@launch
+                    }
+                if (
+                    !isModelAuthenticationConfigured(
+                        baseUrl = modelConfig.baseUrl,
+                        apiKey = modelConfig.apiKey,
+                        allowCleartextModelApi = appSettings.allowCleartextModelApi
                     )
-                }
-            }
-
-            val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
-            val boundaryView = if (currentSession.longTermMemoryEnabled) {
-                runCatching { longTermMemoryService.promptView(sessionId) }.getOrNull()
-            } else {
-                null
-            }
-            val allMsgs = chatRepository.getContextCandidateMessages(
-                sessionId = sessionId,
-                recentTurnCount = effectiveContextWindowSize + 6,
-                includeSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
-            ).filterNot { it.id == alternativeTargetMessageId }
-            ragMemoryMutationMutex.withLock {
-                ChatBarApp.instance.ragRepository.pruneChatMemory(
-                    sessionId = sessionId,
-                    liveMessageIds = chatRepository.getMessageIds(sessionId)
-                )
-            }
-            var contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextToWholeTurns(
-                allMsgs,
-                contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
-            )
-            if (currentSession.longTermMemoryEnabled) {
-                contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextAfterArchive(
-                    allMessages = allMsgs,
-                    directContext = contextMsgs,
-                    pendingSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
-                )
-            }
-            val renderedContextMsgs = contextMsgs.map {
-                PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName)
-            }
-            val currentRetrievalUserContent = when {
-                persistUserMessage || resumedUserMessage != null -> finalUserContent
-                alternativeTargetMessageId != null -> contextMsgs.lastOrNull {
-                    it.role == MessageRole.USER
-                }?.displayContent ?: content
-                else -> content
-            }.let(renderSessionText)
-            val retrievalCredentialMsgs = buildRagRetrievalCredentialMessages(
-                contextMsgs = renderedContextMsgs,
-                currentUserMessageId = userMsg.id,
-                currentUserContent = currentRetrievalUserContent
-            )
-            val activeContextMessageIds = contextMsgs.map { it.id }.toSet()
-            val indexedDocumentCount = maxOf(
-                charCard.ragIndexDone,
-                charCard.customDocuments.count { it.ragChunkCount > 0 }
-            )
-            val ragSourcePlan = RagSourcePlan.create(
-                documentCount = charCard.customDocuments.size,
-                indexedDocumentCount = indexedDocumentCount,
-                messageGroupCount = chatRepository.getMessageTurnCount(sessionId),
-                contextWindowSize = effectiveContextWindowSize,
-                documentRecallCount = appSettings.docRagTopK,
-                memoryRecallCount = appSettings.memoryRagTopK
-            )
-            try {
-                // 4. RAG 检索
-                val ragDebugLogs = mutableListOf<String>()
-                val ragResults = if (appSettings.ragInjectionMode.equals("OFF", ignoreCase = true)) {
-                    ragDebugLogs.add("RAG 检索跳过：RAG 注入强度为关闭。")
-                    emptyList()
-                } else if (!ragSourcePlan.shouldRetrieve) {
-                    val reason = if (appSettings.docRagTopK <= 0 && appSettings.memoryRagTopK <= 0) {
-                        "文档与记忆召回数量均为 0"
-                    } else {
-                        "没有启用且可召回的已索引文档或上下文外消息"
-                    }
-                    ragDebugLogs.add("RAG 检索跳过：$reason。")
-                    emptyList()
-                } else if (embeddingConfig != null) {
-                    if (appSettings.docRagTopK <= 0) {
-                        ragDebugLogs.add("知识库文档召回跳过：文档召回数量为 0。")
-                    }
-                    if (appSettings.memoryRagTopK <= 0) {
-                        ragDebugLogs.add("对话记忆召回跳过：记忆召回数量为 0。")
-                    }
-                    if (ragSourcePlan.includeDocuments && charCard.ragIndexStatus != "COMPLETE") {
-                        ragDebugLogs.add("角色卡 RAG 索引未完成：${charCard.ragIndexStatus} ${charCard.ragIndexDone}/${charCard.ragIndexTotal}。${charCard.ragIndexMessage.orEmpty()}")
-                    }
-                    ragDebugLogs.add("开始 RAG 检索。来源: documents=${ragSourcePlan.includeDocuments}, memory=${ragSourcePlan.includeMemory}; Embedding配置: [${embeddingConfig.displayName}], 目标模型: ${embeddingConfig.modelName}")
-                    try {
-                        val retrievalChunks = ChatBarApp.instance.ragRepository.getChunksForRetrieval(
-                            characterId = charCard.id.takeIf { ragSourcePlan.includeDocuments },
-                            sessionId = sessionId.takeIf { ragSourcePlan.includeMemory }
-                        )
-                        val currentEmbeddingKey = ragManager.embeddingKey(embeddingConfig)
-                        val allDocChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.DOCUMENT }
-                        val legacyDocChunks = allDocChunks.filter { it.metadata["embeddingKey"].isNullOrBlank() }
-                        val mismatchedDocChunks = allDocChunks.filter {
-                            val key = it.metadata["embeddingKey"]
-                            !key.isNullOrBlank() && key != currentEmbeddingKey
-                        }
-                        val docChunks = allDocChunks.filter { it.metadata["embeddingKey"] == currentEmbeddingKey }
-                        val allMemChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.CHAT_MEMORY }
-                        val staleAutomaticChunks = allMemChunks.filter(ChatMemoryIndexPolicy::needsAutomaticRebuild)
-                        val memChunks = allMemChunks.filter { chunk ->
-                            !ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) &&
-                                chunk.metadata["indexMode"] != "memory_node" &&
-                                chunk.messageIds().none { it in activeContextMessageIds }
-                        }
-                        val searchableMemChunks = memChunks
-                        val filteredMemCount = allMemChunks.size - staleAutomaticChunks.size - memChunks.size
-                        ragDebugLogs.add("RAG split retrieval: document candidates=${docChunks.size}; ignored legacy document chunks=${legacyDocChunks.size}; ignored embedding-mismatch document chunks=${mismatchedDocChunks.size}; chat_memory candidates=${allMemChunks.size}; active context messages=${activeContextMessageIds.size}; eligible chat_memory after context filter=${memChunks.size}.")
-                        if (legacyDocChunks.isNotEmpty() || mismatchedDocChunks.isNotEmpty()) {
-                            ragDebugLogs.add("Document RAG index uses a different or unknown embedding model. Rebuild the character card RAG index before judging recall quality.")
-                        }
-                        if (filteredMemCount > 0) {
-                            ragDebugLogs.add("Filtered $filteredMemCount chat_memory chunks because they overlap messages already sent in the normal context window.")
-                        }
-                        if (staleAutomaticChunks.isNotEmpty()) {
-                            ragDebugLogs.add("Ignored ${staleAutomaticChunks.size} stale automatic memory chunks. Rebuild them from the RAG library page.")
-                        }
-                        
-                        ragDebugLogs.add("数据库向量块查询完成。知识库文档块数: ${docChunks.size}, 对话记忆块数: ${memChunks.size} (已排除角色设定块)")
-                        
-                        if (docChunks.isEmpty() && memChunks.isEmpty()) {
-                            ragDebugLogs.add("警告：数据库中未检索到任何知识库文档或对话记忆块。")
-                            emptyList()
-                        } else {
-                            ragDebugLogs.add("Retrieval planner uses current chat model: ${modelConfig.displayName}")
-                            val retrievalPlanResult = retrievalPlanner.plan(
-                                currentUserContent = currentRetrievalUserContent,
-                                contextMessages = retrievalCredentialMsgs,
-                                characterName = charCard.name,
-                                modelConfig = modelConfig
-                            )
-                            val retrievalPlan = retrievalPlanResult.plan
-                            if (retrievalPlan != null) {
-                                ragDebugLogs.add(retrievalPlan.toDebugLog())
-                            } else {
-                                ragDebugLogs.add(
-                                    buildString {
-                                        append("Retrieval planner failed. Fallback to local mixed retrieval query.")
-                                        retrievalPlanResult.failureReason?.let { append(" reason=$it") }
-                                    }
-                                )
-                            }
-                            ragDebugLogs.add(
-                                buildString {
-                                    append("Raw planner response preview (${retrievalPlanResult.rawResponsePreview.length} chars):\n")
-                                    append(retrievalPlanResult.rawResponsePreview.ifBlank { "<empty>" })
-                                }
-                            )
-
-                            if (retrievalPlan != null &&
-                                !retrievalPlan.shouldRecall
-                            ) {
-                                ragDebugLogs.add("Retrieval planner skipped RAG: no topic/query/entity returned.")
-                                emptyList()
-                            } else {
-                            val ragQuery = retrievalPlan?.toRagQuery(
-                                currentRetrievalUserContent,
-                                retrievalCredentialMsgs
-                            ) ?: buildRagQuery(currentRetrievalUserContent, retrievalCredentialMsgs)
-                            val queryEmbedding = ChatBarApp.instance.embeddingService.getEmbedding(ragQuery, embeddingConfig)
-                            ragDebugLogs.add("RAG query text (${ragQuery.length} chars):\n${ragQuery.take(1200)}")
-                            ragDebugLogs.add("RAG retrieval credentials: last_assistant=${retrievalCredentialMsgs.size}, current_user=1.")
-                            ragDebugLogs.add("查询文本 Embedding 计算完成。维度: ${queryEmbedding.size}")
-                            
-                            val rankedDocChunks = if (ragSourcePlan.includeDocuments) {
-                                rankChunksByMultiRoute(
-                                    chunks = docChunks,
-                                    queryEmbedding = queryEmbedding,
-                                    ragQuery = ragQuery,
-                                    routeLimit = routeCandidateLimit(appSettings.docRagTopK, docChunks.size)
-                                )
-                            } else {
-                                emptyList()
-                            }
-
-                            val rankedMemChunks = if (ragSourcePlan.includeMemory) {
-                                rankChunksByMultiRoute(
-                                    chunks = searchableMemChunks,
-                                    queryEmbedding = queryEmbedding,
-                                    ragQuery = ragQuery,
-                                    routeLimit = routeCandidateLimit(appSettings.memoryRagTopK, searchableMemChunks.size)
-                                )
-                            } else {
-                                emptyList()
-                            }
-
-                            val mismatchedSourceLabelCount = docChunks.count { it.hasMismatchedSourceLabel() }
-                            if (mismatchedSourceLabelCount > 0) {
-                                ragDebugLogs.add("Document chunk source integrity warning: mismatched content source vs metadata source=$mismatchedSourceLabelCount/${docChunks.size}. Rebuild index if this stays non-zero.")
-                            }
-                            
-                            val topDocCandidates = rankedDocChunks.take(routeCandidateLimit(appSettings.docRagTopK, rankedDocChunks.size))
-                            val eligibleDocCandidates = topDocCandidates.filter {
-                                it.vectorScore >= appSettings.docRagSimilarityThreshold ||
-                                    it.lexicalScore >= DOCUMENT_LEXICAL_ACCEPT_THRESHOLD
-                            }
-                            val topDocChunks = eligibleDocCandidates.withSourceDiversity(appSettings.docRagTopK)
-                            if (topDocCandidates.isNotEmpty() && topDocChunks.isEmpty()) {
-                                ragDebugLogs.add(
-                                    "Document RAG topK candidates all below threshold ${appSettings.docRagSimilarityThreshold}. Best scores: " +
-                                        topDocCandidates.take(5).joinToString(", ") { "%.4f".format(it.combinedScore) }
-                                )
-                            }
-                            val topMemChunks = rankedMemChunks.filter {
-                                it.vectorScore >= appSettings.memoryRagSimilarityThreshold ||
-                                    it.lexicalScore >= MEMORY_LEXICAL_ACCEPT_THRESHOLD
-                            }.take(appSettings.memoryRagTopK)
-                            if (rankedDocChunks.isNotEmpty()) {
-                                ragDebugLogs.add(
-                                    "Document multi-route top scores: " +
-                                        rankedDocChunks.take(10).joinToString("\n") { rank ->
-                                            val chunk = rank.chunk
-                                            val metaSource = chunk.metadata["sourceLabel"]
-                                                ?: chunk.metadata["fileName"]
-                                                ?: chunk.id
-                                            val contentSource = chunk.contentSourceLabel() ?: "no-content-source"
-                                            "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | meta=$metaSource | content=$contentSource"
-                                        }
-                                )
-                                val topSources = rankedDocChunks.take(20)
-                                    .map { it.chunk.metadata["sourceLabel"] ?: it.chunk.metadata["fileName"] ?: "unknown" }
-                                    .groupingBy { it.substringBefore(" > ") }
-                                    .eachCount()
-                                ragDebugLogs.add("Document top20 source distribution: $topSources")
-                                val finalSources = topDocChunks
-                                    .map { it.chunk.sourceDiversityKey() }
-                                    .groupingBy { it }
-                                    .eachCount()
-                                ragDebugLogs.add("Document final source distribution after local rerank: $finalSources")
-                            }
-                            if (rankedMemChunks.isNotEmpty()) {
-                                ragDebugLogs.add(
-                                    "Chat memory multi-route top scores: " +
-                                        rankedMemChunks.take(10).joinToString("\n") { rank ->
-                                            "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | messageIds=${rank.chunk.messageIds()}"
-                                        }
-                                )
-                            }
-                            
-                            if (ragSourcePlan.includeDocuments) {
-                                ragDebugLogs.add("知识库文档召回完成。阈值: ${appSettings.docRagSimilarityThreshold}, Top-K: ${appSettings.docRagTopK}。召回块数: ${topDocChunks.size}")
-                            }
-                            if (ragSourcePlan.includeMemory) {
-                                ragDebugLogs.add("对话记忆召回完成。阈值: ${appSettings.memoryRagSimilarityThreshold}, Top-K: ${appSettings.memoryRagTopK}。召回块数: ${topMemChunks.size}")
-                            }
-                            
-                            val finalCards = (topDocChunks.map { it.chunk } +
-                                topMemChunks.map { it.chunk })
-                                .distinctBy { it.id }
-                                .map { RetrievedKnowledgeCard.fromChunk(it) }
-                            if (finalCards.isNotEmpty()) {
-                                ragDebugLogs.add("--- 最终召回的文本块详情 ---")
-                                finalCards.forEachIndexed { i, card ->
-                                    ragDebugLogs.add("[召回 ${i + 1} | 类型: ${card.type} | 来源: ${card.sourceLabel} | ID: ${card.sourceId}]\n${card.content}")
-                                }
-                            }
-                            finalCards
-                            }
-                        }
-                    } catch (e: Exception) {
-                        ragDebugLogs.add("错误：RAG 检索过程中抛出异常: ${e.message}")
-                        emptyList()
-                    }
-                } else {
-                    ragDebugLogs.add("RAG 检索未启用：未配置全局 Embedding 模型。")
-                    emptyList()
+                ) {
+                    addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "API Key 未配置"}")
+                    _isResponding.value = false
+                    return@launch
                 }
 
-                // 5. 组装 System Prompt
-                val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(
-                    card = charCard,
-                    session = currentSession,
-                    previousTimed = currentSession.timedWorldInfo,
-                    excludedMessageId = alternativeTargetMessageId,
-                    transientUserMessage = userMsg.takeIf {
-                        !persistUserMessage && resumedUserMessage == null &&
-                            alternativeTargetMessageId == null && finalUserContent.isNotBlank()
-                    },
-                    scanContext = com.example.chatbar.domain.worldbook.WorldBookScanContext.fromCard(
-                        charCard, activePlayerSetting, activePlayerNameOrNull
-                    ),
-                    debugLogs = ragDebugLogs
-                )
-                if (wbTimed != currentSession.timedWorldInfo) {
-                    val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
-                    chatRepository.updateSession(updatedSession)
-                    _session.value = updatedSession
+                // 确定是否要用 Embedding 做 RAG 检索
+                startStreamingForegroundWork()
+                val generationJob = coroutineContext[Job]
+                var interruptedReplyDraft: ChatMessage? = null
+                var assistantReplyPersisted = false
+                val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
+                    generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
                 }
-                val replyLength = currentSession.replyLength
-                val renderedFormatCardContent = activeFormatCard
-                    ?.content
-                    ?.takeIf(String::isNotBlank)
-                    ?.let { formatCardContent ->
-                        promptAssembler.renderFormatCardForUserMessage(
-                            content = formatCardContent,
-                            playerName = activePlayerNameOrNull,
-                            botName = charCard.effectiveBotName,
-                            worldBookOutlets = wbOutlets
-                        )
-                    }
-                // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
-                val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
-                    contextMsgs.lastOrNull { it.role == MessageRole.USER }
+                try {
+                AiBackgroundWorkManager.awaitForegroundProtection()
+                val embeddingConfig = modelResolver.embeddingModel(appSettings)
+
+                // 2. 多模态图片处理 (如果是纯文本模型但附带了图片，则先调用视觉模型生成图片描述)
+                val resumedUserMessage = if (resumeLatestUser) {
+                    chatRepository.getRecentMessages(sessionId, 1).lastOrNull()
+                        ?.takeIf { it.role == MessageRole.USER }
                 } else null
-                val latestMessageId = when {
-                    persistUserMessage -> userMsg.id
-                    regenTargetUserMsg != null -> regenTargetUserMsg.id
-                    else -> null
-                }
-                val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
-                    contextMessages = contextMsgs,
-                    latestMessageId = latestMessageId
-                )
-                val requirementsSystemPrompt =
-                    PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
-                        formatCardContent = renderedFormatCardContent,
-                        replyLength = replyLength,
-                        includeFormatHistoryContinuityNotice =
-                            ChatHistoryPromptPolicy.shouldIncludeFormatContinuityNotice(
-                                excludeAssistantStatusFromHistory =
-                                    appSettings.excludeAssistantStatusFromHistory,
-                                formatCardContent = renderedFormatCardContent,
-                                earlierHistoryMessages = promptMessageGroups.historyMessages
+                var finalUserContent = resumedUserMessage?.displayContent ?: content
+                val userMsgImages = mutableListOf<String>()
+                userMsgImages.addAll(resumedUserMessage?.images.orEmpty())
+
+                if (imagePaths.isNotEmpty()) {
+                    userMsgImages.addAll(imagePaths)
+
+                    if (!modelConfig.isMultimodal) {
+                        try {
+                            val imageUnderstanding = imageUnderstandingService.prepare(
+                                imageBase64s = listOf(encodeImageToBase64(imagePaths.first())),
+                                generationModel = modelConfig,
+                                requireUnderstanding = false,
+                                onStatus = { addSystemMessage(it) }
                             )
-                    )
-                fun assemblePromptLayers() =
-                    promptAssembler.assembleCachePromptLayers(
-                        characterCard = charCard,
-                        playerSetting = activePlayerSetting,
-                        playerName = activePlayerName.takeIf { it.isNotBlank() },
-                        supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
-                        ragResults = ragResults,
-                        ragInjectionMode = appSettings.ragInjectionMode,
-                        replyLength = replyLength,
-                        replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
-                        memoryArchive = null,
-                        memoryHeadAndTimeline = null,
-                        worldBookPrompt = wbPrompt,
-                        worldBookOutlets = wbOutlets
-                    )
-                val memoryView = if (currentSession.longTermMemoryEnabled) {
-                    longTermMemoryService.promptView(sessionId).also { view ->
-                        check(view.usedArchiveChars == 0 || view.archive.isNotBlank()) {
-                            "长期记忆Archive有正文，但请求快照为空"
+                            if (imageUnderstanding.descriptions.isNotEmpty()) {
+                                finalUserContent += "\n[用户附图描述: ${imageUnderstanding.descriptions.joinToString("\n")}]"
+                            } else if (!imageUnderstanding.unavailableReason.isNullOrBlank()) {
+                                addSystemMessage("${imageUnderstanding.unavailableReason}，将作为无图消息发送。")
+                            }
+                        } catch (e: Exception) {
+                            addSystemMessage("图片解析失败: ${e.message}。将作为无图消息发送。")
                         }
                     }
+                }
+
+                // 3. 将用户消息存入仓库并更新 UI
+                val userMsg = resumedUserMessage ?: ChatMessage.create(
+                    sessionId = sessionId,
+                    role = MessageRole.USER,
+                    content = finalUserContent,
+                    images = userMsgImages
+                )
+                if (persistUserMessage) {
+                    val persistedUserMessage = chatRepository.addMessage(userMsg)
+                    messageWindowAnchorId.set(persistedUserMessage.id)
+                    replaceMessagesFromRepository(persistedUserMessage.id)
+                    if (currentSession.longTermMemoryEnabled) {
+                        longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                            sessionId,
+                            MemoryMaintenanceTrigger.USER_MESSAGE_PERSISTED
+                        )
+                    }
+                }
+
+                val effectiveContextWindowSize = effectiveContextWindowSize(currentSession, appSettings)
+                val boundaryView = if (currentSession.longTermMemoryEnabled) {
+                    runCatching { longTermMemoryService.promptView(sessionId) }.getOrNull()
                 } else {
                     null
                 }
-                val renderedMemoryArchive = memoryView?.archive?.let(renderSessionText)
-                val renderedMemoryHeadAndTimeline = memoryView?.headAndTimeline?.let(renderSessionText)
-                val promptLayers = assemblePromptLayers()
-                val positionedRequirementsSystemPrompt = joinPromptParts(
-                    requirementsSystemPrompt,
-                    promptLayers.replyConstraintsSystemPrompt,
-                    PromptTemplates.replyTailSystemPrompt(
-                        replyLength = replyLength,
-                        roleplaySpeakerFormatEnabled = _assistantSegmentedBubblesEnabled.value,
-                        characterNames = charCard.characters.map { it.name }
+                val allMsgs = chatRepository.getContextCandidateMessages(
+                    sessionId = sessionId,
+                    recentTurnCount = effectiveContextWindowSize + 6,
+                    includeSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
+                ).filterNot { it.id == alternativeTargetMessageId }
+                ragMemoryMutationMutex.withLock {
+                    ChatBarApp.instance.ragRepository.pruneChatMemory(
+                        sessionId = sessionId,
+                        liveMessageIds = chatRepository.getMessageIds(sessionId)
                     )
+                }
+                var contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextToWholeTurns(
+                    allMsgs,
+                    contextWindowManager.getRecentMessages(allMsgs, effectiveContextWindowSize)
                 )
-                val stablePrefixMessages = buildCcbStablePrefixMessages(
-                    coreSystemPrompt = promptLayers.coreSystemPrompt,
-                    stableContextSystemPrompt = promptLayers.stableContextSystemPrompt,
-                    positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
-                    formatPromptPosition = modelConfig.formatPromptPosition,
-                    settingReferenceSystemPrompt = promptLayers.settingReferenceSystemPrompt,
-                    playerSystemPrompt = promptLayers.playerSystemPrompt,
-                    supplementarySystemPrompt = promptLayers.supplementarySystemPrompt
-                )
-                val promptCacheKey = stablePrefixMessages
-                    .takeIf { promptLayers.stablePrefixCacheable && it.isNotEmpty() }
-                    ?.let(PromptCacheKeyFactory::cacheKey)
-
-                val apiMessages = stablePrefixMessages.toMutableList()
-
-                suspend fun addContextMessage(
-                    msg: ChatMessage,
-                    zone: ChatHistoryPromptZone
-                ) {
-                    val role = msg.role.name.lowercase()
-                    val sourceText = ChatHistoryPromptPolicy.sourceText(
-                        message = msg,
-                        excludeAssistantStatusFromHistory =
-                            appSettings.excludeAssistantStatusFromHistory,
-                        zone = zone
+                if (currentSession.longTermMemoryEnabled) {
+                    contextMsgs = TimelineArchiveBoundaryPolicy.expandDirectContextAfterArchive(
+                        allMessages = allMsgs,
+                        directContext = contextMsgs,
+                        pendingSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
                     )
-                    val renderedBody = renderSessionText(sourceText)
-                    val hasSupportedImage = msg.images.isNotEmpty() &&
-                        modelConfig.isMultimodal &&
-                        msg.role == MessageRole.USER
-                    val text = ChatHistoryPromptPolicy.payloadText(
-                        renderedBody = renderedBody,
-                        hasSupportedImage = hasSupportedImage
-                    ) ?: return
-                    if (hasSupportedImage) {
+                }
+                val renderedContextMsgs = contextMsgs.map {
+                    PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName)
+                }
+                val currentRetrievalUserContent = when {
+                    persistUserMessage || resumedUserMessage != null -> finalUserContent
+                    alternativeTargetMessageId != null -> contextMsgs.lastOrNull {
+                        it.role == MessageRole.USER
+                    }?.displayContent ?: content
+                    else -> content
+                }.let(renderSessionText)
+                val retrievalCredentialMsgs = buildRagRetrievalCredentialMessages(
+                    contextMsgs = renderedContextMsgs,
+                    currentUserMessageId = userMsg.id,
+                    currentUserContent = currentRetrievalUserContent
+                )
+                val activeContextMessageIds = contextMsgs.map { it.id }.toSet()
+                val indexedDocumentCount = maxOf(
+                    charCard.ragIndexDone,
+                    charCard.customDocuments.count { it.ragChunkCount > 0 }
+                )
+                val ragSourcePlan = RagSourcePlan.create(
+                    documentCount = charCard.customDocuments.size,
+                    indexedDocumentCount = indexedDocumentCount,
+                    messageGroupCount = chatRepository.getMessageTurnCount(sessionId),
+                    contextWindowSize = effectiveContextWindowSize,
+                    documentRecallCount = appSettings.docRagTopK,
+                    memoryRecallCount = appSettings.memoryRagTopK
+                )
+                try {
+                    // 4. RAG 检索
+                    val ragDebugLogs = mutableListOf<String>()
+                    val ragResults = if (appSettings.ragInjectionMode.equals("OFF", ignoreCase = true)) {
+                        ragDebugLogs.add("RAG 检索跳过：RAG 注入强度为关闭。")
+                        emptyList()
+                    } else if (!ragSourcePlan.shouldRetrieve) {
+                        val reason = if (appSettings.docRagTopK <= 0 && appSettings.memoryRagTopK <= 0) {
+                            "文档与记忆召回数量均为 0"
+                        } else {
+                            "没有启用且可召回的已索引文档或上下文外消息"
+                        }
+                        ragDebugLogs.add("RAG 检索跳过：$reason。")
+                        emptyList()
+                    } else if (embeddingConfig != null) {
+                        if (appSettings.docRagTopK <= 0) {
+                            ragDebugLogs.add("知识库文档召回跳过：文档召回数量为 0。")
+                        }
+                        if (appSettings.memoryRagTopK <= 0) {
+                            ragDebugLogs.add("对话记忆召回跳过：记忆召回数量为 0。")
+                        }
+                        if (ragSourcePlan.includeDocuments && charCard.ragIndexStatus != "COMPLETE") {
+                            ragDebugLogs.add("角色卡 RAG 索引未完成：${charCard.ragIndexStatus} ${charCard.ragIndexDone}/${charCard.ragIndexTotal}。${charCard.ragIndexMessage.orEmpty()}")
+                        }
+                        ragDebugLogs.add("开始 RAG 检索。来源: documents=${ragSourcePlan.includeDocuments}, memory=${ragSourcePlan.includeMemory}; Embedding配置: [${embeddingConfig.displayName}], 目标模型: ${embeddingConfig.modelName}")
                         try {
-                            val base64 = encodeImageToBase64(msg.images.first())
-                            apiMessages.add(
-                                ChatApiMessage.withImage(
-                                    role = role,
-                                    text = text,
-                                    imageBase64 = base64
-                                )
+                            val retrievalChunks = ChatBarApp.instance.ragRepository.getChunksForRetrieval(
+                                characterId = charCard.id.takeIf { ragSourcePlan.includeDocuments },
+                                sessionId = sessionId.takeIf { ragSourcePlan.includeMemory }
                             )
-                        } catch (e: Exception) {
-                            if (renderedBody.isNotBlank()) {
-                                apiMessages.add(ChatApiMessage.text(role, text))
+                            val currentEmbeddingKey = ragManager.embeddingKey(embeddingConfig)
+                            val allDocChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.DOCUMENT }
+                            val legacyDocChunks = allDocChunks.filter { it.metadata["embeddingKey"].isNullOrBlank() }
+                            val mismatchedDocChunks = allDocChunks.filter {
+                                val key = it.metadata["embeddingKey"]
+                                !key.isNullOrBlank() && key != currentEmbeddingKey
                             }
+                            val docChunks = allDocChunks.filter { it.metadata["embeddingKey"] == currentEmbeddingKey }
+                            val allMemChunks = retrievalChunks.filter { it.sourceType == ChunkSourceType.CHAT_MEMORY }
+                            val staleAutomaticChunks = allMemChunks.filter(ChatMemoryIndexPolicy::needsAutomaticRebuild)
+                            val memChunks = allMemChunks.filter { chunk ->
+                                !ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) &&
+                                    chunk.metadata["indexMode"] != "memory_node" &&
+                                    chunk.messageIds().none { it in activeContextMessageIds }
+                            }
+                            val searchableMemChunks = memChunks
+                            val filteredMemCount = allMemChunks.size - staleAutomaticChunks.size - memChunks.size
+                            ragDebugLogs.add("RAG split retrieval: document candidates=${docChunks.size}; ignored legacy document chunks=${legacyDocChunks.size}; ignored embedding-mismatch document chunks=${mismatchedDocChunks.size}; chat_memory candidates=${allMemChunks.size}; active context messages=${activeContextMessageIds.size}; eligible chat_memory after context filter=${memChunks.size}.")
+                            if (legacyDocChunks.isNotEmpty() || mismatchedDocChunks.isNotEmpty()) {
+                                ragDebugLogs.add("Document RAG index uses a different or unknown embedding model. Rebuild the character card RAG index before judging recall quality.")
+                            }
+                            if (filteredMemCount > 0) {
+                                ragDebugLogs.add("Filtered $filteredMemCount chat_memory chunks because they overlap messages already sent in the normal context window.")
+                            }
+                            if (staleAutomaticChunks.isNotEmpty()) {
+                                ragDebugLogs.add("Ignored ${staleAutomaticChunks.size} stale automatic memory chunks. Rebuild them from the RAG library page.")
+                            }
+
+                            ragDebugLogs.add("数据库向量块查询完成。知识库文档块数: ${docChunks.size}, 对话记忆块数: ${memChunks.size} (已排除角色设定块)")
+
+                            if (docChunks.isEmpty() && memChunks.isEmpty()) {
+                                ragDebugLogs.add("警告：数据库中未检索到任何知识库文档或对话记忆块。")
+                                emptyList()
+                            } else {
+                                ragDebugLogs.add("Retrieval planner uses current chat model: ${modelConfig.displayName}")
+                                val retrievalPlanResult = retrievalPlanner.plan(
+                                    currentUserContent = currentRetrievalUserContent,
+                                    contextMessages = retrievalCredentialMsgs,
+                                    characterName = charCard.name,
+                                    modelConfig = modelConfig
+                                )
+                                val retrievalPlan = retrievalPlanResult.plan
+                                if (retrievalPlan != null) {
+                                    ragDebugLogs.add(retrievalPlan.toDebugLog())
+                                } else {
+                                    ragDebugLogs.add(
+                                        buildString {
+                                            append("Retrieval planner failed. Fallback to local mixed retrieval query.")
+                                            retrievalPlanResult.failureReason?.let { append(" reason=$it") }
+                                        }
+                                    )
+                                }
+                                ragDebugLogs.add(
+                                    buildString {
+                                        append("Raw planner response preview (${retrievalPlanResult.rawResponsePreview.length} chars):\n")
+                                        append(retrievalPlanResult.rawResponsePreview.ifBlank { "<empty>" })
+                                    }
+                                )
+
+                                if (retrievalPlan != null &&
+                                    !retrievalPlan.shouldRecall
+                                ) {
+                                    ragDebugLogs.add("Retrieval planner skipped RAG: no topic/query/entity returned.")
+                                    emptyList()
+                                } else {
+                                val ragQuery = retrievalPlan?.toRagQuery(
+                                    currentRetrievalUserContent,
+                                    retrievalCredentialMsgs
+                                ) ?: buildRagQuery(currentRetrievalUserContent, retrievalCredentialMsgs)
+                                val queryEmbedding = ChatBarApp.instance.embeddingService.getEmbedding(ragQuery, embeddingConfig)
+                                ragDebugLogs.add("RAG query text (${ragQuery.length} chars):\n${ragQuery.take(1200)}")
+                                ragDebugLogs.add("RAG retrieval credentials: last_assistant=${retrievalCredentialMsgs.size}, current_user=1.")
+                                ragDebugLogs.add("查询文本 Embedding 计算完成。维度: ${queryEmbedding.size}")
+
+                                val rankedDocChunks = if (ragSourcePlan.includeDocuments) {
+                                    rankChunksByMultiRoute(
+                                        chunks = docChunks,
+                                        queryEmbedding = queryEmbedding,
+                                        ragQuery = ragQuery,
+                                        routeLimit = routeCandidateLimit(appSettings.docRagTopK, docChunks.size)
+                                    )
+                                } else {
+                                    emptyList()
+                                }
+
+                                val rankedMemChunks = if (ragSourcePlan.includeMemory) {
+                                    rankChunksByMultiRoute(
+                                        chunks = searchableMemChunks,
+                                        queryEmbedding = queryEmbedding,
+                                        ragQuery = ragQuery,
+                                        routeLimit = routeCandidateLimit(appSettings.memoryRagTopK, searchableMemChunks.size)
+                                    )
+                                } else {
+                                    emptyList()
+                                }
+
+                                val mismatchedSourceLabelCount = docChunks.count { it.hasMismatchedSourceLabel() }
+                                if (mismatchedSourceLabelCount > 0) {
+                                    ragDebugLogs.add("Document chunk source integrity warning: mismatched content source vs metadata source=$mismatchedSourceLabelCount/${docChunks.size}. Rebuild index if this stays non-zero.")
+                                }
+
+                                val topDocCandidates = rankedDocChunks.take(routeCandidateLimit(appSettings.docRagTopK, rankedDocChunks.size))
+                                val eligibleDocCandidates = topDocCandidates.filter {
+                                    it.vectorScore >= appSettings.docRagSimilarityThreshold ||
+                                        it.lexicalScore >= DOCUMENT_LEXICAL_ACCEPT_THRESHOLD
+                                }
+                                val topDocChunks = eligibleDocCandidates.withSourceDiversity(appSettings.docRagTopK)
+                                if (topDocCandidates.isNotEmpty() && topDocChunks.isEmpty()) {
+                                    ragDebugLogs.add(
+                                        "Document RAG topK candidates all below threshold ${appSettings.docRagSimilarityThreshold}. Best scores: " +
+                                            topDocCandidates.take(5).joinToString(", ") { "%.4f".format(it.combinedScore) }
+                                    )
+                                }
+                                val topMemChunks = rankedMemChunks.filter {
+                                    it.vectorScore >= appSettings.memoryRagSimilarityThreshold ||
+                                        it.lexicalScore >= MEMORY_LEXICAL_ACCEPT_THRESHOLD
+                                }.take(appSettings.memoryRagTopK)
+                                if (rankedDocChunks.isNotEmpty()) {
+                                    ragDebugLogs.add(
+                                        "Document multi-route top scores: " +
+                                            rankedDocChunks.take(10).joinToString("\n") { rank ->
+                                                val chunk = rank.chunk
+                                                val metaSource = chunk.metadata["sourceLabel"]
+                                                    ?: chunk.metadata["fileName"]
+                                                    ?: chunk.id
+                                                val contentSource = chunk.contentSourceLabel() ?: "no-content-source"
+                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | meta=$metaSource | content=$contentSource"
+                                            }
+                                    )
+                                    val topSources = rankedDocChunks.take(20)
+                                        .map { it.chunk.metadata["sourceLabel"] ?: it.chunk.metadata["fileName"] ?: "unknown" }
+                                        .groupingBy { it.substringBefore(" > ") }
+                                        .eachCount()
+                                    ragDebugLogs.add("Document top20 source distribution: $topSources")
+                                    val finalSources = topDocChunks
+                                        .map { it.chunk.sourceDiversityKey() }
+                                        .groupingBy { it }
+                                        .eachCount()
+                                    ragDebugLogs.add("Document final source distribution after local rerank: $finalSources")
+                                }
+                                if (rankedMemChunks.isNotEmpty()) {
+                                    ragDebugLogs.add(
+                                        "Chat memory multi-route top scores: " +
+                                            rankedMemChunks.take(10).joinToString("\n") { rank ->
+                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | messageIds=${rank.chunk.messageIds()}"
+                                            }
+                                    )
+                                }
+
+                                if (ragSourcePlan.includeDocuments) {
+                                    ragDebugLogs.add("知识库文档召回完成。阈值: ${appSettings.docRagSimilarityThreshold}, Top-K: ${appSettings.docRagTopK}。召回块数: ${topDocChunks.size}")
+                                }
+                                if (ragSourcePlan.includeMemory) {
+                                    ragDebugLogs.add("对话记忆召回完成。阈值: ${appSettings.memoryRagSimilarityThreshold}, Top-K: ${appSettings.memoryRagTopK}。召回块数: ${topMemChunks.size}")
+                                }
+
+                                val finalCards = (topDocChunks.map { it.chunk } +
+                                    topMemChunks.map { it.chunk })
+                                    .distinctBy { it.id }
+                                    .map { RetrievedKnowledgeCard.fromChunk(it) }
+                                if (finalCards.isNotEmpty()) {
+                                    ragDebugLogs.add("--- 最终召回的文本块详情 ---")
+                                    finalCards.forEachIndexed { i, card ->
+                                        ragDebugLogs.add("[召回 ${i + 1} | 类型: ${card.type} | 来源: ${card.sourceLabel} | ID: ${card.sourceId}]\n${card.content}")
+                                    }
+                                }
+                                finalCards
+                                }
+                            }
+                        } catch (e: Exception) {
+                            ragDebugLogs.add("错误：RAG 检索过程中抛出异常: ${e.message}")
+                            emptyList()
                         }
                     } else {
-                        apiMessages.add(ChatApiMessage.text(role, text))
+                        ragDebugLogs.add("RAG 检索未启用：未配置全局 Embedding 模型。")
+                        emptyList()
                     }
-                }
 
-                // Archive 位于设定确认之后、原始聊天历史之前。
-                ChatRequestMemoryPolicy.archiveMessage(renderedMemoryArchive)?.let(apiMessages::add)
-                if (promptMessageGroups.historyMessages.isNotEmpty()) {
-                    apiMessages.add(ChatApiMessage.text(
-                        "system", PromptTemplates.sectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
-                    ))
-                }
-                for (msg in promptMessageGroups.historyMessages) {
-                    addContextMessage(
-                        msg = msg,
-                        zone = ChatHistoryPromptZone.EARLIER_HISTORY
+                    // 5. 组装 System Prompt
+                    val (wbPrompt, wbOutlets, wbTimed) = buildWorldBookPrompt(
+                        card = charCard,
+                        session = currentSession,
+                        previousTimed = currentSession.timedWorldInfo,
+                        excludedMessageId = alternativeTargetMessageId,
+                        transientUserMessage = userMsg.takeIf {
+                            !persistUserMessage && resumedUserMessage == null &&
+                                alternativeTargetMessageId == null && finalUserContent.isNotBlank()
+                        },
+                        scanContext = com.example.chatbar.domain.worldbook.WorldBookScanContext.fromCard(
+                            charCard, activePlayerSetting, activePlayerNameOrNull
+                        ),
+                        debugLogs = ragDebugLogs
                     )
-                }
-
-                // 记忆召回紧接历史，HEAD 保持在上一轮之前。
-                ChatRequestMemoryPolicy.orderedDynamicMessages(
-                    worldBookAndRag = promptLayers.memoryRagSystemPrompt,
-                    archive = null,
-                    headAndTimeline = memoryView?.headAndTimeline,
-                    playerName = activePlayerNameOrNull,
-                    botName = charCard.effectiveBotName
-                ).forEach(apiMessages::add)
-                if (promptMessageGroups.previousTurnMessages.isNotEmpty()) {
-                    apiMessages.add(
-                        ChatApiMessage.text(
-                            role = "system",
-                            content = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
-                        )
-                    )
-                }
-                for (msg in promptMessageGroups.previousTurnMessages) {
-                    addContextMessage(
-                        msg = msg,
-                        zone = ChatHistoryPromptZone.PREVIOUS_TURN
-                    )
-                }
-
-                apiMessages.add(ChatApiMessage.text(
-                    "system", PromptTemplates.CCB_CONTINUATION_SYSTEM_PROMPT.trimIndent().trim()
-                ))
-                val postUserSystemPrompt = buildCcbFinalTailSystemPrompt(
-                    postHistorySystemPrompt = promptLayers.tailSystemPrompt,
-                    positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
-                    formatPromptPosition = modelConfig.formatPromptPosition
-                )
-
-                // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant/user 开写尾缀。
-                val currentUserContent: String?
-                val currentUserImages: List<String>
-                val shouldAddUserPrompt: Boolean = when {
-                    persistUserMessage -> {
-                        currentUserContent = renderSessionText(finalUserContent)
-                        currentUserImages = userMsgImages
-                        true
+                    if (wbTimed != currentSession.timedWorldInfo) {
+                        val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
+                        chatRepository.updateSession(updatedSession)
+                        _session.value = updatedSession
                     }
-                    regenTargetUserMsg != null -> {
-                        currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
-                        currentUserImages = regenTargetUserMsg.images
-                        true
-                    }
-                    content.isNotBlank() -> {
-                        currentUserContent = renderSessionText(content)
-                        currentUserImages = emptyList()
-                        true
-                    }
-                    else -> {
-                        currentUserContent = null
-                        currentUserImages = emptyList()
-                        false
-                    }
-                }
-                if (shouldAddUserPrompt && currentUserContent != null) {
-                    val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
-                        userContent = currentUserContent,
-                        tools = activeFormatCard?.userTools.orEmpty()
-                    )
-                    val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
-                        activeFormatCard?.userTools.orEmpty()
-                    )
-                    val currentUserApiMessage = if (
-                        currentUserImages.isNotEmpty() &&
-                        modelConfig.isMultimodal
-                    ) {
-                        try {
-                            val base64 = encodeImageToBase64(currentUserImages.first())
-                            ChatApiMessage.withImage(
-                                role = "user",
-                                text = requestUserContent,
-                                imageBase64 = base64
+                    val replyLength = currentSession.replyLength
+                    val renderedFormatCardContent = activeFormatCard
+                        ?.content
+                        ?.takeIf(String::isNotBlank)
+                        ?.let { formatCardContent ->
+                            promptAssembler.renderFormatCardForUserMessage(
+                                content = formatCardContent,
+                                playerName = activePlayerNameOrNull,
+                                botName = charCard.effectiveBotName,
+                                worldBookOutlets = wbOutlets
                             )
-                        } catch (e: Exception) {
-                            requestUserContent
-                                .takeIf(String::isNotBlank)
-                                ?.let { ChatApiMessage.text("user", it) }
                         }
-                    } else if (requestUserContent.isNotBlank()) {
-                        ChatApiMessage.text("user", requestUserContent)
+                    // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
+                    val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
+                        contextMsgs.lastOrNull { it.role == MessageRole.USER }
+                    } else null
+                    val latestMessageId = when {
+                        persistUserMessage -> userMsg.id
+                        regenTargetUserMsg != null -> regenTargetUserMsg.id
+                        else -> null
+                    }
+                    val promptMessageGroups = contextWindowManager.getPromptMessageGroups(
+                        contextMessages = contextMsgs,
+                        latestMessageId = latestMessageId
+                    )
+                    val requirementsSystemPrompt =
+                        PromptTemplates.currentTurnOutputRequirementsSystemPrompt(
+                            formatCardContent = renderedFormatCardContent,
+                            replyLength = replyLength,
+                            includeFormatHistoryContinuityNotice =
+                                ChatHistoryPromptPolicy.shouldIncludeFormatContinuityNotice(
+                                    excludeAssistantStatusFromHistory =
+                                        appSettings.excludeAssistantStatusFromHistory,
+                                    formatCardContent = renderedFormatCardContent,
+                                    earlierHistoryMessages = promptMessageGroups.historyMessages
+                                )
+                        )
+                    fun assemblePromptLayers() =
+                        promptAssembler.assembleCachePromptLayers(
+                            characterCard = charCard,
+                            playerSetting = activePlayerSetting,
+                            playerName = activePlayerName.takeIf { it.isNotBlank() },
+                            supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
+                            ragResults = ragResults,
+                            ragInjectionMode = appSettings.ragInjectionMode,
+                            replyLength = replyLength,
+                            replyLanguage = currentSession.replyLanguage?.takeIf { it.isNotBlank() },
+                            memoryArchive = null,
+                            memoryHeadAndTimeline = null,
+                            worldBookPrompt = wbPrompt,
+                            worldBookOutlets = wbOutlets
+                        )
+                    val memoryView = if (currentSession.longTermMemoryEnabled) {
+                        longTermMemoryService.promptView(sessionId).also { view ->
+                            check(view.usedArchiveChars == 0 || view.archive.isNotBlank()) {
+                                "长期记忆Archive有正文，但请求快照为空"
+                            }
+                        }
                     } else {
                         null
                     }
-                    currentUserApiMessage?.let { userMessage ->
-                        appendCurrentUserAndCcbTailMessages(
-                            messages = apiMessages,
-                            userMessage = userMessage,
-                            strongPromptSystemSuffix = strongPromptSystemSuffix,
-                            postUserSystemPrompt = postUserSystemPrompt
+                    val renderedMemoryArchive = memoryView?.archive?.let(renderSessionText)
+                    val renderedMemoryHeadAndTimeline = memoryView?.headAndTimeline?.let(renderSessionText)
+                    val promptLayers = assemblePromptLayers()
+                    val positionedRequirementsSystemPrompt = joinPromptParts(
+                        requirementsSystemPrompt,
+                        promptLayers.replyConstraintsSystemPrompt,
+                        PromptTemplates.replyTailSystemPrompt(
+                            replyLength = replyLength,
+                            roleplaySpeakerFormatEnabled = _assistantSegmentedBubblesEnabled.value,
+                            characterNames = charCard.characters.map { it.name }
+                        )
+                    )
+                    val stablePrefixMessages = buildCcbStablePrefixMessages(
+                        coreSystemPrompt = promptLayers.coreSystemPrompt,
+                        stableContextSystemPrompt = promptLayers.stableContextSystemPrompt,
+                        positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
+                        formatPromptPosition = modelConfig.formatPromptPosition,
+                        settingReferenceSystemPrompt = promptLayers.settingReferenceSystemPrompt,
+                        playerSystemPrompt = promptLayers.playerSystemPrompt,
+                        supplementarySystemPrompt = promptLayers.supplementarySystemPrompt
+                    )
+                    val promptCacheKey = stablePrefixMessages
+                        .takeIf { promptLayers.stablePrefixCacheable && it.isNotEmpty() }
+                        ?.let(PromptCacheKeyFactory::cacheKey)
+
+                    val apiMessages = stablePrefixMessages.toMutableList()
+
+                    suspend fun addContextMessage(
+                        msg: ChatMessage,
+                        zone: ChatHistoryPromptZone
+                    ) {
+                        val role = msg.role.name.lowercase()
+                        val sourceText = ChatHistoryPromptPolicy.sourceText(
+                            message = msg,
+                            excludeAssistantStatusFromHistory =
+                                appSettings.excludeAssistantStatusFromHistory,
+                            zone = zone
+                        )
+                        val renderedBody = renderSessionText(sourceText)
+                        val hasSupportedImage = msg.images.isNotEmpty() &&
+                            modelConfig.isMultimodal &&
+                            msg.role == MessageRole.USER
+                        val text = ChatHistoryPromptPolicy.payloadText(
+                            renderedBody = renderedBody,
+                            hasSupportedImage = hasSupportedImage
+                        ) ?: return
+                        if (hasSupportedImage) {
+                            try {
+                                val base64 = encodeImageToBase64(msg.images.first())
+                                apiMessages.add(
+                                    ChatApiMessage.withImage(
+                                        role = role,
+                                        text = text,
+                                        imageBase64 = base64
+                                    )
+                                )
+                            } catch (e: Exception) {
+                                if (renderedBody.isNotBlank()) {
+                                    apiMessages.add(ChatApiMessage.text(role, text))
+                                }
+                            }
+                        } else {
+                            apiMessages.add(ChatApiMessage.text(role, text))
+                        }
+                    }
+
+                    // Archive 位于设定确认之后、原始聊天历史之前。
+                    ChatRequestMemoryPolicy.archiveMessage(renderedMemoryArchive)?.let(apiMessages::add)
+                    if (promptMessageGroups.historyMessages.isNotEmpty()) {
+                        apiMessages.add(ChatApiMessage.text(
+                            "system", PromptTemplates.sectionHeading(PromptTemplates.SECTION_CHAT_HISTORY)
+                        ))
+                    }
+                    for (msg in promptMessageGroups.historyMessages) {
+                        addContextMessage(
+                            msg = msg,
+                            zone = ChatHistoryPromptZone.EARLIER_HISTORY
                         )
                     }
-                }
 
-                ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
-                val promptSystemDebug = apiMessages
-                    .asSequence()
-                    .filter { it.role == "system" }
-                    .mapNotNull { (it.content as? JsonPrimitive)?.contentOrNull }
-                    .filter(String::isNotBlank)
-                    .joinToString("\n\n")
-
-                // 8. 开启流式响应
-                var accumulatedText = ""
-                var accumulatedReasoning = ""
-                val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
-                val streamStartedAt = System.currentTimeMillis()
-                val regenerationTarget = alternativeTargetMessageId
-                    ?.let { chatRepository.getMessage(it, sessionId) }
-                val streamCreatedAt = regenerationTarget?.createdAt ?: streamStartedAt
-                val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
-
-                val ctx = ChatBarApp.instance
-                _streamingMessage.value = ChatMessage(
-                    id = assistantMsgId,
-                    sessionId = sessionId,
-                    role = MessageRole.ASSISTANT,
-                    content = "...",
-                    createdAt = streamCreatedAt,
-                    updatedAt = streamStartedAt,
-                    orderKey = streamOrderKey
-                )
-                StreamingNotificationManager.update(ctx, "正在连接流式响应...", sessionId)
-
-                val replyCompletion = AtomicReference<ChatReplyCompletion?>()
-                var automaticImageHandled = false
-                streamingChatService.streamChat(
-                    sessionId = sessionId,
-                    messages = apiMessages,
-                    modelConfig = modelConfig,
-                    systemPrompt = promptSystemDebug,
-                    ragChunks = ragDebugLogs,
-                    promptCacheKey = promptCacheKey,
-                    onReplyCompletion = { replyCompletion.set(it) }
-                ).collect { event ->
-                    if (ChatBarApp.instance.streamingStopRequested.value) {
-                        throw UserStoppedResponseGenerationException()
+                    // 记忆召回紧接历史，HEAD 保持在上一轮之前。
+                    ChatRequestMemoryPolicy.orderedDynamicMessages(
+                        worldBookAndRag = promptLayers.memoryRagSystemPrompt,
+                        archive = null,
+                        headAndTimeline = memoryView?.headAndTimeline,
+                        playerName = activePlayerNameOrNull,
+                        botName = charCard.effectiveBotName
+                    ).forEach(apiMessages::add)
+                    if (promptMessageGroups.previousTurnMessages.isNotEmpty()) {
+                        apiMessages.add(
+                            ChatApiMessage.text(
+                                role = "system",
+                                content = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+                            )
+                        )
                     }
-                    when (event) {
-                        is StreamEvent.Usage -> Unit
-                        is StreamEvent.ReasoningDelta -> {
-                            accumulatedReasoning += event.text
-                            interruptedReplyDraft = ChatMessage(
-                                id = assistantMsgId,
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = accumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = streamCreatedAt,
-                                updatedAt = System.currentTimeMillis(),
-                                orderKey = streamOrderKey
-                            )
-                            _streamingMessage.value = ChatMessage(
-                                id = assistantMsgId,
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = renderSessionText(accumulatedText),
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
-                                    ?.let(renderSessionText),
-                                createdAt = streamCreatedAt,
-                                updatedAt = System.currentTimeMillis(),
-                                orderKey = streamOrderKey
-                            )
-                        }
-                        is StreamEvent.Delta -> {
-                            accumulatedText += event.text
-                            val renderedAccumulatedText = renderSessionText(accumulatedText)
-                            interruptedReplyDraft = ChatMessage(
-                                id = assistantMsgId,
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = accumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = streamCreatedAt,
-                                updatedAt = System.currentTimeMillis(),
-                                orderKey = streamOrderKey
-                            )
-                            _streamingMessage.value = ChatMessage(
-                                id = assistantMsgId,
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = renderedAccumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
-                                    ?.let(renderSessionText),
-                                createdAt = streamCreatedAt,
-                                updatedAt = System.currentTimeMillis(),
-                                orderKey = streamOrderKey
-                            )
-                            StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
-                        }
-                        is StreamEvent.Error -> {
-                            throw Exception(event.message)
-                        }
-                        is StreamEvent.Done -> {
-                            ChatBarApp.instance.streamingStopRequested.value = false
-                            // 流生成完毕，保存到数据库
-                            ChatHistoryPromptPolicy.requirePersistableAssistantBody(accumulatedText)
-                            val assistantMsg = ChatMessage(
-                                id = assistantMsgId,
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = accumulatedText,
-                                reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                createdAt = streamCreatedAt,
-                                updatedAt = System.currentTimeMillis(),
-                                orderKey = streamOrderKey
-                            )
-                            var persistedAssistantMessage = withContext(NonCancellable) {
-                                persistGeneratedAssistantMessage(
-                                    generatedMessage = assistantMsg,
-                                    alternativeTargetMessageId = alternativeTargetMessageId
-                                ).also { assistantReplyPersisted = true }
-                            }
+                    for (msg in promptMessageGroups.previousTurnMessages) {
+                        addContextMessage(
+                            msg = msg,
+                            zone = ChatHistoryPromptZone.PREVIOUS_TURN
+                        )
+                    }
 
-                            alternativeTargetMessageId?.let { targetId ->
-                                hiddenRegenerationMessageId.compareAndSet(targetId, null)
-                            }
-                            messageWindowAnchorId.set(persistedAssistantMessage.id)
-                            replaceMessagesFromRepository(persistedAssistantMessage.id)
-                            _streamingMessage.value = null
-                            if (appSettings.automaticFormatCheckEnabled) {
-                                persistedAssistantMessage = performMessageFormatRepair(
-                                    message = persistedAssistantMessage,
-                                    automatic = true
-                                )
-                            }
-                            if (!automaticImageHandled &&
-                                chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true
-                            ) {
-                                automaticImageHandled = true
-                                var skipReason = AutomaticChatImagePolicy.skipReason(
-                                    replyCompletion.get(), accumulatedText
-                                ) ?: AutomaticChatImagePolicy.skipReason(
-                                    replyCompletion.get(), persistedAssistantMessage.displayContent
-                                )
-                                currentCoroutineContext().ensureActive()
-                                if (ChatBarApp.instance.streamingStopRequested.value) {
-                                    throw UserStoppedResponseGenerationException()
-                                }
-                                if (chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true) {
-                                    val latestMessage = chatRepository.getMessage(persistedAssistantMessage.id, sessionId)
-                                    if (latestMessage?.displayContent != persistedAssistantMessage.displayContent) {
-                                        skipReason = "生图前消息已更改或删除"
-                                    }
-                                    if (skipReason == null) {
-                                        generateNovelAiImage(persistedAssistantMessage.id)
-                                    } else {
-                                        android.util.Log.i("ChatViewModel", "自动生图已跳过：$skipReason")
-                                        _automaticImageEvents.tryEmit("自动生图已跳过：$skipReason")
-                                    }
-                                }
-                            }
-                            if (persistedAssistantMessage.displayContent.isNotBlank()) {
-                                StreamingNotificationManager.showComplete(
-                                    ctx,
-                                    renderSessionText(persistedAssistantMessage.displayContent)
-                                )
-                            }
+                    apiMessages.add(ChatApiMessage.text(
+                        "system", PromptTemplates.CCB_CONTINUATION_SYSTEM_PROMPT.trimIndent().trim()
+                    ))
+                    val postUserSystemPrompt = buildCcbFinalTailSystemPrompt(
+                        postHistorySystemPrompt = promptLayers.tailSystemPrompt,
+                        positionedRequirementsSystemPrompt = positionedRequirementsSystemPrompt,
+                        formatPromptPosition = modelConfig.formatPromptPosition
+                    )
 
-                            updateLongTermMemoryAfterReply(
-                                session = currentSession,
-                                modelConfig = modelConfig,
-                                contextWindowSize = effectiveContextWindowSize
-                            )
-                            ChatBarApp.instance.momentScheduler.kick("chat-reply")
-                            
-                            try {
-                                replaceMessagesFromRepository()
-                            } catch (_: Exception) {}
-                            _isResponding.value = false
-
-                            // 对话存入 RAG 记忆库（后台异步）
-                            if (embeddingConfig != null) {
-                                try {
-                                    ragMemoryMutationMutex.withLock {
-                                        indexMessagesLeavingContextWindow(
-                                            contextWindowSize = effectiveContextWindowSize,
-                                            embeddingConfig = embeddingConfig
-                                        )
-                                    }
-                                } catch (_: Exception) {}
-                            }
+                    // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant/user 开写尾缀。
+                    val currentUserContent: String?
+                    val currentUserImages: List<String>
+                    val shouldAddUserPrompt: Boolean = when {
+                        persistUserMessage -> {
+                            currentUserContent = renderSessionText(finalUserContent)
+                            currentUserImages = userMsgImages
+                            true
+                        }
+                        regenTargetUserMsg != null -> {
+                            currentUserContent = renderSessionText(regenTargetUserMsg.displayContent)
+                            currentUserImages = regenTargetUserMsg.images
+                            true
+                        }
+                        content.isNotBlank() -> {
+                            currentUserContent = renderSessionText(content)
+                            currentUserImages = emptyList()
+                            true
+                        }
+                        else -> {
+                            currentUserContent = null
+                            currentUserImages = emptyList()
+                            false
                         }
                     }
-                }
-
-            } catch (e: Exception) {
-                ChatBarApp.instance.streamingStopRequested.value = false
-                if (e is BackgroundGenerationProtectionCancellationException) {
-                    addSystemMessage("后台生成已中止：${e.reason}")
-                } else if (e is UserStoppedResponseGenerationException) {
-                    val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
-                    if (draft != null || assistantReplyPersisted) {
-                        withContext(NonCancellable) {
+                    if (shouldAddUserPrompt && currentUserContent != null) {
+                        val requestUserContent = FormatCardUserToolPolicy.appendRequestSuffix(
+                            userContent = currentUserContent,
+                            tools = activeFormatCard?.userTools.orEmpty()
+                        )
+                        val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
+                            activeFormatCard?.userTools.orEmpty()
+                        )
+                        val currentUserApiMessage = if (
+                            currentUserImages.isNotEmpty() &&
+                            modelConfig.isMultimodal
+                        ) {
                             try {
-                                if (!assistantReplyPersisted && draft != null) {
+                                val base64 = encodeImageToBase64(currentUserImages.first())
+                                ChatApiMessage.withImage(
+                                    role = "user",
+                                    text = requestUserContent,
+                                    imageBase64 = base64
+                                )
+                            } catch (e: Exception) {
+                                requestUserContent
+                                    .takeIf(String::isNotBlank)
+                                    ?.let { ChatApiMessage.text("user", it) }
+                            }
+                        } else if (requestUserContent.isNotBlank()) {
+                            ChatApiMessage.text("user", requestUserContent)
+                        } else {
+                            null
+                        }
+                        currentUserApiMessage?.let { userMessage ->
+                            appendCurrentUserAndCcbTailMessages(
+                                messages = apiMessages,
+                                userMessage = userMessage,
+                                strongPromptSystemSuffix = strongPromptSystemSuffix,
+                                postUserSystemPrompt = postUserSystemPrompt
+                            )
+                        }
+                    }
+
+                    ChatRequestMemoryPolicy.requireArchiveIncluded(apiMessages, renderedMemoryArchive)
+                    val promptSystemDebug = apiMessages
+                        .asSequence()
+                        .filter { it.role == "system" }
+                        .mapNotNull { (it.content as? JsonPrimitive)?.contentOrNull }
+                        .filter(String::isNotBlank)
+                        .joinToString("\n\n")
+
+                    // 8. 开启流式响应
+                    var accumulatedText = ""
+                    var accumulatedReasoning = ""
+                    val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
+                    val streamStartedAt = System.currentTimeMillis()
+                    val regenerationTarget = alternativeTargetMessageId
+                        ?.let { chatRepository.getMessage(it, sessionId) }
+                    val streamCreatedAt = regenerationTarget?.createdAt ?: streamStartedAt
+                    val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
+
+                    val ctx = ChatBarApp.instance
+                    _streamingMessage.value = ChatMessage(
+                        id = assistantMsgId,
+                        sessionId = sessionId,
+                        role = MessageRole.ASSISTANT,
+                        content = "...",
+                        createdAt = streamCreatedAt,
+                        updatedAt = streamStartedAt,
+                        orderKey = streamOrderKey
+                    )
+                    StreamingNotificationManager.update(ctx, "正在连接流式响应...", sessionId)
+
+                    val replyCompletion = AtomicReference<ChatReplyCompletion?>()
+                    var automaticImageHandled = false
+                    streamingChatService.streamChat(
+                        sessionId = sessionId,
+                        messages = apiMessages,
+                        modelConfig = modelConfig,
+                        systemPrompt = promptSystemDebug,
+                        ragChunks = ragDebugLogs,
+                        promptCacheKey = promptCacheKey,
+                        onReplyCompletion = { replyCompletion.set(it) }
+                    ).collect { event ->
+                        if (ChatBarApp.instance.streamingStopRequested.value) {
+                            throw UserStoppedResponseGenerationException()
+                        }
+                        when (event) {
+                            is StreamEvent.Usage -> Unit
+                            is StreamEvent.ReasoningDelta -> {
+                                accumulatedReasoning += event.text
+                                interruptedReplyDraft = ChatMessage(
+                                    id = assistantMsgId,
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = accumulatedText,
+                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                    createdAt = streamCreatedAt,
+                                    updatedAt = System.currentTimeMillis(),
+                                    orderKey = streamOrderKey
+                                )
+                                _streamingMessage.value = ChatMessage(
+                                    id = assistantMsgId,
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = renderSessionText(accumulatedText),
+                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
+                                        ?.let(renderSessionText),
+                                    createdAt = streamCreatedAt,
+                                    updatedAt = System.currentTimeMillis(),
+                                    orderKey = streamOrderKey
+                                )
+                            }
+                            is StreamEvent.Delta -> {
+                                accumulatedText += event.text
+                                val renderedAccumulatedText = renderSessionText(accumulatedText)
+                                interruptedReplyDraft = ChatMessage(
+                                    id = assistantMsgId,
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = accumulatedText,
+                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                    createdAt = streamCreatedAt,
+                                    updatedAt = System.currentTimeMillis(),
+                                    orderKey = streamOrderKey
+                                )
+                                _streamingMessage.value = ChatMessage(
+                                    id = assistantMsgId,
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = renderedAccumulatedText,
+                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
+                                        ?.let(renderSessionText),
+                                    createdAt = streamCreatedAt,
+                                    updatedAt = System.currentTimeMillis(),
+                                    orderKey = streamOrderKey
+                                )
+                                StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
+                            }
+                            is StreamEvent.Error -> {
+                                throw Exception(event.message)
+                            }
+                            is StreamEvent.Done -> {
+                                ChatBarApp.instance.streamingStopRequested.value = false
+                                // 流生成完毕，保存到数据库
+                                ChatHistoryPromptPolicy.requirePersistableAssistantBody(accumulatedText)
+                                val assistantMsg = ChatMessage(
+                                    id = assistantMsgId,
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = accumulatedText,
+                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                                    createdAt = streamCreatedAt,
+                                    updatedAt = System.currentTimeMillis(),
+                                    orderKey = streamOrderKey
+                                )
+                                var persistedAssistantMessage = withContext(NonCancellable) {
                                     persistGeneratedAssistantMessage(
-                                        generatedMessage = draft.copy(updatedAt = System.currentTimeMillis()),
+                                        generatedMessage = assistantMsg,
                                         alternativeTargetMessageId = alternativeTargetMessageId
-                                    )
-                                    assistantReplyPersisted = true
+                                    ).also { assistantReplyPersisted = true }
                                 }
+
                                 alternativeTargetMessageId?.let { targetId ->
                                     hiddenRegenerationMessageId.compareAndSet(targetId, null)
                                 }
-                                replaceMessagesFromRepository()
-                                ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
-                                    sessionId,
-                                    MemoryMaintenanceTrigger.REPLY_PERSISTED
+                                messageWindowAnchorId.set(persistedAssistantMessage.id)
+                                replaceMessagesFromRepository(persistedAssistantMessage.id)
+                                _streamingMessage.value = null
+                                if (appSettings.automaticFormatCheckEnabled) {
+                                    persistedAssistantMessage = performMessageFormatRepair(
+                                        message = persistedAssistantMessage,
+                                        automatic = true
+                                    )
+                                }
+                                if (!automaticImageHandled &&
+                                    chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true
+                                ) {
+                                    automaticImageHandled = true
+                                    var skipReason = AutomaticChatImagePolicy.skipReason(
+                                        replyCompletion.get(), accumulatedText
+                                    ) ?: AutomaticChatImagePolicy.skipReason(
+                                        replyCompletion.get(), persistedAssistantMessage.displayContent
+                                    )
+                                    currentCoroutineContext().ensureActive()
+                                    if (ChatBarApp.instance.streamingStopRequested.value) {
+                                        throw UserStoppedResponseGenerationException()
+                                    }
+                                    if (chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true) {
+                                        val latestMessage = chatRepository.getMessage(persistedAssistantMessage.id, sessionId)
+                                        if (latestMessage?.displayContent != persistedAssistantMessage.displayContent) {
+                                            skipReason = "生图前消息已更改或删除"
+                                        }
+                                        if (skipReason == null) {
+                                            generateNovelAiImage(persistedAssistantMessage.id)
+                                        } else {
+                                            android.util.Log.i("ChatViewModel", "自动生图已跳过：$skipReason")
+                                            _automaticImageEvents.tryEmit("自动生图已跳过：$skipReason")
+                                        }
+                                    }
+                                }
+                                if (persistedAssistantMessage.displayContent.isNotBlank()) {
+                                    StreamingNotificationManager.showComplete(
+                                        ctx,
+                                        renderSessionText(persistedAssistantMessage.displayContent)
+                                    )
+                                }
+
+                                updateLongTermMemoryAfterReply(
+                                    session = currentSession,
+                                    modelConfig = modelConfig,
+                                    contextWindowSize = effectiveContextWindowSize
                                 )
-                            } catch (persistenceError: Exception) {
-                                addSystemMessage(
-                                    "中断回复保存失败：${persistenceError.message ?: persistenceError::class.java.simpleName}"
-                                )
+                                ChatBarApp.instance.momentScheduler.kick("chat-reply")
+
+                                try {
+                                    replaceMessagesFromRepository()
+                                } catch (_: Exception) {}
+                                _isResponding.value = false
+
+                                // 对话存入 RAG 记忆库（后台异步）
+                                if (embeddingConfig != null) {
+                                    try {
+                                        ragMemoryMutationMutex.withLock {
+                                            indexMessagesLeavingContextWindow(
+                                                contextWindowSize = effectiveContextWindowSize,
+                                                embeddingConfig = embeddingConfig
+                                            )
+                                        }
+                                    } catch (_: Exception) {}
+                                }
                             }
                         }
                     }
-                } else if (e !is CancellationException) {
-                    try {
-                        if (alternativeTargetMessageId == null) {
-                            val errorAssistantMsg = ChatMessage.create(
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = "错误: ${e.message}"
-                            )
-                            chatRepository.addMessage(errorAssistantMsg)
-                            try {
-                                replaceMessagesFromRepository()
-                            } catch (_: Exception) {}
-                        } else {
-                            addSystemMessage("错误: ${e.message}")
+
+                } catch (e: Exception) {
+                    ChatBarApp.instance.streamingStopRequested.value = false
+                    if (e is BackgroundGenerationProtectionCancellationException) {
+                        addSystemMessage("后台生成已中止：${e.reason}")
+                    } else if (e is UserStoppedResponseGenerationException) {
+                        val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
+                        if (draft != null || assistantReplyPersisted) {
+                            withContext(NonCancellable) {
+                                try {
+                                    if (!assistantReplyPersisted && draft != null) {
+                                        persistGeneratedAssistantMessage(
+                                            generatedMessage = draft.copy(updatedAt = System.currentTimeMillis()),
+                                            alternativeTargetMessageId = alternativeTargetMessageId
+                                        )
+                                        assistantReplyPersisted = true
+                                    }
+                                    alternativeTargetMessageId?.let { targetId ->
+                                        hiddenRegenerationMessageId.compareAndSet(targetId, null)
+                                    }
+                                    replaceMessagesFromRepository()
+                                    ChatBarApp.instance.longTermMemoryAutoMaintenanceCoordinator.enqueue(
+                                        sessionId,
+                                        MemoryMaintenanceTrigger.REPLY_PERSISTED
+                                    )
+                                } catch (persistenceError: Exception) {
+                                    addSystemMessage(
+                                        "中断回复保存失败：${persistenceError.message ?: persistenceError::class.java.simpleName}"
+                                    )
+                                }
+                            }
                         }
-                    } catch (_: Exception) {}
-                }
-                _streamingMessage.value = null
-                _isResponding.value = false
-            } finally {
-                ChatBarApp.instance.streamingStopRequested.value = false
-            }
-            } catch (e: Exception) {
-                ChatBarApp.instance.streamingStopRequested.value = false
-                _isResponding.value = false
-                if (e !is CancellationException) {
-                    try {
-                        if (alternativeTargetMessageId == null) {
-                            val errorAssistantMsg = ChatMessage.create(
-                                sessionId = sessionId,
-                                role = MessageRole.ASSISTANT,
-                                content = "閿欒: ${e.message}"
-                            )
-                            chatRepository.addMessage(errorAssistantMsg)
-                            try {
-                                replaceMessagesFromRepository()
-                            } catch (_: Exception) {}
-                        } else {
-                            addSystemMessage("閿欒: ${e.message}")
-                        }
-                    } catch (_: Exception) {}
-                }
-                _streamingMessage.value = null
-            } finally {
-                protectionLossHandle?.dispose()
-                ChatBarApp.instance.streamingStopRequested.value = false
-                stopStreamingForegroundWork()
-                if (
-                    alternativeTargetMessageId != null &&
-                    hiddenRegenerationMessageId.compareAndSet(alternativeTargetMessageId, null)
-                ) {
+                    } else if (e !is CancellationException) {
+                        try {
+                            if (alternativeTargetMessageId == null) {
+                                val errorAssistantMsg = ChatMessage.create(
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = "错误: ${e.message}"
+                                )
+                                chatRepository.addMessage(errorAssistantMsg)
+                                try {
+                                    replaceMessagesFromRepository()
+                                } catch (_: Exception) {}
+                            } else {
+                                addSystemMessage("错误: ${e.message}")
+                            }
+                        } catch (_: Exception) {}
+                    }
                     _streamingMessage.value = null
-                    runCatching { replaceMessagesFromRepository() }
+                    _isResponding.value = false
+                } finally {
+                    ChatBarApp.instance.streamingStopRequested.value = false
+                }
+                } catch (e: Exception) {
+                    ChatBarApp.instance.streamingStopRequested.value = false
+                    _isResponding.value = false
+                    if (e !is CancellationException) {
+                        try {
+                            if (alternativeTargetMessageId == null) {
+                                val errorAssistantMsg = ChatMessage.create(
+                                    sessionId = sessionId,
+                                    role = MessageRole.ASSISTANT,
+                                    content = "閿欒: ${e.message}"
+                                )
+                                chatRepository.addMessage(errorAssistantMsg)
+                                try {
+                                    replaceMessagesFromRepository()
+                                } catch (_: Exception) {}
+                            } else {
+                                addSystemMessage("閿欒: ${e.message}")
+                            }
+                        } catch (_: Exception) {}
+                    }
+                    _streamingMessage.value = null
+                } finally {
+                    protectionLossHandle?.dispose()
+                    ChatBarApp.instance.streamingStopRequested.value = false
+                    stopStreamingForegroundWork()
+                    if (
+                        alternativeTargetMessageId != null &&
+                        hiddenRegenerationMessageId.compareAndSet(alternativeTargetMessageId, null)
+                    ) {
+                        _streamingMessage.value = null
+                        runCatching { replaceMessagesFromRepository() }
+                    }
                 }
             }
         }
@@ -4024,81 +4026,83 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     ) {
         if (saveSlotOperationJob?.isActive == true) return
         saveSlotOperationJob = viewModelScope.launch {
-            var packagedSlot: SaveSlot? = null
-            try {
-                _saveSlotOperation.value = SaveSlotOperationState(
-                    busy = true,
-                    status = "正在准备存档…",
-                    cancellable = true
-                )
-                val curSession = _session.value ?: error("当前会话尚未加载")
-                val memorySnapshot = longTermMemoryService.snapshot(sessionId)
-                val voices = if (includeAudio) {
-                    voiceMessageRepository.listForSession(sessionId)
-                } else {
-                    emptyList()
-                }
-                val baseSlot = SaveSlot.create(
-                    sessionId = sessionId,
-                    name = NamePolicy.normalize(name),
-                    description = description?.trim()?.takeIf(String::isNotBlank)
-                ).copy(
-                    schemaVersion = com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION,
-                    playerSetting = curSession.playerSetting,
-                    playerName = curSession.playerName,
-                    supplementarySetting = curSession.supplementarySetting,
-                    modelId = curSession.modelId,
-                    imageModelId = curSession.imageModelId,
-                    novelAiImageModel = curSession.novelAiImageModel,
-                    novelAiNaturalLanguageMode = curSession.novelAiNaturalLanguageMode,
-                    automaticImageGenerationEnabled = curSession.automaticImageGenerationEnabled,
-                    formatCardId = curSession.formatCardId,
-                    replyLength = curSession.replyLength,
-                    replyLanguage = curSession.replyLanguage,
-                    roleplayStyle = curSession.roleplayStyle,
-                    chatBackground = curSession.chatBackground,
-                    audiobookModeEnabled = curSession.audiobookModeEnabled,
-                    voiceLanguage = curSession.voiceLanguage,
-                    longTermMemoryEnabled = curSession.longTermMemoryEnabled,
-                    longTermMemory = curSession.longTermMemory,
-                    longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
-                    nextSourceTurnOrder = curSession.nextSourceTurnOrder,
-                    sourceTurnTombstones = curSession.sourceTurnTombstones,
-                    nextTimelineTurn = curSession.nextTimelineTurn,
-                    timelineTombstones = curSession.timelineTombstones,
-                    memoryLimitChars = curSession.memoryLimitChars,
-                    memorySnapshot = memorySnapshot,
-                    contextWindowSize = curSession.contextWindowSize,
-                    extraWorldBookIds = curSession.extraWorldBookIds,
-                    timedWorldInfo = curSession.timedWorldInfo,
-                    imagePolicy = imagePolicy,
-                    includeAudio = includeAudio
-                )
-                packagedSlot = ChatBarApp.instance.saveSlotPackageStorage.createPackage(
-                    baseSlot = baseSlot,
-                    imagePolicy = imagePolicy,
-                    includeAudio = includeAudio,
-                    messageSource = { emit -> chatRepository.forEachMessage(sessionId, action = emit) },
-                    ragSource = { emit ->
-                        ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
-                    },
-                    voices = voices,
-                    onProgress = { status ->
-                        _saveSlotOperation.value = SaveSlotOperationState(true, status, true)
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                var packagedSlot: SaveSlot? = null
+                try {
+                    _saveSlotOperation.value = SaveSlotOperationState(
+                        busy = true,
+                        status = "正在准备存档…",
+                        cancellable = true
+                    )
+                    val curSession = _session.value ?: error("当前会话尚未加载")
+                    val memorySnapshot = longTermMemoryService.snapshot(sessionId)
+                    val voices = if (includeAudio) {
+                        voiceMessageRepository.listForSession(sessionId)
+                    } else {
+                        emptyList()
                     }
-                )
-                saveSlotRepository.save(packagedSlot)
-                refreshSaveSlots()
-                _saveSlotOperation.value = SaveSlotOperationState(status = "存档已创建。")
-            } catch (error: Throwable) {
-                packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
-                if (error is CancellationException) {
-                    _saveSlotOperation.value = SaveSlotOperationState(status = "已取消创建存档。")
-                    throw error
+                    val baseSlot = SaveSlot.create(
+                        sessionId = sessionId,
+                        name = NamePolicy.normalize(name),
+                        description = description?.trim()?.takeIf(String::isNotBlank)
+                    ).copy(
+                        schemaVersion = com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION,
+                        playerSetting = curSession.playerSetting,
+                        playerName = curSession.playerName,
+                        supplementarySetting = curSession.supplementarySetting,
+                        modelId = curSession.modelId,
+                        imageModelId = curSession.imageModelId,
+                        novelAiImageModel = curSession.novelAiImageModel,
+                        novelAiNaturalLanguageMode = curSession.novelAiNaturalLanguageMode,
+                        automaticImageGenerationEnabled = curSession.automaticImageGenerationEnabled,
+                        formatCardId = curSession.formatCardId,
+                        replyLength = curSession.replyLength,
+                        replyLanguage = curSession.replyLanguage,
+                        roleplayStyle = curSession.roleplayStyle,
+                        chatBackground = curSession.chatBackground,
+                        audiobookModeEnabled = curSession.audiobookModeEnabled,
+                        voiceLanguage = curSession.voiceLanguage,
+                        longTermMemoryEnabled = curSession.longTermMemoryEnabled,
+                        longTermMemory = curSession.longTermMemory,
+                        longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
+                        nextSourceTurnOrder = curSession.nextSourceTurnOrder,
+                        sourceTurnTombstones = curSession.sourceTurnTombstones,
+                        nextTimelineTurn = curSession.nextTimelineTurn,
+                        timelineTombstones = curSession.timelineTombstones,
+                        memoryLimitChars = curSession.memoryLimitChars,
+                        memorySnapshot = memorySnapshot,
+                        contextWindowSize = curSession.contextWindowSize,
+                        extraWorldBookIds = curSession.extraWorldBookIds,
+                        timedWorldInfo = curSession.timedWorldInfo,
+                        imagePolicy = imagePolicy,
+                        includeAudio = includeAudio
+                    )
+                    packagedSlot = ChatBarApp.instance.saveSlotPackageStorage.createPackage(
+                        baseSlot = baseSlot,
+                        imagePolicy = imagePolicy,
+                        includeAudio = includeAudio,
+                        messageSource = { emit -> chatRepository.forEachMessage(sessionId, action = emit) },
+                        ragSource = { emit ->
+                            ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
+                        },
+                        voices = voices,
+                        onProgress = { status ->
+                            _saveSlotOperation.value = SaveSlotOperationState(true, status, true)
+                        }
+                    )
+                    saveSlotRepository.save(packagedSlot)
+                    refreshSaveSlots()
+                    _saveSlotOperation.value = SaveSlotOperationState(status = "存档已创建。")
+                } catch (error: Throwable) {
+                    packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
+                    if (error is CancellationException) {
+                        _saveSlotOperation.value = SaveSlotOperationState(status = "已取消创建存档。")
+                        throw error
+                    }
+                    _saveSlotOperation.value = SaveSlotOperationState(
+                        status = "创建失败：${error.message ?: error::class.simpleName}"
+                    )
                 }
-                _saveSlotOperation.value = SaveSlotOperationState(
-                    status = "创建失败：${error.message ?: error::class.simpleName}"
-                )
             }
         }
     }
@@ -4113,123 +4117,125 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun loadSaveSlot(summary: SaveSlotSummary) {
         if (saveSlotOperationJob?.isActive == true) return
         saveSlotOperationJob = viewModelScope.launch {
-          try {
-            _saveSlotOperation.value = SaveSlotOperationState(
-                busy = true,
-                status = "正在读取存档…",
-                cancellable = true
-            )
-            val curSession = _session.value ?: error("当前会话尚未加载")
-            fishAudioCoordinator.cancelAndJoinForSession(sessionId)
-            val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
-            if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
-                slot.packageRef != null
-            ) {
-                loadPackagedSaveSlot(curSession, slot)
-                _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
-                return@launch
-            }
-            val materializedImages = materializeSaveSlotImages(slot)
-            val materializedAudio = try {
-                materializeSaveSlotAudio(materializedImages.slot)
-            } catch (error: Throwable) {
-                materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
-                throw error
-            }
-            val materializedSlot = materializedAudio.slot
-            val preservedImages = materializedSlot.messages
-                .flatMap { it.images }
-                .toSet() + listOfNotNull(materializedSlot.chatBackground)
-            val preservedAudio = materializedSlot.voiceMessages.mapTo(mutableSetOf()) { it.audioPath }
-            val currentMsgs = chatRepository.getMessages(sessionId)
-            val currentVoices = voiceMessageRepository.listForSession(sessionId)
-            val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
-            longTermMemoryService.ensureMigrated(sessionId)
-            val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
-            val currentImages = currentMsgs.flatMap { it.images }.toSet() +
-                listOfNotNull(curSession.chatBackground)
-            val latest = materializedSlot.messages.lastOrNull()
-            val restoredSession = curSession.copy(
-                playerSetting = materializedSlot.playerSetting,
-                playerName = materializedSlot.playerName,
-                supplementarySetting = materializedSlot.supplementarySetting,
-                modelId = materializedSlot.modelId,
-                imageModelId = materializedSlot.imageModelId,
-                novelAiImageModel = materializedSlot.novelAiImageModel,
-                novelAiNaturalLanguageMode = materializedSlot.novelAiNaturalLanguageMode,
-                automaticImageGenerationEnabled = materializedSlot.automaticImageGenerationEnabled,
-                formatCardId = materializedSlot.formatCardId,
-                replyLength = materializedSlot.replyLength,
-                replyLanguage = materializedSlot.replyLanguage,
-                roleplayStyle = materializedSlot.roleplayStyle,
-                chatBackground = materializedSlot.chatBackground,
-                audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
-                voiceLanguage = materializedSlot.voiceLanguage,
-                longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
-                longTermMemory = materializedSlot.longTermMemory,
-                longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,
-                nextSourceTurnOrder = materializedSlot.nextSourceTurnOrder,
-                sourceTurnTombstones = materializedSlot.sourceTurnTombstones,
-                nextTimelineTurn = materializedSlot.nextTimelineTurn,
-                timelineTombstones = materializedSlot.timelineTombstones,
-                memoryLimitChars = materializedSlot.memoryLimitChars,
-                contextWindowSize = materializedSlot.contextWindowSize ?: curSession.contextWindowSize,
-                extraWorldBookIds = materializedSlot.extraWorldBookIds,
-                timedWorldInfo = materializedSlot.timedWorldInfo,
-                lastMessagePreview = latest?.saveSlotPreviewText(),
-                lastMessageTime = latest?.createdAt,
-                lastMessageRole = latest?.role
-            )
-            val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
-            fishAudioCoordinator.stopPlayback()
-            try {
-                chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
-                voiceMessageRepository.restoreForSession(
-                    sessionId,
-                    materializedSlot.voiceMessages,
-                    materializedSlot.messages
-                )
-                ChatBarApp.instance.ragRepository.deleteChunksBySource(
-                    ChunkSourceType.CHAT_MEMORY,
-                    sessionId
-                )
-                ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
-                chatRepository.updateSession(restoredSession)
-                longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
-            } catch (error: Throwable) {
-                chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
-                voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
-                ChatBarApp.instance.ragRepository.deleteChunksBySource(
-                    ChunkSourceType.CHAT_MEMORY,
-                    sessionId
-                )
-                ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
-                chatRepository.updateSession(curSession)
-                runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
-                preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
-                materializedAudio.createdPaths.forEach {
-                    ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
-                }
-                materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
-                throw error
-            }
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                try {
+                  _saveSlotOperation.value = SaveSlotOperationState(
+                      busy = true,
+                      status = "正在读取存档…",
+                      cancellable = true
+                  )
+                  val curSession = _session.value ?: error("当前会话尚未加载")
+                  fishAudioCoordinator.cancelAndJoinForSession(sessionId)
+                  val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
+                  if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
+                      slot.packageRef != null
+                  ) {
+                      loadPackagedSaveSlot(curSession, slot)
+                      _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                      return@launch
+                  }
+                  val materializedImages = materializeSaveSlotImages(slot)
+                  val materializedAudio = try {
+                      materializeSaveSlotAudio(materializedImages.slot)
+                  } catch (error: Throwable) {
+                      materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
+                      throw error
+                  }
+                  val materializedSlot = materializedAudio.slot
+                  val preservedImages = materializedSlot.messages
+                      .flatMap { it.images }
+                      .toSet() + listOfNotNull(materializedSlot.chatBackground)
+                  val preservedAudio = materializedSlot.voiceMessages.mapTo(mutableSetOf()) { it.audioPath }
+                  val currentMsgs = chatRepository.getMessages(sessionId)
+                  val currentVoices = voiceMessageRepository.listForSession(sessionId)
+                  val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
+                  longTermMemoryService.ensureMigrated(sessionId)
+                  val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
+                  val currentImages = currentMsgs.flatMap { it.images }.toSet() +
+                      listOfNotNull(curSession.chatBackground)
+                  val latest = materializedSlot.messages.lastOrNull()
+                  val restoredSession = curSession.copy(
+                      playerSetting = materializedSlot.playerSetting,
+                      playerName = materializedSlot.playerName,
+                      supplementarySetting = materializedSlot.supplementarySetting,
+                      modelId = materializedSlot.modelId,
+                      imageModelId = materializedSlot.imageModelId,
+                      novelAiImageModel = materializedSlot.novelAiImageModel,
+                      novelAiNaturalLanguageMode = materializedSlot.novelAiNaturalLanguageMode,
+                      automaticImageGenerationEnabled = materializedSlot.automaticImageGenerationEnabled,
+                      formatCardId = materializedSlot.formatCardId,
+                      replyLength = materializedSlot.replyLength,
+                      replyLanguage = materializedSlot.replyLanguage,
+                      roleplayStyle = materializedSlot.roleplayStyle,
+                      chatBackground = materializedSlot.chatBackground,
+                      audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
+                      voiceLanguage = materializedSlot.voiceLanguage,
+                      longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
+                      longTermMemory = materializedSlot.longTermMemory,
+                      longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,
+                      nextSourceTurnOrder = materializedSlot.nextSourceTurnOrder,
+                      sourceTurnTombstones = materializedSlot.sourceTurnTombstones,
+                      nextTimelineTurn = materializedSlot.nextTimelineTurn,
+                      timelineTombstones = materializedSlot.timelineTombstones,
+                      memoryLimitChars = materializedSlot.memoryLimitChars,
+                      contextWindowSize = materializedSlot.contextWindowSize ?: curSession.contextWindowSize,
+                      extraWorldBookIds = materializedSlot.extraWorldBookIds,
+                      timedWorldInfo = materializedSlot.timedWorldInfo,
+                      lastMessagePreview = latest?.saveSlotPreviewText(),
+                      lastMessageTime = latest?.createdAt,
+                      lastMessageRole = latest?.role
+                  )
+                  val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
+                  fishAudioCoordinator.stopPlayback()
+                  try {
+                      chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
+                      voiceMessageRepository.restoreForSession(
+                          sessionId,
+                          materializedSlot.voiceMessages,
+                          materializedSlot.messages
+                      )
+                      ChatBarApp.instance.ragRepository.deleteChunksBySource(
+                          ChunkSourceType.CHAT_MEMORY,
+                          sessionId
+                      )
+                      ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
+                      chatRepository.updateSession(restoredSession)
+                      longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
+                  } catch (error: Throwable) {
+                      chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
+                      voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
+                      ChatBarApp.instance.ragRepository.deleteChunksBySource(
+                          ChunkSourceType.CHAT_MEMORY,
+                          sessionId
+                      )
+                      ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
+                      chatRepository.updateSession(curSession)
+                      runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
+                      preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
+                      materializedAudio.createdPaths.forEach {
+                          ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
+                      }
+                      materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
+                      throw error
+                  }
 
-            currentImages.filterNot { it in preservedImages }.forEach { deleteDisposableChatImage(it) }
-            currentVoices
-                .map(GeneratedVoiceMessage::audioPath)
-                .filterNot { it in preservedAudio }
-                .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
-            loadSessionData()
-            _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
-          } catch (error: Throwable) {
-            if (error is CancellationException) {
-                _saveSlotOperation.value = SaveSlotOperationState(status = "已取消读档。")
-                throw error
+                  currentImages.filterNot { it in preservedImages }.forEach { deleteDisposableChatImage(it) }
+                  currentVoices
+                      .map(GeneratedVoiceMessage::audioPath)
+                      .filterNot { it in preservedAudio }
+                      .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
+                  loadSessionData()
+                  _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                } catch (error: Throwable) {
+                  if (error is CancellationException) {
+                      _saveSlotOperation.value = SaveSlotOperationState(status = "已取消读档。")
+                      throw error
+                  }
+                  _saveSlotOperation.value = SaveSlotOperationState(
+                      status = "读档失败：${error.message ?: error::class.simpleName}"
+                  )
+                }
             }
-            _saveSlotOperation.value = SaveSlotOperationState(
-                status = "读档失败：${error.message ?: error::class.simpleName}"
-            )
-          }
         }
     }
 
@@ -4332,65 +4338,67 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     suspend fun importSaveSlotJson(input: InputStream): SaveSlot {
-        val currentNames = saveSlotRepository.getBySessionId(sessionId).map { it.name }
-        fun importedName(requested: String): String {
-            val candidate = requested.ifBlank { "导入存档" }
-            return if (currentNames.any { NamePolicy.isSame(it, candidate) }) {
-                NamePolicy.nextCopyName(candidate, currentNames)
-            } else {
-                NamePolicy.normalize(candidate)
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val currentNames = saveSlotRepository.getBySessionId(sessionId).map { it.name }
+            fun importedName(requested: String): String {
+                val candidate = requested.ifBlank { "导入存档" }
+                return if (currentNames.any { NamePolicy.isSame(it, candidate) }) {
+                    NamePolicy.nextCopyName(candidate, currentNames)
+                } else {
+                    NamePolicy.normalize(candidate)
+                }
             }
-        }
-        val source = PushbackInputStream(input.buffered(), 4)
-        if (ChatBarApp.instance.saveSlotPackageStorage.isPackageStream(source)) {
-            val imported = ChatBarApp.instance.saveSlotPackageStorage.importPackage(
-                input = source,
-                targetSessionId = sessionId,
-                targetName = ::importedName
-            ).slot
-            try {
-                saveSlotRepository.save(imported)
-            } catch (error: Throwable) {
-                ChatBarApp.instance.saveSlotPackageStorage.delete(imported)
-                throw error
+            val source = PushbackInputStream(input.buffered(), 4)
+            if (ChatBarApp.instance.saveSlotPackageStorage.isPackageStream(source)) {
+                val imported = ChatBarApp.instance.saveSlotPackageStorage.importPackage(
+                    input = source,
+                    targetSessionId = sessionId,
+                    targetName = ::importedName
+                ).slot
+                try {
+                    saveSlotRepository.save(imported)
+                } catch (error: Throwable) {
+                    ChatBarApp.instance.saveSlotPackageStorage.delete(imported)
+                    throw error
+                }
+                _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
+                return imported
             }
+
+            val decoded = withContext(Dispatchers.IO) { SaveSlotJsonTransfer.read(source) }
+            validateSaveSlotImport(decoded)
+            val requestedName = decoded.name.ifBlank { "导入存档" }
+            val importedVoiceResources = linkedMapOf<String, SaveSlotAudioResource>()
+            val importedVoices = decoded.voiceMessages.map { voice ->
+                val newVoiceId = UUID.randomUUID().toString()
+                val oldResourceId = when {
+                    voice.audioPath in decoded.audioResources -> voice.audioPath
+                    voice.id in decoded.audioResources -> voice.id
+                    else -> null
+                }
+                oldResourceId?.let { resourceId ->
+                    importedVoiceResources[newVoiceId] = decoded.audioResources.getValue(resourceId)
+                }
+                voice.copy(
+                    id = newVoiceId,
+                    sessionId = sessionId,
+                    audioPath = if (oldResourceId == null) voice.audioPath else newVoiceId
+                )
+            }
+            val imported = decoded.copy(
+                id = UUID.randomUUID().toString(),
+                sessionId = sessionId,
+                name = importedName(requestedName),
+                messages = decoded.messages.map { it.copy(sessionId = sessionId) },
+                voiceMessages = importedVoices,
+                audioResources = importedVoiceResources,
+                vectorChunks = decoded.vectorChunks.map { it.copy(sourceId = sessionId) },
+                createdAt = System.currentTimeMillis()
+            )
+            saveSlotRepository.save(imported)
             _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
             return imported
         }
-
-        val decoded = withContext(Dispatchers.IO) { SaveSlotJsonTransfer.read(source) }
-        validateSaveSlotImport(decoded)
-        val requestedName = decoded.name.ifBlank { "导入存档" }
-        val importedVoiceResources = linkedMapOf<String, SaveSlotAudioResource>()
-        val importedVoices = decoded.voiceMessages.map { voice ->
-            val newVoiceId = UUID.randomUUID().toString()
-            val oldResourceId = when {
-                voice.audioPath in decoded.audioResources -> voice.audioPath
-                voice.id in decoded.audioResources -> voice.id
-                else -> null
-            }
-            oldResourceId?.let { resourceId ->
-                importedVoiceResources[newVoiceId] = decoded.audioResources.getValue(resourceId)
-            }
-            voice.copy(
-                id = newVoiceId,
-                sessionId = sessionId,
-                audioPath = if (oldResourceId == null) voice.audioPath else newVoiceId
-            )
-        }
-        val imported = decoded.copy(
-            id = UUID.randomUUID().toString(),
-            sessionId = sessionId,
-            name = importedName(requestedName),
-            messages = decoded.messages.map { it.copy(sessionId = sessionId) },
-            voiceMessages = importedVoices,
-            audioResources = importedVoiceResources,
-            vectorChunks = decoded.vectorChunks.map { it.copy(sourceId = sessionId) },
-            createdAt = System.currentTimeMillis()
-        )
-        saveSlotRepository.save(imported)
-        _availableSaveSlots.value = saveSlotRepository.getBySessionId(sessionId)
-        return imported
     }
 
     private data class MaterializedSaveSlotImages(
@@ -4513,17 +4521,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private fun deleteDisposableChatImage(path: String): Boolean {
-        if (novelAiImageStorage.deleteIfOwned(path)) return true
-        val file = File(path)
-        return runCatching {
-            val imagesRoot = File(ChatBarApp.instance.filesDir, "images").canonicalFile
-            val saveSlotRoot = File(imagesRoot, "save_slots").canonicalFile
-            val canonicalFile = file.canonicalFile
-            val parent = canonicalFile.parentFile?.canonicalFile
-            val owned = canonicalFile.path.startsWith(saveSlotRoot.path + File.separator) ||
-                (parent == imagesRoot && canonicalFile.name.startsWith("chat_img_"))
-            owned && (!file.exists() || file.delete())
-        }.getOrDefault(false)
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            if (novelAiImageStorage.deleteIfOwned(path)) return true
+            val file = File(path)
+            return runCatching {
+                val imagesRoot = File(ChatBarApp.instance.filesDir, "images").canonicalFile
+                val saveSlotRoot = File(imagesRoot, "save_slots").canonicalFile
+                val canonicalFile = file.canonicalFile
+                val parent = canonicalFile.parentFile?.canonicalFile
+                val owned = canonicalFile.path.startsWith(saveSlotRoot.path + File.separator) ||
+                    (parent == imagesRoot && canonicalFile.name.startsWith("chat_img_"))
+                owned && (!file.exists() || file.delete())
+            }.getOrDefault(false)
+        }
     }
 
     private fun safeFileSegment(value: String): String =
@@ -4651,32 +4661,34 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun copyUriToLocalFile(uri: Uri, onSuccess: (String) -> Unit) {
         viewModelScope.launch {
-            try {
-                val context = ChatBarApp.instance
-                val contentResolver = context.contentResolver
-                val filesDir = context.filesDir
-                val imagesDir = File(filesDir, "images")
-                if (!imagesDir.exists()) imagesDir.mkdirs()
-                
-                val mimeType = contentResolver.getType(uri)
-                val extension = when (mimeType) {
-                    "image/png" -> "png"
-                    "image/gif" -> "gif"
-                    "image/webp" -> "webp"
-                    else -> "jpg"
-                }
-                
-                val localFile = File(imagesDir, "chat_img_${System.currentTimeMillis()}.$extension")
-                withContext(Dispatchers.IO) {
-                    contentResolver.openInputStream(uri)?.use { inputStream ->
-                        localFile.outputStream().use { outputStream ->
-                            inputStream.copyTo(outputStream)
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                try {
+                    val context = ChatBarApp.instance
+                    val contentResolver = context.contentResolver
+                    val filesDir = context.filesDir
+                    val imagesDir = File(filesDir, "images")
+                    if (!imagesDir.exists()) imagesDir.mkdirs()
+
+                    val mimeType = contentResolver.getType(uri)
+                    val extension = when (mimeType) {
+                        "image/png" -> "png"
+                        "image/gif" -> "gif"
+                        "image/webp" -> "webp"
+                        else -> "jpg"
+                    }
+
+                    val localFile = File(imagesDir, "chat_img_${System.currentTimeMillis()}.$extension")
+                    withContext(Dispatchers.IO) {
+                        contentResolver.openInputStream(uri)?.use { inputStream ->
+                            localFile.outputStream().use { outputStream ->
+                                inputStream.copyTo(outputStream)
+                            }
                         }
                     }
+                    onSuccess(localFile.absolutePath)
+                } catch (e: Exception) {
+                    addSystemMessage("拷贝图片文件失败: ${e.message}")
                 }
-                onSuccess(localFile.absolutePath)
-            } catch (e: Exception) {
-                addSystemMessage("拷贝图片文件失败: ${e.message}")
             }
         }
     }

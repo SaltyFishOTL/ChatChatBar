@@ -531,13 +531,21 @@ internal class SessionScopedJobRegistry(
         sessionId: String,
         block: suspend CoroutineScope.() -> Unit
     ): Job? {
-        val job = synchronized(lock) {
+        val (job, admission) = synchronized(lock) {
             if (sessionId in deletingSessionIds) return null
-            scope.launch(start = CoroutineStart.LAZY, block = block).also { job ->
+            val admission = try { com.example.chatbar.domain.backup.LocalDataMaintenance.enter() }
+                catch (_: IllegalStateException) { return null }
+            try {
+                val job = scope.launch(start = CoroutineStart.LAZY, block = block)
                 jobsBySessionId.getOrPut(sessionId) { mutableSetOf() }.add(job)
+                job to admission
+            } catch (error: Throwable) {
+                admission.close()
+                throw error
             }
         }
         job.invokeOnCompletion {
+            admission.close()
             synchronized(lock) {
                 jobsBySessionId[sessionId]?.let { jobs ->
                     jobs.remove(job)

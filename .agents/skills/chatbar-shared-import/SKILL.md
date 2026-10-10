@@ -24,6 +24,7 @@ All Kotlin paths are relative to `app/app/src/main/java/com/example/chatbar/`.
 
 - Accept one file from `ACTION_SEND`, one URI from `ACTION_VIEW`, or nonblank `EXTRA_TEXT` only when no URI exists. Do not silently add `ACTION_SEND_MULTIPLE` support.
 - Copy URI content into `filesDir/shared-import` immediately. Detection must use staged bytes, not extension or declared MIME. Queue remains FIFO and process-local; startup removes stale staging files.
+- Full-app Backup is recognized by CBBACKUP header before readBytes. Only this channel bypasses 100 MB, using LocalDataTransferForegroundService plus cancellation/space checks. AppBackupService/AppBackupHost own password, validation, summary and replacement confirmation. Shared intents wait for boot readiness.
 - Recognize only strictly decodable ChatBar character/format/model/world-book packages, SillyTavern V1/V2 character JSON or Chara PNG, SillyTavern World Info, and ChatBar character PNG. Invalid or ambiguous data stays Unknown and never falls back to character import.
 - A decodable image without supported card metadata stays Image, including NovelAI metadata PNG. GIF may enter image tools but not guidance.
 - High-confidence resources import automatically. Character, format, and world-book name conflicts retain overwrite/new/cancel; model templates always create a new model with empty API key.

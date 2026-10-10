@@ -17,6 +17,7 @@ class StreamingForegroundService : Service() {
         val sessionId = intent?.getStringExtra("sessionId") ?: ""
         val generation = AiBackgroundWorkManager.workGenerationFrom(intent)
         try {
+            StreamingNotificationManager.init(this)
             val notification = StreamingNotificationManager.buildNotification(this, "", sessionId)
             startForeground(StreamingNotificationManager.NOTIFICATION_ID, notification)
             if (intent?.action == StreamingNotificationManager.ACTION_STOP) {

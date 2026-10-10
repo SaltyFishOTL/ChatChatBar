@@ -10,11 +10,15 @@ class ImageMaskPreferences(context: Context) {
     fun loadBrushType(): String = preferences.getString(BRUSH_TYPE, DEFAULT_BRUSH_TYPE) ?: DEFAULT_BRUSH_TYPE
 
     fun saveBrushSize(value: Float) {
-        preferences.edit().putFloat(BRUSH_SIZE, value.coerceIn(16f, 72f)).apply()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            preferences.edit().putFloat(BRUSH_SIZE, value.coerceIn(16f, 72f)).apply()
+        }
     }
 
     fun saveBrushType(value: String) {
-        preferences.edit().putString(BRUSH_TYPE, value).apply()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            preferences.edit().putString(BRUSH_TYPE, value).apply()
+        }
     }
 
     private companion object {

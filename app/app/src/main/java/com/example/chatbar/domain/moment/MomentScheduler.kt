@@ -35,6 +35,7 @@ class MomentScheduler(
     private val mutex = Mutex()
 
     fun kick(reason: String = "manual") {
+        if (com.example.chatbar.domain.backup.LocalDataMaintenance.blocked.value) return
         scope.launch {
             runCatching { runOnce(reason) }
                 .onFailure { error ->
@@ -46,33 +47,37 @@ class MomentScheduler(
     }
 
     suspend fun runOnce(reason: String = "manual", now: Long = System.currentTimeMillis()) = mutex.withLock {
-        settingsRepository.initialize()
-        characterRepository.initialize()
-        chatRepository.initialize()
-        momentRepository.initialize()
-        MomentAlarmScheduler.cancel(appContext)
-        val settings = settingsRepository.getAppSettings()
-        if (!settings.momentsEnabled) {
-            return@withLock
-        }
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            settingsRepository.initialize()
+            characterRepository.initialize()
+            chatRepository.initialize()
+            momentRepository.initialize()
+            MomentAlarmScheduler.cancel(appContext)
+            val settings = settingsRepository.getAppSettings()
+            if (!settings.momentsEnabled) {
+                return@withLock
+            }
 
-        ensureSchedules(now, settings)
-        processDueTasks(now)
-        ensureSchedules(System.currentTimeMillis(), settings)
-        Log.d(TAG, "Moment scheduler complete: $reason")
+            ensureSchedules(now, settings)
+            processDueTasks(now)
+            ensureSchedules(System.currentTimeMillis(), settings)
+            Log.d(TAG, "Moment scheduler complete: $reason")
+        }
     }
 
     suspend fun ensureFutureSchedules(reason: String = "preview", now: Long = System.currentTimeMillis()) = mutex.withLock {
-        settingsRepository.initialize()
-        characterRepository.initialize()
-        chatRepository.initialize()
-        momentRepository.initialize()
-        MomentAlarmScheduler.cancel(appContext)
-        val settings = settingsRepository.getAppSettings()
-        if (!settings.momentsEnabled) return@withLock
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            settingsRepository.initialize()
+            characterRepository.initialize()
+            chatRepository.initialize()
+            momentRepository.initialize()
+            MomentAlarmScheduler.cancel(appContext)
+            val settings = settingsRepository.getAppSettings()
+            if (!settings.momentsEnabled) return@withLock
 
-        ensureSchedules(now, settings)
-        Log.d(TAG, "Moment future schedules ensured: $reason")
+            ensureSchedules(now, settings)
+            Log.d(TAG, "Moment future schedules ensured: $reason")
+        }
     }
 
     private suspend fun ensureSchedules(now: Long, settings: AppSettings) {

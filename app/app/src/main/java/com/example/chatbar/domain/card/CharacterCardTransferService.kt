@@ -59,9 +59,11 @@ class CharacterCardTransferService(
     }
 
     suspend fun duplicate(id: String): CharacterCard = withContext(Dispatchers.IO) {
-        val source = repository.getById(id) ?: error("角色卡不存在")
-        val name = NamePolicy.nextCopyName(source.name, repository.getAll().map { it.name })
-        saveNew(materialize(packageCard(source), UUID.randomUUID().toString(), name))
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val source = repository.getById(id) ?: error("角色卡不存在")
+            val name = NamePolicy.nextCopyName(source.name, repository.getAll().map { it.name })
+            saveNew(materialize(packageCard(source), UUID.randomUUID().toString(), name))
+        }
     }
 
     suspend fun importNew(
@@ -70,12 +72,14 @@ class CharacterCardTransferService(
         presetKey: String? = null,
         presetVersion: Int? = null
     ): CharacterCard = withContext(Dispatchers.IO) {
-        val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
-        normalizedPackage.validateForImport()
-        val uniqueName = if (repository.getAll().any { NamePolicy.isSame(it.name, requestedName) }) {
-            NamePolicy.nextCopyName(requestedName, repository.getAll().map { it.name })
-        } else NamePolicy.normalize(requestedName)
-        saveNew(materialize(normalizedPackage, UUID.randomUUID().toString(), uniqueName, presetKey, presetVersion))
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
+            normalizedPackage.validateForImport()
+            val uniqueName = if (repository.getAll().any { NamePolicy.isSame(it.name, requestedName) }) {
+                NamePolicy.nextCopyName(requestedName, repository.getAll().map { it.name })
+            } else NamePolicy.normalize(requestedName)
+            saveNew(materialize(normalizedPackage, UUID.randomUUID().toString(), uniqueName, presetKey, presetVersion))
+        }
     }
 
     suspend fun overwrite(
@@ -84,31 +88,35 @@ class CharacterCardTransferService(
         presetKey: String? = null,
         presetVersion: Int? = null
     ): CharacterCard = withContext(Dispatchers.IO) {
-        val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
-        normalizedPackage.validateForImport()
-        val existing = repository.getById(existingId) ?: error("待覆盖角色卡不存在")
-        val replacement = materialize(
-            packageData = normalizedPackage,
-            id = existing.id,
-            name = existing.name,
-            presetKey = presetKey,
-            presetVersion = presetVersion,
-            createdAt = existing.createdAt
-        )
-        try {
-            repository.save(replacement)
-        } catch (error: Throwable) {
-            deleteMaterializedFiles(replacement)
-            throw error
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val normalizedPackage = packageData.withoutEmptyCharacterPlaceholders()
+            normalizedPackage.validateForImport()
+            val existing = repository.getById(existingId) ?: error("待覆盖角色卡不存在")
+            val replacement = materialize(
+                packageData = normalizedPackage,
+                id = existing.id,
+                name = existing.name,
+                presetKey = presetKey,
+                presetVersion = presetVersion,
+                createdAt = existing.createdAt
+            )
+            try {
+                repository.save(replacement)
+            } catch (error: Throwable) {
+                deleteMaterializedFiles(replacement)
+                throw error
+            }
+            deleteOwnedResources(existing, preservePaths = replacement.ownedFilePaths())
+            replacement
         }
-        deleteOwnedResources(existing, preservePaths = replacement.ownedFilePaths())
-        replacement
     }
 
     suspend fun deleteCard(id: String) = withContext(Dispatchers.IO) {
-        val previous = repository.getById(id)
-        if (previous != null) deleteOwnedResources(previous)
-        repository.delete(id)
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val previous = repository.getById(id)
+            if (previous != null) deleteOwnedResources(previous)
+            repository.delete(id)
+        }
     }
 
     private suspend fun packageCard(card: CharacterCard): CharacterCardPackage {

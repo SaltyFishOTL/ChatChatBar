@@ -156,8 +156,10 @@ class CommunityService(
     }
 
     fun signOut() {
-        prefs.edit().remove(KEY_SESSION).apply()
-        _session.value = null
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            prefs.edit().remove(KEY_SESSION).apply()
+            _session.value = null
+        }
     }
 
     suspend fun listItems(): List<CommunityItem> = withContext(Dispatchers.IO) {
@@ -542,8 +544,10 @@ class CommunityService(
         }
 
     private fun saveSession(session: CommunitySession) {
-        prefs.edit().putString(KEY_SESSION, json.encodeToString(CommunitySession.serializer(), session)).apply()
-        _session.value = session
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            prefs.edit().putString(KEY_SESSION, json.encodeToString(CommunitySession.serializer(), session)).apply()
+            _session.value = session
+        }
     }
 
     private suspend fun checkAvailable() {

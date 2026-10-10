@@ -278,12 +278,14 @@ private suspend fun writeLongScreenshotBitmap(
     fileName: String,
     bitmap: Bitmap
 ): File = withContext(Dispatchers.IO) {
-    val directory = File(context.filesDir, "images/screenshots").also { it.mkdirs() }
-    val file = File(directory, fileName)
-    file.outputStream().use { output ->
-        check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "长截图保存失败" }
+    com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+        val directory = File(context.filesDir, "images/screenshots").also { it.mkdirs() }
+        val file = File(directory, fileName)
+        file.outputStream().use { output ->
+            check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "长截图保存失败" }
+        }
+        file
     }
-    file
 }
 
 private tailrec fun Context.findActivity(): Activity? = when (this) {

@@ -1721,15 +1721,17 @@ class CharacterEditViewModel(
     fun deleteTransientImage(path: String?) {
         if (path.isNullOrBlank()) return
         viewModelScope.launch(Dispatchers.IO) {
-            runCatching {
-                val file = File(path)
-                val imagesDir = File(ChatBarApp.instance.filesDir, "images")
-                val filePath = file.canonicalPath
-                val imagesDirPath = imagesDir.canonicalPath
-                if (file.exists() &&
-                    (filePath.startsWith(imagesDirPath + File.separator) || draftAssetService.isDraftAsset(path))
-                ) {
-                    file.delete()
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                runCatching {
+                    val file = File(path)
+                    val imagesDir = File(ChatBarApp.instance.filesDir, "images")
+                    val filePath = file.canonicalPath
+                    val imagesDirPath = imagesDir.canonicalPath
+                    if (file.exists() &&
+                        (filePath.startsWith(imagesDirPath + File.separator) || draftAssetService.isDraftAsset(path))
+                    ) {
+                        file.delete()
+                    }
                 }
             }
         }

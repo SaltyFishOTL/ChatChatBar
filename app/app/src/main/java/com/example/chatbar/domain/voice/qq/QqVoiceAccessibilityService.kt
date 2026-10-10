@@ -6,6 +6,9 @@ import android.graphics.Path
 import android.graphics.Rect
 import android.view.accessibility.AccessibilityEvent
 import com.example.chatbar.ChatBarApp
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 
 class QqVoiceAccessibilityService : AccessibilityService(), QqVoiceGestureDelegate {
     @Volatile
@@ -13,6 +16,7 @@ class QqVoiceAccessibilityService : AccessibilityService(), QqVoiceGestureDelega
     @Volatile
     private var activeTarget: QqVoiceGestureTarget? = null
     private var gestureGeneration = 0L
+    private var attachJob: Job? = null
 
     override val connected: Boolean
         get() = serviceConnected
@@ -20,12 +24,16 @@ class QqVoiceAccessibilityService : AccessibilityService(), QqVoiceGestureDelega
     override fun onServiceConnected() {
         super.onServiceConnected()
         serviceConnected = true
-        ChatBarApp.instance.qqVoiceGestureGateway.attach(this)
+        attachJob = ChatBarApp.instance.applicationScope.launch(kotlinx.coroutines.Dispatchers.Main) {
+            ChatBarApp.instance.backupStartupReady.first { it }
+            if (serviceConnected) ChatBarApp.instance.qqVoiceGestureGateway.attach(this@QqVoiceAccessibilityService)
+        }
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) = Unit
 
     override fun onInterrupt() {
+        if (!ChatBarApp.instance.dependenciesReady.value) return
         ChatBarApp.instance.qqVoiceTransferCoordinator.fail(
             QqVoiceTransferPolicy.failure(
                 QqVoiceTransferFailureCode.ACCESSIBILITY_DISABLED,
@@ -110,7 +118,8 @@ class QqVoiceAccessibilityService : AccessibilityService(), QqVoiceGestureDelega
     override fun onDestroy() {
         cancelActiveGesture()
         serviceConnected = false
-        ChatBarApp.instance.qqVoiceGestureGateway.detach(this)
+        attachJob?.cancel()
+        if (ChatBarApp.instance.dependenciesReady.value) ChatBarApp.instance.qqVoiceGestureGateway.detach(this)
         super.onDestroy()
     }
 }

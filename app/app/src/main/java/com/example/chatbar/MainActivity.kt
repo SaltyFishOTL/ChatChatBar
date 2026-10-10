@@ -40,6 +40,13 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.components.AppUpdateDialog
 import com.example.chatbar.ui.components.CrashReportDialog
 import com.example.chatbar.ui.components.StorageReadFailureScreen
+import com.example.chatbar.ui.manage.AppBackupHost
+import com.example.chatbar.ui.kit.CbButton
+import com.example.chatbar.ui.kit.CbText
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.padding
+import androidx.compose.ui.unit.dp
 import com.example.chatbar.utils.diagnostics.CrashReportManager
 import kotlinx.coroutines.launch
 
@@ -48,15 +55,30 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_created")
-
         currentIntentHandled = savedInstanceState?.getBoolean(STATE_CURRENT_INTENT_HANDLED) == true
-        if (!currentIntentHandled) {
-            handleSharedIntent(intent)
-        }
 
         enableEdgeToEdge()
         setContent {
+            val backupError by ChatBarApp.instance.backupStartupError.collectAsState()
+            val backupReady by ChatBarApp.instance.backupStartupReady.collectAsState()
+            if (backupError != null) {
+                ChatBarTheme {
+                    Column(Modifier.fillMaxSize().background(ChatBarTheme.colors.background).padding(24.dp),
+                        verticalArrangement = Arrangement.Center) {
+                        CbText(requireNotNull(backupError))
+                        CbButton("关闭 APP，重新打开重试", ::closeForBackup)
+                    }
+                }
+                return@setContent
+            }
+            if (!backupReady) {
+                ChatBarTheme { CbLoadingState(label = "正在加载本地数据，请稍候") }
+                return@setContent
+            }
+            LaunchedEffect(Unit) {
+                CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_created")
+                if (!currentIntentHandled) handleSharedIntent(intent)
+            }
             val settingsRepository = ChatBarApp.instance.settingsRepository
             val storageFailures by ChatBarApp.instance.jsonFileStorage.singletonReadFailures.collectAsState()
             val scope = rememberCoroutineScope()
@@ -194,17 +216,26 @@ class MainActivity : ComponentActivity() {
                             onDismiss = { crashDialogDismissed = true }
                         )
                     }
+                    AppBackupHost(ChatBarApp.instance.appBackupService, ::closeForBackup)
                 }
             }
         }
     }
 
+    private fun closeForBackup() {
+        finishAndRemoveTask()
+        android.os.Process.killProcess(android.os.Process.myPid())
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
-        CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_new_intent")
+        if (ChatBarApp.instance.backupStartupError.value != null) return
         currentIntentHandled = false
         setIntent(intent)
-        handleSharedIntent(intent)
+        if (ChatBarApp.instance.backupStartupReady.value) {
+            CrashReportManager.recordBreadcrumb("lifecycle", "main_activity_new_intent")
+            handleSharedIntent(intent)
+        }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {

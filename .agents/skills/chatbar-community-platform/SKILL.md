@@ -188,3 +188,5 @@ After any community-related change, update this skill when future agents would o
 - Discord OAuth redirect/auth behavior.
 
 Keep this skill compact. Replace stale facts instead of appending history.
+
+Full-app .cbbackup includes community session. Session save/sign-out hold LocalDataMaintenance; monitoring/prefetch wait for ChatBarApp.backupStartupReady. Credential expiration follows normal login handling. See chatbar-app-backup.

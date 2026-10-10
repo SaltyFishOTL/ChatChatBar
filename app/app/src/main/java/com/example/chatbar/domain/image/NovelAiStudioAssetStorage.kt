@@ -19,46 +19,54 @@ class NovelAiStudioAssetStorage(private val context: Context) {
     private val root: File get() = File(context.filesDir, "images/studio-guidance")
 
     fun importUri(uri: Uri, tier: NovelAiSizeTier, fitToGeneration: Boolean): NovelAiStudioAssetRef {
-        val temporary = File(root.also(File::mkdirs), ".import-${UUID.randomUUID()}")
-        try {
-            context.contentResolver.openInputStream(uri)?.use { input ->
-                temporary.outputStream().buffered().use(input::copyTo)
-            } ?: error("无法打开所选图片")
-            require(temporary.length() in 1..MAX_INPUT_BYTES) { "图片为空或超过 100 MB" }
-            return materializeFile(temporary, tier, fitToGeneration)
-        } finally {
-            temporary.delete()
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val temporary = File(root.also(File::mkdirs), ".import-${UUID.randomUUID()}")
+            try {
+                context.contentResolver.openInputStream(uri)?.use { input ->
+                    temporary.outputStream().buffered().use(input::copyTo)
+                } ?: error("无法打开所选图片")
+                require(temporary.length() in 1..MAX_INPUT_BYTES) { "图片为空或超过 100 MB" }
+                return materializeFile(temporary, tier, fitToGeneration)
+            } finally {
+                temporary.delete()
+            }
         }
     }
 
     fun copyExisting(path: String, tier: NovelAiSizeTier, fitToGeneration: Boolean): NovelAiStudioAssetRef {
-        val source = File(path)
-        require(source.isFile) { "图片文件不存在" }
-        require(source.length() in 1..MAX_INPUT_BYTES) { "图片为空或超过 100 MB" }
-        return materializeFile(source, tier, fitToGeneration)
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val source = File(path)
+            require(source.isFile) { "图片文件不存在" }
+            require(source.length() in 1..MAX_INPUT_BYTES) { "图片为空或超过 100 MB" }
+            return materializeFile(source, tier, fitToGeneration)
+        }
     }
 
     fun importBase64(encoded: String, tier: NovelAiSizeTier, fitToGeneration: Boolean): NovelAiStudioAssetRef {
-        val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }
-            .getOrElse { throw IllegalArgumentException("元数据图片编码无效", it) }
-        require(bytes.size.toLong() in 1..MAX_INPUT_BYTES) { "元数据图片为空或超过 100 MB" }
-        val temporary = File(root.also(File::mkdirs), ".metadata-${UUID.randomUUID()}")
-        return try {
-            temporary.writeBytes(bytes)
-            materializeFile(temporary, tier, fitToGeneration)
-        } finally {
-            temporary.delete()
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val bytes = runCatching { Base64.decode(encoded, Base64.DEFAULT) }
+                .getOrElse { throw IllegalArgumentException("元数据图片编码无效", it) }
+            require(bytes.size.toLong() in 1..MAX_INPUT_BYTES) { "元数据图片为空或超过 100 MB" }
+            val temporary = File(root.also(File::mkdirs), ".metadata-${UUID.randomUUID()}")
+            return try {
+                temporary.writeBytes(bytes)
+                materializeFile(temporary, tier, fitToGeneration)
+            } finally {
+                temporary.delete()
+            }
         }
     }
 
     fun createEmptyMask(width: Int, height: Int): NovelAiStudioAssetRef {
-        require(width > 0 && height > 0) { "蒙版尺寸无效" }
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        bitmap.eraseColor(Color.BLACK)
-        return try {
-            saveBitmap(bitmap, "mask").copy(containsPaint = false)
-        } finally {
-            bitmap.recycle()
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            require(width > 0 && height > 0) { "蒙版尺寸无效" }
+            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+            bitmap.eraseColor(Color.BLACK)
+            return try {
+                saveBitmap(bitmap, "mask").copy(containsPaint = false)
+            } finally {
+                bitmap.recycle()
+            }
         }
     }
 
@@ -83,29 +91,33 @@ class NovelAiStudioAssetStorage(private val context: Context) {
     }
 
     fun saveBitmap(bitmap: Bitmap, prefix: String = "edited"): NovelAiStudioAssetRef {
-        root.mkdirs()
-        val target = File(root, "$prefix-${UUID.randomUUID()}.png")
-        val temporary = File(root, ".${target.name}.tmp")
-        try {
-            temporary.outputStream().buffered().use { output ->
-                check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "PNG 编码失败" }
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            root.mkdirs()
+            val target = File(root, "$prefix-${UUID.randomUUID()}.png")
+            val temporary = File(root, ".${target.name}.tmp")
+            try {
+                temporary.outputStream().buffered().use { output ->
+                    check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, output)) { "PNG 编码失败" }
+                }
+                check(temporary.length() > 0L && temporary.renameTo(target)) { "无法保存图片" }
+                return NovelAiStudioAssetRef(
+                    path = target.absolutePath,
+                    sha256 = sha256(target),
+                    width = bitmap.width,
+                    height = bitmap.height
+                )
+            } finally {
+                temporary.delete()
             }
-            check(temporary.length() > 0L && temporary.renameTo(target)) { "无法保存图片" }
-            return NovelAiStudioAssetRef(
-                path = target.absolutePath,
-                sha256 = sha256(target),
-                width = bitmap.width,
-                height = bitmap.height
-            )
-        } finally {
-            temporary.delete()
         }
     }
 
     fun deleteIfOwned(asset: NovelAiStudioAssetRef?): Boolean {
-        val file = asset?.path?.takeIf(String::isNotBlank)?.let(::File) ?: return true
-        val owned = file.canonicalPath.startsWith(root.canonicalPath + File.separator)
-        return owned && (!file.exists() || file.delete())
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val file = asset?.path?.takeIf(String::isNotBlank)?.let(::File) ?: return true
+            val owned = file.canonicalPath.startsWith(root.canonicalPath + File.separator)
+            return owned && (!file.exists() || file.delete())
+        }
     }
 
     fun isOwned(asset: NovelAiStudioAssetRef?): Boolean = runCatching {
@@ -114,13 +126,15 @@ class NovelAiStudioAssetStorage(private val context: Context) {
     }.getOrDefault(false)
 
     fun cleanupOrphans(referencedPaths: Set<String>) {
-        val referenced = referencedPaths.mapNotNullTo(mutableSetOf()) { path ->
-            runCatching { File(path).canonicalPath }.getOrNull()
-        }
-        root.listFiles().orEmpty().forEach { file ->
-            if (file.isFile && !file.name.startsWith(".") && file.extension.equals("png", ignoreCase = true)) {
-                val canonical = runCatching { file.canonicalPath }.getOrNull()
-                if (canonical != null && canonical !in referenced) file.delete()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val referenced = referencedPaths.mapNotNullTo(mutableSetOf()) { path ->
+                runCatching { File(path).canonicalPath }.getOrNull()
+            }
+            root.listFiles().orEmpty().forEach { file ->
+                if (file.isFile && !file.name.startsWith(".") && file.extension.equals("png", ignoreCase = true)) {
+                    val canonical = runCatching { file.canonicalPath }.getOrNull()
+                    if (canonical != null && canonical !in referenced) file.delete()
+                }
             }
         }
     }

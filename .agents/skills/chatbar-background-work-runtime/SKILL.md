@@ -28,6 +28,8 @@ Use chatbar-model-request-runtime for HTTP/SSE behavior, chatbar-image-generatio
 - Feature callers own result persistence, UI state, and feature-specific cancellation semantics.
 - `AiBackgroundWorkManager.notifyCompletion` posts completion notifications on the shared IPC thread and reports publication failures to the caller. Studio automatic generation uses this entry after its target images are committed.
 
+AiBackgroundWorkManager foreground lease owns LocalDataMaintenance admission until final caller finishes. Whole-app migration uses separate offline LocalDataTransferForegroundService, serializes transfers and retains pending generations until promotion. See chatbar-app-backup; local transfer must not use AI network preflight.
+
 ## Foreground-Service Contract
 
 - After every successful `startForegroundService()`, allow `startForeground()` to complete before any `stopService()`, `stopSelf()`, or `stopForeground()`. Android 12+ can otherwise throw `ForegroundServiceDidNotStartInTimeException` even when stopping was intentional.

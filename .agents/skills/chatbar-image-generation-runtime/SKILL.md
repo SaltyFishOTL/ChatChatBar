@@ -19,6 +19,7 @@ Keep prompt design, HTTP generation, persistence, and feature UI as separate own
 - Studio prompt token budgets: domain/image/NovelAiPromptTokenCounter.kt plus assets/tokenizers; reproducible compact `.binz` GZIP assets come from tools/build_novelai_tokenizer_assets.py (`.gz` is forbidden because Android packaging expands and renames it)
 - Studio Prompt display translations: domain/image/NovelAiPromptTranslation.kt, shared `DanbooruTagCatalog`, and annotation state/rendering in ImagePromptToolViewModel.kt plus ImagePromptToolScreen.kt
 - Studio account quota and immediate Anlas estimate: domain/image/NovelAiAccountService.kt; UI ownership remains ImagePromptToolViewModel.kt and ImagePromptToolScreen.kt
+- Whole-app .cbbackup preserves raw image/guidance/history/undo/Vibe data; use chatbar-app-backup. Owned media mutations and catalog swaps hold LocalDataMaintenance.
 - Studio contracts and persistence: domain/image/NovelAiStudioModels.kt, data/repository/NovelAiStudioRepository.kt, ui/imageprompt/NovelAiHistoryViewModel.kt, and NovelAiHistoryScreen.kt
 - Studio image guidance: domain/image/NovelAiImageGuidance.kt, NovelAiStudioAssetStorage.kt, NovelAiVibeEncodingService.kt, and ui/imageprompt/NovelAiImageGuidanceEditor.kt
 - Reversible APNG disguise: ui/components/ImageMosaicEditor.kt, domain/image/ImageProcessingService.kt, domain/image/ApngDisguiseCodec.kt, and ui/components/ImageActions.kt

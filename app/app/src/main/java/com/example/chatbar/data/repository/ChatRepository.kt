@@ -55,6 +55,9 @@ class ChatRepository(private val storage: JsonFileStorage) {
     private val messageIndexes = ConcurrentHashMap<String, ChatMessageIndex>()
     private val scrollPositionMutex = Mutex()
 
+    private suspend inline fun <T> Mutex.withDataAccess(block: () -> T): T =
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access { withLock { block() } }
+
     suspend fun initialize() {
         if (initialized) return
         refreshSessionCache()
@@ -95,14 +98,14 @@ class ChatRepository(private val storage: JsonFileStorage) {
     private val sessionSettingsMutex = Mutex()
 
     suspend fun updateSession(session: ChatSession) {
-        sessionSettingsMutex.withLock { updateSessionLocked(session) }
+        sessionSettingsMutex.withDataAccess { updateSessionLocked(session) }
     }
 
     suspend fun relinkArchivedSession(
         sessionId: String,
         characterCardId: String,
         characterRepository: CharacterRepository
-    ) = sessionSettingsMutex.withLock {
+    ) = sessionSettingsMutex.withDataAccess {
         val latest = getSession(sessionId) ?: error("对话已不存在")
         check(characterRepository.getById(latest.characterCardId) == null) {
             "本对话已有角色卡，无需重新关联"
@@ -114,7 +117,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun saveSessionSettingsDraft(baseline: ChatSession, draft: ChatSession): ChatSession =
-        sessionSettingsMutex.withLock {
+        sessionSettingsMutex.withDataAccess {
             val latest = getSession(baseline.id) ?: error("会话已不存在")
             val merged = mergeSettingsDraft(ChatSession.serializer(), baseline, draft, latest)
             updateSessionLocked(merged)
@@ -152,10 +155,10 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun updateScrollPosition(position: ChatScrollPosition) =
-        scrollPositionMutex.withLock {
-            if (getSession(position.sessionId) == null) return@withLock
+        scrollPositionMutex.withDataAccess {
+            if (getSession(position.sessionId) == null) return@withDataAccess
             val current = getScrollPosition(position.sessionId)
-            if (current != null && current.capturedAt >= position.capturedAt) return@withLock
+            if (current != null && current.capturedAt >= position.capturedAt) return@withDataAccess
             storage.saveEntity(
                 SCROLL_POSITION_TYPE,
                 position.sessionId,
@@ -165,7 +168,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
 
     suspend fun deleteScrollPosition(sessionId: String) =
-        scrollPositionMutex.withLock {
+        scrollPositionMutex.withDataAccess {
             storage.deleteEntity<ChatScrollPosition>(SCROLL_POSITION_TYPE, sessionId)
         }
 
@@ -323,8 +326,8 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private suspend fun loadMessageIndex(sessionId: String): ChatMessageIndex {
         messageIndexes[sessionId]?.let { return it }
-        return messageIndexMutex.withLock {
-            messageIndexes[sessionId]?.let { return@withLock it }
+        return messageIndexMutex.withDataAccess {
+            messageIndexes[sessionId]?.let { return@withDataAccess it }
             val prefix = "${sessionId}_"
             val signature = storage.fileSetSignatureByIdPrefix(MESSAGE_TYPE, prefix)
             val stored = storage.loadEntity(
@@ -337,7 +340,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 stored.fileCount == signature.count &&
                 (stored.fileFingerprint == 0L || stored.fileFingerprint == signature.fingerprint)
             ) {
-                return@withLock stored.copy(entries = stored.entries.sortedWith(indexComparator))
+                return@withDataAccess stored.copy(entries = stored.entries.sortedWith(indexComparator))
             }
             rebuildMessageIndexLocked(sessionId)
         }
@@ -381,7 +384,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         sessionId: String,
         base: ChatMessageIndex,
         transform: (List<ChatMessageIndexEntry>) -> List<ChatMessageIndexEntry>
-    ) = messageIndexMutex.withLock {
+    ) = messageIndexMutex.withDataAccess {
         writeMessageIndexLocked(sessionId, transform(base.entries))
     }
 
@@ -441,7 +444,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         )
     }
 
-    suspend fun addMessage(message: ChatMessage): ChatMessage = messageAppendMutex.withLock {
+    suspend fun addMessage(message: ChatMessage): ChatMessage = messageAppendMutex.withDataAccess {
         val assigned = assignSourceTurnForAppend(message)
         saveMessageRecord(assigned)
 
@@ -465,7 +468,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun addMessageAfter(
         message: ChatMessage,
         anchorMessageId: String
-    ): ChatMessage = messageAppendMutex.withLock {
+    ): ChatMessage = messageAppendMutex.withDataAccess {
         val anchor = getMessage(anchorMessageId, message.sessionId)
         val assigned = message.copy(
             sourceTurnId = message.sourceTurnId ?: anchor?.sourceTurnId,
@@ -541,7 +544,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withLock {
+    suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withDataAccess {
         val persisted = getMessage(message.id, message.sessionId)
         val updated = message.copy(
             updatedAt = System.currentTimeMillis(),
@@ -569,20 +572,20 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun previewMessageOrderRepair(sessionId: String): ChatMessageOrderRepairPlan =
-        messageAppendMutex.withLock {
+        messageAppendMutex.withDataAccess {
             ChatMessageOrderRepairPolicy.plan(getMessages(sessionId))
         }
 
     suspend fun repairMessageOrder(
         sessionId: String,
         expectedBaseline: List<ChatMessageOrderSnapshot>
-    ): ChatMessageOrderRepairPlan = messageAppendMutex.withLock {
+    ): ChatMessageOrderRepairPlan = messageAppendMutex.withDataAccess {
         val current = getMessages(sessionId)
         val plan = ChatMessageOrderRepairPolicy.plan(current)
         check(plan.baseline == expectedBaseline) {
             "预览后聊天内容已变化，请重新生成修复预览"
         }
-        if (!plan.requiresRepair) return@withLock plan
+        if (!plan.requiresRepair) return@withDataAccess plan
 
         storage.saveEntity(
             MESSAGE_ORDER_BACKUP_TYPE,
@@ -604,7 +607,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         storage.exists(MESSAGE_ORDER_BACKUP_TYPE, sessionId)
 
     suspend fun restoreMessageOrderBackup(sessionId: String): List<ChatMessage> =
-        messageAppendMutex.withLock {
+        messageAppendMutex.withDataAccess {
             val backup = storage.loadEntity(
                 MESSAGE_ORDER_BACKUP_TYPE,
                 sessionId,
@@ -650,7 +653,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    suspend fun deleteMessage(messageId: String, sessionId: String) = messageAppendMutex.withLock {
+    suspend fun deleteMessage(messageId: String, sessionId: String) = messageAppendMutex.withDataAccess {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
         storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
@@ -711,7 +714,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         deleteMessagesForSession(sessionId)
         deleteScrollPosition(sessionId)
         storage.saveAllUncached(MESSAGE_TYPE, entities, ChatMessage.serializer())
-        messageIndexMutex.withLock {
+        messageIndexMutex.withDataAccess {
             writeMessageIndexLocked(
                 sessionId,
                 entities.values.map(ChatMessage::toIndexEntry).sortedWith(indexComparator)
@@ -736,7 +739,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     suspend fun replaceMessagesForSessionStreaming(
         sessionId: String,
         producer: suspend (emit: suspend (ChatMessage) -> Unit) -> Unit
-    ) = messageAppendMutex.withLock {
+    ) = messageAppendMutex.withDataAccess {
         val entries = mutableListOf<ChatMessageIndexEntry>()
         var latest: ChatMessage? = null
         var maxSourceOrder = 0L
@@ -763,7 +766,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
         deleteScrollPosition(sessionId)
         storage.deleteEntity<ChatMessageOrderBackup>(MESSAGE_ORDER_BACKUP_TYPE, sessionId)
-        messageIndexMutex.withLock {
+        messageIndexMutex.withDataAccess {
             writeMessageIndexLocked(sessionId, entries.sortedWith(indexComparator))
         }
         getSession(sessionId)?.let { session ->
@@ -780,9 +783,9 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     /** 旧消息首次使用时补稳定source turn；不改消息ID、时间、orderKey。 */
-    suspend fun ensureSourceTurns(sessionId: String): List<ChatMessage> = messageAppendMutex.withLock {
+    suspend fun ensureSourceTurns(sessionId: String): List<ChatMessage> = messageAppendMutex.withDataAccess {
         val messages = getMessages(sessionId)
-        val session = getSession(sessionId) ?: return@withLock messages
+        val session = getSession(sessionId) ?: return@withDataAccess messages
         if (messages.none {
                 it.role != MessageRole.SYSTEM &&
                     (it.sourceTurnId == null || it.sourceTurnOrder == null)
@@ -792,7 +795,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             if (session.nextSourceTurnOrder < next) {
                 updateSession(session.copy(nextSourceTurnOrder = next))
             }
-            return@withLock messages
+            return@withDataAccess messages
         }
 
         val result = TimelineTurnPolicy.migrate(
@@ -802,7 +805,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         )
         val migrated = result.messages
         migrated.forEach { saveMessageRecord(it, updateIndex = false) }
-        messageIndexMutex.withLock { rebuildMessageIndexLocked(sessionId) }
+        messageIndexMutex.withDataAccess { rebuildMessageIndexLocked(sessionId) }
         updateSession(
             session.copy(
                 nextTimelineTurn = result.nextTimelineTurn,

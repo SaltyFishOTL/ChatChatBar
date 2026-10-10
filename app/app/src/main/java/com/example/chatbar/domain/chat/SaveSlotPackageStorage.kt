@@ -269,156 +269,162 @@ class SaveSlotPackageStorage(private val context: Context) {
         messageSource: suspend (emit: suspend (ChatMessage) -> Unit) -> Unit,
         ragSource: suspend (emit: suspend (VectorChunk) -> Unit) -> Unit,
         voices: List<GeneratedVoiceMessage>,
-        onProgress: (String) -> Unit = {}
+        onProgress: (String) -> Unit = {
+
+
+
+    }
     ): SaveSlot = withContext(Dispatchers.IO) {
-        root.mkdirs()
-        val finalFile = packageFile(baseSlot.id)
-        val tempFile = File(root, ".${finalFile.name}.${UUID.randomUUID()}.part")
-        val imagePlans = mutableListOf<MediaPlan>()
-        val audioPlans = mutableListOf<MediaPlan>()
-        val imageResourceByPath = linkedMapOf<String, String>()
-        var messageCount = 0
-        var imageCount = 0
-        var ragCount = 0
-        var audioCount = 0
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            root.mkdirs()
+            val finalFile = packageFile(baseSlot.id)
+            val tempFile = File(root, ".${finalFile.name}.${UUID.randomUUID()}.part")
+            val imagePlans = mutableListOf<MediaPlan>()
+            val audioPlans = mutableListOf<MediaPlan>()
+            val imageResourceByPath = linkedMapOf<String, String>()
+            var messageCount = 0
+            var imageCount = 0
+            var ragCount = 0
+            var audioCount = 0
 
-        fun packageImage(path: String): String {
-            imageCount++
-            if (path.startsWith(OMITTED_SAVE_SLOT_IMAGE_PREFIX)) return path
-            imageResourceByPath[path]?.let { resourceId ->
-                return when (imagePolicy) {
-                    SaveSlotImagePolicy.NONE -> OMITTED_SAVE_SLOT_IMAGE_PREFIX + resourceId
-                    else -> SAVE_SLOT_IMAGE_PREFIX + resourceId
-                }
-            }
-            val resourceId = "img-${UUID.randomUUID()}"
-            imageResourceByPath[path] = resourceId
-            if (imagePolicy == SaveSlotImagePolicy.NONE) {
-                return OMITTED_SAVE_SLOT_IMAGE_PREFIX + resourceId
-            }
-            val source = File(path)
-            require(source.isFile) { "图片文件不存在，无法写入存档：${source.name.ifBlank { path }}" }
-            val copyOriginal = imagePolicy == SaveSlotImagePolicy.ORIGINAL ||
-                source.extension.equals("gif", ignoreCase = true)
-            val extension = if (copyOriginal) source.extension.safeExtension("jpg") else "jpg"
-            imagePlans += MediaPlan(
-                source = source,
-                resourceId = resourceId,
-                entryName = "$IMAGE_DIR$resourceId.$extension",
-                compressImage = !copyOriginal
-            )
-            return SAVE_SLOT_IMAGE_PREFIX + resourceId
-        }
-
-        val packagedBackground = baseSlot.chatBackground
-            ?.takeIf(String::isNotBlank)
-            ?.let { path ->
-                if (imagePolicy == SaveSlotImagePolicy.NONE) {
-                    null
-                } else {
-                    packageImage(path)
-                }
-            }
-
-        try {
-            ZipOutputStream(tempFile.outputStream().buffered()).use { zip ->
-                zip.setLevel(Deflater.BEST_SPEED)
-                zip.putNextEntry(ZipEntry(MESSAGES_ENTRY))
-                messageSource { message ->
-                    currentCoroutineContext().ensureActive()
-                    val images = message.images.map(::packageImage)
-                    val packagedByPath = message.images.zip(images).toMap()
-                    val packaged = message.copy(
-                        images = images,
-                        generatedImageMetadata = message.generatedImageMetadata.mapNotNull { metadata ->
-                            packagedByPath[metadata.imagePath]?.let { packagedPath ->
-                                metadata.copy(imagePath = packagedPath)
-                            }
-                        }
-                    )
-                    zip.write(json.encodeToString(ChatMessage.serializer(), packaged).toByteArray(Charsets.UTF_8))
-                    zip.write('\n'.code)
-                    messageCount++
-                    if (messageCount % 25 == 0) onProgress("正在写入消息：$messageCount 条")
-                }
-                zip.closeEntry()
-
-                zip.putNextEntry(ZipEntry(RAG_ENTRY))
-                ragSource { chunk ->
-                    currentCoroutineContext().ensureActive()
-                    zip.write(json.encodeToString(VectorChunk.serializer(), chunk).toByteArray(Charsets.UTF_8))
-                    zip.write('\n'.code)
-                    ragCount++
-                }
-                zip.closeEntry()
-
-                zip.putNextEntry(ZipEntry(VOICES_ENTRY))
-                if (includeAudio) {
-                    voices.forEach { voice ->
-                        currentCoroutineContext().ensureActive()
-                        val source = File(voice.audioPath)
-                        require(source.isFile) { "语音文件不存在，无法写入存档：${voice.id}" }
-                        val resourceId = "audio-${UUID.randomUUID()}"
-                        audioPlans += MediaPlan(
-                            source = source,
-                            resourceId = resourceId,
-                            entryName = "$AUDIO_DIR$resourceId.${source.extension.safeExtension("mp3")}",
-                            compressImage = false
-                        )
-                        val packaged = voice.copy(audioPath = SAVE_SLOT_AUDIO_PREFIX + resourceId)
-                        zip.write(json.encodeToString(GeneratedVoiceMessage.serializer(), packaged).toByteArray(Charsets.UTF_8))
-                        zip.write('\n'.code)
-                        audioCount++
+            fun packageImage(path: String): String {
+                imageCount++
+                if (path.startsWith(OMITTED_SAVE_SLOT_IMAGE_PREFIX)) return path
+                imageResourceByPath[path]?.let { resourceId ->
+                    return when (imagePolicy) {
+                        SaveSlotImagePolicy.NONE -> OMITTED_SAVE_SLOT_IMAGE_PREFIX + resourceId
+                        else -> SAVE_SLOT_IMAGE_PREFIX + resourceId
                     }
                 }
-                zip.closeEntry()
-
-                imagePlans.forEachIndexed { index, plan ->
-                    currentCoroutineContext().ensureActive()
-                    onProgress("正在写入图片：${index + 1}/${imagePlans.size}")
-                    zip.putNextEntry(ZipEntry(plan.entryName))
-                    if (plan.compressImage) writeCompressedImage(plan.source, zip) else copyFile(plan.source, zip)
-                    zip.closeEntry()
+                val resourceId = "img-${UUID.randomUUID()}"
+                imageResourceByPath[path] = resourceId
+                if (imagePolicy == SaveSlotImagePolicy.NONE) {
+                    return OMITTED_SAVE_SLOT_IMAGE_PREFIX + resourceId
                 }
-                audioPlans.forEachIndexed { index, plan ->
-                    currentCoroutineContext().ensureActive()
-                    onProgress("正在写入语音：${index + 1}/${audioPlans.size}")
-                    zip.putNextEntry(ZipEntry(plan.entryName))
-                    copyFile(plan.source, zip)
-                    zip.closeEntry()
-                }
-
-                val packageRef = SaveSlotPackageRef(
-                    fileName = finalFile.name,
-                    messageCount = messageCount,
-                    imageCount = imageCount,
-                    audioCount = audioCount,
-                    ragChunkCount = ragCount
+                val source = File(path)
+                require(source.isFile) { "图片文件不存在，无法写入存档：${source.name.ifBlank { path }}" }
+                val copyOriginal = imagePolicy == SaveSlotImagePolicy.ORIGINAL ||
+                    source.extension.equals("gif", ignoreCase = true)
+                val extension = if (copyOriginal) source.extension.safeExtension("jpg") else "jpg"
+                imagePlans += MediaPlan(
+                    source = source,
+                    resourceId = resourceId,
+                    entryName = "$IMAGE_DIR$resourceId.$extension",
+                    compressImage = !copyOriginal
                 )
-                val manifest = baseSlot.copy(
-                    schemaVersion = SCHEMA_VERSION,
-                    chatBackground = packagedBackground,
-                    messages = emptyList(),
-                    imageResources = emptyMap(),
-                    voiceMessages = emptyList(),
-                    audioResources = emptyMap(),
-                    vectorChunks = emptyList(),
-                    imagePolicy = imagePolicy,
-                    includeAudio = includeAudio,
-                    packageRef = packageRef
-                )
-                zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
-                json.encodeToStream(SaveSlot.serializer(), manifest, zip)
-                zip.closeEntry()
+                return SAVE_SLOT_IMAGE_PREFIX + resourceId
             }
-            require(tempFile.length() > 0L) { "存档包为空" }
-            moveReplacing(tempFile, finalFile)
-            val manifest = readManifest(finalFile)
-            manifest.copy(packageRef = manifest.packageRef?.copy(byteLength = finalFile.length()))
-        } catch (error: Throwable) {
-            tempFile.delete()
-            finalFile.delete()
-            throw error
+
+            val packagedBackground = baseSlot.chatBackground
+                ?.takeIf(String::isNotBlank)
+                ?.let { path ->
+                    if (imagePolicy == SaveSlotImagePolicy.NONE) {
+                        null
+                    } else {
+                        packageImage(path)
+                    }
+                }
+
+            try {
+                ZipOutputStream(tempFile.outputStream().buffered()).use { zip ->
+                    zip.setLevel(Deflater.BEST_SPEED)
+                    zip.putNextEntry(ZipEntry(MESSAGES_ENTRY))
+                    messageSource { message ->
+                        currentCoroutineContext().ensureActive()
+                        val images = message.images.map(::packageImage)
+                        val packagedByPath = message.images.zip(images).toMap()
+                        val packaged = message.copy(
+                            images = images,
+                            generatedImageMetadata = message.generatedImageMetadata.mapNotNull { metadata ->
+                                packagedByPath[metadata.imagePath]?.let { packagedPath ->
+                                    metadata.copy(imagePath = packagedPath)
+                                }
+                            }
+                        )
+                        zip.write(json.encodeToString(ChatMessage.serializer(), packaged).toByteArray(Charsets.UTF_8))
+                        zip.write('\n'.code)
+                        messageCount++
+                        if (messageCount % 25 == 0) onProgress("正在写入消息：$messageCount 条")
+                    }
+                    zip.closeEntry()
+
+                    zip.putNextEntry(ZipEntry(RAG_ENTRY))
+                    ragSource { chunk ->
+                        currentCoroutineContext().ensureActive()
+                        zip.write(json.encodeToString(VectorChunk.serializer(), chunk).toByteArray(Charsets.UTF_8))
+                        zip.write('\n'.code)
+                        ragCount++
+                    }
+                    zip.closeEntry()
+
+                    zip.putNextEntry(ZipEntry(VOICES_ENTRY))
+                    if (includeAudio) {
+                        voices.forEach { voice ->
+                            currentCoroutineContext().ensureActive()
+                            val source = File(voice.audioPath)
+                            require(source.isFile) { "语音文件不存在，无法写入存档：${voice.id}" }
+                            val resourceId = "audio-${UUID.randomUUID()}"
+                            audioPlans += MediaPlan(
+                                source = source,
+                                resourceId = resourceId,
+                                entryName = "$AUDIO_DIR$resourceId.${source.extension.safeExtension("mp3")}",
+                                compressImage = false
+                            )
+                            val packaged = voice.copy(audioPath = SAVE_SLOT_AUDIO_PREFIX + resourceId)
+                            zip.write(json.encodeToString(GeneratedVoiceMessage.serializer(), packaged).toByteArray(Charsets.UTF_8))
+                            zip.write('\n'.code)
+                            audioCount++
+                        }
+                    }
+                    zip.closeEntry()
+
+                    imagePlans.forEachIndexed { index, plan ->
+                        currentCoroutineContext().ensureActive()
+                        onProgress("正在写入图片：${index + 1}/${imagePlans.size}")
+                        zip.putNextEntry(ZipEntry(plan.entryName))
+                        if (plan.compressImage) writeCompressedImage(plan.source, zip) else copyFile(plan.source, zip)
+                        zip.closeEntry()
+                    }
+                    audioPlans.forEachIndexed { index, plan ->
+                        currentCoroutineContext().ensureActive()
+                        onProgress("正在写入语音：${index + 1}/${audioPlans.size}")
+                        zip.putNextEntry(ZipEntry(plan.entryName))
+                        copyFile(plan.source, zip)
+                        zip.closeEntry()
+                    }
+
+                    val packageRef = SaveSlotPackageRef(
+                        fileName = finalFile.name,
+                        messageCount = messageCount,
+                        imageCount = imageCount,
+                        audioCount = audioCount,
+                        ragChunkCount = ragCount
+                    )
+                    val manifest = baseSlot.copy(
+                        schemaVersion = SCHEMA_VERSION,
+                        chatBackground = packagedBackground,
+                        messages = emptyList(),
+                        imageResources = emptyMap(),
+                        voiceMessages = emptyList(),
+                        audioResources = emptyMap(),
+                        vectorChunks = emptyList(),
+                        imagePolicy = imagePolicy,
+                        includeAudio = includeAudio,
+                        packageRef = packageRef
+                    )
+                    zip.putNextEntry(ZipEntry(MANIFEST_ENTRY))
+                    json.encodeToStream(SaveSlot.serializer(), manifest, zip)
+                    zip.closeEntry()
+                }
+                require(tempFile.length() > 0L) { "存档包为空" }
+                moveReplacing(tempFile, finalFile)
+                val manifest = readManifest(finalFile)
+                manifest.copy(packageRef = manifest.packageRef?.copy(byteLength = finalFile.length()))
+            } catch (error: Throwable) {
+                tempFile.delete()
+                finalFile.delete()
+                throw error
+            }
         }
     }
 
@@ -433,33 +439,35 @@ class SaveSlotPackageStorage(private val context: Context) {
         targetSessionId: String,
         targetName: (String) -> String
     ): ImportedPackage = withContext(Dispatchers.IO) {
-        root.mkdirs()
-        val staged = File(root, ".import-${UUID.randomUUID()}.part")
-        try {
-            staged.outputStream().buffered().use { output -> copyCancellable(input, output) }
-            require(staged.length() > 0L) { "存档包为空" }
-            val decoded = readManifest(staged)
-            require(decoded.schemaVersion == SCHEMA_VERSION && decoded.packageRef != null) {
-                "不支持的存档包格式"
-            }
-            val newId = UUID.randomUUID().toString()
-            val finalFile = packageFile(newId)
-            val imported = decoded.copy(
-                id = newId,
-                sessionId = targetSessionId,
-                name = targetName(decoded.name),
-                createdAt = System.currentTimeMillis(),
-                packageRef = decoded.packageRef.copy(
-                    fileName = finalFile.name,
-                    byteLength = staged.length()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            root.mkdirs()
+            val staged = File(root, ".import-${UUID.randomUUID()}.part")
+            try {
+                staged.outputStream().buffered().use { output -> copyCancellable(input, output) }
+                require(staged.length() > 0L) { "存档包为空" }
+                val decoded = readManifest(staged)
+                require(decoded.schemaVersion == SCHEMA_VERSION && decoded.packageRef != null) {
+                    "不支持的存档包格式"
+                }
+                val newId = UUID.randomUUID().toString()
+                val finalFile = packageFile(newId)
+                val imported = decoded.copy(
+                    id = newId,
+                    sessionId = targetSessionId,
+                    name = targetName(decoded.name),
+                    createdAt = System.currentTimeMillis(),
+                    packageRef = decoded.packageRef.copy(
+                        fileName = finalFile.name,
+                        byteLength = staged.length()
+                    )
                 )
-            )
-            openReader(staged, imported).use { reader -> reader.validate() }
-            moveReplacing(staged, finalFile)
-            ImportedPackage(imported)
-        } catch (error: Throwable) {
-            staged.delete()
-            throw error
+                openReader(staged, imported).use { reader -> reader.validate() }
+                moveReplacing(staged, finalFile)
+                ImportedPackage(imported)
+            } catch (error: Throwable) {
+                staged.delete()
+                throw error
+            }
         }
     }
 
@@ -473,23 +481,29 @@ class SaveSlotPackageStorage(private val context: Context) {
     }
 
     fun delete(slot: SaveSlot): Boolean {
-        val reference = slot.packageRef ?: return true
-        return runCatching {
-            val file = File(root, reference.fileName).canonicalFile
-            val ownedRoot = root.canonicalFile
-            file.parentFile == ownedRoot && (!file.exists() || file.delete())
-        }.getOrDefault(false)
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val reference = slot.packageRef ?: return true
+            return runCatching {
+                val file = File(root, reference.fileName).canonicalFile
+                val ownedRoot = root.canonicalFile
+                file.parentFile == ownedRoot && (!file.exists() || file.delete())
+            }.getOrDefault(false)
+        }
     }
 
     fun deleteBySlotId(slotId: String): Boolean = runCatching {
-        val file = packageFile(slotId)
-        !file.exists() || file.delete()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val file = packageFile(slotId)
+            !file.exists() || file.delete()
+        }
     }.getOrDefault(false)
 
     fun cleanupPartialFiles() {
-        root.listFiles { file -> file.isFile && (file.extension == "part" || file.name.startsWith(".")) }
-            .orEmpty()
-            .forEach(File::delete)
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            root.listFiles { file -> file.isFile && (file.extension == "part" || file.name.startsWith(".")) }
+                .orEmpty()
+                .forEach(File::delete)
+        }
     }
 
     private fun openReader(file: File, slot: SaveSlot): Reader =

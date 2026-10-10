@@ -211,83 +211,85 @@ class DanbooruCatalogUpdateManager(
     } ?: DanbooruCatalogUpdateState.Idle
 
     private suspend fun download(id: Long, updateInfo: DanbooruCatalogUpdateInfo) {
-        val stagedFile = catalog.downloadStagingFile()
-        try {
-            stagedFile.parentFile?.let { parent ->
-                if (!parent.exists() && !parent.mkdirs()) throw IOException("无法创建词库更新目录")
-            }
-            stagedFile.delete()
-            val request = Request.Builder()
-                .url(updateInfo.downloadUrl)
-                .header("Accept", "application/octet-stream")
-                .header("Cache-Control", "no-cache")
-                .header("User-Agent", "ChatBar/${BuildConfig.VERSION_NAME}")
-                .get()
-                .build()
-            val call = client.newCall(request)
-            synchronized(this) {
-                if (id != requestId) return
-                activeCall = call
-            }
-            call.execute().use { response ->
-                if (!response.isSuccessful) throw IOException("词库下载失败：HTTP ${response.code}")
-                val body = response.body ?: throw IOException("词库下载响应为空")
-                var downloaded = 0L
-                var lastPublished = 0L
-                body.byteStream().use { input ->
-                    FileOutputStream(stagedFile).buffered().use { output ->
-                        val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
-                        while (true) {
-                            currentCoroutineContext().ensureActive()
-                            val count = input.read(buffer)
-                            if (count < 0) break
-                            output.write(buffer, 0, count)
-                            downloaded += count
-                            if (downloaded - lastPublished >= PROGRESS_STEP_BYTES) {
-                                publish(
-                                    id,
-                                    DanbooruCatalogUpdateState.Downloading(
-                                        updateInfo.latestSourceSha,
-                                        downloaded,
-                                        updateInfo.sizeBytes
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val stagedFile = catalog.downloadStagingFile()
+            try {
+                stagedFile.parentFile?.let { parent ->
+                    if (!parent.exists() && !parent.mkdirs()) throw IOException("无法创建词库更新目录")
+                }
+                stagedFile.delete()
+                val request = Request.Builder()
+                    .url(updateInfo.downloadUrl)
+                    .header("Accept", "application/octet-stream")
+                    .header("Cache-Control", "no-cache")
+                    .header("User-Agent", "ChatBar/${BuildConfig.VERSION_NAME}")
+                    .get()
+                    .build()
+                val call = client.newCall(request)
+                synchronized(this) {
+                    if (id != requestId) return
+                    activeCall = call
+                }
+                call.execute().use { response ->
+                    if (!response.isSuccessful) throw IOException("词库下载失败：HTTP ${response.code}")
+                    val body = response.body ?: throw IOException("词库下载响应为空")
+                    var downloaded = 0L
+                    var lastPublished = 0L
+                    body.byteStream().use { input ->
+                        FileOutputStream(stagedFile).buffered().use { output ->
+                            val buffer = ByteArray(DOWNLOAD_BUFFER_SIZE)
+                            while (true) {
+                                currentCoroutineContext().ensureActive()
+                                val count = input.read(buffer)
+                                if (count < 0) break
+                                output.write(buffer, 0, count)
+                                downloaded += count
+                                if (downloaded - lastPublished >= PROGRESS_STEP_BYTES) {
+                                    publish(
+                                        id,
+                                        DanbooruCatalogUpdateState.Downloading(
+                                            updateInfo.latestSourceSha,
+                                            downloaded,
+                                            updateInfo.sizeBytes
+                                        )
                                     )
-                                )
-                                lastPublished = downloaded
+                                    lastPublished = downloaded
+                                }
                             }
                         }
                     }
                 }
-            }
-            publish(id, DanbooruCatalogUpdateState.Validating(updateInfo.latestSourceSha))
-            val validation = catalog.validateDownloadedDatabase(
-                file = stagedFile,
-                expectedSizeBytes = updateInfo.sizeBytes,
-                expectedSourceSha = updateInfo.latestSourceSha
-            )
-            publish(id, DanbooruCatalogUpdateState.Applying(updateInfo.latestSourceSha))
-            val installed = catalog.installDownloadedDatabase(
-                stagedFile = stagedFile,
-                sourceCommitTime = updateInfo.latestCommitTime,
-                validation = validation
-            )
-            publish(id, DanbooruCatalogUpdateState.Ready(installed))
-        } catch (error: CancellationException) {
-            stagedFile.delete()
-            throw error
-        } catch (error: Throwable) {
-            stagedFile.delete()
-            publish(
-                id,
-                DanbooruCatalogUpdateState.Failed(
-                    updateInfo.latestSourceSha,
-                    error.displayMessage("词库更新失败")
+                publish(id, DanbooruCatalogUpdateState.Validating(updateInfo.latestSourceSha))
+                val validation = catalog.validateDownloadedDatabase(
+                    file = stagedFile,
+                    expectedSizeBytes = updateInfo.sizeBytes,
+                    expectedSourceSha = updateInfo.latestSourceSha
                 )
-            )
-        } finally {
-            synchronized(this) {
-                if (id == requestId) {
-                    activeCall = null
-                    job = null
+                publish(id, DanbooruCatalogUpdateState.Applying(updateInfo.latestSourceSha))
+                val installed = catalog.installDownloadedDatabase(
+                    stagedFile = stagedFile,
+                    sourceCommitTime = updateInfo.latestCommitTime,
+                    validation = validation
+                )
+                publish(id, DanbooruCatalogUpdateState.Ready(installed))
+            } catch (error: CancellationException) {
+                stagedFile.delete()
+                throw error
+            } catch (error: Throwable) {
+                stagedFile.delete()
+                publish(
+                    id,
+                    DanbooruCatalogUpdateState.Failed(
+                        updateInfo.latestSourceSha,
+                        error.displayMessage("词库更新失败")
+                    )
+                )
+            } finally {
+                synchronized(this) {
+                    if (id == requestId) {
+                        activeCall = null
+                        job = null
+                    }
                 }
             }
         }

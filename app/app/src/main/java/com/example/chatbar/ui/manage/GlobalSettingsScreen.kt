@@ -317,12 +317,18 @@ internal fun GlobalSettingsScreen(
         SettingsCategory("reply", "回复与记忆", "上下文 ${draftContextWindowSize} 组 · 自动格式检查${if (automaticFormatCheckEnabled) "开" else "关"}"),
         SettingsCategory("appearance", "外观与显示", "${when(themeMode) { ThemeMode.SYSTEM -> "跟随系统"; ThemeMode.LIGHT -> "浅色"; ThemeMode.DARK -> "深色" }} · 字号 ${bubbleFontScale}×"),
         SettingsCategory("player", "玩家身份", playerName.ifBlank { "未填写玩家名称" }),
+        SettingsCategory("migration", "数据迁移", "完整导出与换机恢复"),
         SettingsCategory("images", "图片生成", "${novelAiImageModel.displayName} · ${if (novelAiConfigured) "已配置密钥" else "未配置密钥"}"),
         SettingsCategory("voice", "语音与朗读", "${if (fishAudioConfigured) "已配置密钥" else "未配置密钥"} · 听书${if (audiobookModeEnabled) "开" else "关"}"),
         SettingsCategory("moments", "朋友圈", if (momentsEnabled) formatMomentFrequency(draftMomentDelayRange.minHours, draftMomentDelayRange.maxHours) else "已关闭"),
         SettingsCategory("updates", "更新与诊断", "${BuildConfig.VERSION_NAME} · ${if (pendingCrashReport != null) "有诊断报告" else "暂无诊断报告"}")
     )
     val entries = listOf(
+        SettingsEntry("app-backup", "migration", "全量存档", "导出 导入 全量存档 备份 换机 数据迁移 cbbackup") {
+            SettingsLink("全量存档", "导出全部本地进度，或恢复其他设备的完整存档") {
+                requestLeave { ChatBarApp.instance.appBackupService.open() }
+            }
+        },
         SettingsEntry("connection-help", "models", "连接说明", "连接说明", searchable = false) {
             CbText(
                 "HTTPS 模型 API Key 留空时使用全局默认 API Key；允许明文 HTTP 后，HTTP 模型留空表示无需鉴权。",

@@ -23,12 +23,14 @@ class NovelAiInlinePayloadStore(filesDir: File) {
     }
 
     fun retain(value: String): String {
-        if (value.startsWith(PREFIX) || value.length < INLINE_LIMIT) return value
-        val temporary = File.createTempFile("payload-", ".tmp", root)
-        return try {
-            temporary.writeText(value, Charsets.UTF_8)
-            commit(temporary)
-        } finally { temporary.delete() }
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            if (value.startsWith(PREFIX) || value.length < INLINE_LIMIT) return value
+            val temporary = File.createTempFile("payload-", ".tmp", root)
+            return try {
+                temporary.writeText(value, Charsets.UTF_8)
+                commit(temporary)
+            } finally { temporary.delete() }
+        }
     }
 
     private fun commit(temporary: File): String {
@@ -49,41 +51,43 @@ class NovelAiInlinePayloadStore(filesDir: File) {
 
     /** Copies JSON lexically with bounded buffers; the source remains untouched on any error. */
     fun openCompactJson(file: File): InputStream {
-        val compact = File.createTempFile("json-", ".tmp", root)
-        try {
-            file.reader(Charsets.UTF_8).buffered().use { raw ->
-                val input = PushbackReader(raw, 1)
-                compact.writer(Charsets.UTF_8).buffered().use { output ->
-                    var payloadKey = false
-                    while (true) {
-                        val c = input.read()
-                        if (c < 0) break
-                        if (c != '"'.code) {
-                            output.write(c)
-                            if (!c.toChar().isWhitespace() && c != ':'.code) payloadKey = false
-                            continue
-                        }
-                        if (payloadKey) {
-                            val payload = File.createTempFile("payload-", ".tmp", root)
-                            try {
-                                payload.writer(Charsets.UTF_8).buffered().use { sink -> copyString(input, sink, decode = true) }
-                                val value = if (payload.length() < INLINE_LIMIT) payload.readText(Charsets.UTF_8) else commit(payload)
-                                output.write(Json.encodeToString(value))
-                            } finally { payload.delete() }
-                            payloadKey = false
-                        } else {
-                            output.write('"'.code)
-                            val token = copyString(input, output, decode = false)
-                            output.write('"'.code)
-                            payloadKey = token == "encodedVibe"
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val compact = File.createTempFile("json-", ".tmp", root)
+            try {
+                file.reader(Charsets.UTF_8).buffered().use { raw ->
+                    val input = PushbackReader(raw, 1)
+                    compact.writer(Charsets.UTF_8).buffered().use { output ->
+                        var payloadKey = false
+                        while (true) {
+                            val c = input.read()
+                            if (c < 0) break
+                            if (c != '"'.code) {
+                                output.write(c)
+                                if (!c.toChar().isWhitespace() && c != ':'.code) payloadKey = false
+                                continue
+                            }
+                            if (payloadKey) {
+                                val payload = File.createTempFile("payload-", ".tmp", root)
+                                try {
+                                    payload.writer(Charsets.UTF_8).buffered().use { sink -> copyString(input, sink, decode = true) }
+                                    val value = if (payload.length() < INLINE_LIMIT) payload.readText(Charsets.UTF_8) else commit(payload)
+                                    output.write(Json.encodeToString(value))
+                                } finally { payload.delete() }
+                                payloadKey = false
+                            } else {
+                                output.write('"'.code)
+                                val token = copyString(input, output, decode = false)
+                                output.write('"'.code)
+                                payloadKey = token == "encodedVibe"
+                            }
                         }
                     }
                 }
-            }
-            return object : FilterInputStream(compact.inputStream().buffered()) {
-                override fun close() { try { super.close() } finally { compact.delete() } }
-            }
-        } catch (error: Throwable) { compact.delete(); throw error }
+                return object : FilterInputStream(compact.inputStream().buffered()) {
+                    override fun close() { try { super.close() } finally { compact.delete() } }
+                }
+            } catch (error: Throwable) { compact.delete(); throw error }
+        }
     }
 
     private fun copyString(input: PushbackReader, output: Writer, decode: Boolean): String {

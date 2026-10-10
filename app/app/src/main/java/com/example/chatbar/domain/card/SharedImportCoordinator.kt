@@ -8,6 +8,7 @@ import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -293,6 +294,9 @@ class SharedImportCoordinator(
         runCatching { stage(record) }.fold(
             onSuccess = { staged ->
                 val inspection = runCatching {
+                    if (runCatching { com.example.chatbar.domain.backup.AppBackupCodec.hasMagic(File(staged.path)) }.getOrDefault(false)) {
+                        return@runCatching SharedImportInspection.Backup
+                    }
                     val bytes = File(staged.path).readBytes()
                     SharedImportClassifier.inspect(bytes, staged.displayName, probeImage(staged.path))
                 }.getOrElse { error ->
@@ -327,8 +331,13 @@ class SharedImportCoordinator(
         )
     }
 
-    private fun stage(record: Record): SharedImportStagedFile {
+    private suspend fun stage(record: Record): SharedImportStagedFile {
         stagingDirectory.mkdirs()
+        val coroutine = kotlinx.coroutines.currentCoroutineContext()
+        val checkActive = {
+            coroutine[kotlinx.coroutines.Job]?.ensureActive()
+            check(synchronized(lock) { records.find { it.id == record.id } != null }) { "共享文件导入已取消" }
+        }
         val target = File(stagingDirectory, "shared-${record.id}-${UUID.randomUUID()}.bin")
         return try {
             val (displayName, declaredMimeType) = when (val source = record.source) {
@@ -336,7 +345,24 @@ class SharedImportCoordinator(
                     val resolver = context.contentResolver
                     val name = queryDisplayName(source.uri) ?: source.uri.lastPathSegment ?: "共享文件"
                     resolver.openInputStream(source.uri)?.use { input ->
-                        target.outputStream().buffered().use { output -> copyBounded(input, output) }
+                        val peek = java.io.PushbackInputStream(input, 8)
+                        val prefix = ByteArray(8)
+                        var n = 0
+                        while (n < prefix.size) {
+                            val read = peek.read(prefix, n, prefix.size - n)
+                            if (read < 0) break
+                            n += read
+                        }
+                        peek.unread(prefix, 0, n)
+                        val copy: suspend () -> Unit = {
+                            target.outputStream().buffered().use { output -> copyBounded(peek, output, checkActive) }
+                        }
+                        if (n == prefix.size && prefix.contentEquals(com.example.chatbar.domain.backup.AppBackupCodec.magic)) {
+                            com.example.chatbar.domain.backup.LocalDataTransferForegroundService.runProtected(context,
+                                cancel = { reason ->
+                                    coroutine[kotlinx.coroutines.Job]?.cancel(kotlinx.coroutines.CancellationException(reason))
+                                }, block = copy)
+                        } else copy()
                     } ?: error("无法打开共享文件")
                     name to resolver.getType(source.uri)
                 }
@@ -347,7 +373,8 @@ class SharedImportCoordinator(
                     "共享文本.json" to "application/json"
                 }
             }
-            require(target.length() in 1..MAX_INPUT_BYTES) { "共享文件为空或超过 100 MB" }
+            val backup = runCatching { com.example.chatbar.domain.backup.AppBackupCodec.hasMagic(target) }.getOrDefault(false)
+            require(target.length() > 0 && (backup || target.length() <= MAX_INPUT_BYTES)) { "共享文件为空或超过 100 MB" }
             SharedImportStagedFile(
                 path = target.absolutePath,
                 displayName = displayName,
@@ -381,14 +408,25 @@ class SharedImportCoordinator(
         }
     }.getOrNull()
 
-    private fun copyBounded(input: java.io.InputStream, output: java.io.OutputStream) {
+    private fun copyBounded(input: java.io.InputStream, output: java.io.OutputStream, checkActive: () -> Unit) {
         val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
         var total = 0L
+        val prefix = ByteArray(com.example.chatbar.domain.backup.AppBackupCodec.magic.size)
+        var prefixSize = 0
+        var backup = false
         while (true) {
+            checkActive()
             val count = input.read(buffer)
             if (count < 0) break
             total += count
-            require(total <= MAX_INPUT_BYTES) { "共享文件超过 100 MB" }
+            if (prefixSize < prefix.size) {
+                val size = minOf(count, prefix.size - prefixSize)
+                buffer.copyInto(prefix, prefixSize, 0, size)
+                prefixSize += size
+                if (prefixSize == prefix.size) backup = prefix.contentEquals(com.example.chatbar.domain.backup.AppBackupCodec.magic)
+            }
+            require(backup || total <= MAX_INPUT_BYTES) { "共享文件超过 100 MB" }
+            if (backup) com.example.chatbar.domain.backup.BackupArchive.ensureSpace(stagingDirectory, count.toLong())
             output.write(buffer, 0, count)
         }
     }

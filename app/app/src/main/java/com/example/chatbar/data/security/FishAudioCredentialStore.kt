@@ -13,23 +13,45 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
-class FishAudioCredentialStore(context: Context) {
+class FishAudioCredentialStore(context: Context, private val keyAlias: String = KEY_ALIAS) {
     private val preferences = context.getSharedPreferences(PREFERENCES, Context.MODE_PRIVATE)
     private val _configured = MutableStateFlow(load() != null)
     val configured: StateFlow<Boolean> = _configured.asStateFlow()
 
     fun isConfigured(): Boolean = load() != null
 
-    fun save(apiKey: String) {
-        val normalized = apiKey.trim()
-        require(normalized.isNotEmpty()) { "Fish Audio API Key 不能为空" }
+    fun readForBackup(): String? {
+        val present = preferences.contains(CIPHERTEXT) || preferences.contains(IV)
+        return load().also { check(!present || it != null) { "Fish Audio 密钥无法解密，完整导出已停止" } }
+    }
+
+    fun replaceFromBackup(apiKey: String?) {
+        if (apiKey == null) {
+            check(preferences.edit().clear().commit()) { "Fish Audio 密钥恢复失败" }
+            _configured.value = false
+            return
+        }
+        require(apiKey.isNotBlank()) { "存档 Fish Audio 密钥无效" }
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
-        preferences.edit()
-            .putString(CIPHERTEXT, Base64.encodeToString(cipher.doFinal(normalized.toByteArray()), Base64.NO_WRAP))
-            .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
-            .apply()
+        check(preferences.edit().clear()
+            .putString(CIPHERTEXT, Base64.encodeToString(cipher.doFinal(apiKey.toByteArray()), Base64.NO_WRAP))
+            .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP)).commit()) { "Fish Audio 密钥恢复失败" }
         _configured.value = true
+    }
+
+    fun save(apiKey: String) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val normalized = apiKey.trim()
+            require(normalized.isNotEmpty()) { "Fish Audio API Key 不能为空" }
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
+            preferences.edit()
+                .putString(CIPHERTEXT, Base64.encodeToString(cipher.doFinal(normalized.toByteArray()), Base64.NO_WRAP))
+                .putString(IV, Base64.encodeToString(cipher.iv, Base64.NO_WRAP))
+                .apply()
+            _configured.value = true
+        }
     }
 
     fun load(): String? {
@@ -47,17 +69,19 @@ class FishAudioCredentialStore(context: Context) {
     }
 
     fun clear() {
-        preferences.edit().remove(CIPHERTEXT).remove(IV).apply()
-        _configured.value = false
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            preferences.edit().remove(CIPHERTEXT).remove(IV).apply()
+            _configured.value = false
+        }
     }
 
     private fun getOrCreateKey(): SecretKey {
         val keyStore = KeyStore.getInstance(ANDROID_KEYSTORE).apply { load(null) }
-        (keyStore.getKey(KEY_ALIAS, null) as? SecretKey)?.let { return it }
+        (keyStore.getKey(keyAlias, null) as? SecretKey)?.let { return it }
         return KeyGenerator.getInstance(KeyProperties.KEY_ALGORITHM_AES, ANDROID_KEYSTORE).run {
             init(
                 KeyGenParameterSpec.Builder(
-                    KEY_ALIAS,
+                    keyAlias,
                     KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
                 )
                     .setBlockModes(KeyProperties.BLOCK_MODE_GCM)

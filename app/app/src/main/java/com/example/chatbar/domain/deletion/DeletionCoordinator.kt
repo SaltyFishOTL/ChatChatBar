@@ -40,19 +40,23 @@ class DeletionCoordinator(
     private val cleanupMutex = Mutex()
 
     suspend fun deleteCharacter(id: String) {
-        val card = characterRepository.getById(id) ?: return
-        enqueue(PendingDeletion.forCharacter(card))
-        characterRepository.delete(id)
-        drainPending()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val card = characterRepository.getById(id) ?: return
+            enqueue(PendingDeletion.forCharacter(card))
+            characterRepository.delete(id)
+            drainPending()
+        }
     }
 
     suspend fun deleteSession(id: String) {
-        if (chatRepository.getSession(id) == null) return
-        enqueue(PendingDeletion.forSession(id))
-        memoryMaintenance.cancelAndJoinForSession(id)
-        voiceGeneration.cancelAndJoinForSession(id)
-        chatRepository.deleteSessionRecord(id)
-        drainPending()
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            if (chatRepository.getSession(id) == null) return
+            enqueue(PendingDeletion.forSession(id))
+            memoryMaintenance.cancelAndJoinForSession(id)
+            voiceGeneration.cancelAndJoinForSession(id)
+            chatRepository.deleteSessionRecord(id)
+            drainPending()
+        }
     }
 
     suspend fun resumePending() {
@@ -64,17 +68,19 @@ class DeletionCoordinator(
     }
 
     private suspend fun drainPending() = cleanupMutex.withLock {
-        storage.loadAll(TASK_TYPE, PendingDeletion.serializer())
-            .sortedBy { it.createdAt }
-            .forEach { task ->
-                try {
-                    process(task)
-                    storage.deleteEntity<PendingDeletion>(TASK_TYPE, task.id)
-                } catch (error: Throwable) {
-                    if (error is CancellationException) throw error
-                    Log.e(TAG, "Pending deletion cleanup failed: ${task.id}", error)
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            storage.loadAll(TASK_TYPE, PendingDeletion.serializer())
+                .sortedBy { it.createdAt }
+                .forEach { task ->
+                    try {
+                        process(task)
+                        storage.deleteEntity<PendingDeletion>(TASK_TYPE, task.id)
+                    } catch (error: Throwable) {
+                        if (error is CancellationException) throw error
+                        Log.e(TAG, "Pending deletion cleanup failed: ${task.id}", error)
+                    }
                 }
-            }
+        }
     }
 
     private suspend fun process(task: PendingDeletion) {

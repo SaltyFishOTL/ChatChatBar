@@ -41,6 +41,12 @@ class QqVoiceTransferService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        QqVoiceTransferNotificationManager.init(this)
+        if (ChatBarApp.instance.backupStartupReady.value) initializeTransfer()
+    }
+
+    private fun initializeTransfer() {
+        if (::player.isInitialized) return
         coordinator = ChatBarApp.instance.qqVoiceTransferCoordinator
         gestureGateway = ChatBarApp.instance.qqVoiceGestureGateway
         preflight = QqVoiceTransferPreflight(this, gestureGateway)
@@ -76,6 +82,15 @@ class QqVoiceTransferService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (!ChatBarApp.instance.backupStartupReady.value) {
+            startForeground(QqVoiceTransferNotificationManager.NOTIFICATION_ID,
+                QqVoiceTransferNotificationManager.preparing(this))
+            Toast.makeText(this, "本地数据正在加载，请稍后重新发送语音", Toast.LENGTH_SHORT).show()
+            stopForeground(STOP_FOREGROUND_REMOVE)
+            stopSelf()
+            return START_NOT_STICKY
+        }
+        initializeTransfer()
         when (intent?.action) {
             ACTION_PREPARE -> handlePrepare(intent)
             ACTION_BEGIN -> handleBegin()
@@ -379,10 +394,12 @@ class QqVoiceTransferService : Service() {
 
     override fun onDestroy() {
         transferJob?.cancel()
-        player.stop()
-        player.clearMediaItems()
-        player.release()
-        if (!terminal && QqVoiceTransferPolicy.isActive(coordinator.state.value)) {
+        if (::player.isInitialized) {
+            player.stop()
+            player.clearMediaItems()
+            player.release()
+        }
+        if (::coordinator.isInitialized && !terminal && QqVoiceTransferPolicy.isActive(coordinator.state.value)) {
             coordinator.fail(
                 QqVoiceTransferPolicy.failure(
                     QqVoiceTransferFailureCode.SERVICE_STOPPED,

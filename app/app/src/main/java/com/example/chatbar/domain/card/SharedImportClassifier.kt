@@ -10,6 +10,7 @@ enum class SharedImportKind {
     FORMAT,
     WORLD_BOOK,
     MODEL_TEMPLATE,
+    APP_BACKUP,
     IMAGE,
     UNKNOWN
 }
@@ -23,6 +24,9 @@ data class SharedImportImageInfo(
 
 sealed interface SharedImportInspection {
     val kind: SharedImportKind
+    data object Backup : SharedImportInspection {
+        override val kind = SharedImportKind.APP_BACKUP
+    }
 
     data class Character(val request: CharacterCardImportRequest) : SharedImportInspection {
         override val kind = SharedImportKind.CHARACTER
@@ -113,6 +117,7 @@ object SharedImportClassifier {
                 }
             )
             SharedImportKind.IMAGE,
+            SharedImportKind.APP_BACKUP,
             SharedImportKind.UNKNOWN -> error("该目标不能手动解析")
         }
     }

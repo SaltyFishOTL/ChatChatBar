@@ -39,33 +39,35 @@ class RagManager(
         characterCardId: String,
         embeddingConfig: EmbeddingConfig
     ): DocumentIndexResult {
-        val contentHash = sha256(content)
-        // 清除旧索引
-        ragRepository.deleteChunksByDocumentId(doc.id)
+        return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val contentHash = sha256(content)
+            // 清除旧索引
+            ragRepository.deleteChunksByDocumentId(doc.id)
 
-        val chunksWithMeta = chunkingEngine.chunkDocument(content, doc.id, doc.fileName)
-        if (chunksWithMeta.isEmpty()) return DocumentIndexResult(contentHash, 0)
+            val chunksWithMeta = chunkingEngine.chunkDocument(content, doc.id, doc.fileName)
+            if (chunksWithMeta.isEmpty()) return DocumentIndexResult(contentHash, 0)
 
-        val texts = chunksWithMeta.map { it.first }
-        val embeddings = embeddingService.getEmbeddings(texts, embeddingConfig)
+            val texts = chunksWithMeta.map { it.first }
+            val embeddings = embeddingService.getEmbeddings(texts, embeddingConfig)
 
-        val vectorChunks = chunksWithMeta.mapIndexed { index, (text, meta) ->
-            VectorChunk.create(
-                sourceType = ChunkSourceType.DOCUMENT,
-                sourceId = characterCardId,
-                content = text,
-                embedding = embeddings[index],
-                metadata = meta + mapOf(
-                    "fileName" to doc.fileName,
-                    "originalDocId" to doc.id,
-                    "contentHash" to contentHash,
-                    "embeddingKey" to embeddingConfig.key()
+            val vectorChunks = chunksWithMeta.mapIndexed { index, (text, meta) ->
+                VectorChunk.create(
+                    sourceType = ChunkSourceType.DOCUMENT,
+                    sourceId = characterCardId,
+                    content = text,
+                    embedding = embeddings[index],
+                    metadata = meta + mapOf(
+                        "fileName" to doc.fileName,
+                        "originalDocId" to doc.id,
+                        "contentHash" to contentHash,
+                        "embeddingKey" to embeddingConfig.key()
+                    )
                 )
-            )
-        }
+            }
 
-        ragRepository.saveChunks(vectorChunks)
-        return DocumentIndexResult(contentHash, vectorChunks.size)
+            ragRepository.saveChunks(vectorChunks)
+            return DocumentIndexResult(contentHash, vectorChunks.size)
+        }
     }
 
     /**
@@ -85,49 +87,51 @@ class RagManager(
         sessionId: String,
         embeddingConfig: EmbeddingConfig
     ) {
-        if (!ChatMemoryIndexPolicy.shouldIndex(turn)) {
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            if (!ChatMemoryIndexPolicy.shouldIndex(turn)) {
+                ragRepository.deleteSupersededAutomaticChatMemory(
+                    sessionId = sessionId,
+                    sourceTurnId = turn.sourceTurnId,
+                    messageIds = turn.messageIds,
+                    keepChunkIds = emptySet()
+                )
+                return
+            }
+            val memoryTexts = ChatMemoryIndexPolicy.contentsForIndex(turn)
+            val embeddings = embeddingService.getEmbeddings(memoryTexts, embeddingConfig)
+            val now = System.currentTimeMillis()
+            val chunks = memoryTexts.mapIndexed { index, memoryText ->
+                VectorChunk(
+                    id = chatMemoryChunkId(sessionId, turn.identityKey, index),
+                    sourceType = ChunkSourceType.CHAT_MEMORY,
+                    sourceId = sessionId,
+                    content = memoryText,
+                    embedding = embeddings[index],
+                    messageId = turn.anchorMessage.id,
+                    metadata = buildMap {
+                        put("sessionId", sessionId)
+                        put("messageIds", turn.messageIds.joinToString(","))
+                        put("messageTime", turn.anchorMessage.createdAt.toString())
+                        put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
+                        put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
+                        put("chunkIndex", index.toString())
+                        put("chunkCount", memoryTexts.size.toString())
+                        put("embeddingKey", embeddingKey(embeddingConfig))
+                        put("sourceHash", hashContent(memoryText))
+                        turn.sourceTurnId?.let { put("sourceTurnId", it) }
+                        turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
+                    },
+                    createdAt = now
+                )
+            }
+            ragRepository.saveChunks(chunks)
             ragRepository.deleteSupersededAutomaticChatMemory(
                 sessionId = sessionId,
                 sourceTurnId = turn.sourceTurnId,
                 messageIds = turn.messageIds,
-                keepChunkIds = emptySet()
-            )
-            return
-        }
-        val memoryTexts = ChatMemoryIndexPolicy.contentsForIndex(turn)
-        val embeddings = embeddingService.getEmbeddings(memoryTexts, embeddingConfig)
-        val now = System.currentTimeMillis()
-        val chunks = memoryTexts.mapIndexed { index, memoryText ->
-            VectorChunk(
-                id = chatMemoryChunkId(sessionId, turn.identityKey, index),
-                sourceType = ChunkSourceType.CHAT_MEMORY,
-                sourceId = sessionId,
-                content = memoryText,
-                embedding = embeddings[index],
-                messageId = turn.anchorMessage.id,
-                metadata = buildMap {
-                    put("sessionId", sessionId)
-                    put("messageIds", turn.messageIds.joinToString(","))
-                    put("messageTime", turn.anchorMessage.createdAt.toString())
-                    put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
-                    put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)
-                    put("chunkIndex", index.toString())
-                    put("chunkCount", memoryTexts.size.toString())
-                    put("embeddingKey", embeddingKey(embeddingConfig))
-                    put("sourceHash", hashContent(memoryText))
-                    turn.sourceTurnId?.let { put("sourceTurnId", it) }
-                    turn.sourceTurnOrder?.let { put("sourceTurnOrder", it.toString()) }
-                },
-                createdAt = now
+                keepChunkIds = chunks.mapTo(mutableSetOf()) { it.id }
             )
         }
-        ragRepository.saveChunks(chunks)
-        ragRepository.deleteSupersededAutomaticChatMemory(
-            sessionId = sessionId,
-            sourceTurnId = turn.sourceTurnId,
-            messageIds = turn.messageIds,
-            keepChunkIds = chunks.mapTo(mutableSetOf()) { it.id }
-        )
     }
 
     @Deprecated(
