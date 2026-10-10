@@ -2,9 +2,9 @@
 
 > 状态更新：2026-10-10。当前切片为 `.cbbackup` 全量迁移及完整版本交付：用户已授权全部提交、push、发布新版本；保留完整替换、携带全部 API 密钥和社区会话、可选密码、恢复后重启，以及不默认运行自动测试或设备诊断的约定。
 > 已实现：domain/backup/ 流式封装、Tink 1.23.0 加密、字段路径映射、实体/媒体/标签库校验、完整任务写入屏障、事务日志与暂存二次校验；第九分类“数据迁移”、全局恢复确认、外部分享大文件通道、IO 启动恢复/回滚及页面/服务守卫。
-> 验证：功能、JVM 测试源码、Android 测试源码编译通过；最终 release APK 构建成功（app/app/build/outputs/apk/release/app-release.apk）。adb devices -l 无设备，仅构建，无安装。自动测试、1 GiB 回归与跨机验收均未执行。验收流程：doc/app_backup_manual_acceptance.md。
+> 验证：功能、JVM 测试源码、Android 测试源码编译通过，本地功能 release 构建成功。正式 v1.4.5 包已下载至 app/build/published-1.4.5/ChatBar-1.4.5.apk，SHA-256 与 GitHub 资产一致。adb devices -l 无设备，无安装。自动测试、1 GiB 回归与跨机验收均未执行。验收流程：doc/app_backup_manual_acceptance.md。
 > 技能：新增 chatbar-app-backup，更新功能地图、设置、分享、单会话存档、媒体、后台保护、凭据、社区与记忆说明；修正语音与模型请求的过时说明。发布流程固定编译应用及测试源码，runTests 默认 false；显式授权测试才开启。
-> 发布范围：以 v1.4.4 为上一正式版，覆盖全量迁移，以及其后尚未发布的角色卡高级生图设置、独立 PNG 封面、预制依赖恢复、大型工作室数据、辅助模型配置继承、朋友圈生成、长截图、图片反推确认和头像构图。发布结果以 GitHub Release 与相邻标签为准；下一步产品验收仍为 doc/app_backup_manual_acceptance.md 的跨机流程。
+> 发布：v1.4.5 已正式发布；功能提交 d3cf2aa9，版本提交 1198a13c，云端源码编译与签名构建成功。以 v1.4.4 为基线的四个功能提交均纳入 11 条更新说明；GitHub API 与 Atom 正文一致、APK 资产核验通过。覆盖全量迁移、角色卡生图设置与独立封面、预制依赖、大型工作室数据、辅助模型配置、朋友圈、长截图、图片反推确认与头像构图。下一步仍为 doc/app_backup_manual_acceptance.md 的跨机和故障验收。
 > 编译：临时忽略脚本 python app/build/compile_backup.py 复用 redeploy.bat 的 Java socket 目录兼容设置。构建从 app/，release 使用根目录 redeploy.bat --build-only --no-pause。辅助编辑脚本已完成用途，不要重复运行。
 
 ---

@@ -32,7 +32,7 @@ Treat “更新” as authorization to publish every current ChatBar workspace c
 9. Push the current branch to `origin`.
 10. Dispatch `.github/workflows/release.yml` with:
    - `versionName`: next unused version without `v`.
-   - `releaseNotes`: load the exact Markdown file from step 8.
+   - `releaseNotes`: load the exact Markdown file from step 8 using `-F "releaseNotes=@<file>"`. The `@` is required; a bare file path becomes the literal Release body. For repairs, use `gh release edit --notes-file <file>`.
    - `runTests`: true only for an explicitly requested JVM test run; otherwise false.
 11. Monitor workflow through completion. On failure, inspect the failed job, fix the cause, commit and push the fix, then dispatch an unused version if a tag was already created.
 12. Recheck the final published tag range against the coverage checklist, then run `python .agents/skills/chatbar-release-publish/scripts/verify_release.py --repo SaltyFishOTL/ChatChatBar --version <version>`. Completion requires all gates:
