@@ -7,54 +7,37 @@ import com.example.chatbar.domain.chat.SaveSlotPackageStorage
 import com.example.chatbar.domain.image.*
 import java.io.File
 import kotlinx.serialization.ExperimentalSerializationApi
-import kotlinx.serialization.KSerializer
-import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.decodeFromStream
 
 internal object BackupEntityValidator {
     private val entityJson = Json { ignoreUnknownKeys = true }
-    private val serializers: Map<String, KSerializer<*>> = mapOf(
-        "app_settings" to AppSettings.serializer(), "player_setting" to PlayerSetting.serializer(),
-        "character_cards" to CharacterCard.serializer(), "format_cards" to FormatCard.serializer(),
-        "world_books" to WorldBook.serializer(), "model_configs" to ModelConfig.serializer(),
-        "embedding_configs" to EmbeddingConfig.serializer(), "embedding_model_config" to EmbeddingConfig.serializer(),
-        "chat_sessions" to ChatSession.serializer(), "chat_messages" to ChatMessage.serializer(),
-        "chat_message_indexes" to ChatMessageIndex.serializer(), "chat_message_order_backups" to ChatMessageOrderBackup.serializer(),
-        "chat_drafts" to ChatDraft.serializer(), "chat_scroll_positions" to ChatScrollPosition.serializer(),
-        "vector_chunks" to VectorChunk.serializer(), "save_slots" to SaveSlot.serializer(),
-        "edit_drafts" to EditorDraft.serializer(), "moment_posts" to MomentPost.serializer(), "moment_tasks" to MomentTask.serializer(),
-        "memory_nodes" to MemoryNode.serializer(), "memory_states" to MemorySessionState.serializer(),
-        "memory_tier_revisions" to MemoryTierRevision.serializer(), "memory_compression_transactions" to MemoryCompressionTransaction.serializer(),
-        "memory_commits" to MemoryCommit.serializer(), "memory_commit_journals" to MemoryCommitJournal.serializer(),
-        "generated_voice_messages" to GeneratedVoiceMessage.serializer(), "voice_anchor_states" to VoiceAnchorState.serializer(),
-        "novelai_studio_draft" to NovelAiStudioDraft.serializer(), "novelai_studio_history_undo" to NovelAiStudioUndoDraft.serializer(),
-        "novelai_studio_guidance_checkpoint" to NovelAiGuidanceEditorCheckpoint.serializer(),
-        "novelai_generation_history" to NovelAiGenerationHistoryEntry.serializer(),
-        "novelai_history_fold_preferences" to NovelAiHistoryFoldPreference.serializer(),
-        "novelai_design_conversations" to NovelAiDesignConversation.serializer(), "novelai_design_current" to NovelAiDesignCurrentState.serializer(),
-        "preset_import_state" to PresetImportState.serializer(),
-        "model_configuration_migration" to VersionState.serializer(),
-        "character_speaker_migration_state" to SpeakerMigrationState.serializer(),
-        "world_book_migration_state" to WorldBookMigrationState.serializer(),
-        "pending_deletions" to DeletionState.serializer()
-    )
 
     @OptIn(ExperimentalSerializationApi::class)
-    suspend fun validateTree(context: Context, filesRoot: File, checkActive: () -> Unit) {
+    suspend fun validateTree(
+        context: Context,
+        filesRoot: File,
+        exportSelectionOnly: Boolean = false,
+        selection: BackupExportPlan? = null,
+        checkActive: () -> Unit
+    ): BackupValidationReport {
         val scratch = File(AppBackupBootstrap.workspace(context), "validation-" + java.util.UUID.randomUUID()).also(File::mkdirs)
         val stagedContext = object : ContextWrapper(context) {
             override fun getFilesDir(): File = filesRoot
         }
         val identities = hashSetOf<Pair<String, String>>()
+        var missingHistoricalAvatars = 0
         try {
-            validateCatalog(filesRoot, checkActive)
-            File(filesRoot, "entities").walkTopDown().filter { it.isFile && it.extension == "json" }.forEach { file ->
+            if (selection == null || "tagCatalog" in selection.selection.globalOptions) validateCatalog(filesRoot, checkActive)
+            val entities = if (selection != null) selection.records.asSequence().map { it.file }
+                else if (exportSelectionOnly) BackupDataRegistry.entityFiles(filesRoot)
+                else File(filesRoot, "entities").walkTopDown().filter { it.isFile && it.extension == "json" }
+            entities.forEach { file ->
                 checkActive()
                 val relative = file.relativeTo(filesRoot).invariantSeparatorsPath
                 if (relative == "entities/novelai_prompt_translation_cache.json") return@forEach
                 val type = relative.removePrefix("entities/").substringBefore('/').removeSuffix(".json")
-                val serializer = requireNotNull(serializers[type]) { "尚未登记的数据类型：" + type }
+                val serializer = requireNotNull(BackupDataRegistry.entitySerializers[type]) { "存档包含不支持的数据类型：" + type }
                 val skeleton = File(scratch, "entity.json")
                 val recordIds = mutableMapOf<String, MutableSet<String>>()
                 try {
@@ -84,10 +67,15 @@ internal object BackupEntityValidator {
                                     }
                                 }, observeId = { id ->
                                     require(id.isNotBlank() && identities.add(type to id)) { "实体 ID 无效或重复" }
-                                }, checkActive = checkActive
+                                }, checkActive = checkActive,
+                                replaceValue = { fields -> selection?.replacement(file, fields) },
+                                extraRootFields = selection?.extraFields(file).orEmpty()
                             ) { path, fields ->
-                                validatePath(context, filesRoot, type, path, fields)
-                                path
+                                val projected = selection?.resourcePath(file, path, fields) ?: path
+                                validatePath(context, filesRoot, type, projected, fields, exportSelectionOnly) {
+                                    missingHistoricalAvatars = Math.incrementExact(missingHistoricalAvatars)
+                                }
+                                projected
                             }.copy()
                         }
                     }
@@ -111,6 +99,7 @@ internal object BackupEntityValidator {
                 } finally { skeleton.delete() }
             }
         } finally { scratch.deleteRecursively() }
+        return BackupValidationReport(missingHistoricalAvatars)
     }
 
     private fun validateCatalog(root: File, checkActive: () -> Unit) {
@@ -138,7 +127,10 @@ internal object BackupEntityValidator {
         checkActive()
     }
 
-    private fun validatePath(context: Context, root: File, type: String, path: String, fields: List<String>) {
+    private fun validatePath(
+        context: Context, root: File, type: String, path: String, fields: List<String>, exportSelectionOnly: Boolean,
+        missingHistoricalAvatar: () -> Unit
+    ) {
         if (path.startsWith("chatbar-vibe-file:")) {
             val hash = path.removePrefix("chatbar-vibe-file:")
             require(hash.matches(Regex("[a-f0-9]{64}")) && File(root, "novelai-vibe-payloads/" + hash).isFile) {
@@ -149,13 +141,26 @@ internal object BackupEntityValidator {
         if (type == "save_slots" || type == "pending_deletions" || fields.lastOrNull() == "pendingDeletedAssets") return
         if (path.isBlank() || path.startsWith("chatbar-save-slot-") || path.startsWith("http:") || path.startsWith("https:")) return
         val prefix = context.filesDir.canonicalPath + File.separator
-        val file = if (path.startsWith("file:")) File(java.net.URI(path)) else File(path)
+        val file = when {
+            path.startsWith("file:") -> File(java.net.URI(path))
+            !File(path).isAbsolute && path.substringBefore('/') in BackupDataRegistry.roots -> BackupDataRegistry.target(context.filesDir, path)
+            else -> File(path)
+        }
+        fun checkFile(resource: File, reason: String) {
+            if (!resource.exists() && BackupHistoricalResourcePolicy.allowsMissingAvatar(type, fields)) {
+                missingHistoricalAvatar()
+                return
+            }
+            require(resource.isFile) { reason + "；字段：" + fields.joinToString(".") }
+        }
         if (file.canonicalPath.startsWith(prefix)) {
             val relative = file.canonicalPath.removePrefix(prefix).replace(File.separatorChar, '/')
-            require(BackupDataRegistry.target(root, relative).isFile) { "本地资源缺失：" + relative }
+            if (!exportSelectionOnly || BackupDataRegistry.isSelectedFile(relative)) {
+                checkFile(BackupDataRegistry.target(root, relative), "本地资源缺失：" + relative)
+            } else checkFile(file, "外部资源文件缺失：" + path)
         } else if (path.startsWith(BACKUP_PATH_PREFIX)) {
-            require(BackupDataRegistry.target(root, path.removePrefix(BACKUP_PATH_PREFIX)).isFile) { "存档资源引用缺失" }
-        } else if (file.isAbsolute) require(file.isFile) { "外部资源文件缺失" }
+            checkFile(BackupDataRegistry.target(root, path.removePrefix(BACKUP_PATH_PREFIX)), "存档资源引用缺失")
+        } else if (file.isAbsolute) checkFile(file, "外部资源文件缺失：" + path)
     }
 
     private fun validatePackageCrc(file: File, packages: File, checkActive: () -> Unit) {
@@ -189,11 +194,4 @@ internal object BackupEntityValidator {
             }
         }
     }
-
-    @Serializable private data class VersionState(val version: Int = 0)
-    @Serializable private data class SpeakerMigrationState(val lastRunAt: Long, val migratedCards: Int)
-    @Serializable private data class WorldBookMigrationState(val lastRunAt: Long, val migratedCharacters: Int)
-    @Serializable private data class DeletionState(val id: String, val type: DeletionType, val ownerId: String,
-        val filePaths: List<String> = emptyList(), val createdAt: Long = 0)
-    @Serializable private enum class DeletionType { CHARACTER, SESSION }
 }

@@ -15,6 +15,28 @@ import org.junit.runner.RunWith
 /** Isolated preferences and key aliases: never touches installed user's credentials. */
 @RunWith(AndroidJUnit4::class)
 class BackupCredentialTransferTest {
+    @Test fun incrementalRestorePreservesUnselectedPreferenceBytesWithoutOpeningCredentialStores() {
+        val base = ApplicationProvider.getApplicationContext<Context>()
+        val prefix = "chatbar-incremental-preferences-" + UUID.randomUUID()
+        val context = object : ContextWrapper(base) {
+            override fun getSharedPreferences(name: String, mode: Int) = base.getSharedPreferences("$prefix-$name", mode)
+        }
+        try {
+            BackupDataRegistry.preferences.forEach { name ->
+                assertTrue(context.getSharedPreferences(name, Context.MODE_PRIVATE).edit().putString("sentinel", "original-$name").commit())
+            }
+            val before = BackupDataRegistry.preferences.associateWith { context.getSharedPreferences(it, Context.MODE_PRIVATE).all.toMap() }
+            BackupPreferenceTransfer.restore(context, BackupPreferences(retainedPreferences = BackupDataRegistry.preferences))
+            before.forEach { (name, contents) -> assertEquals(contents, context.getSharedPreferences(name, Context.MODE_PRIVATE).all) }
+            BackupPreferenceTransfer.restore(context, BackupPreferences(brushSize = 42f, brushType = "Brush",
+                retainedPreferences = BackupDataRegistry.preferences - "image_mask_preferences"))
+            assertEquals(42f, context.getSharedPreferences("image_mask_preferences", Context.MODE_PRIVATE).getFloat("brush_size", 0f), 0f)
+            before.filterKeys { it != "image_mask_preferences" }.forEach { (name, contents) ->
+                assertEquals(contents, context.getSharedPreferences(name, Context.MODE_PRIVATE).all)
+            }
+        } finally { BackupDataRegistry.preferences.forEach { base.deleteSharedPreferences("$prefix-$it") } }
+    }
+
     @Test fun portableSecretsAreReencryptedByDestinationKeysAndUndecryptableStateBlocksExport() {
         val base = ApplicationProvider.getApplicationContext<Context>()
         val prefix = "chatbar-backup-test-" + UUID.randomUUID()

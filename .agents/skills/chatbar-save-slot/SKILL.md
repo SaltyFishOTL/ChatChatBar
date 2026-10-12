@@ -22,7 +22,7 @@ Keep archive size independent from peak app memory. Treat SaveSlot as a cross-st
 
 All abbreviated source paths are under `app/app/src/main/java/com/example/chatbar/`.
 
-Whole-app .cbbackup is independent; use chatbar-app-backup. It preserves existing SaveSlots and all memory histories without changing the current-only SaveSlot snapshot contract. SaveSlot create/import/load and session copy hold LocalDataMaintenance across complete transactions.
+Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive selection retains inline/v8 SaveSlots and their own media independently of current-chat image/voice choices; the chooser labels this distinction and has a global archive toggle. Scoped replacement/incremental restore rewrites selected nested identities/proofs and v8 JSONL into mapped packages, preserving original media bytes and updating packageRef.byteLength. Unselected archives of matched local sessions remain local, including their original package files; explicitly selected empty archive families clear old rows. Memory histories follow the selected session without changing the current-only SaveSlot snapshot contract. SaveSlot create/import/load and session copy hold LocalDataMaintenance across complete transactions.
 
 ## Package Contract
 

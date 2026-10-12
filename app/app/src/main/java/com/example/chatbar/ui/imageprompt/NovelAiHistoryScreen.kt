@@ -80,6 +80,7 @@ import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.hasMissingHistorySource
 import com.example.chatbar.domain.image.requiresImageGuidanceReuseWarning
+import com.example.chatbar.domain.image.originalOmitted
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
 import com.example.chatbar.ui.components.createChatImageLoader
@@ -513,17 +514,21 @@ fun NovelAiHistoryScreen(
     }
 
     fullPreviewIndex?.let { index ->
-        val previewItems = state.filteredImages.map { item ->
+        val previewSources = state.filteredImages.filterNot { it.image.originalOmitted }
+        val openingKey = state.filteredImages.getOrNull(index)?.key
+        val previewItems = previewSources.map { item ->
             ImagePreviewItem(messageId = item.entry.id, path = item.image.path)
         }
         if (previewItems.isNotEmpty()) {
             ImagePreviewDialog(
                 items = previewItems,
-                initialIndex = index.coerceIn(previewItems.indices),
+                initialIndex = previewSources.indexOfFirst { it.key == openingKey }.coerceIn(previewItems.indices),
                 onDismiss = { fullPreviewIndex = null },
                 onPageChanged = { page ->
-                    fullPreviewIndex = page
-                    state.filteredImages.getOrNull(page)?.let { selectedKey = it.key }
+                    previewSources.getOrNull(page)?.let { item ->
+                        fullPreviewIndex = state.filteredImages.indexOfFirst { it.key == item.key }.takeIf { it >= 0 }
+                        selectedKey = item.key
+                    }
                 }
             )
         }
@@ -1001,7 +1006,10 @@ internal fun HistoryDetailDialog(
                     modifier = Modifier.fillMaxWidth().height(previewHeight),
                     key = { page -> items[page].key }
                 ) { page ->
-                    AsyncImage(
+                    if (items[page].image.originalOmitted) Box(Modifier.fillMaxSize().background(ChatBarTheme.colors.surfaceSubtle),
+                        contentAlignment = Alignment.Center) {
+                        CbText("导出时未包含原图 · 参数与 Seed 已保留", color = ChatBarTheme.colors.mutedForeground)
+                    } else AsyncImage(
                         model = items[page].image.path,
                         contentDescription = "历史详情图片 ${page + 1}",
                         modifier = Modifier
@@ -1035,7 +1043,7 @@ internal fun HistoryDetailDialog(
                     NovelAiImageAction(AppIcons.Seed, "Seed", "仅复用 Seed", !busy, Modifier.weight(1f)) {
                         onApply(current.entry, current.image, NovelAiHistoryApplyMode.SEED_ONLY)
                     }
-                    NovelAiImageAction(AppIcons.AddPhotoAlternate, "用作", "用作图像引导", !busy, Modifier.weight(1f)) {
+                    NovelAiImageAction(AppIcons.AddPhotoAlternate, "用作", "用作图像引导", !busy && !current.image.originalOmitted, Modifier.weight(1f)) {
                         onUseAs(current)
                     }
                 }

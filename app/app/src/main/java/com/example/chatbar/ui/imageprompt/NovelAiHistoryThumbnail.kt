@@ -50,6 +50,10 @@ internal fun NovelAiHistoryThumbnail(
         modifier.background(ChatBarTheme.colors.surfaceSubtle),
         contentAlignment = Alignment.Center
     ) {
+        if (path.startsWith(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX)) {
+            CbText("仅元数据", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
+            return@BoxWithConstraints
+        }
         val edgePx = with(density) { maxWidth.roundToPx().coerceAtLeast(1) }
         val request = remember(context, path, edgePx) { historyThumbnailRequest(context, path, edgePx) }
         var failed by remember(path, edgePx) { mutableStateOf(false) }

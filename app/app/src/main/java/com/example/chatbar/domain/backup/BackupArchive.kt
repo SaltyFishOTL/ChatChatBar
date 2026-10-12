@@ -30,19 +30,24 @@ internal class BackupArchive(
         password: CharArray?,
         appVersionCode: Int,
         appVersionName: String,
-        preferences: BackupPreferences
+        preferences: BackupPreferences,
+        selection: BackupExportPlan? = null
     ): AppBackupSummary {
         workspace.mkdirs()
         val inventory = File(workspace, "inventory.jsonl")
         val external = linkedMapOf<String, String>()
         val counts = linkedMapOf<String, Int>()
-        val payload = AppBackupCodec.encrypting(output, password)
+        val referencedFiles = linkedMapOf<String, File>()
+        val appended = hashSetOf<String>()
+        val payload = AppBackupCodec.encrypting(output, password, if (selection == null) 1 else 2)
         ZipOutputStream(payload).use { zip ->
             zip.setLevel(Deflater.BEST_SPEED)
             inventory.bufferedWriter().use { index ->
                 fun append(file: File, relative: String) {
                     checkActive()
                     BackupDataRegistry.target(filesRoot, relative)
+                    if (!appended.add(relative)) return
+                    require(file.isFile) { "本地资源缺失：" + relative }
                     zip.putNextEntry(ZipEntry("files/" + relative))
                     val digest = MessageDigest.getInstance("SHA-256")
                     val size = file.inputStream().buffered().use { copy(it, zip, digest, relative) }
@@ -59,7 +64,10 @@ internal class BackupArchive(
                         counts[type] = (counts[type] ?: 0) + 1
                     }
                 }
-                BackupDataRegistry.files(filesRoot).forEach { source ->
+                val selectedFiles = selection?.let { plan ->
+                    (plan.records.map { it.file } + plan.additionalFiles.map { it.first }).asSequence()
+                } ?: BackupDataRegistry.files(filesRoot)
+                selectedFiles.forEach { source ->
                     val relative = source.relativeTo(filesRoot).invariantSeparatorsPath
                     val beforeLength = source.length()
                     val beforeModified = source.lastModified()
@@ -68,8 +76,12 @@ internal class BackupArchive(
                         try {
                             source.strictUtf8Reader().use { reader ->
                                 converted.bufferedWriter().use { writer ->
-                                    BackupJsonStream(reader, writer, checkActive = checkActive) { path, fields ->
-                                        portablePath(path, fields, relative, filesRoot, external)
+                                    BackupJsonStream(reader, writer, checkActive = checkActive,
+                                        replaceValue = { fields -> selection?.replacement(source, fields) },
+                                        extraRootFields = selection?.extraFields(source).orEmpty()
+                                    ) { path, fields ->
+                                        portablePath(selection?.resourcePath(source, path, fields) ?: path,
+                                            fields, relative, filesRoot, external, referencedFiles)
                                     }.copy()
                                 }
                             }
@@ -82,6 +94,12 @@ internal class BackupArchive(
                     check(source.length() == beforeLength && source.lastModified() == beforeModified) {
                         "导出期间源数据发生变化，请重试"
                     }
+                }
+                if (selection != null) referencedFiles.forEach { (relative, source) ->
+                    val length = source.length()
+                    val modified = source.lastModified()
+                    append(source, relative)
+                    check(source.length() == length && source.lastModified() == modified) { "导出期间源数据发生变化，请重试" }
                 }
                 for ((source, relative) in external) {
                     val temporary = File(workspace, "external.tmp")
@@ -104,7 +122,9 @@ internal class BackupArchive(
                 appVersionCode = appVersionCode, appVersionName = appVersionName,
                 createdAt = System.currentTimeMillis(), sourceFilesRoot = filesRoot.absolutePath,
                 counts = counts, fileCount = count, totalBytes = bytes,
-                preferencesSha256 = hex(MessageDigest.getInstance("SHA-256").digest(preferenceBytes))
+                preferencesSha256 = hex(MessageDigest.getInstance("SHA-256").digest(preferenceBytes)),
+                formatVersion = if (selection == null) 1 else 2,
+                scope = selection?.selection?.let { AppBackupExportScope.from(it) }
             )
             zip.putNextEntry(ZipEntry("manifest.json"))
             zip.write(backupJson.encodeToString(summary).toByteArray(Charsets.UTF_8))
@@ -156,14 +176,22 @@ internal class BackupArchive(
                 return text
             }
             val manifest = backupJson.decodeFromString<AppBackupSummary>(small("manifest.json"))
-            require(manifest.formatVersion == 1) { "存档格式不支持，请升级 APP" }
-            require(manifest.appVersionCode <= appVersionCode) { "该存档来自更新版本，请先升级 APP" }
+            manifest.requireCompatibleWith(appVersionCode)
             require(manifest.fileCount >= 0 && manifest.totalBytes >= 0L &&
                 manifest.counts.values.all { it >= 0 }) { "存档数量无效" }
+            if (manifest.formatVersion == 2) {
+                val scope = requireNotNull(manifest.scope) { "所选存档缺少数据范围" }
+                require(scope.globalOptions.all { it in BackupSettingOptions.ids } &&
+                    scope.characters == (manifest.counts["character_cards"] ?: 0) &&
+                    scope.sessions == (manifest.counts["chat_sessions"] ?: 0) &&
+                    scope.sessionsWithImages in 0..scope.sessions && scope.sessionsWithVoice in 0..scope.sessions &&
+                    scope.sessionsWithArchives in 0..scope.sessions) { "存档选择范围无效" }
+            }
             val preferenceText = small("preferences.json")
             require(hex(MessageDigest.getInstance("SHA-256").digest(preferenceText.toByteArray(Charsets.UTF_8))) ==
                 manifest.preferencesSha256) { "存档偏好与密钥校验失败" }
             val preferences = backupJson.decodeFromString<BackupPreferences>(preferenceText)
+            require(preferences.retainedPreferences.isEmpty()) { "存档包含无效的本机偏好指令" }
             preferences.communitySession?.let {
                 kotlinx.serialization.json.Json { ignoreUnknownKeys = true }
                     .decodeFromString<com.example.chatbar.domain.community.CommunitySession>(it)
@@ -238,7 +266,11 @@ internal class BackupArchive(
                             val stagedResource = BackupDataRegistry.target(stage, resource)
                             val inline = relative.startsWith("entities/save_slots/") ||
                                 relative.startsWith("entities/pending_deletions/") || fields.lastOrNull() == "pendingDeletedAssets"
-                            require(inline || stagedResource.isFile) { "存档引用资源缺失：" + resource }
+                            val missingAvatar = !stagedResource.exists() &&
+                                BackupHistoricalResourcePolicy.allowsMissingAvatar(relative, fields)
+                            require(inline || missingAvatar || stagedResource.isFile) {
+                                "存档引用资源缺失：" + resource + "；字段：" + fields.joinToString(".")
+                            }
                             BackupDataRegistry.target(targetFilesRoot, resource).absolutePath
                         }
                     }.copy()
@@ -252,7 +284,8 @@ internal class BackupArchive(
     }
 
     private fun portablePath(
-        path: String, fields: List<String>, entity: String, root: File, external: MutableMap<String, String>
+        path: String, fields: List<String>, entity: String, root: File, external: MutableMap<String, String>,
+        referencedFiles: MutableMap<String, File>
     ): String {
         if (path.isBlank() || path.startsWith("http://") || path.startsWith("https://") ||
             path.startsWith("chatbar-save-slot-")) return path
@@ -261,31 +294,44 @@ internal class BackupArchive(
             require(hash.matches(Regex("[a-f0-9]{64}")) && File(root, "novelai-vibe-payloads/" + hash).isFile) {
                 "氛围编码资源缺失"
             }
+            referencedFiles["novelai-vibe-payloads/$hash"] = File(root, "novelai-vibe-payloads/$hash")
             return path
         }
         if (path.startsWith("content:")) {
             val relative = external.getOrPut(path) { "images/migrated_external/" + UUID.randomUUID() + ".bin" }
             return BACKUP_PATH_PREFIX + relative
         }
-        val file = if (path.startsWith("file:")) File(java.net.URI(path)) else File(path)
+        val file = when {
+            path.startsWith("file:") -> File(java.net.URI(path))
+            !File(path).isAbsolute && path.substringBefore('/') in BackupDataRegistry.roots -> BackupDataRegistry.target(root, path)
+            else -> File(path)
+        }
         val canonicalRoot = root.canonicalFile
         val canonical = file.canonicalFile
-        if (canonical.path.startsWith(canonicalRoot.path + File.separator)) {
+        if (canonical.path.startsWith(canonicalRoot.path + File.separator) &&
+            BackupDataRegistry.isSelectedFile(canonical.relativeTo(canonicalRoot).invariantSeparatorsPath)) {
             val relative = canonical.relativeTo(canonicalRoot).invariantSeparatorsPath
             BackupDataRegistry.target(root, relative)
             require(entity.startsWith("entities/save_slots/") || entity.startsWith("entities/pending_deletions/") ||
-                fields.lastOrNull() == "pendingDeletedAssets" || canonical.isFile) {
-                "本地资源缺失：" + relative
+                fields.lastOrNull() == "pendingDeletedAssets" || canonical.isFile ||
+                (!canonical.exists() && BackupHistoricalResourcePolicy.allowsMissingAvatar(entity, fields))) {
+                "本地资源缺失：" + relative + "；字段：" + fields.joinToString(".")
             }
+            if (canonical.isFile) referencedFiles[relative] = canonical
             return BACKUP_PATH_PREFIX + relative
         }
         if (!file.isAbsolute) return path
-        if (entity.startsWith("entities/save_slots/") || (entity.startsWith("entities/pending_deletions/") && !file.exists())) {
+        if (!file.exists() && BackupHistoricalResourcePolicy.allowsMissingAvatar(entity, fields)) {
+            val digest = hex(MessageDigest.getInstance("SHA-256").digest(path.toByteArray()))
+            return BACKUP_PATH_PREFIX + "images/migrated_external/missing-avatar-" + digest
+        }
+        if (entity.startsWith("entities/save_slots/") ||
+            (!file.exists() && (entity.startsWith("entities/pending_deletions/") || fields.lastOrNull() == "pendingDeletedAssets"))) {
             // Legacy inline resources carry their bytes in the same JSON; remap keys and references together.
             val digest = hex(MessageDigest.getInstance("SHA-256").digest(path.toByteArray()))
             return BACKUP_PATH_PREFIX + "images/migrated_external/inline-" + digest
         }
-        val relative = external.getOrPut(path) {
+        val relative = external.getOrPut(canonical.path) {
             val extension = file.extension.takeIf { it.matches(Regex("[A-Za-z0-9]{1,12}")) } ?: "bin"
             "images/migrated_external/" + UUID.randomUUID() + "." + extension
         }

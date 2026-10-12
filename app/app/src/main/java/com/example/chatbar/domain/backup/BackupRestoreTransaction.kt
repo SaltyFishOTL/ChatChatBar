@@ -26,26 +26,28 @@ internal class BackupRestoreTransaction(
         val movingRoot: String? = null,
         val installedRoots: Set<String> = emptySet(),
         val rollbackMovingRoot: String? = null,
-        val restoredRoots: Set<String> = emptySet()
+        val restoredRoots: Set<String> = emptySet(),
+        val stageDirectory: String = "prepared"
     )
 
     private val journal = File(workspace, "restore.json")
-    private val staged = File(workspace, "prepared/files")
     private val old = File(workspace, "rollback/files")
     private val oldPreferences = File(workspace, "rollback/preferences")
     var recoveredRollback: Boolean = false
         private set
 
-    fun schedule() {
+    fun schedule(stageDirectory: String = "prepared") {
+        require(stageDirectory in setOf("prepared", "incoming")) { "恢复暂存目录无效" }
         check(!journal.exists()) { "已有待恢复事务" }
-        check(File(workspace, "prepared/manifest.json").isFile) { "恢复暂存数据不存在，请重新导入" }
-        save(Journal("PREPARED", emptySet(), emptySet()))
+        check(File(workspace, "$stageDirectory/manifest.json").isFile) { "恢复暂存数据不存在，请重新导入" }
+        save(Journal("PREPARED", emptySet(), emptySet(), stageDirectory = stageDirectory))
     }
 
     /** Returns true only when new data is installed and awaits complete application initialization. */
     fun bootstrap(restorePreferences: (File) -> Unit, validatePrepared: (File) -> Unit = {}): Boolean {
         if (!journal.exists()) return false
         val current = read()
+        val staged = File(workspace, "${current.stageDirectory}/files")
         if (current.state == "COMMITTED" || current.state == "ROLLED_BACK") {
             recoveredRollback = current.state == "ROLLED_BACK"
             cleanup()
@@ -86,7 +88,8 @@ internal class BackupRestoreTransaction(
         }
         syncDirectory(oldPreferences)
         var state = Journal("APPLYING", originalRoots, originalPrefs,
-            replacementRoots = BackupDataRegistry.roots.filterTo(linkedSetOf()) { File(staged, it).exists() })
+            replacementRoots = BackupDataRegistry.roots.filterTo(linkedSetOf()) { File(staged, it).exists() },
+            stageDirectory = current.stageDirectory)
         save(state)
         try {
             for (name in BackupDataRegistry.roots) {
@@ -100,7 +103,7 @@ internal class BackupRestoreTransaction(
                 state = state.copy(movingRoot = null, installedRoots = state.installedRoots + name)
                 save(state)
             }
-            restorePreferences(File(workspace, "prepared/preferences.json"))
+            restorePreferences(File(workspace, "${current.stageDirectory}/preferences.json"))
             save(state.copy(state = "APPLIED"))
             return true
         } catch (error: Throwable) {
@@ -120,6 +123,7 @@ internal class BackupRestoreTransaction(
 
     fun rollback() {
         var state = read()
+        val staged = File(workspace, "${state.stageDirectory}/files")
         check(state.state != "COMMITTED") { "已提交的恢复不能回滚" }
         if (state.state == "ROLLED_BACK") {
             cleanup()
@@ -174,7 +178,8 @@ internal class BackupRestoreTransaction(
 
     private fun read(): Journal {
         val value = backupJson.decodeFromString<Journal>(journal.readText())
-        require(value.state in setOf("PREPARED", "APPLYING", "APPLIED", "COMMITTED", "ROLLING_BACK", "ROLLED_BACK") &&
+        require(value.stageDirectory in setOf("prepared", "incoming") &&
+            value.state in setOf("PREPARED", "APPLYING", "APPLIED", "COMMITTED", "ROLLING_BACK", "ROLLED_BACK") &&
             value.originalRoots.all { it in BackupDataRegistry.roots } &&
             value.replacementRoots.all { it in BackupDataRegistry.roots } &&
             value.installedRoots.all { it in BackupDataRegistry.roots } &&
@@ -203,6 +208,7 @@ internal class BackupRestoreTransaction(
         check(!File(workspace, "prepared").exists() || File(workspace, "prepared").deleteRecursively()) {
             "恢复暂存清理需重试"
         }
+        check(!File(workspace, "incoming").exists() || File(workspace, "incoming").deleteRecursively()) { "原存档暂存清理失败" }
         check(!journal.exists() || journal.delete()) { "恢复日志清理失败" }
     }
 

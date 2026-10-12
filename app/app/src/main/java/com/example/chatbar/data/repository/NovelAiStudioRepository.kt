@@ -9,6 +9,7 @@ import com.example.chatbar.domain.image.NovelAiHistoryFoldPreference
 import com.example.chatbar.domain.image.NovelAiHistoryImageDeleteResult
 import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
 import com.example.chatbar.domain.image.NovelAiHistoryDeletionPolicy
+import com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.image.NovelAiImageUseTarget
 import com.example.chatbar.domain.image.NovelAiStudioDraft
@@ -241,7 +242,9 @@ class NovelAiStudioRepository(
                 val staged = mutableListOf<com.example.chatbar.domain.image.NovelAiStagedImageDeletion>()
                 try {
                     uniqueSelections.forEach { selection ->
-                        imageStorage.stageImageDelete(selection.imagePath)?.let(staged::add)
+                        if (!selection.imagePath.startsWith(OMITTED_SAVE_SLOT_IMAGE_PREFIX)) {
+                            imageStorage.stageImageDelete(selection.imagePath)?.let(staged::add)
+                        }
                     }
                     storage.applyEntityChanges(
                         HISTORY_ENTITY,

@@ -99,4 +99,21 @@ class BackupRestoreTransactionTest {
         }
         assertEquals("old-images", File(fixture.files, "images/value.png").readText())
     }
+
+    @Test fun incomingStageAndIncrementalPreparedStageBothRollbackAfterInterruptedInitialization() {
+        for (directory in listOf("incoming", "prepared")) {
+            val fixture = fixture(directory)
+            if (directory == "incoming") java.nio.file.Files.move(File(fixture.work, "prepared").toPath(), File(fixture.work, "incoming").toPath())
+            fixture.transaction().apply {
+                schedule(directory)
+                assertTrue(bootstrap({ fixture.setPreferences() }, { BackupPreparedSeal.write(it, {}) }))
+            }
+            fixture.transaction().apply {
+                assertFalse(bootstrap({ error("must roll back") }))
+                assertTrue(recoveredRollback)
+            }
+            assertEquals("old-entities", File(fixture.files, "entities/value.json").readText())
+            assertEquals("old-preferences", File(fixture.preferences, "image_mask_preferences.xml").readText())
+        }
+    }
 }

@@ -13,6 +13,7 @@ import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.memory.LongTermMemoryAutoMaintenanceCoordinator
+import com.example.chatbar.domain.moment.MomentMediaRetention
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.FishAudioGenerationCoordinator
 import com.example.chatbar.domain.voice.VoicePlaybackController
@@ -88,11 +89,7 @@ class DeletionCoordinator(
             PendingDeletionType.CHARACTER -> {
                 characterRepository.delete(task.ownerId)
                 // Historical posts own their saved author identity and media independently of the card.
-                val retainedMomentFiles = momentRepository.getAllPosts()
-                    .flatMap { listOfNotNull(it.senderAvatar, it.imagePath) }
-                    .map { File(it).canonicalPath }
-                    .toSet()
-                task.filePaths.filterNot { File(it).canonicalPath in retainedMomentFiles }
+                MomentMediaRetention.unreferencedPaths(task.filePaths, momentRepository.getAllPosts())
                     .forEach(::deleteOwnedFile)
                 ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, task.ownerId)
                 momentRepository.deletePendingTasksForCharacter(task.ownerId)

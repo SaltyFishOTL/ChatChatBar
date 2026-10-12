@@ -2,6 +2,7 @@ package com.example.chatbar.domain.backup
 
 import java.io.StringReader
 import java.io.StringWriter
+import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -9,6 +10,29 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class BackupJsonStreamTest {
+    @Test fun streamedMediaReplacementSkipsMappingAndAddsMissingFieldsWithoutChangingText() {
+        val output = StringWriter()
+        val images = { writer: java.io.Writer -> writer.write("[\"/local/original.png\"]") }
+        val observed = StringWriter()
+        val text = "正文🙂".repeat(20000)
+        val source = "{\"images\":[\"/incoming/new.png\"],\"content\":" + Json.encodeToString(text) + "}"
+        BackupJsonStream(StringReader(source), output,
+            replaceValueStream = { path, writer -> if (path == listOf("images")) { images(writer); true } else false },
+            extraRootStreams = mapOf("images" to images, "generatedImageMetadata" to { it.write("[]") }),
+            observeValue = { path -> observed.takeIf { path == listOf("content") } }
+        ) { _, _ -> error("Unselected incoming image must not be mapped") }.copy()
+        val result = Json.parseToJsonElement(output.toString()).jsonObject
+        assertEquals("[\"/local/original.png\"]", result.getValue("images").toString())
+        assertEquals("[]", result.getValue("generatedImageMetadata").toString())
+        assertEquals(text, result.getValue("content").jsonPrimitive.content)
+        assertEquals(text, Json.parseToJsonElement(observed.toString()).jsonPrimitive.content)
+        assertThrows(IllegalArgumentException::class.java) {
+            BackupJsonStream(StringReader("""{"images":[{"id":"one","id":"two"}]}"""), StringWriter(),
+                replaceValueStream = { _, writer -> writer.write("[]"); true }
+            ) { value, _ -> value }.copy()
+        }
+    }
+
     @Test fun mapsOnlyResourceFieldsAndRetainsPromptAndMessageText() {
         val source = """{"avatar":"/old/a.png","content":"/old/a.png","systemPrompt":"/old/a.png","extensions":{"path":"/old/a.png"},"characterPayload":{"characters":[{"appearanceImage":"/old/a.png"}]}}"""
         val output = StringWriter()

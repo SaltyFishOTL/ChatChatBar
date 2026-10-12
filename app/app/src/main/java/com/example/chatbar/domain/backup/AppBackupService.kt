@@ -34,12 +34,16 @@ class AppBackupService(
     val dialogOpen = _dialogOpen.asStateFlow()
     private val _importRequest = MutableStateFlow<AppBackupImportRequest?>(null)
     val importRequest = _importRequest.asStateFlow()
+    private val _catalog = MutableStateFlow(BackupCatalogState())
+    val catalog = _catalog.asStateFlow()
+    private var catalogJob: Job? = null
     private val lock = Any()
     private var operation: Job? = null
     private var cleanup: Job? = null
     private var restoreAdmission: Closeable? = null
     private var cancellationReason: String? = null
     private var selectedExportPassword: CharArray? = null
+    private var selectedExportContents: AppBackupSelection? = null
     private var exportSelectionConfigured = false
     private val workspace get() = AppBackupBootstrap.workspace(context)
 
@@ -77,41 +81,59 @@ class AppBackupService(
         }.getOrDefault(AppBackupState(AppBackupPhase.FAILED, error = "上次迁移进度损坏，请重新选择文件。"))
     }
 
-    fun open() { _dialogOpen.value = true }
+    fun open() { _dialogOpen.value = true; refreshCatalog() }
 
-    fun configureExport(password: CharArray?) {
+    fun refreshCatalog() {
+        catalogJob?.cancel()
+        _catalog.value = _catalog.value.copy(loading = true, error = null)
+        catalogJob = scope.launch(Dispatchers.IO) {
+            try {
+                val coroutine = currentCoroutineContext()
+                val catalog = BackupExportCatalog.read(context.filesDir) { coroutine.ensureActive() }
+                _catalog.value = BackupCatalogState(catalog = catalog)
+            } catch (error: CancellationException) { throw error }
+            catch (error: Exception) { _catalog.value = BackupCatalogState(error = error.message ?: "无法读取导出清单") }
+        }
+    }
+
+    fun configureExport(password: CharArray?, selection: AppBackupSelection? = null) {
         synchronized(lock) {
             selectedExportPassword?.fill('\u0000')
             selectedExportPassword = password
+            selectedExportContents = selection
             exportSelectionConfigured = true
         }
     }
 
     fun exportSelected(uri: Uri) {
-        val password = synchronized(lock) {
+        val (password, selection) = synchronized(lock) {
             check(exportSelectionConfigured) { "导出配置已失效，请重新选择导出" }
             exportSelectionConfigured = false
-            selectedExportPassword.also { selectedExportPassword = null }
+            (selectedExportPassword to selectedExportContents).also {
+                selectedExportPassword = null; selectedExportContents = null
+            }
         }
-        export(uri, password)
+        export(uri, password, selection)
     }
 
     fun cancelExportSelection() {
         synchronized(lock) {
             selectedExportPassword?.fill('\u0000')
             selectedExportPassword = null
+            selectedExportContents = null
             exportSelectionConfigured = false
         }
     }
 
     fun requestImport(path: String, consumed: () -> Unit) {
-        check(!state.value.busy && state.value.phase != AppBackupPhase.READY_TO_RESTART) { "正在迁移数据，请稍后重试" }
+        check(!state.value.busy && state.value.phase != AppBackupPhase.READY_TO_RESTART &&
+            state.value.phase != AppBackupPhase.AWAITING_CONFIRMATION) { "请先处理当前迁移存档" }
         check(_importRequest.value == null) { "已有待处理的全量存档" }
         _importRequest.value = AppBackupImportRequest(path, consumed)
         _dialogOpen.value = true
     }
 
-    fun export(uri: Uri, password: CharArray?) = start(password, failure = { message ->
+    fun export(uri: Uri, password: CharArray?, selection: AppBackupSelection? = null) = start(password, failure = { message ->
         val removed = runCatching { DocumentsContract.deleteDocument(context.contentResolver, uri) }.getOrDefault(false)
         if (removed) message else message + "；所选位置可能留有不完整文件，请删除后重试"
     }) {
@@ -119,18 +141,20 @@ class AppBackupService(
         LocalDataMaintenance.acquire().use {
             val work = File(workspace, "export").also { it.deleteRecursively(); it.mkdirs() }
             try {
-                val total = BackupDataRegistry.files(context.filesDir).fold(0L) { sum, file ->
-                    Math.addExact(sum, file.length())
-                }
-                BackupArchive.ensureSpace(work, Math.multiplyExact(total, 2L))
-                val preferences = BackupPreferenceTransfer.capture(context)
                 val activeCoroutine = currentCoroutineContext()
-                BackupEntityValidator.validateTree(context, context.filesDir) { activeCoroutine.ensureActive() }
+                val catalog = BackupExportCatalog.read(context.filesDir) { activeCoroutine.ensureActive() }
+                val plan = catalog.plan(selection ?: catalog.allSelection())
+                val total = plan.estimate().bytes
+                BackupArchive.ensureSpace(work, Math.multiplyExact(total, 2L))
+                val preferences = BackupPreferenceTransfer.capture(context, plan.selection)
+                val validation = BackupEntityValidator.validateTree(context, context.filesDir, exportSelectionOnly = true, selection = plan) {
+                    activeCoroutine.ensureActive()
+                }
                 val archive = File(work, "complete.cbbackup")
                 _state.value = AppBackupState(AppBackupPhase.EXPORTING, "正在打包本地数据", totalBytes = total)
                 archive.outputStream().buffered().use { output ->
                     engine().create(context.filesDir, work, output, password,
-                        BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME, preferences)
+                        BuildConfig.VERSION_CODE, BuildConfig.VERSION_NAME, preferences, plan)
                 }
                 _state.value = _state.value.copy(phase = AppBackupPhase.VALIDATING, label = "正在验证存档", doneBytes = 0)
                 val verify = File(work, "verify")
@@ -154,7 +178,8 @@ class AppBackupService(
                     }
                     output.flush()
                 } ?: error("无法写入所选位置")
-                _state.value = AppBackupState(AppBackupPhase.COMPLETE, "全量存档已导出", summary = summary)
+                _state.value = AppBackupState(AppBackupPhase.COMPLETE, "所选存档已导出", summary = summary,
+                    warnings = validation.warnings)
             } finally { work.deleteRecursively() }
         }
     }
@@ -175,7 +200,7 @@ class AppBackupService(
     }
 
     private suspend fun prepare(password: CharArray?, open: () -> java.io.InputStream) {
-        val work = File(workspace, "prepared")
+        val work = File(workspace, "incoming")
         check(!AppBackupBootstrap.transaction(context).pending()) { "已有待恢复事务，请先重新打开 APP" }
         work.deleteRecursively()
         work.mkdirs()
@@ -186,33 +211,94 @@ class AppBackupService(
                 engine().extract(it, password, work, context.filesDir, BuildConfig.VERSION_CODE)
             }
             val activeCoroutine = currentCoroutineContext()
-            BackupEntityValidator.validateTree(context, File(work, "files")) { activeCoroutine.ensureActive() }
+            val validation = BackupEntityValidator.validateTree(context, File(work, "files")) { activeCoroutine.ensureActive() }
             resetDeviceConfirmations(File(work, "files"))
             BackupPreparedSeal.write(work, { activeCoroutine.ensureActive() }, AppBackupBootstrap::syncDirectory)
             ready = true
             _state.value = AppBackupState(
-                AppBackupPhase.AWAITING_CONFIRMATION, "存档校验完成，等待确认恢复", summary = summary
+                AppBackupPhase.AWAITING_CONFIRMATION, "存档校验完成，等待确认恢复", summary = summary,
+                warnings = validation.warnings
             )
         } finally { if (!ready) work.deleteRecursively() }
     }
 
-    fun prepareRestore() {
+    fun discardRestorePreview() {
         check(state.value.phase == AppBackupPhase.AWAITING_CONFIRMATION)
+        restoreAdmission?.close()
+        restoreAdmission = null
+        _state.value = _state.value.copy(restorePreview = null, error = null)
+        cleanup = scope.launch(Dispatchers.IO) { File(workspace, "prepared").deleteRecursively() }
+    }
+
+    fun previewRestore(mode: AppBackupRestoreMode) {
+        check(state.value.phase == AppBackupPhase.AWAITING_CONFIRMATION)
+        check(restoreAdmission == null && state.value.restorePreview == null) { "请先修改导入模式或取消已有预览" }
+        val inspected = state.value.copy(restorePreview = null, error = null)
+        require(requireNotNull(inspected.summary).requiresRestorePreview(mode)) { "旧版全量存档不需要选择范围预览" }
+        start(null, recoverState = inspected) {
+            flushDrafts()
+            val lease = LocalDataMaintenance.acquire()
+            val work = File(workspace, "prepared")
+            var ready = false
+            try {
+                BackupPreferenceTransfer.flush(context)
+                check(!AppBackupBootstrap.transaction(context).pending()) { "已有待恢复事务" }
+                work.deleteRecursively()
+                work.mkdirs()
+                val coroutine = currentCoroutineContext()
+                _state.value = _state.value.copy(phase = AppBackupPhase.PREPARING, label = "正在比较并准备恢复数据")
+                val preview = BackupMergeEngine(context.filesDir, File(workspace, "incoming"), work,
+                    requireNotNull(inspected.summary), mode, { coroutine.ensureActive() }, { bytes, files, label ->
+                        _state.value = _state.value.copy(doneBytes = bytes, doneFiles = files, label = label)
+                    }).build()
+                val validation = BackupEntityValidator.validateTree(context, File(work, "files")) { coroutine.ensureActive() }
+                BackupPreparedSeal.write(work, { coroutine.ensureActive() }, AppBackupBootstrap::syncDirectory)
+                restoreAdmission = lease
+                ready = true
+                _state.value = inspected.copy(label = "恢复预览完成，确认后导入", restorePreview = preview,
+                    warnings = (inspected.warnings + validation.warnings + preview.warnings).distinct())
+            } finally {
+                if (!ready) { work.deleteRecursively(); lease.close() }
+            }
+        }
+    }
+
+    fun prepareRestore(mode: AppBackupRestoreMode = AppBackupRestoreMode.REPLACE_ALL) {
+        check(state.value.phase == AppBackupPhase.AWAITING_CONFIRMATION)
+        val needsPreview = requireNotNull(state.value.summary).requiresRestorePreview(mode)
+        if (needsPreview) check(state.value.restorePreview?.mode == mode && restoreAdmission != null) {
+            "请先预览恢复结果"
+        }
+        val inspected = state.value
         synchronized(lock) {
             if (operation?.isActive == true) return
+            _state.value = inspected.copy(phase = AppBackupPhase.PREPARING, label = "正在记录恢复事务")
             operation = scope.launch(Dispatchers.IO) {
                 try {
-                    val lease = LocalDataMaintenance.acquire()
+                    val lease = restoreAdmission ?: LocalDataMaintenance.acquire()
                     try {
+                        currentCoroutineContext().ensureActive()
                         BackupPreferenceTransfer.flush(context)
-                        AppBackupBootstrap.transaction(context).schedule()
+                        currentCoroutineContext().ensureActive()
+                        AppBackupBootstrap.transaction(context).schedule(if (needsPreview) "prepared" else "incoming")
                         restoreAdmission = lease
                         _state.value = _state.value.copy(
                             phase = AppBackupPhase.READY_TO_RESTART, label = "已准备恢复，请关闭并重新打开 APP", error = null
                         )
-                    } catch (error: Throwable) { lease.close(); throw error }
+                    } catch (error: Throwable) {
+                        if (AppBackupBootstrap.transaction(context).pending()) {
+                            // A durable intent may exist even when the final directory fsync reports failure.
+                            restoreAdmission = lease
+                            _state.value = inspected.copy(phase = AppBackupPhase.READY_TO_RESTART,
+                                label = "恢复事务已记录，请关闭并重新打开 APP",
+                                error = "事务记录尚需启动时核对：${error.message ?: "写入失败"}")
+                        } else {
+                            if (restoreAdmission == null) lease.close()
+                            throw error
+                        }
+                    }
                 } catch (error: Exception) {
-                    _state.value = _state.value.copy(error = error.message ?: "无法准备恢复")
+                    _state.value = inspected.copy(error = if (error is CancellationException) cancellationReason ?: "恢复准备已取消" else error.message ?: "无法准备恢复")
                 }
             }
         }
@@ -231,13 +317,20 @@ class AppBackupService(
         _state.value = AppBackupState()
         _dialogOpen.value = false
         cancelExportSelection()
+        catalogJob?.cancel()
+        _catalog.value = BackupCatalogState()
+        restoreAdmission?.close()
+        restoreAdmission = null
         cleanup = scope.launch(Dispatchers.IO) {
+            operation?.join()
             File(workspace, "prepared").deleteRecursively()
+            File(workspace, "incoming").deleteRecursively()
             request?.consumed?.invoke()
         }
     }
 
-    private fun start(password: CharArray?, failure: ((String) -> String)? = null, action: suspend () -> Unit) {
+    private fun start(password: CharArray?, failure: ((String) -> String)? = null,
+        recoverState: AppBackupState? = null, action: suspend () -> Unit) {
         synchronized(lock) {
             check(operation?.isCompleted != false) { "数据迁移或取消清理尚未完成，请稍后重试" }
             cancellationReason = null
@@ -249,12 +342,14 @@ class AppBackupService(
                     LocalDataTransferForegroundService.runProtected(context, ::cancel, action)
                 } catch (error: CancellationException) {
                     val reason = cancellationReason ?: "迁移已取消"
-                    _state.value = AppBackupState(AppBackupPhase.FAILED, error = failure?.invoke(reason) ?: reason)
+                    _state.value = recoverState?.copy(error = reason, label = "恢复准备已取消，原数据保留")
+                        ?: AppBackupState(AppBackupPhase.FAILED, error = failure?.invoke(reason) ?: reason)
                 } catch (error: Exception) {
                     val reason = if (error is kotlinx.serialization.SerializationException) {
                         "存档或本地记录格式损坏，请检查数据后重试"
                     } else error.message ?: "迁移失败，请重试"
-                    _state.value = AppBackupState(AppBackupPhase.FAILED, error = failure?.invoke(reason) ?: reason)
+                    _state.value = recoverState?.copy(error = reason, label = "恢复准备失败，原数据保留")
+                        ?: AppBackupState(AppBackupPhase.FAILED, error = failure?.invoke(reason) ?: reason)
                 } finally {
                     password?.fill('\u0000')
                 }

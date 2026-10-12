@@ -32,14 +32,15 @@ object AppBackupBootstrap {
             validatePrepared = { prepared ->
                 BackupPreparedSeal.validate(prepared)
                 val summary = backupJson.decodeFromString<AppBackupSummary>(File(prepared, "manifest.json").readText())
-                require(summary.formatVersion == 1 && summary.appVersionCode <= com.example.chatbar.BuildConfig.VERSION_CODE) {
-                    "该存档来自更新版本，请先升级 APP"
-                }
+                summary.requireCompatibleWith(com.example.chatbar.BuildConfig.VERSION_CODE)
             }
         )
         recoveryNotice = if (transaction.recoveredRollback) "上次恢复已中断，已回滚原数据。请重新导入存档。" else null
         if (restored || transaction.recoveredRollback) File(directory, "last-operation.json").delete()
-        if (!transaction.pending()) File(directory, "prepared").deleteRecursively()
+        if (!transaction.pending()) {
+            File(directory, "prepared").deleteRecursively()
+            File(directory, "incoming").deleteRecursively()
+        }
         File(directory, "export").deleteRecursively()
         return restored
     }

@@ -33,7 +33,8 @@ internal object AppBackupCodec {
     fun hasMagic(input: InputStream): Boolean =
         DataInputStream(input).run { ByteArray(magic.size).also { readFully(it) }.contentEquals(magic) }
 
-    fun encrypting(output: OutputStream, password: CharArray?): OutputStream {
+    fun encrypting(output: OutputStream, password: CharArray?, version: Int = 1): OutputStream {
+        require(version in 1..2) { "存档格式不支持" }
         val protected = password != null
         var handle: KeysetHandle? = null
         val envelope = if (protected) {
@@ -51,12 +52,13 @@ internal object AppBackupCodec {
                 cipher.updateAAD(magic + salt)
                 val wrapped = try { cipher.iv + cipher.doFinal(plain) } finally { plain.fill(0) }
                 AppBackupEnvelope(
+                    version = version,
                     encrypted = true,
                     salt = Base64.getEncoder().encodeToString(salt),
                     wrappedKey = Base64.getEncoder().encodeToString(wrapped)
                 )
             } finally { key.fill(0) }
-        } else AppBackupEnvelope()
+        } else AppBackupEnvelope(version = version)
         val header = backupJson.encodeToString(envelope).toByteArray(Charsets.UTF_8)
         DataOutputStream(output).apply {
             write(magic)
@@ -77,7 +79,7 @@ internal object AppBackupCodec {
         require(length in 1..32768) { "存档头损坏" }
         val header = ByteArray(length).also(source::readFully)
         val envelope = backupJson.decodeFromString<AppBackupEnvelope>(header.toString(Charsets.UTF_8))
-        require(envelope.version == 1) { "存档格式不支持，请升级 APP" }
+        require(envelope.version in 1..2) { "存档格式不支持，请升级 APP" }
         if (!envelope.encrypted) {
             require(envelope.salt == null && envelope.wrappedKey == null) { "存档头无效" }
             return source

@@ -31,6 +31,25 @@ class NovelAiStudioRepositoryTest {
     val temp = TemporaryFolder()
 
     @Test
+    fun mixedMetadataAndOriginalDeletionKeepsRemainingRecipeWithoutStagingOmittedFiles() = runTest {
+        val files = temp.newFolder()
+        val images = NovelAiImageStorage(TestContext(files))
+        val repository = repository(files)
+        val original = NovelAiGenerationHistoryImage(images.save("mixed", byteArrayOf(1, 2, 3)), 11)
+        val omitted = NovelAiGenerationHistoryImage(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX + "one", 12)
+        val survivor = NovelAiGenerationHistoryImage(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX + "two", 13)
+        val entry = NovelAiGenerationHistoryEntry(id = "mixed", images = listOf(original, omitted, survivor),
+            recipe = NovelAiGenerationRecipe(basePrompt = "retained recipe"), createdAt = 100)
+        repository.saveHistory(entry)
+        val result = repository.deleteHistoryImages(listOf(
+            NovelAiHistoryImageSelection("mixed", original.path), NovelAiHistoryImageSelection("mixed", omitted.path)))
+        assertEquals(2, result.deletedCount)
+        assertEquals(0, result.cleanupFailureCount)
+        assertFalse(File(original.path).exists())
+        assertEquals(listOf(entry.copy(images = listOf(survivor))), repository.history.first())
+    }
+
+    @Test
     fun `delayed flush persists latest staged revision instead of captured older draft`() = runTest {
         val files = temp.newFolder("latest-${System.nanoTime()}")
         val repository = repository(files)

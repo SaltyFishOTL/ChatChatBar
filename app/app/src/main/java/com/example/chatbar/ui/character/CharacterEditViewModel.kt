@@ -61,6 +61,7 @@ import com.example.chatbar.domain.image.NovelAiStylePreset
 import com.example.chatbar.domain.image.NovelAiStylePromptFillState
 import com.example.chatbar.domain.image.hasImageDesignSource
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
+import com.example.chatbar.domain.moment.MomentMediaRetention
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.search.CharacterReferenceDocument
 import com.example.chatbar.domain.search.CharacterResearchOptions
@@ -2450,7 +2451,10 @@ class CharacterEditViewModel(
         val oldAssets = oldCard?.let(draftAssetService::ownedAssetPaths).orEmpty().toSet()
         val newAssets = draftAssetService.ownedAssetPaths(newCard).toSet()
         val removedAssets = oldAssets - newAssets + pendingDeletedAssets
-        draftAssetService.deleteFiles(removedAssets)
+        val removableAssets = MomentMediaRetention.unreferencedPaths(
+            removedAssets, ChatBarApp.instance.momentRepository.getAllPosts()
+        )
+        draftAssetService.deleteFiles(removableAssets)
 
         val newDocsById = newCard.customDocuments.associateBy { it.id }
         val staleDocIds = oldCard?.customDocuments.orEmpty()

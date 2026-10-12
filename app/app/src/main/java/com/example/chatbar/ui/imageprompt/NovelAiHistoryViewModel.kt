@@ -178,6 +178,10 @@ class NovelAiHistoryViewModel : ViewModel() {
         val snapshot = _uiState.value
         if (snapshot.busy || snapshot.exportPlan != null || snapshot.selectedImageKeys.isEmpty()) return
         val selectedItems = snapshot.selectedItems()
+        if (selectedItems.any { it.image.path.startsWith(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX) }) {
+            _uiState.update { it.copy(error = "选择中包含仅元数据记录，没有原图可保存；请取消这些记录后重试") }
+            return
+        }
         if (selectedItems.size != snapshot.selectedImageKeys.size) {
             _uiState.update { it.copy(error = "部分历史图片已发生变化，请重新选择") }
             return
@@ -326,6 +330,10 @@ class NovelAiHistoryViewModel : ViewModel() {
 
     fun useImage(item: NovelAiHistoryImageItem, target: NovelAiImageUseTarget) {
         if (_uiState.value.busy) return
+        if (item.image.path.startsWith(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX)) {
+            reportError("此历史记录导出时未包含原图，无法用作图像引导")
+            return
+        }
         viewModelScope.launch {
             _uiState.update { it.copy(busy = true, error = null) }
             runCatching {

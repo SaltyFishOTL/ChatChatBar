@@ -295,6 +295,9 @@ data class NovelAiGenerationHistoryImage(
     val seed: Long = 0L
 )
 
+val NovelAiGenerationHistoryImage.originalOmitted: Boolean
+    get() = path.startsWith(com.example.chatbar.domain.chat.OMITTED_SAVE_SLOT_IMAGE_PREFIX)
+
 @Serializable
 data class NovelAiGenerationHistoryEntry(
     val id: String = UUID.randomUUID().toString(),

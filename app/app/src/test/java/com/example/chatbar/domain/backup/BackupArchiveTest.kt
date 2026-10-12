@@ -2,6 +2,7 @@ package com.example.chatbar.domain.backup
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.MomentPost
 import java.io.File
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -78,6 +79,84 @@ class BackupArchiveTest {
         assertEquals("original", original.readText())
     }
 
+    @Test fun unrelatedRuntimeAndUnknownStoresAreExcludedWithoutChangingUserFiles() {
+        val (source, media) = source("source")
+        val runtimeFiles = listOf(
+            File(source, "profileinstaller_profileWrittenFor_lastUpdateTime.dat"),
+            File(source, "profileInstalled"),
+            File(source, "mozilla/profiles/profile/runtime.json"),
+            File(source, "future-sdk/vendor-state.dat"),
+            File(source, "entities/vendor_runtime/invalid.json"),
+            File(source, "entities/novelai_prompt_translation_cache.json"),
+            File(source, "danbooru_catalog/tag.sqlite.download.part")
+        )
+        val runtimeBytes = byteArrayOf(1, 2, 3, 4)
+        runtimeFiles.forEach { it.parentFile!!.mkdirs(); it.writeBytes(runtimeBytes) }
+        val userFile = File(source, "documents/profileInstalled").also {
+            it.parentFile!!.mkdirs()
+            it.writeBytes(byteArrayOf(5, 6, 7))
+        }
+        val archive = temporary.newFile("archive")
+        val summary = archive.outputStream().use {
+            engine().create(source, temporary.newFolder("encode"), it, null, 10, "fixture", BackupPreferences())
+        }
+        val work = temporary.newFolder("decode")
+        val target = temporary.newFolder("target")
+        val restored = archive.inputStream().use { engine().extract(it, null, work, target, 10) }
+        val staged = File(work, "files")
+        assertEquals(summary, restored)
+        assertEquals(3, summary.fileCount)
+        assertArrayEquals(media, File(staged, "images/generated/picture.png").readBytes())
+        assertArrayEquals(userFile.readBytes(), File(staged, "documents/profileInstalled").readBytes())
+        runtimeFiles.forEach {
+            assertFalse(File(staged, it.relativeTo(source).path).exists())
+            assertArrayEquals(runtimeBytes, it.readBytes())
+        }
+    }
+
+    @Test fun referencedResourceOutsideSelectedStoresIsCopiedAndRemapped() {
+        val (source, _) = source("source")
+        val referenced = File(source, "vendor-runtime/picked.png").also {
+            it.parentFile!!.mkdirs()
+            it.writeBytes(byteArrayOf(7, 8, 9))
+        }
+        val unreferenced = File(referenced.parentFile, "unrelated.dat").also { it.writeText("leave behind") }
+        val messageFile = File(source, "entities/chat_messages/m.json")
+        val message = json.decodeFromString<ChatMessage>(messageFile.readText())
+        messageFile.writeText(json.encodeToString(message.copy(images = listOf(referenced.path))))
+        val archive = temporary.newFile()
+        archive.outputStream().use {
+            engine().create(source, temporary.newFolder("encode"), it, null, 10, "fixture", BackupPreferences())
+        }
+        val work = temporary.newFolder("decode")
+        val target = temporary.newFolder("target")
+        archive.inputStream().use { engine().extract(it, null, work, target, 10) }
+        val staged = File(work, "files")
+        val restored = json.decodeFromString<ChatMessage>(File(staged, "entities/chat_messages/m.json").readText())
+        assertTrue(restored.images.single().startsWith(File(target, "images/migrated_external").path))
+        val relative = File(restored.images.single()).relativeTo(target).path
+        assertArrayEquals(referenced.readBytes(), File(staged, relative).readBytes())
+        assertFalse(File(staged, "vendor-runtime").exists())
+        assertEquals("leave behind", unreferenced.readText())
+    }
+
+    @Test fun corruptedRegisteredStoreStillStopsExport() {
+        val root = temporary.newFolder()
+        val record = File(root, "entities/chat_messages/m.json").also {
+            it.parentFile!!.mkdirs()
+            it.writeText("{broken JSON")
+        }
+        assertThrows(IllegalStateException::class.java) {
+            temporary.newFile().outputStream().use {
+                engine().create(root, temporary.newFolder(), it, null, 10, "fixture", BackupPreferences())
+            }
+        }
+        assertEquals("{broken JSON", record.readText())
+        record.delete()
+        File(root, "images").writeText("damaged directory")
+        assertThrows(IllegalArgumentException::class.java) { BackupDataRegistry.files(root).toList() }
+    }
+
     @Test fun newerAppArchiveAndEscapingPathsAreRejected() {
         val (source, _) = source("source")
         val archive = temporary.newFile("archive")
@@ -98,6 +177,40 @@ class BackupArchiveTest {
             temporary.newFile().outputStream().use { engine().create(source, temporary.newFolder("encode"), it, null, 10, "fixture", BackupPreferences()) }
         }
         assertEquals(original, File(source, "entities/chat_messages/m.json").readText())
+    }
+
+    @Test fun historicalMissingAvatarRoundTripsWhileMissingMomentImageStillBlocksExport() {
+        val (source, media) = source("source")
+        val missing = File(source, "images/old-card-avatar.png")
+        val post = MomentPost(id = "post", characterCardId = "old-card", sessionId = "session",
+            senderName = "历史人物", senderAvatar = missing.path, text = "历史文案",
+            imagePath = File(source, "images/generated/picture.png").path,
+            isPrivate = true, userLiked = true, scheduledAt = 10, generatedAt = 11)
+        val record = File(source, "entities/moment_posts/post.json").also {
+            it.parentFile!!.mkdirs(); it.writeText(json.encodeToString(post))
+        }
+        val original = record.readBytes()
+        val archive = temporary.newFile()
+        archive.outputStream().use {
+            engine().create(source, temporary.newFolder("encode"), it, null, 10, "fixture", BackupPreferences())
+        }
+        val work = temporary.newFolder("decode")
+        val target = temporary.newFolder("target")
+        archive.inputStream().use { engine().extract(it, null, work, target, 10) }
+        val staged = File(work, "files")
+        val restored = json.decodeFromString<MomentPost>(File(staged, "entities/moment_posts/post.json").readText())
+        assertEquals(post.copy(senderAvatar = File(target, "images/old-card-avatar.png").path,
+            imagePath = File(target, "images/generated/picture.png").path), restored)
+        assertFalse(File(staged, "images/old-card-avatar.png").exists())
+        assertArrayEquals(media, File(staged, "images/generated/picture.png").readBytes())
+        assertArrayEquals(original, record.readBytes())
+        record.writeText(json.encodeToString(post.copy(imagePath = missing.path)))
+        val error = assertThrows(IllegalStateException::class.java) {
+            temporary.newFile().outputStream().use {
+                engine().create(source, temporary.newFolder(), it, null, 10, "fixture", BackupPreferences())
+            }
+        }
+        assertTrue(error.message.orEmpty().contains("imagePath"))
     }
 
     @Test fun legacyInlineSaveSlotKeepsEmbeddedBytesAndPortableKeyIdentity() {
