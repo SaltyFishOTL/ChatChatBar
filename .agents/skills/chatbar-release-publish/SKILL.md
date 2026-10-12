@@ -49,7 +49,7 @@ Report version, commit, workflow result, Release URL, APK asset, exact user-faci
 
 ## Client Reality Check
 
-On Windows, gh may report an invalid login when it cannot connect through the registry-configured system proxy. Compare Git/Python connectivity before changing credentials; propagate the existing system HTTP/HTTPS proxy into the release child process when gh does not inherit it.
+On Windows, gh may report an invalid login when it cannot connect through the registry-configured system proxy. Compare Git/Python connectivity before changing credentials; propagate the existing system HTTP/HTTPS proxy into the release child process when gh does not inherit it. Git fetch/pull can also wait on direct connections; pass the same existing proxy with `git -c http.proxy=<system-proxy> pull --ff-only` when needed.
 
 GitHub Release body existence does not prove the app can display it. When the app reports empty notes:
 
