@@ -282,8 +282,8 @@ class NovelAiHistoryViewModel : ViewModel() {
             _uiState.update { it.copy(error = "部分历史图片已发生变化，请重新选择") }
             return
         }
+        _uiState.update { it.copy(busy = true, error = null, notice = null) }
         viewModelScope.launch {
-            _uiState.update { it.copy(busy = true, error = null, notice = null) }
             runCatching {
                 repository.deleteHistoryImages(
                     selectedItems.map { item ->

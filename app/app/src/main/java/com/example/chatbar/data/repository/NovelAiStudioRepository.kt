@@ -1,6 +1,7 @@
 package com.example.chatbar.data.repository
 
 import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiHistoryApplyMode
@@ -26,6 +27,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 
 class NovelAiStudioRepository(
@@ -223,64 +225,48 @@ class NovelAiStudioRepository(
 
     suspend fun deleteHistoryImages(
         selections: List<NovelAiHistoryImageSelection>
-    ): NovelAiHistoryImageDeleteResult = historyMutex.withLock {
-        val uniqueSelections = selections.distinctBy { it.entryId to it.imagePath }
-        require(uniqueSelections.isNotEmpty()) { "未选择历史图片" }
-        val originals = storage.loadAll(HISTORY_ENTITY, NovelAiGenerationHistoryEntry.serializer())
-            .associateBy(NovelAiGenerationHistoryEntry::id)
-        val mutations = NovelAiHistoryDeletionPolicy.apply(originals.values.toList(), uniqueSelections)
+    ): NovelAiHistoryImageDeleteResult = LocalDataMaintenance.access {
+        historyMutex.withLock {
+            val uniqueSelections = selections.distinctBy { it.entryId to it.imagePath }
+            require(uniqueSelections.isNotEmpty()) { "未选择历史图片" }
+            val originals = storage.loadByIdsUncached(
+                HISTORY_ENTITY,
+                uniqueSelections.map(NovelAiHistoryImageSelection::entryId).distinct(),
+                NovelAiGenerationHistoryEntry.serializer()
+            )
+            val mutations = NovelAiHistoryDeletionPolicy.apply(originals, uniqueSelections)
 
-        val staged = mutableListOf<com.example.chatbar.domain.image.NovelAiStagedImageDeletion>()
-        try {
-            withContext(Dispatchers.IO) {
-                uniqueSelections.forEach { selection ->
-                    imageStorage.stageImageDelete(selection.imagePath)?.let(staged::add)
-                }
-            }
-            mutations.forEach { (entryId, remaining) ->
-                if (remaining == null) {
-                    storage.deleteEntity<NovelAiGenerationHistoryEntry>(HISTORY_ENTITY, entryId)
-                } else {
-                    storage.saveEntity(
+            // Once files move, finish commit or rollback even when this screen is disposed.
+            withContext(Dispatchers.IO + NonCancellable) {
+                val staged = mutableListOf<com.example.chatbar.domain.image.NovelAiStagedImageDeletion>()
+                try {
+                    uniqueSelections.forEach { selection ->
+                        imageStorage.stageImageDelete(selection.imagePath)?.let(staged::add)
+                    }
+                    storage.applyEntityChanges(
                         HISTORY_ENTITY,
-                        entryId,
-                        remaining,
+                        mutations,
                         NovelAiGenerationHistoryEntry.serializer()
                     )
-                }
-            }
-        } catch (error: Throwable) {
-            val rollbackFailures = mutableListOf<Throwable>()
-            mutations.keys.forEach { entryId ->
-                originals[entryId]?.let { original ->
-                    runCatching {
-                        storage.saveEntity(
-                            HISTORY_ENTITY,
-                            entryId,
-                            original,
-                            NovelAiGenerationHistoryEntry.serializer()
-                        )
-                    }.exceptionOrNull()?.let(rollbackFailures::add)
-                }
-            }
-            withContext(Dispatchers.IO) {
-                staged.asReversed().forEach { deletion ->
-                    if (!imageStorage.restoreStagedImage(deletion)) {
-                        rollbackFailures += IllegalStateException("图片恢复失败：${deletion.original.name}")
+                } catch (error: Throwable) {
+                    staged.asReversed().forEach { deletion ->
+                        runCatching {
+                            check(imageStorage.restoreStagedImage(deletion)) {
+                                "图片恢复失败：${deletion.original.name}"
+                            }
+                        }.exceptionOrNull()?.let(error::addSuppressed)
                     }
+                    if (error.suppressed.isNotEmpty()) {
+                        throw IllegalStateException("历史删除失败，部分回滚未完成；暂存原文件已保留", error)
+                    }
+                    throw error
                 }
+                NovelAiHistoryImageDeleteResult(
+                    deletedCount = uniqueSelections.size,
+                    cleanupFailureCount = imageStorage.commitStagedImageDeletes(staged)
+                )
             }
-            rollbackFailures.forEach(error::addSuppressed)
-            throw error
         }
-
-        val cleanupFailures = withContext(Dispatchers.IO) {
-            staged.count { !imageStorage.commitStagedImageDelete(it) }
-        }
-        NovelAiHistoryImageDeleteResult(
-            deletedCount = uniqueSelections.size,
-            cleanupFailureCount = cleanupFailures
-        )
     }
 
     companion object {

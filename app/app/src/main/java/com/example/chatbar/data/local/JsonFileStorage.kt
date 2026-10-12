@@ -393,6 +393,38 @@ class JsonFileStorage(private val context: Context) {
         }
     }
 
+    /** 暂存并切换一批实体，失败时恢复旧文件；成功后只发布一次缓存变更。null 表示删除。 */
+    suspend fun <T : Any> applyEntityChanges(
+        entityType: String,
+        changes: Map<String, T?>,
+        serializer: KSerializer<T>
+    ) = mutexFor(entityType).withStorageAccess {
+        if (changes.isEmpty()) return@withStorageAccess
+        val mutations = changes.toMap()
+        withContext(Dispatchers.IO + kotlinx.coroutines.NonCancellable) {
+            val directory = entityDir(entityType).canonicalFile
+            mutations.keys.forEach { id ->
+                require(id.isNotBlank() && File(directory, "$id.json").canonicalFile.parentFile == directory) {
+                    "非法实体存储 ID：$id"
+                }
+            }
+            replaceMatchingFilesStreamingLocked(
+                entityType = entityType,
+                serializer = serializer,
+                currentMatches = { file -> file.nameWithoutExtension in mutations },
+                producer = { emit ->
+                    mutations.forEach { (id, entity) -> if (entity != null) emit(id, entity) }
+                }
+            )
+            val flow = getCacheFlow<T>(entityType)
+            val next = flow.value.toMutableMap()
+            mutations.forEach { (id, entity) ->
+                if (entity == null) next.remove(id) else next[id] = entity
+            }
+            flow.value = next
+        }
+    }
+
     /**
      * 先把替代实体逐条写入暂存目录，再一次切换指定前缀的文件。
      * 生产或切换失败时保留原文件，不在内存中构造完整实体 Map。

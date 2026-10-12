@@ -10,7 +10,11 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.test.UnconfinedTestDispatcher
+import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.builtins.serializer
@@ -146,6 +150,57 @@ class JsonFileStorageSafetyTest {
         assertTrue(storage.observeAll("items", String.serializer()).first().isEmpty())
         storage.loadAll("items", String.serializer())
         assertEquals(listOf("saved"), storage.observeAll("items", String.serializer()).first())
+    }
+
+    @OptIn(kotlinx.coroutines.ExperimentalCoroutinesApi::class)
+    @Test
+    fun mixedBatchPublishesOnlyCommittedSnapshot() = runTest {
+        val dir = temp.newFolder()
+        val storage = storage(dir)
+        storage.saveAll("items", linkedMapOf("a" to "old-a", "b" to "old-b", "c" to "keep"), String.serializer())
+        val snapshots = mutableListOf<Set<String>>()
+        backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {
+            storage.observeAll("items", String.serializer()).collect { snapshots += it.toSet() }
+        }
+        storage.applyEntityChanges("items", linkedMapOf("a" to "new-a", "b" to null), String.serializer())
+        runCurrent()
+        assertEquals(listOf(setOf("old-a", "old-b", "keep"), setOf("new-a", "keep")), snapshots)
+        assertEquals(setOf("new-a", "keep"), storage(dir).loadAll("items", String.serializer()).toSet())
+        assertEquals(setOf("a.json", "c.json"), File(dir, "entities/items").list()!!.toSet())
+    }
+
+    @Test
+    fun failedBatchStagingKeepsAllOriginalFilesAndCache() = runTest {
+        val dir = temp.newFolder()
+        val storage = storage(dir)
+        storage.saveAll("items", linkedMapOf("a" to "old-a", "b" to "old-b", "c" to "keep"), String.serializer())
+        expectFailure<IOException> {
+            storage.applyEntityChanges("items", linkedMapOf("a" to "new-a", "b" to "fail", "c" to null), failingSerializer)
+        }
+        val expected = setOf("old-a", "old-b", "keep")
+        assertEquals(expected, storage.observeAll("items", String.serializer()).first().toSet())
+        assertEquals(expected, storage(dir).loadAll("items", String.serializer()).toSet())
+        assertEquals(setOf("a.json", "b.json", "c.json"), File(dir, "entities/items").list()!!.toSet())
+    }
+
+    @Test
+    fun failedBatchInstallRestoresUpdatesAndDeletedFilesWithoutPublishing() = runTest {
+        val dir = temp.newFolder()
+        val storage = storage(dir)
+        storage.saveAll("items", linkedMapOf("a" to "old-a", "c" to "old-c"), String.serializer())
+        val blocker = File(dir, "entities/items/b.json/foreign")
+        blocker.parentFile!!.mkdirs()
+        blocker.writeText("keep foreign file")
+        val beforeA = File(dir, "entities/items/a.json").readBytes()
+        val beforeC = File(dir, "entities/items/c.json").readBytes()
+        expectFailure<IOException> {
+            storage.applyEntityChanges("items", linkedMapOf("a" to "new-a", "c" to null, "b" to "new-b"), String.serializer())
+        }
+        assertArrayEquals(beforeA, File(dir, "entities/items/a.json").readBytes())
+        assertArrayEquals(beforeC, File(dir, "entities/items/c.json").readBytes())
+        assertEquals("keep foreign file", blocker.readText())
+        assertEquals(setOf("old-a", "old-c"), storage.observeAll("items", String.serializer()).first().toSet())
+        assertEquals(setOf("a.json", "b.json", "c.json"), File(dir, "entities/items").list()!!.toSet())
     }
 
     private val failingSerializer = object : KSerializer<String> by String.serializer() {

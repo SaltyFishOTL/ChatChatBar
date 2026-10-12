@@ -1,11 +1,11 @@
 # ChatBar 项目交接文档
 
-> 状态更新：2026-10-10。当前切片为 `.cbbackup` 全量迁移及完整版本交付：用户已授权全部提交、push、发布新版本；保留完整替换、携带全部 API 密钥和社区会话、可选密码、恢复后重启，以及不默认运行自动测试或设备诊断的约定。
-> 已实现：domain/backup/ 流式封装、Tink 1.23.0 加密、字段路径映射、实体/媒体/标签库校验、完整任务写入屏障、事务日志与暂存二次校验；第九分类“数据迁移”、全局恢复确认、外部分享大文件通道、IO 启动恢复/回滚及页面/服务守卫。
-> 验证：功能、JVM 测试源码、Android 测试源码编译通过，本地功能 release 构建成功。正式 v1.4.5 包已下载至 app/build/published-1.4.5/ChatBar-1.4.5.apk，SHA-256 与 GitHub 资产一致。adb devices -l 无设备，无安装。自动测试、1 GiB 回归与跨机验收均未执行。验收流程：doc/app_backup_manual_acceptance.md。
-> 技能：新增 chatbar-app-backup，更新功能地图、设置、分享、单会话存档、媒体、后台保护、凭据、社区与记忆说明；修正语音与模型请求的过时说明。发布流程固定编译应用及测试源码，runTests 默认 false；显式授权测试才开启。
-> 发布：v1.4.5 已正式发布；功能提交 d3cf2aa9，版本提交 1198a13c，云端源码编译与签名构建成功。以 v1.4.4 为基线的四个功能提交均纳入 11 条更新说明；GitHub API 与 Atom 正文一致、APK 资产核验通过。覆盖全量迁移、角色卡生图设置与独立封面、预制依赖、大型工作室数据、辅助模型配置、朋友圈、长截图、图片反推确认与头像构图。下一步仍为 doc/app_backup_manual_acceptance.md 的跨机和故障验收。
-> 编译：临时忽略脚本 python app/build/compile_backup.py 复用 redeploy.bat 的 Java socket 目录兼容设置。构建从 app/，release 使用根目录 redeploy.bat --build-only --no-pause。辅助编辑脚本已完成用途，不要重复运行。
+> 状态更新：2026-10-12。当前切片为工作室历史缩略图与批量删除回归修复，基线 master c9071842 / 已发布 v1.4.5。用户确认只有缩略图白，详情/全屏正常，未导入 .cbbackup；具体设备白图触发原因尚未复现。
+> 已实现：NovelAiHistoryThumbnail 按格子尺寸请求本地原图，使用独立 24 MiB / 两 IO 槽图片加载器与缩略图缓存，失败可见；批量删除只读选中批次，经 applyEntityChanges 整批切换 JSON 后仅发布一次缓存，整段持有迁移屏障，暂存后非取消 IO 完成提交/回滚，每个图片目录只检查一次。未选原图、历史关联与生成设置保留。
+> 验证：应用、JVM 测试源码、Android 测试源码编译通过；redeploy.bat --build-only --no-pause 的 release 构建和 lintVital 通过。APK：app/app/build/outputs/apk/release/app-release.apk。adb devices -l 无设备，无安装；未执行自动测试或诊断。
+> 待验收：旧历史缩略图、快速滚动/折叠往返、跨批次大量删除后一次刷新、未选图片和图库副本保留、重开持久化、设置复用/图像引导及继续生成。流程与验证边界：doc/image_history_regression_2026_10_12.md。相关 image-generation-runtime / app-backup 技能已更新；用户已要求提交并 push 本轮修复。
+> 全量迁移既定语义：完整替换、携带全部 API 密钥和社区会话、可选密码、恢复后重启。v1.4.5 的 API/Atom 说明与发布 APK 已核验；跨机和 1 GiB 验收仍未执行，见 doc/app_backup_manual_acceptance.md。发布工作流 runTests 默认 false。
+> 构建从 app/；根目录 redeploy.bat 处理 Java socket 兼容设置。临时 app/build/compile_backup.py 可只编译源码，不执行旧辅助编辑脚本。
 
 ---
 

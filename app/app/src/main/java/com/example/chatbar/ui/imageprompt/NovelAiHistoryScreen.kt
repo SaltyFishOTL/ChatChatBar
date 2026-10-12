@@ -44,6 +44,7 @@ import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -81,6 +82,7 @@ import com.example.chatbar.domain.image.hasMissingHistorySource
 import com.example.chatbar.domain.image.requiresImageGuidanceReuseWarning
 import com.example.chatbar.ui.components.ImagePreviewDialog
 import com.example.chatbar.ui.components.ImagePreviewItem
+import com.example.chatbar.ui.components.createChatImageLoader
 import com.example.chatbar.ui.kit.AppIcons
 import com.example.chatbar.ui.kit.ButtonVariant
 import com.example.chatbar.ui.kit.CbButton
@@ -594,6 +596,11 @@ internal fun NovelAiHistoryGallery(
     albums: List<NovelAiHistoryAlbum> = emptyList(),
     rangeAnchorKey: String? = null
 ) {
+    val context = LocalContext.current
+    val thumbnailLoader = remember(context) { createChatImageLoader(context) }
+    DisposableEffect(thumbnailLoader) {
+        onDispose { thumbnailLoader.shutdown() }
+    }
     val albumsByKey = remember(albums) { albums.associateBy { it.key } }
     LazyVerticalGrid(
         columns = GridCells.Adaptive(minSize = 104.dp),
@@ -633,13 +640,13 @@ internal fun NovelAiHistoryGallery(
                         .background(ChatBarTheme.colors.card, RoundedCornerShape(ChatBarShape.sm))
                         .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm)))
                 }
-                AsyncImage(
-                    model = item.image.path,
+                NovelAiHistoryThumbnail(
+                    path = item.image.path,
+                    imageLoader = thumbnailLoader,
                     contentDescription = if (count > 1) "${album?.label}相册，$count 张图片，点击展开" else "历史图片 ${index + 1}",
                     modifier = Modifier.fillMaxSize().padding(end = if (count > 1) 8.dp else 0.dp, bottom = if (count > 1) 8.dp else 0.dp)
                         .clip(RoundedCornerShape(ChatBarShape.sm))
-                        .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm)),
-                    contentScale = ContentScale.Crop
+                        .border(1.dp, ChatBarTheme.colors.border, RoundedCornerShape(ChatBarShape.sm))
                 )
                 if (count > 1 && !selectionMode) {
                     CbText(

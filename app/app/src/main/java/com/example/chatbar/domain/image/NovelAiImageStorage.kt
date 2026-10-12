@@ -83,5 +83,20 @@ class NovelAiImageStorage(private val context: Context) {
         }
     }
 
+    /** 删除暂存图片后，每个批次目录只扫描一次；返回未清理的文件数。 */
+    fun commitStagedImageDeletes(deletions: List<NovelAiStagedImageDeletion>): Int =
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val parents = mutableSetOf<File>()
+            val failures = deletions.count { deletion ->
+                val deleted = !deletion.staged.exists() || deletion.staged.delete()
+                if (deleted) deletion.original.parentFile?.let(parents::add)
+                !deleted
+            }
+            parents.forEach { parent ->
+                if (parent.listFiles()?.isEmpty() == true) parent.delete()
+            }
+            failures
+        }
+
     private fun safeSegment(value: String): String = value.replace(Regex("[^A-Za-z0-9._-]"), "_")
 }
