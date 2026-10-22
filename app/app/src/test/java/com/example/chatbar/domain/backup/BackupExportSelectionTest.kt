@@ -221,6 +221,18 @@ class BackupExportSelectionTest {
         assertEquals(before, source.readText())
     }
 
+    @Test fun selectedSaveSlotPackageNamesCannotEscapeTheRegisteredDirectory() {
+        val root = fixture()
+        val selection = AppBackupSelection(characterIds = setOf("a"),
+            sessions = mapOf("a" to BackupSessionChoice(archives = true)))
+        for (name in listOf("../outside.cbsave", "nested/slot.cbsave", "..", ".", "outside\\slot.cbsave")) {
+            write(root, "entities/save_slots/slot.json", backupJson.encodeToString(SaveSlot(
+                schemaVersion = 8, id = "slot", sessionId = "a", name = "fixture", createdAt = 1,
+                packageRef = SaveSlotPackageRef(name, byteLength = 1))))
+            assertThrows(IllegalArgumentException::class.java) { BackupExportCatalog.read(root) {}.plan(selection) }
+        }
+    }
+
     @Test fun selectedSessionBindsOmittedDefaultsAndKeepsReferencedArchivedDependencies() {
         val root = fixture()
         write(root, "entities/app_settings.json", backupJson.encodeToString(AppSettings(defaultModelId = "default-model", defaultFormatCardId = "default-format")))

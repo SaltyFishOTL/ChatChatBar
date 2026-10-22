@@ -65,10 +65,10 @@ internal class BackupArchive(
                     }
                 }
                 val selectedFiles = selection?.let { plan ->
-                    (plan.records.map { it.file } + plan.additionalFiles.map { it.first }).asSequence()
-                } ?: BackupDataRegistry.files(filesRoot)
-                selectedFiles.forEach { source ->
-                    val relative = source.relativeTo(filesRoot).invariantSeparatorsPath
+                    // Keep declared archive paths: canonical sources can use a different filesDir alias.
+                    (plan.records.map { it.file to it.relative } + plan.additionalFiles).asSequence()
+                } ?: BackupDataRegistry.files(filesRoot).map { it to it.relativeTo(filesRoot).invariantSeparatorsPath }
+                selectedFiles.forEach { (source, relative) ->
                     val beforeLength = source.length()
                     val beforeModified = source.lastModified()
                     if (relative.startsWith("entities/") && source.extension == "json") {
