@@ -73,7 +73,8 @@ data class NovelAiGenerationSettings(
     val customWidth: Int? = null,
     val customHeight: Int? = null,
     val useCharacterPositions: Boolean = false,
-    val effort: NovelAiEffort = NovelAiEffort.HIGH
+    val effort: NovelAiEffort = NovelAiEffort.HIGH,
+    val transparentBackground: Boolean = false
 ) {
     val isMediumEffort: Boolean get() = model == NovelAiImageModel.V5_FULL && effort == NovelAiEffort.MEDIUM
     val effectiveSteps: Int get() = if (isMediumEffort) 14 else steps

@@ -1982,7 +1982,11 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private fun scheduleTokenCount(draft: NovelAiStudioDraft) {
         if (!_uiState.value.draftLoaded) return
-        val request = draft.selectedModel to draft.activeSettings.withEffectiveNegativePrompt(draft.toPromptPlan())
+        val request = draft.selectedModel to draft.activeSettings.withEffectiveNegativePrompt(
+            com.example.chatbar.domain.image.NovelAiV5TextPromptPolicy.withTransparentBackground(
+                draft.toPromptPlan(), draft.selectedModel, draft.activeSettings.transparentBackground
+            )
+        )
         if (request == lastTokenCountRequest && _uiState.value.promptTokens.error == null) return
         lastTokenCountRequest = request
         val revision = ++tokenCountRevision

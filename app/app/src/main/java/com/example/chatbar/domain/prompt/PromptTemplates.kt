@@ -1923,6 +1923,9 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
         return if (positivePrompt.contains("nsfw", ignoreCase = true)) heavy else "nsfw, $heavy"
     }
 
+    // Official V5 Transparent BG option; added only to an explicitly opted-in request.
+    const val NOVELAI_TRANSPARENT_BACKGROUND_TAG = "transparent background"
+
     const val NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM = """
 JSON only, no Markdown, no explanation:
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}

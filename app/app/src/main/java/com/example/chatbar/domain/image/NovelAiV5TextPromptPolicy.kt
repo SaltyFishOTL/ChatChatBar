@@ -1,5 +1,7 @@
 package com.example.chatbar.domain.image
 
+import com.example.chatbar.domain.prompt.PromptTemplates
+
 /** Request-only port of NovelAI's V5 quote expansion (web build 3102745, module 46278). */
 internal object NovelAiV5TextPromptPolicy {
     // Match ECMAScript whitespace without Android's unsupported UNICODE_CHARACTER_CLASS flag.
@@ -15,6 +17,22 @@ internal object NovelAiV5TextPromptPolicy {
         '\'' to '\'',
         '‘' to '’'
     )
+
+    /** Official V5 option suffix goes in the first base chunk, before any explicit text block. */
+    fun withTransparentBackground(prompt: NovelAiPromptPlan, model: NovelAiImageModel, enabled: Boolean): NovelAiPromptPlan {
+        if (model != NovelAiImageModel.V5_FULL || !enabled) return prompt
+        val chunkEnd = firstChunkEnd(prompt.baseCaption)
+        val chunk = prompt.baseCaption.substring(0, chunkEnd)
+        val textStart = explicitTextBlock.find(chunk)?.range?.last?.minus(4) ?: chunk.length
+        val beforeText = chunk.substring(0, textStart).trimEnd { it == ',' || it.isJsWhitespace() }
+        val tag = PromptTemplates.NOVELAI_TRANSPARENT_BACKGROUND_TAG
+        // PNG/history imports can already contain the official suffix.
+        if (beforeText == tag || beforeText.endsWith(", $tag")) return prompt
+        val withTag = if (beforeText.isEmpty()) tag else "$beforeText, $tag"
+        val text = chunk.substring(textStart)
+        return prompt.copy(baseCaption = withTag + (if (text.isEmpty()) "" else ", $text") +
+            prompt.baseCaption.substring(chunkEnd))
+    }
 
     fun apply(prompt: NovelAiPromptPlan, model: NovelAiImageModel): NovelAiPromptPlan {
         if (model != NovelAiImageModel.V5_FULL) return prompt

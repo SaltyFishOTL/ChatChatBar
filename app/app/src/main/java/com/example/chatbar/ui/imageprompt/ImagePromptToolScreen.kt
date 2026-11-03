@@ -1936,6 +1936,13 @@ private fun GenerationSettingsSection(
 
 @Composable
 private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
+    if (settings.model == NovelAiImageModel.V5_FULL) {
+        CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+            CbSwitch(settings.transparentBackground, { enabled ->
+                viewModel.updateGenerationSettings { it.copy(transparentBackground = enabled) }
+            })
+        }
+    }
     CbButton("使用 NovelAI 默认采样参数", {
         viewModel.updateGenerationSettings { it.withDefaultSampling() }
     }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)

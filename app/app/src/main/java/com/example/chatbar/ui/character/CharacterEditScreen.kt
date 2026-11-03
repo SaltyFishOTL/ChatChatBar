@@ -675,6 +675,11 @@ fun CharacterEditScreen(
                             viewModel.defaultImageGenerationSettings = imageSettings.copy(effort = it)
                         })
                     }
+                    CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+                        CbSwitch(imageSettings.transparentBackground, {
+                            viewModel.defaultImageGenerationSettings = imageSettings.copy(transparentBackground = it)
+                        })
+                    }
                 }
                 CbField("Sampler") {
                     CbSelect(effectiveImageSettings.effectiveSampler,

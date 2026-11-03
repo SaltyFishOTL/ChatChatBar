@@ -25,6 +25,20 @@ import org.junit.Test
 import org.msgpack.core.MessagePack
 
 class NovelAiImageRetryTest {
+    @Test fun transparentPngBytesSurviveTheProductionStreamUnchanged() = runTest {
+        val png = java.util.Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4zwAE/xkaAAt+An+rqPSSAAAAAElFTkSuQmCC")
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            response(chain.request(), 200, finalFrame(png))
+        }.build()
+        try {
+            val settings = NovelAiGenerationSettings(model = NovelAiImageModel.V5_FULL, transparentBackground = true)
+            val events = NovelAiImageService(client).generate("synthetic-token",
+                NovelAiPromptPlan("synthetic scene", emptyList()), settings.imageSize(), settings).toList()
+            assertArrayEquals(png, (events.single() as NovelAiImageEvent.Final).image)
+        } finally { client.closeTestResources() }
+    }
+
     @Test
     fun `ten rate limit retries allow success on eleventh request`() = runTest {
         verifyBoundedRateLimitRetries(succeedOnLastAttempt = true)
