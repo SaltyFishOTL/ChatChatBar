@@ -116,7 +116,7 @@ object NovelAiImageCostEstimator {
         val pixels = max(requestPixels, MIN_PRICED_PIXELS)
         val baseCost = ceil(
             PIXEL_BASE_COST_FACTOR * pixels +
-                PIXEL_STEP_COST_FACTOR * pixels * settings.steps
+                PIXEL_STEP_COST_FACTOR * pixels * settings.effectiveSteps
         ).toInt()
         val modelCost = if (settings.model == NovelAiImageModel.V5_FULL) {
             ceil(baseCost * V5_PRICE_MULTIPLIER).toInt()
@@ -127,7 +127,7 @@ object NovelAiImageCostEstimator {
         val freeSampleEligible = account?.isActiveOpus == true &&
             settings.count == 1 &&
             (imageGuidance.action == NovelAiGenerationAction.INPAINT || sourcePixels <= NORMAL_MAX_PIXELS) &&
-            settings.steps <= FREE_MAX_STEPS &&
+            settings.effectiveSteps <= FREE_MAX_STEPS &&
             imageGuidance.action != NovelAiGenerationAction.IMAGE_TO_IMAGE &&
             imageGuidance.effectiveReferenceMode(settings.model) == NovelAiReferenceMode.NONE &&
             (settings.model != NovelAiImageModel.V5_FULL ||

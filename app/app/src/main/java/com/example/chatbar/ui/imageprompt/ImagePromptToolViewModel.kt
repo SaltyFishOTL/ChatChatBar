@@ -1982,7 +1982,7 @@ class ImagePromptToolViewModel : ViewModel() {
 
     private fun scheduleTokenCount(draft: NovelAiStudioDraft) {
         if (!_uiState.value.draftLoaded) return
-        val request = draft.selectedModel to draft.toPromptPlan()
+        val request = draft.selectedModel to draft.activeSettings.withEffectiveNegativePrompt(draft.toPromptPlan())
         if (request == lastTokenCountRequest && _uiState.value.promptTokens.error == null) return
         lastTokenCountRequest = request
         val revision = ++tokenCountRevision

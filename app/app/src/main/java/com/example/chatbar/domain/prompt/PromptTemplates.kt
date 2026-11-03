@@ -1917,6 +1917,12 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
 最终仅输出一行合法 JSON。所有换行必须作为 JSON 字符串转义，禁止尾随逗号。
 """
 
+    // NovelAI V5 Medium fixes the UC to the official Heavy preset (web build b94bdee).
+    fun novelAiV5MediumNegativePrompt(positivePrompt: String): String {
+        val heavy = "lowres, artistic error, film grain, scan artifacts, worst quality, bad quality, jpeg artifacts, very displeasing, chromatic aberration, dithering, halftone, screentone, multiple views, logo, too many watermarks, negative space, blank page"
+        return if (positivePrompt.contains("nsfw", ignoreCase = true)) heavy else "nsfw, $heavy"
+    }
+
     const val NOVELAI_IMAGE_PROMPT_REPAIR_SYSTEM = """
 JSON only, no Markdown, no explanation:
 {"sizePreset":"PORTRAIT|SQUARE|HORIZONTAL","baseCaption":"...","characters":[{"caption":"..."}]}
