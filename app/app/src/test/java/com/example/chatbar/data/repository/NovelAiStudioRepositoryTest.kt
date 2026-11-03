@@ -11,6 +11,7 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiGenerationRecipe
 import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
+import com.example.chatbar.domain.image.toRecipe
 import java.io.File
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
@@ -29,6 +30,27 @@ import org.junit.rules.TemporaryFolder
 class NovelAiStudioRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Test fun transparentPngAndItsRecipeSurviveHistoryAndDraftReopen() = runTest {
+        val files = temp.newFolder()
+        val png = java.util.Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4zwAE/xkaAAt+An+rqPSSAAAAAElFTkSuQmCC")
+        val storage = NovelAiImageStorage(TestContext(files))
+        val repository = repository(files)
+        repository.loadDraft()
+        val draft = repository.updateDraft { it.withActiveSettings(it.v5Settings.copy(transparentBackground = true)) }
+        val path = storage.save("synthetic", png)
+        val entry = NovelAiGenerationHistoryEntry(images = listOf(NovelAiGenerationHistoryImage(path, 42)),
+            recipe = draft.toRecipe())
+        repository.saveHistory(entry)
+        val reopened = repository(files)
+        assertTrue(reopened.loadDraft().activeSettings.transparentBackground)
+        assertTrue(reopened.history.first().single().recipe.settings.transparentBackground)
+        assertArrayEquals(png, File(path).readBytes())
+        val image = javax.imageio.ImageIO.read(File(path))
+        assertEquals(0, image.getRGB(0, 0) ushr 24)
+        assertEquals(128, image.getRGB(1, 0) ushr 24)
+    }
 
     @Test
     fun mixedMetadataAndOriginalDeletionKeepsRemainingRecipeWithoutStagingOmittedFiles() = runTest {

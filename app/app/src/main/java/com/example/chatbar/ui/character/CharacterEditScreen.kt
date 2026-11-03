@@ -665,6 +665,13 @@ fun CharacterEditScreen(
             }
                 val imageModel = viewModel.defaultNovelAiImageModel ?: ChatBarApp.instance.settingsRepository.currentAppSettings.novelAiImageModel
                 val imageSettings = viewModel.defaultImageGenerationSettings ?: com.example.chatbar.domain.image.NovelAiCharacterImageSettings()
+                if (imageModel == NovelAiImageModel.V5_FULL) {
+                    CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+                        CbSwitch(imageSettings.transparentBackground, {
+                            viewModel.defaultImageGenerationSettings = imageSettings.copy(transparentBackground = it)
+                        })
+                    }
+                }
                 CbField("Sampler") {
                     CbSelect(imageSettings.sampler.takeIf { it in imageModel.samplers } ?: imageModel.samplers.first(), imageModel.samplers, { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
                 }

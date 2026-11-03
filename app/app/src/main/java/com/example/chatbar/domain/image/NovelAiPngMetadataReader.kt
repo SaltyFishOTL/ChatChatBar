@@ -115,7 +115,8 @@ object NovelAiPngMetadataReader {
             cfgRescale = imported.cfgRescale ?: 0f,
             varietyPlus = imported.varietyPlus ?: false,
             sampler = imported.sampler ?: NovelAiSampler.EULER_ANCESTRAL,
-            useCharacterPositions = imported.useCharacterPositions ?: false
+            useCharacterPositions = imported.useCharacterPositions ?: false,
+            transparentBackground = imported.transparentBackground ?: false
         )
         settings.validationError(metadata.characters.size)?.let { error(it) }
         return NovelAiEnhanceSource(
@@ -314,6 +315,7 @@ object NovelAiPngMetadataReader {
                 steps = this["steps"]?.jsonPrimitive?.intOrNull?.takeIf { it in 1..50 },
                 guidance = this["scale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 1f..10f },
                 cfgRescale = this["cfg_rescale"]?.jsonPrimitive?.floatOrNull?.takeIf { it in 0f..1f },
+                transparentBackground = this["tag_hint_transparent_background"]?.jsonPrimitive?.booleanOrNull,
                 varietyPlus = if (containsKey("skip_cfg_above_sigma")) {
                     (this["skip_cfg_above_sigma"]?.jsonPrimitive?.floatOrNull ?: 0f) > 0f
                 } else null,

@@ -67,7 +67,8 @@ data class NovelAiGenerationSettings(
     val varietyPlus: Boolean = false,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
-    val useCharacterPositions: Boolean = false
+    val useCharacterPositions: Boolean = false,
+    val transparentBackground: Boolean = false
 ) {
     val usesCustomSize: Boolean get() = customWidth != null || customHeight != null
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)

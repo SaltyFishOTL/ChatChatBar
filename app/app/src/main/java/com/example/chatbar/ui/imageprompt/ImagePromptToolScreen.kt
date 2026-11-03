@@ -1929,6 +1929,13 @@ private fun GenerationSettingsSection(
 
 @Composable
 private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
+    if (settings.model == NovelAiImageModel.V5_FULL) {
+        CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+            CbSwitch(settings.transparentBackground, { enabled ->
+                viewModel.updateGenerationSettings { it.copy(transparentBackground = enabled) }
+            })
+        }
+    }
     CbField("Steps · ${settings.steps}") {
         CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
     }

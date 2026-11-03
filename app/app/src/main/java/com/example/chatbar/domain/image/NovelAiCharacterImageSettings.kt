@@ -8,13 +8,15 @@ data class NovelAiCharacterImageSettings(
     val steps: Int = 28,
     val guidance: Float = 8f,
     val cfgRescale: Float = 0f,
-    val varietyPlus: Boolean = false
+    val varietyPlus: Boolean = false,
+    val transparentBackground: Boolean = false
 ) {
     fun applyTo(settings: NovelAiGenerationSettings): NovelAiGenerationSettings = settings.copy(
         sampler = sampler,
         steps = steps,
         guidance = guidance,
         cfgRescale = cfgRescale,
-        varietyPlus = varietyPlus
+        varietyPlus = varietyPlus,
+        transparentBackground = transparentBackground
     ).normalized()
 }
