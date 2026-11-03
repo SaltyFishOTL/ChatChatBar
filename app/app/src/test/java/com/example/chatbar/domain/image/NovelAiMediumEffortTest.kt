@@ -97,7 +97,7 @@ class NovelAiMediumEffortTest {
         assertTrue(settings.isMediumEffort)
         assertEquals(profile, Json.decodeFromString(NovelAiCharacterImageSettings.serializer(),
             Json.encodeToString(NovelAiCharacterImageSettings.serializer(), profile)))
-        val draft = NovelAiStudioDraft().withActiveSettings(settings)
+        val draft = NovelAiStudioDraft(negativePrompt = "synthetic negative", updatedAt = 123L).withActiveSettings(settings)
         assertEquals(draft, Json.decodeFromString(NovelAiStudioDraft.serializer(),
             Json.encodeToString(NovelAiStudioDraft.serializer(), draft)))
         assertEquals(NovelAiImageCostEstimator.estimate(settings.copy(steps = 14), null),
