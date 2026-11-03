@@ -44,6 +44,7 @@ class NovelAiStudioRepositoryTest {
         assertEquals(41, reopened.loadDraft().activeSettings.steps)
         val entry = NovelAiGenerationHistoryEntry(recipe = medium.toRecipe())
         repository.saveHistory(entry)
+        reopened.initialize()
         assertTrue(reopened.history.first().single().recipe.settings.isMediumEffort)
         val undo = requireNotNull(reopened.loadUndoDraft())
         reopened.updateDraft { undo }
