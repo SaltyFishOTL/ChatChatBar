@@ -30,6 +30,25 @@ class NovelAiStudioRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
 
+    @Test fun novelAiSamplingDefaultsApplyOnlyToNewDraftsAndResetIsUndoable() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        val fresh = repository.loadDraft()
+        assertEquals(23, fresh.v45Settings.steps)
+        assertEquals(5f, fresh.v45Settings.guidance)
+        assertEquals(23, fresh.v5Settings.steps)
+        assertEquals(7f, fresh.v5Settings.guidance)
+        val edited = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(steps = 41, guidance = 9f)) }
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        repository.saveUndoDraft(edited)
+        repository.updateDraft { it.withActiveSettings(it.activeSettings.withDefaultSampling()) }
+        assertEquals(23, repository(files).loadDraft().activeSettings.steps)
+        val undo = requireNotNull(repository.loadUndoDraft())
+        repository.updateDraft { undo }
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        assertEquals(9f, repository(files).loadDraft().activeSettings.guidance)
+    }
+
     @Test
     fun mixedMetadataAndOriginalDeletionKeepsRemainingRecipeWithoutStagingOmittedFiles() = runTest {
         val files = temp.newFolder()

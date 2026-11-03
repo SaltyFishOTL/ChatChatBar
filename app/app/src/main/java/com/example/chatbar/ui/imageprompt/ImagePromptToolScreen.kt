@@ -1929,6 +1929,9 @@ private fun GenerationSettingsSection(
 
 @Composable
 private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
+    CbButton("使用 NovelAI 默认采样参数", {
+        viewModel.updateGenerationSettings { it.withDefaultSampling() }
+    }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
     CbField("Steps · ${settings.steps}") {
         CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
     }

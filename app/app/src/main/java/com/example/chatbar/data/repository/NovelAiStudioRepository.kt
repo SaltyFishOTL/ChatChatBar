@@ -16,6 +16,7 @@ import com.example.chatbar.domain.image.NovelAiStudioDraft
 import com.example.chatbar.domain.image.NovelAiStudioUndoDraft
 import com.example.chatbar.domain.image.NovelAiGuidanceEditorCheckpoint
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.image.NovelAiGenerationSettings
 import com.example.chatbar.domain.image.NovelAiPromptPlan
 import com.example.chatbar.domain.image.applyDesignedPromptPlan
 import com.example.chatbar.domain.image.applyReversePromptPlan
@@ -72,7 +73,15 @@ class NovelAiStudioRepository(
                 _draft.value?.let { return@withLock it }
             }
             val loaded = storage.loadSingleton(DRAFT_ENTITY, NovelAiStudioDraft.serializer())
-                ?: NovelAiStudioDraft(followDefaultNovelAiImageModel = true)
+                ?: NovelAiStudioDraft(
+                    followDefaultNovelAiImageModel = true,
+                    v45Settings = NovelAiGenerationSettings(
+                        model = NovelAiImageModel.V4_5_FULL
+                    ).withDefaultSampling(),
+                    v5Settings = NovelAiGenerationSettings(
+                        model = NovelAiImageModel.V5_FULL
+                    ).withDefaultSampling()
+                )
             synchronized(draftStateLock) {
                 _draft.value ?: loaded.also { _draft.value = it }
             }

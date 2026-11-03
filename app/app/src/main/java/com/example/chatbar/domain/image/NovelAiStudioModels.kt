@@ -16,9 +16,11 @@ enum class NovelAiImageModel(
     V5_FULL("nai-diffusion-5-full", "V5 Full", 22, 1471, NovelAiTokenizerKind.QWEN);
 
     val supportsVarietyPlus: Boolean get() = this == V4_5_FULL
+    val defaultSteps: Int get() = 23
+    val defaultGuidance: Float get() = if (this == V5_FULL) 7f else 5f
     val samplers: List<NovelAiSampler> get() = when (this) {
         V4_5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
-            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M,
+            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M_SDE, NovelAiSampler.DPM_PLUS_PLUS_2M,
             NovelAiSampler.DPM_PLUS_PLUS_SDE)
         V5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
             NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M_SDE,
@@ -71,6 +73,14 @@ data class NovelAiGenerationSettings(
 ) {
     val usesCustomSize: Boolean get() = customWidth != null || customHeight != null
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)
+
+    /** Explicit reset/new-draft defaults; serialized legacy values keep their existing defaults. */
+    fun withDefaultSampling(): NovelAiGenerationSettings = copy(
+        steps = model.defaultSteps,
+        guidance = model.defaultGuidance,
+        cfgRescale = 0f,
+        sampler = NovelAiSampler.EULER_ANCESTRAL
+    )
 
     fun normalized(): NovelAiGenerationSettings = copy(
         sampler = sampler.takeIf { it in model.samplers } ?: NovelAiSampler.EULER_ANCESTRAL,

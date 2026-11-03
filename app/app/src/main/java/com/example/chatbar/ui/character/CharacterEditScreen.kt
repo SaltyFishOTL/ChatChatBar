@@ -665,6 +665,9 @@ fun CharacterEditScreen(
             }
                 val imageModel = viewModel.defaultNovelAiImageModel ?: ChatBarApp.instance.settingsRepository.currentAppSettings.novelAiImageModel
                 val imageSettings = viewModel.defaultImageGenerationSettings ?: com.example.chatbar.domain.image.NovelAiCharacterImageSettings()
+                CbButton("使用 NovelAI 默认采样参数", {
+                    viewModel.defaultImageGenerationSettings = imageSettings.withDefaultSampling(imageModel)
+                }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
                 CbField("Sampler") {
                     CbSelect(imageSettings.sampler.takeIf { it in imageModel.samplers } ?: imageModel.samplers.first(), imageModel.samplers, { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
                 }

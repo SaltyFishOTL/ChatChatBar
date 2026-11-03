@@ -10,6 +10,13 @@ data class NovelAiCharacterImageSettings(
     val cfgRescale: Float = 0f,
     val varietyPlus: Boolean = false
 ) {
+    fun withDefaultSampling(model: NovelAiImageModel): NovelAiCharacterImageSettings = copy(
+        steps = model.defaultSteps,
+        guidance = model.defaultGuidance,
+        cfgRescale = 0f,
+        sampler = NovelAiSampler.EULER_ANCESTRAL
+    )
+
     fun applyTo(settings: NovelAiGenerationSettings): NovelAiGenerationSettings = settings.copy(
         sampler = sampler,
         steps = steps,
