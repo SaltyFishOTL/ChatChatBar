@@ -682,9 +682,9 @@ fun CharacterEditScreen(
                     }
                 }
                 CbField("Sampler") {
-                    CbSelect(effectiveImageSettings.effectiveSampler,
-                        if (effectiveImageSettings.isMediumEffort) listOf(effectiveImageSettings.effectiveSampler) else imageModel.samplers,
-                        { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
+                    com.example.chatbar.ui.components.NovelAiSamplerSelect(effectiveImageSettings) { sampler ->
+                        viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = sampler)
+                    }
                 }
                 CbField("Steps · ${effectiveImageSettings.effectiveSteps}") {
                     CbSlider(effectiveImageSettings.effectiveSteps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48, enabled = !effectiveImageSettings.isMediumEffort)

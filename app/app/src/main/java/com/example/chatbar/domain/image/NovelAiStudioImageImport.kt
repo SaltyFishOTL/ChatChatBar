@@ -57,7 +57,17 @@ data class NovelAiStudioPngMetadata(
     val seed: Long? = null,
     val width: Int,
     val height: Int
-)
+) {
+    // A hint is not provenance: the same bytes can contain a handwritten suffix.
+    val hasAmbiguousTransparentSuffix: Boolean
+        get() = settings.model == NovelAiImageModel.V5_FULL && settings.transparentBackground == true &&
+            NovelAiV5TextPromptPolicy.withoutTransparentBackgroundSuffix(positivePrompt) != null
+}
+
+enum class NovelAiTransparentSuffixImport(val displayName: String) {
+    KEEP_AS_PROMPT("保留在正文中"),
+    MANAGE_WITH_SWITCH("交给透明背景开关管理")
+}
 
 enum class NovelAiCharacterImportMode(val displayName: String) {
     OFF("关"),
@@ -71,7 +81,8 @@ data class NovelAiStudioMetadataSelection(
     val characterPrompts: NovelAiCharacterImportMode = NovelAiCharacterImportMode.REPLACE,
     val generationSettings: Boolean = true,
     val seed: Boolean = true,
-    val imageGuidance: Boolean = true
+    val imageGuidance: Boolean = true,
+    val transparentSuffix: NovelAiTransparentSuffixImport = NovelAiTransparentSuffixImport.KEEP_AS_PROMPT
 )
 
 fun NovelAiStudioDraft.applyImportedMetadata(
@@ -83,8 +94,15 @@ fun NovelAiStudioDraft.applyImportedMetadata(
         NovelAiCharacterImportMode.REPLACE -> true
         NovelAiCharacterImportMode.APPEND -> metadata.characters.isNotEmpty()
     }
+    // The raw PNG/metadata remain untouched. Only the explicitly selected studio
+    // import removes one user-confirmed option suffix. Logical text then persists
+    // normally in draft/undo/history; Enhance keeps its independent resolved caption.
+    val importedPositive = if (metadata.hasAmbiguousTransparentSuffix &&
+        selection.transparentSuffix == NovelAiTransparentSuffixImport.MANAGE_WITH_SWITCH) {
+        requireNotNull(NovelAiV5TextPromptPolicy.withoutTransparentBackgroundSuffix(metadata.positivePrompt))
+    } else metadata.positivePrompt
     var result = copy(
-        basePrompt = metadata.positivePrompt.takeIf { selection.positivePrompt } ?: basePrompt,
+        basePrompt = importedPositive.takeIf { selection.positivePrompt } ?: basePrompt,
         extraPrompt = if (selection.positivePrompt) "" else extraPrompt,
         negativePrompt = metadata.negativePrompt
             ?.takeIf { selection.negativePrompt }

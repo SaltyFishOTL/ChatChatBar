@@ -33,6 +33,33 @@ class NovelAiStudioRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
 
+    @Test fun managedTransparentImportPersistsLogicalPromptAndUndoWithoutChangingRawMetadata() = runTest {
+        val files = temp.newFolder()
+        val repo = repository(files)
+        val original = repo.loadDraft()
+        repo.saveUndoDraft(original)
+        val metadata = com.example.chatbar.domain.image.NovelAiStudioPngMetadata(
+            "/synthetic.png", "scene, transparent background",
+            settings = com.example.chatbar.domain.image.NovelAiImportedGenerationSettings(
+                model = com.example.chatbar.domain.image.NovelAiImageModel.V5_FULL, transparentBackground = true),
+            width = 1024, height = 1024)
+        val imported = repo.updateDraft { it.applyImportedMetadata(metadata,
+            com.example.chatbar.domain.image.NovelAiStudioMetadataSelection(
+                transparentSuffix = com.example.chatbar.domain.image.NovelAiTransparentSuffixImport.MANAGE_WITH_SWITCH)) }
+        repo.saveHistory(NovelAiGenerationHistoryEntry(recipe = imported.toRecipe()))
+        val reopened = repository(files)
+        reopened.initialize()
+        val restored = reopened.loadDraft()
+        assertEquals("scene", restored.basePrompt)
+        assertTrue(restored.activeSettings.transparentBackground)
+        assertEquals("scene", reopened.history.first().single().recipe.basePrompt)
+        val off = reopened.updateDraft { it.withActiveSettings(it.activeSettings.copy(transparentBackground = false)) }
+        assertEquals("scene", off.basePrompt)
+        assertFalse(repository(files).loadDraft().activeSettings.transparentBackground)
+        assertEquals(original.basePrompt, reopened.loadUndoDraft()?.basePrompt)
+        assertEquals("scene, transparent background", metadata.positivePrompt)
+    }
+
     @Test fun combinedMediumTransparencyPersistsThroughPngHistoryReopenAndUndo() = runTest {
         val files = temp.newFolder()
         val repository = repository(files)

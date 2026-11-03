@@ -246,10 +246,8 @@ class NovelAiImageService(
                 imageGuidance.preciseReferenceBase64 == null && imageGuidance.vibes.isEmpty()
         ) { "V5 Full 暂不支持精确参考或氛围参考" }
         settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
-        val effectivePrompt = settings.withEffectiveNegativePrompt(if (enhance != null) prompt else
-            NovelAiV5TextPromptPolicy.apply(NovelAiV5TextPromptPolicy.withTransparentBackground(
-                NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt), settings.model, settings.transparentBackground
-            ), settings.model))
+        val effectivePrompt = if (enhance != null) settings.withEffectiveNegativePrompt(prompt)
+            else NovelAiV5TextPromptPolicy.prepareForRequest(prompt, settings)
         val negative = if (enhance != null) effectivePrompt.negativePrompt else effectivePrompt.effectiveNegativePrompt.trim()
         val useCoordinates = settings.useCharacterPositions && effectivePrompt.characterCaptions.isNotEmpty()
         fun requestCenter(caption: NovelAiCharacterCaption) = if (useCoordinates) {

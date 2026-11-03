@@ -1048,7 +1048,7 @@ private fun ImageUseAsDialog(
 }
 
 @Composable
-private fun ImportedMetadataSelectionDialog(
+internal fun ImportedMetadataSelectionDialog(
     metadata: NovelAiStudioPngMetadata,
     busy: Boolean,
     onDismiss: () -> Unit,
@@ -1065,40 +1065,53 @@ private fun ImportedMetadataSelectionDialog(
         dismiss = { CbButton("返回", onDismiss, enabled = !busy, variant = ButtonVariant.Ghost) },
         confirm = { CbButton(if (busy) "正在填入…" else "确认解析", { onConfirm(selection) }, enabled = !busy) }
     ) {
-        CbText(
-            "开启的项目覆盖对应内容；角色选择“新增”时追加到末尾。画风 Prompt 与自然语言模式不变。",
-            color = ChatBarTheme.colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
-        )
-        Spacer(Modifier.height(ChatBarSpacing.sm))
-        MetadataToggleRow("正向 Prompt", selection.positivePrompt, true) {
-            selection = selection.copy(positivePrompt = it)
-        }
-        MetadataToggleRow("逆向 Prompt（基础负面）", selection.negativePrompt, negativeAvailable) {
-            selection = selection.copy(negativePrompt = it)
-        }
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
-            CbText("角色 Prompt（正向与负面）· ${metadata.characters.size} 个")
-            CbSelect(
-                value = if (metadata.hasCharacterPrompts) selection.characterPrompts else NovelAiCharacterImportMode.OFF,
-                options = NovelAiCharacterImportMode.entries,
-                optionLabel = { it.displayName },
-                onValueChange = { selection = selection.copy(characterPrompts = it) },
-                enabled = metadata.hasCharacterPrompts && !busy
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            CbText(
+                "开启的项目覆盖对应内容；角色选择“新增”时追加到末尾。画风 Prompt 与自然语言模式不变。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
             )
-        }
-        MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
-            selection = selection.copy(generationSettings = it)
-        }
-        MetadataToggleRow("图像引导", selection.imageGuidance, guidanceAvailable) {
-            selection = selection.copy(imageGuidance = it)
-        }
-        MetadataToggleRow(
-            metadata.seed?.let { "种子 · $it" } ?: "种子",
-            selection.seed,
-            seedAvailable
-        ) {
-            selection = selection.copy(seed = it)
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            MetadataToggleRow("正向 Prompt", selection.positivePrompt, true) {
+                selection = selection.copy(positivePrompt = it)
+            }
+            if (metadata.hasAmbiguousTransparentSuffix && selection.positivePrompt) {
+                CbField("透明标签归属", description = "图片含透明标签，无法判断是否手写。保留正文时，关闭开关仍保留该词；交给开关管理后，关闭会撤回这一处标签。") {
+                    CbSelect(
+                        value = selection.transparentSuffix,
+                        options = com.example.chatbar.domain.image.NovelAiTransparentSuffixImport.entries,
+                        optionLabel = { it.displayName },
+                        onValueChange = { selection = selection.copy(transparentSuffix = it) },
+                        enabled = !busy
+                    )
+                }
+            }
+            MetadataToggleRow("逆向 Prompt（基础负面）", selection.negativePrompt, negativeAvailable) {
+                selection = selection.copy(negativePrompt = it)
+            }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
+                CbText("角色 Prompt（正向与负面）· ${metadata.characters.size} 个")
+                CbSelect(
+                    value = if (metadata.hasCharacterPrompts) selection.characterPrompts else NovelAiCharacterImportMode.OFF,
+                    options = NovelAiCharacterImportMode.entries,
+                    optionLabel = { it.displayName },
+                    onValueChange = { selection = selection.copy(characterPrompts = it) },
+                    enabled = metadata.hasCharacterPrompts && !busy
+                )
+            }
+            MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
+                selection = selection.copy(generationSettings = it)
+            }
+            MetadataToggleRow("图像引导", selection.imageGuidance, guidanceAvailable) {
+                selection = selection.copy(imageGuidance = it)
+            }
+            MetadataToggleRow(
+                metadata.seed?.let { "种子 · $it" } ?: "种子",
+                selection.seed,
+                seedAvailable
+            ) {
+                selection = selection.copy(seed = it)
+            }
         }
     }
 }
@@ -1971,8 +1984,9 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
         }
     }
     CbField("Sampler") {
-        CbSelect(settings.effectiveSampler, if (settings.isMediumEffort) listOf(settings.effectiveSampler) else settings.model.samplers,
-            { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+        com.example.chatbar.ui.components.NovelAiSamplerSelect(settings) { sampler ->
+            viewModel.updateGenerationSettings { it.copy(sampler = sampler) }
+        }
     }
     if (settings.model.supportsVarietyPlus) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

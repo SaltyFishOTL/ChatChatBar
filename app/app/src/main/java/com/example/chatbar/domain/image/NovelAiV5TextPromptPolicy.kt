@@ -18,6 +18,29 @@ internal object NovelAiV5TextPromptPolicy {
         '‘' to '’'
     )
 
+    /** Keep studio counting and the final request on the same preparation path. */
+    fun prepareForRequest(prompt: NovelAiPromptPlan, settings: NovelAiGenerationSettings): NovelAiPromptPlan =
+        settings.withEffectiveNegativePrompt(apply(withTransparentBackground(
+            NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt), settings.model, settings.transparentBackground
+        ), settings.model))
+
+    /** Exact option-shaped suffix only. Matching it does not prove who authored it;
+     * studio PNG import must obtain an explicit choice before using this result.
+     */
+    fun withoutTransparentBackgroundSuffix(source: String): String? {
+        val chunk = source.substring(0, firstChunkEnd(source))
+        val textStart = explicitTextBlock.find(chunk)?.range?.last?.minus(4) ?: chunk.length
+        val end = chunk.substring(0, textStart).trimEnd { it == ',' || it.isJsWhitespace() }.length
+        val tag = PromptTemplates.NOVELAI_TRANSPARENT_BACKGROUND_TAG
+        val start = end - tag.length
+        if (start < 0 || chunk.substring(start, end) != tag) return null
+        if (start == 0) return source.substring(textStart)
+        var separator = start
+        while (separator > 0 && chunk[separator - 1].isJsWhitespace()) separator--
+        if (separator == 0 || chunk[separator - 1] != ',') return null
+        return source.removeRange(separator - 1, end)
+    }
+
     /** Official V5 option suffix goes in the first base chunk, before any explicit text block. */
     fun withTransparentBackground(prompt: NovelAiPromptPlan, model: NovelAiImageModel, enabled: Boolean): NovelAiPromptPlan {
         if (model != NovelAiImageModel.V5_FULL || !enabled) return prompt

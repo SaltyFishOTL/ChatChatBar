@@ -1,7 +1,6 @@
 package com.example.chatbar.domain.image
 
 import kotlinx.serialization.json.JsonObject
-import kotlin.math.ceil
 import kotlin.math.floor
 import kotlin.math.roundToInt
 import kotlin.math.sqrt
@@ -135,10 +134,9 @@ object NovelAiPostProcessPolicy {
             (!v5 || account.v5AllowancePercent != null && !account.v5AllowanceExhausted)) {
             return NovelAiGenerationCost(if (v5) NovelAiGenerationChargeKind.V5_ALLOWANCE else NovelAiGenerationChargeKind.FREE)
         }
-        val base = ceil(2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * source.settings.effectiveSteps)
         // Price the decimal value serialized on the wire, not its Float-to-Double rounding residue.
         val strength = options.strength.toString().toDouble()
         return NovelAiGenerationCost(NovelAiGenerationChargeKind.ANLAS,
-            ceil(base * (if (v5) 1.5 else 1.0) * strength).toInt().coerceAtLeast(2))
+            NovelAiSingleImagePricing.cost(source.settings, pixels, strength))
     }
 }
