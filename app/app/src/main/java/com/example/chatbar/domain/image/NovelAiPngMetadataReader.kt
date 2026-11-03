@@ -14,6 +14,7 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.floatOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
@@ -114,6 +115,7 @@ object NovelAiPngMetadataReader {
             guidance = imported.guidance ?: 6f,
             cfgRescale = imported.cfgRescale ?: 0f,
             varietyPlus = imported.varietyPlus ?: false,
+            varietyPlusSigma = imported.varietyPlusSigma,
             sampler = imported.sampler ?: NovelAiSampler.EULER_ANCESTRAL,
             useCharacterPositions = imported.useCharacterPositions ?: false
         )
@@ -317,6 +319,9 @@ object NovelAiPngMetadataReader {
                 varietyPlus = if (containsKey("skip_cfg_above_sigma")) {
                     (this["skip_cfg_above_sigma"]?.jsonPrimitive?.floatOrNull ?: 0f) > 0f
                 } else null,
+                varietyPlusSigma = this["skip_cfg_above_sigma"]?.jsonPrimitive?.doubleOrNull
+                    ?.takeIf { it.isFinite() && it > 0 && width >= 8 && height >= 8 }
+                    ?.div(NovelAiVarietyPlusPolicy.resolutionScale(width, height)),
                 sampler = this["sampler"]?.jsonPrimitive?.contentOrNull?.let { sampler ->
                     NovelAiSampler.entries.firstOrNull { it.apiId.equals(sampler, ignoreCase = true) }
                 }

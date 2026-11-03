@@ -37,7 +37,8 @@ class NovelAiAdvancedSettingsTest {
                 imageSize = NovelAiImageSize(832, 1216, "test"), settings = settings)).jsonObject
             val parameters = body.getValue("parameters").jsonObject
             if (model == NovelAiImageModel.V5_FULL) assertFalse(parameters.containsKey("skip_cfg_above_sigma"))
-            else assertEquals(if (enabled) "58" else "null", parameters.getValue("skip_cfg_above_sigma").jsonPrimitive.content)
+            else if (enabled) assertEquals(58.0, parameters.getValue("skip_cfg_above_sigma").jsonPrimitive.content.toDouble(), 0.0)
+            else assertEquals("null", parameters.getValue("skip_cfg_above_sigma").jsonPrimitive.content)
             assertEquals(enabled, settings.normalized().varietyPlus)
         }
     }

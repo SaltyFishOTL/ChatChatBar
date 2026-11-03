@@ -1958,7 +1958,7 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
     if (settings.model.supportsVarietyPlus) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CbText("V+ · Variety+", modifier = Modifier.weight(1f))
-            CbSwitch(settings.varietyPlus, { value -> viewModel.updateGenerationSettings { it.copy(varietyPlus = value) } })
+            CbSwitch(settings.varietyPlus, { value -> viewModel.updateGenerationSettings { it.copy(varietyPlus = value, varietyPlusSigma = null) } })
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {
