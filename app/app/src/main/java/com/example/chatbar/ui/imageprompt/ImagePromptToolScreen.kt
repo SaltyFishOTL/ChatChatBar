@@ -1881,6 +1881,13 @@ private fun GenerationSettingsSection(
                     onValueChange = { viewModel.selectImageModel(it.value) }
                 )
             }
+            if (settings.model == NovelAiImageModel.V5_FULL) {
+                CbField("Effort", description = "Medium 固定 14 Steps、Euler Ancestral、Heavy 负面词与 Rescale 0。自定义值保留，切回 High 后生效。") {
+                    CbSelect(settings.effort, com.example.chatbar.domain.image.NovelAiEffort.entries.toList(), { it.displayName }, { effort ->
+                        viewModel.updateGenerationSettings { it.copy(effort = effort) }
+                    })
+                }
+            }
             if (guidanceSummary.isNotBlank()) {
                 CbText(
                     "图像引导已启用 · $guidanceSummary",
@@ -1918,7 +1925,7 @@ private fun GenerationSettingsSection(
             }
             CollapsibleHeader(
                 title = "",
-                summary = "${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} / ${"%.2f".format(settings.cfgRescale)} · ${settings.sampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
+                summary = "${settings.effectiveSteps} Steps · CFG ${"%.1f".format(settings.guidance)} / ${"%.2f".format(settings.effectiveCfgRescale)} · ${settings.effectiveSampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
                 expanded = advancedExpanded,
                 onClick = { viewModel.updateDraft { it.copy(advancedExpanded = !it.advancedExpanded) } }
             )
@@ -1932,8 +1939,8 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
     CbButton("使用 NovelAI 默认采样参数", {
         viewModel.updateGenerationSettings { it.withDefaultSampling() }
     }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
-    CbField("Steps · ${settings.steps}") {
-        CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
+    CbField("Steps · ${settings.effectiveSteps}") {
+        CbSlider(settings.effectiveSteps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48, enabled = !settings.isMediumEffort)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
         CbField("CFG Scale · ${"%.1f".format(settings.guidance)}", Modifier.weight(1f)) {
@@ -1945,18 +1952,20 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
                 contentDescription = "CFG Scale"
             )
         }
-        CbField("CFG Rescale · ${"%.2f".format(settings.cfgRescale)}", Modifier.weight(1f)) {
+        CbField("CFG Rescale · ${"%.2f".format(settings.effectiveCfgRescale)}", Modifier.weight(1f)) {
             CbSlider(
-                settings.cfgRescale,
+                settings.effectiveCfgRescale,
                 { value -> viewModel.updateGenerationSettings("settings:cfg_rescale") { it.copy(cfgRescale = kotlin.math.round(value * 20f) / 20f) } },
                 0f..1f,
                 steps = 19,
-                contentDescription = "CFG Rescale"
+                contentDescription = "CFG Rescale",
+                enabled = !settings.isMediumEffort
             )
         }
     }
     CbField("Sampler") {
-        CbSelect(settings.sampler, settings.model.samplers, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+        CbSelect(settings.effectiveSampler, if (settings.isMediumEffort) listOf(settings.effectiveSampler) else settings.model.samplers,
+            { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
     }
     if (settings.model.supportsVarietyPlus) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {

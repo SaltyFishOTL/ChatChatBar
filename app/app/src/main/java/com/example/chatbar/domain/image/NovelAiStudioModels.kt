@@ -45,6 +45,9 @@ enum class NovelAiSampler(val apiId: String, val displayName: String) {
 enum class NovelAiSeedMode { RANDOM, FIXED }
 
 @Serializable
+enum class NovelAiEffort(val displayName: String) { HIGH("High"), MEDIUM("Medium") }
+
+@Serializable
 enum class NovelAiSizeTier(val displayName: String) {
     SMALL("Small"), NORMAL("Normal"), LARGE("Large"), WALLPAPER("Wallpaper")
 }
@@ -69,8 +72,21 @@ data class NovelAiGenerationSettings(
     val varietyPlus: Boolean = false,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
-    val useCharacterPositions: Boolean = false
+    val useCharacterPositions: Boolean = false,
+    val effort: NovelAiEffort = NovelAiEffort.HIGH
 ) {
+    val isMediumEffort: Boolean get() = model == NovelAiImageModel.V5_FULL && effort == NovelAiEffort.MEDIUM
+    val effectiveSteps: Int get() = if (isMediumEffort) 14 else steps
+    val effectiveSampler: NovelAiSampler get() = if (isMediumEffort) NovelAiSampler.EULER_ANCESTRAL else sampler
+    val effectiveCfgRescale: Float get() = if (isMediumEffort) 0f else cfgRescale
+    val requestModelId: String get() = if (isMediumEffort) "nai-diffusion-5-full-medium" else model.apiId
+
+    /** Request-only constraints: never discard the user's saved High-effort negative prompts. */
+    fun withEffectiveNegativePrompt(prompt: NovelAiPromptPlan): NovelAiPromptPlan = if (!isMediumEffort) prompt else prompt.copy(
+        negativePrompt = PromptTemplates.novelAiV5MediumNegativePrompt(prompt.baseCaption),
+        characterCaptions = prompt.characterCaptions.map { it.copy(negativePrompt = "") }
+    )
+
     val usesCustomSize: Boolean get() = customWidth != null || customHeight != null
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)
 

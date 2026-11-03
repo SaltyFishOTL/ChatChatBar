@@ -668,17 +668,27 @@ fun CharacterEditScreen(
                 CbButton("使用 NovelAI 默认采样参数", {
                     viewModel.defaultImageGenerationSettings = imageSettings.withDefaultSampling(imageModel)
                 }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
-                CbField("Sampler") {
-                    CbSelect(imageSettings.sampler.takeIf { it in imageModel.samplers } ?: imageModel.samplers.first(), imageModel.samplers, { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
+                val effectiveImageSettings = imageSettings.applyTo(com.example.chatbar.domain.image.NovelAiGenerationSettings(model = imageModel))
+                if (imageModel == NovelAiImageModel.V5_FULL) {
+                    CbField("Effort", description = "Medium 固定 14 Steps、Euler Ancestral、Heavy 负面词与 Rescale 0。自定义值保留，切回 High 后生效。") {
+                        CbSelect(imageSettings.effort, com.example.chatbar.domain.image.NovelAiEffort.entries.toList(), { it.displayName }, {
+                            viewModel.defaultImageGenerationSettings = imageSettings.copy(effort = it)
+                        })
+                    }
                 }
-                CbField("Steps · ${imageSettings.steps}") {
-                    CbSlider(imageSettings.steps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48)
+                CbField("Sampler") {
+                    CbSelect(effectiveImageSettings.effectiveSampler,
+                        if (effectiveImageSettings.isMediumEffort) listOf(effectiveImageSettings.effectiveSampler) else imageModel.samplers,
+                        { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
+                }
+                CbField("Steps · ${effectiveImageSettings.effectiveSteps}") {
+                    CbSlider(effectiveImageSettings.effectiveSteps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48, enabled = !effectiveImageSettings.isMediumEffort)
                 }
                 CbField("CFG · ${imageSettings.guidance}") {
                     CbSlider(imageSettings.guidance, { viewModel.defaultImageGenerationSettings = imageSettings.copy(guidance = it) }, valueRange = 1f..10f)
                 }
-                CbField("CFG Rescale · ${imageSettings.cfgRescale}") {
-                    CbSlider(imageSettings.cfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f)
+                CbField("CFG Rescale · ${effectiveImageSettings.effectiveCfgRescale}") {
+                    CbSlider(effectiveImageSettings.effectiveCfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f, enabled = !effectiveImageSettings.isMediumEffort)
                 }
                 if (imageModel.supportsVarietyPlus) {
                     Row(verticalAlignment = Alignment.CenterVertically) {

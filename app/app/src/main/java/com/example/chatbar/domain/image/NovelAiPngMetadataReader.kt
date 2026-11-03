@@ -97,6 +97,7 @@ object NovelAiPngMetadataReader {
         val modelText = (explicitModel ?: root["source"]?.jsonPrimitive?.contentOrNull ?: source).orEmpty().trim().lowercase()
         val model = when {
             "curated" in modelText || "inpainting" in modelText -> null
+            modelText in ENHANCE_V5_MEDIUM_SOURCES -> NovelAiImageModel.V5_FULL
             modelText in ENHANCE_V5_SOURCES -> NovelAiImageModel.V5_FULL
             modelText in ENHANCE_V45_SOURCES -> NovelAiImageModel.V4_5_FULL
             else -> null
@@ -115,7 +116,8 @@ object NovelAiPngMetadataReader {
             cfgRescale = imported.cfgRescale ?: 0f,
             varietyPlus = imported.varietyPlus ?: false,
             sampler = imported.sampler ?: NovelAiSampler.EULER_ANCESTRAL,
-            useCharacterPositions = imported.useCharacterPositions ?: false
+            useCharacterPositions = imported.useCharacterPositions ?: false,
+            effort = imported.effort ?: NovelAiEffort.HIGH
         )
         settings.validationError(metadata.characters.size)?.let { error(it) }
         return NovelAiEnhanceSource(
@@ -141,6 +143,9 @@ object NovelAiPngMetadataReader {
     private val ENHANCE_V5_SOURCES = setOf(
         "nai-diffusion-5-full", "novelai diffusion v5 full",
         "novelai diffusion v5 657484a5", "novelai diffusion v5 0adf9ab7"
+    )
+    private val ENHANCE_V5_MEDIUM_SOURCES = setOf(
+        "nai-diffusion-5-full-medium", "novelai diffusion v5 93f4bd30", "novelai diffusion v5 70ab5786"
     )
     private val ENHANCE_V45_SOURCES = setOf(
         "nai-diffusion-4-5-full", "novelai diffusion v4.5 full", "diffusionmodelmetaname.naiv4next 4bde2a90",
@@ -260,12 +265,9 @@ object NovelAiPngMetadataReader {
         }
         val matchedSize = matchStudioSize(width, height)
         val useCustomSize = matchedSize == null && NovelAiStudioSizePolicy.validationError(width, height) == null
-        val modelText = listOfNotNull(
-            this["model"]?.jsonPrimitive?.contentOrNull,
-            this["model_id"]?.jsonPrimitive?.contentOrNull,
-            this["source"]?.jsonPrimitive?.contentOrNull,
-            source
-        ).joinToString(" ")
+        val modelText = this["model"]?.jsonPrimitive?.contentOrNull
+            ?: this["model_id"]?.jsonPrimitive?.contentOrNull
+            ?: this["source"]?.jsonPrimitive?.contentOrNull ?: source.orEmpty()
         val action = when (this["action"]?.jsonPrimitive?.contentOrNull?.lowercase()) {
             NovelAiGenerationAction.IMAGE_TO_IMAGE.apiId -> NovelAiGenerationAction.IMAGE_TO_IMAGE
             NovelAiGenerationAction.INPAINT.apiId -> NovelAiGenerationAction.INPAINT
@@ -306,6 +308,12 @@ object NovelAiPngMetadataReader {
                     ?.get("use_coords")?.jsonPrimitive?.booleanOrNull
                     ?: this["use_coords"]?.jsonPrimitive?.booleanOrNull ?: false,
                 model = modelText.toNovelAiModelOrNull(),
+                effort = when {
+                    modelText.lowercase() in ENHANCE_V5_MEDIUM_SOURCES ||
+                        modelText.equals("nai-diffusion-5-full-medium-inpainting", ignoreCase = true) -> NovelAiEffort.MEDIUM
+                    modelText.toNovelAiModelOrNull() == NovelAiImageModel.V5_FULL -> NovelAiEffort.HIGH
+                    else -> null
+                },
                 sizeTier = matchedSize?.first,
                 aspectRatio = matchedSize?.second,
                 customWidth = width.takeIf { useCustomSize },

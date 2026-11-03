@@ -18,12 +18,13 @@ data class NovelAiImportedGenerationSettings(
     val sampler: NovelAiSampler? = null,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
-    val useCharacterPositions: Boolean? = null
+    val useCharacterPositions: Boolean? = null,
+    val effort: NovelAiEffort? = null
 ) {
     val hasAny: Boolean
         get() = model != null || sizeTier != null || aspectRatio != null || count != null ||
             steps != null || guidance != null || cfgRescale != null || varietyPlus != null || sampler != null ||
-            customWidth != null || customHeight != null || useCharacterPositions != null
+            customWidth != null || customHeight != null || useCharacterPositions != null || effort != null
 }
 
 data class NovelAiImportedImageGuidance(
@@ -129,7 +130,8 @@ fun NovelAiStudioDraft.applyImportedMetadata(
                 cfgRescale = imported.cfgRescale ?: current.cfgRescale,
                 varietyPlus = imported.varietyPlus ?: current.varietyPlus,
                 sampler = imported.sampler ?: current.sampler,
-                useCharacterPositions = imported.useCharacterPositions ?: current.useCharacterPositions
+                useCharacterPositions = imported.useCharacterPositions ?: current.useCharacterPositions,
+                effort = imported.effort ?: current.effort
             )
         )
     }

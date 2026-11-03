@@ -11,6 +11,7 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiGenerationRecipe
 import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
+import com.example.chatbar.domain.image.toRecipe
 import java.io.File
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
@@ -47,6 +48,28 @@ class NovelAiStudioRepositoryTest {
         repository.updateDraft { undo }
         assertEquals(41, repository(files).loadDraft().activeSettings.steps)
         assertEquals(9f, repository(files).loadDraft().activeSettings.guidance)
+    }
+
+    @Test fun mediumEffortReopensAndUndoRestoresHighSettings() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        repository.loadDraft()
+        val high = repository.updateDraft { it.withActiveSettings(it.v5Settings.copy(steps = 41, cfgRescale = 0.6f)) }
+        repository.saveUndoDraft(high)
+        val medium = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(
+            effort = com.example.chatbar.domain.image.NovelAiEffort.MEDIUM)) }
+        val reopened = repository(files)
+        assertTrue(reopened.loadDraft().activeSettings.isMediumEffort)
+        assertEquals(41, reopened.loadDraft().activeSettings.steps)
+        val entry = NovelAiGenerationHistoryEntry(recipe = medium.toRecipe())
+        repository.saveHistory(entry)
+        reopened.initialize()
+        assertTrue(reopened.history.first().single().recipe.settings.isMediumEffort)
+        val undo = requireNotNull(reopened.loadUndoDraft())
+        reopened.updateDraft { undo }
+        assertFalse(repository(files).loadDraft().activeSettings.isMediumEffort)
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        assertEquals(0.6f, repository(files).loadDraft().activeSettings.cfgRescale)
     }
 
     @Test

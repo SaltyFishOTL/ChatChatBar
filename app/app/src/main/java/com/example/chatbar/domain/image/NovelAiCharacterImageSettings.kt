@@ -8,7 +8,8 @@ data class NovelAiCharacterImageSettings(
     val steps: Int = 28,
     val guidance: Float = 8f,
     val cfgRescale: Float = 0f,
-    val varietyPlus: Boolean = false
+    val varietyPlus: Boolean = false,
+    val effort: NovelAiEffort = NovelAiEffort.HIGH
 ) {
     fun withDefaultSampling(model: NovelAiImageModel): NovelAiCharacterImageSettings = copy(
         steps = model.defaultSteps,
@@ -22,6 +23,7 @@ data class NovelAiCharacterImageSettings(
         steps = steps,
         guidance = guidance,
         cfgRescale = cfgRescale,
-        varietyPlus = varietyPlus
+        varietyPlus = varietyPlus,
+        effort = effort
     ).normalized()
 }

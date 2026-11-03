@@ -131,11 +131,11 @@ object NovelAiPostProcessPolicy {
         val pixels = if (options.scale == NovelAiEnhanceScale.MAX) size.width.toLong() * size.height
         else (size.width / 64.0).roundToInt().toLong() * 64 * (size.height / 64.0).roundToInt() * 64
         val v5 = source.settings.model == NovelAiImageModel.V5_FULL
-        if (account?.isActiveOpus == true && pixels <= 1_048_576 && source.settings.steps <= 28 &&
+        if (account?.isActiveOpus == true && pixels <= 1_048_576 && source.settings.effectiveSteps <= 28 &&
             (!v5 || account.v5AllowancePercent != null && !account.v5AllowanceExhausted)) {
             return NovelAiGenerationCost(if (v5) NovelAiGenerationChargeKind.V5_ALLOWANCE else NovelAiGenerationChargeKind.FREE)
         }
-        val base = ceil(2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * source.settings.steps)
+        val base = ceil(2.951823174884865e-6 * pixels + 5.753298233447344e-7 * pixels * source.settings.effectiveSteps)
         // Price the decimal value serialized on the wire, not its Float-to-Double rounding residue.
         val strength = options.strength.toString().toDouble()
         return NovelAiGenerationCost(NovelAiGenerationChargeKind.ANLAS,
