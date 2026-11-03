@@ -44,6 +44,7 @@ class NovelAiStudioRepositoryTest {
             recipe = draft.toRecipe())
         repository.saveHistory(entry)
         val reopened = repository(files)
+        reopened.initialize()
         assertTrue(reopened.loadDraft().activeSettings.transparentBackground)
         assertTrue(reopened.history.first().single().recipe.settings.transparentBackground)
         assertArrayEquals(png, File(path).readBytes())
