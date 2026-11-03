@@ -5,6 +5,7 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
+import androidx.test.platform.app.InstrumentationRegistry
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.ui.components.NovelAiSamplerSelect
 import com.example.chatbar.ui.kit.CbButton
@@ -57,6 +58,7 @@ class NovelAiReviewRegressionTest {
         compose.onNodeWithText(NovelAiSampler.EULER_ANCESTRAL.displayName)
             .assertIsNotEnabled().performTouchInput { click() }
         compose.onAllNodesWithText("取消").assertCountEquals(0)
+        capture(if (card) "medium-character.png" else "medium-studio.png")
         compose.onNodeWithText("High").performClick()
         compose.onNodeWithText(high.sampler.displayName).assertIsEnabled()
         compose.runOnIdle {
@@ -92,6 +94,7 @@ class NovelAiReviewRegressionTest {
             compose.onNodeWithText(NovelAiTransparentSuffixImport.KEEP_AS_PROMPT.displayName).performClick()
             compose.onNodeWithText(NovelAiTransparentSuffixImport.MANAGE_WITH_SWITCH.displayName).performClick()
         }
+        capture(if (manage) "import-manage.png" else "import-retain.png")
         compose.onNodeWithText("确认解析").performClick()
         compose.runOnIdle {
             val draft = requireNotNull(imported)
@@ -100,5 +103,18 @@ class NovelAiReviewRegressionTest {
                 off.activeSettings.imageSize(), off.activeSettings)).jsonObject
             assertEquals(if (manage) "scene" else "scene, transparent background", body.getValue("input").jsonPrimitive.content)
         }
+    }
+
+    private fun capture(name: String) {
+        compose.waitForIdle()
+        val instrumentation = InstrumentationRegistry.getInstrumentation()
+        val bitmap = checkNotNull(instrumentation.uiAutomation.takeScreenshot())
+        try {
+            val folder = java.io.File(instrumentation.targetContext.getExternalFilesDir(null), "nai-review-evidence")
+            check(folder.isDirectory || folder.mkdirs())
+            java.io.File(folder, name).outputStream().use {
+                check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it))
+            }
+        } finally { bitmap.recycle() }
     }
 }
