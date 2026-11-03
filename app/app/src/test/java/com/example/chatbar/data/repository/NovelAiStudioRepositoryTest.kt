@@ -12,6 +12,7 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiGenerationRecipe
 import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
 import com.example.chatbar.domain.image.toRecipe
+import com.example.chatbar.domain.image.applyImportedMetadata
 import java.io.File
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
@@ -19,6 +20,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
@@ -30,6 +32,45 @@ import org.junit.rules.TemporaryFolder
 class NovelAiStudioRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Test fun combinedMediumTransparencyPersistsThroughPngHistoryReopenAndUndo() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        repository.loadDraft()
+        val high = repository.updateDraft { it.copy(basePrompt = "synthetic scene", negativePrompt = "saved negative")
+            .withActiveSettings(it.v5Settings.copy(steps = 41, cfgRescale = 0.6f)) }
+        repository.saveUndoDraft(high)
+        val combined = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(
+            effort = com.example.chatbar.domain.image.NovelAiEffort.MEDIUM, transparentBackground = true)) }
+        val request = kotlinx.serialization.json.Json.parseToJsonElement(
+            com.example.chatbar.domain.image.NovelAiImageService().buildRequestBody(
+                NovelAiPromptPlan("synthetic scene", emptyList()), combined.activeSettings.imageSize(), combined.activeSettings
+            )).jsonObject
+        val comment = kotlinx.serialization.json.JsonObject(request.getValue("parameters").jsonObject +
+            mapOf("model" to request.getValue("model")))
+        val metadata = requireNotNull(com.example.chatbar.domain.image.NovelAiPngMetadataReader.parseStudioComment(
+            comment.toString(), "/synthetic.png"))
+        val imported = repository.updateDraft { it.applyImportedMetadata(metadata,
+            com.example.chatbar.domain.image.NovelAiStudioMetadataSelection()) }
+        repository.saveHistory(NovelAiGenerationHistoryEntry(recipe = imported.toRecipe()))
+        val reopened = repository(files)
+        reopened.initialize()
+        val restored = reopened.loadDraft()
+        assertTrue(restored.activeSettings.isMediumEffort)
+        assertTrue(restored.activeSettings.transparentBackground)
+        val history = reopened.history.first().single().recipe
+        assertTrue(history.settings.isMediumEffort)
+        assertTrue(history.settings.transparentBackground)
+        assertEquals("synthetic scene, transparent background", restored.basePrompt)
+        val undo = requireNotNull(reopened.loadUndoDraft())
+        reopened.updateDraft { undo }
+        val undone = repository(files).loadDraft()
+        assertFalse(undone.activeSettings.isMediumEffort)
+        assertFalse(undone.activeSettings.transparentBackground)
+        assertEquals(41, undone.activeSettings.steps)
+        assertEquals(0.6f, undone.activeSettings.cfgRescale)
+        assertEquals("saved negative", undone.negativePrompt)
+    }
 
     @Test fun novelAiSamplingDefaultsApplyOnlyToNewDraftsAndResetIsUndoable() = runTest {
         val files = temp.newFolder()

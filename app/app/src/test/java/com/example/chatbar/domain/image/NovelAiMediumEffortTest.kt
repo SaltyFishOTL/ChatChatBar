@@ -52,7 +52,7 @@ class NovelAiMediumEffortTest {
         assertEquals("nai-diffusion-4-5-full", body.getValue("model").jsonPrimitive.content)
         val parameters = body.getValue("parameters").jsonObject
         assertEquals(42, parameters.getValue("steps").jsonPrimitive.int)
-        assertEquals(58, parameters.getValue("skip_cfg_above_sigma").jsonPrimitive.int)
+        assertEquals(58.0, parameters.getValue("skip_cfg_above_sigma").jsonPrimitive.double, 0.0)
         assertEquals(plan.negativePrompt, parameters.getValue("negative_prompt").jsonPrimitive.content)
         assertEquals(NovelAiEffort.HIGH, Json.decodeFromString(NovelAiGenerationSettings.serializer(), "{}").effort)
         assertEquals(NovelAiEffort.HIGH, Json.decodeFromString(NovelAiCharacterImageSettings.serializer(), "{}").effort)
