@@ -26,6 +26,7 @@ data class NovelAiCharacterImageSettings(
         cfgRescale = cfgRescale,
         varietyPlus = varietyPlus,
         effort = effort,
-        transparentBackground = transparentBackground
+        transparentBackground = transparentBackground,
+        varietyPlusSigma = null
     ).normalized()
 }

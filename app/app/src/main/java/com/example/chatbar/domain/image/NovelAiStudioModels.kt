@@ -70,6 +70,8 @@ data class NovelAiGenerationSettings(
     val sampler: NovelAiSampler = NovelAiSampler.EULER_ANCESTRAL,
     val cfgRescale: Float = 0f,
     val varietyPlus: Boolean = false,
+    /** Resolution-independent sigma imported from PNG; null uses the official toggle default. */
+    val varietyPlusSigma: Double? = null,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
     val useCharacterPositions: Boolean = false,

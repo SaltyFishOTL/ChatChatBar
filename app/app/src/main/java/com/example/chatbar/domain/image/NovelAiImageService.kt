@@ -320,7 +320,11 @@ class NovelAiImageService(
                 put("dynamic_thresholding", false)
                 put("cfg_rescale", settings.effectiveCfgRescale)
                 if (settings.model.supportsVarietyPlus) {
-                    if (settings.varietyPlus) put("skip_cfg_above_sigma", 58) else put("skip_cfg_above_sigma", JsonNull)
+                    if (settings.varietyPlus) {
+                        val sigma = settings.varietyPlusSigma ?: NovelAiVarietyPlusPolicy.DEFAULT_SIGMA
+                        require(sigma.isFinite() && sigma > 0) { "Variety+ Sigma 无效" }
+                        put("skip_cfg_above_sigma", sigma * NovelAiVarietyPlusPolicy.resolutionScale(imageSize.width, imageSize.height))
+                    } else put("skip_cfg_above_sigma", JsonNull)
                 }
                 put("deliberate_euler_ancestral_bug", false)
                 put("prefer_brownian", true)
@@ -331,7 +335,7 @@ class NovelAiImageService(
                     require(imageGuidance.action == NovelAiGenerationAction.IMAGE_TO_IMAGE && settings.count == 1)
                     require(!enhance.upscaledEnhance || settings.model == NovelAiImageModel.V5_FULL)
                     enhance.sourceParameters.forEach { (key, value) ->
-                        if (key != "skip_cfg_above_sigma" || settings.model.supportsVarietyPlus) put(key, value)
+                        if (key != "skip_cfg_above_sigma") put(key, value)
                     }
                     put("upscaled_enhance", enhance.upscaledEnhance)
                     put("color_correct", false)
