@@ -1048,7 +1048,7 @@ private fun ImageUseAsDialog(
 }
 
 @Composable
-private fun ImportedMetadataSelectionDialog(
+internal fun ImportedMetadataSelectionDialog(
     metadata: NovelAiStudioPngMetadata,
     busy: Boolean,
     onDismiss: () -> Unit,
@@ -1065,40 +1065,53 @@ private fun ImportedMetadataSelectionDialog(
         dismiss = { CbButton("返回", onDismiss, enabled = !busy, variant = ButtonVariant.Ghost) },
         confirm = { CbButton(if (busy) "正在填入…" else "确认解析", { onConfirm(selection) }, enabled = !busy) }
     ) {
-        CbText(
-            "开启的项目覆盖对应内容；角色选择“新增”时追加到末尾。画风 Prompt 与自然语言模式不变。",
-            color = ChatBarTheme.colors.mutedForeground,
-            style = ChatBarTheme.typography.caption
-        )
-        Spacer(Modifier.height(ChatBarSpacing.sm))
-        MetadataToggleRow("正向 Prompt", selection.positivePrompt, true) {
-            selection = selection.copy(positivePrompt = it)
-        }
-        MetadataToggleRow("逆向 Prompt（基础负面）", selection.negativePrompt, negativeAvailable) {
-            selection = selection.copy(negativePrompt = it)
-        }
-        Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
-            CbText("角色 Prompt（正向与负面）· ${metadata.characters.size} 个")
-            CbSelect(
-                value = if (metadata.hasCharacterPrompts) selection.characterPrompts else NovelAiCharacterImportMode.OFF,
-                options = NovelAiCharacterImportMode.entries,
-                optionLabel = { it.displayName },
-                onValueChange = { selection = selection.copy(characterPrompts = it) },
-                enabled = metadata.hasCharacterPrompts && !busy
+        Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
+            CbText(
+                "开启的项目覆盖对应内容；角色选择“新增”时追加到末尾。画风 Prompt 与自然语言模式不变。",
+                color = ChatBarTheme.colors.mutedForeground,
+                style = ChatBarTheme.typography.caption
             )
-        }
-        MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
-            selection = selection.copy(generationSettings = it)
-        }
-        MetadataToggleRow("图像引导", selection.imageGuidance, guidanceAvailable) {
-            selection = selection.copy(imageGuidance = it)
-        }
-        MetadataToggleRow(
-            metadata.seed?.let { "种子 · $it" } ?: "种子",
-            selection.seed,
-            seedAvailable
-        ) {
-            selection = selection.copy(seed = it)
+            Spacer(Modifier.height(ChatBarSpacing.sm))
+            MetadataToggleRow("正向 Prompt", selection.positivePrompt, true) {
+                selection = selection.copy(positivePrompt = it)
+            }
+            if (metadata.hasAmbiguousTransparentSuffix && selection.positivePrompt) {
+                CbField("透明标签归属", description = "图片含透明标签，无法判断是否手写。保留正文时，关闭开关仍保留该词；交给开关管理后，关闭会撤回这一处标签。") {
+                    CbSelect(
+                        value = selection.transparentSuffix,
+                        options = com.example.chatbar.domain.image.NovelAiTransparentSuffixImport.entries,
+                        optionLabel = { it.displayName },
+                        onValueChange = { selection = selection.copy(transparentSuffix = it) },
+                        enabled = !busy
+                    )
+                }
+            }
+            MetadataToggleRow("逆向 Prompt（基础负面）", selection.negativePrompt, negativeAvailable) {
+                selection = selection.copy(negativePrompt = it)
+            }
+            Column(Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(ChatBarSpacing.xs)) {
+                CbText("角色 Prompt（正向与负面）· ${metadata.characters.size} 个")
+                CbSelect(
+                    value = if (metadata.hasCharacterPrompts) selection.characterPrompts else NovelAiCharacterImportMode.OFF,
+                    options = NovelAiCharacterImportMode.entries,
+                    optionLabel = { it.displayName },
+                    onValueChange = { selection = selection.copy(characterPrompts = it) },
+                    enabled = metadata.hasCharacterPrompts && !busy
+                )
+            }
+            MetadataToggleRow("生成设置", selection.generationSettings, settingsAvailable) {
+                selection = selection.copy(generationSettings = it)
+            }
+            MetadataToggleRow("图像引导", selection.imageGuidance, guidanceAvailable) {
+                selection = selection.copy(imageGuidance = it)
+            }
+            MetadataToggleRow(
+                metadata.seed?.let { "种子 · $it" } ?: "种子",
+                selection.seed,
+                seedAvailable
+            ) {
+                selection = selection.copy(seed = it)
+            }
         }
     }
 }
@@ -1881,6 +1894,13 @@ private fun GenerationSettingsSection(
                     onValueChange = { viewModel.selectImageModel(it.value) }
                 )
             }
+            if (settings.model == NovelAiImageModel.V5_FULL) {
+                CbField("Effort", description = "Medium 固定 14 Steps、Euler Ancestral、Heavy 负面词与 Rescale 0。自定义值保留，切回 High 后生效。") {
+                    CbSelect(settings.effort, com.example.chatbar.domain.image.NovelAiEffort.entries.toList(), { it.displayName }, { effort ->
+                        viewModel.updateGenerationSettings { it.copy(effort = effort) }
+                    })
+                }
+            }
             if (guidanceSummary.isNotBlank()) {
                 CbText(
                     "图像引导已启用 · $guidanceSummary",
@@ -1918,7 +1938,7 @@ private fun GenerationSettingsSection(
             }
             CollapsibleHeader(
                 title = "",
-                summary = "${settings.steps} Steps · CFG ${"%.1f".format(settings.guidance)} / ${"%.2f".format(settings.cfgRescale)} · ${settings.sampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
+                summary = "${settings.effectiveSteps} Steps · CFG ${"%.1f".format(settings.guidance)} / ${"%.2f".format(settings.effectiveCfgRescale)} · ${settings.effectiveSampler.displayName} · ${if (settings.seedMode == NovelAiSeedMode.RANDOM) "随机 Seed" else settings.seed}",
                 expanded = advancedExpanded,
                 onClick = { viewModel.updateDraft { it.copy(advancedExpanded = !it.advancedExpanded) } }
             )
@@ -1929,8 +1949,18 @@ private fun GenerationSettingsSection(
 
 @Composable
 private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: ImagePromptToolViewModel) {
-    CbField("Steps · ${settings.steps}") {
-        CbSlider(settings.steps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48)
+    if (settings.model == NovelAiImageModel.V5_FULL) {
+        CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+            CbSwitch(settings.transparentBackground, { enabled ->
+                viewModel.updateGenerationSettings { it.copy(transparentBackground = enabled) }
+            })
+        }
+    }
+    CbButton("使用 NovelAI 默认采样参数", {
+        viewModel.updateGenerationSettings { it.withDefaultSampling() }
+    }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
+    CbField("Steps · ${settings.effectiveSteps}") {
+        CbSlider(settings.effectiveSteps.toFloat(), { value -> viewModel.updateGenerationSettings("settings:steps") { it.copy(steps = value.toInt()) } }, 1f..50f, steps = 48, enabled = !settings.isMediumEffort)
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
         CbField("CFG Scale · ${"%.1f".format(settings.guidance)}", Modifier.weight(1f)) {
@@ -1942,23 +1972,26 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
                 contentDescription = "CFG Scale"
             )
         }
-        CbField("CFG Rescale · ${"%.2f".format(settings.cfgRescale)}", Modifier.weight(1f)) {
+        CbField("CFG Rescale · ${"%.2f".format(settings.effectiveCfgRescale)}", Modifier.weight(1f)) {
             CbSlider(
-                settings.cfgRescale,
+                settings.effectiveCfgRescale,
                 { value -> viewModel.updateGenerationSettings("settings:cfg_rescale") { it.copy(cfgRescale = kotlin.math.round(value * 20f) / 20f) } },
                 0f..1f,
                 steps = 19,
-                contentDescription = "CFG Rescale"
+                contentDescription = "CFG Rescale",
+                enabled = !settings.isMediumEffort
             )
         }
     }
     CbField("Sampler") {
-        CbSelect(settings.sampler, settings.model.samplers, { it.displayName }, { sampler -> viewModel.updateGenerationSettings { it.copy(sampler = sampler) } })
+        com.example.chatbar.ui.components.NovelAiSamplerSelect(settings) { sampler ->
+            viewModel.updateGenerationSettings { it.copy(sampler = sampler) }
+        }
     }
     if (settings.model.supportsVarietyPlus) {
         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             CbText("V+ · Variety+", modifier = Modifier.weight(1f))
-            CbSwitch(settings.varietyPlus, { value -> viewModel.updateGenerationSettings { it.copy(varietyPlus = value) } })
+            CbSwitch(settings.varietyPlus, { value -> viewModel.updateGenerationSettings { it.copy(varietyPlus = value, varietyPlusSigma = null) } })
         }
     }
     Row(verticalAlignment = Alignment.CenterVertically) {

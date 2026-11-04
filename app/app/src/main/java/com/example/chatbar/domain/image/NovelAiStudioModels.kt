@@ -16,9 +16,11 @@ enum class NovelAiImageModel(
     V5_FULL("nai-diffusion-5-full", "V5 Full", 22, 1471, NovelAiTokenizerKind.QWEN);
 
     val supportsVarietyPlus: Boolean get() = this == V4_5_FULL
+    val defaultSteps: Int get() = 23
+    val defaultGuidance: Float get() = if (this == V5_FULL) 7f else 5f
     val samplers: List<NovelAiSampler> get() = when (this) {
         V4_5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
-            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M,
+            NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M_SDE, NovelAiSampler.DPM_PLUS_PLUS_2M,
             NovelAiSampler.DPM_PLUS_PLUS_SDE)
         V5_FULL -> listOf(NovelAiSampler.EULER_ANCESTRAL, NovelAiSampler.EULER,
             NovelAiSampler.DPM_PLUS_PLUS_2S_ANCESTRAL, NovelAiSampler.DPM_PLUS_PLUS_2M_SDE,
@@ -43,6 +45,9 @@ enum class NovelAiSampler(val apiId: String, val displayName: String) {
 enum class NovelAiSeedMode { RANDOM, FIXED }
 
 @Serializable
+enum class NovelAiEffort(val displayName: String) { HIGH("High"), MEDIUM("Medium") }
+
+@Serializable
 enum class NovelAiSizeTier(val displayName: String) {
     SMALL("Small"), NORMAL("Normal"), LARGE("Large"), WALLPAPER("Wallpaper")
 }
@@ -65,12 +70,36 @@ data class NovelAiGenerationSettings(
     val sampler: NovelAiSampler = NovelAiSampler.EULER_ANCESTRAL,
     val cfgRescale: Float = 0f,
     val varietyPlus: Boolean = false,
+    /** Resolution-independent sigma imported from PNG; null uses the official toggle default. */
+    val varietyPlusSigma: Double? = null,
     val customWidth: Int? = null,
     val customHeight: Int? = null,
-    val useCharacterPositions: Boolean = false
+    val useCharacterPositions: Boolean = false,
+    val effort: NovelAiEffort = NovelAiEffort.HIGH,
+    val transparentBackground: Boolean = false
 ) {
+    val isMediumEffort: Boolean get() = model == NovelAiImageModel.V5_FULL && effort == NovelAiEffort.MEDIUM
+    val effectiveSteps: Int get() = if (isMediumEffort) 14 else steps
+    val effectiveSampler: NovelAiSampler get() = if (isMediumEffort) NovelAiSampler.EULER_ANCESTRAL else sampler
+    val effectiveCfgRescale: Float get() = if (isMediumEffort) 0f else cfgRescale
+    val requestModelId: String get() = if (isMediumEffort) "nai-diffusion-5-full-medium" else model.apiId
+
+    /** Request-only constraints: never discard the user's saved High-effort negative prompts. */
+    fun withEffectiveNegativePrompt(prompt: NovelAiPromptPlan): NovelAiPromptPlan = if (!isMediumEffort) prompt else prompt.copy(
+        negativePrompt = PromptTemplates.novelAiV5MediumNegativePrompt(prompt.baseCaption),
+        characterCaptions = prompt.characterCaptions.map { it.copy(negativePrompt = "") }
+    )
+
     val usesCustomSize: Boolean get() = customWidth != null || customHeight != null
     val maxAllowedBaseSeed: Long get() = MAX_SEED - (count.coerceIn(1, 4) - 1L)
+
+    /** Explicit reset/new-draft defaults; serialized legacy values keep their existing defaults. */
+    fun withDefaultSampling(): NovelAiGenerationSettings = copy(
+        steps = model.defaultSteps,
+        guidance = model.defaultGuidance,
+        cfgRescale = 0f,
+        sampler = NovelAiSampler.EULER_ANCESTRAL
+    )
 
     fun normalized(): NovelAiGenerationSettings = copy(
         sampler = sampler.takeIf { it in model.samplers } ?: NovelAiSampler.EULER_ANCESTRAL,

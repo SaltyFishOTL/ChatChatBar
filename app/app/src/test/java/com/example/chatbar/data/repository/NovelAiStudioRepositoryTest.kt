@@ -11,6 +11,8 @@ import com.example.chatbar.domain.image.NovelAiGenerationHistoryEntry
 import com.example.chatbar.domain.image.NovelAiGenerationHistoryImage
 import com.example.chatbar.domain.image.NovelAiGenerationRecipe
 import com.example.chatbar.domain.image.NovelAiHistoryImageSelection
+import com.example.chatbar.domain.image.toRecipe
+import com.example.chatbar.domain.image.applyImportedMetadata
 import java.io.File
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.first
@@ -18,6 +20,7 @@ import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.test.UnconfinedTestDispatcher
 import kotlinx.coroutines.test.runCurrent
 import kotlinx.coroutines.test.runTest
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Assert.assertFalse
@@ -29,6 +32,135 @@ import org.junit.rules.TemporaryFolder
 class NovelAiStudioRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Test fun managedTransparentImportPersistsLogicalPromptAndUndoWithoutChangingRawMetadata() = runTest {
+        val files = temp.newFolder()
+        val repo = repository(files)
+        val original = repo.loadDraft()
+        repo.saveUndoDraft(original)
+        val metadata = com.example.chatbar.domain.image.NovelAiStudioPngMetadata(
+            "/synthetic.png", "scene, transparent background",
+            settings = com.example.chatbar.domain.image.NovelAiImportedGenerationSettings(
+                model = com.example.chatbar.domain.image.NovelAiImageModel.V5_FULL, transparentBackground = true),
+            width = 1024, height = 1024)
+        val imported = repo.updateDraft { it.applyImportedMetadata(metadata,
+            com.example.chatbar.domain.image.NovelAiStudioMetadataSelection(
+                transparentSuffix = com.example.chatbar.domain.image.NovelAiTransparentSuffixImport.MANAGE_WITH_SWITCH)) }
+        repo.saveHistory(NovelAiGenerationHistoryEntry(recipe = imported.toRecipe()))
+        val reopened = repository(files)
+        reopened.initialize()
+        val restored = reopened.loadDraft()
+        assertEquals("scene", restored.basePrompt)
+        assertTrue(restored.activeSettings.transparentBackground)
+        assertEquals("scene", reopened.history.first().single().recipe.basePrompt)
+        val off = reopened.updateDraft { it.withActiveSettings(it.activeSettings.copy(transparentBackground = false)) }
+        assertEquals("scene", off.basePrompt)
+        assertFalse(repository(files).loadDraft().activeSettings.transparentBackground)
+        assertEquals(original.basePrompt, reopened.loadUndoDraft()?.basePrompt)
+        assertEquals("scene, transparent background", metadata.positivePrompt)
+    }
+
+    @Test fun combinedMediumTransparencyPersistsThroughPngHistoryReopenAndUndo() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        repository.loadDraft()
+        val high = repository.updateDraft { it.copy(basePrompt = "synthetic scene", negativePrompt = "saved negative")
+            .withActiveSettings(it.v5Settings.copy(steps = 41, cfgRescale = 0.6f)) }
+        repository.saveUndoDraft(high)
+        val combined = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(
+            effort = com.example.chatbar.domain.image.NovelAiEffort.MEDIUM, transparentBackground = true)) }
+        val request = kotlinx.serialization.json.Json.parseToJsonElement(
+            com.example.chatbar.domain.image.NovelAiImageService().buildRequestBody(
+                NovelAiPromptPlan("synthetic scene", emptyList()), combined.activeSettings.imageSize(), combined.activeSettings
+            )).jsonObject
+        val comment = kotlinx.serialization.json.JsonObject(request.getValue("parameters").jsonObject +
+            mapOf("model" to request.getValue("model")))
+        val metadata = requireNotNull(com.example.chatbar.domain.image.NovelAiPngMetadataReader.parseStudioComment(
+            comment.toString(), "/synthetic.png"))
+        val imported = repository.updateDraft { it.applyImportedMetadata(metadata,
+            com.example.chatbar.domain.image.NovelAiStudioMetadataSelection()) }
+        repository.saveHistory(NovelAiGenerationHistoryEntry(recipe = imported.toRecipe()))
+        val reopened = repository(files)
+        reopened.initialize()
+        val restored = reopened.loadDraft()
+        assertTrue(restored.activeSettings.isMediumEffort)
+        assertTrue(restored.activeSettings.transparentBackground)
+        val history = reopened.history.first().single().recipe
+        assertTrue(history.settings.isMediumEffort)
+        assertTrue(history.settings.transparentBackground)
+        assertEquals("synthetic scene, transparent background", restored.basePrompt)
+        val undo = requireNotNull(reopened.loadUndoDraft())
+        reopened.updateDraft { undo }
+        val undone = repository(files).loadDraft()
+        assertFalse(undone.activeSettings.isMediumEffort)
+        assertFalse(undone.activeSettings.transparentBackground)
+        assertEquals(41, undone.activeSettings.steps)
+        assertEquals(0.6f, undone.activeSettings.cfgRescale)
+        assertEquals("saved negative", undone.negativePrompt)
+    }
+
+    @Test fun novelAiSamplingDefaultsApplyOnlyToNewDraftsAndResetIsUndoable() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        val fresh = repository.loadDraft()
+        assertEquals(23, fresh.v45Settings.steps)
+        assertEquals(5f, fresh.v45Settings.guidance)
+        assertEquals(23, fresh.v5Settings.steps)
+        assertEquals(7f, fresh.v5Settings.guidance)
+        val edited = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(steps = 41, guidance = 9f)) }
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        repository.saveUndoDraft(edited)
+        repository.updateDraft { it.withActiveSettings(it.activeSettings.withDefaultSampling()) }
+        assertEquals(23, repository(files).loadDraft().activeSettings.steps)
+        val undo = requireNotNull(repository.loadUndoDraft())
+        repository.updateDraft { undo }
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        assertEquals(9f, repository(files).loadDraft().activeSettings.guidance)
+    }
+
+    @Test fun mediumEffortReopensAndUndoRestoresHighSettings() = runTest {
+        val files = temp.newFolder()
+        val repository = repository(files)
+        repository.loadDraft()
+        val high = repository.updateDraft { it.withActiveSettings(it.v5Settings.copy(steps = 41, cfgRescale = 0.6f)) }
+        repository.saveUndoDraft(high)
+        val medium = repository.updateDraft { it.withActiveSettings(it.activeSettings.copy(
+            effort = com.example.chatbar.domain.image.NovelAiEffort.MEDIUM)) }
+        val reopened = repository(files)
+        assertTrue(reopened.loadDraft().activeSettings.isMediumEffort)
+        assertEquals(41, reopened.loadDraft().activeSettings.steps)
+        val entry = NovelAiGenerationHistoryEntry(recipe = medium.toRecipe())
+        repository.saveHistory(entry)
+        reopened.initialize()
+        assertTrue(reopened.history.first().single().recipe.settings.isMediumEffort)
+        val undo = requireNotNull(reopened.loadUndoDraft())
+        reopened.updateDraft { undo }
+        assertFalse(repository(files).loadDraft().activeSettings.isMediumEffort)
+        assertEquals(41, repository(files).loadDraft().activeSettings.steps)
+        assertEquals(0.6f, repository(files).loadDraft().activeSettings.cfgRescale)
+    }
+
+    @Test fun transparentPngAndItsRecipeSurviveHistoryAndDraftReopen() = runTest {
+        val files = temp.newFolder()
+        val png = java.util.Base64.getDecoder().decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4zwAE/xkaAAt+An+rqPSSAAAAAElFTkSuQmCC")
+        val storage = NovelAiImageStorage(TestContext(files))
+        val repository = repository(files)
+        repository.loadDraft()
+        val draft = repository.updateDraft { it.withActiveSettings(it.v5Settings.copy(transparentBackground = true)) }
+        val path = storage.save("synthetic", png)
+        val entry = NovelAiGenerationHistoryEntry(images = listOf(NovelAiGenerationHistoryImage(path, 42)),
+            recipe = draft.toRecipe())
+        repository.saveHistory(entry)
+        val reopened = repository(files)
+        reopened.initialize()
+        assertTrue(reopened.loadDraft().activeSettings.transparentBackground)
+        assertTrue(reopened.history.first().single().recipe.settings.transparentBackground)
+        assertArrayEquals(png, File(path).readBytes())
+        val image = javax.imageio.ImageIO.read(File(path))
+        assertEquals(0, image.getRGB(0, 0) ushr 24)
+        assertEquals(128, image.getRGB(1, 0) ushr 24)
+    }
 
     @Test
     fun mixedMetadataAndOriginalDeletionKeepsRemainingRecipeWithoutStagingOmittedFiles() = runTest {

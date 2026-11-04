@@ -158,7 +158,7 @@ class NovelAiImageService(
                                     val count = stream.read(buffer)
                                     if (count < 0) break
                                     decoder.feed(buffer.copyOf(count)).forEach { frame ->
-                                        decodeFrame(frame, settings.steps)?.let { event ->
+                                        decodeFrame(frame, settings.effectiveSteps)?.let { event ->
                                             when (event) {
                                                 is NovelAiImageEvent.Intermediate -> trySend(event)
                                                 is NovelAiImageEvent.Final -> {
@@ -246,9 +246,9 @@ class NovelAiImageService(
                 imageGuidance.preciseReferenceBase64 == null && imageGuidance.vibes.isEmpty()
         ) { "V5 Full 暂不支持精确参考或氛围参考" }
         settings.validationError(prompt.characterCaptions.size)?.let { error(it) }
-        val effectivePrompt = if (enhance != null) prompt else
-            NovelAiV5TextPromptPolicy.apply(NovelAiPromptDelimiterPolicy.normalizeForRequest(prompt), settings.model)
-        val negative = if (enhance != null) prompt.negativePrompt else effectivePrompt.effectiveNegativePrompt.trim()
+        val effectivePrompt = if (enhance != null) settings.withEffectiveNegativePrompt(prompt)
+            else NovelAiV5TextPromptPolicy.prepareForRequest(prompt, settings)
+        val negative = if (enhance != null) effectivePrompt.negativePrompt else effectivePrompt.effectiveNegativePrompt.trim()
         val useCoordinates = settings.useCharacterPositions && effectivePrompt.characterCaptions.isNotEmpty()
         fun requestCenter(caption: NovelAiCharacterCaption) = if (useCoordinates) {
             NovelAiCharacterPositionPolicy.normalize(caption.center, settings.model)
@@ -286,9 +286,9 @@ class NovelAiImageService(
             put("use_order", true)
         }
         val requestModel = if (imageGuidance.action == NovelAiGenerationAction.INPAINT) {
-            "${settings.model.apiId}-inpainting"
+            "${settings.requestModelId}-inpainting"
         } else {
-            settings.model.apiId
+            settings.requestModelId
         }
         return buildJsonObject {
             put("input", effectivePrompt.baseCaption)
@@ -299,12 +299,12 @@ class NovelAiImageService(
                 put("width", imageSize.width)
                 put("height", imageSize.height)
                 put("scale", settings.guidance)
-                put("sampler", settings.sampler.apiId)
-                put("steps", settings.steps)
+                put("sampler", settings.effectiveSampler.apiId)
+                put("steps", settings.effectiveSteps)
                 put("seed", settings.seed)
                 put("extra_noise_seed", settings.seed)
                 put("n_samples", settings.count)
-                put("ucPreset", 3)
+                if (settings.isMediumEffort) put("tag_hint_uc_preset", 2) else put("ucPreset", 3)
                 put("qualityToggle", false)
                 put("negative_prompt", negative)
                 put("noise_schedule", "karras")
@@ -316,9 +316,13 @@ class NovelAiImageService(
                 put("sm", false)
                 put("sm_dyn", false)
                 put("dynamic_thresholding", false)
-                put("cfg_rescale", settings.cfgRescale)
+                put("cfg_rescale", settings.effectiveCfgRescale)
                 if (settings.model.supportsVarietyPlus) {
-                    if (settings.varietyPlus) put("skip_cfg_above_sigma", 58) else put("skip_cfg_above_sigma", JsonNull)
+                    if (settings.varietyPlus) {
+                        val sigma = settings.varietyPlusSigma ?: NovelAiVarietyPlusPolicy.DEFAULT_SIGMA
+                        require(sigma.isFinite() && sigma > 0) { "Variety+ Sigma 无效" }
+                        put("skip_cfg_above_sigma", sigma * NovelAiVarietyPlusPolicy.resolutionScale(imageSize.width, imageSize.height))
+                    } else put("skip_cfg_above_sigma", JsonNull)
                 }
                 put("deliberate_euler_ancestral_bug", false)
                 put("prefer_brownian", true)
@@ -329,11 +333,24 @@ class NovelAiImageService(
                     require(imageGuidance.action == NovelAiGenerationAction.IMAGE_TO_IMAGE && settings.count == 1)
                     require(!enhance.upscaledEnhance || settings.model == NovelAiImageModel.V5_FULL)
                     enhance.sourceParameters.forEach { (key, value) ->
-                        if (key != "skip_cfg_above_sigma" || settings.model.supportsVarietyPlus) put(key, value)
+                        if (key != "skip_cfg_above_sigma") put(key, value)
                     }
                     put("upscaled_enhance", enhance.upscaledEnhance)
                     put("color_correct", false)
                     put("extra_noise_seed", (settings.seed - 1L) and 0xffff_ffffL)
+                }
+                // Imported Enhance parameters cannot override Medium's fixed request contract.
+                if (settings.isMediumEffort) {
+                    put("steps", settings.effectiveSteps)
+                    put("sampler", settings.effectiveSampler.apiId)
+                    put("cfg_rescale", settings.effectiveCfgRescale)
+                    put("negative_prompt", negative)
+                    put("v4_negative_prompt", v4NegativePrompt)
+                    put("tag_hint_uc_preset", 2)
+                }
+                if (settings.model == NovelAiImageModel.V5_FULL) {
+                    put("tag_hint_transparent_background", settings.transparentBackground)
+                    put("straight_alpha", true)
                 }
                 when (imageGuidance.action) {
                     NovelAiGenerationAction.IMAGE_TO_IMAGE -> {

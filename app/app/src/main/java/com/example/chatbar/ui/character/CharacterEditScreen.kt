@@ -665,17 +665,35 @@ fun CharacterEditScreen(
             }
                 val imageModel = viewModel.defaultNovelAiImageModel ?: ChatBarApp.instance.settingsRepository.currentAppSettings.novelAiImageModel
                 val imageSettings = viewModel.defaultImageGenerationSettings ?: com.example.chatbar.domain.image.NovelAiCharacterImageSettings()
-                CbField("Sampler") {
-                    CbSelect(imageSettings.sampler.takeIf { it in imageModel.samplers } ?: imageModel.samplers.first(), imageModel.samplers, { it.displayName }, { viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = it) })
+                CbButton("使用 NovelAI 默认采样参数", {
+                    viewModel.defaultImageGenerationSettings = imageSettings.withDefaultSampling(imageModel)
+                }, variant = ButtonVariant.Ghost, size = ButtonSize.Sm)
+                val effectiveImageSettings = imageSettings.applyTo(com.example.chatbar.domain.image.NovelAiGenerationSettings(model = imageModel))
+                if (imageModel == NovelAiImageModel.V5_FULL) {
+                    CbField("Effort", description = "Medium 固定 14 Steps、Euler Ancestral、Heavy 负面词与 Rescale 0。自定义值保留，切回 High 后生效。") {
+                        CbSelect(imageSettings.effort, com.example.chatbar.domain.image.NovelAiEffort.entries.toList(), { it.displayName }, {
+                            viewModel.defaultImageGenerationSettings = imageSettings.copy(effort = it)
+                        })
+                    }
+                    CbField("透明背景", description = "让图片使用透明背景，仅 V5 支持。") {
+                        CbSwitch(imageSettings.transparentBackground, {
+                            viewModel.defaultImageGenerationSettings = imageSettings.copy(transparentBackground = it)
+                        })
+                    }
                 }
-                CbField("Steps · ${imageSettings.steps}") {
-                    CbSlider(imageSettings.steps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48)
+                CbField("Sampler") {
+                    com.example.chatbar.ui.components.NovelAiSamplerSelect(effectiveImageSettings) { sampler ->
+                        viewModel.defaultImageGenerationSettings = imageSettings.copy(sampler = sampler)
+                    }
+                }
+                CbField("Steps · ${effectiveImageSettings.effectiveSteps}") {
+                    CbSlider(effectiveImageSettings.effectiveSteps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48, enabled = !effectiveImageSettings.isMediumEffort)
                 }
                 CbField("CFG · ${imageSettings.guidance}") {
                     CbSlider(imageSettings.guidance, { viewModel.defaultImageGenerationSettings = imageSettings.copy(guidance = it) }, valueRange = 1f..10f)
                 }
-                CbField("CFG Rescale · ${imageSettings.cfgRescale}") {
-                    CbSlider(imageSettings.cfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f)
+                CbField("CFG Rescale · ${effectiveImageSettings.effectiveCfgRescale}") {
+                    CbSlider(effectiveImageSettings.effectiveCfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f, enabled = !effectiveImageSettings.isMediumEffort)
                 }
                 if (imageModel.supportsVarietyPlus) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
