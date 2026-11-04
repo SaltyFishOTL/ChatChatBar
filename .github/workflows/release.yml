@@ -16,6 +16,11 @@ on:
         required: false
         default: false
         type: boolean
+      resumeRelease:
+        description: "Finish publishing an existing tag without changing its source or version"
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -31,6 +36,7 @@ jobs:
     env:
       VERSION_NAME: ${{ inputs.versionName }}
       RELEASE_NOTES: ${{ inputs.releaseNotes }}
+      RESUME_RELEASE: ${{ inputs.resumeRelease }}
       CHATBAR_SUPABASE_URL: ${{ secrets.CHATBAR_SUPABASE_URL || 'https://rrlxofrrgfnhjfyrqvry.supabase.co' }}
       CHATBAR_SUPABASE_ANON_KEY: ${{ secrets.CHATBAR_SUPABASE_ANON_KEY || 'sb_publishable_J56aQ_JJLnank-dv1olMdg_d87xNQjD' }}
 
@@ -64,7 +70,14 @@ jobs:
           echo "VERSION_NAME=${VERSION_NAME}" >> "${GITHUB_ENV}"
           git fetch --tags --force
           if git rev-parse -q --verify "refs/tags/v$VERSION_NAME" >/dev/null; then
-            echo "Tag v$VERSION_NAME already exists"
+            if [[ "$RESUME_RELEASE" != true ]]; then
+              echo "Tag v$VERSION_NAME already exists; use resumeRelease only to finish that exact source."
+              exit 1
+            fi
+            git checkout --detach "refs/tags/v$VERSION_NAME"
+            echo "Resuming immutable tag v$VERSION_NAME at $(git rev-parse HEAD)"
+          elif [[ "$RESUME_RELEASE" == true ]]; then
+            echo "Cannot resume: tag v$VERSION_NAME does not exist."
             exit 1
           fi
 
@@ -111,6 +124,8 @@ jobs:
               raise SystemExit("versionName default not found")
           current_name = re.search(r'\.orElse\("([^"]+)"\)', version_match.group(0)).group(1)
           current_code = int(code_match.group(1))
+          if os.environ["RESUME_RELEASE"] == "true" and current_name != version_name:
+              raise SystemExit("Tagged source version does not match the requested release")
           if current_name == version_name:
               # A previous attempt may have pushed metadata before tag publication failed.
               next_code = current_code
@@ -189,6 +204,7 @@ jobs:
           cp "${release_apk}" "ChatBar-${VERSION_NAME}.apk"
 
       - name: Commit version bump and tag
+        if: ${{ !inputs.resumeRelease }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -260,7 +276,62 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release create "v${VERSION_NAME}" \
-            "ChatBar-${VERSION_NAME}.apk#ChatBar-${VERSION_NAME}.apk" \
-            --title "ChatBar ${VERSION_NAME}" \
-            --notes "${RELEASE_NOTES}"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          import time
+
+          repo = os.environ["GITHUB_REPOSITORY"]
+          version = os.environ["VERSION_NAME"]
+          tag = f"v{version}"
+          notes = os.environ["RELEASE_NOTES"]
+          apk = Path(f"ChatBar-{version}.apk")
+          digest = "sha256:" + hashlib.sha256(apk.read_bytes()).hexdigest()
+
+          def api(path, method="GET", payload=None, file=None):
+              args = ["gh", "api", path, "--method", method]
+              if file is not None:
+                  args += ["--input", str(file), "-H", "Content-Type: application/vnd.android.package-archive"]
+              elif payload is not None:
+                  args += ["--input", "-"]
+              result = subprocess.run(args, input=json.dumps(payload) if payload is not None else None,
+                                      capture_output=True, text=True, check=False)
+              if result.returncode:
+                  raise RuntimeError(result.stderr.strip())
+              return json.loads(result.stdout)
+
+          for attempt in range(1, 4):
+              try:
+                  releases = api(f"repos/{repo}/releases?per_page=100")
+                  release = next((item for item in releases if item["tag_name"] == tag), None)
+                  if release is None:
+                      release = api(f"repos/{repo}/releases", "POST", {
+                          "tag_name": tag, "name": f"ChatBar {version}", "body": notes,
+                          "draft": True, "prerelease": False,
+                      })
+                  release_id = release["id"]
+                  asset = next((item for item in release["assets"] if item["name"] == apk.name), None)
+                  if asset is None:
+                      asset = api(f"https://uploads.github.com/repos/{repo}/releases/{release_id}/assets?name={apk.name}",
+                                  "POST", file=apk)
+                  if asset["state"] != "uploaded" or asset["size"] != apk.stat().st_size or asset.get("digest") != digest:
+                      raise SystemExit("Existing release asset differs from this build; refusing to overwrite it.")
+                  if release["draft"] or release["body"] != notes or release["prerelease"]:
+                      api(f"repos/{repo}/releases/{release_id}", "PATCH", {
+                          "name": f"ChatBar {version}", "body": notes,
+                          "draft": False, "prerelease": False,
+                      })
+                  published = api(f"repos/{repo}/releases/{release_id}")
+                  if published["draft"] or published["prerelease"] or published["body"] != notes:
+                      raise RuntimeError("Published release metadata does not match")
+                  print(published["html_url"])
+                  break
+              except RuntimeError as error:
+                  print(f"::warning::Release publication attempt {attempt} failed: {error}")
+                  if attempt == 3:
+                      raise SystemExit("Release publication failed after three attempts")
+                  time.sleep(attempt * 5)
+          PY

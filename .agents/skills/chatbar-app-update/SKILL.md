@@ -61,5 +61,8 @@ Use `.github/workflows/release.yml` through `workflow_dispatch` after all intend
 - `versionName`: next unused version without relying on local build overrides.
 - `releaseNotes`: short user-facing changes since previous Release; exclude implementation details.
 - `runTests`: optional JVM execution; default false. Application/JVM/Android test-source compilation and signed APK build always run.
+- `resumeRelease`: only for completing an existing immutable tag after publication failure; checks out that tag and skips version/tag writes. New source needs a new version.
 
 Workflow increments Android `versionCode` for a new version, reuses matching prepared metadata when resuming a missing-tag publication, commits only changed version metadata, creates annotated `v<version>` through the Git database API without overwriting tags, builds signed APK, and creates GitHub Release. Require the release-publish verification script to pass before reporting completion.
+
+Release upload uses a draft until APK size/SHA-256 match, then publishes notes and asset together. Bounded retries inspect server state; an existing different APK is never overwritten.
