@@ -99,19 +99,29 @@ jobs:
           if not code_match:
               raise SystemExit("baseVersionCode not found")
 
-          next_code = int(code_match.group(1)) + 1
           version_name = os.environ["VERSION_NAME"]
-          text, code_updates = re.subn(
-              r'val\s+baseVersionCode\s*=\s*\d+',
-              f'val baseVersionCode = {next_code}',
-              text,
-              count=1,
-          )
           version_pattern = re.compile(
               r'(versionName\s*=\s*providers\.gradleProperty\("CHATBAR_VERSION_NAME"\)\s*'
               r'\n\s*\.orElse\(providers\.environmentVariable\("CHATBAR_VERSION_NAME"\)\)\s*'
               r'\n\s*\.orElse\(")[^"]+("\)\s*'
               r'\n\s*\.get\(\))'
+          )
+          version_match = version_pattern.search(text)
+          if not version_match:
+              raise SystemExit("versionName default not found")
+          current_name = re.search(r'\.orElse\("([^"]+)"\)', version_match.group(0)).group(1)
+          current_code = int(code_match.group(1))
+          if current_name == version_name:
+              # A previous attempt may have pushed metadata before tag publication failed.
+              next_code = current_code
+              print(f"Resuming prepared version {version_name} with versionCode {next_code}")
+          else:
+              next_code = current_code + 1
+          text, code_updates = re.subn(
+              r'val\s+baseVersionCode\s*=\s*\d+',
+              f'val baseVersionCode = {next_code}',
+              text,
+              count=1,
           )
           text, version_updates = version_pattern.subn(
               lambda match: f"{match.group(1)}{version_name}{match.group(2)}",
@@ -184,10 +194,34 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add app/app/build.gradle.kts
-          git commit -m "Release ${VERSION_NAME}"
+          if git diff --cached --quiet; then
+            echo "Version metadata already prepared; keeping the existing commit."
+          else
+            git commit -m "Release $VERSION_NAME"
+          fi
           git tag -a "v${VERSION_NAME}" -m "ChatBar ${VERSION_NAME}"
-          git push origin HEAD:${GITHUB_REF_NAME}
-          git push origin "v${VERSION_NAME}"
+          push_ref() {
+            local source_ref="$1" target_ref="$2" expected actual attempt
+            expected="$(git rev-parse "$source_ref")"
+            for attempt in 1 2 3; do
+              if git push origin "$source_ref:$target_ref"; then
+                return 0
+              fi
+              echo "::warning::Push attempt $attempt failed for $target_ref; checking remote state."
+              actual="$(git ls-remote --refs origin "$target_ref" | awk '{print $1}')" || actual=""
+              if [[ "$actual" == "$expected" ]]; then
+                echo "Remote $target_ref already matches $expected; push was applied despite the error."
+                return 0
+              fi
+              if [[ "$attempt" -lt 3 ]]; then
+                sleep "$((attempt * 5))"
+              fi
+            done
+            echo "::error::Could not publish $target_ref after three attempts."
+            return 1
+          }
+          push_ref HEAD "refs/heads/$GITHUB_REF_NAME"
+          push_ref "refs/tags/v$VERSION_NAME" "refs/tags/v$VERSION_NAME"
 
       - name: Create GitHub release
         env:
