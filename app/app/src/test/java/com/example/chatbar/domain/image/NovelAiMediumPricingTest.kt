@@ -69,12 +69,10 @@ class NovelAiMediumPricingTest {
             NovelAiEnhanceOptions(), opus.copy(v5AllowanceExhausted = true)).anlas)
     }
 
-    @Test fun highAndV45KeepTheirPreviousRoundingAndImg2imgEstimates() {
+    @Test fun highAndV45KeepTheirTextGenerationRoundingAndEnhanceEstimates() {
         for ((model, expected) in listOf(NovelAiImageModel.V5_FULL to 30, NovelAiImageModel.V4_5_FULL to 20)) {
             val high = settings(steps = 28).copy(model = model, effort = NovelAiEffort.HIGH)
             assertEquals(expected, NovelAiImageCostEstimator.estimate(high, null).anlas)
-            assertEquals(expected, NovelAiImageCostEstimator.estimate(high, null,
-                NovelAiImageGuidanceDraft(action = NovelAiGenerationAction.IMAGE_TO_IMAGE)).anlas)
             val source = NovelAiEnhanceSource(NovelAiPromptPlan("scene", emptyList()), high, JsonObject(emptyMap()))
             assertEquals(if (model == NovelAiImageModel.V5_FULL) 18 else 12,
                 NovelAiPostProcessPolicy.enhanceCost(source, 1024, 1024, NovelAiEnhanceOptions(strength = 0.6f), null).anlas)

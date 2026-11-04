@@ -112,12 +112,12 @@ object NovelAiImageCostEstimator {
         } else {
             sourcePixels
         }
-        // Preserve High's existing estimate; Medium uses the official fractional base.
-        val strength = if (settings.isMediumEffort) when (imageGuidance.action) {
+        // All models apply the action's wire strength before the final price rounding.
+        val strength = when (imageGuidance.action) {
             NovelAiGenerationAction.TEXT_TO_IMAGE -> 1.0
             NovelAiGenerationAction.IMAGE_TO_IMAGE -> imageGuidance.imageToImageStrength.coerceIn(0f, 1f).toString().toDouble()
             NovelAiGenerationAction.INPAINT -> imageGuidance.inpaintStrength.coerceIn(0f, 1f).toString().toDouble()
-        } else 1.0
+        }
         val modelCost = NovelAiSingleImagePricing.cost(
             settings, if (settings.isMediumEffort) requestPixels else max(requestPixels, MIN_PRICED_PIXELS), strength
         )

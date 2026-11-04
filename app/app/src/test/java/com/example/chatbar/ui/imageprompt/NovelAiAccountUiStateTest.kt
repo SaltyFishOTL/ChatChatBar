@@ -5,6 +5,26 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NovelAiAccountUiStateTest {
+    @Test fun correctedHighActionEstimateReconcilesWithoutLeavingAnlasResidue() {
+        val high = com.example.chatbar.domain.image.NovelAiGenerationSettings(
+            model = com.example.chatbar.domain.image.NovelAiImageModel.V5_FULL,
+            steps = 28, customWidth = 1024, customHeight = 1024)
+        for (action in listOf(com.example.chatbar.domain.image.NovelAiGenerationAction.IMAGE_TO_IMAGE,
+            com.example.chatbar.domain.image.NovelAiGenerationAction.INPAINT)) {
+            val guidance = com.example.chatbar.domain.image.NovelAiImageGuidanceDraft(
+                action = action, imageToImageStrength = 0.5f, inpaintStrength = 0.5f)
+            val estimate = com.example.chatbar.domain.image.NovelAiImageCostEstimator.estimate(high, null, guidance).anlas
+            assertEquals(15, estimate)
+            val initial = usage(100.0).copy(anlas = 1000)
+            val pending = NovelAiAccountUiState(usage = initial, loading = false)
+                .recordAnlasGeneration(estimate.toLong()).reconcile(initial)
+            assertEquals(985L, pending.displayAnlas)
+            assertEquals(15L, pending.localAnlasSpent)
+            val confirmed = pending.reconcile(initial.copy(anlas = 985))
+            assertEquals(985L, confirmed.displayAnlas)
+            assertEquals(0L, confirmed.localAnlasSpent)
+        }
+    }
     @Test fun correctedMediumEstimateReconcilesWithoutLeavingAnlasResidue() {
         val settings = com.example.chatbar.domain.image.NovelAiGenerationSettings(
             model = com.example.chatbar.domain.image.NovelAiImageModel.V5_FULL,

@@ -72,7 +72,7 @@ class NovelAiImageCostEstimatorTest {
         )
 
         assertEquals(NovelAiGenerationChargeKind.ANLAS, cost.kind)
-        assertEquals(20, cost.anlas)
+        assertEquals(10, cost.anlas)
     }
 
     @Test
