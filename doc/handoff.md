@@ -2,7 +2,7 @@
 
 > 当前状态：2026-11-04。PR #1 已按维护者授权复审通过并合并到 master；合并提交 b0fa1a425f24a0abe5adcb3b8f5775598452996e，PR 精确源码 567ff1939ec2a5621bbbc8dd7d5f06e079a942b7。准备发布 v1.4.8，远端上一稳定版为 v1.4.7，v1.4.8 标签未占用；完整覆盖清单见 doc/release_1_4_8_coverage.md。
 > 本轮生图：V5 High/Medium 与透明背景；Medium 固定请求与独立费用公式，High 自定义采样保留；Studio PNG 导入明确透明标签归属，手写默认保留；Sampler 禁用及旧弹窗写回保护；V4.5 补齐六种采样、Variety+ 按画布缩放；新草稿及显式采样重置采用新默认值，旧资料保持兼容。原静态 Prompt 正文未改。
-> 发布恢复：41808693254 两次应用/测试源码编译和签名构建均通过，但 GitHub Git 写入返回 Internal Server Error；第一次 branch 推送失败，第二次版本提交 24bda4eb 已写 master、tag 推送失败，远端仍无 v1.4.8 标签。工作流现保留已准备的 1.4.8/87，跳过空提交，并对 branch/tag 推送最多重试三次、每次失败核对远端精确 SHA，不强制覆盖。
+> 发布恢复：41808693254 两次编译/签名通过，但 branch/tag 写入分别报 GitHub Internal Server Error；版本提交 24bda4eb 已写入。5c22fdf 保留 1.4.8/87、跳过空提交并有限重试；41811103447 主分支成功、tag 三次仍返回 500，标签仍未创建。现将带注释标签改为 Git database API 创建对象再创建引用，失败核对精确 SHA，冲突时停止；旧源码启动的 41810535516 已取消。
 > 复审证据：已下载原始 CI XML 并核对 SHA-256，567ff19 费用与余额 5 suites/34 项全部通过（run 41766050690）；f52eeb9 的 48 suites/326 项及 4 项共享控件交互通过（runs 41669697238/41672730945），后继仅修改费用估算与对应测试，相关控件/导入代码未变。非完整页面端到端、真机或真实付费 Provider 验收。本地主分支应用、JVM 和 Android 测试源码编译已通过；未运行本地自动测试。ADB 无连接设备，发布后仅打包交付。
 
 > 上次发布：2026-10-22。v1.4.7 / versionCode 86 已发布；修复提交 81f54498，版本提交/标签 b4fa75d2。用户截图为导出所选会话存档时“存档路径越界：../../.../data/com.example.chatbar/files/save_slot_packages/...cbsave”。源码定位：清单通过 BackupDataRegistry.target 获得规范化包文件，BackupArchive.create 丢弃已有包内名称，再对未规范化 filesDir 计算相对路径；目录别名可因此生成 ../。现沿用 records.relative 与 additionalFiles 的明确包内路径，原 target 越界校验保留，原始文件不改。此前勾选范围、三种导入模式与未选内容保留语义不变。

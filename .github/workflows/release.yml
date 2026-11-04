@@ -189,6 +189,8 @@ jobs:
           cp "${release_apk}" "ChatBar-${VERSION_NAME}.apk"
 
       - name: Commit version bump and tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
@@ -199,7 +201,6 @@ jobs:
           else
             git commit -m "Release $VERSION_NAME"
           fi
-          git tag -a "v${VERSION_NAME}" -m "ChatBar ${VERSION_NAME}"
           push_ref() {
             local source_ref="$1" target_ref="$2" expected actual attempt
             expected="$(git rev-parse "$source_ref")"
@@ -221,7 +222,39 @@ jobs:
             return 1
           }
           push_ref HEAD "refs/heads/$GITHUB_REF_NAME"
-          push_ref "refs/tags/v$VERSION_NAME" "refs/tags/v$VERSION_NAME"
+          # Use the Git database API: Git receive-pack has returned persistent 500s for tags.
+          # Create the annotated object first, then its ref; never update an existing tag.
+          tag_object="$(gh api --method POST "repos/$GITHUB_REPOSITORY/git/tags" \
+            -f tag="v$VERSION_NAME" -f message="ChatBar $VERSION_NAME" \
+            -f object="$(git rev-parse HEAD)" -f type=commit \
+            -f 'tagger[name]=github-actions[bot]' \
+            -f 'tagger[email]=github-actions[bot]@users.noreply.github.com' --jq .sha)"
+          tag_published=false
+          for attempt in 1 2 3; do
+            if gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+              -f ref="refs/tags/v$VERSION_NAME" -f sha="$tag_object"; then
+              tag_published=true
+              break
+            fi
+            echo "::warning::Tag ref creation attempt $attempt failed; checking remote state."
+            actual="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/v$VERSION_NAME" --jq .object.sha)" || actual=""
+            if [[ "$actual" == "$tag_object" ]]; then
+              echo "Remote tag already matches $tag_object; API write was applied despite the error."
+              tag_published=true
+              break
+            fi
+            if [[ -n "$actual" ]]; then
+              echo "::error::Tag now points to another object; refusing to overwrite it."
+              exit 1
+            fi
+            if [[ "$attempt" -lt 3 ]]; then
+              sleep "$((attempt * 5))"
+            fi
+          done
+          if [[ "$tag_published" != true ]]; then
+            echo "::error::Could not create the tag ref after three attempts."
+            exit 1
+          fi
 
       - name: Create GitHub release
         env:
