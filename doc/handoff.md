@@ -1,9 +1,13 @@
 # ChatBar 项目交接文档
 
-> 当前状态：2026-11-04。PR #1 已合并到 master（b0fa1a425f24a0abe5adcb3b8f5775598452996e）；PR 精确源码 567ff1939ec2a5621bbbc8dd7d5f06e079a942b7。v1.4.8 标签已固定指向 6f8a09a8bd24c274b08a56cadc37a82380bfe625，1.4.8/87 尚待补全 Release；上一稳定版 v1.4.7。完整覆盖见 doc/release_1_4_8_coverage.md。
+> 当前状态：2026-11-04。PR #1 已合并（b0fa1a42）；v1.4.8 / versionCode 87 已发布，版本元数据提交 24bda4eb，标签指向发布恢复提交 6f8a09a8bd24c274b08a56cadc37a82380bfe625。发布准备 b031c08；完整相邻标签覆盖见 doc/release_1_4_8_coverage.md。
 > 本轮生图：V5 High/Medium 与透明背景；Medium 固定请求与独立费用公式，High 自定义采样保留；Studio PNG 导入明确透明标签归属，手写默认保留；Sampler 禁用及旧弹窗写回保护；V4.5 补齐六种采样、Variety+ 按画布缩放；新草稿及显式采样重置采用新默认值，旧资料保持兼容。原静态 Prompt 正文未改。
-> 发布恢复：41808693254 的 branch/tag 推送先后报 GitHub 500；版本提交 24bda4eb 已写入。5c22fdf 保留 1.4.8/87、有限重试；41811103447 标签仍三次 500。6f8a09a 改标签 API 后，41811690437 成功创建 v1.4.8（精确指向 6f8a09a），但创建 Release 返回 HTTP 502，无草稿或 APK。现增加 resumeRelease：仅检出已有标签构建并补全上传，不改版本/标签；草稿上传校验摘要后发布，最多三次并检查服务端实际状态。旧源码启动的 41810535516 已取消。
-> 复审证据：已下载原始 CI XML 并核对 SHA-256，567ff19 费用与余额 5 suites/34 项全部通过（run 41766050690）；f52eeb9 的 48 suites/326 项及 4 项共享控件交互通过（runs 41669697238/41672730945），后继仅修改费用估算与对应测试，相关控件/导入代码未变。非完整页面端到端、真机或真实付费 Provider 验收。本地主分支应用、JVM 和 Android 测试源码编译已通过；未运行本地自动测试。ADB 无连接设备，发布后仅打包交付。
+> 发布核验：流程 41812418619 成功（https://github.com/SaltyFishOTL/ChatChatBar/actions/runs/41812418619），工作流 e9dff76 以 resumeRelease=true 检出不可变标签 6f8a09a 构建；应用/JVM/Android 测试源码编译和签名 release 构建通过，runTests=false、JVM 执行及版本/标签写入 skipped。API 与 Atom 的 6 条更新说明一致，正式 APK 已上传；包信息 com.example.chatbar / 1.4.8 / 87，签名与 v1.4.7 一致。
+> 发布恢复：41808693254 两次编译/签名均通过，但第一次 branch 推送报 GitHub Internal Server Error；第二次写入版本提交 24bda4eb 后 tag 推送仍报错。旧源码启动的 41810535516 已取消。5c22fdf 保留 1.4.8/87、跳过空提交、有限重试及核对精确 SHA；41811103447 的 tag 三次仍报 500。6f8a09a 改标签 API，41811690437 创建标签后 Release 创建报 HTTP 502、无草稿或 APK；e9dff76 增加固定标签续传及草稿上传校验后发布，随后完成，无重写标签。
+> 正式包：app/build/published-1.4.8/ChatBar-1.4.8.apk，95,697,693 字节，SHA-256 c531fcf3f33aaf29c14257f5f30891e306c88eafd90e54b94a89e913a53b8df4，与 GitHub asset digest 一致。发布页：https://github.com/SaltyFishOTL/ChatChatBar/releases/tag/v1.4.8。
+> 本地交付：redeploy.bat --build-only --no-pause 构建成功，使用 1.4.8/87 版本覆盖；app/app/build/outputs/apk/release/app-release.apk，95,697,925 字节，SHA-256 4f7e757f810f262f3ea362c28d51b8380904d2a18ebec46446aa2f583fa89217。应用/JVM/Android 测试源码编译及 release/lintVital 通过；未运行本地自动测试。发布交付 ADB 无设备，未安装、未读设备日志或截图。
+> 复审证据：原始 CI XML 已核对，567ff19 费用/余额 5 suites/34 项通过（41766050690）；f52eeb9 的 48 suites/326 项及 4 项共享控件交互通过（41669697238/41672730945），后继仅费用估算及对应测试变化，相关控件/导入代码未变。非完整页面端到端、真机或真实付费 Provider 验收。
+> 待人工复测：工作室 V5 High 自定义采样后切 Medium 再回 High，确认原值保留；透明 PNG 导入选“交给透明背景开关管理”后关闭，确认只撤回该处标签，默认“保留正文”保持手写词；打开旧草稿/历史并切 V4.5，核对复用与保存；管理页检查更新确认可读取本次说明。真实付费出图和服务端 alpha 仍待自愿验收。
 
 > 上次发布：2026-10-22。v1.4.7 / versionCode 86 已发布；修复提交 81f54498，版本提交/标签 b4fa75d2。用户截图为导出所选会话存档时“存档路径越界：../../.../data/com.example.chatbar/files/save_slot_packages/...cbsave”。源码定位：清单通过 BackupDataRegistry.target 获得规范化包文件，BackupArchive.create 丢弃已有包内名称，再对未规范化 filesDir 计算相对路径；目录别名可因此生成 ../。现沿用 records.relative 与 additionalFiles 的明确包内路径，原 target 越界校验保留，原始文件不改。此前勾选范围、三种导入模式与未选内容保留语义不变。
 > 已实现：选择清单有分层总览、搜索、全选/清空/轻量及后台大小估算；角色卡强调底色/标签，子会话缩进/连接线/图标。总览与详情的图片/语音/存档三个开关分别同步全部已选会话（含隐藏项）及新选默认，互不影响、逐会话可覆盖。长期记忆、阅读位置、编辑草稿属于会话设置；角色依赖及关联模型/格式卡/世界书自动带入；独立 SaveSlot 自身媒体不受当前聊天开关影响。
