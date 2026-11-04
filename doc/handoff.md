@@ -1,6 +1,10 @@
 # ChatBar 项目交接文档
 
-> 状态更新：2026-10-22。v1.4.7 / versionCode 86 已发布；修复提交 81f54498，版本提交/标签 b4fa75d2。用户截图为导出所选会话存档时“存档路径越界：../../.../data/com.example.chatbar/files/save_slot_packages/...cbsave”。源码定位：清单通过 BackupDataRegistry.target 获得规范化包文件，BackupArchive.create 丢弃已有包内名称，再对未规范化 filesDir 计算相对路径；目录别名可因此生成 ../。现沿用 records.relative 与 additionalFiles 的明确包内路径，原 target 越界校验保留，原始文件不改。此前勾选范围、三种导入模式与未选内容保留语义不变。
+> 当前状态：2026-11-04。PR #1 已按维护者授权复审通过并合并到 master；合并提交 b0fa1a425f24a0abe5adcb3b8f5775598452996e，PR 精确源码 567ff1939ec2a5621bbbc8dd7d5f06e079a942b7。准备发布 v1.4.8，远端上一稳定版为 v1.4.7，v1.4.8 标签未占用；完整覆盖清单见 doc/release_1_4_8_coverage.md。
+> 本轮生图：V5 High/Medium 与透明背景；Medium 固定请求与独立费用公式，High 自定义采样保留；Studio PNG 导入明确透明标签归属，手写默认保留；Sampler 禁用及旧弹窗写回保护；V4.5 补齐六种采样、Variety+ 按画布缩放；新草稿及显式采样重置采用新默认值，旧资料保持兼容。原静态 Prompt 正文未改。
+> 复审证据：已下载原始 CI XML 并核对 SHA-256，567ff19 费用与余额 5 suites/34 项全部通过（run 41766050690）；f52eeb9 的 48 suites/326 项及 4 项共享控件交互通过（runs 41669697238/41672730945），后继仅修改费用估算与对应测试，相关控件/导入代码未变。非完整页面端到端、真机或真实付费 Provider 验收。本地主分支应用、JVM 和 Android 测试源码编译已通过；未运行本地自动测试。ADB 无连接设备，发布后仅打包交付。
+
+> 上次发布：2026-10-22。v1.4.7 / versionCode 86 已发布；修复提交 81f54498，版本提交/标签 b4fa75d2。用户截图为导出所选会话存档时“存档路径越界：../../.../data/com.example.chatbar/files/save_slot_packages/...cbsave”。源码定位：清单通过 BackupDataRegistry.target 获得规范化包文件，BackupArchive.create 丢弃已有包内名称，再对未规范化 filesDir 计算相对路径；目录别名可因此生成 ../。现沿用 records.relative 与 additionalFiles 的明确包内路径，原 target 越界校验保留，原始文件不改。此前勾选范围、三种导入模式与未选内容保留语义不变。
 > 已实现：选择清单有分层总览、搜索、全选/清空/轻量及后台大小估算；角色卡强调底色/标签，子会话缩进/连接线/图标。总览与详情的图片/语音/存档三个开关分别同步全部已选会话（含隐藏项）及新选默认，互不影响、逐会话可覆盖。长期记忆、阅读位置、编辑草稿属于会话设置；角色依赖及关联模型/格式卡/世界书自动带入；独立 SaveSlot 自身媒体不受当前聊天开关影响。
 > 投影与格式：维护锁内刷新清单，只流式修改副本；聊天图片关闭清空 images/generatedImageMetadata，工作室原图关闭换为唯一省略标记并保留配方/Seed/时间，朋友圈配图关闭置空 imagePath/generatedImageMetadata，保留头像/正文/身份/点赞/时间/生图提示词/检查点/任务。省略引用在校验、复制、估算前移除，共享文件仍随其他所选对象保留；轻量方案默认关闭三类图片。媒体仅取引用并去重。元数据工作室历史可复用/删除，禁用原图操作，全屏跳过省略项。封装/清单 v2 含范围摘要；旧 v1 可读，早期 v2 范围缺少 momentsImages 时默认包含。启动恢复与导入共用版本兼容校验。
 > 上轮数据修复保留：登记 40 种 JSON 用户入口及偏好，mozilla/ProfileInstaller 不阻止导出；MomentMediaRetention 修复角色头像替换误删历史引用，仅已有缺失 moment_posts.senderAvatar 保留缺失关联并提示，已选包含的真实配图仍必需。选择朋友圈后即使模块关闭也带历史。用户具体缺失字段未读取设备确认，新错误已带字段名。
