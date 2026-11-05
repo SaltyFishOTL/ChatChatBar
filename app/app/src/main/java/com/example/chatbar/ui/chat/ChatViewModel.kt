@@ -205,12 +205,6 @@ internal fun appendCurrentUserAndCcbTailMessages(
             content = PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim()
         )
     )
-    messages.add(
-        ChatApiMessage.text(
-            role = "user",
-            content = PromptTemplates.CCB_POST_USER_IDENTITY_REMINDER_USER_PROMPT.trimIndent().trim()
-        )
-    )
 }
 
 private fun joinPromptParts(vararg parts: String): String = parts
@@ -2375,6 +2369,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Error -> throw IllegalStateException(event.message)
                             StreamEvent.Done -> sawDone = true
                             is StreamEvent.ReasoningDelta,
+                            is StreamEvent.ContentPreview,
                             is StreamEvent.Usage -> Unit
                         }
                     }
@@ -3092,7 +3087,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         formatPromptPosition = modelConfig.formatPromptPosition
                     )
 
-                    // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant/user 开写尾缀。
+                    // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant 开写尾缀。
                     val currentUserContent: String?
                     val currentUserImages: List<String>
                     val shouldAddUserPrompt: Boolean = when {
@@ -3167,6 +3162,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     // 8. 开启流式响应
                     var accumulatedText = ""
                     var accumulatedReasoning = ""
+                    var ordinaryPreview: String? = null
                     val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
                     val streamStartedAt = System.currentTimeMillis()
                     val regenerationTarget = alternativeTargetMessageId
@@ -3175,6 +3171,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                     val ctx = ChatBarApp.instance
+                    fun updateStreamingDraft(body: String) {
+                        val draft = ChatMessage(
+                            id = assistantMsgId,
+                            sessionId = sessionId,
+                            role = MessageRole.ASSISTANT,
+                            content = body,
+                            reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
+                            createdAt = streamCreatedAt,
+                            updatedAt = System.currentTimeMillis(),
+                            orderKey = streamOrderKey
+                        )
+                        interruptedReplyDraft = draft
+                        _streamingMessage.value = draft.copy(
+                            content = renderSessionText(body),
+                            reasoningContent = draft.reasoningContent?.let(renderSessionText)
+                        )
+                    }
                     _streamingMessage.value = ChatMessage(
                         id = assistantMsgId,
                         sessionId = sessionId,
@@ -3204,52 +3217,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Usage -> Unit
                             is StreamEvent.ReasoningDelta -> {
                                 accumulatedReasoning += event.text
-                                interruptedReplyDraft = ChatMessage(
-                                    id = assistantMsgId,
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = accumulatedText,
-                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                    createdAt = streamCreatedAt,
-                                    updatedAt = System.currentTimeMillis(),
-                                    orderKey = streamOrderKey
-                                )
-                                _streamingMessage.value = ChatMessage(
-                                    id = assistantMsgId,
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = renderSessionText(accumulatedText),
-                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
-                                        ?.let(renderSessionText),
-                                    createdAt = streamCreatedAt,
-                                    updatedAt = System.currentTimeMillis(),
-                                    orderKey = streamOrderKey
-                                )
+                                updateStreamingDraft(ordinaryPreview ?: accumulatedText)
+                            }
+                            is StreamEvent.ContentPreview -> {
+                                ordinaryPreview = event.text.takeIf(String::isNotEmpty)
+                                updateStreamingDraft(ordinaryPreview ?: accumulatedText)
+                                StreamingNotificationManager.update(ctx, renderSessionText(event.text), sessionId)
                             }
                             is StreamEvent.Delta -> {
+                                ordinaryPreview = null
                                 accumulatedText += event.text
                                 val renderedAccumulatedText = renderSessionText(accumulatedText)
-                                interruptedReplyDraft = ChatMessage(
-                                    id = assistantMsgId,
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = accumulatedText,
-                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
-                                    createdAt = streamCreatedAt,
-                                    updatedAt = System.currentTimeMillis(),
-                                    orderKey = streamOrderKey
-                                )
-                                _streamingMessage.value = ChatMessage(
-                                    id = assistantMsgId,
-                                    sessionId = sessionId,
-                                    role = MessageRole.ASSISTANT,
-                                    content = renderedAccumulatedText,
-                                    reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() }
-                                        ?.let(renderSessionText),
-                                    createdAt = streamCreatedAt,
-                                    updatedAt = System.currentTimeMillis(),
-                                    orderKey = streamOrderKey
-                                )
+                                updateStreamingDraft(accumulatedText)
                                 StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
                             }
                             is StreamEvent.Error -> {

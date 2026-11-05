@@ -1336,6 +1336,7 @@ internal suspend fun collectPromptText(
             }
             is StreamEvent.Error -> throw event.asException()
             is StreamEvent.Usage,
+            is StreamEvent.ContentPreview,
             StreamEvent.Done -> Unit
         }
     }

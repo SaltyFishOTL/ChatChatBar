@@ -9,6 +9,21 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class CleartextHttpChatTemplatePolicyTest {
+    @Test
+    fun `original assistant tail stays assistant on both transports`() {
+        val source = listOf(
+            ChatApiMessage.text("system", "core"),
+            ChatApiMessage.text("user", "input"),
+            ChatApiMessage.text("system", "requirements"),
+            ChatApiMessage.text("assistant", "reply prefix:")
+        )
+        listOf("http://localhost/v1", "https://example.test/v1").forEach { url ->
+            val adapted = CleartextHttpChatTemplatePolicy.adaptMessages(source, true, url)
+            assertEquals(source.last(), adapted.last())
+            assertEquals(source.map { it.content }, adapted.map { it.content })
+        }
+    }
+
     private val messages = listOf(
         ChatApiMessage.text("system", "固定设定"),
         ChatApiMessage.text("user", "较早用户消息"),

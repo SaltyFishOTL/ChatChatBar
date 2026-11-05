@@ -17,6 +17,7 @@ data class AppSettings(
     val presetDefaultModelKey: String? = null,
     val siliconFlowApiKey: String = "",
     val allowCleartextModelApi: Boolean = false,
+    val experimentalApiModeEnabled: Boolean = false,
     val defaultEmbeddingId: String? = null,
     val defaultFormatCardId: String? = null,
     val automaticFormatCheckEnabled: Boolean = false,

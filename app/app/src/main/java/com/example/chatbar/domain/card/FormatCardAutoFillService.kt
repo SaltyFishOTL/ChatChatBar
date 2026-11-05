@@ -99,7 +99,7 @@ internal suspend fun collectFormatCardAutoFillText(
                 }
                 is StreamEvent.Error -> throw event.asException()
                 StreamEvent.Done -> completed = true
-                is StreamEvent.ReasoningDelta, is StreamEvent.Usage -> Unit
+                is StreamEvent.ReasoningDelta, is StreamEvent.Usage, is StreamEvent.ContentPreview -> Unit
             }
         }
     } finally {

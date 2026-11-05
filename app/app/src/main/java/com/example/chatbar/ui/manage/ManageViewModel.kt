@@ -889,7 +889,10 @@ class ManageViewModel : ViewModel() {
                 )
                 val chat = modelResolver.defaultChatModel(current)
                 val embedding = modelResolver.embeddingModel(current)
-                val chatService = StreamingChatService { allowCleartextModelApi }
+                val chatService = StreamingChatService(
+                    experimentalApiModeEnabled = { current.experimentalApiModeEnabled },
+                    allowCleartextHttp = { allowCleartextModelApi }
+                )
                 val embeddingService = EmbeddingService { allowCleartextModelApi }
                 val chatResult = if (chat == null) "对话：预制型号未配置" else runCatching {
                     AiBackgroundWorkManager.run("api-test") {

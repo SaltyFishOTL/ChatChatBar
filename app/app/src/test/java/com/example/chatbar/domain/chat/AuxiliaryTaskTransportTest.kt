@@ -41,7 +41,7 @@ class AuxiliaryTaskTransportTest {
             assertFalse(events.any { it is StreamEvent.Error })
             assertEquals(2, events.filterIsInstance<StreamEvent.Usage>().single().usage.completionTokens)
             val request = Json.parseToJsonElement(server.requestBody).jsonObject["messages"]!!.jsonArray
-            assertEquals(listOf("system", "assistant", "user", "assistant", "user", "assistant", "assistant", "user"), request.map { it.jsonObject["role"]!!.jsonPrimitive.content })
+            assertEquals(listOf("system", "assistant", "user", "assistant", "user", "assistant", "assistant"), request.map { it.jsonObject["role"]!!.jsonPrimitive.content })
             assertEquals(messages.last().content, request[4].jsonObject["content"])
             val log = DebugLogManager.logs.value.single { it.taskId == context.taskId }
             assertEquals(17, log.apiPromptTokens)
@@ -99,7 +99,7 @@ class AuxiliaryTaskTransportTest {
     )
 }
 
-private class TaskResponseServer(body: String, contentType: String) : AutoCloseable {
+internal class TaskResponseServer(body: String, contentType: String) : AutoCloseable {
     private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
     val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
     @Volatile var requestBody = ""

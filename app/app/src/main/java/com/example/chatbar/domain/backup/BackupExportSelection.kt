@@ -21,6 +21,7 @@ object BackupSettingOptions {
         field("modelConfigurationMode", "模型配置方式", "模型与连接", "presetDefaultModelKey"),
         field("siliconFlowApiKey", "硅基流动密钥", "模型与连接"),
         field("allowCleartextModelApi", "允许本地 HTTP 模型", "模型与连接"),
+        field("experimentalApiModeEnabled", "实验模式", "模型与连接"),
         field("defaultEmbeddingId", "默认向量模型", "模型与连接"),
         BackupSettingOption("models", "全部模型配置与密钥", "模型与连接"),
         BackupSettingOption("embedding", "全部向量模型配置", "模型与连接"),

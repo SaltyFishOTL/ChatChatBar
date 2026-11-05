@@ -10,6 +10,16 @@ import org.junit.Test
 
 class AutomaticChatImagePolicyTest {
     @Test
+    fun `tool calls need validated body evidence before automatic images`() {
+        val complete = ChatReplyCompletion("tool_calls", toolReplyCompleted = true)
+        assertNull(AutomaticChatImagePolicy.skipReason(complete, "完整正文"))
+        assertNotNull(AutomaticChatImagePolicy.skipReason(complete.copy(toolReplyCompleted = false), "正文"))
+        assertNotNull(AutomaticChatImagePolicy.skipReason(complete.copy(transportFailed = true), "正文"))
+        assertNotNull(AutomaticChatImagePolicy.skipReason(complete.copy(refused = true), "正文"))
+        assertNotNull(AutomaticChatImagePolicy.skipReason(complete.copy(finishReason = "length"), "部分正文"))
+    }
+
+    @Test
     fun `only explicit normal completion passes transport gate`() {
         assertNull(AutomaticChatImagePolicy.skipReason(ChatReplyCompletion("stop"), "故事正文"))
         listOf(null, "", "length", "content_filter", "tool_calls", "unknown").forEach { reason ->

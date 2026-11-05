@@ -47,6 +47,18 @@ class AiStreamProgress : AbstractCoroutineContextElement(Key) {
         if (System.nanoTime() - lastPublish >= 100_000_000L) publish()
     }
 
+    /** Ordinary-text preview may be replaced when the provider later chooses tool output. */
+    @Synchronized
+    fun replaceContent(id: String, content: String) {
+        val old = pending[id] ?: return
+        pending[id] = old.copy(
+            content = preview(content),
+            status = if (content.isNotEmpty()) "正在输出" else old.status,
+            lastUpdateNanos = System.nanoTime()
+        )
+        if (System.nanoTime() - lastPublish >= 100_000_000L) publish()
+    }
+
     @Synchronized
     fun finish(id: String, status: String) {
         pending[id]?.let { pending[id] = it.copy(active = false, status = status) }

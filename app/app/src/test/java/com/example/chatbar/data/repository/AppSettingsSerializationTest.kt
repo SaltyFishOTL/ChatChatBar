@@ -20,6 +20,7 @@ class AppSettingsSerializationTest {
         assertTrue(decoded.assistantSegmentedBubblesEnabled)
         assertTrue(decoded.excludeAssistantStatusFromHistory)
         assertFalse(decoded.allowCleartextModelApi)
+        assertFalse(decoded.experimentalApiModeEnabled)
         assertFalse(decoded.automaticFormatCheckEnabled)
         assertEquals(null, decoded.formatRepairModelId)
         assertEquals("s2.1-pro-free", decoded.fishAudioTtsModelId)
@@ -75,6 +76,12 @@ class AppSettingsSerializationTest {
 
         assertTrue(decoded.automaticFormatCheckEnabled)
         assertEquals("repair-model", decoded.formatRepairModelId)
+    }
+
+    @Test
+    fun experimentalApiMode_roundTrips() {
+        val encoded = Json.encodeToString(AppSettings.serializer(), AppSettings(experimentalApiModeEnabled = true))
+        assertTrue(Json.decodeFromString(AppSettings.serializer(), encoded).experimentalApiModeEnabled)
     }
 
     @Test

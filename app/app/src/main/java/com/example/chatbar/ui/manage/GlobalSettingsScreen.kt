@@ -133,6 +133,7 @@ internal fun GlobalSettingsScreen(
     var automaticFormatCheckEnabled by rememberSettingDraft(settings.automaticFormatCheckEnabled)
     var siliconFlowApiKey by rememberSettingDraft(settings.siliconFlowApiKey)
     var allowCleartextModelApi by rememberSettingDraft(settings.allowCleartextModelApi)
+    var experimentalApiModeEnabled by rememberSettingDraft(settings.experimentalApiModeEnabled)
     var novelAiToken by rememberSettingDraft("")
     var fishAudioApiKey by rememberSettingDraft("")
     var fishAudioTtsModelId by rememberSettingDraft(settings.fishAudioTtsModelId)
@@ -206,6 +207,7 @@ internal fun GlobalSettingsScreen(
         automaticFormatCheckEnabled = automaticFormatCheckEnabled,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
         allowCleartextModelApi = allowCleartextModelApi,
+        experimentalApiModeEnabled = experimentalApiModeEnabled,
         defaultFormatCardId = formatId,
         memoryRagTopK = memoryTopK.roundToInt().coerceIn(0, 15),
         memoryRagSimilarityThreshold = memoryThreshold,
@@ -361,6 +363,23 @@ internal fun GlobalSettingsScreen(
                         checked = allowCleartextModelApi,
                         onCheckedChange = { allowCleartextModelApi = it }, label = "允许明文 HTTP 模型 API")
                 }
+            }
+        },
+        SettingsEntry("experimental-api", "models", "实验模式", "实验模式 API 工具调用 请求结构") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("实验模式", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "试验性的请求方式：会消耗更多token，也许可以降低模型拒绝回复的概率，但没有实际数据或证据证明。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                SettingsSwitch(
+                    checked = experimentalApiModeEnabled,
+                    onCheckedChange = { experimentalApiModeEnabled = it },
+                    label = "实验模式"
+                )
             }
         },
         SettingsEntry("test-connection", "models", "测试连接", "测试连接") {

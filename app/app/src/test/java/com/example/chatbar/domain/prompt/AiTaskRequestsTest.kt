@@ -11,7 +11,7 @@ import org.junit.Assert.*
 import org.junit.Test
 
 class AiTaskRequestsTest {
-    private val expectedRoles = listOf("system", "assistant", "user", "assistant", "user", "assistant", "assistant", "user")
+    private val expectedRoles = listOf("system", "assistant", "user", "assistant", "user", "assistant", "assistant")
 
     @Test
     fun everySceneHasProfileAndPreservesActualMultimodalInput() {
@@ -27,7 +27,7 @@ class AiTaskRequestsTest {
             assertTrue(context.profile.templateSymbols.isNotEmpty())
             val result = AiTaskMessageAssembler.assemble(original, context)
             if (kind == AiTaskKind.IMAGE_DESIGN) {
-                assertEquals(original.filter { it.role != "system" }, result.subList(4, result.size - 3))
+                assertEquals(original.filter { it.role != "system" }, result.subList(4, result.size - 2))
                 assertEquals(result, AiTaskMessageAssembler.assemble(result, context))
                 return@forEach
             }
@@ -53,7 +53,7 @@ class AiTaskRequestsTest {
     }
 
     @Test
-    fun httpAdaptationPreservesFinalUserAndImageAndHttpsKeepsRoles() {
+    fun httpAdaptationPreservesAssistantTailAndImageAndHttpsKeepsRoles() {
         val context = AiTaskContext(AiTaskKind.IMAGE_DESIGN)
         val result = AiTaskMessageAssembler.assemble(listOf(
             ChatApiMessage.text("system", "fixture"),

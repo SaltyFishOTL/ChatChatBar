@@ -22,7 +22,7 @@ class NovelAiSceneHistoryTest {
         )
         val context = AiTaskContext(AiTaskKind.IMAGE_DESIGN)
         val messages = AiTaskMessageAssembler.assemble(original, context)
-        assertEquals(listOf("system", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "assistant", "user"), messages.map { it.role })
+        assertEquals(listOf("system", "assistant", "user", "assistant", "user", "assistant", "user", "assistant", "assistant"), messages.map { it.role })
         assertEquals(ChatApiMessage.text("assistant", scene), messages[5])
         assertEquals(actual, messages[6])
         assertFalse(messages.first().content.jsonPrimitive.content.contains(scene))
@@ -41,16 +41,16 @@ class NovelAiSceneHistoryTest {
         )
         val messages = AiTaskMessageAssembler.assemble(original, AiTaskContext(AiTaskKind.IMAGE_DESIGN))
         assertFalse(messages.any { it.role == "assistant" && it.content.jsonPrimitive.content.contains(source) })
-        assertEquals(8, messages.size)
+        assertEquals(7, messages.size)
     }
 
     @Test
-    fun repairKeepsItsOrdinaryEightMessageStructure() {
+    fun repairKeepsItsOrdinarySevenMessageStructure() {
         val messages = AiTaskMessageAssembler.assemble(
             listOf(ChatApiMessage.text("system", "repair"), ChatApiMessage.text("user", "raw")),
             AiTaskContext(AiTaskKind.IMAGE_DESIGN, AiTaskStage.REPAIR)
         )
-        assertEquals(8, messages.size)
+        assertEquals(7, messages.size)
         assertEquals(ChatApiMessage.text("user", "raw"), messages[4])
     }
 }

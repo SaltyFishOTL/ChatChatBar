@@ -536,6 +536,7 @@ class MomentGenerationService(
                 }
                 is StreamEvent.Error -> errorMessage = event.asException()
                 StreamEvent.Done,
+                is StreamEvent.ContentPreview,
                 is StreamEvent.Usage,
                 is StreamEvent.ReasoningDelta -> Unit
             }

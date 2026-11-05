@@ -70,6 +70,9 @@ sealed class StreamEvent {
     /** 增量文本片段 */
     data class Delta(val text: String) : StreamEvent()
 
+    /** Main-chat preview snapshot; canonical Delta output may replace it after tool selection. */
+    data class ContentPreview(val text: String) : StreamEvent()
+
     /** 增量思维链片段 */
     data class ReasoningDelta(val text: String) : StreamEvent()
 
@@ -163,6 +166,7 @@ data class ChatApiMessage(
  * data: [DONE]
  */
 class StreamingChatService(
+    private val experimentalApiModeEnabled: () -> Boolean = { false },
     private val allowCleartextHttp: () -> Boolean = { false }
 ) {
 
@@ -212,13 +216,15 @@ class StreamingChatService(
         val baseUrl = modelConfig.baseUrl.trimEnd('/')
         val url = "$baseUrl/chat/completions"
         val supportsOpenAiCacheInstrumentation = modelConfig.supportsOpenAiPromptCacheInstrumentation()
+        val experimentalApiMode = experimentalApiModeEnabled()
         val requestBody = buildRequestBody(
             messages = messages,
             modelConfig = modelConfig,
             stream = true,
             maxTokens = maxTokens,
             promptCacheKey = promptCacheKey.takeIf { supportsOpenAiCacheInstrumentation },
-            includeStreamUsage = supportsOpenAiCacheInstrumentation
+            includeStreamUsage = supportsOpenAiCacheInstrumentation,
+            experimentalApiMode = experimentalApiMode
         )
 
         // 写入 Debug 日志开始记录（仅一次）
@@ -247,6 +253,8 @@ class StreamingChatService(
                 val terminalDelivered = AtomicBoolean(false)
                 val finishReasonObserved = AtomicBoolean(false)
                 val replyCompletion = AtomicReference(ChatReplyCompletion())
+                val toolDecoder = if (experimentalApiMode) ExperimentalToolReplyDecoder() else null
+                var previewedOrdinaryText = false
                 var finishReasonCompletionJob: Job? = null
 
                 fun resumeAttempt() {
@@ -261,15 +269,38 @@ class StreamingChatService(
                     completed: Boolean
                 ) {
                     if (!terminalDelivered.compareAndSet(false, true)) return
+                    var finalEvent = event
+                    var finalCompleted = completed
+                    if (toolDecoder != null) {
+                        try {
+                            val evidence = replyCompletion.get()
+                            val decoded = toolDecoder.finish(
+                                validate = completed && !evidence.refused && evidence.finishReason != "length"
+                            )
+                            if (decoded.remainingText.isNotEmpty()) {
+                                DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
+                                trySend(StreamEvent.Delta(decoded.remainingText))
+                            }
+                            if (decoded.toolReplyCompleted) {
+                                replyCompletion.updateAndGet { it.copy(toolReplyCompleted = true) }
+                            } else if (completed && !toolDecoder.hasToolCalls) {
+                                DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")
+                            }
+                        } catch (error: Exception) {
+                            finalEvent = StreamEvent.Error(error.message ?: "实验模式工具回复解析失败", cause = error)
+                            finalCompleted = false
+                            replyCompletion.updateAndGet { it.copy(transportFailed = true) }
+                        }
+                    }
                     shouldStop = true
                     onReplyCompletion(replyCompletion.get())
                     DebugLogManager.recordCompletion(mainLogId, replyCompletion.get().finishReason, replyCompletion.get().refused)
-                    if (completed) {
+                    if (finalCompleted) {
                         com.example.chatbar.utils.DebugLogManager.completeRequest(mainLogId)
-                    } else if (event is StreamEvent.Error) {
-                        com.example.chatbar.utils.DebugLogManager.logError(mainLogId, event.message)
+                    } else if (finalEvent is StreamEvent.Error) {
+                        com.example.chatbar.utils.DebugLogManager.logError(mainLogId, finalEvent.message)
                     }
-                    trySend(event)
+                    trySend(finalEvent)
                     resumeAttempt()
                     eventSource.cancel()
                 }
@@ -290,7 +321,19 @@ class StreamingChatService(
                         }
 
                         try {
-                            val delta = parseDelta(data)
+                            val rawDelta = parseDelta(data)
+                            val delta = if (toolDecoder == null) rawDelta else rawDelta.copy(
+                                content = toolDecoder.append(rawDelta.content, rawDelta.toolCalls)
+                            )
+                            if (toolDecoder != null) {
+                                if (!toolDecoder.hasToolCalls && !rawDelta.content.isNullOrEmpty()) {
+                                    previewedOrdinaryText = true
+                                    trySend(StreamEvent.ContentPreview(toolDecoder.ordinaryContent))
+                                } else if (toolDecoder.hasToolCalls && previewedOrdinaryText) {
+                                    previewedOrdinaryText = false
+                                    trySend(StreamEvent.ContentPreview(""))
+                                }
+                            }
                             replyCompletion.updateAndGet { previous ->
                                 previous.copy(
                                     finishReason = delta.finishReason ?: previous.finishReason,
@@ -431,6 +474,8 @@ class StreamingChatService(
     ): Flow<StreamEvent> = callbackFlow {
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
+        val experimentalApiMode = experimentalApiModeEnabled()
+        val toolDecoder = if (experimentalApiMode) ExperimentalToolReplyDecoder() else null
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
             messages = actualMessages,
@@ -444,7 +489,8 @@ class StreamingChatService(
             reasoningEffortOverride = reasoningEffort,
             isolatedTaskParameters = isolatedTaskParameters,
             responseFormatJson = responseFormatJson,
-            includeStreamUsage = modelConfig.supportsOpenAiPromptCacheInstrumentation()
+            includeStreamUsage = modelConfig.supportsOpenAiPromptCacheInstrumentation(),
+            experimentalApiMode = experimentalApiMode
         )
         val logId = DebugLogManager.startRequest(
             sessionId = context?.taskId ?: java.util.UUID.randomUUID().toString(),
@@ -464,6 +510,7 @@ class StreamingChatService(
         var finishReason: String? = null
         var refused = false
         var receivedReasoning = false
+        var previewedOrdinaryText = false
         var graceJob: Job? = null
         var inactivityJob: Job? = null
         var lastMeaningfulEvent = System.nanoTime()
@@ -482,6 +529,27 @@ class StreamingChatService(
         fun complete(eventSource: EventSource) {
             synchronized(lock) {
                 if (closed.get()) return
+                if (toolDecoder != null) {
+                    try {
+                        val decoded = toolDecoder.finish(validate = finishReason != "length" && !refused)
+                        if (previewedOrdinaryText) {
+                            progress?.replaceContent(logId, text.toString())
+                            previewedOrdinaryText = false
+                        }
+                        if (decoded.remainingText.isNotEmpty()) {
+                            text.append(decoded.remainingText)
+                            progress?.append(logId, null, decoded.remainingText)
+                            DebugLogManager.appendResponseChunk(logId, "", decoded.remainingText)
+                            trySend(StreamEvent.Delta(decoded.remainingText))
+                        }
+                        if (!toolDecoder.hasToolCalls) {
+                            DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
+                        }
+                    } catch (error: Exception) {
+                        fail(eventSource, error)
+                        return
+                    }
+                }
                 val content = text.toString()
                 val rejection = AiTaskRefusalPolicy.failure(content, finishReason, refused)
                 if (rejection != null) {
@@ -516,7 +584,19 @@ class StreamingChatService(
                         return
                     }
                     val delta = try {
-                        parseDelta(data)
+                        val rawDelta = parseDelta(data)
+                        if (!rawDelta.content.isNullOrBlank()) lastMeaningfulEvent = System.nanoTime()
+                        if (toolDecoder == null) rawDelta else {
+                            val decodedContent = toolDecoder.append(rawDelta.content, rawDelta.toolCalls)
+                            if (!toolDecoder.hasToolCalls && !rawDelta.content.isNullOrEmpty()) {
+                                previewedOrdinaryText = true
+                                progress?.replaceContent(logId, toolDecoder.ordinaryContent)
+                            } else if (toolDecoder.hasToolCalls && previewedOrdinaryText) {
+                                previewedOrdinaryText = false
+                                progress?.replaceContent(logId, text.toString())
+                            }
+                            rawDelta.copy(content = decodedContent)
+                        }
                     } catch (error: Exception) {
                         DebugLogManager.appendResponseChunk(logId, data)
                         fail(eventSource, IllegalArgumentException(
@@ -527,7 +607,8 @@ class StreamingChatService(
                     }
                     finishReason = delta.finishReason ?: finishReason
                     refused = refused || delta.refused
-                    if (!delta.content.isNullOrBlank() || !delta.reasoningContent.isNullOrBlank() || delta.finishReason != null) {
+                    if (!delta.content.isNullOrBlank() || !delta.reasoningContent.isNullOrBlank() ||
+                        !delta.toolCalls.isNullOrEmpty() || delta.finishReason != null) {
                         lastMeaningfulEvent = System.nanoTime()
                     }
                     progress?.append(logId, delta.reasoningContent, delta.content)
@@ -643,11 +724,13 @@ class StreamingChatService(
     ): String {
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
+        val experimentalApiMode = experimentalApiModeEnabled()
         val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
         val requestBody = buildRequestBody(
             messages = actualMessages, modelConfig = modelConfig, stream = false,
             maxTokens = maxTokens, thinkingBudget = thinkingBudget, disableThinking = disableThinking,
-            isolatedTaskParameters = isolatedTaskParameters, responseFormatJson = responseFormatJson
+            isolatedTaskParameters = isolatedTaskParameters, responseFormatJson = responseFormatJson,
+            experimentalApiMode = experimentalApiMode
         )
         val logId = DebugLogManager.startRequest(
             sessionId = context?.taskId ?: java.util.UUID.randomUUID().toString(),
@@ -696,10 +779,17 @@ class StreamingChatService(
             DebugLogManager.recordCompletion(logId, finishReason, refused)
             parsePromptCacheUsage(body)?.let { DebugLogManager.recordPromptCacheUsage(logId, it) }
             AiTaskRefusalPolicy.failure("", finishReason, refused)?.let { throw it }
-            val content = parseNonStreamResponse(body)
+            if (finishReason == "length") throw ModelResponseTruncatedException()
+            val content = parseNonStreamResponse(body, experimentalApiMode)
+            if (experimentalApiMode) {
+                val responseMessage = (json.parseToJsonElement(body) as? JsonObject)?.get("choices")
+                    ?.let { it as? JsonArray }?.firstOrNull()?.let { it as? JsonObject }?.get("message") as? JsonObject
+                if (responseMessage?.get("tool_calls") == null && responseMessage?.get("function_call") == null) {
+                    DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
+                }
+            }
             DebugLogManager.appendResponseChunk(logId, "", content)
             AiTaskRefusalPolicy.failure(content, finishReason, refused)?.let { throw it }
-            if (finishReason == "length") throw ModelResponseTruncatedException()
             if (content.isBlank()) throw AiTaskEmptyResponseException(false)
             DebugLogManager.completeRequest(logId)
             return content
@@ -741,6 +831,7 @@ class StreamingChatService(
                 is StreamEvent.Error -> throw event.asException()
                 StreamEvent.Done -> completed = true
                 is StreamEvent.Usage -> Unit
+                is StreamEvent.ContentPreview -> Unit
             }
         }
         check(completed) { "流式文本补全未正常完成" }
@@ -763,14 +854,15 @@ class StreamingChatService(
         includeStreamUsage: Boolean = false,
         disableThinking: Boolean = false,
         isolatedTaskParameters: Boolean = false,
-        responseFormatJson: Boolean = false
+        responseFormatJson: Boolean = false,
+        experimentalApiMode: Boolean = experimentalApiModeEnabled()
     ): String {
         val legacyThinking = ThinkingRequestPolicy.usesLegacyControls(modelConfig)
         val taskEffort = ThinkingRequestPolicy.taskEffort(
             disableThinking, enableThinkingOverride, thinkingBudget, maxThinkingTokens,
             reasoningEffortOverride
         )
-        val requestMessages = CleartextHttpChatTemplatePolicy.adaptMessages(
+        val requestMessages = if (experimentalApiMode) messages else CleartextHttpChatTemplatePolicy.adaptMessages(
             messages = messages,
             allowCleartextHttp = allowCleartextHttp(),
             baseUrl = modelConfig.baseUrl
@@ -839,7 +931,11 @@ class StreamingChatService(
             }
         }
 
-        return bodyObj.toString()
+        return if (experimentalApiMode) {
+            ExperimentalToolChatPolicy.wrap(bodyObj, requestMessages).toString()
+        } else {
+            bodyObj.toString()
+        }
     }
 
     private fun compactImageDescription(text: String): String {
@@ -852,7 +948,8 @@ class StreamingChatService(
         val content: String?,
         val reasoningContent: String?,
         val finishReason: String? = null,
-        val refused: Boolean = false
+        val refused: Boolean = false,
+        val toolCalls: JsonArray? = null
     )
 
     /** 从 SSE data 行解析增量文本和思维链；解析失败或遇到服务端错误体时抛出异常，由调用方转成显式错误。 */
@@ -886,7 +983,16 @@ class StreamingChatService(
             (delta?.get("content") as? JsonArray)?.any { part ->
                 (part as? JsonObject)?.get("type")?.jsonPrimitive?.contentOrNull == "refusal"
             } == true || finishReason == "content_filter"
-        return DeltaResult(content, reasoning, finishReason, refused)
+        val toolCalls = delta?.get("tool_calls") as? JsonArray
+            ?: (delta?.get("function_call") as? JsonObject)?.let { function ->
+                buildJsonArray {
+                    add(buildJsonObject {
+                        put("index", 0)
+                        put("function", function)
+                    })
+                }
+            }
+        return DeltaResult(content, reasoning, finishReason, refused, toolCalls)
     }
 
     /** 容忍 content 为字符串或文本分段数组（如 [{"type":"text","text":"..."}]）的增量。 */
@@ -905,11 +1011,14 @@ class StreamingChatService(
     }
 
     /** 从非流式响应解析完整回复内容 */
-    private fun parseNonStreamResponse(body: String): String {
+    private fun parseNonStreamResponse(body: String, experimentalApiMode: Boolean = false): String {
         val obj = json.decodeFromString<JsonObject>(body)
         val message = obj["choices"]?.jsonArray?.firstOrNull()
             ?.jsonObject?.get("message")
             ?.jsonObject
+        if (experimentalApiMode && message != null) {
+            ExperimentalToolReplyDecoder.decodeMessage(message)?.let { return it }
+        }
         val content = message?.get("content")
         val primitiveContent = (content as? JsonPrimitive)?.contentOrNull
         if (primitiveContent != null) return primitiveContent

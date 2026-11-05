@@ -220,6 +220,7 @@ class CharacterAutoFillService(
                 }
                 is StreamEvent.Error -> streamError = event.asException()
                 StreamEvent.Done,
+                is StreamEvent.ContentPreview,
                 is StreamEvent.Usage,
                 is StreamEvent.ReasoningDelta -> Unit
             }

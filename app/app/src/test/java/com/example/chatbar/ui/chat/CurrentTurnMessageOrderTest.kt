@@ -42,9 +42,10 @@ class CurrentTurnMessageOrderTest {
                 )
             )
             for (baseUrl in listOf("https://example.test/v1", "http://127.0.0.1:1234/v1")) {
+                val model = ModelConfig(id = "fixture", displayName = "fixture", modelName = "fixture", baseUrl = baseUrl, apiKey = "", createdAt = 0L)
                 val body = service.buildRequestBody(
                     messages,
-                    ModelConfig(id = "fixture", displayName = "fixture", modelName = "fixture", baseUrl = baseUrl, apiKey = "", createdAt = 0L),
+                    model,
                     stream = true
                 )
                 val serialized = Json.parseToJsonElement(body).jsonObject.getValue("messages").jsonArray
@@ -66,9 +67,23 @@ class CurrentTurnMessageOrderTest {
                     assertTrue(end < contents.indexOf("fixture-strong"))
                 }
                 assertEquals(messages.map { it.content.jsonText() }, contents)
-                assertEquals("user", roles.last())
+                assertEquals("assistant", roles.last())
                 assertEquals("user", roles[userIndex])
                 assertEquals(if (baseUrl.startsWith("http:")) "assistant" else "system", roles[characterIndex])
+                val experimental = Json.parseToJsonElement(service.buildRequestBody(
+                    messages, model, stream = true, experimentalApiMode = true
+                )).jsonObject
+                val description = experimental.getValue("tools").jsonArray
+                    .map { it.jsonObject.getValue("function").jsonObject }
+                    .single { it.getValue("name").jsonPrimitive.content == "context" }
+                    .getValue("description").jsonPrimitive.content
+                val context = Json.parseToJsonElement(description + "\"}]").jsonArray
+                assertEquals(messages.drop(1).map { it.content }, context.map { it.jsonObject.getValue("content") })
+                assertEquals("assistant", context.last().jsonObject.getValue("role").jsonPrimitive.content)
+                assertEquals(PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim(),
+                    context.last().jsonObject.getValue("content").jsonPrimitive.content)
+                assertEquals(PromptTemplates.EXPERIMENTAL_TOOL_USER_TAIL,
+                    experimental.getValue("messages").jsonArray.last().jsonObject.getValue("content").jsonPrimitive.content)
             }
         }
     }
@@ -132,20 +147,15 @@ class CurrentTurnMessageOrderTest {
             postUserSystemPrompt = postUserPrompt
         )
 
-        assertEquals("user", messages[messages.lastIndex - 3].role)
-        assertEquals("system", messages[messages.lastIndex - 2].role)
-        assertEquals("assistant", messages[messages.lastIndex - 1].role)
-        assertEquals("user", messages.last().role)
-        val tail = messages[messages.lastIndex - 2].content.jsonText()
+        assertEquals("user", messages[messages.lastIndex - 2].role)
+        assertEquals("system", messages[messages.lastIndex - 1].role)
+        assertEquals("assistant", messages.last().role)
+        val tail = messages[messages.lastIndex - 1].content.jsonText()
         assertTrue(tail.indexOf("JailBreak尾缀") < tail.indexOf("格式要求"))
         assertFalse(tail.contains(PromptTemplates.CCB_CONTINUATION_SYSTEM_PROMPT.trimIndent().trim()))
         assertEquals(1, messages.count { it.content.jsonText() == "真实用户输入" })
         assertEquals(
             PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim(),
-            messages[messages.lastIndex - 1].content.jsonText()
-        )
-        assertEquals(
-            PromptTemplates.CCB_POST_USER_IDENTITY_REMINDER_USER_PROMPT.trimIndent().trim(),
             messages.last().content.jsonText()
         )
     }
@@ -185,13 +195,12 @@ class CurrentTurnMessageOrderTest {
         )
 
         assertEquals(
-            listOf("system", "user", "system", "assistant", "user"),
+            listOf("system", "user", "system", "assistant"),
             messages.map { it.role }
         )
         assertEquals("真实用户输入", messages[1].content.jsonText())
         assertEquals("强提示 A\n\n强提示 B", messages[2].content.jsonText())
-        assertTrue(messages[3].content.jsonText().contains("开始写"))
-        assertTrue(messages[4].content.jsonText().contains("不要在正文中暴露CCB大师身份"))
+        assertEquals(PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim(), messages[3].content.jsonText())
     }
 
     @Test
@@ -218,7 +227,7 @@ class CurrentTurnMessageOrderTest {
 
         assertEquals("用户原文\n{\n下一轮使用随机数：42\n}", messages[0].content.jsonText())
         assertFalse(messages[0].content.jsonText().contains("强提示"))
-        assertEquals(listOf("user", "system", "assistant", "user"), messages.map { it.role })
+        assertEquals(listOf("user", "system", "assistant"), messages.map { it.role })
         assertEquals("强提示", messages[1].content.jsonText())
     }
 

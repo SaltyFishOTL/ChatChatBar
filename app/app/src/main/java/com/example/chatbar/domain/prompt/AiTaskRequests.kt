@@ -90,13 +90,12 @@ object AiTaskMessageAssembler {
         )
         val tail = listOf(
             ChatApiMessage.text("assistant", PromptTemplates.GENERAL_CONTEXT_APPROVAL_ASSISTANT_PROMPT),
-            ChatApiMessage.text("assistant", PromptTemplates.GENERAL_POST_USER_ACK_ASSISTANT_PROMPT),
-            ChatApiMessage.text("user", PromptTemplates.GENERAL_POST_USER_IDENTITY_REMINDER_USER_PROMPT)
+            ChatApiMessage.text("assistant", PromptTemplates.GENERAL_POST_USER_ACK_ASSISTANT_PROMPT)
         )
         // Check the entire envelope, not phrases appearing inside ordinary input.
-        if (messages.size >= 8 && messages.first().role == "system" &&
-            messages.subList(4, messages.size - 3).all { it.role == "user" || it.role == "assistant" } &&
-            messages.subList(1, 4) == prefix && messages.takeLast(3) == tail &&
+        if (messages.size >= 7 && messages.first().role == "system" &&
+            messages.subList(4, messages.size - 2).all { it.role == "user" || it.role == "assistant" } &&
+            messages.subList(1, 4) == prefix && messages.takeLast(2) == tail &&
             systemHasEnvelope(messages.first().content)
         ) return messages
         val system = mergeContents(
@@ -157,7 +156,6 @@ object AiTaskMessageAssembler {
         add(PromptTemplates.GENERAL_CONTRACT_CONFIRMATION_ASSISTANT_PROMPT)
         add(PromptTemplates.GENERAL_CONTEXT_APPROVAL_ASSISTANT_PROMPT)
         add(PromptTemplates.GENERAL_POST_USER_ACK_ASSISTANT_PROMPT)
-        add(PromptTemplates.GENERAL_POST_USER_IDENTITY_REMINDER_USER_PROMPT)
         val inputs = messages.filter { it.role != "system" }
         if (inputs.isEmpty()) add(PromptTemplates.GENERAL_TASK_EMPTY_INPUT)
         else if (context?.preservesInputRoles != true && (inputs.size != 1 || inputs.single().role != "user")) {
