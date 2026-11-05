@@ -214,6 +214,10 @@ fun ChatScreen(
     val showBatteryOptimizationHint by viewModel.showBatteryOptimizationHint.collectAsState()
     val draftInput by viewModel.draftInput.collectAsState()
     val draftLoaded by viewModel.draftLoaded.collectAsState()
+    val narrativeMode by viewModel.narrativeMode.collectAsState()
+    val activeResponseNarrativeMode by viewModel.activeResponseNarrativeMode.collectAsState()
+    val narrativeModeError by viewModel.narrativeModeError.collectAsState()
+    val saveSlotOperation by viewModel.saveSlotOperation.collectAsState()
     val longTermMemoryUiState by viewModel.longTermMemoryUiState.collectAsState()
     val appSettings by ChatBarApp.instance.settingsRepository.appSettings.collectAsState(initial = AppSettings())
     val playerSetting by ChatBarApp.instance.settingsRepository.playerSetting.collectAsState(initial = PlayerSetting())
@@ -264,6 +268,9 @@ fun ChatScreen(
         viewModel.messageFormatRepairEvents.collect { message ->
             Toast.makeText(context, message, Toast.LENGTH_SHORT).show()
         }
+    }
+    LaunchedEffect(narrativeModeError) {
+        narrativeModeError?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
     }
     LaunchedEffect(viewModel, context) {
         viewModel.automaticImageEvents.collect { message ->
@@ -1107,6 +1114,14 @@ fun ChatScreen(
                 }
             },
             confirmIcon = AppIcons.Send,
+            confirmAccessory = {
+                ChatNarrativeModeToggle(
+                    mode = narrativeMode,
+                    activeMode = activeResponseNarrativeMode.takeIf { isResponding },
+                    enabled = session != null && !saveSlotOperation.busy,
+                    onSelect = viewModel::setNarrativeMode
+                )
+            },
             visible = true
         )
         return
@@ -1415,6 +1430,14 @@ fun ChatScreen(
                         disabledPlaceholder = "本对话已封存",
                         onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onFull = { fullComposer = true },
+                        modeAction = {
+                            ChatNarrativeModeToggle(
+                                mode = narrativeMode,
+                                activeMode = activeResponseNarrativeMode.takeIf { isResponding },
+                                enabled = session != null && !isArchived && !saveSlotOperation.busy,
+                                onSelect = viewModel::setNarrativeMode
+                            )
+                        },
                         onCancel = viewModel::cancelResponseGeneration,
                         onSend = {
                             if (viewModel.sendMessage(input.text, selectedImages.toList())) {
@@ -2705,6 +2728,7 @@ private fun ChatComposer(
     disabledPlaceholder: String,
     onImage: () -> Unit,
     onFull: () -> Unit,
+    modeAction: @Composable () -> Unit,
     onCancel: () -> Unit,
     onSend: () -> Unit
 ) {
@@ -2718,8 +2742,19 @@ private fun ChatComposer(
             .padding(horizontal = 8.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        CbIconButton(AppIcons.AddPhotoAlternate, "添加图片", onImage, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
-        CbIconButton(AppIcons.OpenInFull, "全屏编辑", onFull, enabled = enabled && !responding, tint = ChatBarTheme.colors.primary)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            CbIconButton(
+                AppIcons.AddPhotoAlternate, "添加图片", onImage,
+                modifier = Modifier.size(28.dp), iconSize = 18.dp,
+                enabled = enabled && !responding, tint = ChatBarTheme.colors.primary
+            )
+            modeAction()
+            CbIconButton(
+                AppIcons.OpenInFull, "全屏编辑", onFull,
+                modifier = Modifier.size(28.dp), iconSize = 18.dp,
+                enabled = enabled && !responding, tint = ChatBarTheme.colors.primary
+            )
+        }
         CbInput(
             input,
             onInput,
@@ -2728,7 +2763,7 @@ private fun ChatComposer(
             enabled = enabled,
             minLines = 1
         )
-        Spacer(Modifier.width(8.dp))
+        Spacer(Modifier.width(4.dp))
         CbIconButton(
             if (responding) AppIcons.Close else AppIcons.Send,
             if (responding) "中断生成" else "发送",

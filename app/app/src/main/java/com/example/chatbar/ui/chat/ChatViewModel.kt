@@ -118,7 +118,8 @@ internal fun buildCcbStablePrefixMessages(
     formatPromptPosition: FormatPromptPosition,
     settingReferenceSystemPrompt: String = "",
     playerSystemPrompt: String = "",
-    supplementarySystemPrompt: String = ""
+    supplementarySystemPrompt: String = "",
+    narrativeModeSystemPrompt: String = ""
 ): List<ChatApiMessage> = buildList {
     add(
         ChatApiMessage.text(
@@ -163,6 +164,9 @@ internal fun buildCcbStablePrefixMessages(
     playerSystemPrompt.takeIf(String::isNotBlank)?.let {
         add(ChatApiMessage.text(role = "system", content = it))
     }
+    narrativeModeSystemPrompt.takeIf(String::isNotBlank)?.let {
+        add(ChatApiMessage.text(role = "system", content = it))
+    }
     add(
         ChatApiMessage.text(
             role = "assistant",
@@ -184,7 +188,8 @@ internal fun appendCurrentUserAndCcbTailMessages(
     messages: MutableList<ChatApiMessage>,
     userMessage: ChatApiMessage,
     strongPromptSystemSuffix: String,
-    postUserSystemPrompt: String = ""
+    postUserSystemPrompt: String = "",
+    narrativeModeSystemPrompt: String = ""
 ) {
     require(userMessage.role == "user")
     messages.add(userMessage)
@@ -198,6 +203,9 @@ internal fun appendCurrentUserAndCcbTailMessages(
                 content = strongPromptSystemSuffix
             )
         )
+    }
+    if (narrativeModeSystemPrompt.isNotBlank()) {
+        messages.add(ChatApiMessage.text(role = "system", content = narrativeModeSystemPrompt))
     }
     messages.add(
         ChatApiMessage.text(
@@ -370,6 +378,49 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     // UI 状态
     private val _session = MutableStateFlow<ChatSession?>(null)
     val session: StateFlow<ChatSession?> = _session.asStateFlow()
+
+    private val _narrativeMode = MutableStateFlow(ChatNarrativeMode.FOCUS)
+    val narrativeMode = _narrativeMode.asStateFlow()
+    private val _activeResponseNarrativeMode = MutableStateFlow<ChatNarrativeMode?>(null)
+    val activeResponseNarrativeMode = _activeResponseNarrativeMode.asStateFlow()
+    private val _narrativeModeError = MutableStateFlow<String?>(null)
+    val narrativeModeError = _narrativeModeError.asStateFlow()
+    private val narrativeModeSaveMutex = Mutex()
+    // Selection/save revisions are confined to Main; writes survive leaving this screen.
+    private var narrativeModeRevision = 0L
+    private var narrativeModeSavedRevision = 0L
+    private var persistedNarrativeMode = ChatNarrativeMode.FOCUS
+
+    private fun acceptPersistedNarrativeMode(session: ChatSession) {
+        persistedNarrativeMode = session.narrativeMode
+        if (narrativeModeRevision == narrativeModeSavedRevision) {
+            _narrativeMode.value = session.narrativeMode
+        }
+    }
+
+    fun setNarrativeMode(mode: ChatNarrativeMode) {
+        if (_session.value == null || _isArchived.value || _saveSlotOperation.value.busy) return
+        if (_narrativeMode.value == mode) return
+        val revision = ++narrativeModeRevision
+        _narrativeMode.value = mode
+        _narrativeModeError.value = null
+        ChatBarApp.instance.applicationScope.launch(Dispatchers.Main.immediate) {
+            narrativeModeSaveMutex.withLock {
+                try {
+                    val saved = chatRepository.setNarrativeMode(sessionId, mode)
+                    persistedNarrativeMode = saved.narrativeMode
+                    narrativeModeSavedRevision = revision
+                } catch (error: Exception) {
+                    if (error is CancellationException) throw error
+                    narrativeModeSavedRevision = revision
+                    if (revision == narrativeModeRevision) {
+                        _narrativeMode.value = persistedNarrativeMode
+                        _narrativeModeError.value = "模式保存失败：${error.message ?: error::class.simpleName}"
+                    }
+                }
+            }
+        }
+    }
 
     private val _characterCard = MutableStateFlow<CharacterCard?>(null)
     val characterCard: StateFlow<CharacterCard?> = _characterCard.asStateFlow()
@@ -714,6 +765,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             chatRepository.observeSessions().collect { sessions ->
                 sessions.find { it.id == sessionId }?.let { updatedSession ->
+                    acceptPersistedNarrativeMode(updatedSession)
                     val modelChanged = _session.value?.modelId != updatedSession.modelId
                     val voiceLanguageChanged =
                         _session.value?.voiceLanguage != updatedSession.voiceLanguage
@@ -768,6 +820,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             val s = chatRepository.getSession(sessionId)
             _session.value = s
+            s?.let(::acceptPersistedNarrativeMode)
             if (s != null && !draftTouched) {
                 _draftInput.value = chatRepository.getSessionDraft(sessionId)
             }
@@ -2246,6 +2299,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
         sendMessageInternal(
             content = effectiveContent,
+            requestNarrativeMode = _narrativeMode.value,
             imagePaths = imagePaths,
             persistUserMessage = !isBlank,
             resumeLatestUser = isBlank
@@ -2500,6 +2554,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private fun sendMessageInternal(
         content: String,
+        requestNarrativeMode: ChatNarrativeMode,
         imagePaths: List<String> = emptyList(),
         persistUserMessage: Boolean,
         resumeLatestUser: Boolean = false,
@@ -2507,6 +2562,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         respondingAlreadyStarted: Boolean = false
     ) {
         if (_isResponding.value && !respondingAlreadyStarted) return
+
+        _activeResponseNarrativeMode.value = requestNarrativeMode
 
         val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
             com.example.chatbar.domain.backup.LocalDataMaintenance.access {
@@ -2964,7 +3021,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             memoryArchive = null,
                             memoryHeadAndTimeline = null,
                             worldBookPrompt = wbPrompt,
-                            worldBookOutlets = wbOutlets
+                            worldBookOutlets = wbOutlets,
+                            narrativeMode = requestNarrativeMode
                         )
                     val memoryView = if (currentSession.longTermMemoryEnabled) {
                         longTermMemoryService.promptView(sessionId).also { view ->
@@ -2994,7 +3052,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         formatPromptPosition = modelConfig.formatPromptPosition,
                         settingReferenceSystemPrompt = promptLayers.settingReferenceSystemPrompt,
                         playerSystemPrompt = promptLayers.playerSystemPrompt,
-                        supplementarySystemPrompt = promptLayers.supplementarySystemPrompt
+                        supplementarySystemPrompt = promptLayers.supplementarySystemPrompt,
+                        narrativeModeSystemPrompt = promptLayers.narrativeModeSystemPrompt
                     )
                     val promptCacheKey = stablePrefixMessages
                         .takeIf { promptLayers.stablePrefixCacheable && it.isNotEmpty() }
@@ -3017,10 +3076,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         val hasSupportedImage = msg.images.isNotEmpty() &&
                             modelConfig.isMultimodal &&
                             msg.role == MessageRole.USER
-                        val text = ChatHistoryPromptPolicy.payloadText(
+                        val payloadText = ChatHistoryPromptPolicy.payloadText(
                             renderedBody = renderedBody,
                             hasSupportedImage = hasSupportedImage
                         ) ?: return
+                        val text = ChatHistoryPromptPolicy.renderedHistoryText(msg, payloadText)
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())
@@ -3146,7 +3206,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 messages = apiMessages,
                                 userMessage = userMessage,
                                 strongPromptSystemSuffix = strongPromptSystemSuffix,
-                                postUserSystemPrompt = postUserSystemPrompt
+                                postUserSystemPrompt = postUserSystemPrompt,
+                                narrativeModeSystemPrompt = PromptTemplates.narrativeModeTailSystemPrompt(
+                                    requestNarrativeMode,
+                                    ChatHistoryPromptPolicy.previousNarrativeMode(
+                                        contextMsgs,
+                                        alternativeTargetMessageId?.let {
+                                            chatRepository.getMessage(it, sessionId)
+                                        }
+                                    )
+                                )
                             )
                         }
                     }
@@ -3177,6 +3246,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT,
                             content = body,
+                            narrativeMode = requestNarrativeMode,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
                             updatedAt = System.currentTimeMillis(),
@@ -3193,6 +3263,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         sessionId = sessionId,
                         role = MessageRole.ASSISTANT,
                         content = "...",
+                        narrativeMode = requestNarrativeMode,
                         createdAt = streamCreatedAt,
                         updatedAt = streamStartedAt,
                         orderKey = streamOrderKey
@@ -3243,6 +3314,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     sessionId = sessionId,
                                     role = MessageRole.ASSISTANT,
                                     content = accumulatedText,
+                                    narrativeMode = requestNarrativeMode,
                                     reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                                     createdAt = streamCreatedAt,
                                     updatedAt = System.currentTimeMillis(),
@@ -3419,6 +3491,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         job.invokeOnCompletion {
             if (responseJob == job) {
                 responseJob = null
+                _activeResponseNarrativeMode.value = null
                 _streamingMessage.value = null
                 if (
                     alternativeTargetMessageId != null &&
@@ -3446,7 +3519,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val updated = MessageAlternativeVersionPolicy.append(
             message = old,
             content = generatedMessage.content,
-            newVersionId = MessageAlternativeVersionPolicy.newVersionId(old)
+            newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
+            narrativeMode = generatedMessage.narrativeMode
         ).copy(
             reasoningContent = generatedMessage.reasoningContent,
             formatRepairNotice = null
@@ -3892,6 +3966,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /** 重新生成指定 AI 文本回复，保留其消息 ID 与时间轴位置。 */
     fun regenerateResponse(messageId: String) {
         if (_isResponding.value || _isArchived.value) return
+        val requestNarrativeMode = _narrativeMode.value
 
         viewModelScope.launch {
             val currentMessages = _messages.value
@@ -3931,6 +4006,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
             sendMessageInternal(
                 content = "",
+                requestNarrativeMode = requestNarrativeMode,
                 imagePaths = emptyList(),
                 persistUserMessage = false,
                 alternativeTargetMessageId = targetMessage.id,
@@ -4013,7 +4089,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         status = "正在准备存档…",
                         cancellable = true
                     )
-                    val curSession = _session.value ?: error("当前会话尚未加载")
+                    narrativeModeSaveMutex.withLock { }
+                    val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                     val memorySnapshot = longTermMemoryService.snapshot(sessionId)
                     val voices = if (includeAudio) {
                         voiceMessageRepository.listForSession(sessionId)
@@ -4038,6 +4115,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         replyLength = curSession.replyLength,
                         replyLanguage = curSession.replyLanguage,
                         roleplayStyle = curSession.roleplayStyle,
+                        narrativeMode = curSession.narrativeMode,
                         chatBackground = curSession.chatBackground,
                         audiobookModeEnabled = curSession.audiobookModeEnabled,
                         voiceLanguage = curSession.voiceLanguage,
@@ -4103,7 +4181,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       status = "正在读取存档…",
                       cancellable = true
                   )
-                  val curSession = _session.value ?: error("当前会话尚未加载")
+                  narrativeModeSaveMutex.withLock { }
+                  val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                   fishAudioCoordinator.cancelAndJoinForSession(sessionId)
                   val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
                   if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
@@ -4146,6 +4225,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       replyLength = materializedSlot.replyLength,
                       replyLanguage = materializedSlot.replyLanguage,
                       roleplayStyle = materializedSlot.roleplayStyle,
+                      narrativeMode = materializedSlot.narrativeMode,
                       chatBackground = materializedSlot.chatBackground,
                       audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
                       voiceLanguage = materializedSlot.voiceLanguage,
@@ -4178,7 +4258,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                           sessionId
                       )
                       ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
-                      chatRepository.updateSession(restoredSession)
+                      chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
                       longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
                   } catch (error: Throwable) {
                       chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
@@ -4188,7 +4268,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                           sessionId
                       )
                       ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
-                      chatRepository.updateSession(curSession)
+                      chatRepository.updateSession(curSession, restoreNarrativeMode = true)
                       runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
                       preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
                       materializedAudio.createdPaths.forEach {
@@ -4261,6 +4341,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             replyLength = slot.replyLength,
                             replyLanguage = slot.replyLanguage,
                             roleplayStyle = slot.roleplayStyle,
+                            narrativeMode = slot.narrativeMode,
                             chatBackground = restoredBackground,
                             audiobookModeEnabled = slot.audiobookModeEnabled,
                             voiceLanguage = slot.voiceLanguage,
@@ -4275,7 +4356,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             contextWindowSize = slot.contextWindowSize ?: curSession.contextWindowSize,
                             extraWorldBookIds = slot.extraWorldBookIds,
                             timedWorldInfo = slot.timedWorldInfo
-                        )
+                        ),
+                        restoreNarrativeMode = true
                     )
                     longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot)
                 }

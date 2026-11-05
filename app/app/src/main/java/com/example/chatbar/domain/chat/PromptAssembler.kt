@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.DEFAULT_REPLY_LENGTH_CHARS
 import com.example.chatbar.data.local.entity.FormatCard
@@ -18,7 +19,8 @@ data class PromptCachePromptLayers(
     val playerSystemPrompt: String = "",
     val memoryRagSystemPrompt: String = "",
     val supplementarySystemPrompt: String = "",
-    val replyConstraintsSystemPrompt: String = ""
+    val replyConstraintsSystemPrompt: String = "",
+    val narrativeModeSystemPrompt: String = ""
 )
 
 internal fun resolveFormatCardForRequest(
@@ -65,7 +67,8 @@ class PromptAssembler {
         memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap(),
-        includePostHistory: Boolean = true
+        includePostHistory: Boolean = true,
+        narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
     ): String {
         val sections = collectSections(
             characterCard = characterCard,
@@ -79,7 +82,8 @@ class PromptAssembler {
             longTermMemory = longTermMemory,
             memoryArchive = memoryArchive,
             memoryHeadAndTimeline = memoryHeadAndTimeline,
-            worldBookPrompt = worldBookPrompt
+            worldBookPrompt = worldBookPrompt,
+            narrativeMode = narrativeMode
         ).filter { includePostHistory || it.title != PromptTemplates.SECTION_POST_HISTORY }
         return renderLayer(
             raw = renderSections(sections),
@@ -106,7 +110,8 @@ class PromptAssembler {
         memoryArchive: String? = null,
         memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
-        worldBookOutlets: Map<String, String> = emptyMap()
+        worldBookOutlets: Map<String, String> = emptyMap(),
+        narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
     ): PromptCachePromptLayers {
         val sections = collectSections(
             characterCard = characterCard,
@@ -120,7 +125,8 @@ class PromptAssembler {
             longTermMemory = longTermMemory,
             memoryArchive = memoryArchive,
             memoryHeadAndTimeline = memoryHeadAndTimeline,
-            worldBookPrompt = worldBookPrompt
+            worldBookPrompt = worldBookPrompt,
+            narrativeMode = narrativeMode
         )
         val coreRaw = renderSections(sections.filter { it.layer == PromptLayer.CORE })
         val stableRaw = renderSections(sections.filter {
@@ -129,6 +135,7 @@ class PromptAssembler {
         val playerRaw = renderSections(sections.filter { it.title == PromptTemplates.SECTION_PLAYER })
         val supplementaryRaw = renderSections(sections.filter { it.title == PromptTemplates.SECTION_SUPPLEMENTARY })
         val replyRaw = renderSections(sections.filter { it.title == PromptTemplates.SECTION_REPLY })
+        val modeRaw = renderSections(sections.filter { it.title == PromptTemplates.SECTION_NARRATIVE_MODE })
         val settingCards = ragResults.filter { it.type != ChunkSourceType.CHAT_MEMORY }
         val memoryCards = ragResults.filter { it.type == ChunkSourceType.CHAT_MEMORY }
         fun renderRag(cards: List<RetrievedKnowledgeCard>, offset: Int = 0): String =
@@ -174,7 +181,8 @@ class PromptAssembler {
                 playerSystemPrompt = rendered(playerRaw),
                 memoryRagSystemPrompt = rendered(memoryRagRaw),
                 supplementarySystemPrompt = rendered(supplementaryRaw),
-                replyConstraintsSystemPrompt = rendered(replyRaw)
+                replyConstraintsSystemPrompt = rendered(replyRaw),
+                narrativeModeSystemPrompt = rendered(modeRaw)
             )
         }
 
@@ -208,7 +216,8 @@ class PromptAssembler {
             playerSystemPrompt = rendered(playerRaw),
             memoryRagSystemPrompt = rendered(memoryRagRaw),
             supplementarySystemPrompt = rendered(supplementaryRaw),
-            replyConstraintsSystemPrompt = rendered(replyRaw)
+            replyConstraintsSystemPrompt = rendered(replyRaw),
+            narrativeModeSystemPrompt = rendered(modeRaw)
         )
     }
 
@@ -236,7 +245,8 @@ class PromptAssembler {
         longTermMemory: String?,
         memoryArchive: String?,
         memoryHeadAndTimeline: String?,
-        worldBookPrompt: String?
+        worldBookPrompt: String?,
+        narrativeMode: ChatNarrativeMode
     ): List<PromptSection> = buildList {
         addSection(
             PromptLayer.STABLE,
@@ -278,6 +288,11 @@ class PromptAssembler {
             if (!playerSetting.isNullOrBlank()) appendLine(playerSetting)
         }.trim()
         addSection(PromptLayer.STABLE, PromptTemplates.SECTION_PLAYER, personal)
+        addSection(
+            PromptLayer.STABLE,
+            PromptTemplates.SECTION_NARRATIVE_MODE,
+            PromptTemplates.narrativeModeSystemPrompt(narrativeMode)
+        )
         addSection(
             PromptLayer.CORE,
             PromptTemplates.SECTION_CORE,

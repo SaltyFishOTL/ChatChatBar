@@ -21,6 +21,8 @@ import com.composables.icons.lucide.Eraser
 import com.composables.icons.lucide.Download
 import com.composables.icons.lucide.Ellipsis
 import com.composables.icons.lucide.FileText
+import com.composables.icons.lucide.FastForward
+import com.composables.icons.lucide.Focus
 import com.composables.icons.lucide.Heart
 import com.composables.icons.lucide.History
 import com.composables.icons.lucide.Image
@@ -84,6 +86,8 @@ object AppIcons {
     val ExpandMore: ImageVector get() = Lucide.ChevronDown
     val More: ImageVector get() = Lucide.Ellipsis
     val Face: ImageVector get() = Lucide.Smile
+    val FastForward: ImageVector get() = Lucide.FastForward
+    val Focus: ImageVector get() = Lucide.Focus
     val Forum: ImageVector get() = Lucide.MessageCircle
     val NewChat: ImageVector get() = Lucide.MessageSquarePlus
     val HelpOutline: ImageVector get() = Lucide.CircleQuestionMark

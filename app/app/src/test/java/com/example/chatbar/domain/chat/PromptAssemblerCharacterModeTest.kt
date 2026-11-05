@@ -3,17 +3,35 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.domain.prompt.PromptTemplates
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class PromptAssemblerCharacterModeTest {
     private val assembler = PromptAssembler()
+
+    @Test fun narrativeModeIsEquivalentInCachedUncachedAndCombinedAssembly() {
+        for (mode in ChatNarrativeMode.entries) {
+            val cached = assembler.assembleCachePromptLayers(card(), narrativeMode = mode)
+            val uncached = assembler.assembleCachePromptLayers(
+                card().copy(systemPrompt = "{{outlet::dynamic}}"), narrativeMode = mode
+            )
+            val full = assembler.assembleSystemPrompt(card(), narrativeMode = mode)
+            assertTrue(cached.stablePrefixCacheable)
+            assertFalse(uncached.stablePrefixCacheable)
+            assertEquals(cached.narrativeModeSystemPrompt, uncached.narrativeModeSystemPrompt)
+            assertTrue(full.contains(cached.narrativeModeSystemPrompt))
+            assertTrue(cached.narrativeModeSystemPrompt.contains(PromptTemplates.narrativeModeSystemPrompt(mode)))
+            assertFalse(cached.memoryRagSystemPrompt.contains(cached.narrativeModeSystemPrompt))
+        }
+    }
 
     @Test fun legacyJsonDefaultsToStructuredMode() {
         val card = Json { ignoreUnknownKeys = true }.decodeFromString(

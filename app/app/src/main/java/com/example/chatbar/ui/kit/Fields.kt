@@ -521,7 +521,8 @@ fun FullscreenTextEditor(
     onRemoveImage: ((String) -> Unit)? = null,
     confirmIcon: ImageVector = AppIcons.Check,
     confirmEnabled: Boolean = true,
-    canConfirm: (TextFieldValue) -> Boolean = { true }
+    canConfirm: (TextFieldValue) -> Boolean = { true },
+    confirmAccessory: (@Composable () -> Unit)? = null
 ) {
     if (!visible) return
     val editorState = rememberTextFieldState(
@@ -544,7 +545,10 @@ fun FullscreenTextEditor(
             onConfirm(editorValue)
         }
     }
-    FullscreenTextEditorLayout(title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(finalValue()), images, onAddImage, onRemoveImage) { ctxColors, interactionSource, focused ->
+    FullscreenTextEditorLayout(
+        title, onDismiss, confirm, confirmIcon, confirmEnabled && canConfirm(finalValue()),
+        images, onAddImage, onRemoveImage, confirmAccessory = confirmAccessory
+    ) { ctxColors, interactionSource, focused ->
         CursorAwareFullscreenTextField(
             state = editorState,
             placeholder = placeholder,
@@ -813,6 +817,7 @@ private fun FullscreenTextEditorLayout(
     onAddImage: (() -> Unit)?,
     onRemoveImage: ((String) -> Unit)?,
     topContent: (@Composable ColumnScope.() -> Unit)? = null,
+    confirmAccessory: (@Composable () -> Unit)? = null,
     textField: @Composable (colors: ChatBarColors, interactionSource: MutableInteractionSource, focused: Boolean) -> Unit
 ) {
     val colors = ChatBarTheme.colors
@@ -855,10 +860,21 @@ private fun FullscreenTextEditorLayout(
             }
         }
         CbIconButton(AppIcons.Close, "退出", onDismiss, Modifier.align(Alignment.BottomStart).padding(ChatBarSpacing.lg).size(56.dp).background(colors.card, CircleShape))
-        Row(Modifier.align(Alignment.BottomEnd).padding(ChatBarSpacing.lg), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
+        Row(
+            Modifier.align(Alignment.BottomEnd).padding(ChatBarSpacing.lg),
+            horizontalArrangement = Arrangement.spacedBy(if (confirmAccessory != null) 4.dp else ChatBarSpacing.md),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
             if (onAddImage != null) {
-                CbIconButton(AppIcons.AddPhotoAlternate, "插入图片", onAddImage, Modifier.size(56.dp).background(colors.card, CircleShape), tint = colors.primary)
+                val compact = confirmAccessory != null
+                CbIconButton(
+                    AppIcons.AddPhotoAlternate, "插入图片", onAddImage,
+                    if (compact) Modifier.size(28.dp) else Modifier.size(56.dp).background(colors.card, CircleShape),
+                    tint = colors.primary,
+                    iconSize = if (compact) 18.dp else 20.dp
+                )
             }
+            confirmAccessory?.invoke()
             CbIconButton(confirmIcon, "确认", onConfirm, Modifier.size(56.dp).background(colors.primary, CircleShape), enabled = confirmEnabled, tint = colors.primaryForeground)
         }
     }

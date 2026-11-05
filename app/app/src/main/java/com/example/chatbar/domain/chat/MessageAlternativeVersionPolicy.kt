@@ -1,12 +1,14 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
 data class MessageVersionSnapshot(
     val id: String,
-    val content: String
+    val content: String,
+    val narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
 )
 
 object MessageAlternativeVersionPolicy {
@@ -29,13 +31,17 @@ object MessageAlternativeVersionPolicy {
                     id = message.currentAlternativeVersionId
                         ?.takeIf(String::isNotBlank)
                         ?: message.id,
-                    content = message.content
+                    content = message.content,
+                    narrativeMode = message.narrativeMode
                 )
             )
         }
         val ids = alignedVersionIds(message)
         return message.alternatives.mapIndexed { index, content ->
-            MessageVersionSnapshot(ids[index], content)
+            MessageVersionSnapshot(
+                ids[index], content,
+                message.alternativeNarrativeModes.getOrNull(index) ?: ChatNarrativeMode.FOCUS
+            )
         }
     }
 
@@ -51,7 +57,8 @@ object MessageAlternativeVersionPolicy {
                 id = message.currentAlternativeVersionId
                     ?.takeIf(String::isNotBlank)
                     ?: message.id,
-                content = message.content
+                content = message.content,
+                narrativeMode = message.narrativeMode
             )
         }
     }
@@ -66,7 +73,13 @@ object MessageAlternativeVersionPolicy {
             } else {
                 alignedVersionIds(message)
             },
-            currentAlternativeVersionId = active.id
+            currentAlternativeVersionId = active.id,
+            narrativeMode = active.narrativeMode,
+            alternativeNarrativeModes = if (message.alternatives.isEmpty()) {
+                emptyList()
+            } else {
+                versions(message).map(MessageVersionSnapshot::narrativeMode)
+            }
         )
     }
 
@@ -75,7 +88,8 @@ object MessageAlternativeVersionPolicy {
         content: String,
         newVersionId: String,
         maxVersions: Int = 5,
-        updatedAt: Long = System.currentTimeMillis()
+        updatedAt: Long = System.currentTimeMillis(),
+        narrativeMode: ChatNarrativeMode = message.narrativeMode
     ): ChatMessage {
         require(newVersionId.isNotBlank()) { "消息版本 ID 不能为空" }
         require(maxVersions > 0) { "消息版本数量上限必须大于 0" }
@@ -84,7 +98,8 @@ object MessageAlternativeVersionPolicy {
         val retained = (
             existing + MessageVersionSnapshot(
                 id = newVersionId,
-                content = content
+                content = content,
+                narrativeMode = narrativeMode
             )
         ).takeLast(maxVersions)
         return message.copy(
@@ -93,6 +108,8 @@ object MessageAlternativeVersionPolicy {
             alternativeVersionIds = retained.map(MessageVersionSnapshot::id),
             currentAlternativeIndex = retained.lastIndex,
             currentAlternativeVersionId = newVersionId,
+            narrativeMode = narrativeMode,
+            alternativeNarrativeModes = retained.map(MessageVersionSnapshot::narrativeMode),
             updatedAt = updatedAt
         )
     }
@@ -111,6 +128,8 @@ object MessageAlternativeVersionPolicy {
             alternativeVersionIds = versions.map(MessageVersionSnapshot::id),
             currentAlternativeIndex = alternativeIndex,
             currentAlternativeVersionId = selected.id,
+            narrativeMode = selected.narrativeMode,
+            alternativeNarrativeModes = versions.map(MessageVersionSnapshot::narrativeMode),
             updatedAt = updatedAt
         )
     }

@@ -41,6 +41,7 @@ data class ChatSession(
     val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS, // 正文目标字数
     val replyLanguage: String? = null,       // 回复语言
     val roleplayStyle: String? = null,       // 会话扮演风格覆盖
+    val narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS,
     val supplementarySetting: String? = null, // 补充设定
     val playerName: String? = null,           // 玩家名称覆盖
     val playerSetting: String? = null,        // 个人设定覆盖

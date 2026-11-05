@@ -28,6 +28,7 @@ data class SaveSlot(
     val replyLength: Int = DEFAULT_REPLY_LENGTH_CHARS,
     val replyLanguage: String? = null,
     val roleplayStyle: String? = null,
+    val narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS,
     val chatBackground: String? = null,
     val audiobookModeEnabled: Boolean? = null,
     val voiceLanguage: String? = null,

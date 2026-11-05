@@ -4,6 +4,9 @@ import android.content.ContextWrapper
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.launch
 import com.example.chatbar.data.local.entity.MESSAGE_ORDER_STEP
 import com.example.chatbar.data.local.entity.MessageRole
 import java.io.File
@@ -19,6 +22,31 @@ import org.junit.rules.TemporaryFolder
 class ChatRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
+
+    @Test
+    fun `stale asynchronous session update and settings draft preserve mode while restore replaces it`() = runTest {
+        val chats = repository("narrative-mode")
+        val original = ChatSession.create("card", "fixture")
+        chats.createSession(original)
+        val read = CompletableDeferred<Unit>()
+        val allowWrite = CompletableDeferred<Unit>()
+        val staleWriter = launch {
+            val stale = requireNotNull(chats.getSession(original.id))
+            read.complete(Unit)
+            allowWrite.await()
+            chats.updateSession(stale.copy(lastMessagePreview = "new-preview"))
+        }
+        read.await()
+        chats.setNarrativeMode(original.id, ChatNarrativeMode.ADVANCE)
+        allowWrite.complete(Unit)
+        staleWriter.join()
+        assertEquals(ChatNarrativeMode.ADVANCE, chats.getSession(original.id)?.narrativeMode)
+        assertEquals("new-preview", chats.getSession(original.id)?.lastMessagePreview)
+        chats.saveSessionSettingsDraft(original, original.copy(replyLength = 500))
+        assertEquals(ChatNarrativeMode.ADVANCE, chats.getSession(original.id)?.narrativeMode)
+        chats.updateSession(requireNotNull(chats.getSession(original.id)).copy(narrativeMode = ChatNarrativeMode.FOCUS), restoreNarrativeMode = true)
+        assertEquals(ChatNarrativeMode.FOCUS, chats.getSession(original.id)?.narrativeMode)
+    }
 
     @Test
     fun `rewriteSessionTitlesForCharacterCard renames bound session titles`() = runTest {

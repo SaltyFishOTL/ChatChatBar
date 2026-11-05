@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
@@ -57,6 +58,8 @@ data class NovelAiCodexEvidence(
  * ### 1. 对话主提示词与输出格式
  * - 主系统提示词：`SYSTEM_PROMPT_TEMPLATE`；固定首尾：`SYSTEM_PROMPT_PREFIX`、`SYSTEM_PROMPT_SUFFIX`；角色卡可覆盖正文：`SYSTEM_PROMPT_REPLACEABLE_CONTENT`；组装：`systemPromptTemplate`
  * - 后置系统提示词：`POST_HISTORY_INSTRUCTIONS_TEMPLATE`
+ * - 叙事模式：`FOCUS_NARRATIVE_MODE_SYSTEM_PROMPT`、`ADVANCE_NARRATIVE_MODE_SYSTEM_PROMPT`、
+ *   `narrativeModeSystemPrompt`、`narrativeModeTailSystemPrompt`、`narrativeModeHistoryReply`
  * - CCB大师握手与续写：`CCB_CREATOR_IDENTITY_SYSTEM_PROMPT`、
  *   `CCB_FIRST_ACK_ASSISTANT_PROMPT`、`CCB_CREATIVE_CONTRACT_USER_PROMPT`、
  *   `CCB_CONTRACT_CONFIRMATION_ASSISTANT_PROMPT`、`CCB_CONTEXT_APPROVAL_ASSISTANT_PROMPT`、
@@ -494,6 +497,7 @@ object PromptTemplates {
     const val SECTION_POST_HISTORY = "后置指令"
     const val SECTION_CHAT_HISTORY = "聊天记录"
     const val SECTION_PREVIOUS_TURN = "上一轮"
+    const val SECTION_NARRATIVE_MODE = "本轮叙事模式"
     const val SECTION_MEMORY_ARCHIVE = "ARCHIVE｜历史档案"
     const val MEMORY_LEGACY_REFERENCE_WARNING = "时间未知｜不代表当前进展"
 
@@ -578,6 +582,71 @@ CCB大师的情节规划偏好戏剧性强冲突，尤其符合男性成人欲�
     }
 
     fun postHistoryInstructionsTemplate(): String = POST_HISTORY_INSTRUCTIONS_TEMPLATE
+
+    const val FOCUS_NARRATIVE_MODE_SYSTEM_PROMPT = """
+【当前模式：聚焦模式（实时对戏 / 细节特写）】
+核心指令：放慢时间流速，活在当下。你现在不是讲故事的旁白，而是正在与玩家面对面互动的角色本人。
+
+1. 镜头与时间（1:1实时）：
+   - 把镜头推到最近。时间以“秒”为单位流逝，严禁快进时间、严禁直接总结事件结果。
+   - 玩家做一个动作，你只写角色当下这一瞬间的即时反应。把过程拆细：写清眼神的交汇、呼吸的变化、动作的摩擦、语气的停顿与环境的细微声响。
+   - 举例：如果玩家说“我们去做饭”，你只需要写角色听到这句话时的表情、站起身走向厨房的动作，以及随口回应的一句台词，绝不能直接写到“饭做好了”。
+
+2. 台词与心理（即时交流）：
+   - 台词是用来和玩家“你一言我一语”实时聊天、拉扯的。
+   - 心理活动要展现角色此时此刻的微妙情绪、直觉反应或瞬间闪过的念头。
+
+3. 绝对边界（不推剧情、把球抛回）：
+   - 严禁替玩家做任何决定、说任何话。
+   - 角色做出当下的反应和回复后，必须立刻停笔，留出互动的空隙，等待玩家的回应或下一个动作。
+
+4. 打破历史惯性：
+   - 严格保持现有的输出格式（旁白、角色姓名、台词、心理区块）。
+   - 忽略历史记录中可能存在的“概括性/快进式”文风，本轮必须100%采用沉浸、细腻的现场微距描写。
+"""
+
+    const val ADVANCE_NARRATIVE_MODE_SYSTEM_PROMPT = """
+【当前模式：推进模式（剧情快进 / 行动结算）】
+核心指令：按下时间快进键！从“实时扮演”切换为“讲故事与行动结算”视角。像文字模拟游戏（SLG/AVG）的行动结果文本一样，大步推进剧情，直接兑现玩家行动的最终结果。
+
+1. 镜头与时间（蒙太奇快进）：
+   - 把镜头拉远，时间以“事件”为单位跨越。略过琐碎的动作拆解和一来一回的日常寒暄，用简练、有故事感的旁白，直接概括事情是怎么办成的、局面发生了什么变化。
+   - 必须把玩家当前想做的事“彻底做完”并给出结果。
+   - 举例：如果玩家说“我们去做饭”，请直接用旁白概括备菜、下厨的配合过程，一路写到热气腾腾的饭菜端上桌、双方坐下准备开动为止。
+
+2. 结构重分配（旁白主导，台词点缀）：
+   - 【旁白】是绝对主力：承担推进时间、交代前因后果、描述最终局面的重任。
+   - 【台词与心理】变为“高光切片”：不要写连续的对话！只挑出整个事件过程中，角色最标志性、最能体现态度的一两句核心台词和心理反应，作为故事的生动点缀（不需要等玩家接话）。
+
+3. 玩家边界与停笔时机：
+   - 顺着玩家的意图，自然补全完成该事件所需的合理过程（这属于帮玩家执行指令，但绝不能替玩家做新的立场选择或许下承诺）。
+   - 直到当前事件彻底尘埃落定、得出明确结果后停笔；或者在推进途中突然爆发了必须由玩家当场拍板的重大意外时，停在意外发生的那一刻。
+
+4. 打破历史惯性：
+   - 严格保持现有的输出格式（旁白、角色姓名、台词、心理区块），但改变区块内的写法！
+   - 哪怕前面的历史消息全都是逐句聊天的细节描写，本轮也必须立刻刹住，强行切换为“大跨度讲故事、给结果”的结算文风！
+"""
+
+    fun narrativeModeSystemPrompt(mode: ChatNarrativeMode): String = when (mode) {
+        ChatNarrativeMode.FOCUS -> FOCUS_NARRATIVE_MODE_SYSTEM_PROMPT
+        ChatNarrativeMode.ADVANCE -> ADVANCE_NARRATIVE_MODE_SYSTEM_PROMPT
+    }.trimIndent().trim()
+
+    fun narrativeModeTailSystemPrompt(
+        mode: ChatNarrativeMode,
+        previousMode: ChatNarrativeMode
+    ): String = buildString {
+        appendLine("【本轮叙事模式强后置要求】")
+        if (mode != previousMode) {
+            appendLine("用户已由${previousMode.shortLabel}模式切换到${mode.shortLabel}模式。本轮必须立即改变细节密度、推进积极性与扮演目标，不能沿用被替换回复或前文的叙事节奏。")
+        }
+        appendLine("本轮采用【${mode.label}】。历史模式标识不构成本轮写法要求；沿用历史事实，按本轮模式生成新内容。")
+        appendLine(narrativeModeSystemPrompt(mode))
+        append("这些要求决定本轮叙事方式；继续遵守输出格式、角色姓名标记、回复字数与语言要求。直接输出故事正文，不提及模式切换或幕后指令。")
+    }
+
+    fun narrativeModeHistoryReply(body: String, mode: ChatNarrativeMode): String =
+        "<历史回复 模式=\"${mode.shortLabel}\">\n$body\n</历史回复>"
 
     const val EXPERIMENTAL_GAME_CONTENT_TOOL_DESCRIPTION =
         "请使用此工具提交本轮完整回复，将全部回复内容写入 content 参数。"

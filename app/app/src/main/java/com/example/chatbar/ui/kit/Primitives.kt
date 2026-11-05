@@ -265,7 +265,8 @@ fun CbIconButton(
     modifier: Modifier = Modifier,
     enabled: Boolean = true,
     tint: Color = ChatBarTheme.colors.foreground,
-    dirty: Boolean = false
+    dirty: Boolean = false,
+    iconSize: Dp = 20.dp
 ) {
     var pressVersion by remember { mutableStateOf(0) }
     val scale by animateFloatAsState(
@@ -299,7 +300,7 @@ fun CbIconButton(
             },
         contentAlignment = Alignment.Center
     ) {
-        CbIcon(imageVector, contentDescription, Modifier.size(20.dp), tint)
+        CbIcon(imageVector, contentDescription, Modifier.size(iconSize), tint)
         if (dirty) {
             Box(
                 Modifier

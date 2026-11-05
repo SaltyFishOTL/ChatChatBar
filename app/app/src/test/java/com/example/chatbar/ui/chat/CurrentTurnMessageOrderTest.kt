@@ -3,6 +3,7 @@ package com.example.chatbar.ui.chat
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.FormatCardUserToolType
 import com.example.chatbar.data.local.entity.FormatPromptPosition
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
@@ -23,6 +24,22 @@ import org.junit.Test
 
 class CurrentTurnMessageOrderTest {
     @Test
+    fun changingNarrativeModeChangesStableCacheIdentityForEveryFormatPosition() {
+        for (position in FormatPromptPosition.entries) {
+            val keys = ChatNarrativeMode.entries.map { mode ->
+                PromptCacheKeyFactory.cacheKey(buildCcbStablePrefixMessages(
+                    coreSystemPrompt = "fixture-core",
+                    stableContextSystemPrompt = "fixture-character",
+                    positionedRequirementsSystemPrompt = "fixture-requirements",
+                    formatPromptPosition = position,
+                    narrativeModeSystemPrompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+                ))
+            }
+            assertEquals(ChatNarrativeMode.entries.size, keys.toSet().size)
+        }
+    }
+
+    @Test
     fun serializedRequestsPreserveStartEndAndBothOrderForHttpsAndLocalHttp() {
         val service = StreamingChatService(allowCleartextHttp = { true })
         for (position in FormatPromptPosition.entries) {
@@ -30,7 +47,8 @@ class CurrentTurnMessageOrderTest {
                 coreSystemPrompt = "fixture-core",
                 stableContextSystemPrompt = "fixture-character",
                 positionedRequirementsSystemPrompt = "fixture-requirements",
-                formatPromptPosition = position
+                formatPromptPosition = position,
+                narrativeModeSystemPrompt = "fixture-mode"
             ).toMutableList()
             messages.add(ChatApiMessage.text("assistant", "fixture-history"))
             appendCurrentUserAndCcbTailMessages(
@@ -39,7 +57,8 @@ class CurrentTurnMessageOrderTest {
                 strongPromptSystemSuffix = "fixture-strong",
                 postUserSystemPrompt = buildCcbFinalTailSystemPrompt(
                     "fixture-post-history", "fixture-requirements", position
-                )
+                ),
+                narrativeModeSystemPrompt = "fixture-mode-tail"
             )
             for (baseUrl in listOf("https://example.test/v1", "http://127.0.0.1:1234/v1")) {
                 val model = ModelConfig(id = "fixture", displayName = "fixture", modelName = "fixture", baseUrl = baseUrl, apiKey = "", createdAt = 0L)
@@ -53,6 +72,9 @@ class CurrentTurnMessageOrderTest {
                 val roles = serialized.map { it.jsonObject.getValue("role").jsonPrimitive.content }
                 val characterIndex = contents.indexOf("fixture-character")
                 val userIndex = contents.indexOf("fixture-current-user")
+                assertTrue(contents.indexOf("fixture-mode") < contents.indexOf("fixture-history"))
+                assertTrue(contents.indexOf("fixture-strong") < contents.indexOf("fixture-mode-tail"))
+                assertEquals(contents.lastIndex - 1, contents.indexOf("fixture-mode-tail"))
                 val requirementIndices = contents.indices.filter { "fixture-requirements" in contents[it] }
                 val expectedCount = (if (position.includesStart) 1 else 0) + (if (position.includesEnd) 1 else 0)
                 assertEquals(expectedCount, requirementIndices.size)

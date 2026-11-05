@@ -49,6 +49,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 - Restore only the current long-term-memory snapshot. Do not archive histories, running jobs, coordinator state, or stale runtime progress.
 - `automaticImageGenerationEnabled` is a default-false manifest/session setting. ChatViewModel writes it at SaveSlot creation and restores it in packaged and legacy paths; loading history never triggers automatic images.
 - `novelAiNaturalLanguageMode` is also default false in session/manifest JSON; preserve it at creation and both restore paths independently of the selected NovelAI model, so switching back to V5 restores the preference.
+- `narrativeMode` defaults to FOCUS in session/manifest JSON. Create and both restore paths retain it; restore/rollback use `ChatRepository.updateSession(..., restoreNarrativeMode = true)` because ordinary updates preserve the latest mode. `ChatMessage.narrativeMode` and `alternativeNarrativeModes` travel with message JSON/JSONL and session copies; legacy candidates default to FOCUS.
 
 ## UI and Lifecycle
 

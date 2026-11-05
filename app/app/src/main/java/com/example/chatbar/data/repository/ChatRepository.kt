@@ -10,6 +10,7 @@ import com.example.chatbar.data.local.entity.ChatMessageOrderBackup
 import com.example.chatbar.data.local.entity.ChatMessageOrderBackupEntry
 import com.example.chatbar.data.local.entity.ChatScrollPosition
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.toIndexEntry
@@ -97,9 +98,21 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private val sessionSettingsMutex = Mutex()
 
-    suspend fun updateSession(session: ChatSession) {
-        sessionSettingsMutex.withDataAccess { updateSessionLocked(session) }
+    suspend fun updateSession(session: ChatSession, restoreNarrativeMode: Boolean = false) {
+        sessionSettingsMutex.withDataAccess {
+            val latestMode = getSession(session.id)?.narrativeMode
+            updateSessionLocked(
+                if (restoreNarrativeMode || latestMode == null) session
+                else session.copy(narrativeMode = latestMode)
+            )
+        }
     }
+
+    suspend fun setNarrativeMode(sessionId: String, mode: ChatNarrativeMode): ChatSession =
+        sessionSettingsMutex.withDataAccess {
+            val latest = getSession(sessionId) ?: error("会话已不存在")
+            latest.copy(narrativeMode = mode).also { updateSessionLocked(it) }
+        }
 
     suspend fun relinkArchivedSession(
         sessionId: String,
