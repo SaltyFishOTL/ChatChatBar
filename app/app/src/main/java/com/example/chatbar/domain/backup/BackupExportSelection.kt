@@ -27,6 +27,7 @@ object BackupSettingOptions {
         BackupSettingOption("embedding", "全部向量模型配置", "模型与连接"),
         field("defaultFormatCardId", "默认格式卡", "回复与记忆"),
         field("automaticFormatCheckEnabled", "自动格式检查", "回复与记忆"),
+        field("disableNarrativeModes", "去除聚焦与推进选项", "回复与记忆"),
         field("formatRepairModelId", "格式修复模型", "回复与记忆"),
         field("memoryRagTopK", "记忆检索数量", "回复与记忆"),
         field("memoryRagSimilarityThreshold", "记忆相似度阈值", "回复与记忆"),

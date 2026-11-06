@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
@@ -10,6 +11,7 @@ import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -18,10 +20,52 @@ class ChatNarrativeModeTest {
     private val focus = ChatNarrativeMode.FOCUS
     private val advance = ChatNarrativeMode.ADVANCE
 
-    private fun reply(mode: ChatNarrativeMode = focus) = ChatMessage(
+    private fun reply(mode: ChatNarrativeMode? = focus) = ChatMessage(
         id = "reply", sessionId = "session", role = MessageRole.ASSISTANT,
         content = "fixture-original", narrativeMode = mode, createdAt = 1, updatedAt = 1
     )
+
+    @Test
+    fun oldSettingsKeepModesEnabledAndDisabledSettingRoundTrips() {
+        assertFalse(json.decodeFromString(AppSettings.serializer(), "{}").disableNarrativeModes)
+        val disabled = AppSettings(disableNarrativeModes = true)
+        assertEquals(disabled, json.decodeFromString(AppSettings.serializer(),
+            json.encodeToString(AppSettings.serializer(), disabled)))
+    }
+
+    @Test
+    fun disabledCandidatesKeepExplicitNullThroughStorageEditingAndSelection() {
+        val disabled = MessageAlternativeVersionPolicy.append(reply(advance), "disabled", "v2", narrativeMode = null)
+        val slot = SaveSlot.create("session", "fixture", messages = listOf(disabled))
+        val decoded = json.decodeFromString(SaveSlot.serializer(), json.encodeToString(SaveSlot.serializer(), slot))
+            .messages.single()
+        assertNull(decoded.narrativeMode)
+        assertEquals(listOf(advance, null), decoded.alternativeNarrativeModes)
+        assertEquals(decoded, MessageAlternativeVersionPolicy.normalize(decoded))
+        assertEquals(advance, MessageAlternativeVersionPolicy.select(decoded, 0).narrativeMode)
+        assertNull(MessageAlternativeVersionPolicy.editCurrentContent(decoded, "edited").narrativeMode)
+        assertNull(MessageFormatRepairPolicy.replaceCurrentDisplayContent(decoded, "repaired").narrativeMode)
+        assertNull(InterruptedReplyPolicy.persistableDraft(reply(null))?.narrativeMode)
+        val copy = SessionCopyPolicy("copy", setOf(decoded.id)).message(decoded, "copy")
+        assertEquals(decoded.alternativeNarrativeModes, copy.alternativeNarrativeModes)
+        val trimmed = MessageAlternativeVersionPolicy.append(decoded, "focus", "v3", maxVersions = 2, narrativeMode = focus)
+        assertEquals(listOf(null, focus), trimmed.alternativeNarrativeModes)
+        assertNull(MessageAlternativeVersionPolicy.select(trimmed, 0).narrativeMode)
+    }
+
+    @Test
+    fun disabledHistoryAndRepliesRemainUnwrappedAndDoNotInventSwitches() {
+        for (mode in listOf(focus, advance, null)) {
+            assertEquals("rendered", ChatHistoryPromptPolicy.renderedHistoryText(
+                reply(mode), "rendered", narrativeModesEnabled = false))
+        }
+        assertEquals("rendered", ChatHistoryPromptPolicy.renderedHistoryText(reply(null), "rendered"))
+        assertNull(ChatHistoryPromptPolicy.previousNarrativeMode(listOf(reply(advance), reply(null))))
+        assertNull(ChatHistoryPromptPolicy.previousNarrativeMode(listOf(reply(advance)), reply(null)))
+        assertTrue(PromptTemplates.narrativeModeTailSystemPrompt(null, advance).isEmpty())
+        assertEquals(PromptTemplates.narrativeModeTailSystemPrompt(advance, advance),
+            PromptTemplates.narrativeModeTailSystemPrompt(advance, null))
+    }
 
     @Test
     fun oldSessionMessageAndSaveSlotDefaultToFocus() {

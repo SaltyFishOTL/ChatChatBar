@@ -11,21 +11,29 @@ internal enum class ChatHistoryPromptZone {
 }
 
 object ChatHistoryPromptPolicy {
-    fun renderedHistoryText(message: ChatMessage, renderedBody: String): String =
-        if (message.role == MessageRole.ASSISTANT && renderedBody.isNotBlank()) {
-            PromptTemplates.narrativeModeHistoryReply(
-                renderedBody, MessageAlternativeVersionPolicy.activeVersion(message).narrativeMode
-            )
+    fun renderedHistoryText(
+        message: ChatMessage,
+        renderedBody: String,
+        narrativeModesEnabled: Boolean = true
+    ): String {
+        val mode = MessageAlternativeVersionPolicy.activeVersion(message).narrativeMode
+        return if (narrativeModesEnabled && mode != null &&
+            message.role == MessageRole.ASSISTANT && renderedBody.isNotBlank()
+        ) {
+            PromptTemplates.narrativeModeHistoryReply(renderedBody, mode)
         } else renderedBody
+    }
 
     fun previousNarrativeMode(
         history: List<ChatMessage>,
         regenerationTarget: ChatMessage? = null
-    ): ChatNarrativeMode = (regenerationTarget ?: history.lastOrNull {
-        it.role == MessageRole.ASSISTANT && it.displayContent.isNotBlank() &&
-            it.generatedFromMessageId == null
-    })?.let { MessageAlternativeVersionPolicy.activeVersion(it).narrativeMode }
-        ?: ChatNarrativeMode.FOCUS
+    ): ChatNarrativeMode? {
+        val previous = regenerationTarget ?: history.lastOrNull {
+            it.role == MessageRole.ASSISTANT && it.displayContent.isNotBlank() &&
+                it.generatedFromMessageId == null
+        } ?: return ChatNarrativeMode.FOCUS
+        return MessageAlternativeVersionPolicy.activeVersion(previous).narrativeMode
+    }
 
     internal fun sourceText(
         message: ChatMessage,

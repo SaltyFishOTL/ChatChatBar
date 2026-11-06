@@ -399,6 +399,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun setNarrativeMode(mode: ChatNarrativeMode) {
+        if (settingsRepository.currentAppSettings.disableNarrativeModes) return
         if (_session.value == null || _isArchived.value || _saveSlotOperation.value.busy) return
         if (_narrativeMode.value == mode) return
         val revision = ++narrativeModeRevision
@@ -2299,7 +2300,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (!isBlank && _draftInput.value.isNotEmpty()) updateDraftInput("")
         sendMessageInternal(
             content = effectiveContent,
-            requestNarrativeMode = _narrativeMode.value,
+            requestNarrativeMode = snapshotNarrativeMode(),
             imagePaths = imagePaths,
             persistUserMessage = !isBlank,
             resumeLatestUser = isBlank
@@ -2552,9 +2553,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
+    private fun snapshotNarrativeMode(): ChatNarrativeMode? =
+        _narrativeMode.value.takeUnless { settingsRepository.currentAppSettings.disableNarrativeModes }
+
     private fun sendMessageInternal(
         content: String,
-        requestNarrativeMode: ChatNarrativeMode,
+        requestNarrativeMode: ChatNarrativeMode?,
         imagePaths: List<String> = emptyList(),
         persistUserMessage: Boolean,
         resumeLatestUser: Boolean = false,
@@ -3080,7 +3084,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             renderedBody = renderedBody,
                             hasSupportedImage = hasSupportedImage
                         ) ?: return
-                        val text = ChatHistoryPromptPolicy.renderedHistoryText(msg, payloadText)
+                        val text = ChatHistoryPromptPolicy.renderedHistoryText(
+                            msg, payloadText, narrativeModesEnabled = requestNarrativeMode != null
+                        )
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())
@@ -3966,7 +3972,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /** 重新生成指定 AI 文本回复，保留其消息 ID 与时间轴位置。 */
     fun regenerateResponse(messageId: String) {
         if (_isResponding.value || _isArchived.value) return
-        val requestNarrativeMode = _narrativeMode.value
+        val requestNarrativeMode = snapshotNarrativeMode()
 
         viewModelScope.launch {
             val currentMessages = _messages.value

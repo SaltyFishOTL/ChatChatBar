@@ -8,7 +8,7 @@ import java.util.UUID
 data class MessageVersionSnapshot(
     val id: String,
     val content: String,
-    val narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
+    val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
 )
 
 object MessageAlternativeVersionPolicy {
@@ -40,7 +40,9 @@ object MessageAlternativeVersionPolicy {
         return message.alternatives.mapIndexed { index, content ->
             MessageVersionSnapshot(
                 ids[index], content,
-                message.alternativeNarrativeModes.getOrNull(index) ?: ChatNarrativeMode.FOCUS
+                if (index in message.alternativeNarrativeModes.indices) {
+                    message.alternativeNarrativeModes[index]
+                } else ChatNarrativeMode.FOCUS
             )
         }
     }
@@ -89,7 +91,7 @@ object MessageAlternativeVersionPolicy {
         newVersionId: String,
         maxVersions: Int = 5,
         updatedAt: Long = System.currentTimeMillis(),
-        narrativeMode: ChatNarrativeMode = message.narrativeMode
+        narrativeMode: ChatNarrativeMode? = message.narrativeMode
     ): ChatMessage {
         require(newVersionId.isNotBlank()) { "消息版本 ID 不能为空" }
         require(maxVersions > 0) { "消息版本数量上限必须大于 0" }

@@ -68,7 +68,7 @@ class PromptAssembler {
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap(),
         includePostHistory: Boolean = true,
-        narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
+        narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
     ): String {
         val sections = collectSections(
             characterCard = characterCard,
@@ -111,7 +111,7 @@ class PromptAssembler {
         memoryHeadAndTimeline: String? = null,
         worldBookPrompt: String? = null,
         worldBookOutlets: Map<String, String> = emptyMap(),
-        narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS
+        narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
     ): PromptCachePromptLayers {
         val sections = collectSections(
             characterCard = characterCard,
@@ -246,7 +246,7 @@ class PromptAssembler {
         memoryArchive: String?,
         memoryHeadAndTimeline: String?,
         worldBookPrompt: String?,
-        narrativeMode: ChatNarrativeMode
+        narrativeMode: ChatNarrativeMode?
     ): List<PromptSection> = buildList {
         addSection(
             PromptLayer.STABLE,
@@ -288,11 +288,13 @@ class PromptAssembler {
             if (!playerSetting.isNullOrBlank()) appendLine(playerSetting)
         }.trim()
         addSection(PromptLayer.STABLE, PromptTemplates.SECTION_PLAYER, personal)
-        addSection(
-            PromptLayer.STABLE,
-            PromptTemplates.SECTION_NARRATIVE_MODE,
-            PromptTemplates.narrativeModeSystemPrompt(narrativeMode)
-        )
+        narrativeMode?.let { mode ->
+            addSection(
+                PromptLayer.STABLE,
+                PromptTemplates.SECTION_NARRATIVE_MODE,
+                PromptTemplates.narrativeModeSystemPrompt(mode)
+            )
+        }
         addSection(
             PromptLayer.CORE,
             PromptTemplates.SECTION_CORE,

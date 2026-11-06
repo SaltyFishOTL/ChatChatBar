@@ -1114,13 +1114,15 @@ fun ChatScreen(
                 }
             },
             confirmIcon = AppIcons.Send,
-            confirmAccessory = {
-                ChatNarrativeModeToggle(
-                    mode = narrativeMode,
-                    activeMode = activeResponseNarrativeMode.takeIf { isResponding },
-                    enabled = session != null && !saveSlotOperation.busy,
-                    onSelect = viewModel::setNarrativeMode
-                )
+            confirmAccessory = if (appSettings.disableNarrativeModes) null else {
+                {
+                    ChatNarrativeModeToggle(
+                        mode = narrativeMode,
+                        activeMode = activeResponseNarrativeMode.takeIf { isResponding },
+                        enabled = session != null && !saveSlotOperation.busy,
+                        onSelect = viewModel::setNarrativeMode
+                    )
+                }
             },
             visible = true
         )
@@ -1431,12 +1433,14 @@ fun ChatScreen(
                         onImage = { chatImagePicker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly)) },
                         onFull = { fullComposer = true },
                         modeAction = {
-                            ChatNarrativeModeToggle(
-                                mode = narrativeMode,
-                                activeMode = activeResponseNarrativeMode.takeIf { isResponding },
-                                enabled = session != null && !isArchived && !saveSlotOperation.busy,
-                                onSelect = viewModel::setNarrativeMode
-                            )
+                            if (!appSettings.disableNarrativeModes) {
+                                ChatNarrativeModeToggle(
+                                    mode = narrativeMode,
+                                    activeMode = activeResponseNarrativeMode.takeIf { isResponding },
+                                    enabled = session != null && !isArchived && !saveSlotOperation.busy,
+                                    onSelect = viewModel::setNarrativeMode
+                                )
+                            }
                         },
                         onCancel = viewModel::cancelResponseGeneration,
                         onSend = {

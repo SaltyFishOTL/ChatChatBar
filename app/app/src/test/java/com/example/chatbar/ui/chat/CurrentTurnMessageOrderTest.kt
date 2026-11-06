@@ -26,16 +26,55 @@ class CurrentTurnMessageOrderTest {
     @Test
     fun changingNarrativeModeChangesStableCacheIdentityForEveryFormatPosition() {
         for (position in FormatPromptPosition.entries) {
-            val keys = ChatNarrativeMode.entries.map { mode ->
+            val modes = ChatNarrativeMode.entries + listOf(null)
+            val keys = modes.map { mode ->
                 PromptCacheKeyFactory.cacheKey(buildCcbStablePrefixMessages(
                     coreSystemPrompt = "fixture-core",
                     stableContextSystemPrompt = "fixture-character",
                     positionedRequirementsSystemPrompt = "fixture-requirements",
                     formatPromptPosition = position,
-                    narrativeModeSystemPrompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+                    narrativeModeSystemPrompt = mode?.let(PromptTemplates::narrativeModeSystemPrompt).orEmpty()
                 ))
             }
-            assertEquals(ChatNarrativeMode.entries.size, keys.toSet().size)
+            assertEquals(modes.size, keys.toSet().size)
+        }
+    }
+
+    @Test
+    fun disabledNarrativeModePreservesLegacyTailAndTransportForEveryFormatPosition() {
+        val service = StreamingChatService(allowCleartextHttp = { true })
+        for (position in FormatPromptPosition.entries) {
+            fun request(narrativeTail: String? = null): List<ChatApiMessage> {
+                val messages = buildCcbStablePrefixMessages(
+                    coreSystemPrompt = "fixture-core",
+                    stableContextSystemPrompt = "fixture-character",
+                    positionedRequirementsSystemPrompt = "fixture-requirements",
+                    formatPromptPosition = position
+                ).toMutableList()
+                appendCurrentUserAndCcbTailMessages(
+                    messages, ChatApiMessage.text("user", "fixture-user"),
+                    strongPromptSystemSuffix = "fixture-strong",
+                    postUserSystemPrompt = buildCcbFinalTailSystemPrompt(
+                        "fixture-post-history", "fixture-requirements", position),
+                    narrativeModeSystemPrompt = narrativeTail.orEmpty()
+                )
+                return messages
+            }
+            val legacy = request()
+            val disabled = request(PromptTemplates.narrativeModeTailSystemPrompt(null, ChatNarrativeMode.ADVANCE))
+            assertEquals(legacy, disabled)
+            assertEquals("fixture-strong", disabled[disabled.lastIndex - 1].content.jsonText())
+            assertEquals("assistant", disabled.last().role)
+            for (baseUrl in listOf("https://example.test/v1", "http://127.0.0.1:1234/v1")) {
+                val model = ModelConfig(id = "fixture", displayName = "fixture", modelName = "fixture",
+                    baseUrl = baseUrl, apiKey = "", createdAt = 0L)
+                for (experimental in listOf(false, true)) {
+                    assertEquals(
+                        service.buildRequestBody(legacy, model, stream = true, experimentalApiMode = experimental),
+                        service.buildRequestBody(disabled, model, stream = true, experimentalApiMode = experimental)
+                    )
+                }
+            }
         }
     }
 

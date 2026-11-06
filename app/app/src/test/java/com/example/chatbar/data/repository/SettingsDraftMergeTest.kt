@@ -8,6 +8,19 @@ import org.junit.Test
 
 class SettingsDraftMergeTest {
     @Test
+    fun narrativeModeToggleMergesWithoutOverwritingNewRuntimeSettings() {
+        val baseline = AppSettings()
+        val latest = baseline.copy(lastSeenChatAt = 42L, chatBubbleFontScale = 1.2f)
+        val merged = mergeSettingsDraft(AppSettings.serializer(), baseline,
+            baseline.copy(disableNarrativeModes = true), latest)
+        assertTrue(merged.disableNarrativeModes)
+        assertEquals(latest.lastSeenChatAt, merged.lastSeenChatAt)
+        assertEquals(latest.chatBubbleFontScale, merged.chatBubbleFontScale)
+        assertTrue(mergeSettingsDraft(AppSettings.serializer(), baseline, baseline,
+            latest.copy(disableNarrativeModes = true)).disableNarrativeModes)
+    }
+
+    @Test
     fun editedModelPreservesNewAppearanceAndRuntimeState() {
         val baseline = AppSettings(defaultModelId = "old", lastSeenMomentsAt = 10L)
         val draft = baseline.copy(defaultModelId = "chosen")

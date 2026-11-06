@@ -73,9 +73,10 @@ data class ChatMessage(
     val currentAlternativeIndex: Int = 0,
     /** 当前内容版本身份；无 alternatives 时仍保留，供派生资源绑定。 */
     val currentAlternativeVersionId: String? = null,
-    val narrativeMode: ChatNarrativeMode = ChatNarrativeMode.FOCUS,
-    /** 与 alternatives 同序；旧版本缺失项按聚焦解释。 */
-    val alternativeNarrativeModes: List<ChatNarrativeMode> = emptyList(),
+    /** null 表示生成时已停用叙事模式；旧数据缺失时仍按聚焦解释。 */
+    val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS,
+    /** 与 alternatives 同序；缺失项按聚焦解释，显式 null 保留停用状态。 */
+    val alternativeNarrativeModes: List<ChatNarrativeMode?> = emptyList(),
     val reasoningContent: String? = null,              // 思维链内容
     val generatedFromMessageId: String? = null,
     val formatRepairNotice: MessageFormatRepairNotice? = null,

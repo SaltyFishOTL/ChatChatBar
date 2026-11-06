@@ -59,7 +59,7 @@ data class NovelAiCodexEvidence(
  * - 主系统提示词：`SYSTEM_PROMPT_TEMPLATE`；固定首尾：`SYSTEM_PROMPT_PREFIX`、`SYSTEM_PROMPT_SUFFIX`；角色卡可覆盖正文：`SYSTEM_PROMPT_REPLACEABLE_CONTENT`；组装：`systemPromptTemplate`
  * - 后置系统提示词：`POST_HISTORY_INSTRUCTIONS_TEMPLATE`
  * - 叙事模式：`FOCUS_NARRATIVE_MODE_SYSTEM_PROMPT`、`ADVANCE_NARRATIVE_MODE_SYSTEM_PROMPT`、
- *   `narrativeModeSystemPrompt`、`narrativeModeTailSystemPrompt`、`narrativeModeHistoryReply`
+ *   `narrativeModeSystemPrompt`、`narrativeModeTailSystemPrompt`（停用时不注入）、`narrativeModeHistoryReply`
  * - CCB大师握手与续写：`CCB_CREATOR_IDENTITY_SYSTEM_PROMPT`、
  *   `CCB_FIRST_ACK_ASSISTANT_PROMPT`、`CCB_CREATIVE_CONTRACT_USER_PROMPT`、
  *   `CCB_CONTRACT_CONFIRMATION_ASSISTANT_PROMPT`、`CCB_CONTEXT_APPROVAL_ASSISTANT_PROMPT`、
@@ -631,11 +631,11 @@ CCB大师的情节规划偏好戏剧性强冲突，尤其符合男性成人欲�
     }.trimIndent().trim()
 
     fun narrativeModeTailSystemPrompt(
-        mode: ChatNarrativeMode,
-        previousMode: ChatNarrativeMode
-    ): String = buildString {
+        mode: ChatNarrativeMode?,
+        previousMode: ChatNarrativeMode?
+    ): String = if (mode == null) "" else buildString {
         appendLine("【本轮叙事模式强后置要求】")
-        if (mode != previousMode) {
+        if (previousMode != null && mode != previousMode) {
             appendLine("用户已由${previousMode.shortLabel}模式切换到${mode.shortLabel}模式。本轮必须立即改变细节密度、推进积极性与扮演目标，不能沿用被替换回复或前文的叙事节奏。")
         }
         appendLine("本轮采用【${mode.label}】。历史模式标识不构成本轮写法要求；沿用历史事实，按本轮模式生成新内容。")

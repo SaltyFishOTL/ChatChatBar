@@ -161,6 +161,7 @@ internal fun GlobalSettingsScreen(
     var customContextSize by rememberSettingDraft(if (settings.defaultContextWindowSize > 50) settings.defaultContextWindowSize.toString() else "")
     var episodeMaxSourceTurns by rememberSettingDraft(settings.episodeMaxSourceTurns.coerceIn(1, 6).toFloat())
     var excludeAssistantStatusFromHistory by rememberSettingDraft(settings.excludeAssistantStatusFromHistory)
+    var disableNarrativeModes by rememberSettingDraft(settings.disableNarrativeModes)
     var bubbleFontScale by rememberSettingDraft(settings.chatBubbleFontScale)
     var chatBackgroundImageOpacity by rememberSettingDraft(settings.chatBackgroundImageOpacity)
     var assistantSegmentedBubblesEnabled by rememberSettingDraft(settings.assistantSegmentedBubblesEnabled)
@@ -205,6 +206,7 @@ internal fun GlobalSettingsScreen(
         defaultImageModelId = imageModelId,
         formatRepairModelId = formatRepairModelId,
         automaticFormatCheckEnabled = automaticFormatCheckEnabled,
+        disableNarrativeModes = disableNarrativeModes,
         siliconFlowApiKey = siliconFlowApiKey.trim(),
         allowCleartextModelApi = allowCleartextModelApi,
         experimentalApiModeEnabled = experimentalApiModeEnabled,
@@ -463,6 +465,23 @@ internal fun GlobalSettingsScreen(
         SettingsEntry("episode-help", "reply", "近期记忆说明", "近期记忆说明", searchable = false) {
             SettingsDetails("了解更多", "近期记忆按连续对话轮数生成") {
                 CbText("固定按目标轮数生成；末尾不足时正常等待。仅修复旧BUG留下且两侧已有记忆的内部缺口时，允许单轮收尾。默认 2 轮。")
+            }
+        },
+        SettingsEntry("disable-narrative-modes", "reply", "去除聚焦与推进选项", "聚焦 推进 模式 按钮 提示词 原本") {
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                Column(Modifier.weight(1f)) {
+                    CbText("去除聚焦与推进选项", style = ChatBarTheme.typography.label)
+                    CbText(
+                        "开启并保存后，隐藏聊天及全屏输入的模式按钮，不再附加模式提示词与历史模式标识。关闭后恢复各会话原来的模式选择。",
+                        color = ChatBarTheme.colors.mutedForeground,
+                        style = ChatBarTheme.typography.caption
+                    )
+                }
+                SettingsSwitch(
+                    checked = disableNarrativeModes,
+                    onCheckedChange = { disableNarrativeModes = it },
+                    label = "去除聚焦与推进选项"
+                )
             }
         },
         SettingsEntry("history-status", "reply", "上下文剔除状态栏", "上下文剔除状态栏") {

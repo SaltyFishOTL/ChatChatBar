@@ -21,6 +21,7 @@ data class AppSettings(
     val defaultEmbeddingId: String? = null,
     val defaultFormatCardId: String? = null,
     val automaticFormatCheckEnabled: Boolean = false,
+    val disableNarrativeModes: Boolean = false,
     val formatRepairModelId: String? = null,
     val memoryRagTopK: Int = 3,
     val memoryRagSimilarityThreshold: Float = 0.35f,

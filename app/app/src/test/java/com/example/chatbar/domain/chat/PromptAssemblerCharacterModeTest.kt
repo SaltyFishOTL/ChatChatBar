@@ -17,6 +17,26 @@ import org.junit.Test
 class PromptAssemblerCharacterModeTest {
     private val assembler = PromptAssembler()
 
+    @Test fun disabledNarrativeModeOmitsSectionsFromEveryAssemblyPath() {
+        val cached = assembler.assembleCachePromptLayers(card(), narrativeMode = null)
+        val uncached = assembler.assembleCachePromptLayers(
+            card().copy(systemPrompt = "{{outlet::dynamic}}"), narrativeMode = null
+        )
+        val full = assembler.assembleSystemPrompt(card(), narrativeMode = null)
+        assertTrue(cached.stablePrefixCacheable)
+        assertFalse(uncached.stablePrefixCacheable)
+        for (layers in listOf(cached, uncached)) {
+            assertTrue(layers.narrativeModeSystemPrompt.isEmpty())
+        }
+        for (mode in ChatNarrativeMode.entries) {
+            val text = PromptTemplates.narrativeModeSystemPrompt(mode)
+            assertFalse(full.contains(text))
+            assertFalse(cached.stableContextSystemPrompt.contains(text))
+        }
+        assertTrue(cached.coreSystemPrompt.isNotBlank())
+        assertTrue(cached.replyConstraintsSystemPrompt.isNotBlank())
+    }
+
     @Test fun narrativeModeIsEquivalentInCachedUncachedAndCombinedAssembly() {
         for (mode in ChatNarrativeMode.entries) {
             val cached = assembler.assembleCachePromptLayers(card(), narrativeMode = mode)
