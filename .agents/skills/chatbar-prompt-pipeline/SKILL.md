@@ -52,7 +52,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Format-card random-number tools remain a request-only suffix inside the current user message. Extract every STRONG_PROMPT_SUFFIX in configured order into one logical system after character post-history/END requirements. The narrative-mode system tail follows, then CCB_POST_USER_ACK_ASSISTANT_PROMPT is the last logical message; there is no final user identity reminder.
 - Derive the prompt cache key from the exact logical prefix through CCB context approval, including roles, conditional START, World Book/setting RAG and all settings. Edits or retrieval changes alter the key. Archive, history heading and END remain outside that prefix.
 - Render session placeholders in separately inserted Archive and HEAD text before creating their final `ChatApiMessage`; keep persisted memory text unchanged.
-- Cleartext HTTP adaptation changes the non-trailing strong-prompt system and other later system roles to assistant. Original CCB/GENERAL assistant acknowledgement tails remain assistant on both HTTP and HTTPS; no user message is appended for compatibility. Experimental transport retains its outer protocol user while leaving the final assistant content string open inside context.description.
+- Cleartext HTTP adaptation changes the non-trailing strong-prompt system and other later system roles to assistant. Logical CCB/GENERAL assistant acknowledgement tails remain assistant on both HTTP and HTTPS. The later SiliconFlowChatTemplatePolicy quotes that tail within the last native user for official DeepSeek-V3.2 endpoints instead of sending unsupported native prefill; prompt text and logical order remain intact. Experimental transport retains its outer protocol user while leaving the final assistant content string open inside context.description.
 - Omit empty sections and their headings.
 - Base cacheability on rendered stable content. An unresolved World Book outlet in stable content disables stable-prefix caching.
 - Keep cache keys aligned with the exact sent prefix through context approval.
@@ -96,7 +96,7 @@ Do not move behavior between these owners without tracing every caller and test.
 - Stable outlet present versus absent.
 - Document-only, memory-only, and mixed RAG cards.
 - Cache path and non-cache fallback produce equivalent semantic order; cache key covers exact stable role/content sequence.
-- Cleartext HTTP serialization preserves non-trailing message/content order, adapts the strong-prompt system to assistant, and preserves the final original CCB assistant acknowledgement. Experimental context has the same logical tail with its inner string left open; the outer request remains valid JSON.
+- Cleartext HTTP serialization preserves non-trailing message/content order, adapts the strong-prompt system to assistant, and preserves the final original CCB assistant acknowledgement. Official SiliconFlow DeepSeek-V3.2 native requests quote the logical tail within the current user. Experimental context has the same logical tail with its inner string left open; the outer request remains valid JSON.
 - Expected Archive and HEAD markers exist in final serialized messages.
 
 ## Stop Conditions

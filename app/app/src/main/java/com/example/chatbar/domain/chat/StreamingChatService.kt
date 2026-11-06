@@ -931,11 +931,12 @@ class StreamingChatService(
             }
         }
 
-        return if (experimentalApiMode) {
-            ExperimentalToolChatPolicy.wrap(bodyObj, requestMessages).toString()
+        val transportBody = if (experimentalApiMode) {
+            ExperimentalToolChatPolicy.wrap(bodyObj, requestMessages)
         } else {
-            bodyObj.toString()
+            bodyObj
         }
+        return SiliconFlowChatTemplatePolicy.adaptRequest(transportBody, modelConfig).toString()
     }
 
     private fun compactImageDescription(text: String): String {
