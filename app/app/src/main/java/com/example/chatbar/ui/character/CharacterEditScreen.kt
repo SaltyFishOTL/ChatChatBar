@@ -1,6 +1,8 @@
 package com.example.chatbar.ui.character
 
 import com.example.chatbar.domain.chat.AiStreamProgress
+import com.example.chatbar.ui.components.NovelAiGuidanceSlider
+import com.example.chatbar.ui.components.NovelAiCfgRescaleSlider
 import com.example.chatbar.ui.components.AiStreamProgressPanel
 import com.example.chatbar.ui.components.NovelAiTagInput
 import com.example.chatbar.ui.components.NovelAiTagAssistanceBar
@@ -689,11 +691,11 @@ fun CharacterEditScreen(
                 CbField("Steps · ${effectiveImageSettings.effectiveSteps}") {
                     CbSlider(effectiveImageSettings.effectiveSteps.toFloat(), { viewModel.defaultImageGenerationSettings = imageSettings.copy(steps = it.toInt()) }, valueRange = 1f..50f, steps = 48, enabled = !effectiveImageSettings.isMediumEffort)
                 }
-                CbField("CFG · ${imageSettings.guidance}") {
-                    CbSlider(imageSettings.guidance, { viewModel.defaultImageGenerationSettings = imageSettings.copy(guidance = it) }, valueRange = 1f..10f)
+                CbField("CFG · ${"%.1f".format(imageSettings.guidance)}") {
+                    NovelAiGuidanceSlider(imageSettings.guidance, { viewModel.defaultImageGenerationSettings = imageSettings.copy(guidance = it) })
                 }
-                CbField("CFG Rescale · ${effectiveImageSettings.effectiveCfgRescale}") {
-                    CbSlider(effectiveImageSettings.effectiveCfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, valueRange = 0f..1f, enabled = !effectiveImageSettings.isMediumEffort)
+                CbField("CFG Rescale · ${"%.2f".format(effectiveImageSettings.effectiveCfgRescale)}") {
+                    NovelAiCfgRescaleSlider(effectiveImageSettings.effectiveCfgRescale, { viewModel.defaultImageGenerationSettings = imageSettings.copy(cfgRescale = it) }, enabled = !effectiveImageSettings.isMediumEffort)
                 }
                 if (imageModel.supportsVarietyPlus) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
