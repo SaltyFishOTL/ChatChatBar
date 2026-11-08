@@ -1,9 +1,10 @@
 # ChatBar 项目交接文档
 
-> 最新发布：2026-11-06。v1.4.10 / versionCode 89 已正式发布。功能提交 `6e322d0d3a78b0b24dc94bc559c89950d8dd0014`，版本提交与标签指向 `954b61b87356fc676daa6590ac9e1ff519ab175b`。[工作流 42236762285](https://github.com/SaltyFishOTL/ChatChatBar/actions/runs/42236762285) 成功，应用/JVM/Android测试源码编译及签名构建通过，`runTests=false`、测试执行 skipped。API与Atom三条更新说明一致；正式包 `ChatBar-1.4.10.apk`，95,730,457字节，GitHub asset SHA-256 `c7701c7c6127c5ad7195ee02930ad85f73531e571d53f41a7c6f6903b45a34dc`，工作流已核验上传大小与摘要。发布页：https://github.com/SaltyFishOTL/ChatChatBar/releases/tag/v1.4.10。完整相邻标签覆盖见 `doc/release_1_4_10_coverage.md`；发布后的核验补充仅改文档。
+> 最新发布：2026-11-08。v1.4.11 / versionCode 90 已正式发布，功能提交 `b7dc5c6`，版本提交与标签指向 `cf16559`。工作流、正式 APK、API/Atom 更新说明及完整相邻标签审查见 [v1.4.11 发布覆盖](release_1_4_11_coverage.md)。发布后补充仅改文档。
 
-> 当前开发：2026-11-06。全局设置 → 回复与记忆新增默认关闭的“去除聚焦与推进选项”（`AppSettings.disableNarrativeModes`），按现有草稿保存/放弃流程生效，并纳入迁移备份独立选项。开启后移除普通及全屏输入的模式按钮；发送/空输入继续/重生成在触发时快照null模式，前部模式提示、模式强后置和全部直接历史模式包装均不注入，保留原格式卡/字数/语言/助手确认与缓存链路。会话模式选择保留，重新关闭开关即恢复。停用期间回复及候选显式保存null，旧缺失字段/候选项仍按FOCUS；编辑/修复/中断草稿/存档/复制保留null，重新启用不误标历史，也不虚构从聚焦或推进切换。两套提示词及其他原提示正文未改。详细入口与人工流程见 `doc/chat_narrative_modes.md`；教程与提示链路/UI/存档/备份/功能地图技能已同步。
-> 本轮验证与交付：发布前应用、JVM测试源码、Android测试源码编译通过；同步1.4.10 / 89后执行 `redeploy.bat --no-pause`，release/lintVital构建、向唯一已授权PJZ110（49075ec2）保留数据覆盖安装及启动均成功。当前独立本地APK `app/app/build/outputs/apk/release/app-release.apk`，95,730,689字节，SHA-256 `9394061fc9d6f8f66cd63c9690563a2bb0601ff28a427e2ed141fbbc6bd5a22a`，与正式云端资产为独立构建。未执行自动测试、未调用真实模型、未读取设备日志或截图。待人工检查保存/放弃、重启保留、两处按钮消失/恢复、所有生成入口无模式请求、候选/存档null保留，以及图片/全屏/原格式回归。
+> 当前修复：2026-11-08。模型状态改为统一解析与订阅：`EffectiveModelResolver.observeConfiguration()` 汇合仓库和设置变更，`configuration()` 供请求启动时读取。模型编辑、管理、首页、聊天、角色卡、世界书、格式卡和工作室均接入；新增/修改/删除模型无需靠其他设置变化刷新列表。`ModelRepository` 串行完成持久化和状态发布，单模型与列表读取同源。工作室选择设计模型先同步共享草稿，再异步落盘；图片反推与 AI 设计执行读取最新能力和连接配置。显式失效的设计模型继续报错，只有未指定时跟随默认生图辅助模型。原有 AI 提示词正文未改。功能入口与不变量见模型运行时、NovelAI 提示词技能。
+
+> 验证与待验收：本地及云端应用、JVM/Android 测试源码编译和签名构建通过；回归源码已添加但未执行。ADB 无连接设备，未安装、未调用真实模型、未读设备日志或截图。安装新版本后按发布覆盖文档检查两处新增模型选择、能力/连接/默认设置更新、切换设计模型后反推的场景确认与 Prompt 生成，并复测文本模型关联视觉模型及其他 AI 选择器。
 
 > 本轮修复：2026-11-06。用户反馈硅基流动预制 DS3.2 在 v1.4.9 后返回 HTTP 400 / code 20015 / messages illegal；后续明确实验模式不会失败，故障在普通模式。普通请求公共 CCB/GENERAL 尾改为原生 assistant 后未区分前缀续写协议，是对应兼容回归；实验模式原有 system/user 外层不受该尾部角色影响。SiliconFlowChatTemplatePolicy 仅适配官方 cn/com 的 DeepSeek-V3.2/Pro/Exp：保留逻辑提示与内容，将最后 user 后的消息按原 role/content 引用回当前 user，实际请求以 user 收尾；纯文本外层 content 数组转字符串，图片部件保留。无新增提示词、prefix 参数、思考开关、失败重试或自动降级；两种传输及共享 AI 入口均经该策略。SiliconFlowChatTemplatePolicyTest 覆盖尾部保留、四类记忆请求、实验模式、图片、幂等及接口/模型范围；应用与回归源码编译、release/lintVital 构建通过，未执行测试或真实 API 调用。修复提交 `12e420a` 已随v1.4.10发布。人工验收：安装后关闭实验模式并保存，选择 DS3.2，点击原失败任务“重试补录”触发新请求（旧错误会持久保存，切换模式不会自动重跑）；再检查主聊天、思考/正文流式与实验模式对照。
 
