@@ -1,5 +1,13 @@
 # ChatBar 项目交接文档
 
+> PR 合并：2026-11-08。按用户确认顺序先合 #3（105506e07381bee56b164c16cf0dadc6608832ca），再将主线同步到 #2（head d3213f36ef823f64d1a2c4591e222d83c9b15740），待 Android CI 42462774263 成功后合入 #2（b3ca5af84ab3287a5fbd30c2e188800deb1dd82d）。最终合并树与已验证 head 相同，本地主线已同步。本轮未发布新版本。
+
+> 合并内容：角色卡与工作室共用 NovelAiSamplingSliders，CFG 用户编辑步长 0.1、Rescale 0.02；未编辑旧值/导入值保留精度，Medium 禁用 Rescale 且保留 High 值。PromptAssemblerCharacterModeTest 仅校验生成标题并使用带编号的合成正文，覆盖禁用/Focus/Advance；生产提示词未改。生图运行时技能已随 #2 更新。
+
+> 本轮交付：redeploy.bat --build-only --no-pause 的 release/lintVital 构建通过；本地包 app/app/build/outputs/apk/release/app-release.apk（1.4.11/90，95,730,689 字节，SHA-256 d3416746f0cad4ea52afd9d63389d041477bae40a843f522c4777edd5e81f7eb），签名与既有正式版一致。ADB 无连接设备，未安装，未执行本地自动测试或设备诊断；云端验证见 https://github.com/SaltyFishOTL/ChatChatBar/actions/runs/42462774263。
+
+> 本轮人工复测：两处调节 CFG/Rescale，确认分别按 0.1/0.02 变化；打开非网格旧值，不动滑块保存重开，确认原值精度保留；只编辑一项不改另一项；High 设置 Rescale 后切 Medium 确认不可编辑、有效为 0，再切 High 确认恢复。
+
 > 最新发布：2026-11-08。v1.4.11 / versionCode 90 已正式发布，功能提交 `b7dc5c6`，版本提交与标签指向 `cf16559`。工作流、正式 APK、API/Atom 更新说明及完整相邻标签审查见 [v1.4.11 发布覆盖](release_1_4_11_coverage.md)。发布后补充仅改文档。
 
 > 当前修复：2026-11-08。模型状态改为统一解析与订阅：`EffectiveModelResolver.observeConfiguration()` 汇合仓库和设置变更，`configuration()` 供请求启动时读取。模型编辑、管理、首页、聊天、角色卡、世界书、格式卡和工作室均接入；新增/修改/删除模型无需靠其他设置变化刷新列表。`ModelRepository` 串行完成持久化和状态发布，单模型与列表读取同源。工作室选择设计模型先同步共享草稿，再异步落盘；图片反推与 AI 设计执行读取最新能力和连接配置。显式失效的设计模型继续报错，只有未指定时跟随默认生图辅助模型。原有 AI 提示词正文未改。功能入口与不变量见模型运行时、NovelAI 提示词技能。
