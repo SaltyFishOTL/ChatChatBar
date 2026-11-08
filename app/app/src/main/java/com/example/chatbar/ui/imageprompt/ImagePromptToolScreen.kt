@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.imageprompt
 
+import com.example.chatbar.ui.components.NovelAiGuidanceSlider
+import com.example.chatbar.ui.components.NovelAiCfgRescaleSlider
 import com.example.chatbar.ui.components.promptEditorTextStyle
 import com.example.chatbar.ui.components.promptTagWrappingOutputTransformation
 import com.example.chatbar.ui.components.PromptTranslationOverlay
@@ -1964,21 +1966,15 @@ private fun AdvancedSettings(settings: NovelAiGenerationSettings, viewModel: Ima
     }
     Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(ChatBarSpacing.md)) {
         CbField("CFG Scale · ${"%.1f".format(settings.guidance)}", Modifier.weight(1f)) {
-            CbSlider(
+            NovelAiGuidanceSlider(
                 settings.guidance,
-                { value -> viewModel.updateGenerationSettings("settings:guidance") { it.copy(guidance = (value * 10).toInt() / 10f) } },
-                1f..10f,
-                steps = 89,
-                contentDescription = "CFG Scale"
+                { value -> viewModel.updateGenerationSettings("settings:guidance") { it.copy(guidance = value) } }
             )
         }
         CbField("CFG Rescale · ${"%.2f".format(settings.effectiveCfgRescale)}", Modifier.weight(1f)) {
-            CbSlider(
+            NovelAiCfgRescaleSlider(
                 settings.effectiveCfgRescale,
-                { value -> viewModel.updateGenerationSettings("settings:cfg_rescale") { it.copy(cfgRescale = kotlin.math.round(value * 20f) / 20f) } },
-                0f..1f,
-                steps = 19,
-                contentDescription = "CFG Rescale",
+                { value -> viewModel.updateGenerationSettings("settings:cfg_rescale") { it.copy(cfgRescale = value) } },
                 enabled = !settings.isMediumEffort
             )
         }

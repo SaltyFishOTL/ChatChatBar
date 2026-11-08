@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.image
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.float
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.junit.Assert.assertEquals
@@ -22,6 +23,29 @@ class NovelAiSamplingAlignmentTest {
                 cfgRescale = 0f, sampler = expected.sampler), profile.withDefaultSampling(model))
             assertEquals(before, Json.decodeFromString(NovelAiGenerationSettings.serializer(),
                 Json.encodeToString(NovelAiGenerationSettings.serializer(), before)))
+        }
+    }
+
+    @Test fun uneditedOffGridValuesSurviveStorageModelSwitchesAndProductionRequests() {
+        val profile = NovelAiCharacterImageSettings(guidance = 6.75321f, cfgRescale = 0.257891f)
+        val restoredProfile = Json.decodeFromString(NovelAiCharacterImageSettings.serializer(),
+            Json.encodeToString(NovelAiCharacterImageSettings.serializer(), profile))
+        assertEquals(profile, restoredProfile)
+        for (model in NovelAiImageModel.entries) {
+            for (effort in NovelAiEffort.entries) {
+                val settings = restoredProfile.copy(effort = effort).applyTo(
+                    NovelAiGenerationSettings(model = model)).copy(steps = 31)
+                val restored = Json.decodeFromString(NovelAiGenerationSettings.serializer(),
+                    Json.encodeToString(NovelAiGenerationSettings.serializer(), settings))
+                assertEquals(profile.guidance, restored.guidance, 0f)
+                assertEquals(profile.cfgRescale, restored.cfgRescale, 0f)
+                val params = Json.parseToJsonElement(NovelAiImageService().buildRequestBody(
+                    NovelAiPromptPlan("synthetic scene", emptyList()), restored.imageSize(), restored
+                )).jsonObject.getValue("parameters").jsonObject
+                assertEquals(profile.guidance, params.getValue("scale").jsonPrimitive.float, 0f)
+                assertEquals(if (restored.isMediumEffort) 0f else profile.cfgRescale,
+                    params.getValue("cfg_rescale").jsonPrimitive.float, 0f)
+            }
         }
     }
 
