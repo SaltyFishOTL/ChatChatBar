@@ -76,15 +76,7 @@ class SessionCharacterRebindTest {
         val old = card()
         val next = card()
         val source = session(old.id)
-        val vm = withContext(Dispatchers.Main) {
-            val store = ViewModelStore().also { stores += it }
-            val factory = object : ViewModelProvider.Factory {
-                @Suppress("UNCHECKED_CAST")
-                override fun <T : ViewModel> create(modelClass: Class<T>): T = ChatViewModel(source.id) as T
-            }
-            ViewModelProvider(store, factory)[ChatViewModel::class.java]
-        }
-        withTimeout(30_000) { vm.session.first { it?.id == source.id } }
+        val vm = editor(source.id)
         withContext(Dispatchers.Main) { vm.relinkCharacterCard(next.id) }
         assertEquals(next.id, app.chatRepository.getSession(source.id)!!.characterCardId)
         val summaries = app.saveSlotRepository.getBySessionId(source.id)
@@ -93,6 +85,45 @@ class SessionCharacterRebindTest {
         assertEquals(source.id, slot.sessionId)
         assertEquals(SaveSlotImagePolicy.ORIGINAL, slot.imagePolicy)
         assertNotNull(slot.packageRef)
+    }
+
+    @Test fun actualSettingsSavePersistsManualParticipation() = runBlocking<Unit> {
+        val card = card()
+        val source = session(card.id)
+        val vm = editor(source.id)
+        val baseline = requireNotNull(app.chatRepository.getSession(source.id))
+        val states = listOf(SessionCharacterParticipation(card.id, setOf("synthetic-person")))
+        val done = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        withContext(Dispatchers.Main) {
+            vm.updateSessionConfig(
+                modelId = baseline.modelId, imageModelId = baseline.imageModelId,
+                novelAiImageModel = baseline.novelAiImageModel,
+                novelAiNaturalLanguageMode = baseline.novelAiNaturalLanguageMode,
+                automaticImageGenerationEnabled = baseline.automaticImageGenerationEnabled,
+                formatCardId = baseline.formatCardId, replyLength = baseline.replyLength,
+                replyLanguage = baseline.replyLanguage, supplementarySetting = baseline.supplementarySetting,
+                playerName = baseline.playerName, playerSetting = baseline.playerSetting,
+                chatBackground = baseline.chatBackground, audiobookModeEnabled = baseline.audiobookModeEnabled,
+                voiceLanguage = baseline.voiceLanguage, longTermMemoryEnabled = baseline.longTermMemoryEnabled,
+                longTermMemory = baseline.longTermMemory, extraWorldBookIds = baseline.extraWorldBookIds,
+                baseline = baseline, characterParticipation = states, onComplete = { done.complete(it) }
+            )
+        }
+        withTimeout(10_000) { done.await() }.getOrThrow()
+        assertEquals(states, app.chatRepository.getSession(source.id)!!.characterParticipation)
+    }
+
+    private suspend fun editor(id: String): ChatViewModel {
+        val vm = withContext(Dispatchers.Main) {
+            val store = ViewModelStore().also { stores += it }
+            val factory = object : ViewModelProvider.Factory {
+                @Suppress("UNCHECKED_CAST")
+                override fun <T : ViewModel> create(modelClass: Class<T>): T = ChatViewModel(id) as T
+            }
+            ViewModelProvider(store, factory)[ChatViewModel::class.java]
+        }
+        withTimeout(30_000) { vm.session.first { it?.id == id } }
+        return vm
     }
 
     private suspend fun card(): CharacterCard = CharacterCard.create("synthetic-rebind-card")

@@ -4056,6 +4056,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         longTermMemory: String,
         extraWorldBookIds: List<String> = _session.value?.extraWorldBookIds ?: emptyList(),
         baseline: ChatSession? = null,
+        characterParticipation: List<com.example.chatbar.data.local.entity.SessionCharacterParticipation>? = null,
         onComplete: (Result<Unit>) -> Unit = {}
     ) {
         viewModelScope.launch {
@@ -4077,6 +4078,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     playerName = playerName?.takeIf { it.isNotBlank() },
                     playerSetting = playerSetting?.takeIf { it.isNotBlank() },
                     chatBackground = chatBackground?.takeIf { it.isNotBlank() },
+                    characterParticipation = characterParticipation ?: (baseline ?: s).characterParticipation,
                     audiobookModeEnabled = audiobookModeEnabled,
                     voiceLanguage = voiceLanguage?.trim()?.takeIf { it.isNotBlank() },
                     longTermMemoryEnabled = longTermMemoryEnabled,
