@@ -825,12 +825,7 @@ class ImagePromptToolViewModel : ViewModel() {
         val snapshot = _uiState.value
         val source = snapshot.imageImport.source ?: return
         if (snapshot.isBusy) return
-        val model = snapshot.models.firstOrNull { it.id == snapshot.selectedModelId }
-        if (model == null || !snapshot.modelUsable) {
-            _uiState.update { it.copy(error = snapshot.modelErrors.firstOrNull() ?: "生图辅助模型/API Key 未配置") }
-            return
-        }
-        val draft = snapshot.draft
+        val draft = repository.draft.value ?: snapshot.draft
         val targetModel = novelAiDesignTargetModel(draft)
         designJob = viewModelScope.launch {
             _uiState.update {
@@ -845,6 +840,11 @@ class ImagePromptToolViewModel : ViewModel() {
                 )
             }
             try {
+                // Resolve at operation start as well: UI collection can lag a completed save.
+                val configuration = modelResolver.configuration()
+                val model = configuration.imageDesignModel(draft.aiDesignModelId)
+                    ?: error("Prompt 设计模型不可用，请在 AI 设计设置中重新选择")
+                require(model.hasConfiguredAuthentication(configuration.settings)) { "生图辅助模型/API Key 未配置" }
                 val playerName = settingsRepository.getPlayerSetting().playerName
                 if (confirmedScene == null) {
                     val imageBase64 = withContext(Dispatchers.IO) { ImageFileEncoder.encodeToJpegBase64(source.path) }
@@ -2204,11 +2204,12 @@ class ImagePromptToolViewModel : ViewModel() {
             settingsRepository.initialize()
             characterRepository.initialize()
             combine(
-                settingsRepository.appSettings,
+                modelResolver.observeConfiguration(),
                 repository.draft,
                 characterRepository.characters
-            ) { settings, draft, cards -> Triple(settings, draft, cards) }
-                .collect { (settings, draft, cards) ->
+            ) { configuration, draft, cards -> Triple(configuration, draft, cards) }
+                .collect { (configuration, draft, cards) ->
+                val settings = configuration.settings
                 if (draft != null && draft.followDefaultNovelAiImageModel) {
                     val currentCardDefault = draft.importedCharacterCardId
                         ?.let { cardId -> cards.firstOrNull { it.id == cardId } }
@@ -2238,14 +2239,9 @@ class ImagePromptToolViewModel : ViewModel() {
                         repository.flushLatestDraft()
                     }
                 }
-                val models = modelResolver.availableChatModels(settings)
-                val defaultModel = modelResolver.defaultImageModel(settings)
+                val models = configuration.chatModels
                 val explicitModelId = draft?.aiDesignModelId
-                val selectedModel = if (explicitModelId == null) {
-                    defaultModel
-                } else {
-                    models.firstOrNull { it.id == explicitModelId }
-                }
+                val selectedModel = configuration.imageDesignModel(explicitModelId)
                 val errors = buildList {
                     if (explicitModelId != null && selectedModel == null) {
                         add("已选择的生图辅助模型不可用，请在 AI 设计设置中重新选择")

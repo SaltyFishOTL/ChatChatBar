@@ -114,14 +114,14 @@ class NovelAiDesignViewModel : ViewModel() {
 
     private fun observeDesignConfiguration() {
         viewModelScope.launch {
-            combine(studioRepository.draft, settingsRepository.appSettings) { draft, settings ->
-                draft to settings
-            }.collect { (storedDraft, settings) ->
+            combine(studioRepository.draft, modelResolver.observeConfiguration()) { draft, configuration ->
+                draft to configuration
+            }.collect { (storedDraft, configuration) ->
                 val draft = storedDraft ?: return@collect
-                val models = modelResolver.availableChatModels(settings)
-                val defaultModel = modelResolver.defaultImageModel(settings)
-                val selectedId = draft.aiDesignModelId ?: defaultModel?.id
-                val selectedModel = models.firstOrNull { it.id == selectedId }
+                val settings = configuration.settings
+                val models = configuration.chatModels
+                val selectedModel = configuration.imageDesignModel(draft.aiDesignModelId)
+                val selectedId = draft.aiDesignModelId ?: selectedModel?.id
                 val modelError = when {
                     draft.aiDesignModelId != null && selectedModel == null -> "已选择的 Prompt 设计模型不可用，请在设置中重新选择"
                     selectedModel == null -> "未配置可用的生图辅助模型"
@@ -456,9 +456,13 @@ class NovelAiDesignViewModel : ViewModel() {
     private suspend fun runTurn(
         conversationId: String,
         turnId: String,
-        model: ModelConfig
+        selectedModel: ModelConfig
     ) {
         try {
+            val configuration = modelResolver.configuration()
+            val model = configuration.imageDesignModel(selectedModel.id)
+                ?: error("Prompt 设计模型不可用，请在 AI 设计设置中重新选择")
+            require(model.hasConfiguredAuthentication(configuration.settings)) { "Prompt 设计模型/API Key 未配置" }
             val conversation = conversationRepository.conversations.value
                 .firstOrNull { it.id == conversationId }
                 ?: error("AI 设计会话不存在")
@@ -583,15 +587,22 @@ class NovelAiDesignViewModel : ViewModel() {
     }
 
     fun selectDesignModel(model: ModelConfig) {
+        val draft = studioRepository.stageDraft { it.copy(aiDesignModelId = model.id) }
         _uiState.update {
             it.copy(
                 selectedDesignModelId = model.id,
-                draft = it.draft.copy(aiDesignModelId = model.id),
+                draft = draft,
                 modelError = null
             )
         }
         app.applicationScope.launch {
-            studioRepository.updateDraft { draft -> draft.copy(aiDesignModelId = model.id) }
+            try {
+                studioRepository.flushLatestDraft()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (error: Exception) {
+                _uiState.update { it.copy(error = "保存设计模型失败：${error.message ?: "未知错误"}") }
+            }
         }
     }
 

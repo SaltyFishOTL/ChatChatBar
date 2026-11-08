@@ -109,6 +109,14 @@ class FormatCardEditViewModel(
 
     init {
         loadFormatCard()
+        viewModelScope.launch {
+            ChatBarApp.instance.effectiveModelResolver.observeConfiguration().collect { configuration ->
+                autoFillModels = configuration.chatModels
+                autoFillDefaultModelName = configuration.defaultChatModel?.let {
+                    it.displayName.ifBlank { it.modelName }
+                }.orEmpty()
+            }
+        }
     }
 
     val canAutoFill: Boolean
@@ -133,10 +141,6 @@ class FormatCardEditViewModel(
             try {
                 val app = ChatBarApp.instance
                 autoFillCharacters = app.characterRepository.getAll()
-                autoFillModels = app.effectiveModelResolver.availableChatModels()
-                autoFillDefaultModelName = app.effectiveModelResolver.defaultChatModel()?.let {
-                    it.displayName.ifBlank { it.modelName }
-                }.orEmpty()
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (error: Exception) {

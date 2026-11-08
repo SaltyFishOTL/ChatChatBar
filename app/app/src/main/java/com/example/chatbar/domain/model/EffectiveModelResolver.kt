@@ -7,6 +7,11 @@ import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import java.net.URI
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.emitAll
+import kotlinx.coroutines.flow.flow
 
 data class ModelConfigurationStatus(
     val isUsable: Boolean,
@@ -19,17 +24,47 @@ class EffectiveModelResolver(
     private val settings: SettingsRepository,
     private val presets: PresetModelCatalogService
 ) {
+    /** All long-lived model consumers subscribe here instead of caching one-off reads. */
+    fun observeConfiguration(): Flow<EffectiveModelConfiguration> = flow {
+        models.initialize()
+        settings.initialize()
+        emitAll(combine(models.models, models.embeddingModel, settings.appSettings) { stored, embedding, appSettings ->
+            configuration(stored, embedding, appSettings)
+        }.distinctUntilChanged())
+    }
+
+    suspend fun configuration(): EffectiveModelConfiguration = configuration(settings.getAppSettings())
+
+    suspend fun configuration(appSettings: AppSettings): EffectiveModelConfiguration = configuration(
+        models.getAllModels(), models.getEmbeddingModel(), appSettings
+    )
+
+    private fun configuration(
+        stored: List<ModelConfig>,
+        embedding: EmbeddingConfig?,
+        appSettings: AppSettings
+    ): EffectiveModelConfiguration {
+        val configured = stored.filter { it.baseUrl.isNotBlank() && PresetModelPolicy.isConfigured(it.modelName) }
+            .distinctBy(ModelConfig::id).map { it.withEffectiveApiKey(appSettings) }
+        return EffectiveModelConfiguration(
+            settings = appSettings,
+            chatModels = configured.filter { it.selectableForChat }.ifEmpty { presetChatModels(appSettings) },
+            auxiliaryTextModels = configured,
+            multimodalModels = configured.filter { it.isMultimodal },
+            embeddingModel = effectiveEmbeddingModel(embedding, appSettings)
+        )
+    }
+
     suspend fun availableChatModels(): List<ModelConfig> = availableChatModels(settings.getAppSettings())
 
     suspend fun availableChatModels(appSettings: AppSettings): List<ModelConfig> =
-        repositoryChatModels(appSettings).ifEmpty { presetChatModels(appSettings) }
+        configuration(appSettings).chatModels
 
     suspend fun resolveChatModel(
         requestedId: String?,
         appSettings: AppSettings
     ): ModelConfig? {
-        val available = availableChatModels(appSettings)
-        return selectChatModel(requestedId, appSettings, available)
+        return configuration(appSettings).chatModel(requestedId)
     }
 
     suspend fun resolveChatModel(requestedId: String?): ModelConfig? =
@@ -38,15 +73,13 @@ class EffectiveModelResolver(
     suspend fun defaultChatModel(): ModelConfig? = defaultChatModel(settings.getAppSettings())
 
     suspend fun defaultChatModel(appSettings: AppSettings): ModelConfig? =
-        defaultChatModel(appSettings, availableChatModels(appSettings))
+        configuration(appSettings).defaultChatModel
 
     suspend fun resolveImageModel(
         requestedId: String?,
         appSettings: AppSettings
     ): ModelConfig? {
-        val available = availableChatModels(appSettings)
-        return available.firstOrNull { it.id == requestedId }
-            ?: defaultImageModel(appSettings, available)
+        return configuration(appSettings).imageModel(requestedId)
     }
 
     suspend fun resolveImageModel(requestedId: String?): ModelConfig? =
@@ -55,15 +88,14 @@ class EffectiveModelResolver(
     suspend fun defaultImageModel(): ModelConfig? = defaultImageModel(settings.getAppSettings())
 
     suspend fun defaultImageModel(appSettings: AppSettings): ModelConfig? =
-        defaultImageModel(appSettings, availableChatModels(appSettings))
+        configuration(appSettings).defaultImageModel
 
     suspend fun resolveFormatRepairModel(
         requestedId: String?,
         appSettings: AppSettings
     ): ModelConfig? {
-        val available = availableAuxiliaryTextModels(appSettings)
-        val default = if (requestedId.isNullOrBlank()) defaultChatModel(appSettings) else null
-        return selectFormatRepairModel(requestedId, available, default)
+        val configuration = configuration(appSettings)
+        return selectFormatRepairModel(requestedId, configuration.auxiliaryTextModels, configuration.defaultChatModel)
     }
 
     suspend fun resolveFormatRepairModel(requestedId: String?): ModelConfig? =
@@ -82,13 +114,7 @@ class EffectiveModelResolver(
 
     /** 所有已配置文本模型，包括不在普通对话选择器显示的模型。 */
     suspend fun availableAuxiliaryTextModels(appSettings: AppSettings): List<ModelConfig> {
-        val repositoryModels = models.getAllModels()
-        return repositoryModels
-            .asSequence()
-            .filter { it.baseUrl.isNotBlank() && PresetModelPolicy.isConfigured(it.modelName) }
-            .distinctBy(ModelConfig::id)
-            .map { it.withEffectiveApiKey(appSettings) }
-            .toList()
+        return configuration(appSettings).auxiliaryTextModels
     }
 
     suspend fun availableAuxiliaryTextModels(): List<ModelConfig> =
@@ -108,7 +134,10 @@ class EffectiveModelResolver(
     suspend fun embeddingModel(): EmbeddingConfig? = embeddingModel(settings.getAppSettings())
 
     suspend fun embeddingModel(appSettings: AppSettings): EmbeddingConfig? =
-        (models.getEmbeddingModel()?.withEffectiveApiKey(appSettings)
+        effectiveEmbeddingModel(models.getEmbeddingModel(), appSettings)
+
+    private fun effectiveEmbeddingModel(stored: EmbeddingConfig?, appSettings: AppSettings): EmbeddingConfig? =
+        (stored?.withEffectiveApiKey(appSettings)
             ?: presets.catalog.embeddingModel?.takeIf { PresetModelPolicy.isConfigured(it.modelName) }?.let {
                 EmbeddingConfig(
                     id = presetRef(it.modelKey),
@@ -129,37 +158,15 @@ class EffectiveModelResolver(
         requestedChatModelId: String?,
         appSettings: AppSettings
     ): ModelConfigurationStatus {
-        val chatModel = resolveChatModel(requestedChatModelId, appSettings)
-        val embedding = embeddingModel(appSettings)
-        return modelConfigurationStatus(
-            default = chatModel,
-            embedding = embedding,
-            allowCleartextModelApi = appSettings.allowCleartextModelApi
-        )
+        return configuration(appSettings).status(requestedChatModelId)
     }
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
         appSettings.siliconFlowApiKey.trim()
 
-    private suspend fun repositoryChatModels(appSettings: AppSettings): List<ModelConfig> =
-        models.getAllModels()
-            .asSequence()
-            .filter { it.selectableForChat }
-            .filter { it.baseUrl.isNotBlank() && PresetModelPolicy.isConfigured(it.modelName) }
-            .map { it.withEffectiveApiKey(appSettings) }
-            .toList()
-
     private fun presetChatModels(appSettings: AppSettings): List<ModelConfig> {
         val configured = presets.catalog.chatModels.filter { it.selectableForChat && isConfigured(it) }
         return configured.map { it.toModelConfig(appSettings, presets.catalog.chatModels.filter(::isConfigured)) }
-    }
-
-    private fun defaultChatModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
-        return selectDefaultChatModel(appSettings, available)
-    }
-
-    private fun defaultImageModel(appSettings: AppSettings, available: List<ModelConfig>): ModelConfig? {
-        return selectDefaultImageModel(appSettings, available)
     }
 
     private fun PresetChatModel.toModelConfig(

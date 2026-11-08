@@ -14,6 +14,9 @@ import com.example.chatbar.data.local.entity.ParamValue
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.SharingStarted
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -29,8 +32,10 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
     private val _modelConfig = MutableStateFlow<ModelConfig?>(null)
     val modelConfig: StateFlow<ModelConfig?> = _modelConfig.asStateFlow()
 
-    private val _availableMultimodalModels = MutableStateFlow<List<ModelConfig>>(emptyList())
-    val availableMultimodalModels: StateFlow<List<ModelConfig>> = _availableMultimodalModels.asStateFlow()
+    val availableMultimodalModels: StateFlow<List<ModelConfig>> =
+        ChatBarApp.instance.effectiveModelResolver.observeConfiguration()
+            .map { configuration -> configuration.multimodalModels.filter { it.id != modelId } }
+            .stateIn(viewModelScope, SharingStarted.Eagerly, emptyList())
 
     // 编辑器表单状态
     var displayName by mutableStateOf("")
@@ -123,10 +128,6 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
 
     private fun loadModelConfig() {
         viewModelScope.launch {
-            // 加载所有的多模态模型（用于在非多模态模型下选择关联的视觉模型）
-            val all = modelRepository.getAllModels()
-            _availableMultimodalModels.value = all.filter { it.isMultimodal && it.id != modelId }
-
             if (modelId != null) {
                 val config = modelRepository.getModel(modelId)
                 _modelConfig.value = config

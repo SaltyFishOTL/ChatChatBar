@@ -163,6 +163,16 @@ class ManageViewModel : ViewModel() {
     val modelPresets: StateFlow<List<com.example.chatbar.data.local.entity.PresetEntry>> = _modelPresets
 
     init {
+        viewModelScope.launch {
+            modelResolver.observeConfiguration().collect { configuration ->
+                _effectiveChatModels.value = configuration.chatModels
+                _auxiliaryTextModels.value = configuration.auxiliaryTextModels
+                val status = configuration.status()
+                _modelConfigurationErrors.value = status.errors
+                _modelConfigurationWarnings.value = status.warnings
+                _isModelConfigurationUsable.value = status.isUsable
+            }
+        }
         refreshAll()
     }
 
@@ -180,7 +190,6 @@ class ManageViewModel : ViewModel() {
             _worldBookPresets.value = presetCatalog.entries(com.example.chatbar.data.local.entity.PresetType.WORLD_BOOK)
             _modelPresets.value = presetModelCatalog.entries()
             refreshDraftsNow()
-            refreshEffectiveModels()
             refreshCommunityCharacterUpdates()
             refreshMomentsReliability()
             refreshMomentSchedulePreview()
@@ -204,16 +213,6 @@ class ManageViewModel : ViewModel() {
             editorDraftAssetService.deleteDraft(draft.draftSessionId)
             refreshDraftsNow()
         }
-    }
-
-    private suspend fun refreshEffectiveModels() {
-        val settings = settingsRepository.getAppSettings()
-        _effectiveChatModels.value = modelResolver.availableChatModels(settings)
-        _auxiliaryTextModels.value = modelResolver.availableAuxiliaryTextModels(settings)
-        val status = modelResolver.status(settings)
-        _modelConfigurationErrors.value = status.errors
-        _modelConfigurationWarnings.value = status.warnings
-        _isModelConfigurationUsable.value = status.isUsable
     }
 
     // ===== 角色卡 CRUD =====
@@ -517,7 +516,6 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
             settingsRepository.saveAppSettings(current.copy(defaultModelId = id, presetDefaultModelKey = null))
-            refreshEffectiveModels()
         }
     }
 
@@ -525,7 +523,6 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
             settingsRepository.saveAppSettings(current.copy(defaultImageModelId = id))
-            refreshEffectiveModels()
         }
     }
 
@@ -546,7 +543,6 @@ class ManageViewModel : ViewModel() {
                         )
                     )
                 }
-                refreshEffectiveModels()
             }.fold(
                 onSuccess = { onDone(null) },
                 onFailure = { onDone(it.message ?: "导入失败") }
@@ -571,14 +567,12 @@ class ManageViewModel : ViewModel() {
     fun deleteModelConfig(id: String) {
         viewModelScope.launch {
             modelRepository.deleteModel(id)
-            refreshEffectiveModels()
         }
     }
 
     fun duplicateModelConfig(id: String, onDone: (String) -> Unit = {}) {
         viewModelScope.launch {
             val copy = modelRepository.duplicateModel(id)
-            refreshEffectiveModels()
             onDone(copy.id)
         }
     }
@@ -589,7 +583,6 @@ class ManageViewModel : ViewModel() {
 
     suspend fun importModelTemplate(data: com.example.chatbar.domain.card.ModelTemplatePackage): String {
         val model = modelTemplateTransfers.importNew(data)
-        refreshEffectiveModels()
         return model.id
     }
 
@@ -599,14 +592,12 @@ class ManageViewModel : ViewModel() {
     fun deleteEmbeddingConfig(id: String) {
         viewModelScope.launch {
             modelRepository.deleteEmbeddingModel()
-            refreshEffectiveModels()
         }
     }
 
     fun saveEmbeddingConfig(config: EmbeddingConfig) {
         viewModelScope.launch {
             modelRepository.saveEmbeddingModel(config)
-            refreshEffectiveModels()
         }
     }
 
@@ -642,7 +633,6 @@ class ManageViewModel : ViewModel() {
         if (momentFrequencyChanged) {
             momentRepository.deletePendingFutureTasks(System.currentTimeMillis())
         }
-        refreshEffectiveModels()
         refreshMomentsReliability()
         if (settings.momentsEnabled) {
             ChatBarApp.instance.momentScheduler.kick("settings")
@@ -825,7 +815,6 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch {
             val current = settingsRepository.getAppSettings()
             settingsRepository.saveAppSettings(current.copy(modelConfigurationMode = mode.normalized()))
-            refreshEffectiveModels()
         }
     }
 
@@ -856,7 +845,6 @@ class ManageViewModel : ViewModel() {
             val current = settingsRepository.getAppSettings()
             settingsRepository.saveAppSettings(current.copy(siliconFlowApiKey = apiKey.trim()))
             _apiTestStatus.value = "API Key 已保存"
-            refreshEffectiveModels()
         }
     }
 

@@ -174,7 +174,7 @@ class WorldBookEditViewModel(
     init {
         load()
         loadCharacterCards()
-        refreshAiModels()
+        observeAiModels()
     }
 
     private fun loadCharacterCards() {
@@ -188,16 +188,21 @@ class WorldBookEditViewModel(
     val emptyContentCount: Int
         get() = entries.count { it.content.isBlank() }
 
-    private fun refreshAiModels() {
+    private fun observeAiModels() {
+        viewModelScope.launch {
+            modelResolver.observeConfiguration().collect { configuration ->
+                _aiModels.value = configuration.chatModels
+                _aiDefaultModelId.value = configuration.defaultChatModel?.id
+            }
+        }
+        loadAiPreferences()
+    }
+
+    private fun loadAiPreferences() {
         viewModelScope.launch {
             runCatching {
                 val settings = settingsRepository.getAppSettings()
-                _aiModels.value = modelResolver.availableChatModels(settings)
-                _aiDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
                 _aiResearchSourceMode.value = settings.worldBookAiResearchSourceMode
-            }.onFailure {
-                _aiModels.value = emptyList()
-                _aiDefaultModelId.value = null
             }
         }
     }
@@ -234,7 +239,6 @@ class WorldBookEditViewModel(
         val selectedModel = modelId?.let { id -> _aiModels.value.firstOrNull { it.id == id } }
         if (modelId != null && selectedModel == null) {
             _createAiState.value = _createAiState.value.copy(error = "所选模型不可用，请重新选择")
-            refreshAiModels()
             return
         }
         val book = currentStableBook()
@@ -373,7 +377,6 @@ class WorldBookEditViewModel(
         val selectedModel = modelId?.let { id -> _aiModels.value.firstOrNull { it.id == id } }
         if (modelId != null && selectedModel == null) {
             _fillAiState.value = _fillAiState.value.copy(error = "所选模型不可用，请重新选择")
-            refreshAiModels()
             return
         }
         val book = currentStableBook()
