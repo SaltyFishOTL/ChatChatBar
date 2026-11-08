@@ -107,25 +107,44 @@ class PromptAssemblerCharacterModeTest {
     }
 
     @Test fun generatedSectionsIncludeConfiguredContentWithoutNumberedSeparators() {
-        val prompt = assembler.assembleSystemPrompt(
-            characterCard = card(basicSetting = "共同世界观"),
-            playerName = "玩家",
-            playerSetting = "玩家资料",
-            supplementarySetting = "临时规则",
-            longTermMemory = "长期内容",
-            worldBookPrompt = "世界内容"
+        val configuredContent = listOf(
+            "1. 合成世界观",
+            "2. 合成玩家资料",
+            "3.1. 合成临时规则",
+            "4. 合成长期内容",
+            "5. 合成世界书内容"
         )
+        val sectionTitles = listOf(
+            PromptTemplates.SECTION_CHARACTER,
+            PromptTemplates.SECTION_PLAYER,
+            PromptTemplates.SECTION_SUPPLEMENTARY,
+            PromptTemplates.SECTION_LONG_TERM_MEMORY,
+            PromptTemplates.SECTION_WORLD_BOOK,
+            PromptTemplates.SECTION_REPLY,
+            PromptTemplates.SECTION_CORE,
+            PromptTemplates.SECTION_POST_HISTORY
+        )
+        for (mode in listOf<ChatNarrativeMode?>(null) + ChatNarrativeMode.entries) {
+            val prompt = assembler.assembleSystemPrompt(
+                characterCard = card(basicSetting = configuredContent[0]),
+                playerName = "玩家",
+                playerSetting = configuredContent[1],
+                supplementarySetting = configuredContent[2],
+                longTermMemory = configuredContent[3],
+                worldBookPrompt = configuredContent[4],
+                narrativeMode = mode
+            )
 
-        listOf(
-            "共同世界观",
-            "玩家资料",
-            "临时规则",
-            "长期内容",
-            "世界内容"
-        ).forEach { assertTrue(prompt.contains(it)) }
-        assertFalse(prompt.contains("=================================================="))
-        assertFalse(Regex("(?m)^\\d+(?:\\.\\d+)?\\. ").containsMatchIn(prompt))
-        assertFalse(prompt.contains("(World Book)"))
+            configuredContent.forEach { assertTrue(prompt.contains(it)) }
+            // Editable section bodies, including narrative-mode text, may contain numbered lists.
+            // Validate the generated heading format without banning numbering in their content.
+            val headings = sectionTitles + if (mode == null) emptyList() else listOf(PromptTemplates.SECTION_NARRATIVE_MODE)
+            headings.forEach { title ->
+                assertTrue("Missing unnumbered section heading: $title", "【$title】" in prompt.lines())
+            }
+            assertFalse(prompt.contains("=================================================="))
+            assertFalse(prompt.contains("(World Book)"))
+        }
     }
 
     @Test fun replacesPlayerAndCharacterNamePlaceholdersGlobally() {
