@@ -9,6 +9,7 @@ import kotlin.uuid.Uuid
  * 存档槽位 - 保存会话完整状态快照
  */
 @Serializable
+@OptIn(kotlinx.serialization.ExperimentalSerializationApi::class)
 data class SaveSlot(
     val schemaVersion: Int = 4,
     val id: String,
@@ -57,7 +58,9 @@ data class SaveSlot(
     /** v8：大型正文与媒体所在的流式包。null 表示旧版内联 JSON。 */
     val packageRef: SaveSlotPackageRef? = null,
     val createdAt: Long,
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val characterParticipation: List<SessionCharacterParticipation> = emptyList(),
+    @kotlinx.serialization.EncodeDefault(kotlinx.serialization.EncodeDefault.Mode.NEVER)
     val autoPauseAbsentPeople: Boolean = false
 ) {
     companion object {

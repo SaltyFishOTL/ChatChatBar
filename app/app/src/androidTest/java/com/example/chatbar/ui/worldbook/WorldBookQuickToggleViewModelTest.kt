@@ -133,7 +133,7 @@ class WorldBookQuickToggleViewModelTest {
         val book = WorldBook.create("合成快捷开关测试").copy(entries = listOf(entry()))
         ids.add(book.id)
         app.worldBookRepository.save(book)
-        return book
+        return requireNotNull(app.worldBookRepository.getById(book.id))
     }
 
     private suspend fun editor(id: String?): WorldBookEditViewModel = withContext(Dispatchers.Main) {

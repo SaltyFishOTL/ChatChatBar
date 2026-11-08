@@ -60,6 +60,7 @@ data class CharacterCard(
     val createdAt: Long,
     val updatedAt: Long,
     /** Original chat images available to new and existing conversations; default remains chatBackground. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
     val chatBackgroundImages: List<String> = emptyList()
 ) {
     val effectiveBotName: String

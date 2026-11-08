@@ -12,6 +12,8 @@ import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
@@ -111,6 +113,22 @@ class SessionCharacterRebindTest {
         }
         withTimeout(10_000) { done.await() }.getOrThrow()
         assertEquals(states, app.chatRepository.getSession(source.id)!!.characterParticipation)
+    }
+
+    @Test fun defaultGalleryFieldDoesNotInvalidateLegacyDraftFingerprint() {
+        val base = CharacterCard.create("synthetic-legacy-draft").copy(ragIndexStatus = "", updatedAt = 0L)
+        val codec = app.jsonFileStorage.json
+        val currentShape = codec.encodeToJsonElement(CharacterCard.serializer(), base).jsonObject
+        val legacyShape = JsonObject(currentShape.filterKeys { it != "chatBackgroundImages" })
+        val legacyBytes = codec.encodeToString(JsonObject.serializer(), legacyShape).toByteArray(Charsets.UTF_8)
+        val legacyHash = java.security.MessageDigest.getInstance("SHA-256").digest(legacyBytes)
+            .joinToString("") { "%02x".format(it) }
+        val repository = app.editorDraftRepository
+        val draft = repository.characterDraft(base.id, "synthetic-legacy-session",
+            base.copy(greeting = "synthetic-unsaved-text"), base, emptyList(), emptyList(), emptyList())
+            .copy(baseHash = legacyHash)
+        assertFalse(repository.isChanged(base, draft))
+        assertTrue(repository.isChanged(base.copy(chatBackgroundImages = listOf("synthetic-background.png")), draft))
     }
 
     private suspend fun editor(id: String): ChatViewModel {
