@@ -9,7 +9,7 @@ Separate model selection, request construction, transport, and output parsing. A
 
 ## First Read
 
-- Model selection and fallback: domain/model/EffectiveModelResolver.kt
+- Model selection and reactive configuration: domain/model/EffectiveModelResolver.kt and EffectiveModelConfiguration.kt
 - Chat model availability and send gating: ui/chat/ChatViewModel.kt
 - Shared HTTP client, proxy, cleartext policy, Authorization helper: domain/ProxyAwareClient.kt
 - Chat/text request body, SSE parsing, retries, thinking fields: domain/chat/StreamingChatService.kt
@@ -30,6 +30,8 @@ Use chatbar-message-format-repair for repair state behavior, chatbar-image-gener
 
 ## Resolution Rules
 
+- `EffectiveModelResolver.observeConfiguration()` is the common model subscription for selectors and availability. It combines repository model/embedding updates and settings after initialization; `configuration()` gives request-start snapshots through the same resolution rules. UI consumers must not keep one-shot model lists or depend on unrelated settings/draft changes. `EffectiveModelConfiguration.imageDesignModel` preserves explicit stale selections as errors; ordinary chat/image fallback behavior remains separate.
+- `ModelRepository` serializes initialization and all mutations under `stateMutex`; mutations complete persistence and publication together through `mutate`. `getModel` and list reads use the published cache. Preset batch failure republishes completed writes; mutation code must not recursively call another mutation under the same mutex. Regression: `EffectiveModelConfigurationFlowTest`, `ModelRepositoryStateTest`.
 - Distinguish unset selection from explicitly stale selection.
 - Apply fallback only where feature policy defines unset as follow-default.
 - Keep selected custom, preset, embedding, and auxiliary model sources distinct. No dedicated retrieval model exists: ChatViewModel passes the current chat model to RetrievalPlanner; character/world-book research uses the operation's selected generation model.

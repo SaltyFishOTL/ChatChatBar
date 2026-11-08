@@ -13,6 +13,8 @@ import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
@@ -36,16 +38,23 @@ class ModelRepository(private val storage: JsonFileStorage) {
     private val _embeddingModel = MutableStateFlow<EmbeddingConfig?>(null)
     val embeddingModel: Flow<EmbeddingConfig?> = _embeddingModel.asStateFlow()
 
-    private val initializationMutex = Mutex()
+    private val stateMutex = Mutex()
     private var initialized = false
 
-    suspend fun initialize() = initializationMutex.withLock {
+    suspend fun initialize() = stateMutex.withLock {
         if (initialized) return@withLock
         migrateLegacyPlanningModel()
         refreshModelCache()
         refreshEmbeddingCache()
         refreshEmbeddingModelCache()
         initialized = true
+    }
+
+    // Serialize persistence and publication. Cancellation after a successful disk write
+    // must not leave selectors and request resolution on an older in-memory version.
+    private suspend fun <T> mutate(block: suspend () -> T): T {
+        initialize()
+        return stateMutex.withLock { withContext(NonCancellable) { block() } }
     }
 
     private suspend fun refreshModelCache() {
@@ -100,17 +109,16 @@ class ModelRepository(private val storage: JsonFileStorage) {
 
     suspend fun getModel(id: String): ModelConfig? {
         initialize()
-        return storage.loadEntity(MODEL_TYPE, id, ModelConfig.serializer())
+        return _models.value.firstOrNull { it.id == id }
     }
 
-    suspend fun saveModel(model: ModelConfig) {
+    suspend fun saveModel(model: ModelConfig) = mutate {
         storage.saveEntity(MODEL_TYPE, model.id, model, ModelConfig.serializer())
         refreshModelCache()
     }
 
-    suspend fun duplicateModel(id: String): ModelConfig {
-        initialize()
-        val source = getModel(id) ?: error("Model not found")
+    suspend fun duplicateModel(id: String): ModelConfig = mutate {
+        val source = _models.value.firstOrNull { it.id == id } ?: error("Model not found")
         val copy = source.copy(
             id = UUID.randomUUID().toString(),
             displayName = NamePolicy.nextCopyName(source.displayName, _models.value.map { it.displayName }),
@@ -118,8 +126,9 @@ class ModelRepository(private val storage: JsonFileStorage) {
             sourcePresetVersion = null,
             createdAt = System.currentTimeMillis()
         )
-        saveModel(copy)
-        return copy
+        storage.saveEntity(MODEL_TYPE, copy.id, copy, ModelConfig.serializer())
+        refreshModelCache()
+        copy
     }
 
     suspend fun ensurePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
@@ -140,29 +149,32 @@ class ModelRepository(private val storage: JsonFileStorage) {
         catalog: PresetModelCatalog,
         catalogVersion: Int,
         overwriteExisting: Boolean
-    ): List<ModelConfig> {
-        initialize()
+    ): List<ModelConfig> = mutate {
         val current = _models.value
         val saved = mutableListOf<ModelConfig>()
-        catalog.chatModels.forEach { preset ->
-            val stableId = PRESET_MODEL_ID_PREFIX + preset.modelKey
-            val existing = current.firstOrNull { it.sourcePresetKey == preset.modelKey || it.id == stableId }
-            val next = if (existing != null && !overwriteExisting) {
-                existing
-            } else {
-                preset.toModelConfig(
-                    catalog = catalog,
-                    catalogVersion = catalogVersion,
-                    existing = existing
-                )
+        try {
+            catalog.chatModels.forEach { preset ->
+                val stableId = PRESET_MODEL_ID_PREFIX + preset.modelKey
+                val existing = current.firstOrNull { it.sourcePresetKey == preset.modelKey || it.id == stableId }
+                val next = if (existing != null && !overwriteExisting) {
+                    existing
+                } else {
+                    preset.toModelConfig(
+                        catalog = catalog,
+                        catalogVersion = catalogVersion,
+                        existing = existing
+                    )
+                }
+                if (existing == null || next != existing) {
+                    storage.saveEntity(MODEL_TYPE, next.id, next, ModelConfig.serializer())
+                }
+                saved.add(next)
             }
-            if (existing == null || next != existing) {
-                storage.saveEntity(MODEL_TYPE, next.id, next, ModelConfig.serializer())
-            }
-            saved.add(next)
+        } finally {
+            // A partially written preset batch still has to publish its durable state.
+            refreshModelCache()
         }
-        refreshModelCache()
-        return saved
+        saved
     }
 
     private fun PresetChatModel.toModelConfig(
@@ -192,13 +204,18 @@ class ModelRepository(private val storage: JsonFileStorage) {
     private suspend fun upsertPresetEmbeddingModel(
         catalog: PresetModelCatalog,
         overwriteExisting: Boolean
-    ) {
-        initialize()
+    ) = mutate {
         catalog.embeddingModel?.let { preset ->
             val existing = _embeddingModel.value
             if (existing == null || overwriteExisting) {
                 val next = preset.toEmbeddingConfig(catalog, existing)
-                if (next != existing) saveEmbeddingModel(next)
+                if (next != existing) {
+                    storage.saveEntity(
+                        EMBEDDING_SINGLETON_TYPE, EMBEDDING_SINGLETON_ID,
+                        next.copy(id = EMBEDDING_SINGLETON_ID), EmbeddingConfig.serializer()
+                    )
+                    refreshEmbeddingModelCache()
+                }
             }
         }
     }
@@ -215,7 +232,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         dimensions = dimensions
     )
 
-    suspend fun deleteModel(id: String) {
+    suspend fun deleteModel(id: String) = mutate {
         storage.deleteEntity<ModelConfig>(MODEL_TYPE, id)
         refreshModelCache()
     }
@@ -228,15 +245,16 @@ class ModelRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun getEmbedding(id: String): EmbeddingConfig? {
-        return storage.loadEntity(EMBEDDING_TYPE, id, EmbeddingConfig.serializer())
+        initialize()
+        return _embeddings.value.firstOrNull { it.id == id }
     }
 
-    suspend fun saveEmbedding(config: EmbeddingConfig) {
+    suspend fun saveEmbedding(config: EmbeddingConfig) = mutate {
         storage.saveEntity(EMBEDDING_TYPE, config.id, config, EmbeddingConfig.serializer())
         refreshEmbeddingCache()
     }
 
-    suspend fun deleteEmbedding(id: String) {
+    suspend fun deleteEmbedding(id: String) = mutate {
         storage.deleteEntity<EmbeddingConfig>(EMBEDDING_TYPE, id)
         refreshEmbeddingCache()
     }
@@ -246,7 +264,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         return _embeddingModel.value
     }
 
-    suspend fun saveEmbeddingModel(config: EmbeddingConfig) {
+    suspend fun saveEmbeddingModel(config: EmbeddingConfig) = mutate {
         storage.saveEntity(
             EMBEDDING_SINGLETON_TYPE,
             EMBEDDING_SINGLETON_ID,
@@ -256,7 +274,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         refreshEmbeddingModelCache()
     }
 
-    suspend fun deleteEmbeddingModel() {
+    suspend fun deleteEmbeddingModel() = mutate {
         storage.deleteEntity<EmbeddingConfig>(EMBEDDING_SINGLETON_TYPE, EMBEDDING_SINGLETON_ID)
         refreshEmbeddingModelCache()
     }

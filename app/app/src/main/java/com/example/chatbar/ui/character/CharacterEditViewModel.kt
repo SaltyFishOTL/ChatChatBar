@@ -416,7 +416,7 @@ class CharacterEditViewModel(
             formatCardRepository.formatCards.collect { _availableFormatCards.value = it }
         }
         loadCharacterCard()
-        refreshAutoFillModels()
+        observeAutoFillModels()
         loadNovelAiStyleCatalog()
     }
 
@@ -441,17 +441,22 @@ class CharacterEditViewModel(
         defaultImagePromptFillState = defaultImagePromptFillState.undoLastFill()
     }
 
-    private fun refreshAutoFillModels() {
+    private fun observeAutoFillModels() {
+        viewModelScope.launch {
+            modelResolver.observeConfiguration().collect { configuration ->
+                _autoFillModels.value = configuration.chatModels
+                _autoFillDefaultModelId.value = configuration.defaultChatModel?.id
+            }
+        }
+        loadCharacterAiPreferences()
+    }
+
+    private fun loadCharacterAiPreferences() {
         viewModelScope.launch {
             runCatching {
                 val settings = settingsRepository.getAppSettings()
-                _autoFillModels.value = modelResolver.availableChatModels(settings)
-                _autoFillDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
                 _autoFillResearchSourceMode.value = settings.characterAutoFillResearchSourceMode
                 _rewriteResearchSourceMode.value = settings.characterRewriteResearchSourceMode
-            }.onFailure {
-                _autoFillModels.value = emptyList()
-                _autoFillDefaultModelId.value = null
             }
         }
     }
@@ -834,7 +839,6 @@ class CharacterEditViewModel(
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
         if (modelId != null && selectedModel == null) {
             _autoFillState.value = CharacterAutoFillUiState(error = "所选模型不可用，请重新选择")
-            refreshAutoFillModels()
             return
         }
         val selectedModelId = selectedModel?.id
@@ -1789,7 +1793,6 @@ class CharacterEditViewModel(
         val selectedModel = modelId?.let { id -> _autoFillModels.value.firstOrNull { it.id == id } }
         if (modelId != null && selectedModel == null) {
             _rewriteState.value = CharacterRewriteUiState(error = "所选模型不可用，请重新选择")
-            refreshAutoFillModels()
             return
         }
         val currentCard = buildCurrentCard(markDirty = false)

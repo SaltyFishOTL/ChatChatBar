@@ -8,7 +8,6 @@ import com.example.chatbar.data.local.entity.ChatSession
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
-import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.CancellationException
@@ -90,14 +89,8 @@ class HomeViewModel : ViewModel() {
         viewModelScope.launch {
             chatRepository.initialize()
             characterRepository.initialize()
-            ChatBarApp.instance.settingsRepository.initialize()
-            ChatBarApp.instance.modelRepository.initialize()
-            combine(
-                ChatBarApp.instance.settingsRepository.appSettings,
-                ChatBarApp.instance.modelRepository.models,
-                ChatBarApp.instance.modelRepository.embeddingModel
-            ) { settings, _, _ -> settings }.collect { settings ->
-                val status = ChatBarApp.instance.effectiveModelResolver.status(settings)
+            ChatBarApp.instance.effectiveModelResolver.observeConfiguration().collect { configuration ->
+                val status = configuration.status()
                 _modelConfigurationErrors.value = status.errors
                 _modelConfigurationWarnings.value = status.warnings
                 _isModelConfigurationUsable.value = status.isUsable

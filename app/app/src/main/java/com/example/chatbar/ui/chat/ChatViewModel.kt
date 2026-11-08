@@ -790,11 +790,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private fun observeSettingsChanges() {
         viewModelScope.launch {
-            settingsRepository.appSettings.collect { settings ->
+            modelResolver.observeConfiguration().collect { configuration ->
+                val settings = configuration.settings
+                _availableModels.value = configuration.chatModels
+                _effectiveDefaultModelId.value = configuration.defaultChatModel?.id
+                _effectiveDefaultImageModelId.value = configuration.defaultImageModel?.id
+                _effectiveDefaultFormatCardId.value = settings.defaultFormatCardId
                 _chatBubbleFontScale.value = settings.chatBubbleFontScale
                 _assistantSegmentedBubblesEnabled.value = settings.assistantSegmentedBubblesEnabled
                 updateEffectiveAudiobookMode(settings)
-                refreshModelStatus()
+                val status = configuration.status(_session.value?.modelId)
+                _modelConfigurationErrors.value = status.errors
+                _isModelUsable.value = status.isUsable
                 refreshVoiceGenerationAvailability()
             }
         }
@@ -850,18 +857,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun refreshConfigurations() {
         viewModelScope.launch {
             val settings = settingsRepository.getAppSettings()
-            val availableModels = modelResolver.availableChatModels(settings)
-            val currentSession = chatRepository.getSession(sessionId) ?: _session.value
-            _availableModels.value = availableModels
-            _effectiveDefaultModelId.value = modelResolver.resolveChatModel(null, settings)?.id
-            _effectiveDefaultImageModelId.value = modelResolver.resolveImageModel(null, settings)?.id
             val formats = formatCardRepository.getAll()
             _availableFormats.value = formats
             _availableWorldBooks.value = worldBookRepository.getAll()
             _effectiveDefaultFormatCardId.value = settings.defaultFormatCardId
-            val status = modelResolver.status(currentSession?.modelId, settings)
-            _modelConfigurationErrors.value = status.errors
-            _isModelUsable.value = status.isUsable
         }
     }
 
