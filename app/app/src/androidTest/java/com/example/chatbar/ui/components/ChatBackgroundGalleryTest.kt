@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.asAndroidBitmap
+import androidx.compose.ui.graphics.toPixelMap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.unit.dp
@@ -48,6 +49,14 @@ class ChatBackgroundGalleryTest {
                 ChatBackgroundGallery(pictures.map { it.absolutePath }, selected,
                     { selected = it; observed = it }, { removed = it })
             } }
+        }
+        rule.waitUntil(timeoutMillis = 10_000) {
+            val red = rule.onNodeWithContentDescription("聊天背景图 1").captureToImage().toPixelMap()
+            val blue = rule.onNodeWithContentDescription("聊天背景图 2").captureToImage().toPixelMap()
+            val first = red[red.width / 2, red.height / 2]
+            val second = blue[blue.width / 2, blue.height / 2]
+            first.red > 0.5f && first.green < 0.4f && first.blue < 0.4f &&
+                second.blue > 0.5f && second.red < 0.4f && second.green < 0.4f
         }
         rule.onNodeWithText("选择背景 2").performClick()
         rule.onNodeWithText("已选背景 2").assertIsDisplayed()
