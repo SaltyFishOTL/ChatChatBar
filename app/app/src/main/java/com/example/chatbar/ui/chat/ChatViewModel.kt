@@ -2592,14 +2592,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val cachedSession = _session.value ?: return@launch
                 val currentSession = chatRepository.getSession(sessionId) ?: cachedSession
                 _session.value = currentSession
-                val charCard = characterRepository.getById(currentSession.characterCardId)
-                if (charCard == null) {
+                val storedCard = characterRepository.getById(currentSession.characterCardId)
+                if (storedCard == null) {
                     _characterCard.value = null
                     _isArchived.value = true
                     _isResponding.value = false
                     return@launch
                 }
-                _characterCard.value = charCard
+                _characterCard.value = storedCard
+                val charCard = com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.effectiveCard(currentSession, storedCard)
                 val appSettings = settingsRepository.getAppSettings()
                 val activeFormatCard = resolveFormatCardForRequest(
                     sessionFormatCardId = currentSession.formatCardId,
@@ -3027,7 +3028,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         )
                     fun assemblePromptLayers() =
                         promptAssembler.assembleCachePromptLayers(
-                            characterCard = com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.effectiveCard(currentSession, charCard),
+                            characterCard = charCard,
                             playerSetting = activePlayerSetting,
                             playerName = activePlayerName.takeIf { it.isNotBlank() },
                             supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },

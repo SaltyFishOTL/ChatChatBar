@@ -47,6 +47,17 @@ class FunctionalAlignmentPolicyTest {
         assertTrue(full.contains(marker))
     }
 
+    @Test fun replySpeakerRequirementsUseTheSameEffectivePeopleAsTheProfile() {
+        val changed = SessionCharacterParticipationPolicy.change(session, card, first.id, false)
+        val effective = SessionCharacterParticipationPolicy.effectiveCard(changed, card)
+        val tail = com.example.chatbar.domain.prompt.PromptTemplates.replyTailSystemPrompt(
+            replyLength = 900, roleplaySpeakerFormatEnabled = true, characterNames = effective.characters.map { it.name }
+        )
+        assertFalse(tail.contains(first.name))
+        assertTrue(tail.contains(second.name))
+        assertEquals(listOf(first, second), card.characters)
+    }
+
     @Test fun anotherCardDoesNotInheritManualDisabledPeopleAndSwitchingBackKeepsThem() {
         val off = SessionCharacterParticipationPolicy.change(session, card, first.id, false)
         val other = card.copy(id = "other-card")
