@@ -129,6 +129,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
         updateSessionLocked(latest.copy(characterCardId = characterCardId))
     }
 
+    suspend fun rebindSession(
+        expected: ChatSession, characterCardId: String, characterRepository: CharacterRepository
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(expected.id) ?: error("对话已不存在")
+        check(latest == expected) { "对话已变化，请重新检查后再更换角色卡" }
+        check(characterRepository.getById(characterCardId) != null) { "所选角色卡已不存在" }
+        check(latest.characterCardId != characterCardId) { "请选择另一张角色卡" }
+        latest.copy(characterCardId = characterCardId, timedWorldInfo = emptyMap()).also { updateSessionLocked(it) }
+    }
+
     suspend fun saveSessionSettingsDraft(baseline: ChatSession, draft: ChatSession): ChatSession =
         sessionSettingsMutex.withDataAccess {
             val latest = getSession(baseline.id) ?: error("会话已不存在")

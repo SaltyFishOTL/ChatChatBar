@@ -356,6 +356,7 @@ class CharacterEditViewModel(
     var alternateGreetings by mutableStateOf(listOf<String>())
     var avatar by mutableStateOf<String?>(null)
     var chatBackground by mutableStateOf<String?>(null)
+    var chatBackgroundImages by mutableStateOf<List<String>>(emptyList())
     var editMode by mutableStateOf(CharacterEditMode.STRUCTURED)
     var basicSetting by mutableStateOf("")
     var freeformCharacterText by mutableStateOf("")
@@ -558,20 +559,34 @@ class CharacterEditViewModel(
 
     fun discardDraft(onDone: (() -> Unit)? = null) {
         viewModelScope.launch {
-            draftJob?.cancelAndJoin()
-            draftJob = null
-            loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
-            loadedDraft?.id?.let { draftRepository.delete(it) }
-            draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
-            loadedDraft = null
-            pendingDeletedAssets.clear()
-            pendingDeletedDocumentIds.clear()
-            openModalState = null
-            restoredOpenModalState = null
-            hasLocalChanges = false
-            hasUnsavedDraftChanges = false
-            restoreDraft = null
-            restoreConflict = false
+            draftReady = false
+            try {
+                draftJob?.cancelAndJoin()
+                draftJob = null
+                val savedCard = characterId?.let { characterRepository.getById(it) }
+                loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
+                loadedDraft?.id?.let { draftRepository.delete(it) }
+                draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
+                loadedDraft = null
+                // The same editor ViewModel can be reused when this card is reopened.
+                // Discard its editable fields as well as the persisted draft.
+                baseCard = savedCard
+                _indexingStatus.value = null
+                applyCard(savedCard)
+                draftSavedAt = null
+                sourceDeleted = false
+                saveConflict = false
+                pendingDeletedAssets.clear()
+                pendingDeletedDocumentIds.clear()
+                openModalState = null
+                restoredOpenModalState = null
+                hasLocalChanges = false
+                hasUnsavedDraftChanges = false
+                restoreDraft = null
+                restoreConflict = false
+            } finally {
+                draftReady = true
+            }
             onDone?.invoke()
         }
     }
@@ -672,6 +687,7 @@ class CharacterEditViewModel(
             // so a later save would fail to materialize those files.
             avatar = effectiveCard.avatar
             chatBackground = effectiveCard.chatBackground
+            chatBackgroundImages = effectiveCard.chatBackgroundImages
             charactersList.clear()
             charactersList.addAll(effectiveCard.characters)
             documentsList.clear()
@@ -1086,7 +1102,7 @@ class CharacterEditViewModel(
         charactersList.addAll(merged.characters)
         state.coverImage.path?.takeIf(String::isNotBlank)?.let { path ->
             avatar = state.coverImage.avatarPath ?: path
-            chatBackground = path
+            setDefaultChatBackground(path)
         }
         _autoFillState.value = CharacterAutoFillUiState()
     }
@@ -1431,7 +1447,7 @@ class CharacterEditViewModel(
             return
         }
         avatar = _coverImageState.value.avatarPath ?: path
-        chatBackground = path
+        setDefaultChatBackground(path)
         _coverImageState.value = CharacterCoverImageUiState()
     }
 
@@ -2010,7 +2026,7 @@ class CharacterEditViewModel(
         }
         state.coverImage.path?.takeIf(String::isNotBlank)?.let { path ->
             avatar = state.coverImage.avatarPath ?: path
-            chatBackground = path
+            setDefaultChatBackground(path)
         }
         _rewriteState.value = CharacterRewriteUiState()
     }
@@ -2410,14 +2426,16 @@ class CharacterEditViewModel(
         }
     }
 
-    private fun applyCard(card: CharacterCard) {
-        _characterCard.value = card
+    private fun applyCard(savedCard: CharacterCard?) {
+        val card = savedCard ?: CharacterCard.create(name = "")
+        _characterCard.value = savedCard
         name = card.name
         botName = card.botName
         greeting = card.greeting
         alternateGreetings = card.alternateGreetings
         avatar = card.avatar
         chatBackground = card.chatBackground
+        chatBackgroundImages = card.chatBackgroundImages
         editMode = card.editMode
         basicSetting = card.basicSetting
         freeformCharacterText = card.freeformCharacterText
@@ -2454,10 +2472,13 @@ class CharacterEditViewModel(
         val oldAssets = oldCard?.let(draftAssetService::ownedAssetPaths).orEmpty().toSet()
         val newAssets = draftAssetService.ownedAssetPaths(newCard).toSet()
         val removedAssets = oldAssets - newAssets + pendingDeletedAssets
-        val removableAssets = MomentMediaRetention.unreferencedPaths(
-            removedAssets, ChatBarApp.instance.momentRepository.getAllPosts()
-        )
-        draftAssetService.deleteFiles(removableAssets)
+        if (removedAssets.isNotEmpty()) {
+            val app = ChatBarApp.instance
+            val retained = com.example.chatbar.domain.card.CharacterBackgroundRetention.currentReferences(app, newCard.id) +
+                newCard.chatBackgroundImages + listOfNotNull(newCard.chatBackground)
+            val removableAssets = MomentMediaRetention.unreferencedPaths(removedAssets, app.momentRepository.getAllPosts(), retained)
+            draftAssetService.deleteFiles(removableAssets)
+        }
 
         val newDocsById = newCard.customDocuments.associateBy { it.id }
         val staleDocIds = oldCard?.customDocuments.orEmpty()
@@ -2498,6 +2519,7 @@ class CharacterEditViewModel(
                 alternateGreetings = alternateGreetings,
                 avatar = avatar,
                 chatBackground = chatBackground,
+                chatBackgroundImages = chatBackgroundImages,
                 editMode = editMode,
                 basicSetting = basicSetting,
                 freeformCharacterText = freeformCharacterText,
@@ -2514,13 +2536,15 @@ class CharacterEditViewModel(
                 defaultFormatCardId = selectedDefaultFormatCardId,
                 characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
                 customDocuments = documentsList.toList()
-            ) != base
+            ) != base.copy(
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(base.defaultImageNegativePrompt)
+            )
         }
     }
 
     private fun hasNewCharacterInput(): Boolean =
         name.isNotBlank() || botName.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||
-            avatar != null || chatBackground != null || editMode != CharacterEditMode.STRUCTURED ||
+            avatar != null || chatBackground != null || chatBackgroundImages.isNotEmpty() || editMode != CharacterEditMode.STRUCTURED ||
             basicSetting.isNotBlank() || freeformCharacterText.isNotBlank() || defaultImagePrompt.isNotBlank() ||
             systemPrompt.isNotBlank() || postHistoryInstructions.isNotBlank() || mesExample.isNotBlank() ||
             creatorNotes.isNotBlank() || !momentsEnabled || selectedWorldBookIds.isNotEmpty() ||
@@ -2544,6 +2568,7 @@ class CharacterEditViewModel(
             alternateGreetings = alternateGreetings,
             avatar = avatar,
             chatBackground = chatBackground,
+            chatBackgroundImages = chatBackgroundImages,
             editMode = editMode,
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
@@ -2576,6 +2601,7 @@ class CharacterEditViewModel(
             alternateGreetings = alternateGreetings,
             avatar = avatar,
             chatBackground = chatBackground,
+            chatBackgroundImages = chatBackgroundImages,
             editMode = editMode,
             basicSetting = basicSetting,
             freeformCharacterText = freeformCharacterText,
@@ -2801,6 +2827,50 @@ class CharacterEditViewModel(
                 paths.forEach(::deleteTransientImage)
                 onResult(Result.failure(e))
             }
+        }
+    }
+
+    fun setDefaultChatBackground(path: String) {
+        chatBackgroundImages = (listOfNotNull(chatBackground) + chatBackgroundImages + path).filter(String::isNotBlank).distinct()
+        chatBackground = path
+        scheduleDraftSave()
+    }
+
+    fun removeChatBackground(path: String) {
+        chatBackgroundImages = chatBackgroundImages.filterNot { it == path }
+        if (chatBackground == path) chatBackground = null
+        scheduleDraftSave()
+    }
+
+    fun addChatBackgroundImages(uris: List<Uri>) {
+        if (uris.isEmpty() || _isSaving.value) return
+        viewModelScope.launch {
+            _isSaving.value = true
+            val created = mutableListOf<String>()
+            try {
+                for (uri in uris) {
+                    val extension = when (ChatBarApp.instance.contentResolver.getType(uri)) {
+                        "image/png" -> "png"
+                        "image/webp" -> "webp"
+                        "image/gif" -> "gif"
+                        else -> "jpg"
+                    }
+                    val path = draftAssetService.copyImageToDraft(draftSessionId, uri, extension)
+                    created += path
+                    withContext(Dispatchers.IO) {
+                        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+                        BitmapFactory.decodeFile(path, bounds)
+                        require(bounds.outWidth > 0 && bounds.outHeight > 0) { "所选背景图片无法读取" }
+                    }
+                }
+                chatBackgroundImages = (listOfNotNull(chatBackground) + chatBackgroundImages + created).distinct()
+                if (chatBackground == null) chatBackground = created.firstOrNull()
+                scheduleDraftSave()
+            } catch (error: Throwable) {
+                withContext(kotlinx.coroutines.NonCancellable) { draftAssetService.deleteFiles(created) }
+                if (error is CancellationException) throw error
+                _indexingStatus.value = "添加聊天背景失败：${error.message ?: "图片无法读取"}"
+            } finally { _isSaving.value = false }
         }
     }
 

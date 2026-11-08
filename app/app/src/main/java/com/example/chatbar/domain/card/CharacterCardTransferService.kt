@@ -156,7 +156,8 @@ class CharacterCardTransferService(
                 relationships = character.relationships,
                 speakingStyle = character.speakingStyle,
                 imagePrompt = character.imagePrompt,
-                fishAudioVoice = character.fishAudioVoice
+                fishAudioVoice = character.fishAudioVoice,
+                enabled = character.enabled
             )
         }
         return CharacterCardPackage(
@@ -168,6 +169,9 @@ class CharacterCardTransferService(
                 greeting = card.greeting,
                 alternateGreetings = card.alternateGreetings,
                 chatBackgroundResourceId = packageImage(card.chatBackground, "chat-background", "聊天背景"),
+                chatBackgroundImageResourceIds = card.chatBackgroundImages.distinct().mapIndexedNotNull { index, path ->
+                    packageImage(path, "chat-background-$index", "聊天背景图 ${index + 1}")
+                },
                 editMode = card.editMode,
                 basicSetting = card.basicSetting,
                 freeformCharacterText = card.freeformCharacterText,
@@ -264,7 +268,8 @@ class CharacterCardTransferService(
                             relationships = character.relationships,
                             speakingStyle = character.speakingStyle,
                             imagePrompt = character.imagePrompt,
-                            fishAudioVoice = character.fishAudioVoice
+                            fishAudioVoice = character.fishAudioVoice,
+                enabled = character.enabled
                         )
                     }
                 ),
@@ -272,6 +277,7 @@ class CharacterCardTransferService(
                 greeting = card.greeting,
                 alternateGreetings = card.alternateGreetings,
                 chatBackground = card.chatBackgroundResourceId?.let(imagePathMap::getValue),
+                chatBackgroundImages = card.chatBackgroundImageResourceIds.map(imagePathMap::getValue).distinct(),
                 editMode = card.editMode,
                 basicSetting = card.basicSetting,
                 freeformCharacterText = card.freeformCharacterText,
@@ -381,15 +387,17 @@ class CharacterCardTransferService(
     }
 
     private suspend fun deleteOwnedResources(card: CharacterCard, preservePaths: Set<String> = emptySet()) {
-        card.ownedFilePaths()
-            .filterNot { it in preservePaths }
-            .forEach { File(it).delete() }
+        val retained = CharacterBackgroundRetention.currentReferences(app, card.id) + preservePaths
+        com.example.chatbar.domain.moment.MomentMediaRetention.unreferencedPaths(
+            card.ownedFilePaths(), app.momentRepository.getAllPosts(), retained
+        ).forEach { File(it).delete() }
         ragRepository.deleteChunksBySource(com.example.chatbar.data.local.entity.ChunkSourceType.DOCUMENT, card.id)
     }
 
     private fun CharacterCard.ownedFilePaths(): Set<String> = buildSet {
         avatar?.takeIf { it.isNotBlank() }?.let(::add)
         chatBackground?.takeIf { it.isNotBlank() }?.let(::add)
+        addAll(chatBackgroundImages.filter(String::isNotBlank))
         characters.mapNotNullTo(this) { it.appearanceImage?.takeIf(String::isNotBlank) }
         customDocuments.mapNotNullTo(this) { it.filePath.takeIf(String::isNotBlank) }
     }

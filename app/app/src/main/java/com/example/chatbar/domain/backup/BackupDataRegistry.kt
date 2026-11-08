@@ -45,7 +45,7 @@ object BackupDataRegistry {
     private val mediaRoots = roots - setOf("entities", "danbooru_catalog")
     private val catalogFiles = setOf("tag.sqlite", "catalog.json")
     private val resourceFields = setOf(
-        "avatar", "appearanceImage", "chatBackground", "senderAvatar", "imagePath",
+        "avatar", "appearanceImage", "chatBackground", "chatBackgroundImages", "senderAvatar", "imagePath",
         "audioPath", "filePath", "filePaths", "draftAssetPaths", "pendingDeletedAssets", "images", "path"
     )
 

@@ -1,5 +1,10 @@
 package com.example.chatbar.ui.character
 
+import androidx.compose.foundation.selection.toggleable
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+
 import com.example.chatbar.domain.chat.AiStreamProgress
 import com.example.chatbar.ui.components.NovelAiGuidanceSlider
 import com.example.chatbar.ui.components.NovelAiCfgRescaleSlider
@@ -395,6 +400,9 @@ fun CharacterEditScreen(
             }
         }
     }
+    val backgroundsPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        viewModel.addChatBackgroundImages(uris)
+    }
     val referenceImagesPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         val callback = pendingReferenceImagesPick
         pendingReferenceImagesPick = null
@@ -566,12 +574,20 @@ fun CharacterEditScreen(
             }) {
                 CbInput(viewModel.greeting, { viewModel.greeting = it }, placeholder = "输入开场白…", singleLine = false, minLines = 2)
             }
+            CbField("聊天背景图库", description = "可以保存多张图片；默认背景用于新会话，每个会话也可单独选择。") {
+                com.example.chatbar.ui.components.ChatBackgroundGallery(
+                    (listOfNotNull(viewModel.chatBackground) + viewModel.chatBackgroundImages).distinct(),
+                    viewModel.chatBackground, viewModel::setDefaultChatBackground,
+                    viewModel::removeChatBackground, enabled = !isSaving
+                )
+                CbButton("添加背景图片", { backgroundsPicker.launch("image/*") }, enabled = !isSaving, variant = ButtonVariant.Outline)
+            }
             CbField("默认聊天背景") {
                 ImagePickerPanel(
                     imagePath = viewModel.chatBackground,
                     height = 112.dp,
                     onPick = {
-                        pickCroppedImage(CharacterImageCropTarget.Background) { viewModel.chatBackground = it }
+                        pickCroppedImage(CharacterImageCropTarget.Background, viewModel::setDefaultChatBackground)
                     },
                     onClear = { viewModel.chatBackground = null },
                     onDownload = {
@@ -787,6 +803,10 @@ fun CharacterEditScreen(
                     CharacterRow(
                         character = character,
                         canDelete = true,
+                        onEnabledChange = { checked ->
+                            viewModel.charactersList[index] = character.copy(enabled = checked)
+                            viewModel.scheduleDraftSave()
+                        },
                         onEdit = {
                             editCharacter = character
                             characterDialogDraft = character
@@ -1999,6 +2019,7 @@ private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = 
     append(viewModel.alternateGreetings.joinToString("\u001f")).append('|')
     append(viewModel.avatar.orEmpty()).append('|')
     append(viewModel.chatBackground.orEmpty()).append('|')
+    append(viewModel.chatBackgroundImages.joinToString("\u001e")).append('|')
     append(viewModel.editMode.name).append('|')
     append(viewModel.basicSetting).append('|')
     append(viewModel.freeformCharacterText).append('|')
@@ -2014,6 +2035,7 @@ private fun characterDraftSnapshot(viewModel: CharacterEditViewModel): String = 
     append(viewModel.charactersList.joinToString("\u001e") {
         listOf(
             it.id,
+            it.enabled.toString(),
             it.name,
             it.profile,
             it.appearance,
@@ -2255,7 +2277,8 @@ private fun CharacterRow(
     canDelete: Boolean,
     showProfile: Boolean = true,
     onEdit: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onEnabledChange: ((Boolean) -> Unit)? = null
 ) {
     CbSurface(Modifier.fillMaxWidth(), border = BorderStroke(1.dp, ChatBarTheme.colors.border)) {
         Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -2270,6 +2293,13 @@ private fun CharacterRow(
                 }
                 character.fishAudioVoice?.let { voice ->
                     CbText("音色：${voice.title}", color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
+                }
+            }
+            if (onEnabledChange != null) {
+                Box(Modifier.size(48.dp).semantics { contentDescription = "启用人物：${character.name}" }
+                    .toggleable(character.enabled, role = Role.Switch, onValueChange = onEnabledChange),
+                    contentAlignment = Alignment.Center) {
+                    CbSwitch(character.enabled, onCheckedChange = null)
                 }
             }
             CbIconButton(AppIcons.Edit, "编辑", onEdit, tint = ChatBarTheme.colors.primary)

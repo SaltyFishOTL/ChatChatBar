@@ -89,7 +89,8 @@ class DeletionCoordinator(
             PendingDeletionType.CHARACTER -> {
                 characterRepository.delete(task.ownerId)
                 // Historical posts own their saved author identity and media independently of the card.
-                MomentMediaRetention.unreferencedPaths(task.filePaths, momentRepository.getAllPosts())
+                MomentMediaRetention.unreferencedPaths(task.filePaths, momentRepository.getAllPosts(),
+                    com.example.chatbar.domain.card.CharacterBackgroundRetention.currentReferences(com.example.chatbar.ChatBarApp.instance, task.ownerId))
                     .forEach(::deleteOwnedFile)
                 ragRepository.deleteChunksBySource(ChunkSourceType.DOCUMENT, task.ownerId)
                 momentRepository.deletePendingTasksForCharacter(task.ownerId)
@@ -140,6 +141,7 @@ private data class PendingDeletion(
             filePaths = buildList {
                 card.avatar?.let(::add)
                 card.chatBackground?.let(::add)
+                addAll(card.chatBackgroundImages)
                 card.characters.mapNotNullTo(this) { it.appearanceImage }
                 card.customDocuments.mapTo(this) { it.filePath }
             }.filter(String::isNotBlank).distinct()

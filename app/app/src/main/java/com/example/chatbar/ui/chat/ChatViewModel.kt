@@ -432,8 +432,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     val relinkCharacterCards = characterRepository.characters
 
     suspend fun relinkCharacterCard(characterCardId: String) {
-        check(!_isResponding.value) { "请等待当前回复结束后再重新关联" }
-        chatRepository.relinkArchivedSession(sessionId, characterCardId, characterRepository)
+        check(!_isResponding.value && !_saveSlotOperation.value.busy) { "请等待当前回复或存档操作结束后再更换角色卡" }
+        check(characterRepository.getById(characterCardId) != null) { "所选角色卡已不存在" }
+        check(chatRepository.getSession(sessionId)?.characterCardId != characterCardId) { "请选择另一张角色卡" }
+        check(!_isResponding.value && !_saveSlotOperation.value.busy) { "对话正在处理其他操作，请稍后再更换角色卡" }
+        _saveSlotOperation.value = SaveSlotOperationState(true, "正在创建换绑前的恢复存档…", false)
+        try {
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                val captured = captureSaveSlot("更换角色卡前的存档", null, SaveSlotImagePolicy.ORIGINAL, true, cancellable = false)
+                chatRepository.rebindSession(captured.second, characterCardId, characterRepository)
+            }
+            _saveSlotOperation.value = SaveSlotOperationState(status = "角色卡已更换，历史和会话设置已保留。")
+        } catch (error: Throwable) {
+            _saveSlotOperation.value = SaveSlotOperationState(status = "更换角色卡未完成：${error.message ?: "操作已取消"}")
+            throw error
+        }
     }
 
     private val _modelConfigurationErrors = MutableStateFlow<List<String>>(emptyList())
@@ -2293,6 +2306,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      * 发送文本及图片
      */
     fun sendMessage(content: String, imagePaths: List<String> = emptyList()): Boolean {
+        if (_saveSlotOperation.value.busy) return false
         if (_isArchived.value || !_isModelUsable.value || _isResponding.value) return false
         val isBlank = content.isBlank() && imagePaths.isEmpty()
         val effectiveContent = if (isBlank) PromptTemplates.continueGenerationUserPrompt() else content
@@ -2564,7 +2578,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         alternativeTargetMessageId: String? = null,
         respondingAlreadyStarted: Boolean = false
     ) {
-        if (_isResponding.value && !respondingAlreadyStarted) return
+        if (_saveSlotOperation.value.busy || (_isResponding.value && !respondingAlreadyStarted)) return
 
         _activeResponseNarrativeMode.value = requestNarrativeMode
 
@@ -3013,7 +3027,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         )
                     fun assemblePromptLayers() =
                         promptAssembler.assembleCachePromptLayers(
-                            characterCard = charCard,
+                            characterCard = com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.effectiveCard(currentSession, charCard),
                             playerSetting = activePlayerSetting,
                             playerName = activePlayerName.takeIf { it.isNotBlank() },
                             supplementarySetting = currentSession.supplementarySetting?.takeIf { it.isNotBlank() },
@@ -4078,13 +4092,89 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 创建当前对话的存档
      */
+    private suspend fun captureSaveSlot(
+        name: String, description: String?, imagePolicy: SaveSlotImagePolicy, includeAudio: Boolean, cancellable: Boolean = true
+    ): Pair<SaveSlot, ChatSession> {
+        var packagedSlot: SaveSlot? = null
+        var committed = false
+        try {
+            narrativeModeSaveMutex.withLock { }
+            val memorySnapshot = longTermMemoryService.snapshot(sessionId)
+            val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
+            val voices = if (includeAudio) {
+                voiceMessageRepository.listForSession(sessionId)
+            } else {
+                emptyList()
+            }
+            val baseSlot = SaveSlot.create(
+                sessionId = sessionId,
+                name = NamePolicy.normalize(name),
+                description = description?.trim()?.takeIf(String::isNotBlank)
+            ).copy(
+                schemaVersion = com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION,
+                playerSetting = curSession.playerSetting,
+                playerName = curSession.playerName,
+                supplementarySetting = curSession.supplementarySetting,
+                modelId = curSession.modelId,
+                imageModelId = curSession.imageModelId,
+                novelAiImageModel = curSession.novelAiImageModel,
+                novelAiNaturalLanguageMode = curSession.novelAiNaturalLanguageMode,
+                automaticImageGenerationEnabled = curSession.automaticImageGenerationEnabled,
+                formatCardId = curSession.formatCardId,
+                replyLength = curSession.replyLength,
+                replyLanguage = curSession.replyLanguage,
+                roleplayStyle = curSession.roleplayStyle,
+                narrativeMode = curSession.narrativeMode,
+                chatBackground = curSession.chatBackground,
+                characterParticipation = curSession.characterParticipation,
+                autoPauseAbsentPeople = curSession.autoPauseAbsentPeople,
+                audiobookModeEnabled = curSession.audiobookModeEnabled,
+                voiceLanguage = curSession.voiceLanguage,
+                longTermMemoryEnabled = curSession.longTermMemoryEnabled,
+                longTermMemory = curSession.longTermMemory,
+                longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
+                nextSourceTurnOrder = curSession.nextSourceTurnOrder,
+                sourceTurnTombstones = curSession.sourceTurnTombstones,
+                nextTimelineTurn = curSession.nextTimelineTurn,
+                timelineTombstones = curSession.timelineTombstones,
+                memoryLimitChars = curSession.memoryLimitChars,
+                memorySnapshot = memorySnapshot,
+                contextWindowSize = curSession.contextWindowSize,
+                extraWorldBookIds = curSession.extraWorldBookIds,
+                timedWorldInfo = curSession.timedWorldInfo,
+                imagePolicy = imagePolicy,
+                includeAudio = includeAudio
+            )
+            packagedSlot = ChatBarApp.instance.saveSlotPackageStorage.createPackage(
+                baseSlot = baseSlot,
+                imagePolicy = imagePolicy,
+                includeAudio = includeAudio,
+                messageSource = { emit -> chatRepository.forEachMessage(sessionId, action = emit) },
+                ragSource = { emit ->
+                    ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
+                },
+                voices = voices,
+                onProgress = { status ->
+                    _saveSlotOperation.value = SaveSlotOperationState(true, status, cancellable)
+                }
+            )
+            saveSlotRepository.save(packagedSlot)
+            committed = true
+            refreshSaveSlots()
+            return requireNotNull(packagedSlot) to curSession
+        } catch (error: Throwable) {
+            if (!committed) packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
+            throw error
+        }
+    }
+
     fun createSaveSlot(
         name: String,
         description: String?,
         imagePolicy: SaveSlotImagePolicy = SaveSlotImagePolicy.NONE,
         includeAudio: Boolean = true
     ) {
-        if (saveSlotOperationJob?.isActive == true) return
+        if (saveSlotOperationJob?.isActive == true || _saveSlotOperation.value.busy) return
         saveSlotOperationJob = viewModelScope.launch {
             com.example.chatbar.domain.backup.LocalDataMaintenance.access {
                 var packagedSlot: SaveSlot? = null
@@ -4094,66 +4184,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         status = "正在准备存档…",
                         cancellable = true
                     )
-                    narrativeModeSaveMutex.withLock { }
-                    val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
-                    val memorySnapshot = longTermMemoryService.snapshot(sessionId)
-                    val voices = if (includeAudio) {
-                        voiceMessageRepository.listForSession(sessionId)
-                    } else {
-                        emptyList()
-                    }
-                    val baseSlot = SaveSlot.create(
-                        sessionId = sessionId,
-                        name = NamePolicy.normalize(name),
-                        description = description?.trim()?.takeIf(String::isNotBlank)
-                    ).copy(
-                        schemaVersion = com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION,
-                        playerSetting = curSession.playerSetting,
-                        playerName = curSession.playerName,
-                        supplementarySetting = curSession.supplementarySetting,
-                        modelId = curSession.modelId,
-                        imageModelId = curSession.imageModelId,
-                        novelAiImageModel = curSession.novelAiImageModel,
-                        novelAiNaturalLanguageMode = curSession.novelAiNaturalLanguageMode,
-                        automaticImageGenerationEnabled = curSession.automaticImageGenerationEnabled,
-                        formatCardId = curSession.formatCardId,
-                        replyLength = curSession.replyLength,
-                        replyLanguage = curSession.replyLanguage,
-                        roleplayStyle = curSession.roleplayStyle,
-                        narrativeMode = curSession.narrativeMode,
-                        chatBackground = curSession.chatBackground,
-                        audiobookModeEnabled = curSession.audiobookModeEnabled,
-                        voiceLanguage = curSession.voiceLanguage,
-                        longTermMemoryEnabled = curSession.longTermMemoryEnabled,
-                        longTermMemory = curSession.longTermMemory,
-                        longTermMemoryUpdatedThroughMessageId = curSession.longTermMemoryUpdatedThroughMessageId,
-                        nextSourceTurnOrder = curSession.nextSourceTurnOrder,
-                        sourceTurnTombstones = curSession.sourceTurnTombstones,
-                        nextTimelineTurn = curSession.nextTimelineTurn,
-                        timelineTombstones = curSession.timelineTombstones,
-                        memoryLimitChars = curSession.memoryLimitChars,
-                        memorySnapshot = memorySnapshot,
-                        contextWindowSize = curSession.contextWindowSize,
-                        extraWorldBookIds = curSession.extraWorldBookIds,
-                        timedWorldInfo = curSession.timedWorldInfo,
-                        imagePolicy = imagePolicy,
-                        includeAudio = includeAudio
-                    )
-                    packagedSlot = ChatBarApp.instance.saveSlotPackageStorage.createPackage(
-                        baseSlot = baseSlot,
-                        imagePolicy = imagePolicy,
-                        includeAudio = includeAudio,
-                        messageSource = { emit -> chatRepository.forEachMessage(sessionId, action = emit) },
-                        ragSource = { emit ->
-                            ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
-                        },
-                        voices = voices,
-                        onProgress = { status ->
-                            _saveSlotOperation.value = SaveSlotOperationState(true, status, true)
-                        }
-                    )
-                    saveSlotRepository.save(packagedSlot)
-                    refreshSaveSlots()
+                    packagedSlot = captureSaveSlot(name, description, imagePolicy, includeAudio).first
                     _saveSlotOperation.value = SaveSlotOperationState(status = "存档已创建。")
                 } catch (error: Throwable) {
                     packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
@@ -4177,7 +4208,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      * 读取存档并覆盖当前对话状态
      */
     fun loadSaveSlot(summary: SaveSlotSummary) {
-        if (saveSlotOperationJob?.isActive == true) return
+        if (saveSlotOperationJob?.isActive == true || _saveSlotOperation.value.busy) return
         saveSlotOperationJob = viewModelScope.launch {
             com.example.chatbar.domain.backup.LocalDataMaintenance.access {
                 try {
@@ -4232,6 +4263,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       roleplayStyle = materializedSlot.roleplayStyle,
                       narrativeMode = materializedSlot.narrativeMode,
                       chatBackground = materializedSlot.chatBackground,
+                      characterParticipation = materializedSlot.characterParticipation,
+                      autoPauseAbsentPeople = materializedSlot.autoPauseAbsentPeople,
                       audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
                       voiceLanguage = materializedSlot.voiceLanguage,
                       longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
@@ -4348,6 +4381,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             roleplayStyle = slot.roleplayStyle,
                             narrativeMode = slot.narrativeMode,
                             chatBackground = restoredBackground,
+                            characterParticipation = slot.characterParticipation,
+                            autoPauseAbsentPeople = slot.autoPauseAbsentPeople,
                             audiobookModeEnabled = slot.audiobookModeEnabled,
                             voiceLanguage = slot.voiceLanguage,
                             longTermMemoryEnabled = slot.longTermMemoryEnabled,

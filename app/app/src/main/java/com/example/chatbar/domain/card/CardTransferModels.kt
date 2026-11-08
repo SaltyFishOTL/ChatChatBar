@@ -9,10 +9,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.EncodeDefault
 import kotlinx.serialization.ExperimentalSerializationApi
 
+const val CHARACTER_CARD_PACKAGE_SCHEMA_VERSION = 10
+
 @Serializable
 @OptIn(ExperimentalSerializationApi::class)
 data class CharacterCardPackage(
-    val schemaVersion: Int = 9,
+    val schemaVersion: Int = CHARACTER_CARD_PACKAGE_SCHEMA_VERSION,
     val exportedAt: Long = System.currentTimeMillis(),
     val card: PackagedCharacterCard,
     val documents: List<PackagedDocument> = emptyList(),
@@ -46,10 +48,12 @@ data class PackagedCharacterCard(
     val creator: String = "",
     val characterVersion: String = "",
     val extensions: String = "",
-    val characterBook: WorldBook? = null
+    val characterBook: WorldBook? = null,
+    val chatBackgroundImageResourceIds: List<String> = emptyList()
 )
 
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class PackagedCharacter(
     val name: String,
     val profile: String = "",
@@ -62,7 +66,10 @@ data class PackagedCharacter(
     val relationships: String = "",
     val speakingStyle: String = "",
     val imagePrompt: String = "",
-    val fishAudioVoice: FishAudioVoiceBinding? = null
+    val fishAudioVoice: FishAudioVoiceBinding? = null,
+    @kotlinx.serialization.json.JsonNames("desktopEnabled")
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val enabled: Boolean = true
 )
 
 @Serializable
@@ -85,7 +92,7 @@ data class CharacterCardImportRequest(
 )
 
 internal fun CharacterCardPackage.validateForImport() {
-    require(schemaVersion in 3..9) { "不支持的角色卡 schemaVersion：$schemaVersion" }
+    require(schemaVersion in 3..CHARACTER_CARD_PACKAGE_SCHEMA_VERSION) { "不支持的角色卡 schemaVersion：$schemaVersion" }
     defaultFormatCard?.validateForImport()
     card.defaultImageGenerationSettings?.applyTo(
         com.example.chatbar.domain.image.NovelAiGenerationSettings(model = card.defaultNovelAiImageModel ?: NovelAiImageModel.V4_5_FULL)
@@ -99,6 +106,7 @@ internal fun CharacterCardPackage.validateForImport() {
     val references = buildList {
         card.avatarResourceId?.let(::add)
         card.chatBackgroundResourceId?.let(::add)
+        addAll(card.chatBackgroundImageResourceIds)
         card.characters.mapNotNullTo(this) { it.appearanceImageResourceId }
     }
     val missing = references.filterNot(images::containsKey).distinct()

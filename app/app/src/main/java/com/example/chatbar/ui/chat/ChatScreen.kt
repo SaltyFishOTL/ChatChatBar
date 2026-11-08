@@ -1457,7 +1457,7 @@ fun ChatScreen(
     if (relinkOpen) {
         CbDialog(
             onDismissRequest = { if (!relinkBusy) relinkOpen = false },
-            title = "重新关联角色卡",
+            title = if (isArchived) "重新关联角色卡" else "更换对话角色卡",
             dismiss = {
                 CbButton("取消", { relinkOpen = false }, enabled = !relinkBusy, variant = ButtonVariant.Ghost)
             },
@@ -1482,12 +1482,12 @@ fun ChatScreen(
                             }
                         }
                     },
-                    enabled = !relinkBusy && relinkCards.any { it.id == relinkSelectedId }
+                    enabled = !relinkBusy && relinkCards.any { it.id == relinkSelectedId && it.id != characterCard?.id }
                 )
             }
         ) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbText("选择重新导入的角色卡，仅恢复当前对话。聊天记录、长期记忆和会话设置保留；后续回复使用所选角色卡。", color = ChatBarTheme.colors.mutedForeground)
+                CbText("选择另一张角色卡。更换前会创建恢复存档，聊天记录、长期记忆和会话设置保留；后续回复使用新卡，世界书的临时计时状态会重新开始。", color = ChatBarTheme.colors.mutedForeground)
                 if (relinkCards.isEmpty()) {
                     CbText("暂无角色卡，请先到管理页导入角色卡。")
                 }
@@ -1563,6 +1563,12 @@ fun ChatScreen(
 
     if (settingsOpen) ChatSettingsDialog(
         viewModel = viewModel,
+        onRebindCharacter = {
+            settingsOpen = false
+            relinkSelectedId = null
+            relinkError = null
+            relinkOpen = true
+        },
         onDismiss = { settingsOpen = false },
         onClearHistory = { clearConfirm = true },
         onJumpToSource = { sourceTurnId ->

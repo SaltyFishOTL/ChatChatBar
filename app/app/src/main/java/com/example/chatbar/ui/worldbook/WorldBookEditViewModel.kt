@@ -710,16 +710,28 @@ class WorldBookEditViewModel(
 
     fun discardDraft(onDone: (() -> Unit)? = null) {
         viewModelScope.launch {
-            draftJob?.cancelAndJoin()
-            draftJob = null
-            loadedDraft?.id?.let { draftRepository.delete(it) }
-            draftRepository.deleteForTarget(EditorDraftType.WORLD_BOOK, worldBookId)
-            loadedDraft = null
-            hasLocalChanges = false
-            hasUnsavedDraftChanges = false
-            entryModalState = null
-            restoreDraft = null
-            restoreConflict = false
+            draftReady = false
+            try {
+                draftJob?.cancelAndJoin()
+                draftJob = null
+                val savedBook = worldBookId?.let { repository.getById(it) }
+                loadedDraft?.id?.let { draftRepository.delete(it) }
+                draftRepository.deleteForTarget(EditorDraftType.WORLD_BOOK, worldBookId)
+                loadedDraft = null
+                // Reopening this book can reuse the editor instance in the same process.
+                baseBook = savedBook
+                applyBook(savedBook)
+                draftSavedAt = null
+                saveConflict = false
+                sourceDeleted = false
+                hasLocalChanges = false
+                hasUnsavedDraftChanges = false
+                entryModalState = null
+                restoreDraft = null
+                restoreConflict = false
+            } finally {
+                draftReady = true
+            }
             onDone?.invoke()
         }
     }
@@ -835,6 +847,7 @@ class WorldBookEditViewModel(
     }
 
     fun toggleEntry(index: Int) {
+        if (_isSaving.value) return
         if (index in entries.indices) {
             val e = entries[index]
             entries[index] = e.copy(enabled = !e.enabled)
@@ -933,8 +946,9 @@ class WorldBookEditViewModel(
         )
     }
 
-    private fun applyBook(book: WorldBook) {
-        _worldBook.value = book
+    private fun applyBook(savedBook: WorldBook?) {
+        val book = savedBook ?: WorldBook.create(name = "").copy(scanDepth = 10)
+        _worldBook.value = savedBook
         name = book.name
         description = book.description
         scanDepth = book.scanDepth

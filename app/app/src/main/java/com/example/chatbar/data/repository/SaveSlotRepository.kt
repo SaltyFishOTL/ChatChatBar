@@ -98,6 +98,7 @@ class SaveSlotRepository(
         var sessionId = ""
         var name = ""
         var description: String? = null
+        var chatBackground: String? = null
         var schemaVersion = 1
         var createdAt = 0L
         var inlineMessageCount = 0
@@ -116,6 +117,7 @@ class SaveSlotRepository(
                     "sessionId" -> sessionId = reader.nextString()
                     "name" -> name = reader.nextString()
                     "description" -> description = reader.nextNullableString()
+                    "chatBackground" -> chatBackground = reader.nextNullableString()
                     "schemaVersion" -> schemaVersion = reader.nextInt()
                     "createdAt" -> createdAt = reader.nextLong()
                     "imagePolicy" -> imagePolicy = runCatching {
@@ -158,7 +160,8 @@ class SaveSlotRepository(
             imagePolicy = imagePolicy,
             imageCount = packageImageCount ?: inlineImageCount,
             includeAudio = includeAudio,
-            audioCount = packageAudioCount ?: inlineAudioCount
+            audioCount = packageAudioCount ?: inlineAudioCount,
+            chatBackground = chatBackground
         )
     }
 }

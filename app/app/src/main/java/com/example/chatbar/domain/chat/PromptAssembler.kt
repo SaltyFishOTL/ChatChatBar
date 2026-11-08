@@ -71,7 +71,7 @@ class PromptAssembler {
         narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
     ): String {
         val sections = collectSections(
-            characterCard = characterCard,
+            characterCard = SessionCharacterParticipationPolicy.effectiveCard(null, characterCard),
             playerSetting = playerSetting,
             playerName = playerName,
             supplementarySetting = supplementarySetting,
@@ -114,7 +114,7 @@ class PromptAssembler {
         narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
     ): PromptCachePromptLayers {
         val sections = collectSections(
-            characterCard = characterCard,
+            characterCard = SessionCharacterParticipationPolicy.effectiveCard(null, characterCard),
             playerSetting = playerSetting,
             playerName = playerName,
             supplementarySetting = supplementarySetting,
