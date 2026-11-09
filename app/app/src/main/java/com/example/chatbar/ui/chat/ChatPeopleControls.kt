@@ -60,8 +60,10 @@ internal fun ChatPeopleDialog(
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Row(
-                        Modifier.weight(1f).heightIn(min = 48.dp)
-                            .clickable(enabled = enabled && !person.enabled, role = Role.Button, onClick = onEditCard),
+                        Modifier.weight(1f).heightIn(min = 48.dp).then(
+                            if (!person.enabled) Modifier.clickable(enabled = enabled, role = Role.Button, onClick = onEditCard)
+                            else Modifier
+                        ),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(8.dp)
                     ) {
