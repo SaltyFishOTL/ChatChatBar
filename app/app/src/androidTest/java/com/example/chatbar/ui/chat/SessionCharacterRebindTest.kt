@@ -7,6 +7,7 @@ import androidx.test.core.app.ApplicationProvider
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
+import kotlinx.coroutines.async
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -130,6 +131,73 @@ class SessionCharacterRebindTest {
         assertFalse(repository.isChanged(base, draft))
         assertTrue(repository.isChanged(base.copy(chatBackgroundImages = listOf("synthetic-background.png")), draft))
     }
+
+    @Test fun concurrentQuickTogglesMergeDifferentPeopleAndKeepLatestSettings() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = session(card.id)
+        val latest = requireNotNull(app.chatRepository.getSession(source.id)).copy(
+            title = "synthetic newer title", supplementarySetting = "synthetic newer setting")
+        app.chatRepository.updateSession(latest)
+        val baseline = requireNotNull(app.chatRepository.getSession(source.id))
+        kotlinx.coroutines.coroutineScope {
+            val first = async(Dispatchers.Default) {
+                app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", false, app.characterRepository)
+            }
+            val second = async(Dispatchers.Default) {
+                app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-b", false, app.characterRepository)
+            }
+            first.await(); second.await()
+        }
+        val updated = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals(setOf("person-a", "person-b"), updated.characterParticipation.single().disabledPersonIds)
+        assertEquals(baseline.copy(characterParticipation = updated.characterParticipation, updatedAt = updated.updatedAt), updated)
+        assertTrue(app.characterRepository.getById(card.id)!!.characters.all { it.enabled })
+    }
+
+    @Test fun quickToggleCannotEnableCardDisabledPerson() = runBlocking<Unit> {
+        val card = peopleCard()
+        app.characterRepository.save(card.copy(characters = card.characters.map { it.copy(enabled = false) }))
+        val source = session(card.id)
+        val baseline = requireNotNull(app.chatRepository.getSession(source.id))
+        var rejected = false
+        try { app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", true, app.characterRepository) }
+        catch (_: IllegalArgumentException) { rejected = true }
+        assertTrue(rejected)
+        assertEquals(baseline, app.chatRepository.getSession(source.id))
+    }
+
+    @Test fun quickToggleCannotWriteOldCardAfterRebind() = runBlocking<Unit> {
+        val card = peopleCard()
+        val next = peopleCard()
+        val source = session(card.id)
+        app.chatRepository.rebindSession(requireNotNull(app.chatRepository.getSession(source.id)), next.id, app.characterRepository)
+        val baseline = requireNotNull(app.chatRepository.getSession(source.id))
+        var rejected = false
+        try { app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", false, app.characterRepository) }
+        catch (_: IllegalStateException) { rejected = true }
+        assertTrue(rejected)
+        assertEquals(baseline, app.chatRepository.getSession(source.id))
+    }
+
+    @Test fun actualQuickTogglePersistsAndDoesNotChangeAnotherConversation() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = session(card.id)
+        val other = session(card.id)
+        val otherBaseline = requireNotNull(app.chatRepository.getSession(other.id))
+        val vm = editor(source.id)
+        val done = kotlinx.coroutines.CompletableDeferred<Result<Unit>>()
+        withContext(Dispatchers.Main) { vm.setPersonEnabled("person-a", false) { done.complete(it) } }
+        withTimeout(10_000) { done.await() }.getOrThrow()
+        val saved = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals(setOf("person-a"), saved.characterParticipation.single().disabledPersonIds)
+        assertEquals(saved.characterParticipation, vm.session.value!!.characterParticipation)
+        assertEquals(otherBaseline, app.chatRepository.getSession(other.id))
+        assertTrue(app.characterRepository.getById(card.id)!!.characters.all { it.enabled })
+    }
+
+    private suspend fun peopleCard(): CharacterCard = card().copy(characters = listOf(
+        CharacterInfo("person-a", "synthetic person a"), CharacterInfo("person-b", "synthetic person b")
+    )).also { app.characterRepository.save(it) }
 
     private suspend fun editor(id: String): ChatViewModel {
         val vm = withContext(Dispatchers.Main) {

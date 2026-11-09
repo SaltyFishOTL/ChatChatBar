@@ -4038,6 +4038,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     /**
      * 保存会话特定的配置参数
      */
+    fun setPersonEnabled(personId: String, enabled: Boolean, onComplete: (Result<Unit>) -> Unit) {
+        val cardId = _session.value?.characterCardId
+        if (cardId == null || _saveSlotOperation.value.busy) {
+            onComplete(Result.failure(IllegalStateException("请等待当前存档操作完成后再修改人物")))
+            return
+        }
+        viewModelScope.launch {
+            val result = runCatching {
+                val updated = chatRepository.setSessionPersonEnabled(
+                    sessionId, cardId, personId, enabled, characterRepository
+                )
+                _session.value = updated
+            }
+            onComplete(result)
+        }
+    }
+
     fun updateSessionConfig(
         modelId: String?,
         imageModelId: String?,

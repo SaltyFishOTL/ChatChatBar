@@ -175,6 +175,7 @@ internal fun canUseChatImageLongPress(
 fun ChatScreen(
     sessionId: String,
     onBack: () -> Unit,
+    onEditCharacter: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: ChatViewModel = viewModel(key = sessionId, factory = ChatViewModelFactory(sessionId))
 ) {
@@ -289,6 +290,9 @@ fun ChatScreen(
     val selectedImages = remember { mutableStateListOf<String>() }
     var settingsOpen by remember { mutableStateOf(false) }
     var debugOpen by remember { mutableStateOf(false) }
+    var peopleOpen by remember(sessionId) { mutableStateOf(false) }
+    var peopleSaving by remember(sessionId) { mutableStateOf(false) }
+    var peopleError by remember(sessionId) { mutableStateOf<String?>(null) }
     var clearConfirm by remember { mutableStateOf(false) }
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
@@ -1139,6 +1143,11 @@ fun ChatScreen(
             title = renderedTitle,
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
+                val peopleCard = characterCard
+                val peopleSession = session
+                if (peopleCard?.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.STRUCTURED && peopleSession != null) {
+                    ChatPeopleButton(peopleSession, peopleCard) { peopleError = null; peopleOpen = true }
+                }
                 if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(AppIcons.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
                 CbIconButton(AppIcons.Tune, "会话设置", { settingsOpen = true })
             }
@@ -1584,6 +1593,24 @@ fun ChatScreen(
             }
         }
     )
+    val peopleCard = characterCard
+    val peopleSession = session
+    if (peopleOpen && peopleCard?.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.STRUCTURED && peopleSession != null) {
+        ChatPeopleDialog(
+            session = peopleSession, card = peopleCard, enabled = !peopleSaving && !saveSlotOperation.busy,
+            error = peopleError,
+            onPersonEnabled = { personId, enabled ->
+                peopleSaving = true
+                peopleError = null
+                viewModel.setPersonEnabled(personId, enabled) { result ->
+                    peopleSaving = false
+                    peopleError = result.exceptionOrNull()?.message
+                }
+            },
+            onEditCard = { peopleOpen = false; onEditCharacter(peopleCard.id) },
+            onDismiss = { peopleOpen = false }
+        )
+    }
     if (debugOpen) DebugLogDialog(sessionId, viewModel, { debugOpen = false })
     if (session?.memoryUpdateStatus == MemoryUpdateStatus.LIMIT_DECISION_REQUIRED &&
         !memoryLimitDialogDismissed

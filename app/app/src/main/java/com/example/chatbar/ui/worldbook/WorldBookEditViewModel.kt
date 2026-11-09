@@ -173,6 +173,7 @@ class WorldBookEditViewModel(
 
     init {
         load()
+        observeDiscardedDrafts()
         loadCharacterCards()
         observeAiModels()
     }
@@ -708,9 +709,22 @@ class WorldBookEditViewModel(
         restoreConflict = false
     }
 
-    fun discardDraft(onDone: (() -> Unit)? = null) {
+    private fun observeDiscardedDrafts() {
         viewModelScope.launch {
-            draftReady = false
+            draftRepository.drafts.collect { drafts ->
+                val remembered = loadedDraft ?: restoreDraft
+                // A management-list discard must also invalidate a retained editor.
+                // Internal discard/save already owns its reset while not ready/saving.
+                if (draftReady && !_isSaving.value && remembered != null && drafts.none { it.id == remembered.id }) {
+                    discardDraft()
+                }
+            }
+        }
+    }
+
+    fun discardDraft(onDone: (() -> Unit)? = null) {
+        draftReady = false
+        viewModelScope.launch {
             try {
                 draftJob?.cancelAndJoin()
                 draftJob = null

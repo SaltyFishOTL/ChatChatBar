@@ -139,6 +139,17 @@ class ChatRepository(private val storage: JsonFileStorage) {
         latest.copy(characterCardId = characterCardId, timedWorldInfo = emptyMap()).also { updateSessionLocked(it) }
     }
 
+    suspend fun setSessionPersonEnabled(
+        sessionId: String, expectedCardId: String, personId: String, enabled: Boolean,
+        characterRepository: CharacterRepository
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(sessionId) ?: error("对话已不存在")
+        check(latest.characterCardId == expectedCardId) { "对话角色卡已变化，请重新打开人物列表" }
+        val card = characterRepository.getById(expectedCardId) ?: error("角色卡已不存在")
+        com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.change(latest, card, personId, enabled)
+            .also { updateSessionLocked(it) }
+    }
+
     suspend fun saveSessionSettingsDraft(baseline: ChatSession, draft: ChatSession): ChatSession =
         sessionSettingsMutex.withDataAccess {
             val latest = getSession(baseline.id) ?: error("会话已不存在")

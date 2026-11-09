@@ -39,3 +39,5 @@ Read these entry points before broad search.
 ## Verification
 
 Run focused JVM tests, then repository release checks when publishing.
+
+- Management-list draft removal must invalidate retained WorldBookEditViewModel fields and pending restore state, not just delete the repository file. Its drafts observer reuses discardDraft while skipping internal save/discard transitions; ManagementDraftDiscardTest exercises the actual ManageViewModel discard path.
