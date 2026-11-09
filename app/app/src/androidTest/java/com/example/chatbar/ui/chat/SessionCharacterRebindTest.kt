@@ -54,8 +54,9 @@ class SessionCharacterRebindTest {
             supplementarySetting = "synthetic-setting", extraWorldBookIds = listOf("synthetic-book"),
             timedWorldInfo = mapOf("e" to TimedEffectState("e", 9, 12)),
             characterParticipation = listOf(SessionCharacterParticipation(old.id, setOf("synthetic-person"))))
-        app.chatRepository.updateSession(source)
+        app.chatRepository.updateSession(source, restoreNarrativeMode = true)
         val baseline = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals(source.characterParticipation, baseline.characterParticipation)
         app.chatRepository.rebindSession(baseline, next.id, app.characterRepository)
         val changed = requireNotNull(app.chatRepository.getSession(source.id))
         assertEquals(baseline.copy(characterCardId = next.id, timedWorldInfo = emptyMap(), updatedAt = changed.updatedAt), changed)
@@ -223,6 +224,41 @@ class SessionCharacterRebindTest {
         catch (_: IllegalStateException) { rejected = true }
         assertTrue(rejected)
         assertEquals(latest, app.chatRepository.getSession(source.id))
+    }
+
+    @Test fun backgroundSessionSnapshotCannotUndoNewPeopleChoices() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = session(card.id)
+        val frozen = requireNotNull(app.chatRepository.getSession(source.id))
+        app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", false, app.characterRepository)
+        val toggled = requireNotNull(app.chatRepository.getSession(source.id))
+        app.chatRepository.saveSessionSettingsDraft(toggled, toggled.copy(autoPauseAbsentPeople = true))
+        app.chatRepository.updateSession(frozen.copy(longTermMemory = "synthetic late memory update"))
+        val saved = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals("synthetic late memory update", saved.longTermMemory)
+        assertEquals(setOf("person-a"), saved.characterParticipation.single().disabledPersonIds)
+        assertTrue(saved.autoPauseAbsentPeople)
+    }
+
+    @Test fun explicitSaveSlotStyleRestoreCanRestoreStoredPeopleChoices() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = session(card.id)
+        app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", false, app.characterRepository)
+        val snapshot = source.copy(characterParticipation = listOf(SessionCharacterParticipation(card.id, setOf("person-b"))),
+            autoPauseAbsentPeople = true)
+        app.chatRepository.updateSession(snapshot, restoreNarrativeMode = true)
+        val saved = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals(snapshot.characterParticipation, saved.characterParticipation)
+        assertTrue(saved.autoPauseAbsentPeople)
+    }
+
+    @Test fun initialSessionUpdateKeepsProvidedPeopleChoicesWhenNoLatestRecordExists() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = ChatSession.create(card.id, "synthetic initial session").copy(
+            characterParticipation = listOf(SessionCharacterParticipation(card.id, setOf("person-a"))))
+        sessions += source.id
+        app.chatRepository.updateSession(source)
+        assertEquals(source.characterParticipation, app.chatRepository.getSession(source.id)!!.characterParticipation)
     }
 
     private suspend fun peopleCard(): CharacterCard = card().copy(characters = listOf(

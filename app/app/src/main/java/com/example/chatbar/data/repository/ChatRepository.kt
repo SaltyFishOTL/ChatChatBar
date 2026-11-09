@@ -100,10 +100,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     suspend fun updateSession(session: ChatSession, restoreNarrativeMode: Boolean = false) {
         sessionSettingsMutex.withDataAccess {
-            val latestMode = getSession(session.id)?.narrativeMode
+            val latest = getSession(session.id)
+            // Background memory/preview writes carry snapshots. Preserve newer user choices;
+            // the existing explicit save-slot restore path restores its stored choices instead.
             updateSessionLocked(
-                if (restoreNarrativeMode || latestMode == null) session
-                else session.copy(narrativeMode = latestMode)
+                if (restoreNarrativeMode || latest == null) session
+                else session.copy(
+                    narrativeMode = latest.narrativeMode,
+                    characterParticipation = latest.characterParticipation,
+                    autoPauseAbsentPeople = latest.autoPauseAbsentPeople
+                )
             )
         }
     }
