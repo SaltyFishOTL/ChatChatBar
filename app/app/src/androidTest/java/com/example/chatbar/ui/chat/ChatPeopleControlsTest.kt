@@ -8,6 +8,8 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.test.*
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -40,12 +42,13 @@ class ChatPeopleControlsTest {
     @Test fun countOpensDedicatedListAndUpdatesAfterToggleAtPhoneWidth() {
         val card = card()
         val original = ChatSession.create(card.id, "synthetic")
+        val title = "合成很长的对话标题用于确认人物计数和调试入口仍可用"
         rule.setContent {
             var session by remember { mutableStateOf(original) }
             var open by remember { mutableStateOf(false) }
             ChatBarTheme {
                 Box(Modifier.width(320.dp)) {
-                    CbTopBar("合成很长的对话标题用于确认人物计数和调试入口仍可用", actions = {
+                    CbTopBar(title, navigation = { CbIconButton(AppIcons.ArrowBack, "返回", {}) }, actions = {
                         ChatPeopleButton(session, card) { open = true }
                         CbIconButton(AppIcons.BugReport, "调试日志", {})
                         CbIconButton(AppIcons.Tune, "会话设置", {})
@@ -56,6 +59,9 @@ class ChatPeopleControlsTest {
                     {}, { open = false })
             }
         }
+        val titleLayouts = mutableListOf<TextLayoutResult>()
+        rule.onNodeWithText(title).performSemanticsAction(SemanticsActions.GetTextLayoutResult) { it(titleLayouts) }
+        assertEquals(1, titleLayouts.single().lineCount)
         val button = rule.onNodeWithContentDescription("会话人物，已启用 1/2")
         assertTrue(button.fetchSemanticsNode().boundsInRoot.right <=
             rule.onNodeWithContentDescription("调试日志").fetchSemanticsNode().boundsInRoot.left)
