@@ -2985,9 +2985,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         debugLogs = ragDebugLogs
                     )
                     if (wbTimed != currentSession.timedWorldInfo) {
-                        val updatedSession = currentSession.copy(timedWorldInfo = wbTimed)
-                        chatRepository.updateSession(updatedSession)
-                        _session.value = updatedSession
+                        _session.value = chatRepository.updateSessionWorldBookClock(
+                            sessionId, currentSession.characterCardId, wbTimed
+                        )
                     }
                     val replyLength = currentSession.replyLength
                     val renderedFormatCardContent = activeFormatCard

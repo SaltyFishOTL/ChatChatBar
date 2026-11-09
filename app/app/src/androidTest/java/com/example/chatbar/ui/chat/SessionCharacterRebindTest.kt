@@ -195,6 +195,36 @@ class SessionCharacterRebindTest {
         assertTrue(app.characterRepository.getById(card.id)!!.characters.all { it.enabled })
     }
 
+    @Test fun lateWorldbookClockWriteKeepsQuickPeopleChoicesAndOtherLatestSettings() = runBlocking<Unit> {
+        val card = peopleCard()
+        val source = session(card.id)
+        val frozenRequestSession = requireNotNull(app.chatRepository.getSession(source.id))
+        val clock = mapOf("synthetic-entry" to TimedEffectState("synthetic-entry", 4, 8))
+        app.chatRepository.setSessionPersonEnabled(source.id, card.id, "person-a", false, app.characterRepository)
+        val afterToggle = requireNotNull(app.chatRepository.getSession(source.id))
+        app.chatRepository.saveSessionSettingsDraft(afterToggle, afterToggle.copy(replyLength = 950, title = "synthetic latest title"))
+        val latest = requireNotNull(app.chatRepository.getSession(source.id))
+        assertNotEquals(frozenRequestSession.characterParticipation, latest.characterParticipation)
+        app.chatRepository.updateSessionWorldBookClock(source.id, frozenRequestSession.characterCardId, clock)
+        val saved = requireNotNull(app.chatRepository.getSession(source.id))
+        assertEquals(latest.copy(timedWorldInfo = clock, updatedAt = saved.updatedAt), saved)
+        assertEquals(setOf("person-a"), saved.characterParticipation.single().disabledPersonIds)
+    }
+
+    @Test fun oldWorldbookClockCannotApplyAfterCardRebind() = runBlocking<Unit> {
+        val card = peopleCard()
+        val next = peopleCard()
+        val source = session(card.id)
+        val before = requireNotNull(app.chatRepository.getSession(source.id))
+        app.chatRepository.rebindSession(before, next.id, app.characterRepository)
+        val latest = requireNotNull(app.chatRepository.getSession(source.id))
+        var rejected = false
+        try { app.chatRepository.updateSessionWorldBookClock(source.id, card.id, mapOf("old-entry" to TimedEffectState("old-entry", 4, 8))) }
+        catch (_: IllegalStateException) { rejected = true }
+        assertTrue(rejected)
+        assertEquals(latest, app.chatRepository.getSession(source.id))
+    }
+
     private suspend fun peopleCard(): CharacterCard = card().copy(characters = listOf(
         CharacterInfo("person-a", "synthetic person a"), CharacterInfo("person-b", "synthetic person b")
     )).also { app.characterRepository.save(it) }

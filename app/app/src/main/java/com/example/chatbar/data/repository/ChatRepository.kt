@@ -139,6 +139,15 @@ class ChatRepository(private val storage: JsonFileStorage) {
         latest.copy(characterCardId = characterCardId, timedWorldInfo = emptyMap()).also { updateSessionLocked(it) }
     }
 
+    suspend fun updateSessionWorldBookClock(
+        sessionId: String, expectedCardId: String,
+        timedWorldInfo: Map<String, com.example.chatbar.data.local.entity.TimedEffectState>
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(sessionId) ?: error("对话已不存在")
+        check(latest.characterCardId == expectedCardId) { "对话角色卡已变化，不能写入旧卡的世界书计时" }
+        latest.copy(timedWorldInfo = timedWorldInfo).also { updateSessionLocked(it) }
+    }
+
     suspend fun setSessionPersonEnabled(
         sessionId: String, expectedCardId: String, personId: String, enabled: Boolean,
         characterRepository: CharacterRepository
