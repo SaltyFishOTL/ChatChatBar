@@ -3,6 +3,8 @@ package com.example.chatbar.data.local.entity
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.image.NovelAiImageModelResolution
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlin.uuid.ExperimentalUuidApi
 import kotlin.uuid.Uuid
 
@@ -22,10 +24,21 @@ data class SourceTurnTombstone(
     val sourceOrder: Long
 )
 
+@Serializable
+@OptIn(ExperimentalSerializationApi::class)
+data class SessionCharacterParticipation(
+    val cardId: String,
+    val disabledPersonIds: Set<String> = emptySet(),
+    @EncodeDefault(EncodeDefault.Mode.NEVER) val automaticallyPausedPersonIds: Set<String> = emptySet()
+) {
+    init { require(cardId.isNotBlank() && disabledPersonIds.all(String::isNotBlank) && automaticallyPausedPersonIds.all(String::isNotBlank)) }
+}
+
 /**
  * 聊天会话
  */
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class ChatSession(
     val id: String,
     val characterCardId: String,
@@ -79,7 +92,13 @@ data class ChatSession(
     val lastMessageRole: MessageRole? = null,
     val timedWorldInfo: Map<String, TimedEffectState> = emptyMap(),
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    @kotlinx.serialization.json.JsonNames("desktopCharacterParticipation")
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val characterParticipation: List<SessionCharacterParticipation> = emptyList(),
+    @kotlinx.serialization.json.JsonNames("desktopAutoPauseAbsentPeople")
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val autoPauseAbsentPeople: Boolean = false
 ) {
     fun resolvedNovelAiImageModel(
         characterDefault: NovelAiImageModel?,

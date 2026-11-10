@@ -46,11 +46,16 @@ class EditorDraftAssetService(private val context: Context) {
     suspend fun materializeCharacterAssets(card: CharacterCard): CharacterCard =
         withContext(Dispatchers.IO) {
         com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val paths = mutableMapOf<String, String?>()
+            fun image(path: String?): String? = path?.let {
+                paths.getOrPut(it) { materializeFile(it, "images") }
+            }
             card.copy(
-                avatar = materializeFile(card.avatar, "images"),
-                chatBackground = materializeFile(card.chatBackground, "images"),
+                avatar = image(card.avatar),
+                chatBackground = image(card.chatBackground),
+                chatBackgroundImages = card.chatBackgroundImages.mapNotNull(::image).distinct(),
                 characters = card.characters.map { character ->
-                    character.copy(appearanceImage = materializeFile(character.appearanceImage, "images"))
+                    character.copy(appearanceImage = image(character.appearanceImage))
                 },
                 customDocuments = card.customDocuments.map { doc ->
                     doc.copy(filePath = materializeFile(doc.filePath, "documents") ?: doc.filePath)
@@ -79,6 +84,7 @@ class EditorDraftAssetService(private val context: Context) {
     fun ownedAssetPaths(card: CharacterCard): List<String> = buildList {
         card.avatar?.let(::add)
         card.chatBackground?.let(::add)
+        addAll(card.chatBackgroundImages)
         card.characters.mapNotNullTo(this) { it.appearanceImage }
         card.customDocuments.mapTo(this) { it.filePath }
     }.filter(String::isNotBlank).distinct()

@@ -100,10 +100,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     suspend fun updateSession(session: ChatSession, restoreNarrativeMode: Boolean = false) {
         sessionSettingsMutex.withDataAccess {
-            val latestMode = getSession(session.id)?.narrativeMode
+            val latest = getSession(session.id)
+            // Background memory/preview writes carry snapshots. Preserve newer user choices;
+            // the existing explicit save-slot restore path restores its stored choices instead.
             updateSessionLocked(
-                if (restoreNarrativeMode || latestMode == null) session
-                else session.copy(narrativeMode = latestMode)
+                if (restoreNarrativeMode || latest == null) session
+                else session.copy(
+                    narrativeMode = latest.narrativeMode,
+                    characterParticipation = latest.characterParticipation,
+                    autoPauseAbsentPeople = latest.autoPauseAbsentPeople
+                )
             )
         }
     }
@@ -127,6 +133,36 @@ class ChatRepository(private val storage: JsonFileStorage) {
             "所选角色卡已不存在，请重新选择"
         }
         updateSessionLocked(latest.copy(characterCardId = characterCardId))
+    }
+
+    suspend fun rebindSession(
+        expected: ChatSession, characterCardId: String, characterRepository: CharacterRepository
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(expected.id) ?: error("对话已不存在")
+        check(latest == expected) { "对话已变化，请重新检查后再更换角色卡" }
+        check(characterRepository.getById(characterCardId) != null) { "所选角色卡已不存在" }
+        check(latest.characterCardId != characterCardId) { "请选择另一张角色卡" }
+        latest.copy(characterCardId = characterCardId, timedWorldInfo = emptyMap()).also { updateSessionLocked(it) }
+    }
+
+    suspend fun updateSessionWorldBookClock(
+        sessionId: String, expectedCardId: String,
+        timedWorldInfo: Map<String, com.example.chatbar.data.local.entity.TimedEffectState>
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(sessionId) ?: error("对话已不存在")
+        check(latest.characterCardId == expectedCardId) { "对话角色卡已变化，不能写入旧卡的世界书计时" }
+        latest.copy(timedWorldInfo = timedWorldInfo).also { updateSessionLocked(it) }
+    }
+
+    suspend fun setSessionPersonEnabled(
+        sessionId: String, expectedCardId: String, personId: String, enabled: Boolean,
+        characterRepository: CharacterRepository
+    ): ChatSession = sessionSettingsMutex.withDataAccess {
+        val latest = getSession(sessionId) ?: error("对话已不存在")
+        check(latest.characterCardId == expectedCardId) { "对话角色卡已变化，请重新打开人物列表" }
+        val card = characterRepository.getById(expectedCardId) ?: error("角色卡已不存在")
+        com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.change(latest, card, personId, enabled)
+            .also { updateSessionLocked(it) }
     }
 
     suspend fun saveSessionSettingsDraft(baseline: ChatSession, draft: ChatSession): ChatSession =

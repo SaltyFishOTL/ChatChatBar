@@ -112,7 +112,8 @@ fun ChatSettingsDialog(
     onDismiss: () -> Unit,
     onClearHistory: () -> Unit,
     onJumpToSource: (String) -> Unit = {},
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    onRebindCharacter: () -> Unit = {}
 ) {
     val session by viewModel.session.collectAsState()
     val models by viewModel.availableModels.collectAsState()
@@ -145,6 +146,7 @@ fun ChatSettingsDialog(
     var playerName by rememberSettingDraft(session?.playerName ?: "")
     var playerSetting by rememberSettingDraft(session?.playerSetting ?: "")
     var background by rememberSettingDraft(session?.chatBackground ?: "")
+    var participation by rememberSettingDraft(session?.characterParticipation.orEmpty())
     var audiobookModeEnabled by rememberSettingDraft(session?.audiobookModeEnabled)
     var voiceLanguage by rememberSettingDraft(session?.voiceLanguage ?: "")
     var longTermMemoryEnabled by rememberSettingDraft(session?.longTermMemoryEnabled ?: true)
@@ -215,6 +217,7 @@ fun ChatSettingsDialog(
             replyLanguage = it.replyLanguage ?: ""
             supplementary = it.supplementarySetting ?: ""; playerName = it.playerName ?: ""
             playerSetting = it.playerSetting ?: ""; background = it.chatBackground ?: ""
+            participation = it.characterParticipation
             audiobookModeEnabled = it.audiobookModeEnabled
             voiceLanguage = it.voiceLanguage ?: ""
             longTermMemoryEnabled = it.longTermMemoryEnabled
@@ -244,6 +247,7 @@ fun ChatSettingsDialog(
             playerName.takeIf(String::isNotBlank) != it.playerName ||
             playerSetting.takeIf(String::isNotBlank) != it.playerSetting ||
             background.takeIf(String::isNotBlank) != it.chatBackground ||
+            participation != it.characterParticipation ||
             audiobookModeEnabled != it.audiobookModeEnabled ||
             voiceLanguage.trim().takeIf(String::isNotBlank) != it.voiceLanguage ||
             longTermMemoryEnabled != it.longTermMemoryEnabled ||
@@ -294,6 +298,7 @@ fun ChatSettingsDialog(
                                 playerName = playerName.takeIf(String::isNotBlank),
                                 playerSetting = playerSetting.takeIf(String::isNotBlank),
                                 chatBackground = background.takeIf(String::isNotBlank),
+                                characterParticipation = participation,
                                 audiobookModeEnabled = audiobookModeEnabled,
                                 voiceLanguage = voiceLanguage,
                                 longTermMemoryEnabled = longTermMemoryEnabled,
@@ -382,7 +387,22 @@ fun ChatSettingsDialog(
                             voiceLanguage, { voiceLanguage = it },
                             longTermMemoryEnabled, { longTermMemoryEnabled = it }, { tab = 1 }, { tab = 2 },
                             { requestLeave(onClearHistory) },
-                            ::openFullscreen
+                            ::openFullscreen,
+                            backgroundImages = (listOfNotNull(characterCard?.chatBackground) + characterCard?.chatBackgroundImages.orEmpty()).distinct(),
+                            onSelectBackground = { background = it },
+                            peopleCard = characterCard,
+                            participation = participation,
+                            onPersonEnabled = { personId, checked ->
+                                val current = session
+                                val card = characterCard
+                                if (current != null && card != null) {
+                                    participation = com.example.chatbar.domain.chat.SessionCharacterParticipationPolicy.change(
+                                        current.copy(characterParticipation = participation), card, personId, checked
+                                    ).characterParticipation
+                                }
+                            },
+                            autoPauseAbsentPeople = session?.autoPauseAbsentPeople ?: false,
+                            onRebindCharacter = { requestLeave(onRebindCharacter) }
                         )
                         "长期记忆" -> LongTermMemoryContent(
                             session = session,

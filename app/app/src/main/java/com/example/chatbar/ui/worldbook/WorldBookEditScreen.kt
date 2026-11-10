@@ -99,6 +99,7 @@ fun WorldBookEditScreen(
         mutableStateOf<((Result<CharacterReferenceDocument>) -> Unit)?>(null)
     }
     val aiModels by viewModel.aiModels.collectAsState()
+    val isSaving by viewModel.isSaving.collectAsState()
     val aiDefaultModelId by viewModel.aiDefaultModelId.collectAsState()
     val aiResearchMode by viewModel.aiResearchSourceMode.collectAsState()
     val createAiState by viewModel.createAiState.collectAsState()
@@ -230,16 +231,13 @@ fun WorldBookEditScreen(
                 CbText("没有正文为空的条目，AI 填充内容暂不可用。", color = ChatBarTheme.colors.mutedForeground, style = ChatBarTheme.typography.caption)
             }
             viewModel.entries.forEachIndexed { index, entry ->
-                CbSurface(Modifier.fillMaxWidth().clickable { viewModel.openEntryDialog(index) }) {
-                    Row(Modifier.fillMaxWidth().padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            CbText(entry.name.ifBlank { "未命名条目" }, style = ChatBarTheme.typography.heading)
-                            CbText(entry.keys.joinToString(", ").ifBlank { "无触发词" }, color = ChatBarTheme.colors.mutedForeground, maxLines = 1)
-                        }
-                        CbIconButton(AppIcons.Edit, "编辑", { viewModel.openEntryDialog(index) }, tint = ChatBarTheme.colors.primary)
-                        CbIconButton(AppIcons.Delete, "删除", { deleteIndex = index }, tint = ChatBarTheme.colors.destructive)
-                    }
-                }
+                WorldBookEntryListItem(
+                    entry = entry,
+                    onEdit = { viewModel.openEntryDialog(index) },
+                    onEnabledChange = { viewModel.toggleEntry(index) },
+                    onDelete = { deleteIndex = index },
+                    enabled = !isSaving
+                )
             }
             Spacer(Modifier.height(24.dp + bottomInset))
         }

@@ -175,6 +175,7 @@ internal fun canUseChatImageLongPress(
 fun ChatScreen(
     sessionId: String,
     onBack: () -> Unit,
+    onEditCharacter: (String) -> Unit = {},
     modifier: Modifier = Modifier,
     viewModel: ChatViewModel = viewModel(key = sessionId, factory = ChatViewModelFactory(sessionId))
 ) {
@@ -289,6 +290,9 @@ fun ChatScreen(
     val selectedImages = remember { mutableStateListOf<String>() }
     var settingsOpen by remember { mutableStateOf(false) }
     var debugOpen by remember { mutableStateOf(false) }
+    var peopleOpen by remember(sessionId) { mutableStateOf(false) }
+    var peopleSaving by remember(sessionId) { mutableStateOf(false) }
+    var peopleError by remember(sessionId) { mutableStateOf<String?>(null) }
     var clearConfirm by remember { mutableStateOf(false) }
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
@@ -1139,6 +1143,11 @@ fun ChatScreen(
             title = renderedTitle,
             navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
             actions = {
+                val peopleCard = characterCard
+                val peopleSession = session
+                if (peopleCard?.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.STRUCTURED && peopleSession != null) {
+                    ChatPeopleButton(peopleSession, peopleCard) { peopleError = null; peopleOpen = true }
+                }
                 if (DebugConfig.SHOW_DEBUG_UI) CbIconButton(AppIcons.BugReport, "调试日志", { debugOpen = true }, tint = ChatBarTheme.colors.primary)
                 CbIconButton(AppIcons.Tune, "会话设置", { settingsOpen = true })
             }
@@ -1457,7 +1466,7 @@ fun ChatScreen(
     if (relinkOpen) {
         CbDialog(
             onDismissRequest = { if (!relinkBusy) relinkOpen = false },
-            title = "重新关联角色卡",
+            title = if (isArchived) "重新关联角色卡" else "更换对话角色卡",
             dismiss = {
                 CbButton("取消", { relinkOpen = false }, enabled = !relinkBusy, variant = ButtonVariant.Ghost)
             },
@@ -1482,12 +1491,12 @@ fun ChatScreen(
                             }
                         }
                     },
-                    enabled = !relinkBusy && relinkCards.any { it.id == relinkSelectedId }
+                    enabled = !relinkBusy && relinkCards.any { it.id == relinkSelectedId && it.id != characterCard?.id }
                 )
             }
         ) {
             Column(Modifier.verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                CbText("选择重新导入的角色卡，仅恢复当前对话。聊天记录、长期记忆和会话设置保留；后续回复使用所选角色卡。", color = ChatBarTheme.colors.mutedForeground)
+                CbText("选择另一张角色卡。更换前会创建恢复存档，聊天记录、长期记忆和会话设置保留；后续回复使用新卡，世界书的临时计时状态会重新开始。", color = ChatBarTheme.colors.mutedForeground)
                 if (relinkCards.isEmpty()) {
                     CbText("暂无角色卡，请先到管理页导入角色卡。")
                 }
@@ -1563,6 +1572,12 @@ fun ChatScreen(
 
     if (settingsOpen) ChatSettingsDialog(
         viewModel = viewModel,
+        onRebindCharacter = {
+            settingsOpen = false
+            relinkSelectedId = null
+            relinkError = null
+            relinkOpen = true
+        },
         onDismiss = { settingsOpen = false },
         onClearHistory = { clearConfirm = true },
         onJumpToSource = { sourceTurnId ->
@@ -1578,6 +1593,24 @@ fun ChatScreen(
             }
         }
     )
+    val peopleCard = characterCard
+    val peopleSession = session
+    if (peopleOpen && peopleCard?.editMode == com.example.chatbar.data.local.entity.CharacterEditMode.STRUCTURED && peopleSession != null) {
+        ChatPeopleDialog(
+            session = peopleSession, card = peopleCard, enabled = !peopleSaving && !saveSlotOperation.busy,
+            error = peopleError,
+            onPersonEnabled = { personId, enabled ->
+                peopleSaving = true
+                peopleError = null
+                viewModel.setPersonEnabled(personId, enabled) { result ->
+                    peopleSaving = false
+                    peopleError = result.exceptionOrNull()?.message
+                }
+            },
+            onEditCard = { peopleOpen = false; onEditCharacter(peopleCard.id) },
+            onDismiss = { peopleOpen = false }
+        )
+    }
     if (debugOpen) DebugLogDialog(sessionId, viewModel, { debugOpen = false })
     if (session?.memoryUpdateStatus == MemoryUpdateStatus.LIMIT_DECISION_REQUIRED &&
         !memoryLimitDialogDismissed
@@ -1767,7 +1800,7 @@ fun ChatScreen(
     }
     actionSegment?.let { segment ->
         val target = messages.find { it.id == segment.messageId }
-        val canRegenerate = target?.id == regenerableId && !isResponding
+        val canRegenerate = target?.id == regenerableId && !isResponding && !saveSlotOperation.busy
         val segmentActions = mutableListOf(
             SegmentMenuAction("复制", "复制本段", AppIcons.ContentCopy, onClick = {
                 clipboardManager.setText(AnnotatedString(segment.copyText))
@@ -1871,7 +1904,7 @@ fun ChatScreen(
     }
     actionMessageId?.let { id ->
         val target = messages.find { it.id == id }
-        val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding
+        val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding && !saveSlotOperation.busy
         CbDialog(
             onDismissRequest = { actionMessageId = null },
             title = "消息操作",

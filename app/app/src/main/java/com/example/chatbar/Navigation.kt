@@ -292,7 +292,8 @@ fun MainNavigation(
                         )
                     }
                     entry<ChatRoute> { key ->
-                        ChatScreen(sessionId = key.sessionId, onBack = ::popBackStack)
+                        ChatScreen(sessionId = key.sessionId, onBack = ::popBackStack,
+                            onEditCharacter = { id -> pushRoute(CharacterEditRoute(characterId = id)) })
                     }
                     entry<CharacterEditRoute> { key ->
                         CharacterEditScreen(characterId = key.characterId, draftId = key.draftId, onBack = ::popBackStack)

@@ -53,6 +53,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 
 ## UI and Lifecycle
 
+- ChatScreen hides/disables regeneration in whole-message/segment menus during archive work. ChatViewModel checks admission before changing response state and again after message reads. Once regeneration reserves response state, sendMessageInternal must enter its normal completion cleanup even if an archive starts meanwhile. SessionCharacterRebindTest covers busy-archive admission without hiding the original reply.
 - Session settings retain a dedicated 存档 tab. Before loading, the settings host resolves pending parameter drafts through save/discard/continue, then rebases on restored session values; switching tool tabs alone keeps parameter drafts.
 
 - Default new SaveSlot to no images. Offer compressed and original policies explicitly; audio inclusion is independent.
@@ -66,3 +67,5 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 2. Check cancellation before materialization, during media copy, and during transactional replacement.
 3. Check schema 1–7 listing/export/load separately from v8.
 4. Verify default no-image, compressed-image, original-image, and audio-off paths without increasing peak memory with archive size.
+
+- Normal character rebinding reuses ChatViewModel.captureSaveSlot to persist an original-media/audio recovery archive before ChatRepository.rebindSession checks the exact captured latest session. Only characterCardId and timedWorldInfo change; history, memory, recordings and other settings remain. A failed stale-state rebind retains the already committed recovery archive. SaveSlot carries per-card characterParticipation and auto-pause state for restoration; archive summaries stream chatBackground to protect referenced gallery originals without loading message arrays.

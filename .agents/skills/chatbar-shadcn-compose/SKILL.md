@@ -51,6 +51,8 @@ Read [references/shadcn-compose.md](references/shadcn-compose.md) before creatin
 
 ## API Rules
 
+- World-book list rows use `WorldBookEntryListItem`; their enable switch updates the existing editor draft through `WorldBookEditViewModel.toggleEntry`, while formal persistence still uses Save. The switch owns its touch target independently of the row's edit action.
+
 - Character editor resource bindings use `CharacterResourcePicker` in `CharacterEditScreen.kt`: compact summary buttons open searchable, height-bounded lazy lists; format cards are single-select and world books multi-select. `CharacterEditViewModel` subscribes to both repository flows for live create/edit/delete updates. Missing bindings remain visible for explicit removal rather than silently rewriting the draft.
 
 - `SegmentActionScope` supplies redundant scope cues in the floating menu: 本段 uses an Article icon and muted surface; 整条 uses Layers, accent surface and primary foreground. Delete stays destructive in both rows; scope styling must not alter callbacks or target IDs.
@@ -93,3 +95,7 @@ A screen is migrated only when:
 - Kotlin compile passes.
 
 Full migration completes only when Material 3 dependency is removed and CI-equivalent verification passes.
+
+- CharacterEditScreen has one compact horizontally scrolling chat background gallery plus the legacy default-background picker; ChatSettingsDialog chooses gallery images in the existing background detail. CharacterRow owns an independent 48dp enabled switch. SessionSettingsContent exposes structured-person participation without rewriting card data or history; disabled-at-card people must be enabled on the card first. ChatPeopleControls provides the live active/total entry immediately before Debug in ChatScreen, a bounded avatar/name/switch list and disabled-card switch navigation to CharacterEditRoute. Quick toggles persist one person through ChatRepository.setSessionPersonEnabled under the existing settings mutex; returning from card editing uses the existing card repository observer.
+
+- CbTopBar keeps titles on one ellipsized line inside its fixed-height row. ChatPeopleControlsTest includes navigation plus all three chat actions at320dp and inspects actual text layout, avoiding clipped wrapped titles when adding the people counter.

@@ -35,7 +35,14 @@ internal fun SessionSettingsContent(
     voiceLanguage: String, onVoiceLanguage: (String) -> Unit,
     longTermMemoryEnabled: Boolean, onLongTermMemoryEnabled: (Boolean) -> Unit,
     onOpenMemory: () -> Unit, onOpenRag: () -> Unit, onClearHistory: () -> Unit,
-    openFullscreen: (String, String, (String) -> Unit) -> Unit
+    openFullscreen: (String, String, (String) -> Unit) -> Unit,
+    backgroundImages: List<String> = emptyList(),
+    onSelectBackground: (String) -> Unit = {},
+    peopleCard: CharacterCard? = null,
+    participation: List<SessionCharacterParticipation> = emptyList(),
+    onPersonEnabled: (String, Boolean) -> Unit = { _, _ -> },
+    autoPauseAbsentPeople: Boolean = false,
+    onRebindCharacter: () -> Unit = {}
 ) {
     var showWorldBooks by remember { mutableStateOf(false) }
     val modelOptions = models.map { SessionOption(it.id, it.displayName) }
@@ -48,7 +55,30 @@ internal fun SessionSettingsContent(
         SettingsCategory("voice", "语音与朗读", "听书${if (audiobookModeEnabled ?: globalAudiobookModeEnabled) "开" else "关"} · ${voiceLanguage.ifBlank { "原文语言" }}"),
         SettingsCategory("memory", "记忆与清理", if (longTermMemoryEnabled) "长期记忆已开启" else "长期记忆已关闭")
     )
-    val entries = listOf(
+    val entries = listOfNotNull(
+        SettingsEntry("rebind", "world", "更换对话角色卡", "关联 换绑 保留历史") {
+            CbField("更换对话角色卡", description = "保留当前聊天、记忆和会话设置；更换前会创建恢复存档。") {
+                CbButton("更换角色卡", onRebindCharacter)
+            }
+        },
+        if (peopleCard?.editMode == CharacterEditMode.STRUCTURED && peopleCard.characters.isNotEmpty()) {
+            SettingsEntry("people", "world", "会话人物启停", "角色 参与 开启 关闭") {
+                CbField("会话人物启停", description = "只影响后续请求中的人物资料，已保存的设定和历史消息会保留。") {
+                    val state = participation.singleOrNull { it.cardId == peopleCard.id }
+                    peopleCard.characters.forEach { person ->
+                        val checked = person.enabled && person.id !in state?.disabledPersonIds.orEmpty() &&
+                            (!autoPauseAbsentPeople || person.id !in state?.automaticallyPausedPersonIds.orEmpty())
+                        androidx.compose.foundation.layout.Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Column(Modifier.weight(1f)) {
+                                CbText(person.name)
+                                if (!person.enabled) CbText("已在角色卡中关闭，请先到角色卡编辑器启用。", style = ChatBarTheme.typography.caption)
+                            }
+                            SettingsSwitch(checked, { onPersonEnabled(person.id, it) }, label = person.name, enabled = person.enabled)
+                        }
+                    }
+                }
+            }
+        } else null,
         SettingsEntry("model", "reply", "会话对话模型", "默认对话模型 API") {
             InheritedSelect("会话对话模型", modelId, defaultModelId, modelOptions, onModel)
         },
@@ -81,6 +111,9 @@ internal fun SessionSettingsContent(
         SettingsEntry("background", "player", "聊天背景", "背景覆盖 恢复默认") {
             SettingsDetails("聊天背景", if (background.isBlank()) "跟随角色卡／默认背景" else "本会话已指定", browser.target == "background") {
                 if (background.isNotBlank()) AsyncImage(File(background), "聊天背景预览", Modifier.fillMaxWidth().height(120.dp), contentScale = ContentScale.Crop)
+                if (backgroundImages.isNotEmpty()) {
+                    com.example.chatbar.ui.components.ChatBackgroundGallery(backgroundImages, background, onSelectBackground)
+                }
                 CbButton("选择图片", onPickBackground)
                 if (background.isNotBlank()) CbButton("恢复角色默认背景", onClearBackground, variant = ButtonVariant.Ghost)
             }

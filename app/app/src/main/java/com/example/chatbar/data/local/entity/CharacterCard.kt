@@ -58,7 +58,10 @@ data class CharacterCard(
     @EncodeDefault(EncodeDefault.Mode.NEVER)
     val pendingSpeakerRenameTasks: List<SpeakerTagRenameTask> = emptyList(),
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /** Original chat images available to new and existing conversations; default remains chatBackground. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val chatBackgroundImages: List<String> = emptyList()
 ) {
     val effectiveBotName: String
         get() = botName.takeIf(String::isNotBlank) ?: name
@@ -104,6 +107,7 @@ enum class RagIndexStatus {
  * 单个角色信息
  */
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class CharacterInfo(
     val id: String,
     val name: String,
@@ -117,7 +121,10 @@ data class CharacterInfo(
     val relationships: String = "",
     val speakingStyle: String = "",
     val imagePrompt: String = "",
-    val fishAudioVoice: FishAudioVoiceBinding? = null
+    val fishAudioVoice: FishAudioVoiceBinding? = null,
+    @kotlinx.serialization.json.JsonNames("desktopEnabled")
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val enabled: Boolean = true
 ) {
     companion object {
         @OptIn(ExperimentalUuidApi::class)

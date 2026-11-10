@@ -40,13 +40,13 @@ class CharacterCardPackageTest {
         assertFalse(encoded.contains("createdAt"))
         assertFalse(encoded.contains("updatedAt"))
         assertFalse(encoded.contains("pendingSpeakerRenameTasks"))
-        assertTrue(encoded.contains("\"schemaVersion\":9"))
+        assertTrue(encoded.contains("\"schemaVersion\":10"))
         assertEquals(packageData, json.decodeFromString(CharacterCardPackage.serializer(), encoded))
     }
 
     @Test
     fun legacyPackageSchemasDefaultBotNameToBlank() {
-        (3..8).forEach { schemaVersion ->
+        (3..9).forEach { schemaVersion ->
             val packageData = json.decodeFromString(
                 CharacterCardPackage.serializer(),
                 """{"schemaVersion":$schemaVersion,"card":{"name":"旧角色卡"}}"""
@@ -57,6 +57,7 @@ class CharacterCardPackageTest {
             assertEquals("", packageData.card.botName)
             assertEquals(null, packageData.card.defaultNovelAiImageModel)
             assertEquals(null, packageData.defaultFormatCard)
+            assertTrue(packageData.card.chatBackgroundImageResourceIds.isEmpty())
         }
     }
 
