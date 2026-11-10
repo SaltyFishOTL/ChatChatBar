@@ -24,7 +24,7 @@ object CharacterBackgroundRetention {
     suspend fun currentReferences(app: ChatBarApp, excludedCardId: String? = null): List<String> = references(
         app.characterRepository.getAll().filterNot { it.id == excludedCardId },
         app.chatRepository.getAllSessions(),
-        app.editorDraftRepository.getAll().filterNot { excludedCardId != null && it.targetId == excludedCardId },
+        app.editorDraftRepository.getAll(),
         app.saveSlotRepository.getAll()
     )
 }

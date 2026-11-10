@@ -8,8 +8,10 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -259,6 +261,32 @@ class SessionCharacterRebindTest {
         sessions += source.id
         app.chatRepository.updateSession(source)
         assertEquals(source.characterParticipation, app.chatRepository.getSession(source.id)!!.characterParticipation)
+    }
+
+    @Test fun regenerationDuringSaveSlotLeavesReplyAndResponseStateUntouched() = runBlocking<Unit> {
+        val source = session(card().id)
+        val reply = ChatMessage.create(source.id, MessageRole.ASSISTANT, "synthetic original reply")
+        app.chatRepository.addMessage(reply)
+        val storedReply = requireNotNull(app.chatRepository.getMessage(reply.id, source.id))
+        val vm = editor(source.id)
+        withTimeout(10_000) { vm.messages.first { messages -> messages.any { it.id == reply.id } } }
+        val before = vm.messages.value
+        // Seed the operation boundary without racing actual archive disk throughput.
+        val field = ChatViewModel::class.java.getDeclaredField("_saveSlotOperation").apply { isAccessible = true }
+        @Suppress("UNCHECKED_CAST")
+        val operation = field.get(vm) as MutableStateFlow<SaveSlotOperationState>
+        try {
+            withContext(Dispatchers.Main) {
+                operation.value = SaveSlotOperationState(busy = true, status = "synthetic archive in progress")
+                vm.regenerateResponse(reply.id)
+            }
+            delay(500)
+            assertFalse(vm.isResponding.value)
+            assertEquals(before, vm.messages.value)
+            assertEquals(storedReply, app.chatRepository.getMessage(reply.id, source.id))
+        } finally {
+            withContext(Dispatchers.Main) { operation.value = SaveSlotOperationState() }
+        }
     }
 
     private suspend fun peopleCard(): CharacterCard = card().copy(characters = listOf(

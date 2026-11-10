@@ -2578,7 +2578,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         alternativeTargetMessageId: String? = null,
         respondingAlreadyStarted: Boolean = false
     ) {
-        if (_saveSlotOperation.value.busy || (_isResponding.value && !respondingAlreadyStarted)) return
+        // Regeneration has already reserved response state; it must reach its completion cleanup.
+        if (!respondingAlreadyStarted && (_saveSlotOperation.value.busy || _isResponding.value)) return
 
         _activeResponseNarrativeMode.value = requestNarrativeMode
 
@@ -3985,7 +3986,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     /** 重新生成指定 AI 文本回复，保留其消息 ID 与时间轴位置。 */
     fun regenerateResponse(messageId: String) {
-        if (_isResponding.value || _isArchived.value) return
+        if (_isResponding.value || _isArchived.value || _saveSlotOperation.value.busy) return
         val requestNarrativeMode = snapshotNarrativeMode()
 
         viewModelScope.launch {
@@ -4004,6 +4005,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 else -> return@launch
             }
 
+            // Repository reads above can suspend while a save-slot operation starts.
+            if (_isResponding.value || _isArchived.value || _saveSlotOperation.value.busy) return@launch
             _isResponding.value = true
             val retryErrorMessageId = selectedMessage.id.takeIf { selectedMessage.id != targetMessage.id }
             val generationMessages = currentMessages.filterNot { it.id == retryErrorMessageId }

@@ -706,11 +706,12 @@ class CharacterEditViewModel(
             charactersList.addAll(effectiveCard.characters)
             documentsList.clear()
             documentsList.addAll(effectiveCard.customDocuments)
-            cleanupAfterCharacterSave(oldCard, effectiveCard)
             draftJob?.cancelAndJoin()
             draftJob = null
             loadedDraft?.id?.let { draftRepository.delete(it) }
             draftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, characterId)
+            // Consumed drafts no longer retain images removed by this save; other drafts still do.
+            cleanupAfterCharacterSave(oldCard, effectiveCard)
             loadedDraft?.draftSessionId?.let { draftAssetService.deleteDraft(it) } ?: draftAssetService.deleteDraft(draftSessionId)
             pendingDeletedAssets.clear()
             pendingDeletedDocumentIds.clear()

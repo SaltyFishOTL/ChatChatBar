@@ -1800,7 +1800,7 @@ fun ChatScreen(
     }
     actionSegment?.let { segment ->
         val target = messages.find { it.id == segment.messageId }
-        val canRegenerate = target?.id == regenerableId && !isResponding
+        val canRegenerate = target?.id == regenerableId && !isResponding && !saveSlotOperation.busy
         val segmentActions = mutableListOf(
             SegmentMenuAction("复制", "复制本段", AppIcons.ContentCopy, onClick = {
                 clipboardManager.setText(AnnotatedString(segment.copyText))
@@ -1904,7 +1904,7 @@ fun ChatScreen(
     }
     actionMessageId?.let { id ->
         val target = messages.find { it.id == id }
-        val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding
+        val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding && !saveSlotOperation.busy
         CbDialog(
             onDismissRequest = { actionMessageId = null },
             title = "消息操作",

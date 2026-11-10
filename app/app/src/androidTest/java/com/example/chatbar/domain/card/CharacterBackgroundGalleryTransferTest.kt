@@ -7,6 +7,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.domain.draft.EditorDraftAssetService
 import java.io.File
 import java.util.UUID
@@ -25,6 +26,7 @@ class CharacterBackgroundGalleryTransferTest {
     private val cards = mutableListOf<String>()
     private val files = mutableListOf<File>()
     private val sessions = mutableListOf<String>()
+    private val draftTargets = mutableListOf<String>()
 
     @Before fun setup() {
         runBlocking {
@@ -35,6 +37,7 @@ class CharacterBackgroundGalleryTransferTest {
 
     @After fun cleanup() {
         runBlocking {
+            for (id in draftTargets) app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, id)
             for (id in sessions) app.chatRepository.deleteSessionRecord(id)
             for (id in cards) app.characterCardTransferService.deleteCard(id)
             files.forEach { it.delete() }
@@ -77,6 +80,45 @@ class CharacterBackgroundGalleryTransferTest {
         cards.remove(source.id)
         assertTrue(picture.isFile)
         assertEquals(picture.absolutePath, app.chatRepository.getSession(session.id)!!.chatBackground)
+    }
+
+    @Test fun overwriteKeepsOriginalGalleryStillReferencedBySameCardDraft() = runBlocking<Unit> {
+        val source = cardWithGalleryDraft()
+        val picture = File(source.chatBackgroundImages.single())
+        val original = picture.readBytes()
+        val packageData = app.characterCardTransferService.decode(app.characterCardTransferService.exportJson(source.id))
+
+        app.characterCardTransferService.overwrite(source.id, packageData)
+
+        assertArrayEquals(original, picture.readBytes())
+        assertEquals(source.chatBackgroundImages,
+            app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, source.id)!!.characterPayload!!.chatBackgroundImages)
+    }
+
+    @Test fun deleteKeepsGalleryForOrphanDraftRecovery() = runBlocking<Unit> {
+        val source = cardWithGalleryDraft()
+        val picture = File(source.chatBackgroundImages.single())
+        val original = picture.readBytes()
+
+        app.deletionCoordinator.deleteCharacter(source.id)
+
+        assertNull(app.characterRepository.getById(source.id))
+        val draft = app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, source.id)!!
+        assertArrayEquals(original, File(draft.characterPayload!!.chatBackgroundImages.single()).readBytes())
+    }
+
+    private suspend fun cardWithGalleryDraft(): CharacterCard {
+        val picture = File(app.cacheDir, "synthetic-draft-gallery-${UUID.randomUUID()}.png")
+            .also { fill(it, Color.BLUE); files += it }
+        val source = CharacterCard.create("synthetic-draft-gallery").copy(
+            chatBackgroundImages = listOf(picture.absolutePath), momentsEnabled = false)
+        cards += source.id
+        draftTargets += source.id
+        app.characterRepository.save(source)
+        app.editorDraftRepository.save(app.editorDraftRepository.characterDraft(
+            source.id, UUID.randomUUID().toString(), source.copy(creatorNotes = "synthetic unsaved note"),
+            source, emptyList(), emptyList(), emptyList()))
+        return source
     }
 
     private fun fill(file: File, color: Int) {

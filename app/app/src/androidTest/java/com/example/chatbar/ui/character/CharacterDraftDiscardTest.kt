@@ -10,6 +10,7 @@ import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.domain.image.NovelAiCharacterImageSettings
 import com.example.chatbar.domain.image.NovelAiImageModel
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +33,7 @@ class CharacterDraftDiscardTest {
     private val stores = mutableListOf<ViewModelStore>()
     private val cardIds = mutableListOf<String>()
     private var openedNewCard = false
+    private val files = mutableListOf<File>()
 
     @Before
     fun awaitDependencies() = runBlocking {
@@ -50,6 +52,7 @@ class CharacterDraftDiscardTest {
         if (openedNewCard) {
             app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, null)
         }
+        files.forEach { it.delete() }
     }
 
     @Test
@@ -156,6 +159,33 @@ class CharacterDraftDiscardTest {
         }
         delay(1_000)
         assertNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+    }
+
+    @Test
+    fun savingGalleryRemovalDoesNotRetainTheConsumedDraftsOldImage() = runBlocking {
+        val picture = File(app.cacheDir, "synthetic-gallery-removal-${UUID.randomUUID()}.png")
+            .also { it.writeBytes(byteArrayOf(1, 2, 3)); files += it }
+        val source = fixture().copy(chatBackgroundImages = listOf(picture.absolutePath))
+        app.characterRepository.save(source)
+        val vm = editor(source.id)
+        val drafted = CompletableDeferred<Unit>()
+        withContext(Dispatchers.Main) {
+            vm.creatorNotes = "synthetic pending note"
+            vm.scheduleDraftSave()
+            vm.saveDraftAndExit { drafted.complete(Unit) }
+        }
+        withTimeout(10_000) { drafted.await() }
+        val saved = CompletableDeferred<Unit>()
+
+        withContext(Dispatchers.Main) {
+            vm.removeChatBackground(picture.absolutePath)
+            vm.saveCharacterCard({ saved.complete(Unit) })
+        }
+
+        withTimeout(10_000) { saved.await() }
+        assertFalse(picture.exists())
+        assertEquals(emptyList<String>(), app.characterRepository.getById(source.id)!!.chatBackgroundImages)
+        assertNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, source.id))
     }
 
     private suspend fun fixture(): CharacterCard {
