@@ -73,6 +73,15 @@ fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
     return attachRoleplaySpeakerPrefixes(content, segments)
 }
 
+/** Raw boundaries reused by read-only action projections; never edit message storage here. */
+fun roleplayLongDashRawRanges(content: String): List<IntRange> {
+    val visible = visibleRoleplayText(content)
+    return findLongDashWrappedRanges(visible.text, 0, visible.text.length).mapNotNull { range ->
+        if (range.start >= range.endExclusive || range.endExclusive > visible.rawIndexes.size) null
+        else visible.rawIndexes[range.start]..visible.rawIndexes[range.endExclusive - 1]
+    }
+}
+
 fun stripRoleplaySpeakerMarkers(content: String): String =
     roleplaySpeakerMarkerPattern.replace(content, "")
 

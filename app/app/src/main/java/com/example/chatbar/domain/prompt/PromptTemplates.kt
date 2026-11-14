@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.image.NovelAiImageModel
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
@@ -2208,11 +2209,18 @@ JSON only, no Markdown, no explanation:
         playerName: String? = null,
         botName: String = "",
         preserveUsername: Boolean = false
-    ): String = if (preserveUsername) {
-        renderNovelAiChatPromptText(message.displayContent, playerName, botName)
-    } else {
-        renderNovelAiPromptText(message.displayContent, playerName, botName)
+    ): String {
+        val scene = novelAiImagePromptSceneSource(message)
+        return if (preserveUsername) {
+            renderNovelAiChatPromptText(scene, playerName, botName)
+        } else {
+            renderNovelAiPromptText(scene, playerName, botName)
+        }
     }
+
+    private fun novelAiImagePromptSceneSource(message: ChatMessage): String =
+        if (message.role == MessageRole.ASSISTANT)
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent) else message.displayContent
 
     fun novelAiImagePromptConversation(
         messages: List<ChatMessage>,
@@ -2225,7 +2233,7 @@ JSON only, no Markdown, no explanation:
         appendLine("Design an image for this scene. Recent messages:")
         messages.forEach {
             val role = if (it.role == MessageRole.USER) "User" else "Assistant"
-            appendLine("$role: ${it.displayContent}")
+            appendLine("$role: ${novelAiImagePromptSceneSource(it)}")
         }
         appendNovelAiImageManualRequirements(
             imageContentHint = imageContentHint,
