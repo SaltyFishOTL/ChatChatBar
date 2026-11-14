@@ -1,0 +1,104 @@
+name: ChatBar documentation auto-merge
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_run:
+    workflows: [Android CI]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+  pull-requests: read
+
+jobs:
+  merge:
+    if: >-
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request &&
+       github.event.comment.user.id == github.event.repository.owner.id &&
+       startsWith(github.event.comment.body, '<!-- chatbar-doc-review-pass:')) ||
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' &&
+       github.event.workflow_run.conclusion == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const repo = context.repo;
+            const ownerId = context.payload.repository.owner.id;
+            const ciWorkflow = 'android-ci.yml';
+            const run = context.payload.workflow_run;
+            const comment = context.payload.comment;
+            const trustedPass = (comment, sha) =>
+              comment.user?.id === ownerId &&
+              comment.body?.split(/\r?\n/, 1)[0] === `<!-- chatbar-doc-review-pass:${sha} -->`;
+
+            if (run) {
+              const { data: workflow } = await github.rest.actions.getWorkflow({
+                ...repo, workflow_id: ciWorkflow,
+              });
+              if (run.workflow_id !== workflow.id) return;
+            }
+
+            const candidates = comment ? [context.issue.number] :
+              (await github.paginate(github.rest.pulls.list, {
+                ...repo, state: 'open', base: 'master', per_page: 100,
+              })).filter(pr => pr.head.sha === run.head_sha && !pr.draft).map(pr => pr.number);
+
+            for (const number of candidates) {
+              const { data: pr } = await github.rest.pulls.get({ ...repo, pull_number: number });
+              const sha = pr.head.sha;
+              const marker = comment && trustedPass(comment, sha);
+              if (pr.state !== 'open' || pr.draft || pr.base.ref !== 'master' ||
+                  (run && run.head_sha !== sha) || (comment && !marker)) continue;
+
+              const files = await github.paginate(github.rest.pulls.listFiles, {
+                ...repo, pull_number: number, per_page: 100,
+              });
+              const isDocument = file =>
+                ['added', 'modified'].includes(file.status) && typeof file.patch === 'string' &&
+                (file.filename === 'README.md' || /^doc\/(?:[\w-]+\/)*[\w.-]+\.md$/.test(file.filename));
+              if (!files.length || files.length !== pr.changed_files || !files.every(isDocument)) continue;
+
+              // GitHub's file list omits modes. Reject symlinks, mode changes and binary diffs.
+              const { data: diff } = await github.rest.pulls.get({
+                ...repo, pull_number: number, mediaType: { format: 'diff' },
+              });
+              if (typeof diff !== 'string' || (diff.match(/^diff --git /gm) || []).length !== files.length ||
+                  /^(?:old mode |new mode |new file mode (?!100644$)|deleted file mode |Binary files |GIT binary patch)/m.test(diff) ||
+                  /^index [0-9a-f]+\.\.[0-9a-f]+ (?!100644$)\d+$/m.test(diff)) continue;
+
+              const comments = await github.paginate(github.rest.issues.listComments, {
+                ...repo, issue_number: number, per_page: 100,
+              });
+              if (!comments.some(entry => trustedPass(entry, sha))) continue;
+
+              const { data: runs } = await github.rest.actions.listWorkflowRuns({
+                ...repo, workflow_id: ciWorkflow, event: 'pull_request', head_sha: sha, per_page: 100,
+              });
+              const latest = runs.workflow_runs.find(candidate =>
+                candidate.head_sha === sha && candidate.head_repository?.id === pr.head.repo?.id);
+              if (latest?.conclusion !== 'success' ||
+                  (latest.pull_requests?.length && !latest.pull_requests.some(item => item.number === number))) continue;
+
+              const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+                ...repo, run_id: latest.id,
+              });
+              if (!jobs.jobs.some(job => job.name === 'Test and package' && job.conclusion === 'success')) continue;
+
+              const { data: current } = await github.rest.pulls.get({ ...repo, pull_number: number });
+              if (current.head.sha !== sha || current.base.sha !== pr.base.sha || current.base.ref !== 'master' ||
+                  current.state !== 'open' || current.draft || current.mergeable_state !== 'clean') continue;
+
+              try {
+                const { data: merged } = await github.rest.pulls.merge({
+                  ...repo, pull_number: number, sha, merge_method: 'squash',
+                });
+                if (!merged.merged) core.warning(`PR #${number}: ${merged.message}`);
+              } catch (error) {
+                if (![405, 409].includes(error.status)) throw error;
+                core.notice(`PR #${number} was not mergeable at ${sha}.`);
+              }
+            }
