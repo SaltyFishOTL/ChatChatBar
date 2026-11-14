@@ -107,13 +107,13 @@ fun ModelEditScreen(
             CbField("显示名称") {
                 CbInput(viewModel.displayName, { viewModel.displayName = it }, placeholder = "例如：ChatGPT-4o")
             }
-            CbField("接口模板类型") {
+            CbField("OpenAI 兼容接口预设") {
                 CbSelect(
                     value = viewModel.templateType,
                     options = ModelTemplate.entries.toList(),
                     optionLabel = { it.name },
                     onValueChange = viewModel::applyTemplateDefaults,
-                    placeholder = "选择接口模板"
+                    placeholder = "选择接口预设"
                 )
             }
             CbField("Base URL") {

@@ -20,6 +20,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
+import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import com.example.chatbar.domain.model.ModelDiscoveryService
 import com.example.chatbar.domain.model.resolveEffectiveModelApiKey
 
@@ -168,8 +169,8 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 modelName = "claude-3-5-sonnet-latest"
             }
             ModelTemplate.GEMINI -> {
-                baseUrl = "https://generativelanguage.googleapis.com/v1beta"
-                modelName = "gemini-2.5-flash"
+                baseUrl = GeminiOpenAiEndpoint.BASE_URL
+                modelName = "gemini-3.5-flash-lite"
             }
             ModelTemplate.CUSTOM -> {
                 // 自定义保持空白
