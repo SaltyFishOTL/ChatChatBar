@@ -18,6 +18,7 @@ import com.example.chatbar.domain.prompt.AiTaskStage
 import com.example.chatbar.domain.prompt.withAiTaskRun
 import com.example.chatbar.domain.prompt.rethrowIfAiTaskTerminalFailure
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.utils.DebugLogManager
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.collect
@@ -857,7 +858,9 @@ class NovelAiPromptDesigner(
         ): List<ChatMessage> {
             val msg = messages.firstOrNull { it.id == anchorMessageId }
                 ?: return emptyList()
-            if (msg.role == MessageRole.SYSTEM || msg.displayContent.isBlank()) return emptyList()
+            val scene = if (msg.role == MessageRole.ASSISTANT)
+                RoleplayActionOptionsPolicy.withoutExplicitOptions(msg.displayContent) else msg.displayContent
+            if (msg.role == MessageRole.SYSTEM || scene.isBlank()) return emptyList()
             return listOf(msg)
         }
 

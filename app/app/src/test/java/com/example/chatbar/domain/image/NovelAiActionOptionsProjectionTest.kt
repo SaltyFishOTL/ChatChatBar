@@ -38,5 +38,6 @@ class NovelAiActionOptionsProjectionTest {
         val message = ChatMessage.create("synthetic", MessageRole.ASSISTANT, options)
         assertTrue(PromptTemplates.novelAiImagePromptAssistantScene(message).isBlank())
         assertEquals(options, message.content)
+        assertTrue(NovelAiPromptDesigner.contextForAnchor(listOf(message), message.id).isEmpty())
     }
 }
