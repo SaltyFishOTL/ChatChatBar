@@ -1,0 +1,161 @@
+name: ChatBar issue auto-fix
+
+on:
+  issues:
+    types: [labeled]
+
+permissions: {}
+
+concurrency:
+  group: chatbar-autofix-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  generate:
+    if: github.event.label.name == 'auto-fix' && github.event.issue.state == 'open'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      has_patch: ${{ steps.patch.outputs.has_patch }}
+    steps:
+      - name: Check label author and existing fix
+        id: gate
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const { data: author } = await github.rest.repos.getCollaboratorPermissionLevel({
+              owner, repo, username: context.payload.sender.login,
+            });
+            const role = author.role_name || author.permission;
+            if (!['admin', 'maintain'].includes(role)) return;
+            const existing = await github.paginate(github.rest.pulls.list, {
+              owner, repo, state: 'open', base: 'master', per_page: 100,
+            });
+            const prefix = `codex/issue-${context.issue.number}-`;
+            core.setOutput('authorized', !existing.some(pr =>
+              pr.head.repo?.id === context.payload.repository.id && pr.head.ref.startsWith(prefix)));
+
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        if: steps.gate.outputs.authorized == 'true'
+        with:
+          persist-credentials: false
+
+      - name: Prepare issue context
+        if: steps.gate.outputs.authorized == 'true'
+        env:
+          CODEX_TASK: ${{ vars.CHATBAR_CODEX_ISSUE_INSTRUCTIONS }}
+          HAS_OPENAI_KEY: ${{ secrets.OPENAI_API_KEY != '' }}
+        run: |
+          if [[ "$HAS_OPENAI_KEY" != true || -z "$CODEX_TASK" ]]; then
+            echo '::error::Configure OPENAI_API_KEY and CHATBAR_CODEX_ISSUE_INSTRUCTIONS in repository settings.'
+            exit 1
+          fi
+          printf '%s\n\n' "$CODEX_TASK" > "$RUNNER_TEMP/chatbar-issue-prompt.txt"
+          jq -c '.issue | {number, title, body}' "$GITHUB_EVENT_PATH" >> "$RUNNER_TEMP/chatbar-issue-prompt.txt"
+
+      - name: Generate fix with Codex
+        if: steps.gate.outputs.authorized == 'true'
+        uses: openai/codex-action@bdf19a4a223ec2549a3e2274a0cf61556bc07675 # v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ':workspace'
+          prompt-file: ${{ runner.temp }}/chatbar-issue-prompt.txt
+
+      - name: Export patch
+        id: patch
+        if: steps.gate.outputs.authorized == 'true'
+        run: |
+          mkdir "$RUNNER_TEMP/chatbar-fix"
+          git add --all
+          git diff --cached --binary --no-ext-diff --no-textconv HEAD -- > "$RUNNER_TEMP/chatbar-fix/issue.patch"
+          git rev-parse HEAD > "$RUNNER_TEMP/chatbar-fix/base"
+          if [[ -s "$RUNNER_TEMP/chatbar-fix/issue.patch" ]]; then
+            echo 'has_patch=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'Codex did not produce a patch.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.patch.outputs.has_patch == 'true'
+        with:
+          name: chatbar-issue-fix
+          path: ${{ runner.temp }}/chatbar-fix/
+          retention-days: 1
+
+  open-pr:
+    needs: generate
+    if: needs.generate.outputs.has_patch == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: chatbar-issue-fix
+          path: ${{ runner.temp }}/chatbar-fix
+
+      - name: Check patch and publish a draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          fix="$RUNNER_TEMP/chatbar-fix"
+          [[ "$(cat "$fix/base")" == "$(git rev-parse HEAD)" ]]
+          [[ "$(wc -c < "$fix/issue.patch")" -le 25000 ]]
+          git apply --index "$fix/issue.patch"
+          python3 - <<'PY'
+          import re
+          import subprocess
+
+          def diff(*args):
+              return subprocess.check_output(['git', 'diff', '--cached', '--no-renames', *args])
+
+          paths = diff('--name-only', '-z').decode().rstrip('\0').split('\0')
+          allowed = re.compile(
+              r'(?:README\.md|doc/(?:[\w-]+/)*[\w.-]+\.md|'
+              r'app/app/src/main/java/com/example/chatbar/ui/(?:[\w-]+/)+[\w-]+\.kt|'
+              r'app/app/src/main/res/values(?:-[\w-]+)?/strings\.xml)'
+          )
+          if not 1 <= len(paths) <= 3 or not all(allowed.fullmatch(path) for path in paths):
+              raise SystemExit('Patch is outside the auto-fix scope.')
+
+          for line in diff('--raw').splitlines():
+              if not re.match(rb'^:(?:000000|100644) 100644 [0-9a-f]+ [0-9a-f]+ [AM]\t', line):
+                  raise SystemExit('Patch must add or modify regular text files.')
+          stats = diff('--numstat').splitlines()
+          if len(stats) != len(paths) or any(line.startswith(b'-') for line in stats):
+              raise SystemExit('Patch must contain only text changes.')
+          if sum(int(value) for line in stats for value in line.split(b'\t')[:2]) > 120:
+              raise SystemExit('Patch exceeds the auto-fix size limit.')
+          PY
+          git diff --cached --check
+          issue="$(gh api "repos/$GITHUB_REPOSITORY/issues/$ISSUE_NUMBER")"
+          if ! jq -e '.state == "open" and any(.labels[]; .name == "auto-fix")' <<< "$issue" > /dev/null; then
+            exit 0
+          fi
+
+          branch="codex/issue-$ISSUE_NUMBER-$GITHUB_RUN_ID"
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m "修复 Issue #$ISSUE_NUMBER"
+          if git ls-remote --exit-code --heads origin "$branch" > /dev/null; then
+            git fetch --no-tags origin "refs/heads/$branch"
+            [[ "$(git rev-parse 'FETCH_HEAD^{tree}')" == "$(git rev-parse 'HEAD^{tree}')" ]]
+          else
+            result=$?
+            [[ "$result" == 2 ]] || exit "$result"
+            git push origin "HEAD:refs/heads/$branch"
+          fi
+          printf 'Closes #%s\n\n由 ChatBar 自动修复生成。补丁已通过范围检查，行为由 Android CI 与 PR 审核验证。\n' "$ISSUE_NUMBER" > "$RUNNER_TEMP/chatbar-pr.md"
+          gh pr create --repo "$GITHUB_REPOSITORY" --base master --head "$branch" --draft \
+            --title "修复 Issue #$ISSUE_NUMBER" --body-file "$RUNNER_TEMP/chatbar-pr.md"
