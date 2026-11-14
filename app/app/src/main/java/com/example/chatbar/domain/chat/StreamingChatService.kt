@@ -47,6 +47,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.addModelApiAuthorization
+import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
 import java.util.concurrent.TimeUnit
@@ -213,8 +214,7 @@ class StreamingChatService(
         var retryCount = 0
         var shouldStop = false
 
-        val baseUrl = modelConfig.baseUrl.trimEnd('/')
-        val url = "$baseUrl/chat/completions"
+        val url = modelConfig.chatCompletionsUrl()
         val supportsOpenAiCacheInstrumentation = modelConfig.supportsOpenAiPromptCacheInstrumentation()
         val experimentalApiMode = experimentalApiModeEnabled()
         val requestBody = buildRequestBody(
@@ -476,7 +476,7 @@ class StreamingChatService(
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
         val toolDecoder = if (experimentalApiMode) ExperimentalToolReplyDecoder() else null
-        val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
+        val url = modelConfig.chatCompletionsUrl()
         val requestBody = buildRequestBody(
             messages = actualMessages,
             modelConfig = modelConfig,
@@ -725,7 +725,7 @@ class StreamingChatService(
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
-        val url = "${modelConfig.baseUrl.trimEnd('/')}/chat/completions"
+        val url = modelConfig.chatCompletionsUrl()
         val requestBody = buildRequestBody(
             messages = actualMessages, modelConfig = modelConfig, stream = false,
             maxTokens = maxTokens, thinkingBudget = thinkingBudget, disableThinking = disableThinking,
@@ -862,11 +862,16 @@ class StreamingChatService(
             disableThinking, enableThinkingOverride, thinkingBudget, maxThinkingTokens,
             reasoningEffortOverride
         )
-        val requestMessages = if (experimentalApiMode) messages else CleartextHttpChatTemplatePolicy.adaptMessages(
-            messages = messages,
-            allowCleartextHttp = allowCleartextHttp(),
-            baseUrl = modelConfig.baseUrl
-        )
+        val useGeminiCompatibility = GeminiOpenAiEndpoint.resolve(modelConfig.baseUrl) != null
+        val requestMessages = when {
+            experimentalApiMode -> messages
+            useGeminiCompatibility -> GeminiChatTemplatePolicy.adaptMessages(messages)
+            else -> CleartextHttpChatTemplatePolicy.adaptMessages(
+                messages = messages,
+                allowCleartextHttp = allowCleartextHttp(),
+                baseUrl = modelConfig.baseUrl
+            )
+        }
         val messagesArray = buildJsonArray {
             for (msg in requestMessages) {
                 add(buildJsonObject {
@@ -877,7 +882,12 @@ class StreamingChatService(
         }
 
         val bodyObj = buildJsonObject {
-            put("model", modelConfig.modelName)
+            val modelId = if (useGeminiCompatibility) {
+                GeminiOpenAiEndpoint.modelId(modelConfig.modelName)
+            } else {
+                modelConfig.modelName
+            }
+            put("model", modelId)
             put("messages", messagesArray)
             put("stream", stream)
             promptCacheKey?.takeIf(String::isNotBlank)?.let { put("prompt_cache_key", it) }
@@ -1119,6 +1129,11 @@ private val ISOLATED_TASK_PARAMETER_KEYS = THINKING_PARAMETER_KEYS + OUTPUT_TOKE
     "repetition_penalty",
     "seed"
 )
+
+internal fun ModelConfig.chatCompletionsUrl(): String {
+    val requestBaseUrl = GeminiOpenAiEndpoint.resolve(baseUrl) ?: baseUrl.trimEnd('/')
+    return "$requestBaseUrl/chat/completions"
+}
 
 private fun ModelConfig.supportsOpenAiPromptCacheInstrumentation(): Boolean {
     val host = runCatching { java.net.URI(baseUrl).host }.getOrNull()
