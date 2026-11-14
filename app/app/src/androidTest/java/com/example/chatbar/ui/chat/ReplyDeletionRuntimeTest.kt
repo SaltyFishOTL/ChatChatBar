@@ -1,8 +1,5 @@
 package com.example.chatbar.ui.chat
 
-import androidx.activity.ComponentActivity
-import androidx.compose.ui.test.*
-import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
@@ -11,19 +8,15 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
-import com.example.chatbar.ui.kit.ChatBarTheme
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.After
 import org.junit.Assert.*
 import org.junit.Before
-import org.junit.Rule
 import org.junit.Test
 
-/** Real screen -> real ViewModel -> real JSON storage; no configured provider. */
-@OptIn(ExperimentalTestApi::class)
+/** Real ViewModel -> real JSON storage and cold read; screen controls are tested separately. */
 class ReplyDeletionRuntimeTest {
-    @get:Rule val rule = createAndroidComposeRule<ComponentActivity>(effectContext = Dispatchers.Main)
     private lateinit var app: ChatBarApp
     private lateinit var session: ChatSession
     private lateinit var vm: ChatViewModel
@@ -43,29 +36,27 @@ class ReplyDeletionRuntimeTest {
         app.chatRepository.deleteSessionRecord(session.id)
     }
 
-    @Test fun actualScreenWholeDeleteRemovesSoleRepairedReplyAndColdReadStaysEmpty() = runBlocking<Unit> {
+    @Test fun actualViewModelWholeDeleteRemovesSoleRepairedReplyAndColdReadStaysEmpty() = runBlocking<Unit> {
         val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic before repair")
         val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(original,
             "synthetic repaired sole reply", MessageFormatRepairPolicy.completedRepairNotice(
                 original.content, "synthetic repaired sole reply"))
         app.chatRepository.addMessage(repaired)
-        openScreen(repaired.id)
-        rule.onNodeWithText("synthetic repaired sole reply").performTouchInput { longClick() }
-        rule.onNodeWithContentDescription("删除消息或当前备选").performClick()
-        rule.onNodeWithText("删除全部备选").performClick()
-        rule.onNodeWithText("全部删除", substring = false).performClick()
+        openModel(repaired.id)
+        withContext(Dispatchers.Main) { vm.deleteMessage(repaired.id) }
         assertGone(repaired.id)
     }
 
-    @Test fun actualScreenCurrentCandidateDeleteRemovesLastReplyAndPreservesUser() = runBlocking<Unit> {
+    @Test fun actualViewModelCurrentCandidateDeleteRemovesLastReplyAndPreservesUser() = runBlocking<Unit> {
         val user = ChatMessage.create(session.id, MessageRole.USER, "synthetic user question")
         app.chatRepository.addMessage(user)
         val reply = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic only candidate")
         app.chatRepository.addMessage(reply)
-        openScreen(reply.id)
-        rule.onNodeWithText("synthetic only candidate").performTouchInput { longClick() }
-        rule.onNodeWithContentDescription("删除消息或当前备选").performClick()
-        rule.onNodeWithText("删除此备选").performClick()
+        openModel(reply.id)
+        val current = requireNotNull(app.chatRepository.getMessage(reply.id, session.id))
+        withContext(Dispatchers.Main) {
+            vm.deleteMessageAlternative(reply.id, MessageAlternativeVersionPolicy.activeVersionId(current))
+        }
         assertGone(reply.id)
         assertNotNull(app.chatRepository.getMessage(user.id, session.id))
     }
@@ -76,13 +67,13 @@ class ReplyDeletionRuntimeTest {
         val separate = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic separate reply")
         app.chatRepository.addMessage(reply)
         app.chatRepository.addMessage(separate)
-        openScreen(reply.id)
+        openModel(reply.id)
         withContext(Dispatchers.Main) { vm.deleteMessage(reply.id) }
         assertGone(reply.id)
         assertEquals(separate.content, app.chatRepository.getMessage(separate.id, session.id)?.content)
     }
 
-    private suspend fun openScreen(messageId: String) {
+    private suspend fun openModel(messageId: String) {
         vm = withContext(Dispatchers.Main) {
             val factory = object : ViewModelProvider.Factory {
                 @Suppress("UNCHECKED_CAST")
@@ -91,8 +82,6 @@ class ReplyDeletionRuntimeTest {
             ViewModelProvider(store, factory)[ChatViewModel::class.java]
         }
         withTimeout(30_000) { vm.messages.first { list -> list.any { it.id == messageId } } }
-        rule.setContent { ChatBarTheme { ChatScreen(session.id, {}, viewModel = vm) } }
-        rule.waitForIdle()
     }
 
     private suspend fun assertGone(messageId: String) {
