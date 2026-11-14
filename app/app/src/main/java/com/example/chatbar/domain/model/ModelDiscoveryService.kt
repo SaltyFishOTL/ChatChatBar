@@ -38,8 +38,9 @@ class ModelDiscoveryService {
             throw IOException("API Key 含无效字符，请检查是否混入空格、换行或中文")
         }
         val client = if (allowCleartext) cleartextClient else httpsClient
+        val requestBase = GeminiOpenAiEndpoint.resolve(baseUrl)?.toHttpUrlOrNull() ?: base
         val request = Request.Builder()
-            .url(base.newBuilder().addPathSegment("models").build())
+            .url(requestBase.newBuilder().addPathSegment("models").build())
             .addModelApiAuthorization(apiKey)
             .get()
             .build()
