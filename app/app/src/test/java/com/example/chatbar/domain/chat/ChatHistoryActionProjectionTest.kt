@@ -23,7 +23,7 @@ class ChatHistoryActionProjectionTest {
     }
 
     @Test fun `historical unresolved references protect the earlier prefix but not later independent action sources`() {
-        for (reference in listOf("1", "１", "②", "⑴，然后看看她接下来的反应。", "贰，然后看看她接下来的反应。", "选择第二项，然后观察她的反应。", "1。接着观察她会如何回答。", "就照刚才的那个行动做。", "I choose two and wait quietly.", "请继续生成接下来发生的故事。", "Please continue the story for a while.", "好", "unknown", "сделай это")) {
+        for (reference in listOf("1", "１", "②", "⑴，然后看看她接下来的反应。", "贰，然后看看她接下来的反应。", "选择第二项，然后观察她的反应。", "1。接着观察她会如何回答。", "就照刚才的那个行动做。", "I choose two and wait quietly.", "I will carry it out tomorrow.", "I shall proceed with them tomorrow.", "我打算照她所说的计划去做然后再回来。", "请继续生成接下来发生的故事。", "Please continue the story for a while.", "好", "unknown", "сделай это")) {
             val a = message("a", MessageRole.ASSISTANT, options, 1)
             val u = message("u", MessageRole.USER, reference, 2)
             val b = message("b", MessageRole.ASSISTANT, options.replace("OLD", "NEW"), 3)
