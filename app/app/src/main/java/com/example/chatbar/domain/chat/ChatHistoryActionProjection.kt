@@ -46,13 +46,13 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         private val numeric = Regex("\\p{N}")
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
-                "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳]|" +
+                "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
                 "^[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾甲乙丙丁]+(?:[,，.、。)）：\\s]|号|然后|再|并)|" +
                 "^[a-t][,，.、。)）：\\s]|" +
                 "(?:前|后)[一二三四五六七八九十两]*(?:个|项|条)|" +
                 "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
                 "\\b(?:option|options|choice|choices|above|previous|former|latter|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|this|that|those|these|it|them|same|aforementioned)\\b|" +
-                "\\b(?:choose|select|pick|take)\\s+(?:the\\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten)\\b"
+                "\\b(?:choose|select|pick|take)\\s+(?:the\\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\\b"
         )
         private val acknowledgement = Regex("(?:(?:请|再|那就|那么)?(?:继续|接着|接下来).*|好[的吧啊呀]?|行|可以|是|不|随便|都行|嗯+|快点|ok|yes|no|(?:please\\s+)?(?:continue|go on|keep going).*|do it)[。.!！?？\\s]*")
     }

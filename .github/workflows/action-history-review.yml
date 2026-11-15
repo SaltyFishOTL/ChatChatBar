@@ -62,7 +62,9 @@ jobs:
         if: always()
         run: |
           mkdir -p action-history-review/wire
-          adb exec-out run-as com.example.chatbar.actionhistory.r1 tar -C files -cf - action-history-wire > action-history-review/wire/originals.tar
+          if adb devices | grep -q emulator; then
+            adb exec-out run-as com.example.chatbar.actionhistory.r1 tar -C files -cf - action-history-wire > action-history-review/wire/originals.tar
+          fi
       - name: Verify APK identity and signature
         shell: python
         run: |

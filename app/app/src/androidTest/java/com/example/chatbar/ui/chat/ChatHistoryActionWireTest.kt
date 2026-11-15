@@ -51,7 +51,7 @@ class ChatHistoryActionWireTest {
         }
     }
     @Test fun numericAndDeicticCurrentInputPreserveItsActionSources() {
-        for (input in listOf("2", "就照刚才的那个行动做。", "请继续生成接下来发生的故事。", "贰，然后看看她接下来的反应。", "I will carry it out tomorrow.", "我打算照她所说的计划去做然后再回来。")) {
+        for (input in listOf("2", "就照刚才的那个行动做。", "请继续生成接下来发生的故事。", "贰，然后看看她接下来的反应。", "I will carry it out tomorrow.", "I choose B and then wait for her.", "那就选乙，然后再看看她接下来的反应。", "我打算照她所说的计划去做然后再回来。")) {
             verify("current-${UUID.randomUUID()}", listOf(a("OLD")), input) { wire, contents ->
                 assertTrue(wire.contains("OLD_LEFT")); assertTrue(contents.contains(input))
             }
@@ -171,6 +171,12 @@ class ChatHistoryActionWireTest {
                     else -> error("Unexpected serialized chat content")
                 }
             }
+            val out = File(app.filesDir, "action-history-wire").also { it.mkdirs() }
+            val wireFile = File(out, "$label.json")
+            // Keep the exact request even when an assertion below exposes a regression.
+            wireFile.writeText(buildJsonObject {
+                put("stage", "REQUEST_RECEIVED"); put("request", json); put("originals", Json.encodeToJsonElement(originals))
+            }.toString())
             assertions(contents.joinToString("\n"), contents)
             rule.waitUntil(20000) { !vm.isResponding.value }
             assertEquals("Only the synthetic completion is requested", 1, server.requestCount)
@@ -185,9 +191,8 @@ class ChatHistoryActionWireTest {
             originals.zip(after).forEachIndexed { n, (before, saved) ->
                 if (!regenerate || n != originals.lastIndex) assertEquals("Persisted source/version must remain exact", before, saved)
             }
-            val out = File(app.filesDir, "action-history-wire").also { it.mkdirs() }
-            File(out, "$label.json").writeText(buildJsonObject {
-                put("request", json); put("originals", Json.encodeToJsonElement(originals)); put("coldAfter", Json.encodeToJsonElement(after)); put("currentInput", Json.encodeToJsonElement(currentInput))
+            wireFile.writeText(buildJsonObject {
+                put("stage", "COLD_SOURCE_VERIFIED"); put("request", json); put("originals", Json.encodeToJsonElement(originals)); put("coldAfter", Json.encodeToJsonElement(after)); put("currentInput", Json.encodeToJsonElement(currentInput))
             }.toString())
         } finally {
             rule.runOnIdle { store.clear() }

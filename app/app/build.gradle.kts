@@ -146,6 +146,7 @@ dependencies {
   testImplementation(libs.kotlinx.coroutines.test)
 
   // Instrumented tests: jUnit rules and runners
+  androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
   androidTestImplementation(libs.androidx.test.core)
   androidTestImplementation(libs.androidx.test.ext.junit)
   androidTestImplementation(libs.androidx.test.runner)
