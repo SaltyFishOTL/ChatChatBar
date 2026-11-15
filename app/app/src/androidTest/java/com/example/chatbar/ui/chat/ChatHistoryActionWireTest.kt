@@ -51,7 +51,7 @@ class ChatHistoryActionWireTest {
         }
     }
     @Test fun numericAndDeicticCurrentInputPreserveItsActionSources() {
-        for (input in listOf("2", "就照刚才的那个行动做。", "请继续生成接下来发生的故事。", "贰，然后看看她接下来的反应。", "I will carry it out tomorrow.", "I choose B and then wait for her.", "那就选乙，然后再看看她接下来的反应。", "我打算照她所说的计划去做然后再回来。")) {
+        for (input in listOf("2", "就照刚才的那个行动做。", "请继续生成接下来发生的故事。", "贰，然后看看她接下来的反应。", "I will carry it out tomorrow.", "Please carry it out tomorrow.", "We shall proceed with them tomorrow.", "Please select B and wait quietly.", "I choose B and then wait for her.", "那就选乙，然后再看看她接下来的反应。", "我打算照她所说的计划去做然后再回来。")) {
             verify("current-${UUID.randomUUID()}", listOf(a("OLD")), input) { wire, contents ->
                 assertTrue(wire.contains("OLD_LEFT")); assertTrue(contents.contains(input))
             }

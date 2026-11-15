@@ -43,7 +43,7 @@ jobs:
         working-directory: app
         run: |
           chmod +x gradlew
-          ./gradlew :app:testDebugUnitTest --tests '*ChatHistory*Test' --tests '*ChatContextCandidateSnapshotTest' --tests '*RoleplayActionOptionsPolicyTest' --tests '*ChatRepositoryTest' --tests '*ContextWindowManagerTest' --tests '*TimelineArchiveBoundaryPolicyTest' --tests '*ChatMessageSerializationTest' --tests '*MessageAlternativeVersionPolicyTest' :app:compileDebugAndroidTestKotlin :app:assembleDebug --no-daemon --stacktrace
+          ./gradlew :app:testDebugUnitTest --tests '*ChatHistoryActionProjectionTest' --tests '*ChatHistoryPromptPolicyTest' --tests '*RoleplayActionOptionsPolicyTest' :app:compileDebugAndroidTestKotlin :app:assembleDebug --no-daemon --stacktrace
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -57,14 +57,7 @@ jobs:
           arch: x86_64
           disable-animations: true
           emulator-options: -no-window -gpu swiftshader_indirect -noaudio -no-boot-anim -camera-back none
-          script: cd app && ./gradlew :app:connectedDebugAndroidTest -Pandroid.testInstrumentationRunnerArguments.class=com.example.chatbar.ui.chat.ChatHistoryActionWireTest --no-daemon --stacktrace
-      - name: Preserve synthetic serialized wire and original cold message pairs
-        if: always()
-        run: |
-          mkdir -p action-history-review/wire
-          if adb devices | grep -q emulator; then
-            adb exec-out run-as com.example.chatbar.actionhistory.r1 tar -C files -cf - action-history-wire > action-history-review/wire/originals.tar
-          fi
+          script: bash .github/scripts/action-history-native-review.sh
       - name: Verify APK identity and signature
         shell: python
         run: |
