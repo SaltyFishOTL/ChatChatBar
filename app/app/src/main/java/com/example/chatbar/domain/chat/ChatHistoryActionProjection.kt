@@ -23,9 +23,10 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 candidates.zipWithNext().any { (a, b) -> ChatMessage.TimelineComparator.compare(a, b) > 0 })
                 return ChatHistoryActionProjection(emptyMap())
             // Protect every earlier action source, not only the immediately preceding assistant:
-            // an old pure-number reply may still depend on an older block in the same request.
+            // an old pure-number or image-bearing reply may depend on an older block.
+            // A generated visual description is not proof of independent typed intent.
             val lastUnresolvedReference = candidates.indexOfLast {
-                it.role == MessageRole.USER && mayReferToEarlierChoices(it.displayContent)
+                it.role == MessageRole.USER && (it.images.isNotEmpty() || mayReferToEarlierChoices(it.displayContent))
             }
             return ChatHistoryActionProjection(candidates.withIndex().filter { (index, message) ->
                 index > lastUnresolvedReference && message.id in completeRecentMessageIds && message.role == MessageRole.ASSISTANT

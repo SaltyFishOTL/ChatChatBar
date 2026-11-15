@@ -2726,10 +2726,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val currentIndex = allMsgs.indexOfLast { it.id == userMsg.id && it.role == MessageRole.USER }
                     if (currentIndex >= 0) allMsgs.take(currentIndex + 1) else emptyList()
                 } else allMsgs
-                // Image-bearing user input has no proven independent text intent.
                 val actionRequestSource = when {
-                    actionCandidates.any { it.role == MessageRole.USER && it.images.isNotEmpty() } ->
-                        ChatHistoryActionRequestSource.UNKNOWN
                     persistUserMessage || resumedUserMessage != null -> ChatHistoryActionRequestSource.PERSISTED_USER
                     alternativeTargetMessageId != null -> ChatHistoryActionRequestSource.NO_USER_REGENERATION
                     resumeLatestUser -> ChatHistoryActionRequestSource.UI_CONTINUATION

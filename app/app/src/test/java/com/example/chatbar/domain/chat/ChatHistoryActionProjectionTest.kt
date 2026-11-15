@@ -73,4 +73,20 @@ class ChatHistoryActionProjectionTest {
         assertFalse(control.project(a, options).contains("OLD_NOT_TAKEN"))
         assertEquals(options, ChatHistoryActionProjection.prepare(all, all.map { it.id }.toSet()).project(a, options))
     }
+    @Test fun `image user protects its earlier sources while later independent options can be omitted`() {
+        val old = message("old", MessageRole.ASSISTANT, options, 1)
+        val imageUser = message("image", MessageRole.USER, "A long generated description appears independent.", 2)
+            .copy(images = listOf("/synthetic.png"))
+        val next = message("next", MessageRole.ASSISTANT, options.replace("OLD", "NEW"), 3)
+        val current = message("current", MessageRole.USER, "我推开木门，走到窗边观察街上的雨。", 4)
+        val all = listOf(old, imageUser, next, current)
+        val p = known(all, all.map { it.id }.toSet())
+        assertEquals(old.displayContent, p.project(old, old.displayContent))
+        assertFalse(p.project(next, next.displayContent).contains("NEW_NOT_TAKEN"))
+        val withCurrentImage = all.dropLast(1) + current.copy(images = listOf("/current.png"))
+        val q = known(withCurrentImage, all.map { it.id }.toSet())
+        assertEquals(next.displayContent, q.project(next, next.displayContent))
+        assertEquals(imageUser.displayContent, p.project(imageUser, imageUser.displayContent))
+    }
+
 }

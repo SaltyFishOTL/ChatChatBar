@@ -108,9 +108,14 @@ class ChatHistoryActionWireTest {
         }
     }
 
-    @Test fun imageBearingUserHistoryDoesNotClaimIndependentTypedIntent() {
+    @Test fun imageUserProtectsOnlyItsPrecedingSourcesNotLaterIndependentOptions() {
         verify("image-history", listOf(a("OLD"), u().copy(images = listOf("/synthetic-not-opened.png")), a("NEW")), independent, exclude = false) { wire, _ ->
-            assertTrue(wire.contains("OLD_LEFT")); assertTrue(wire.contains("NEW_LEFT"))
+            assertTrue(wire.contains("OLD_LEFT")); assertFalse(wire.contains("NEW_LEFT"))
+        }
+    }
+    @Test fun currentImageWithLongTextStillProtectsTheOptionsItMayReference() {
+        verify("current-image", listOf(a("OLD")), independent, withCurrentImage = true) { wire, contents ->
+            assertTrue(wire.contains("OLD_LEFT")); assertTrue(contents.contains(independent))
         }
     }
     @Test fun reliableOptionsOnlyAssistantDoesNotLeakAnEmptyNarrativeWrapper() {
@@ -121,7 +126,7 @@ class ChatHistoryActionWireTest {
     }
 
     private fun verify(label: String, messages: List<ChatMessage>, input: String = "", regenerate: Boolean = false,
-        exclude: Boolean = true, assertions: (String, List<String>) -> Unit) {
+        exclude: Boolean = true, withCurrentImage: Boolean = false, assertions: (String, List<String>) -> Unit) {
         val app = ChatBarApp.instance
         val settings = runBlocking { app.settingsRepository.getAppSettings() }
         val server = MockWebServer()
@@ -130,7 +135,11 @@ class ChatHistoryActionWireTest {
         }) }) }.toString()
         server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: $event\n\ndata: [DONE]\n\n"))
         server.start()
-        val model = ModelConfig.create("Synthetic action model", server.url("/v1").toString(), "synthetic-action-key", "synthetic-model")
+        val model = ModelConfig.create("Synthetic action model", server.url("/v1").toString(), "synthetic-action-key", "synthetic-model", isMultimodal = withCurrentImage)
+        val image = if (withCurrentImage) File(app.filesDir, "action-input-${UUID.randomUUID()}.png").also {
+            it.writeBytes(java.util.Base64.getDecoder().decode(
+                "iVBORw0KGgoAAAANSUhEUgAAAAIAAAABCAYAAAD0In+KAAAAD0lEQVR4nGP4zwAE/xkaAAt+An+rqPSSAAAAAElFTkSuQmCC"))
+        } else null
         val card = CharacterCard.create("Synthetic action card ${UUID.randomUUID()}")
         val session = ChatSession.create(card.id, "Synthetic action history").copy(modelId = model.id,
             longTermMemoryEnabled = false, automaticImageGenerationEnabled = false, contextWindowSize = 20)
@@ -148,25 +157,37 @@ class ChatHistoryActionWireTest {
             lateinit var vm: ChatViewModel
             rule.runOnIdle { vm = ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java] }
             rule.waitUntil(20000) { vm.session.value?.id == session.id && vm.messages.value.size >= messages.size && vm.isModelUsable.value }
-            rule.runOnIdle { if (regenerate) vm.regenerateResponse(originals.last().id) else assertTrue(vm.sendMessage(input)) }
+            rule.runOnIdle { if (regenerate) vm.regenerateResponse(originals.last().id) else assertTrue(vm.sendMessage(input, listOfNotNull(image?.absolutePath))) }
             val request = server.takeRequest(25, TimeUnit.SECONDS)
             assertNotNull("Actual HTTP request must arrive for $label", request)
             assertEquals("/v1/chat/completions", request!!.path)
             assertEquals("Bearer synthetic-action-key", request.getHeader("Authorization"))
             val body = request.body.readUtf8()
             val json = Json.parseToJsonElement(body).jsonObject
-            val contents = json.getValue("messages").jsonArray.map { it.jsonObject.getValue("content").jsonPrimitive.content }
+            val contents = json.getValue("messages").jsonArray.map {
+                when (val content = it.jsonObject.getValue("content")) {
+                    is JsonPrimitive -> content.content
+                    is JsonArray -> content.mapNotNull { part -> part.jsonObject["text"]?.jsonPrimitive?.content }.joinToString("\n")
+                    else -> error("Unexpected serialized chat content")
+                }
+            }
             assertions(contents.joinToString("\n"), contents)
             rule.waitUntil(20000) { !vm.isResponding.value }
             assertEquals("Only the synthetic completion is requested", 1, server.requestCount)
             val cold = ChatRepository(JsonFileStorage(app))
             val after = runBlocking { originals.map { cold.getMessage(it.id, session.id) } }
+            val currentInput = runBlocking { cold.getMessages(session.id).lastOrNull { it.role == MessageRole.USER } }
+            if (withCurrentImage) {
+                assertEquals(input, currentInput!!.displayContent)
+                assertEquals(listOf(image!!.absolutePath), currentInput.images)
+                assertTrue(body.contains("image_url"))
+            }
             originals.zip(after).forEachIndexed { n, (before, saved) ->
                 if (!regenerate || n != originals.lastIndex) assertEquals("Persisted source/version must remain exact", before, saved)
             }
             val out = File(app.filesDir, "action-history-wire").also { it.mkdirs() }
             File(out, "$label.json").writeText(buildJsonObject {
-                put("request", json); put("originals", Json.encodeToJsonElement(originals)); put("coldAfter", Json.encodeToJsonElement(after))
+                put("request", json); put("originals", Json.encodeToJsonElement(originals)); put("coldAfter", Json.encodeToJsonElement(after)); put("currentInput", Json.encodeToJsonElement(currentInput))
             }.toString())
         } finally {
             rule.runOnIdle { store.clear() }
@@ -176,6 +197,7 @@ class ChatHistoryActionWireTest {
                 app.chatRepository.deleteMessagesForSession(session.id); app.chatRepository.deleteSessionRecord(session.id)
                 app.modelRepository.deleteModel(model.id)
             }
+            image?.delete()
             server.shutdown()
         }
     }
