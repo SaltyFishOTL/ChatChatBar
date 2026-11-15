@@ -2721,9 +2721,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 )
                 val allMsgs = candidateSnapshot.messages.filterNot { it.id == alternativeTargetMessageId }
                 // Assess references against the query universe, before context/RAG budget projection.
+                // Bind a persisted request to its own USER, not a concurrent later append.
+                val actionCandidates = if (persistUserMessage || resumedUserMessage != null) {
+                    val currentIndex = allMsgs.indexOfLast { it.id == userMsg.id && it.role == MessageRole.USER }
+                    if (currentIndex >= 0) allMsgs.take(currentIndex + 1) else emptyList()
+                } else allMsgs
                 // Image-bearing user input has no proven independent text intent.
                 val actionRequestSource = when {
-                    allMsgs.any { it.role == MessageRole.USER && it.images.isNotEmpty() } ->
+                    actionCandidates.any { it.role == MessageRole.USER && it.images.isNotEmpty() } ->
                         ChatHistoryActionRequestSource.UNKNOWN
                     persistUserMessage || resumedUserMessage != null -> ChatHistoryActionRequestSource.PERSISTED_USER
                     alternativeTargetMessageId != null -> ChatHistoryActionRequestSource.NO_USER_REGENERATION
@@ -2731,7 +2736,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     else -> ChatHistoryActionRequestSource.UNKNOWN
                 }
                 val actionProjection = ChatHistoryActionProjection.prepare(
-                    candidates = allMsgs,
+                    candidates = actionCandidates,
                     completeRecentMessageIds = candidateSnapshot.completeRecentMessageIds,
                     requestSource = actionRequestSource
                 )
