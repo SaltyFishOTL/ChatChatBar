@@ -58,9 +58,13 @@ class ChatHistoryActionWireTest {
         }
     }
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {
-        verify("historical", listOf(a("OLD"), u("2"), a("NEW")), independent) { wire, contents ->
-            assertTrue(wire.contains("OLD_LEFT")); assertFalse(wire.contains("NEW_LEFT"))
-            assertTrue(contents.contains("2"))
+        for (exclude in listOf(true, false)) {
+            verify("historical-$exclude", listOf(u(), a("OLD"), u("2"), a("NEW")), independent, exclude = exclude) { wire, contents ->
+                // A reference protects what remains after the existing earlier-status policy;
+                // it must not restore a block that the user's old setting already excludes.
+                assertEquals(!exclude, wire.contains("OLD_LEFT")); assertFalse(wire.contains("NEW_LEFT"))
+                assertTrue(contents.contains("2"))
+            }
         }
     }
     @Test fun uiContinueHasTypedSourceButResumingUnansweredNumericUserKeepsOptions() {
@@ -105,7 +109,7 @@ class ChatHistoryActionWireTest {
     }
 
     @Test fun imageBearingUserHistoryDoesNotClaimIndependentTypedIntent() {
-        verify("image-history", listOf(a("OLD"), u().copy(images = listOf("/synthetic-not-opened.png")), a("NEW")), independent) { wire, _ ->
+        verify("image-history", listOf(a("OLD"), u().copy(images = listOf("/synthetic-not-opened.png")), a("NEW")), independent, exclude = false) { wire, _ ->
             assertTrue(wire.contains("OLD_LEFT")); assertTrue(wire.contains("NEW_LEFT"))
         }
     }
