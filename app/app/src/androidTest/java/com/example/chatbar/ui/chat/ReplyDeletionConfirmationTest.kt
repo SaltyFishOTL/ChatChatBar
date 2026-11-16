@@ -28,7 +28,6 @@ class ReplyDeletionConfirmationTest {
         } }
         rule.onNodeWithText("删除备选").assertIsDisplayed()
         rule.onNodeWithText("删除整条回复").assertDoesNotExist()
-        capture("delete-candidate-confirm.png")
         rule.onNodeWithText("删除此备选").performClick()
         rule.runOnIdle {
             assertEquals(listOf("first"), MessageAlternativeVersionPolicy.versions(message.value).map { it.content })
@@ -46,7 +45,6 @@ class ReplyDeletionConfirmationTest {
         rule.onNodeWithText("删除全部备选").performClick()
         rule.onNodeWithText("删除整条回复").assertIsDisplayed()
         rule.runOnIdle { assertEquals(0, wholeDeletes); assertEquals(0, candidateDeletes) }
-        capture("delete-whole-second-confirm.png")
         rule.onNodeWithText("取消").performClick()
         rule.onNodeWithText("删除备选").assertIsDisplayed()
         rule.onNodeWithText("删除全部备选").performClick()
@@ -62,23 +60,7 @@ class ReplyDeletionConfirmationTest {
         } }
         rule.onNodeWithText("删除此备选").assertIsEnabled()
         rule.onNodeWithText("删除全部备选").assertIsDisplayed()
-        capture("delete-last-candidate-confirm.png")
         rule.onNodeWithText("删除此备选").performClick()
         rule.runOnIdle { assertEquals(1, candidateDeletes); assertEquals(0, wholeDeletes) }
-    }
-
-    private fun capture(name: String) {
-        rule.waitForIdle()
-        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        val values = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
-            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/ccb-version-review")
-        }
-        val resolver = instrumentation.targetContext.contentResolver
-        val uri = requireNotNull(resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
-        requireNotNull(resolver.openOutputStream(uri)).use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
-        bitmap.recycle()
     }
 }

@@ -391,7 +391,7 @@ internal class BackupMergeEngine(
                 if (images) return null
                 setOf("images", "generatedImageMetadata")
             }
-            "moment_posts" -> if (scope.momentsImages) return null else setOf("imagePath", "generatedImageMetadata", "imageVersions")
+            "moment_posts" -> if (scope.momentsImages) return null else setOf("imagePath", "imagePrompt", "generatedImageMetadata", "imageVersions")
             "novelai_generation_history" -> {
                 if (scope.studioHistoryImages || old.values["images.path"].orEmpty()
                     .none { it.isNotBlank() && !it.startsWith("chatbar-save-slot-omitted-image:") }) return null

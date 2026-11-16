@@ -28,7 +28,6 @@ class ReplyMediaVersionControlsTest {
         rule.onNodeWithText("撤销修复").performClick()
         rule.runOnIdle { assertEquals("before", state.value.displayContent) }
         rule.onNodeWithText("重做修复").assertIsDisplayed()
-        capture("repair-redo-after-undo.png")
         rule.onNodeWithText("重做修复").performClick()
         rule.runOnIdle { assertEquals("after", state.value.displayContent) }
         rule.onNodeWithText("撤销修复").assertIsDisplayed()
@@ -45,24 +44,8 @@ class ReplyMediaVersionControlsTest {
         rule.onNodeWithText("›").assertIsNotEnabled()
         rule.onNodeWithText("‹").performClick()
         rule.onNodeWithText("1/2").assertIsDisplayed()
-        capture("moment-image-candidates.png")
         rule.runOnIdle { assertEquals("first prompt", state.value.imagePrompt); assertEquals(2, state.value.imageVersions.size) }
         rule.onNodeWithText("›").performClick()
         rule.runOnIdle { assertEquals("second.png", state.value.imagePath) }
     }
-    private fun capture(name: String) {
-        rule.waitForIdle()
-        val instrumentation = androidx.test.platform.app.InstrumentationRegistry.getInstrumentation()
-        val bitmap = requireNotNull(instrumentation.uiAutomation.takeScreenshot())
-        val values = android.content.ContentValues().apply {
-            put(android.provider.MediaStore.MediaColumns.DISPLAY_NAME, name)
-            put(android.provider.MediaStore.MediaColumns.MIME_TYPE, "image/png")
-            put(android.provider.MediaStore.MediaColumns.RELATIVE_PATH, "Download/ccb-version-review")
-        }
-        val resolver = instrumentation.targetContext.contentResolver
-        val uri = requireNotNull(resolver.insert(android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, values))
-        requireNotNull(resolver.openOutputStream(uri)).use { check(bitmap.compress(android.graphics.Bitmap.CompressFormat.PNG, 100, it)) }
-        bitmap.recycle()
-    }
-
 }

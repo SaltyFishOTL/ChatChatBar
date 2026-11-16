@@ -9,6 +9,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -263,6 +265,78 @@ class BackupMergeEngineTest {
         assertEquals(1, preview.counts["chat_sessions"]!!.updated)
         listOf(image, audio).forEach { file -> assertArrayEquals(file.readBytes(), File(staged, file.relativeTo(local).path).readBytes()) }
         assertEquals(original, backupJson.decodeFromString<ChatMessage>(File(local, "entities/chat_messages/session_message.json").readText()))
+    }
+
+    @Test fun scopedReplacementKeepsUnselectedMomentImagePromptWithItsVersionBundle() {
+        checkMomentImageBundleRestore(includeImages = false)
+    }
+
+    @Test fun scopedReplacementWithImagesUsesIncomingMomentImagePromptAndVersions() {
+        checkMomentImageBundleRestore(includeImages = true)
+    }
+
+    @Test fun scopedReplacementLegacyLocalMomentWithoutPromptUsesEmptyDefault() {
+        checkMomentImageBundleRestore(includeImages = false, legacyLocal = true)
+    }
+
+    private fun checkMomentImageBundleRestore(includeImages: Boolean, legacyLocal: Boolean = false) {
+        val local = temporary.newFolder()
+        val source = temporary.newFolder()
+        card(local, "card"); session(local, "session", "card")
+        card(source, "card"); session(source, "session", "card")
+        val firstImage = asset(local, "images/generated/moments/local-first.png", 21)
+        val currentImage = asset(local, "images/generated/moments/local-current.png", 22)
+        val incomingImage = asset(source, "images/generated/moments/incoming.png", 23)
+        fun metadata(path: String, caption: String) = GeneratedImageMetadata(path, caption,
+            negativePrompt = "", sizePreset = "custom", width = 64, height = 64)
+        val currentMetadata = metadata(currentImage.path, "local caption")
+        val localPost = MomentPost("post", "card", "session", senderName = "synthetic sender", text = "local text",
+            imagePath = currentImage.path, imagePrompt = "local current prompt", generatedImageMetadata = currentMetadata,
+            imageBrief = "local brief", scheduledAt = 1, generatedAt = 2,
+            imageVersions = listOf(MomentImageVersion("first", firstImage.path, "local first prompt", metadata(firstImage.path, "first caption")),
+                MomentImageVersion("current", currentImage.path, "local current prompt", currentMetadata)))
+        val encodedLocal = backupJson.encodeToString(localPost)
+        val localJson = if (legacyLocal) JsonObject(backupJson.parseToJsonElement(encodedLocal).jsonObject -
+            setOf("imagePrompt", "imageVersions")).toString() else encodedLocal
+        val localFile = write(local, "entities/moment_posts/post.json", localJson)
+        val expectedLocal = backupJson.decodeFromString<MomentPost>(localJson)
+        val incomingPost = localPost.copy(text = "incoming text", imagePath = incomingImage.path,
+            imagePrompt = "incoming current prompt", imageBrief = "incoming brief",
+            generatedImageMetadata = metadata(incomingImage.path, "incoming caption"),
+            imageVersions = listOf(MomentImageVersion("incoming-version", incomingImage.path,
+                "incoming current prompt", metadata(incomingImage.path, "incoming caption"))))
+        val sourceFile = write(source, "entities/moment_posts/post.json", backupJson.encodeToString(incomingPost))
+        write(source, "entities/moment_posts/new-post.json", backupJson.encodeToString(incomingPost.copy(id = "new-post")))
+        val sourceBefore = sourceFile.readBytes()
+        val selection = AppBackupSelection(characterIds = setOf("card"),
+            sessions = mapOf("session" to BackupSessionChoice(false, false, false)),
+            moments = true, momentsImages = includeImages)
+        val (staged, _) = merge(local, incoming(source, local, selection), AppBackupRestoreMode.REPLACE_ALL)
+        val restored = records<MomentPost>(staged, "moment_posts").single { it.id == "post" }
+        assertEquals("incoming text", restored.text)
+        assertEquals("incoming brief", restored.imageBrief)
+        if (includeImages) {
+            assertEquals(incomingPost.imagePrompt, restored.imagePrompt)
+            assertNotEquals(expectedLocal.imagePath, restored.imagePath)
+            assertEquals(restored.imagePath, restored.generatedImageMetadata!!.imagePath)
+            assertEquals(restored.imagePath, restored.imageVersions.single().imagePath)
+            assertEquals(incomingPost.imagePrompt, restored.imageVersions.single().imagePrompt)
+            val preparedImage = File(staged, File(restored.imagePath!!).relativeTo(local).path)
+            assertArrayEquals(incomingImage.readBytes(), preparedImage.readBytes())
+        } else {
+            assertEquals(expectedLocal.imagePath, restored.imagePath)
+            assertEquals(expectedLocal.imagePrompt, restored.imagePrompt)
+            assertEquals(expectedLocal.generatedImageMetadata, restored.generatedImageMetadata)
+            assertEquals(expectedLocal.imageVersions, restored.imageVersions)
+        }
+        val newPost = records<MomentPost>(staged, "moment_posts").single { it.id == "new-post" }
+        assertEquals(incomingPost.imagePrompt, newPost.imagePrompt)
+        if (!includeImages) {
+            assertNull(newPost.imagePath); assertNull(newPost.generatedImageMetadata)
+            assertTrue(newPost.imageVersions.isEmpty())
+        }
+        assertEquals(localJson, localFile.readText())
+        assertArrayEquals(sourceBefore, sourceFile.readBytes())
     }
 
     @Test fun scopedReplacementDistinguishesSelectedEmptyCollectionsFromUnselectedOnes() {

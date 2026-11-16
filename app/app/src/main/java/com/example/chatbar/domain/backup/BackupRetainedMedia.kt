@@ -21,7 +21,11 @@ internal class BackupRetainedMedia(
                 if (count < 0) break
                 output.write(buffer, 0, count)
             }
-        } else output.write(if (field == "imagePath" || field == "generatedImageMetadata" && "imagePath" in fields) "null" else "[]")
+        } else output.write(when {
+            field == "imagePrompt" -> "\"\""
+            field == "imagePath" || field == "generatedImageMetadata" && "imagePath" in fields -> "null"
+            else -> "[]"
+        })
     } }
 
     init {
