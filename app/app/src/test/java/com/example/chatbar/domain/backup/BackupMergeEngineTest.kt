@@ -524,4 +524,85 @@ class BackupMergeEngineTest {
         }
         before.forEach { (path, bytes) -> assertArrayEquals(bytes, File(local, path).readBytes()) }
     }
+
+    @Test fun copiedLiveMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("live")
+    @Test fun copiedInlineSaveMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("inline")
+    @Test fun copiedV8JsonlMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("package")
+
+    private fun copiedRepairIdentity(carrier: String) {
+        for (variant in 0..3) for (restored in listOf(false, true)) {
+            val local = temporary.newFolder()
+            val source = temporary.newFolder()
+            card(source, "card")
+            session(source, "session", "card")
+            val base = ChatMessage(id = "legacy-message", sessionId = "session", role = MessageRole.ASSISTANT,
+                content = "after", alternatives = if (variant == 0) emptyList() else listOf("other", "after"),
+                alternativeVersionIds = when (variant) { 2 -> listOf("explicit-other"); 3 -> listOf("duplicate", "duplicate"); else -> emptyList() },
+                currentAlternativeIndex = if (variant == 0) 0 else 1,
+                currentAlternativeVersionId = if (variant == 2) "explicit-current" else null,
+                createdAt = 5, updatedAt = 6)
+            val active = com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.activeVersionId(base)
+            val notice = MessageFormatRepairNotice(kind = MessageFormatRepairNoticeKind.APPLIED,
+                originalContent = "before", targetContent = "after", versionId = active, restored = restored)
+            // Deliberately retain the old writer's implicit/partial IDs and put id last in JSON.
+            val original = base.copy(content = if (restored) "before" else "after",
+                alternatives = if (base.alternatives.isEmpty()) emptyList() else listOf("other", if (restored) "before" else "after"),
+                formatRepairNotice = notice)
+            val fields = backupJson.parseToJsonElement(backupJson.encodeToString(original)).jsonObject
+            val raw = JsonObject(fields.filterKeys { it != "id" } + ("id" to fields.getValue("id"))).toString()
+            val slot = SaveSlot(id = "slot", sessionId = "session", name = "synthetic", createdAt = 1,
+                schemaVersion = if (carrier == "package") 8 else 7,
+                packageRef = if (carrier == "package") SaveSlotPackageRef("slot.cbsave", messageCount = 2) else null)
+            when (carrier) {
+                "live" -> write(source, "entities/chat_messages/session_legacy-message.json", raw)
+                "inline" -> {
+                    val slotFields = backupJson.parseToJsonElement(backupJson.encodeToString(slot)).jsonObject
+                    write(source, "entities/save_slots/slot.json", JsonObject(slotFields + ("messages" to
+                        kotlinx.serialization.json.JsonArray(listOf(backupJson.parseToJsonElement(raw))))).toString())
+                }
+                else -> {
+                    val file = File(source, "save_slot_packages/slot.cbsave").also { it.parentFile!!.mkdirs() }
+                    val second = backupJson.encodeToString(ChatMessage(id = "second-message", sessionId = "session",
+                        role = MessageRole.USER, content = "independent", createdAt = 7, updatedAt = 8))
+                    ZipOutputStream(file.outputStream()).use { out ->
+                        fun put(name: String, text: String) { out.putNextEntry(ZipEntry(name)); out.write(text.toByteArray()); out.closeEntry() }
+                        put("manifest.json", backupJson.encodeToString(slot))
+                        put("messages.jsonl", raw + "\n" + second + "\n")
+                    }
+                    write(source, "entities/save_slots/slot.json", backupJson.encodeToString(slot.copy(
+                        packageRef = slot.packageRef!!.copy(byteLength = file.length()))))
+                }
+            }
+            val before = source.walkTopDown().filter(File::isFile).associate { it.relativeTo(source).path to it.readBytes().toList() }
+            val (staged, _) = merge(local, incoming(source, local), AppBackupRestoreMode.ADD_COPIES)
+            val copied = when (carrier) {
+                "live" -> records<ChatMessage>(staged, "chat_messages").single()
+                "inline" -> records<SaveSlot>(staged, "save_slots").single().messages.single()
+                else -> {
+                    val saved = records<SaveSlot>(staged, "save_slots").single()
+                    ZipFile(File(staged, "save_slot_packages/" + saved.packageRef!!.fileName)).use { zip ->
+                        val messages = zip.getInputStream(zip.getEntry("messages.jsonl")).bufferedReader().useLines { lines ->
+                            lines.filter(String::isNotBlank).map { backupJson.decodeFromString<ChatMessage>(it) }.toList() }
+                        assertEquals(2, messages.size)
+                        assertNotEquals(messages[0].currentAlternativeVersionId, messages[1].currentAlternativeVersionId)
+                        messages[0]
+                    }
+                }
+            }
+            assertNotEquals(original.id, copied.id)
+            assertEquals(active, com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.activeVersionId(copied))
+            assertEquals(notice, copied.formatRepairNotice)
+            val policy = com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+            assertNotNull(policy.applicableNotice(copied))
+            val undone = if (restored) copied else requireNotNull(policy.restoreOriginal(copied))
+            assertEquals("before", undone.displayContent)
+            val redone = requireNotNull(policy.redoRepair(undone))
+            assertEquals("after", redone.displayContent)
+            assertEquals(copied.alternativeVersionIds, redone.alternativeVersionIds)
+            if (variant > 0) assertEquals("other", redone.alternatives.first())
+            assertNull(policy.applicableNotice(copied.copy(formatRepairNotice = notice.copy(versionId = "unrelated-stale-version"))))
+            assertEquals(before, source.walkTopDown().filter(File::isFile).associate { it.relativeTo(source).path to it.readBytes().toList() })
+            assertTrue(local.walkTopDown().none(File::isFile))
+        }
+    }
 }

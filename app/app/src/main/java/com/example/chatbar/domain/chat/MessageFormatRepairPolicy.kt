@@ -32,7 +32,8 @@ object MessageFormatRepairPolicy {
         notice: MessageFormatRepairNotice? = message.formatRepairNotice,
         updatedAt: Long = System.currentTimeMillis()
     ): ChatMessage {
-        val alternatives = message.alternatives
+        val normalized = MessageAlternativeVersionPolicy.normalize(message)
+        val alternatives = normalized.alternatives
         val updatedAlternatives = if (
             alternatives.isNotEmpty() && message.currentAlternativeIndex in alternatives.indices
         ) {
@@ -40,7 +41,7 @@ object MessageFormatRepairPolicy {
         } else {
             alternatives
         }
-        return message.copy(
+        return normalized.copy(
             content = replacement,
             alternatives = updatedAlternatives,
             formatRepairNotice = notice?.copy(versionId = MessageAlternativeVersionPolicy.activeVersionId(message)),

@@ -315,7 +315,7 @@ fun MomentsScreen(
 }
 
 @Composable
-private fun MomentPostRow(
+internal fun MomentPostRow(
     post: MomentPost,
     highlighted: Boolean,
     retryState: MomentRetryUiState?,

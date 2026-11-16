@@ -110,7 +110,7 @@ internal class BackupMergeEngine(
             destination.parentFile!!.mkdirs()
             retainedMedia(record).use { retained ->
                 record.file.strictUtf8Reader().use { reader ->
-                    destination.bufferedWriter().use { writer -> transform(record, reader, writer, retained?.streams.orEmpty()).copy() }
+                    destination.bufferedWriter().use { writer -> transform(record, reader, writer, retained?.streams.orEmpty()) }
                 }
             }
             if (record.type == "preset_import_state") mergePresetState(destination)
@@ -471,22 +471,28 @@ internal class BackupMergeEngine(
     }
 
     private fun transform(record: BackupMergeRecord, reader: java.io.Reader, writer: Writer,
-        retained: Map<String, (Writer) -> Unit> = emptyMap()): BackupJsonStream {
+        retained: Map<String, (Writer) -> Unit> = emptyMap(), sequence: Boolean = false) {
         val added = renamed[record.relative]?.let { mapOf((if (record.type == "chat_sessions") "displayTitleOverride" else
             if (record.type in setOf("model_configs", "retrieval_model_config", "embedding_configs", "embedding_model_config")) "displayName" else "name") to backupJson.encodeToString(it)) }.orEmpty()
         val proof = memory.rewriter(record)
-        return BackupJsonStream(reader, writer, checkActive = checkActive, mappedFields = BackupMergeIdentity.fields,
-            observeObject = proof::objectEvent, capturedFields = proof.observedFields, observeField = proof::fieldEvent,
-            mapString = { value, fields -> proof.string(value, fields) ?: identity.string(record, value, fields) },
-            mapKey = identity::key,
-            replaceValueStream = { fields, output -> retained[fields.singleOrNull()]?.let { it(output); true } ?: false },
-            replaceValue = { fields -> added[fields.singleOrNull()] ?: proof.replacement(fields) ?: when {
-                fields == listOf("packageRef", "fileName") -> (packages[record.relative]?.first ?: record.text("__packageName"))?.let { backupJson.encodeToString(it) }
-                fields == listOf("packageRef", "byteLength") -> packages[record.relative]?.second?.toString() ?: "0".takeIf { record.text("__packageName") != null }
-                record.type == "chat_message_indexes" && fields == listOf("fileFingerprint") -> "0"
-                else -> null
-            } }, extraRootFields = added, extraRootStreams = retained
-        ) { path, _ -> resource(path) }
+        BackupMessageVersionIdentity(record.type, writer, File(work, "message-versions"), checkActive).use { versions ->
+            val stream = BackupJsonStream(reader, versions.writer, checkActive = checkActive, mappedFields = BackupMergeIdentity.fields,
+                observeObject = { path, start -> versions.objectEvent(path, start); proof.objectEvent(path, start) },
+                capturedFields = proof.observedFields + versions.observedFields,
+                observeField = { path, value -> versions.fieldEvent(path, value); proof.fieldEvent(path, value) },
+                observeString = versions::stringEvent, observeValue = versions::valueEvent,
+                mapString = { value, fields -> proof.string(value, fields) ?: identity.string(record, value, fields) },
+                mapKey = identity::key,
+                replaceValueStream = { fields, output -> retained[fields.singleOrNull()]?.let { it(output); true } ?: false },
+                replaceValue = { fields -> added[fields.singleOrNull()] ?: proof.replacement(fields) ?: when {
+                    fields == listOf("packageRef", "fileName") -> (packages[record.relative]?.first ?: record.text("__packageName"))?.let { backupJson.encodeToString(it) }
+                    fields == listOf("packageRef", "byteLength") -> packages[record.relative]?.second?.toString() ?: "0".takeIf { record.text("__packageName") != null }
+                    record.type == "chat_message_indexes" && fields == listOf("fileFingerprint") -> "0"
+                    else -> null
+                } }, extraRootFields = added, extraRootStreams = retained
+            ) { path, _ -> resource(path) }
+            if (sequence) stream.copySequence() else stream.copy()
+        }
     }
 
     private fun mergeSettings(destination: File) {
@@ -558,7 +564,7 @@ internal class BackupMergeEngine(
                                 values = slot.values + ("sourceType" to listOf("CHAT_MEMORY")) + ("__packageName" to listOf(destination.name)))
                             val reader = input.strictUtf8Reader()
                             val writer = OutputStreamWriter(out, Charsets.UTF_8)
-                            transform(record, reader, writer).copySequence()
+                            transform(record, reader, writer, sequence = true)
                         }
                     }
                     out.closeEntry()

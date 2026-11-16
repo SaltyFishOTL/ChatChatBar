@@ -11,6 +11,8 @@ data class MessageVersionSnapshot(
     val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
 )
 
+data class MessageVersionIdentity(val alternativeVersionIds: List<String>, val currentAlternativeVersionId: String)
+
 object MessageAlternativeVersionPolicy {
     fun newVersionId(
         message: ChatMessage,
@@ -174,21 +176,32 @@ object MessageAlternativeVersionPolicy {
         )
     }
 
-    private fun alignedVersionIds(message: ChatMessage): List<String> {
+    private fun alignedVersionIds(message: ChatMessage): List<String> = identity(
+        message.id, message.alternatives.size, message.alternativeVersionIds,
+        message.currentAlternativeIndex, message.currentAlternativeVersionId
+    ).alternativeVersionIds
+
+    /** Metadata-only identity resolution, also used before backup message IDs are remapped. */
+    fun identity(
+        messageId: String,
+        alternativeCount: Int,
+        explicitIds: List<String>,
+        currentIndex: Int,
+        currentId: String?
+    ): MessageVersionIdentity {
+        require(alternativeCount >= 0)
         val used = mutableSetOf<String>()
-        return message.alternatives.indices.map { index ->
-            val preferred = message.alternativeVersionIds.getOrNull(index)
-                ?.takeIf(String::isNotBlank)
-                ?: message.currentAlternativeVersionId
-                    ?.takeIf { index == message.currentAlternativeIndex && it.isNotBlank() }
-                ?: legacyVersionId(message.id, index)
+        val ids = (0 until alternativeCount).map { index ->
+            val preferred = explicitIds.getOrNull(index)?.takeIf(String::isNotBlank)
+                ?: currentId?.takeIf { index == currentIndex && it.isNotBlank() }
+                ?: legacyVersionId(messageId, index)
             var candidate = preferred
             var collisionIndex = 0
-            while (!used.add(candidate)) {
-                candidate = legacyVersionId(message.id, index, collisionIndex++)
-            }
+            while (!used.add(candidate)) candidate = legacyVersionId(messageId, index, collisionIndex++)
             candidate
         }
+        return MessageVersionIdentity(ids, ids.getOrNull(currentIndex)
+            ?: currentId?.takeIf(String::isNotBlank) ?: messageId)
     }
 
     private fun legacyVersionId(

@@ -3898,23 +3898,24 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun switchAssistantAlternative(messageId: String, direction: Int) {
         viewModelScope.launch {
-            val message = _messages.value.find { it.id == messageId }
-                ?: chatRepository.getMessage(messageId, sessionId)
-                ?: return@launch
-            if (message.role != MessageRole.ASSISTANT || message.alternatives.size <= 1) return@launch
-            val isRecent = contextWindowManager
-                .getRecentMessages(_messages.value, effectiveContextWindowSize())
-                .any { it.id == messageId }
-            if (!isRecent) return@launch
-            val nextIndex = (message.currentAlternativeIndex + direction)
-                .coerceIn(0, message.alternatives.lastIndex)
-            if (nextIndex == message.currentAlternativeIndex) return@launch
-            val updated = MessageAlternativeVersionPolicy.select(
-                message = message,
-                alternativeIndex = nextIndex
-            )
-            _messages.value = _messages.value.map { if (it.id == messageId) updated else it }
-            chatRepository.updateMessage(updated)
+            try {
+                val message = _messages.value.find { it.id == messageId }
+                    ?: chatRepository.getMessage(messageId, sessionId)
+                    ?: return@launch
+                if (message.role != MessageRole.ASSISTANT || message.alternatives.size <= 1) return@launch
+                val isRecent = contextWindowManager
+                    .getRecentMessages(_messages.value, effectiveContextWindowSize())
+                    .any { it.id == messageId }
+                if (!isRecent) return@launch
+                val nextIndex = (message.currentAlternativeIndex + direction)
+                    .coerceIn(0, message.alternatives.lastIndex)
+                if (nextIndex == message.currentAlternativeIndex) return@launch
+                val updated = MessageAlternativeVersionPolicy.select(message, nextIndex)
+                val committed = chatRepository.updateMessageIfUnchanged(message, updated)
+                replaceMessagesFromRepository()
+                check(committed) { "消息已变化，请重新操作" }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _messageActionError.value = error.message ?: "切换备选失败" }
         }
     }
 
