@@ -279,6 +279,33 @@ class BackupMergeEngineTest {
         checkMomentImageBundleRestore(includeImages = false, legacyLocal = true)
     }
 
+    @Test fun scopedReplacementWithoutLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore(null, "")
+    @Test fun scopedReplacementBlankLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore("", "old prompt without image")
+    @Test fun scopedReplacementWhitespaceLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore("  ", "old prompt without image")
+
+    private fun checkPromptOnlyMomentRestore(localPath: String?, localPrompt: String) {
+        val local = temporary.newFolder()
+        val source = temporary.newFolder()
+        card(local, "card"); session(local, "session", "card")
+        card(source, "card"); session(source, "session", "card")
+        val old = MomentPost("post", "card", "session", senderName = "synthetic", text = "local text",
+            imagePath = localPath, imagePrompt = localPrompt, scheduledAt = 1, generatedAt = 2)
+        val localFile = write(local, "entities/moment_posts/post.json", backupJson.encodeToString(old))
+        val incomingPost = old.copy(text = "incoming text", imagePath = null, imagePrompt = "incoming prompt without image")
+        val sourceFile = write(source, "entities/moment_posts/post.json", backupJson.encodeToString(incomingPost))
+        val beforeLocal = localFile.readBytes(); val beforeSource = sourceFile.readBytes()
+        val selection = AppBackupSelection(characterIds = setOf("card"),
+            sessions = mapOf("session" to BackupSessionChoice(false, false, false)), moments = true, momentsImages = false)
+        val (staged, _) = merge(local, incoming(source, local, selection), AppBackupRestoreMode.REPLACE_ALL)
+        val restored = records<MomentPost>(staged, "moment_posts").single()
+        assertEquals("incoming prompt without image", restored.imagePrompt)
+        assertEquals("incoming text", restored.text)
+        assertEquals(localPath, restored.imagePath)
+        assertNull(restored.generatedImageMetadata)
+        assertTrue(restored.imageVersions.isEmpty())
+        assertArrayEquals(beforeLocal, localFile.readBytes()); assertArrayEquals(beforeSource, sourceFile.readBytes())
+    }
+
     private fun checkMomentImageBundleRestore(includeImages: Boolean, legacyLocal: Boolean = false) {
         val local = temporary.newFolder()
         val source = temporary.newFolder()

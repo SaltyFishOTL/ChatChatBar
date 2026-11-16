@@ -58,6 +58,15 @@ object MessageFormatRepairPolicy {
                 (if (it.restored) it.originalContent else it.targetContent) == message.displayContent
         }
 
+    /** A successful no-op clears failures, retaining only a usable local undo/redo pair. */
+    fun retainedNoticeAfterUnchangedSuccess(message: ChatMessage): MessageFormatRepairNotice? =
+        applicableNotice(message)?.takeIf { it.originalContent != null }?.let { notice ->
+            notice.copy(
+                kind = if (notice.kind == MessageFormatRepairNoticeKind.ERROR) MessageFormatRepairNoticeKind.APPLIED else notice.kind,
+                errorMessage = null
+            )
+        }
+
     fun recoverableNotice(message: ChatMessage): MessageFormatRepairNotice? =
         applicableNotice(message)?.takeIf { it.originalContent != null && !it.restored }
 

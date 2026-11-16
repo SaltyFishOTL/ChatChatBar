@@ -391,7 +391,14 @@ internal class BackupMergeEngine(
                 if (images) return null
                 setOf("images", "generatedImageMetadata")
             }
-            "moment_posts" -> if (scope.momentsImages) return null else setOf("imagePath", "imagePrompt", "generatedImageMetadata", "imageVersions")
+            "moment_posts" -> {
+                if (scope.momentsImages) return null
+                val hasCurrentImage = old.text("imagePath")?.let {
+                    it.isNotBlank() && !it.startsWith("chatbar-save-slot-omitted-image:")
+                } == true
+                setOf("imagePath", "generatedImageMetadata", "imageVersions") +
+                    if (hasCurrentImage) setOf("imagePrompt") else emptySet()
+            }
             "novelai_generation_history" -> {
                 if (scope.studioHistoryImages || old.values["images.path"].orEmpty()
                     .none { it.isNotBlank() && !it.startsWith("chatbar-save-slot-omitted-image:") }) return null

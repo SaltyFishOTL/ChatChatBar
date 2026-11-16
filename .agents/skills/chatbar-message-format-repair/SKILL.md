@@ -41,9 +41,9 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
 - Keep streamed overlay in UI memory. Persist only terminal content or an explicit stopped result.
 - Whenever repair changes content, persist an APPLIED or recoverable terminal notice containing the exact pre-repair text.
-- Show a notice only while notice.targetContent equals message.displayContent.
+- Show a notice only for the matching stable version and expected display text (originalContent when restored, targetContent otherwise).
 - Restore only the current candidate from notice.originalContent; persist restored=true while retaining the exact repaired targetContent and versionId. Redo switches to that target locally without a model request. Another version or a manual edit must not accept a stale recovery pair.
-- A no-change result must not erase an existing applicable recovery point.
+- A successful marker/original-text no-change result clears notices without a local undo/redo pair through retainedNoticeAfterUnchangedSuccess. Preserve applicable original/target/version/restored data; clear legacy error metadata without discarding a usable pair. FormatRepairRetryRuntimeTest exercises real loopback failure followed by each no-change success, then a cold storage read.
 - Keep legacy notice enum values readable. Do not revive the removed length-anomaly gate without a new product decision.
 - Editing, regeneration, candidate switching, or another mutation must clear or hide stale notices according to target-content applicability.
 - Process death during an unfinished stream leaves the pre-repair persisted message intact.

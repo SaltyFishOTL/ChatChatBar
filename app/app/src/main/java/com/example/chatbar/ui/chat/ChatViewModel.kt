@@ -2477,7 +2477,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
                             repairedPrefix == originalContent -> {
                             val unchanged = message.copy(
-                                formatRepairNotice = MessageFormatRepairPolicy.applicableNotice(message),
+                                formatRepairNotice = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(message),
                                 updatedAt = System.currentTimeMillis()
                             )
                             if (unchanged != message) persistFormatRepairMessage(unchanged)
