@@ -133,12 +133,14 @@ class MessageFormatRepairPolicyTest {
     }
 
     @Test fun repairWriterPersistsStableVersionIdentityBeforeMessageIdChanges() {
-        for (multi in listOf(false, true)) {
+        for (mode in listOf(null, com.example.chatbar.data.local.entity.ChatNarrativeMode.ADVANCE, com.example.chatbar.data.local.entity.ChatNarrativeMode.FOCUS)) for (multi in listOf(false, true)) {
             val original = message().copy(content = "before", alternatives = if (multi) listOf("other", "before") else emptyList(),
-                currentAlternativeIndex = if (multi) 1 else 0)
+                currentAlternativeIndex = if (multi) 1 else 0, narrativeMode = mode)
             val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(original, "after",
                 MessageFormatRepairPolicy.completedRepairNotice("before", "after"))
             val identity = MessageAlternativeVersionPolicy.activeVersionId(original)
+            assertEquals(original.narrativeMode, repaired.narrativeMode)
+            assertEquals(original.alternativeNarrativeModes, repaired.alternativeNarrativeModes)
             assertEquals(identity, repaired.currentAlternativeVersionId)
             assertEquals(if (multi) 2 else 0, repaired.alternativeVersionIds.size)
             val copied = repaired.copy(id = "copied-message")

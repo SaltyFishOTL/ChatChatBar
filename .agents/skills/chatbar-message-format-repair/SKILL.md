@@ -35,7 +35,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 ## Mutation Invariants
 
 - Repair the owning full assistant message even when invoked from one segmented bubble.
-- Persist normalized explicit alternative IDs before attaching a repair notice; notices keep that stable ID across backup copies. BackupMessageVersionIdentity resolves legacy implicit IDs before message-ID remapping without changing notice.versionId.
+- Persist normalized explicit alternative IDs before attaching a repair notice, preserving narrativeMode/alternativeNarrativeModes exactly; notices keep that stable ID across backup copies. BackupMessageVersionIdentity resolves legacy implicit IDs before message-ID remapping without changing notice.versionId.
 - Candidate switching uses repository expected-snapshot writes and reloads persisted state; it must not publish an optimistic stale message over deletion or undo/redo.
 - Replace only the current displayed candidate. Preserve other alternatives, images, reasoning, timestamps/order identity, and source-turn identity unless the owning operation explicitly changes them.
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
