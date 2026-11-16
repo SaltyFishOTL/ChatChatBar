@@ -2,6 +2,7 @@ package com.example.chatbar.ui.chat
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
+import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
 import com.example.chatbar.ChatBarApp
@@ -26,7 +27,7 @@ class ReplyDeletionRuntimeTest {
         app = ApplicationProvider.getApplicationContext()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
-        session = ChatSession.create("synthetic-missing-card", "synthetic deletion runtime")
+        session = ChatSession.create("synthetic-missing-card", "synthetic deletion runtime").copy(longTermMemoryEnabled = false)
         app.chatRepository.createSession(session)
     }
 
@@ -94,6 +95,7 @@ class ReplyDeletionRuntimeTest {
             it.isAccessible = true; it.invoke(storage, "chat_sessions") as kotlinx.coroutines.sync.Mutex }
         val appendMutex = app.chatRepository.javaClass.getDeclaredField("messageAppendMutex").let {
             it.isAccessible = true; it.get(app.chatRepository) as kotlinx.coroutines.sync.Mutex }
+        lateinit var switchJob: Job
         storageMutex.lock()
         try {
             withContext(Dispatchers.Main) {
@@ -104,16 +106,20 @@ class ReplyDeletionRuntimeTest {
                 }
             }
             val cold = com.example.chatbar.data.repository.ChatRepository(com.example.chatbar.data.local.JsonFileStorage(app))
-            withTimeout(10_000) {
+            stage("first mutation persisted") {
                 while (cold.getMessage(reply.id, session.id).let { it == null || it == initial }) delay(20)
             }
             // The first transaction is persisted but blocked finishing its session update.
             assertEquals(initial, vm.messages.value.single { it.id == reply.id })
             assertTrue(appendMutex.isLocked)
-            withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, -1) }
+            withContext(Dispatchers.Main) {
+                val scopeJob = requireNotNull(vm.viewModelScope.coroutineContext[Job])
+                val before = scopeJob.children.toSet()
+                vm.switchAssistantAlternative(reply.id, -1)
+                switchJob = scopeJob.children.single { it !in before }
+            }
         } finally { storageMutex.unlock() }
-        withTimeout(10_000) { appendMutex.lock() }
-        appendMutex.unlock()
+        stage("competing switch completed") { switchJob.join() }
         val cold = com.example.chatbar.data.repository.ChatRepository(com.example.chatbar.data.local.JsonFileStorage(app))
         val saved = requireNotNull(cold.getMessage(reply.id, session.id))
         if (operation == "delete") {
@@ -125,8 +131,8 @@ class ReplyDeletionRuntimeTest {
             assertEquals(operation == "undo", saved.formatRepairNotice?.restored)
             assertEquals(if (operation == "undo") "candidate C original" else "candidate C repaired", saved.displayContent)
         }
-        withTimeout(10_000) { vm.messages.first { list -> list.any { it.id == reply.id && it == saved } } }
-        withTimeout(10_000) { vm.messageActionError.first { it != null } }
+        stage("UI refreshed from persisted message") { vm.messages.first { list -> list.any { it.id == reply.id && it == saved } } }
+        stage("conflict visible") { vm.messageActionError.first { it != null } }
         withContext(Dispatchers.Main) { vm.clearMessageActionError(); vm.switchAssistantAlternative(reply.id, -1) }
         withTimeout(10_000) { vm.messages.first { list -> list.any {
             it.id == reply.id && it.currentAlternativeIndex == saved.currentAlternativeIndex - 1 } } }
@@ -139,6 +145,10 @@ class ReplyDeletionRuntimeTest {
         assertEquals(saved.formatRepairNotice, final.formatRepairNotice)
         if (operation != "delete") assertNotNull(MessageFormatRepairPolicy.applicableNotice(final))
     }
+
+    private suspend fun <T> stage(name: String, block: suspend () -> T): T = try {
+        withTimeout(10_000) { block() }
+    } catch (timeout: TimeoutCancellationException) { throw AssertionError("Fixture timed out at: $name", timeout) }
 
     private suspend fun openModel(messageId: String) {
         vm = withContext(Dispatchers.Main) {

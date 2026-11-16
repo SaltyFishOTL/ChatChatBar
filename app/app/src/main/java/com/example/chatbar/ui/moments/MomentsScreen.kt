@@ -409,6 +409,7 @@ internal fun MomentPostRow(
                         contentScale = ContentScale.Crop
                     )
                 } ?: MomentOnDemandImageBlock(post, onDemandImage, onGenerateImage)
+                MomentImageVersionControls(post) { versionId -> onSelectImageVersion(post, versionId) }
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically
@@ -429,8 +430,12 @@ internal fun MomentPostRow(
                             CbText("仅你可见", color = muted, style = ChatBarTheme.typography.caption)
                         }
                     }
-                    MomentImageVersionControls(post) { versionId -> onSelectImageVersion(post, versionId) }
-                    Spacer(Modifier.weight(1f))
+                }
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
                     post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
                         CbIconButton(
                             imageVector = AppIcons.Refresh,

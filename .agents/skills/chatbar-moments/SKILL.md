@@ -112,3 +112,5 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Add/update JVM tests around `PromptTemplates`, `MomentPolicy`, scheduler limits, repository likes/delete, and debug input assembly when touched.
 
 - Scheduled/debug/on-demand/regenerated images apply optional card defaultImageGenerationSettings after resolving the session/card/global model, preserving size and seed policy. Offline repetition/checkpoint regression: MomentGenerationRegressionTest.
+
+- MomentPostRow keeps image-version controls on a separate row; time/privacy metadata and end-aligned regeneration/delete/like actions also have independent rows. MomentPostRowLayoutTest measures the actual private multi-image post at 320dp and 360dp/1.3 font scale and clicks every image/footer action.
