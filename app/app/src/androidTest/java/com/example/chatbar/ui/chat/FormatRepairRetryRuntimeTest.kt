@@ -26,7 +26,6 @@ class FormatRepairRetryRuntimeTest {
 
     private fun verifyRetry(marker: Boolean) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
-        check(app.packageName == "com.example.chatbar.pr7secondreview.r1")
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
         val settings = app.settingsRepository.getAppSettings()
