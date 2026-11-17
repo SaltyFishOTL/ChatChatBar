@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.BuildConfig
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.card.CharacterCardPackage
 import com.example.chatbar.ui.kit.ChatBarTheme
@@ -31,8 +32,12 @@ class CharacterCardFieldsPersistenceTest {
     private val opaque = " {\"future\":{\"unknown\":[null,\" raw \"]}} \n"
 
     @Before fun requireIsolatedSyntheticApplication() {
-        check(InstrumentationRegistry.getInstrumentation().targetContext.packageName in setOf(
-            "com.example.chatbar.cardfields.review.n1", "com.example.chatbar.nextreview.r3"))
+        org.junit.Assume.assumeTrue(
+            "Run connectedDebugAndroidTest with -PCHATBAR_ISOLATED_ANDROID_TEST=true on a clean emulator",
+            BuildConfig.ISOLATED_ANDROID_TEST
+        )
+        val packageName = InstrumentationRegistry.getInstrumentation().targetContext.packageName
+        check(packageName == BuildConfig.APPLICATION_ID && packageName.startsWith("com.example.chatbar."))
         runBlocking { withTimeout(30_000) { app.dependenciesReady.first { it } } }
     }
 
