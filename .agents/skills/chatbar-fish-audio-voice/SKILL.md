@@ -33,7 +33,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Whole-app prepared restore uses domain/backup/BackupMergeIdentity.kt and BackupMergeEngine.kt to rebind voice session/message/character IDs and anchor filenames. Preserve remote Fish binding/model IDs, alternative versions and segment anchors; copy original audio into an independent owned directory. Its global/per-session voice choice is independent from images and SaveSlots; an unselected voice family stays local on update or scoped replacement, together with local-only owning messages. Explicitly selected empty voice families clear old rows.
 - Preserve generated voice history after character deletion, card replacement, speaker-tag edits, or later voice changes. Historical records use generation-time character, voice, and Fish-model snapshots.
 - Keep original bubble text in `GeneratedVoiceMessage.sourceText` for anchors and store the tag-free translated/original synthesis snapshot in `synthesisText`; old records fall back to `sourceText`.
-- Delete voices only with their owning message/session, explicit voice deletion, or failed replacement cleanup.
+- Delete voices only with their owning message/version/session, explicit voice deletion, or failed replacement cleanup.
 - Keep Fish keys in Android Keystore; card/SaveSlot exports omit keys. Whole-app .cbbackup is the explicit exception: readForBackup refuses undecryptable ciphertext; replaceFromBackup reencrypts with destination Keystore. Never log credentials or save blank values.
 - Gate new voice selection and generation on a configured Fish key. Keep existing local voice playback and deletion available without the key.
 
@@ -71,6 +71,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 ## Anchors, Files, and Lifecycle
 
 - Give every assistant alternative a stable version ID. Store voice ownership and anchor state per message version; switching alternatives selects that version's voices without reconciling another version's anchors.
+- Deleting one reply alternative cancels and joins its message's pending voice jobs, commits the message CAS, then removes only that version's voice records and anchor state. Resolve legacy versionless ownership against the pre-deletion message. Preserve other versions, shared message images and audio paths still referenced by surviving voices; keep cleanup within the backup admission lease and non-cancellable commit tail. TTS and regeneration persist through `saveForExistingVersion`; late anchor resolution checks the current version under the voice repository lock.
 - Whole-message and segment edits use MessageAlternativeVersionPolicy.editCurrentContent: replace only the active alternative, retain other alternatives and all stable version IDs; never collapse history when editing.
 - Reconcile stable anchors only after edits within the same message version or segment deletion, using character-offset mapping plus monotonic segment matching. Lazily infer legacy versionless voices from the old anchor snapshot and source text without deleting audio.
 - Preserve explicit target IDs for direct segment edits. Reattach a deleted target to the previous speakable segment, or make it a message-head orphan when none exists.

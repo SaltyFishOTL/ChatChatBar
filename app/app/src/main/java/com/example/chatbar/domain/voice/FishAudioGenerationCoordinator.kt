@@ -272,7 +272,9 @@ class FishAudioGenerationCoordinator(
                     updatedAt = System.currentTimeMillis()
                 )
                 try {
-                    voiceRepository.replace(replacement)
+                    voiceRepository.saveForExistingVersion(replacement) {
+                        chatRepository.getMessage(replacement.messageId, replacement.sessionId)
+                    }
                 } catch (error: Throwable) {
                     storage.deleteIfOwned(audio.path)
                     throw error
@@ -729,7 +731,9 @@ class FishAudioGenerationCoordinator(
                 durationMs = audio.durationMs,
                 byteLength = audio.byteLength
             )
-            voiceRepository.save(voice)
+            voiceRepository.saveForExistingVersion(voice) {
+                chatRepository.getMessage(voice.messageId, voice.sessionId)
+            }
             TargetGenerationResult(target, voice = voice)
         } catch (error: Throwable) {
             storage.deleteIfOwned(audio.path)
@@ -750,11 +754,14 @@ class FishAudioGenerationCoordinator(
         val targetVersion = MessageAlternativeVersionPolicy.activeVersion(target.message)
         val currentVersion = MessageAlternativeVersionPolicy.versions(currentMessage)
             .firstOrNull { it.id == targetVersion.id }
-            ?: targetVersion
+            ?: error("回复备选已删除")
         val currentAnchors = voiceRepository.ensureAnchorsForVersion(
             message = currentMessage,
             messageVersionId = currentVersion.id,
-            content = currentVersion.content
+            content = currentVersion.content,
+            loadCurrentMessage = {
+                chatRepository.getMessage(target.message.id, target.message.sessionId)
+            }
         )
         currentAnchors.firstOrNull { it.anchor.id == target.anchorId }?.let { return it.anchor.id }
         return currentAnchors

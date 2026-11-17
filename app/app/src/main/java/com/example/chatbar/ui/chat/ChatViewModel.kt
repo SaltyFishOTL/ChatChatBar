@@ -2380,13 +2380,33 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (_isResponding.value) return
         viewModelScope.launch {
             try {
+                fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
                 val changed = MessageAlternativeVersionPolicy.remove(message, versionId)
                 if (changed == null) {
                     deleteMessage(messageId, message)
                     return@launch
                 }
-                check(chatRepository.updateMessageIfUnchanged(message, changed)) { "消息已变化，请重新操作" }
+                withContext(NonCancellable) {
+                    com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                        check(chatRepository.updateMessageIfUnchanged(message, changed)) { "消息已变化，请重新操作" }
+                        val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId)
+                        if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
+                            fishAudioCoordinator.stopPlayback()
+                        }
+                        val retainedPaths = voiceMessageRepository.voices.value.mapNotNull {
+                            runCatching { File(it.audioPath).canonicalPath }.getOrNull()
+                        }.toSet()
+                        deletedVoices.forEach { voice ->
+                            val path = runCatching { File(voice.audioPath).canonicalPath }.getOrNull()
+                            if (path != null && path !in retainedPaths) {
+                                check(ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)) {
+                                    "备选已删除，但语音文件清理失败"
+                                }
+                            }
+                        }
+                    }
+                }
                 replaceMessagesFromRepository()
                 refreshMemoryAfterMessageEdit(changed)
             } catch (cancelled: CancellationException) { throw cancelled }
