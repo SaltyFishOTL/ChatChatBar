@@ -9,6 +9,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.FormatCardRepository
 import java.io.File
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -84,7 +85,7 @@ class CharacterSessionServiceTest {
         try { service.createSessionForCharacter(card.id, choice); org.junit.Assert.fail("stale selection created session") }
         catch (_: IllegalArgumentException) { }
         chats.initialize()
-        assertEquals(0, chats.sessions.value.size)
+        assertEquals(0, chats.sessions.first().size)
     }
 
     private class TestContext(private val dir: File) : ContextWrapper(null) {
