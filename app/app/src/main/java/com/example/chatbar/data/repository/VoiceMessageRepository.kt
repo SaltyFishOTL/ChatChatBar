@@ -203,13 +203,22 @@ class VoiceMessageRepository(
     ) = mutex.withLock {
         ensureInitializedLocked()
         val message = loadMessage()
-        check(message != null && message.id == voice.messageId && message.sessionId == voice.sessionId &&
-            (voice.messageVersionId.isNullOrBlank() ||
-                MessageAlternativeVersionPolicy.versions(message).any { it.id == voice.messageVersionId })) {
+        check(message != null && message.id == voice.messageId && message.sessionId == voice.sessionId) {
             "消息或回复备选已删除"
         }
-        storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
-        _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
+        val ownedVoice = if (voice.messageVersionId.isNullOrBlank()) {
+            // A legacy regeneration must still own its persisted record. Cleanup may have
+            // migrated or deleted it while the response was in flight; never infer it anew.
+            check(_voices.value.any { it.id == voice.id }) { "语音消息已删除" }
+            migrateLegacyVoiceVersionsLocked(message)
+            val persisted = checkNotNull(_voices.value.firstOrNull { it.id == voice.id })
+            voice.copy(messageVersionId = persisted.messageVersionId, anchorId = persisted.anchorId)
+        } else voice
+        check(MessageAlternativeVersionPolicy.versions(message).any { it.id == ownedVoice.messageVersionId }) {
+            "回复备选已删除"
+        }
+        storage.saveEntity(VOICE_TYPE, ownedVoice.id, ownedVoice, GeneratedVoiceMessage.serializer())
+        _voices.value = _voices.value.filterNot { it.id == ownedVoice.id } + ownedVoice
     }
 
     /** Use the pre-deletion message to resolve legacy versionless records before removing ownership. */

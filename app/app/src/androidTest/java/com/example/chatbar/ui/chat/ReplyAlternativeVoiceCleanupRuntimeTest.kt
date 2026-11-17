@@ -26,6 +26,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
     @Test fun missingVersionDoesNotCleanAnyVoice() = verify(missing = true)
     @Test fun lateSynthesisCannotRestoreDeletedVersionVoice() = verify(lateVoice = true)
+    @Test fun lateLegacyRegenerationCannotRestoreDeletedVersionVoice() = verify(legacy = true, lateVoice = true)
     @Test fun lateAnchorResolutionCannotRestoreDeletedVersionAnchor() = verify(lateAnchor = true)
 
     private fun verify(
