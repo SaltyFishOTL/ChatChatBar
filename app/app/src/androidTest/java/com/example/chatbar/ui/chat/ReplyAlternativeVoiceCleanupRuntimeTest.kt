@@ -48,7 +48,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             fishModelId = "fixture", audioPath = File(root, "synthetic.mp3").path,
             durationMs = 1000, byteLength = 1, createdAt = 1, updatedAt = 1)
         try {
-            chats.addMessage(message)
+            val persistedMessage = chats.addMessage(message)
             voices.save(legacy)
             val rejected = runCatching { voices.deleteForVersion(message, removedId) { false } }
             assertTrue(rejected.exceptionOrNull() is IllegalStateException)
@@ -58,9 +58,9 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             val finishCommit = CompletableDeferred<Unit>()
             val attempt = CompletableDeferred<Unit>()
             val mutation = async(Dispatchers.Default) {
-                voices.deleteForVersion(message, removedId) {
-                    val committed = chats.updateMessageIfUnchanged(message,
-                        requireNotNull(MessageAlternativeVersionPolicy.remove(message, removedId)))
+                voices.deleteForVersion(persistedMessage, removedId) {
+                    val committed = chats.updateMessageIfUnchanged(persistedMessage,
+                        requireNotNull(MessageAlternativeVersionPolicy.remove(persistedMessage, removedId)))
                     afterCas.complete(Unit)
                     finishCommit.await()
                     committed
