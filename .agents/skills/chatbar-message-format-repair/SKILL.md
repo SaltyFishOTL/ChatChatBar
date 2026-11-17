@@ -81,3 +81,5 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Do not overwrite text without a durable recovery path.
 - Do not persist partial stream output accidentally.
 - Do not treat character-card rewrite behavior as message format repair behavior.
+
+- failedAttemptNotice attaches errorMessage to the current applicable original/target/version/restored recovery pair instead of overwriting it. Without a usable pair it creates a version-bound ERROR. MessageFormatRepairNoticeRow shows request errors independently of snapshot kind/restored, with the undo/redo button still available. Successful local undo/redo clears attempt error metadata. FormatRepairRetryRuntimeTest covers actual undo → HTTP failure → local redo with exactly one model request; ReplyMediaVersionControlsTest covers simultaneous error and recovery controls.

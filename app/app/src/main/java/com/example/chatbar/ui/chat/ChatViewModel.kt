@@ -2539,11 +2539,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         error: String
     ): ChatMessage = persistFormatRepairMessage(
         message.copy(
-            formatRepairNotice = MessageFormatRepairNotice(
-                kind = MessageFormatRepairNoticeKind.ERROR,
-                targetContent = message.displayContent,
-                errorMessage = error
-            ),
+            formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error),
             updatedAt = System.currentTimeMillis()
         )
     )

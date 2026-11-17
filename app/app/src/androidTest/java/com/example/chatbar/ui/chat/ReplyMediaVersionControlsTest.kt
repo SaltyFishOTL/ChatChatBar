@@ -48,4 +48,27 @@ class ReplyMediaVersionControlsTest {
         rule.onNodeWithText("›").performClick()
         rule.runOnIdle { assertEquals("second.png", state.value.imagePath) }
     }
+    @Test fun failedRetryShowsErrorWithRedoAndRedoUsesCachedText() = verifyFailureControl(true)
+    @Test fun failedRetryShowsErrorWithUndoAndUndoKeepsRedo() = verifyFailureControl(false)
+
+    private fun verifyFailureControl(restored: Boolean) {
+        val original = ChatMessage("failure-ui", "session", MessageRole.ASSISTANT, "before", createdAt = 1, updatedAt = 1)
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(original, "after",
+            MessageFormatRepairPolicy.completedRepairNotice("before", "after"))
+        val selected = if (restored) requireNotNull(MessageFormatRepairPolicy.restoreOriginal(repaired)) else repaired
+        val state = mutableStateOf(selected.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(selected, "synthetic failed retry")))
+        rule.setContent { ChatBarTheme {
+            MessageFormatRepairNoticeRow(state.value, false,
+                { state.value = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(state.value)) },
+                { state.value = requireNotNull(MessageFormatRepairPolicy.redoRepair(state.value)) })
+        } }
+        rule.onNodeWithText("synthetic failed retry", substring = true).assertIsDisplayed()
+        rule.onNodeWithText(if (restored) "重做修复" else "撤销修复").performClick()
+        rule.runOnIdle {
+            assertEquals(if (restored) "after" else "before", state.value.displayContent)
+            assertNull(state.value.formatRepairNotice?.errorMessage)
+        }
+        rule.onAllNodesWithText("synthetic failed retry", substring = true).assertCountEquals(0)
+        rule.onNodeWithText(if (restored) "撤销修复" else "重做修复").assertIsDisplayed()
+    }
 }

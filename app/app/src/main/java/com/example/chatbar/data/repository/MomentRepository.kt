@@ -65,7 +65,7 @@ class MomentRepository(private val storage: JsonFileStorage) {
     suspend fun appendImageVersion(postId: String, expectedPath: String?, path: String, prompt: String,
         metadata: GeneratedImageMetadata?, imageBrief: String? = null) = postMutex.withLock {
         val post = getPost(postId) ?: error("原朋友圈不存在")
-        require(!post.isPlaceholder && post.imagePath == expectedPath) { "原朋友圈图片已变化，请重新操作" }
+        require(!post.isPlaceholder && MomentImageVersions.currentImagePath(post) == MomentImageVersions.imagePathOrNull(expectedPath)) { "原朋友圈图片已变化，请重新操作" }
         val updated = MomentImageVersions.append(post, path, prompt, metadata)
         savePostLocked(updated.copy(imageBrief = imageBrief ?: post.imageBrief, updatedAt = System.currentTimeMillis()))
     }

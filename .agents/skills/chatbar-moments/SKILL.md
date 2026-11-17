@@ -114,3 +114,5 @@ Also read `chatbar-novelai-prompt` before changing NovelAI prompt construction, 
 - Scheduled/debug/on-demand/regenerated images apply optional card defaultImageGenerationSettings after resolving the session/card/global model, preserving size and seed policy. Offline repetition/checkpoint regression: MomentGenerationRegressionTest.
 
 - MomentPostRow keeps image-version controls on a separate row; time/privacy metadata and end-aligned regeneration/delete/like actions also have independent rows. MomentPostRowLayoutTest measures the actual private multi-image post at 320dp and 360dp/1.3 font scale and clicks every image/footer action.
+
+- MomentImageVersions.imagePathOrNull/currentImagePath define null, empty and whitespace-only paths as no image across timeline display, retained candidates, on-demand admission and append CAS. Nonblank paths remain byte-for-byte exact; never trim/canonicalize real paths for concurrent-write checks. MomentImageCommitRuntimeTest commits synthetic already-generated PNG bytes through the real repository and cold storage, including late-result rejection after a real image appears.

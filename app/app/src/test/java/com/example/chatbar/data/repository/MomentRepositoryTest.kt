@@ -114,6 +114,36 @@ class MomentRepositoryTest {
         assertNull(repository.getPost(original.id))
     }
 
+    @Test fun legacyNullImagePathAcceptsOnDemandCommit() = checkInitialImageCommit(null)
+    @Test fun legacyEmptyImagePathAcceptsOnDemandCommit() = checkInitialImageCommit("")
+    @Test fun legacyWhitespaceImagePathAcceptsOnDemandCommit() = checkInitialImageCommit("  ")
+
+    private fun checkInitialImageCommit(path: String?) = runTest {
+        val repository = repository()
+        val original = post().copy(imagePath = path, imagePrompt = "draft", generatedImageMetadata = null)
+        repository.savePost(original)
+        repository.appendImageVersion(original.id, null, "generated.png", "generated prompt", null)
+        val saved = requireNotNull(repository.getPost(original.id))
+        assertEquals("generated.png", saved.imagePath)
+        assertEquals("generated prompt", saved.imagePrompt)
+        assertEquals(1, saved.imageVersions.size)
+        assertEquals(original.text, saved.text)
+        assertEquals(original.userLiked, saved.userLiked)
+    }
+
+    @Test fun realImagePathsRemainExactAndConcurrentFirstImageWins() = runTest {
+        val repository = repository()
+        val original = post().copy(imagePath = "  real.png", generatedImageMetadata = null)
+        repository.savePost(original)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, "real.png", "late.png", "late", null) }.isFailure)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, null, "late.png", "late", null) }.isFailure)
+        assertEquals(original, repository.getPost(original.id))
+        repository.savePost(original.copy(imagePath = " "))
+        repository.appendImageVersion(original.id, null, "first.png", "first", null)
+        assertTrue(runCatching { repository.appendImageVersion(original.id, null, "late.png", "late", null) }.isFailure)
+        assertEquals("first.png", repository.getPost(original.id)?.imagePath)
+    }
+
     private fun repository(): MomentRepository =
         MomentRepository(JsonFileStorage(TestContext(temp.newFolder("files"))))
 

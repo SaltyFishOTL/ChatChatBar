@@ -396,7 +396,7 @@ internal fun MomentPostRow(
                             )
                     )
                 }
-                post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                MomentImageVersions.currentImagePath(post)?.let { path ->
                     AsyncImage(
                         model = File(path),
                         contentDescription = post.imageBrief.ifBlank { post.text },
@@ -436,7 +436,7 @@ internal fun MomentPostRow(
                     horizontalArrangement = Arrangement.End,
                     verticalAlignment = Alignment.CenterVertically
                 ) {
-                    post.imagePath?.takeIf(String::isNotBlank)?.let { path ->
+                    MomentImageVersions.currentImagePath(post)?.let { path ->
                         CbIconButton(
                             imageVector = AppIcons.Refresh,
                             contentDescription = "重新生成图片",

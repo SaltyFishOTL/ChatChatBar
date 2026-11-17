@@ -24,7 +24,9 @@ class FormatRepairRetryRuntimeTest {
     @Test fun unchangedMarkerSuccessClearsPreviousFailure() = verifyRetry(true)
     @Test fun originalTextSuccessClearsPreviousFailure() = verifyRetry(false)
 
-    private fun verifyRetry(marker: Boolean) = runBlocking<Unit> {
+    @Test fun undoThenFailedAiRetryStillAllowsLocalRedo() = verifyRetry(true, keepRedo = true)
+
+    private fun verifyRetry(marker: Boolean, keepRedo: Boolean = false) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
@@ -37,8 +39,10 @@ class FormatRepairRetryRuntimeTest {
         val card = CharacterCard.create("Synthetic retry card")
         val session = ChatSession.create(card.id, "Synthetic retry").copy(modelId = model.id,
             longTermMemoryEnabled = false, automaticImageGenerationEnabled = false)
-        val reply = MessageAlternativeVersionPolicy.append(ChatMessage.create(session.id,
+        val baseReply = MessageAlternativeVersionPolicy.append(ChatMessage.create(session.id,
             MessageRole.ASSISTANT, "another candidate"), "synthetic current text", "current-version")
+        val reply = if (keepRedo) MessageFormatRepairPolicy.replaceCurrentDisplayContent(baseReply, "cached repaired result",
+            MessageFormatRepairPolicy.completedRepairNotice(baseReply.displayContent, "cached repaired result")) else baseReply
         val other = ChatMessage.create(session.id, MessageRole.USER, "synthetic independent record")
         try {
             app.modelRepository.saveModel(model)
@@ -53,6 +57,11 @@ class FormatRepairRetryRuntimeTest {
             }
             withTimeout(30_000) { vm.session.first { it?.id == session.id } }
             withTimeout(30_000) { vm.messages.first { messages -> messages.any { it.id == reply.id } } }
+            if (keepRedo) {
+                withContext(Dispatchers.Main) { vm.restoreMessageFormatOriginal(reply.id) }
+                withTimeout(15_000) { vm.messages.first { messages -> messages.any {
+                    it.id == reply.id && it.formatRepairNotice?.restored == true } } }
+            }
             server.enqueue(MockResponse().setResponseCode(400)
                 .setBody("{\"error\":{\"message\":\"synthetic first failure\"}}"))
             suspend fun repair() {
@@ -65,6 +74,24 @@ class FormatRepairRetryRuntimeTest {
             repair()
             val cold = ChatRepository(JsonFileStorage(app))
             val failed = requireNotNull(cold.getMessage(reply.id, session.id))
+            if (keepRedo) {
+                val notice = requireNotNull(failed.formatRepairNotice)
+                assertNotNull("Failed AI retry must retain the cached redo pair", notice.originalContent)
+                assertTrue(notice.restored)
+                assertEquals(baseReply.displayContent, failed.displayContent)
+                assertEquals("cached repaired result", notice.targetContent)
+                assertNotNull(notice.errorMessage)
+                withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id) }
+                withTimeout(15_000) { vm.messages.first { messages -> messages.any {
+                    it.id == reply.id && it.displayContent == "cached repaired result" && it.formatRepairNotice?.restored == false } } }
+                val redone = requireNotNull(cold.getMessage(reply.id, session.id))
+                assertEquals("cached repaired result", redone.displayContent)
+                assertNull(redone.formatRepairNotice?.errorMessage)
+                assertEquals(reply.alternativeVersionIds, redone.alternativeVersionIds)
+                assertEquals(other.content, cold.getMessage(other.id, session.id)?.content)
+                assertEquals("Local redo must not send a model request", 1, server.requestCount)
+                return@runBlocking
+            }
             assertEquals(MessageFormatRepairNoticeKind.ERROR, failed.formatRepairNotice?.kind)
             assertNotNull(MessageFormatRepairPolicy.applicableNotice(failed))
             val content = if (marker) PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER else reply.displayContent

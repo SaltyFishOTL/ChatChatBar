@@ -278,6 +278,7 @@ class MomentsViewModel : ViewModel() {
                 settingsRepository.initialize()
                 val post = repository.getPost(postId) ?: error("朋友圈不存在")
                 require(!post.isPlaceholder) { "占位朋友圈无法按需生成" }
+                require(MomentImageVersions.currentImagePath(post) == null) { "原朋友圈已包含图片，请使用重新生成" }
                 val card = characterRepository.getById(post.characterCardId) ?: error("角色卡不存在")
                 val settings = settingsRepository.getAppSettings()
                 val session = chatRepository.getSession(post.sessionId)

@@ -2312,6 +2312,7 @@ internal fun MessageFormatRepairNoticeRow(
 ) {
     val notice = MessageFormatRepairPolicy.applicableNotice(message)
     if (!checking && notice == null) return
+    val hasError = notice?.let { it.kind == MessageFormatRepairNoticeKind.ERROR || it.errorMessage != null } == true
     Row(
         modifier = Modifier.fillMaxWidth().padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2321,14 +2322,13 @@ internal fun MessageFormatRepairNoticeRow(
         CbText(
             text = when {
                 checking -> "正在检查格式…"
+                hasError -> "格式修复失败：${notice?.errorMessage ?: "未知错误"}"
                 notice?.restored == true -> "已撤销格式修复，可重做"
-                notice?.kind == MessageFormatRepairNoticeKind.ERROR ->
-                    "格式修复失败：${notice.errorMessage ?: "未知错误"}"
                 notice?.kind == MessageFormatRepairNoticeKind.STOPPED -> "格式修复已停止"
                 else -> "格式已修复"
             },
             modifier = Modifier.weight(1f),
-            color = if (notice?.kind == MessageFormatRepairNoticeKind.ERROR) {
+            color = if (hasError) {
                 ChatBarTheme.colors.destructive
             } else {
                 ChatBarTheme.colors.mutedForeground

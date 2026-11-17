@@ -196,6 +196,43 @@ class MessageFormatRepairPolicyTest {
         assertEquals(message().content, MessageFormatRepairPolicy.restoreOriginal(repaired.copy(formatRepairNotice = kept))?.displayContent)
     }
 
+    @Test fun failedRetryKeepsRestoredPairAndLocalRedoClearsAttemptError() {
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(message(), "cached repaired",
+            MessageFormatRepairPolicy.completedRepairNotice(message().content, "cached repaired"))
+        val restored = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(repaired))
+        val notice = MessageFormatRepairPolicy.failedAttemptNotice(restored, "retry failed")
+        assertEquals(restored.formatRepairNotice!!.copy(errorMessage = "retry failed"), notice)
+        val failed = restored.copy(formatRepairNotice = notice)
+        val redone = requireNotNull(MessageFormatRepairPolicy.redoRepair(failed))
+        assertEquals("cached repaired", redone.displayContent)
+        assertNull(redone.formatRepairNotice?.errorMessage)
+        assertEquals(restored.currentAlternativeVersionId, redone.currentAlternativeVersionId)
+    }
+
+    @Test fun failedRetryKeepsAppliedUndoPairAndRestoreClearsAttemptError() {
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(message(), "cached repaired",
+            MessageFormatRepairPolicy.completedRepairNotice(message().content, "cached repaired"))
+        val failed = repaired.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(repaired, "retry failed"))
+        val restored = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(failed))
+        assertEquals(message().content, restored.displayContent)
+        assertNull(restored.formatRepairNotice?.errorMessage)
+        assertEquals("cached repaired", MessageFormatRepairPolicy.redoRepair(restored)?.displayContent)
+    }
+
+    @Test fun failedRetryNeverKeepsStaleVersionOrEditedRecoveryPair() {
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(message(), "cached repaired",
+            MessageFormatRepairPolicy.completedRepairNotice(message().content, "cached repaired"))
+        for (changed in listOf(repaired.copy(content = "manual edit"), repaired.copy(
+            formatRepairNotice = repaired.formatRepairNotice!!.copy(versionId = "another-version")))) {
+            val notice = MessageFormatRepairPolicy.failedAttemptNotice(changed, "retry failed")
+            assertEquals(MessageFormatRepairNoticeKind.ERROR, notice.kind)
+            assertNull(notice.originalContent)
+            assertFalse(notice.restored)
+            assertEquals(changed.displayContent, notice.targetContent)
+            assertEquals(MessageAlternativeVersionPolicy.activeVersionId(changed), notice.versionId)
+        }
+    }
+
     private fun message() = ChatMessage(
         id = "m",
         sessionId = "s",

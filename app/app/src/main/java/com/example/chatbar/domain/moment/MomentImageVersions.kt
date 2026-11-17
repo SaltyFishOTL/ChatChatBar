@@ -6,8 +6,12 @@ import java.util.UUID
 
 /** Current fields remain the selected image; old posts are lifted without changing their originals. */
 object MomentImageVersions {
+    /** Only legacy no-image spellings are equivalent; real paths are never trimmed or resolved. */
+    fun imagePathOrNull(path: String?): String? = path?.takeIf(String::isNotBlank)
+    fun currentImagePath(post: MomentPost): String? = imagePathOrNull(post.imagePath)
+
     fun retained(post: MomentPost): List<MomentImageVersion> {
-        val current = post.imagePath?.takeIf { it.isNotBlank() } ?: return post.imageVersions
+        val current = currentImagePath(post) ?: return post.imageVersions
         if (post.imageVersions.any { it.imagePath == current }) return post.imageVersions
         return post.imageVersions + MomentImageVersion("legacy:${post.id}", current, post.imagePrompt, post.generatedImageMetadata)
     }
