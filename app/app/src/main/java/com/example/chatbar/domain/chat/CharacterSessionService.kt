@@ -13,8 +13,12 @@ class CharacterSessionService(
     private val chatRepository: ChatRepository,
     private val formatCardRepository: FormatCardRepository
 ) {
-    suspend fun createSessionForCharacter(cardId: String): String {
+    suspend fun createSessionForCharacter(
+        cardId: String,
+        greetingChoice: com.example.chatbar.domain.card.CharacterGreetingChoice? = null
+    ): String {
         val card = requireNotNull(characterRepository.getById(cardId)) { "角色卡不存在" }
+        val greeting = com.example.chatbar.domain.card.CharacterGreetingPolicy.resolve(card, greetingChoice)
         val defaultFormatCardId = card.defaultFormatCardId?.takeIf(String::isNotBlank)?.let { id ->
             if (formatCardRepository.getById(id) != null) id else {
                 Log.w("CharacterSessionService", "角色卡 ${card.id} 绑定的格式卡 $id 已不存在，新会话沿用全局默认")
@@ -28,7 +32,7 @@ class CharacterSessionService(
         )
         chatRepository.createSession(session)
         chatRepository.addMessage(
-            ChatMessage.create(sessionId = session.id, role = MessageRole.ASSISTANT, content = card.greeting)
+            ChatMessage.create(sessionId = session.id, role = MessageRole.ASSISTANT, content = greeting)
         )
         return session.id
     }

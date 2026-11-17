@@ -252,6 +252,19 @@ fun ManageScreen(
     var pendingFormatImport by remember { mutableStateOf<Pair<FormatCardPackage, FormatCard?>?>(null) }
     var pendingWorldBookImport by remember { mutableStateOf<Pair<WorldBookPackage, WorldBook?>?>(null) }
     var pendingCharacterChatId by remember { mutableStateOf<String?>(null) }
+    var greetingCardId by remember { mutableStateOf<String?>(null) }
+    var greetingBusy by remember { mutableStateOf(false) }
+    fun showCreationError(error: Exception) {
+        greetingBusy = false
+        Toast.makeText(context, error.message ?: "创建会话失败", Toast.LENGTH_LONG).show()
+    }
+    fun startCharacterChat(id: String) {
+        val card = characters.firstOrNull { it.id == id }
+        if (card == null) showCreationError(IllegalStateException("角色卡已不存在"))
+        else if (com.example.chatbar.domain.card.CharacterGreetingPolicy.choices(card).size > 1) greetingCardId = id
+        else viewModel.createSessionForCharacter(id, onFailure = ::showCreationError) { onNavigate(ChatRoute(it)) }
+    }
+
     var localSharedImportFocus by remember { mutableStateOf<SharedImportFocus?>(null) }
     fun consumeSharedImportFocus() {
         val focus = localSharedImportFocus ?: return
@@ -439,7 +452,7 @@ fun ManageScreen(
                         if (modelWarnings.isNotEmpty()) {
                             pendingCharacterChatId = id
                         } else {
-                            viewModel.createSessionForCharacter(id) { onNavigate(ChatRoute(it)) }
+                            startCharacterChat(id)
                         }
                     }, { entry -> scope.launch {
                         val data = viewModel.recoverCharacterPreset(entry)
@@ -539,12 +552,29 @@ fun ManageScreen(
         }
     }
 
+    greetingCardId?.let { id ->
+        val card = characters.firstOrNull { it.id == id }
+        if (card == null) LaunchedEffect(id) { greetingCardId = null }
+        else com.example.chatbar.ui.components.CharacterGreetingPickerDialog(
+            card = card, busy = greetingBusy,
+            onDismiss = { greetingCardId = null },
+            onConfirm = { choice ->
+                greetingBusy = true
+                viewModel.createSessionForCharacter(id, choice, ::showCreationError) {
+                    greetingCardId = null
+                    greetingBusy = false
+                    onNavigate(ChatRoute(it))
+                }
+            }
+        )
+    }
+
     pendingCharacterChatId?.let { characterId ->
         RagConfigurationNoticeDialog(
             onDismissRequest = { pendingCharacterChatId = null },
             onContinue = {
                 pendingCharacterChatId = null
-                viewModel.createSessionForCharacter(characterId) { onNavigate(ChatRoute(it)) }
+                startCharacterChat(characterId)
             }
         )
     }
