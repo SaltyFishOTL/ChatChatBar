@@ -26,6 +26,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
     @Test fun deletingLastVersionKeepsAudioReferencedByIndependentMessage() = verify(last = true, sharedAudio = true)
+    @Test fun deletingLastVersionReportsCleanupFailureWithoutCrashing() = verify(last = true, cleanupFailure = true)
+    @Test fun deletingOneVersionReportsCleanupFailureAfterRefreshingMessage() = verify(cleanupFailure = true)
     @Test fun missingVersionDoesNotCleanAnyVoice() = verify(missing = true)
     @Test fun lateSynthesisCannotRestoreDeletedVersionVoice() = verify(lateVoice = true)
     @Test fun lateLegacyRegenerationCannotRestoreDeletedVersionVoice() = verify(legacy = true, lateVoice = true)
@@ -86,7 +88,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
 
     private fun verify(
         legacy: Boolean = false, sharedAudio: Boolean = false, last: Boolean = false,
-        missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false
+        missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false,
+        cleanupFailure: Boolean = false
     ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
@@ -104,6 +107,11 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             it.writeBytes("synthetic audio $name".toByteArray())
         }
         val deletedAudio = audio("deleted")
+        if (cleanupFailure) {
+            // Deterministic owned-path deletion failure; no host permission changes.
+            check(deletedAudio.delete()); check(deletedAudio.mkdir())
+            File(deletedAudio, "synthetic-child").writeText("blocks directory deletion")
+        }
         val retainedAudio = if (sharedAudio) deletedAudio else audio("retained")
         val otherAudio = if (last && sharedAudio) deletedAudio else audio("other")
         val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic first voice")
@@ -163,6 +171,16 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertFalse("Deleted alternative must not retain its dedicated voice", coldVoices.any { it.id == removedVoice.id })
             assertFalse("Deleted alternative must not retain its anchor state", coldAnchors.any {
                 it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
+            if (cleanupFailure) {
+                val error = withTimeout(15_000) { vm.messageActionError.first { it != null } }
+                assertTrue(error!!.contains("语音文件清理失败"))
+                val current = ChatRepository(JsonFileStorage(app)).getMessage(reply.id, session.id)
+                if (last) assertNull(current) else assertFalse(MessageAlternativeVersionPolicy.versions(requireNotNull(current))
+                    .any { it.id == deletedVersion.id })
+                assertTrue(deletedAudio.exists())
+                assertTrue(otherAudio.exists())
+                return@runBlocking
+            }
             assertEquals("Shared audio must survive until its last remaining voice is deleted", sharedAudio, deletedAudio.exists())
             assertTrue(otherAudio.exists())
             assertTrue(coldVoices.any { it == independent })
@@ -226,7 +244,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             app.chatRepository.deleteSessionRecord(session.id)
             app.characterRepository.delete(card.id)
             image.delete()
-            audioDir.listFiles().orEmpty().forEach { it.delete() }; audioDir.delete()
+            audioDir.deleteRecursively()
             workspace.deleteRecursively()
         }
     }

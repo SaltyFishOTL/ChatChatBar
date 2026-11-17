@@ -2387,7 +2387,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     deleteMessage(messageId, message)
                     return@launch
                 }
-                withContext(NonCancellable) {
+                val audioCleanupSucceeded = withContext(NonCancellable) {
                     com.example.chatbar.domain.backup.LocalDataMaintenance.access {
                         val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId) {
                             chatRepository.updateMessageIfUnchanged(message, changed)
@@ -2400,6 +2400,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 replaceMessagesFromRepository()
                 refreshMemoryAfterMessageEdit(changed)
+                if (!audioCleanupSucceeded) _messageActionError.value = "备选已删除，但语音文件清理失败"
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { _messageActionError.value = error.message ?: "删除备选失败" }
         }
@@ -3603,18 +3604,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun deleteMessage(messageId: String) = deleteMessage(messageId, null)
 
-    private fun deleteUnreferencedVoiceAudio(deletedVoices: List<com.example.chatbar.data.local.entity.GeneratedVoiceMessage>) {
+    private fun deleteUnreferencedVoiceAudio(deletedVoices: List<com.example.chatbar.data.local.entity.GeneratedVoiceMessage>): Boolean {
         val retainedPaths = voiceMessageRepository.voices.value.mapNotNull {
             runCatching { File(it.audioPath).canonicalPath }.getOrNull()
         }.toSet()
+        var succeeded = true
         deletedVoices.forEach { voice ->
             val path = runCatching { File(voice.audioPath).canonicalPath }.getOrNull()
             if (path != null && path !in retainedPaths) {
-                check(ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)) {
-                    "删除已提交，但语音文件清理失败"
-                }
+                if (!ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)) succeeded = false
             }
         }
+        return succeeded
     }
 
     private fun deleteMessage(messageId: String, expected: ChatMessage?) {
@@ -3639,10 +3640,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
                 fishAudioCoordinator.stopPlayback()
             }
-            deleteUnreferencedVoiceAudio(deletedVoices)
+            val audioCleanupSucceeded = deleteUnreferencedVoiceAudio(deletedVoices)
             _messages.value = _messages.value.filter { it.id != messageId }
             if (expected == null) chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
+            if (!audioCleanupSucceeded) _messageActionError.value = "消息已删除，但语音文件清理失败"
             enqueueLongTermMemoryAfterMessageDeletion()
 
             if (deletedMessage == null || ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
