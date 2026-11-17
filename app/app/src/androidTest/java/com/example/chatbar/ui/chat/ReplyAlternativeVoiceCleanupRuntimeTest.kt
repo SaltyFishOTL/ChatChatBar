@@ -25,6 +25,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingInactiveLegacyVersionResolvesOwnershipBeforeRemoval() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
+    @Test fun deletingLastVersionKeepsAudioReferencedByIndependentMessage() = verify(last = true, sharedAudio = true)
     @Test fun missingVersionDoesNotCleanAnyVoice() = verify(missing = true)
     @Test fun lateSynthesisCannotRestoreDeletedVersionVoice() = verify(lateVoice = true)
     @Test fun lateLegacyRegenerationCannotRestoreDeletedVersionVoice() = verify(legacy = true, lateVoice = true)
@@ -104,7 +105,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         }
         val deletedAudio = audio("deleted")
         val retainedAudio = if (sharedAudio) deletedAudio else audio("retained")
-        val otherAudio = audio("other")
+        val otherAudio = if (last && sharedAudio) deletedAudio else audio("other")
         val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic first voice")
             .copy(images = listOf(image.path))
         val reply = if (last) first else MessageAlternativeVersionPolicy.append(first,
@@ -162,7 +163,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertFalse("Deleted alternative must not retain its dedicated voice", coldVoices.any { it.id == removedVoice.id })
             assertFalse("Deleted alternative must not retain its anchor state", coldAnchors.any {
                 it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
-            assertEquals(sharedAudio, deletedAudio.exists())
+            assertEquals("Shared audio must survive until its last remaining voice is deleted", sharedAudio, deletedAudio.exists())
             assertTrue(otherAudio.exists())
             assertTrue(coldVoices.any { it == independent })
             assertTrue(coldAnchors.any { it.messageId == other.id })
@@ -217,7 +218,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertFalse(exportedAnchors.any { it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
             val exportedAudio = File(restore, "files/audio/generated/${session.id}")
             assertEquals(sharedAudio, File(exportedAudio, "deleted.mp3").exists())
-            assertArrayEquals(otherAudio.readBytes(), File(exportedAudio, "other.mp3").readBytes())
+            assertArrayEquals(otherAudio.readBytes(), File(exportedAudio, otherAudio.name).readBytes())
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
             app.voiceMessageRepository.deleteForSession(session.id)
