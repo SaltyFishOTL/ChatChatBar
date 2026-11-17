@@ -2389,8 +2389,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 }
                 withContext(NonCancellable) {
                     com.example.chatbar.domain.backup.LocalDataMaintenance.access {
-                        check(chatRepository.updateMessageIfUnchanged(message, changed)) { "消息已变化，请重新操作" }
-                        val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId)
+                        val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId) {
+                            chatRepository.updateMessageIfUnchanged(message, changed)
+                        }
                         if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
                             fishAudioCoordinator.stopPlayback()
                         }

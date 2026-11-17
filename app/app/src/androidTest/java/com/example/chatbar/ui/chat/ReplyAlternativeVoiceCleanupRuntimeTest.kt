@@ -3,6 +3,7 @@ package com.example.chatbar.ui.chat
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
+import android.content.ContextWrapper
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.*
@@ -28,10 +29,63 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun lateSynthesisCannotRestoreDeletedVersionVoice() = verify(lateVoice = true)
     @Test fun lateLegacyRegenerationCannotRestoreDeletedVersionVoice() = verify(legacy = true, lateVoice = true)
     @Test fun lateAnchorResolutionCannotRestoreDeletedVersionAnchor() = verify(lateAnchor = true)
+    @Test fun staleUiPlacementReadCannotRecreateDeletedVersionAnchor() = verify(staleUi = true)
+
+    @Test fun legacyLateWriteAndUiReadWaitUntilCasCleanupCompletes() = runBlocking<Unit> { withTimeout(40_000) {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val root = File(app.cacheDir, "atomic-version-voice-" + UUID.randomUUID()).also(File::mkdirs)
+        val context = object : ContextWrapper(app) { override fun getFilesDir() = root }
+        val storage = JsonFileStorage(context)
+        val chats = ChatRepository(storage)
+        val voices = VoiceMessageRepository(storage, chats::getMessage)
+        val first = ChatMessage.create("synthetic-session", MessageRole.ASSISTANT, "old candidate")
+        val message = MessageAlternativeVersionPolicy.append(first, "kept candidate", "kept-version")
+        val removedId = MessageAlternativeVersionPolicy.versions(message).first().id
+        val legacy = GeneratedVoiceMessage(id = "legacy", sessionId = message.sessionId, messageId = message.id,
+            sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
+            sourceSpeakerName = "", sourceText = first.content, taggedText = first.content,
+            characterId = "fixture", characterName = "Fixture", voice = FishAudioVoiceBinding("fixture", "Fixture"),
+            fishModelId = "fixture", audioPath = File(root, "synthetic.mp3").path,
+            durationMs = 1000, byteLength = 1, createdAt = 1, updatedAt = 1)
+        try {
+            chats.addMessage(message)
+            voices.save(legacy)
+            val rejected = runCatching { voices.deleteForVersion(message, removedId) { false } }
+            assertTrue(rejected.exceptionOrNull() is IllegalStateException)
+            assertEquals(legacy, voices.get(legacy.id))
+            assertTrue(voices.snapshotAnchorsForMessages(setOf(message.id)).isEmpty())
+            val afterCas = CompletableDeferred<Unit>()
+            val finishCommit = CompletableDeferred<Unit>()
+            val attempt = CompletableDeferred<Unit>()
+            val mutation = async(Dispatchers.Default) {
+                voices.deleteForVersion(message, removedId) {
+                    val committed = chats.updateMessageIfUnchanged(message,
+                        requireNotNull(MessageAlternativeVersionPolicy.remove(message, removedId)))
+                    afterCas.complete(Unit)
+                    finishCommit.await()
+                    committed
+                }
+            }
+            withTimeout(15_000) { afterCas.await() }
+            val late = async(Dispatchers.Default) {
+                attempt.complete(Unit)
+                runCatching { voices.saveForExistingVersion(legacy) { chats.getMessage(message.id, message.sessionId) } }
+            }
+            val ui = async(Dispatchers.Default) { voices.placementsForMessage(first) }
+            withTimeout(15_000) { attempt.await() }
+            finishCommit.complete(Unit)
+            assertEquals(listOf("legacy"), withTimeout(15_000) { mutation.await() }.map { it.id })
+            assertTrue(withTimeout(15_000) { late.await() }.exceptionOrNull() is IllegalStateException)
+            assertTrue(withTimeout(15_000) { ui.await() }.isEmpty())
+            val cold = VoiceMessageRepository(JsonFileStorage(context))
+            assertTrue(cold.listForSession(message.sessionId).isEmpty())
+            assertFalse(cold.snapshotAnchorsForMessages(setOf(message.id)).any { it.messageVersionId == removedId })
+        } finally { root.deleteRecursively() }
+    } }
 
     private fun verify(
         legacy: Boolean = false, sharedAudio: Boolean = false, last: Boolean = false,
-        missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false
+        missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false
     ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
@@ -137,6 +191,12 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                     app.chatRepository.getMessage(reply.id, session.id)
                 } } catch (_: IllegalStateException) { rejected = true }
                 assertTrue("Late anchor resolution must be rejected", rejected)
+                assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(setOf(reply.id))
+                    .any { it.messageVersionId == deletedVersion.id })
+            }
+            if (staleUi) {
+                assertTrue(app.voiceMessageRepository.placementsForMessage(reply).isEmpty())
+                assertTrue(app.voiceMessageRepository.listForCurrentVersion(reply).isEmpty())
                 assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(setOf(reply.id))
                     .any { it.messageVersionId == deletedVersion.id })
             }

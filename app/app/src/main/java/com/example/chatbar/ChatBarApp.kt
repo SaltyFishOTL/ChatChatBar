@@ -265,7 +265,7 @@ class ChatBarApp : Application() {
         saveSlotRepository = SaveSlotRepository(jsonFileStorage, saveSlotPackageStorage)
         settingsRepository = SettingsRepository(jsonFileStorage)
         momentRepository = MomentRepository(jsonFileStorage)
-        voiceMessageRepository = VoiceMessageRepository(jsonFileStorage)
+        voiceMessageRepository = VoiceMessageRepository(jsonFileStorage, chatRepository::getMessage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
         fishAudioCredentialStore = FishAudioCredentialStore(this)
         ragRepository = RagRepository(jsonFileStorage)
