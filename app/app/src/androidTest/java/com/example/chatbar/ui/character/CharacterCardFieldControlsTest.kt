@@ -38,6 +38,8 @@ class CharacterCardFieldControlsTest {
                 CharacterCardMetadataEditor(tags, { tags = it }, creator, { creator = it }, version, { version = it }, raw)
             }
         } }
+        rule.onNodeWithText(" imported ").assertIsDisplayed()
+        rule.onAllNodesWithText("duplicate").assertCountEquals(2)
         rule.onAllNodes(hasSetTextAction())[1].performScrollTo().performTextReplacement("edited creator")
         rule.onAllNodes(hasSetTextAction())[2].performScrollTo().performTextReplacement("2.0")
         rule.onAllNodes(hasSetTextAction())[0].performScrollTo().performTextReplacement(" imported ")
