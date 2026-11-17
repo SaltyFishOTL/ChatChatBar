@@ -16,6 +16,8 @@ import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import org.junit.Assert.*
 import org.junit.Before
@@ -31,6 +33,7 @@ class CharacterCardFieldsPersistenceTest {
     @Before fun requireIsolatedSyntheticApplication() {
         check(InstrumentationRegistry.getInstrumentation().targetContext.packageName in setOf(
             "com.example.chatbar.cardfields.review.n1", "com.example.chatbar.nextreview.r3"))
+        runBlocking { withTimeout(30_000) { app.dependenciesReady.first { it } } }
     }
 
     @Test fun existingCardsBothModesRetainFieldsThroughDraftSaveColdReadAndNativeTransfer() {
