@@ -619,7 +619,8 @@ fun CharacterEditScreen(
                     }
                 }
             )
-            CbField("对话示例", description = "作为人物对话示例加入模型输入；留空不添加示例，不替换系统提示词。", onFullscreenEdit = {
+            CbField("对话示例", modifier = Modifier.testTag("character-dialogue-examples"),
+                description = "作为人物对话示例加入模型输入；留空不添加示例，不替换系统提示词。", onFullscreenEdit = {
                 fullscreenField = "对话示例" to viewModel.mesExample
                 fullscreenOnChange = { viewModel.mesExample = it }
             }) {
@@ -1031,6 +1032,7 @@ fun CharacterEditScreen(
     }
 
     fullscreenField?.let { (title, text) ->
+        BackHandler { fullscreenField = null; fullscreenOnChange = null }
         FullscreenTextEditor(
             title = title,
             text = text,
