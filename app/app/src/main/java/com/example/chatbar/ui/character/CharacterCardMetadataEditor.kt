@@ -34,7 +34,7 @@ internal fun CharacterCardMetadataEditor(
                 tags.forEachIndexed { index, tag ->
                     CbButton(tag.ifBlank { "（空标签）" }, { onTagsChange(tags.filterIndexed { i, _ -> i != index }) },
                         modifier = Modifier.semantics { contentDescription = "移除标签 $tag" },
-                        variant = ButtonVariant.Outline, icon = AppIcons.Close)
+                        variant = ButtonVariant.Outline, icon = AppIcons.Close, supportingText = tag.ifBlank { "（空标签）" })
                 }
             }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -59,7 +59,8 @@ internal fun CharacterCardMetadataEditor(
                 CbButton(if (showExtensions) "收起扩展数据" else "查看扩展数据", { showExtensions = !showExtensions },
                     enabled = extensions.isNotEmpty(), variant = ButtonVariant.Outline)
                 CbButton("复制扩展", { clipboard.setText(AnnotatedString(extensions)) },
-                    enabled = extensions.isNotEmpty(), variant = ButtonVariant.Ghost, icon = AppIcons.ContentCopy)
+                    enabled = extensions.isNotEmpty(), variant = ButtonVariant.Ghost, icon = AppIcons.ContentCopy,
+                    supportingText = "复制扩展")
             }
             if (extensions.isEmpty()) CbText("无扩展数据", color = ChatBarTheme.colors.mutedForeground)
             if (showExtensions) SelectionContainer {
@@ -100,6 +101,7 @@ internal fun CharacterAlternateGreetingsEditor(
                 }
             }
         }
-        CbButton("添加备用开场", { onChange(greetings + "") }, variant = ButtonVariant.Outline, icon = AppIcons.Add)
+        CbButton("添加备用开场", { onChange(greetings + "") }, variant = ButtonVariant.Outline, icon = AppIcons.Add,
+            supportingText = "添加备用开场")
     }
 }
