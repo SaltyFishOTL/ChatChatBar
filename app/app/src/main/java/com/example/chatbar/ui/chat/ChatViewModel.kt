@@ -2387,23 +2387,31 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     deleteMessage(messageId, message)
                     return@launch
                 }
-                val audioCleanupSucceeded = withContext(NonCancellable) {
-                    com.example.chatbar.domain.backup.LocalDataMaintenance.access {
-                        val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId) {
-                            chatRepository.updateMessageIfUnchanged(message, changed)
-                        }
-                        if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
-                            fishAudioCoordinator.stopPlayback()
-                        }
-                        deleteUnreferencedVoiceAudio(deletedVoices)
-                    }
-                }
-                replaceMessagesFromRepository()
-                refreshMemoryAfterMessageEdit(changed)
-                if (!audioCleanupSucceeded) _messageActionError.value = "备选已删除，但语音文件清理失败"
+                commitReplyAlternativeRemoval(message, versionId, changed)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { _messageActionError.value = error.message ?: "删除备选失败" }
         }
+    }
+
+    private suspend fun commitReplyAlternativeRemoval(
+        message: ChatMessage,
+        versionId: String,
+        changed: ChatMessage
+    ) {
+        val audioCleanupSucceeded = withContext(NonCancellable) {
+            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                val deletedVoices = voiceMessageRepository.deleteForVersion(message, versionId) {
+                    chatRepository.updateMessageIfUnchanged(message, changed)
+                }
+                if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
+                    fishAudioCoordinator.stopPlayback()
+                }
+                deleteUnreferencedVoiceAudio(deletedVoices)
+            }
+        }
+        replaceMessagesFromRepository()
+        refreshMemoryAfterMessageEdit(changed)
+        if (!audioCleanupSucceeded) _messageActionError.value = "备选已删除，但语音文件清理失败"
     }
 
     private suspend fun performMessageFormatRepair(
@@ -3770,15 +3778,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             )
             val updatedMessage = editOutcome.message
             if (updatedMessage == null) {
-                deleteMessage(messageId)
+                deleteMessage(messageId, oldMessage)
                 return@launch
             }
 
-            if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != MessageAlternativeVersionPolicy.activeVersionId(oldMessage)) {
-                if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage)) {
-                    replaceMessagesFromRepository()
-                    refreshMemoryAfterMessageEdit(updatedMessage)
-                } else _messageActionError.value = "消息已变化，请重新操作"
+            val oldVersionId = MessageAlternativeVersionPolicy.activeVersionId(oldMessage)
+            if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != oldVersionId) {
+                try {
+                    fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
+                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _messageActionError.value = error.message ?: "删除备选失败"
+                }
                 return@launch
             }
             applyMessageEdit(

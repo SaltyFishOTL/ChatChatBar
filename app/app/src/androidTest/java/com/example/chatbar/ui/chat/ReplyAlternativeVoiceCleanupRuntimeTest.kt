@@ -22,6 +22,7 @@ import org.junit.Test
 /** Actual VM, private JSON/audio ownership, cold reads and export. No speech or image service. */
 class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingCurrentVersionCleansVoiceAndAnchorFromColdStorageAndBackup() = verify()
+    @Test fun clearingLastTextSegmentCleansRemovedVersionVoiceAndAnchorFromBackup() = verify(viaSegmentEdit = true)
     @Test fun deletingInactiveLegacyVersionResolvesOwnershipBeforeRemoval() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
@@ -89,7 +90,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     private fun verify(
         legacy: Boolean = false, sharedAudio: Boolean = false, last: Boolean = false,
         missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false,
-        cleanupFailure: Boolean = false
+        cleanupFailure: Boolean = false, viaSegmentEdit: Boolean = false
     ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
@@ -115,7 +116,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val retainedAudio = if (sharedAudio) deletedAudio else audio("retained")
         val otherAudio = if (last && sharedAudio) deletedAudio else audio("other")
         val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic first voice")
-            .copy(images = listOf(image.path))
+            .copy(images = if (viaSegmentEdit) emptyList() else listOf(image.path))
         val reply = if (last) first else MessageAlternativeVersionPolicy.append(first,
             "synthetic second voice", "second-version")
         val versions = MessageAlternativeVersionPolicy.versions(reply)
@@ -148,8 +149,13 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
             }
             withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
-            withContext(Dispatchers.Main) { vm.deleteMessageAlternative(reply.id,
-                if (missing) "does-not-exist" else deletedVersion.id) }
+            withContext(Dispatchers.Main) {
+                if (viaSegmentEdit) {
+                    vm.editMessageSegment(reply.id, 0, reply.displayContent.length, "")
+                } else {
+                    vm.deleteMessageAlternative(reply.id, if (missing) "does-not-exist" else deletedVersion.id)
+                }
+            }
             if (missing) {
                 withTimeout(15_000) { vm.messageActionError.first { it != null } }
             } else {
@@ -193,7 +199,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             val coldMessage = ChatRepository(JsonFileStorage(app)).getMessage(reply.id, session.id)
             if (last) assertNull(coldMessage) else {
                 assertNotNull(coldMessage)
-                assertEquals(listOf(image.path), coldMessage!!.images)
+                assertEquals(reply.images, coldMessage!!.images)
                 assertTrue(image.exists())
             }
             if (lateVoice) {
