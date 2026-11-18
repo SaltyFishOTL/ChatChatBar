@@ -23,6 +23,10 @@ import org.junit.Test
 class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingCurrentVersionCleansVoiceAndAnchorFromColdStorageAndBackup() = verify()
     @Test fun clearingLastTextSegmentCleansRemovedVersionVoiceAndAnchorFromBackup() = verify(viaSegmentEdit = true)
+    @Test fun clearingOnlyAlternativeThroughSegmentDeletesMessageAndVoice() = verify(viaSegmentEdit = true, last = true)
+    @Test fun clearingOnlyAlternativePreservesAudioReferencedByIndependentMessage() = verify(viaSegmentEdit = true, last = true, sharedAudio = true)
+    @Test fun clearingLastTextSegmentRejectsLateVoiceAndAnchorRecreation() = verify(viaSegmentEdit = true, lateVoice = true, lateAnchor = true, staleUi = true)
+    @Test fun clearingLastTextSegmentReportsCleanupFailureAfterRefreshingMessage() = verify(viaSegmentEdit = true, cleanupFailure = true)
     @Test fun deletingInactiveLegacyVersionResolvesOwnershipBeforeRemoval() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
