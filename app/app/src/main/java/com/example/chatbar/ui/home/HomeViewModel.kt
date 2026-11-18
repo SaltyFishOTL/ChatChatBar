@@ -101,10 +101,20 @@ class HomeViewModel : ViewModel() {
     /**
      * 创建一个新会话，并在完成后通过回调返回会话 ID
      */
-    fun createSession(characterCard: CharacterCard, onSessionCreated: (String) -> Unit) {
+    fun createSession(
+        characterCard: CharacterCard,
+        greetingChoice: com.example.chatbar.domain.card.CharacterGreetingChoice? = null,
+        onFailure: (Exception) -> Unit = { throw it },
+        onSessionCreated: (String) -> Unit
+    ) {
         viewModelScope.launch {
-            if (ChatBarApp.instance.effectiveModelResolver.status().isUsable) {
-                onSessionCreated(ChatBarApp.instance.characterSessionService.createSessionForCharacter(characterCard.id))
+            try {
+                check(ChatBarApp.instance.effectiveModelResolver.status().isUsable) { "模型配置不可用，无法创建会话。" }
+                onSessionCreated(ChatBarApp.instance.characterSessionService.createSessionForCharacter(characterCard.id, greetingChoice))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                onFailure(error)
             }
         }
     }

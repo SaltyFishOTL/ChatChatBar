@@ -17,6 +17,22 @@ import org.junit.Test
 class PromptAssemblerCharacterModeTest {
     private val assembler = PromptAssembler()
 
+    @Test fun examplesAffectBothModesButCardMetadataNeverBecomesCharacterPromptText() {
+        for (mode in CharacterEditMode.entries) {
+            val sample = CharacterCard.create("synthetic").copy(editMode = mode,
+                freeformCharacterText = "synthetic body", mesExample = "SYNTHETIC_EXAMPLE_741",
+                tags = listOf("META_TAG_741"), creator = "META_CREATOR_741",
+                characterVersion = "META_VERSION_741", extensions = "{\"opaque\":\"META_EXTENSION_741\"}")
+            val prompt = assembler.assembleSystemPrompt(sample)
+            assertTrue(prompt.contains(sample.mesExample))
+            for (metadata in listOf(sample.tags.single(), sample.creator, sample.characterVersion, "META_EXTENSION_741")) {
+                assertFalse(prompt.contains(metadata))
+            }
+            assertEquals("", sample.systemPrompt)
+            assertEquals("", sample.postHistoryInstructions)
+        }
+    }
+
     @Test fun disabledNarrativeModeOmitsSectionsFromEveryAssemblyPath() {
         val cached = assembler.assembleCachePromptLayers(card(), narrativeMode = null)
         val uncached = assembler.assembleCachePromptLayers(
