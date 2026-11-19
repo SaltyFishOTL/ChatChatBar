@@ -58,15 +58,23 @@ class ChatHistoryActionProjectionTest {
             "Let's go with B and wait quietly.",
             "Perhaps ‘b’ would work better here.",
             "Let's go with A and wait quietly.",
-            "She suggested B so we will wait quietly."
+            "She suggested B so we will wait quietly.",
+            "She suggested A so we will wait quietly."
         )) {
             val user = message("u", MessageRole.USER, reference, 2)
             val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
             assertEquals(reference, source, projection.project(assistant, source))
         }
-        val independent = message("u", MessageRole.USER, "I'll open a window while we're waiting nearby.", 2)
-        val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
-        assertEquals("旁白\n", projection.project(assistant, source))
+        for (text in listOf("I'll open a window while we're waiting nearby.", "I open a window and wait nearby.")) {
+            val independent = message("u", MessageRole.USER, text, 2)
+            val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
+            assertEquals("旁白\n", projection.project(assistant, source))
+        }
+        val nineOptions = ('A'..'I').joinToString("\n") { "$it) Action $it" }
+        val longMenu = assistant.copy(content = "旁白\n<choices>\n$nineOptions\n</choices>")
+        val referenceI = message("u", MessageRole.USER, "She suggested I so we will wait quietly.", 2)
+        val projection = known(listOf(longMenu, referenceI), setOf(longMenu.id, referenceI.id))
+        assertEquals(longMenu.content, projection.project(longMenu, longMenu.content))
     }
 
     @Test fun `unreliable list narration code and legacy status projection keep their separate semantics`() {

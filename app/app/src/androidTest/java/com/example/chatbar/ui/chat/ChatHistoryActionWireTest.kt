@@ -61,11 +61,22 @@ class ChatHistoryActionWireTest {
         }
         val letterChoices = row(MessageRole.ASSISTANT, "我看向木门。\n<cyoa>\nA) Read the map\nB) Wait by the door\n</cyoa>")
             .copy(actionOptionsFormat = ActionOptionsFormat("<cyoa>", "</cyoa>", "", ActionOptionLabels.LETTERS))
-        val reference = "Let's go with B and wait quietly."
-        verify("declared-letter-reference", listOf(letterChoices), reference) { wire, contents ->
-            assertTrue(wire.contains("A) Read the map"))
-            assertTrue(wire.contains("B) Wait by the door"))
-            assertTrue(contents.contains(reference))
+        for ((index, reference) in listOf(
+            "Let's go with B and wait quietly.",
+            "She suggested A so we will wait quietly."
+        ).withIndex()) {
+            verify("declared-letter-reference-$index", listOf(letterChoices), reference) { wire, contents ->
+                assertTrue(wire.contains("A) Read the map"))
+                assertTrue(wire.contains("B) Wait by the door"))
+                assertTrue(contents.contains(reference))
+            }
+        }
+        val nineOptions = ('A'..'I').joinToString("\n") { "$it) Action $it" }
+        val longMenu = letterChoices.copy(content = "旁白\n<cyoa>\n$nineOptions\n</cyoa>")
+        val referenceI = "She suggested I so we will wait quietly."
+        verify("declared-letter-i-reference", listOf(longMenu), referenceI) { wire, contents ->
+            assertTrue(wire.contains("I) Action I"))
+            assertTrue(contents.contains(referenceI))
         }
     }
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {

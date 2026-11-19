@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.chat
 
+import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 
@@ -27,12 +28,33 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
             // Protect every earlier action source, not only the immediately preceding assistant:
             // an old pure-number or image-bearing reply may depend on an older block.
             // A generated visual description is not proof of independent typed intent.
-            val lastUnresolvedReference = candidates.indexOfLast {
-                it.role == MessageRole.USER && (it.images.isNotEmpty() || mayReferToEarlierChoices(it.displayContent))
-            }
+            val lastUnresolvedReference = lastPossibleChoiceReference(candidates)
             return ChatHistoryActionProjection(candidates.withIndex().filter { (index, message) ->
                 index > lastUnresolvedReference && message.id in completeRecentMessageIds && message.role == MessageRole.ASSISTANT
             }.associate { it.value.id to it.value })
+        }
+
+        private fun lastPossibleChoiceReference(candidates: List<ChatMessage>): Int {
+            var last = -1
+            val ambiguousLabelsSeen = mutableSetOf<Char>()
+            for ((index, message) in candidates.withIndex()) {
+                if (message.role == MessageRole.USER) {
+                    val content = message.displayContent
+                    if (message.images.isNotEmpty() || mayReferToEarlierChoices(content) ||
+                        (ambiguousLabelsSeen.isNotEmpty() && ambiguousLetterLabel.findAll(content)
+                            .any { it.value.single().uppercaseChar() in ambiguousLabelsSeen })
+                    ) last = index
+                } else if (message.role == MessageRole.ASSISTANT && ambiguousLabelsSeen.size < 2) {
+                    val format = message.displayActionOptionsFormat
+                    if (format?.labels != ActionOptionLabels.LETTERS) continue
+                    for (block in RoleplayActionOptionsPolicy.blocks(message.displayContent, format)) {
+                        block.options.mapNotNullTo(ambiguousLabelsSeen) { option ->
+                            option.label.singleOrNull()?.uppercaseChar()?.takeIf { it == 'A' || it == 'I' }
+                        }
+                    }
+                }
+            }
+            return last
         }
 
         /** Deliberately conservative lexical admission, not natural-language intent inference. */
@@ -48,9 +70,11 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
 
         private val numeric = Regex("\\p{N}")
         // Avoid treating the English article, pronoun and parts of contractions as labels.
-        private val standaloneLetterLabel = Regex(
-            "(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[b-hj-z](?![\\p{L}\\p{N}_]|['’]\\p{L})"
-        )
+        private fun standaloneLetter(characters: String) =
+            Regex("(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[$characters](?![\\p{L}\\p{N}_]|['’]\\p{L})")
+        private val standaloneLetterLabel = standaloneLetter("b-hj-z")
+        // A and I can be ordinary English. Keep the source when an earlier menu defines them.
+        private val ambiguousLetterLabel = standaloneLetter("AIi")
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
