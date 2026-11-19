@@ -155,6 +155,22 @@ class LlmApiAccountsTest {
         assertEquals("", instance.resolver.embeddingModel()?.apiKey)
     }
 
+    @Test fun `restoring presets keeps the legacy endpoint and only key when migration cannot start`() = runTest {
+        val data = Fixture(temp.newFolder())
+        val legacy = model("existing", "https://custom.example/v1", "synthetic-only-key").copy(sourcePresetKey = "preset")
+        data.writeModel(legacy)
+        data.vault.readUnavailable = true
+        val instance = data.open()
+        val catalog = PresetModelCatalog(chatModels = listOf(PresetChatModel("preset", "Preset", "preset-model")))
+        assertTrue(instance.models.llmMigrationPending.value)
+        assertEquals(listOf(legacy), instance.models.restorePresetChatModels(catalog, 1))
+        assertEquals(legacy, data.readModel(legacy.id))
+        data.vault.readUnavailable = false
+        instance.models.retryLlmKeyMigration()
+        assertEquals("", data.readModel(legacy.id)?.apiKey)
+        assertEquals("synthetic-only-key", instance.resolver.auxiliaryChatModel(legacy.id)?.apiKey)
+    }
+
     @Test fun `two named keys can share an endpoint while models link by stable ID`() = runTest {
         val data = Fixture(temp.newFolder())
         val instance = data.open()

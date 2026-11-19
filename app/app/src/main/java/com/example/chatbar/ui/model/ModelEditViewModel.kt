@@ -85,7 +85,9 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
     private val discoveryService = ModelDiscoveryService()
 
     fun selectLlmAccount(account: LlmApiAccount?) {
-        if (llmAccountId == account?.id) return
+        if (llmAccountId == account?.id &&
+            (account == null || canonicalLlmApiEndpoint(baseUrl) == account.baseUrl)
+        ) return
         invalidateModelDiscovery()
         llmAccountId = account?.id
         apiKey = ""
@@ -121,7 +123,9 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
             try {
                 val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
                 val connection = accountId?.let {
-                    llmAccounts.connection(it) ?: throw IllegalArgumentException("所选对话 API 账户不可用")
+                    llmAccounts.connection(it)?.takeIf { connection ->
+                        canonicalLlmApiEndpoint(url) == connection.account.baseUrl
+                    } ?: throw IllegalArgumentException("当前模型的对话 API 账户不可用，请重新选择")
                 }
                 val ids = discoveryService.fetch(
                     connection?.account?.baseUrl ?: url,
@@ -162,7 +166,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 if (config != null) {
                     displayName = config.displayName
                     llmAccountId = config.llmAccountId
-                    baseUrl = config.llmAccountId?.let { llmAccounts.connection(it)?.account?.baseUrl } ?: config.baseUrl
+                    baseUrl = config.baseUrl
                     apiKey = config.apiKey.takeIf { config.llmAccountId == null }.orEmpty()
                     modelName = config.modelName
                     templateType = config.templateType

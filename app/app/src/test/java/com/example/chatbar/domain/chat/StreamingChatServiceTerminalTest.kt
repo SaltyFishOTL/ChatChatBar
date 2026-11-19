@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.utils.DebugLogManager
 import java.net.InetAddress
 import java.net.ServerSocket
 import kotlin.concurrent.thread
@@ -18,7 +19,8 @@ class StreamingChatServiceTerminalTest {
     @Test
     fun `provider errors do not expose the current Authorization key`() = runBlocking {
         val key = "synthetic-reflected-key"
-        val responseBody = """{"error":{"message":"Invalid Authorization: Bearer $key; check access"}}"""
+        val escapedKey = key.map { "\\u%04x".format(it.code) }.joinToString("")
+        val responseBody = """{"error":{"message":"Invalid Authorization: Bearer $key / $escapedKey; check access"}}"""
         val messages = listOf(ChatApiMessage.text("user", "hello"))
         for (transport in listOf("chat", "text", "nonstream")) {
             SseTestServer(emptyList(), "401 Unauthorized", responseBody).use { server ->
@@ -33,11 +35,39 @@ class StreamingChatServiceTerminalTest {
                     }
                 }
                 assertTrue(error.contains("401"))
-                assertTrue(error.contains("<redacted>"))
-                assertTrue(error.contains("check access"))
+                assertTrue(error.contains("API Key"))
+                assertFalse(error.contains("check access"))
                 assertFalse(error.contains(key))
+                assertFalse(error.contains(escapedKey))
                 assertEquals("Bearer $key", server.authorization)
             }
+        }
+    }
+
+    @Test
+    fun `named account parser errors and request logs exclude raw provider content`() = runBlocking {
+        val key = "synthetic-provider-echo"
+        val session = "account-invalid-provider-chunk"
+        val messages = listOf(ChatApiMessage.text("user", "hello"))
+        val payloads = listOf(
+            """{"choices":[{"delta":{"content":"normal visible reply"},"finish_reason":null}]}""",
+            """{"error":{"message":"provider-private error $key"}}"""
+        )
+        try {
+            SseTestServer(payloads).use { server ->
+                val model = model(server.baseUrl).copy(apiKey = key, llmAccountId = "test-account")
+                val events = withTimeout(5_000) { service().streamChat(session, messages, model).toList() }
+                assertEquals("normal visible reply", events.filterIsInstance<StreamEvent.Delta>().single().text)
+                val error = events.filterIsInstance<StreamEvent.Error>().single()
+                assertTrue(error.message.contains("格式"))
+                assertFalse(error.message.contains("provider-private"))
+                val log = DebugLogManager.logs.value.single { it.sessionId == session }
+                assertTrue(log.rawSseOutputText.isEmpty())
+                assertTrue(log.rawAiOutputText.isEmpty())
+                assertFalse(log.error.orEmpty().contains("provider-private"))
+            }
+        } finally {
+            DebugLogManager.clearLogs(session)
         }
     }
 

@@ -9,9 +9,11 @@ import com.example.chatbar.domain.prompt.AiTaskFailureKind
 import com.example.chatbar.domain.prompt.AiTaskMessageAssembler
 import com.example.chatbar.domain.prompt.AiTaskRefusalPolicy
 import com.example.chatbar.domain.prompt.AiTaskEmptyResponseException
+import com.example.chatbar.domain.prompt.AiTaskRefusalException
 import com.example.chatbar.domain.prompt.aiTaskFailureKind
 import com.example.chatbar.utils.DebugLogManager
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.channels.Channel
@@ -218,6 +220,7 @@ class StreamingChatService(
         onReplyCompletion: (ChatReplyCompletion) -> Unit = {}
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
+        val captureProviderText = modelConfig.llmAccountId == null
         var retryCount = 0
         var shouldStop = false
 
@@ -285,7 +288,7 @@ class StreamingChatService(
                                 validate = completed && !evidence.refused && evidence.finishReason != "length"
                             )
                             if (decoded.remainingText.isNotEmpty()) {
-                                DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
+                                if (captureProviderText) DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
                                 trySend(StreamEvent.Delta(decoded.remainingText))
                             }
                             if (decoded.toolReplyCompleted) {
@@ -294,14 +297,20 @@ class StreamingChatService(
                                 DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")
                             }
                         } catch (error: Exception) {
-                            finalEvent = StreamEvent.Error(error.message ?: "实验模式工具回复解析失败", cause = error)
+                            finalEvent = if (captureProviderText) {
+                                StreamEvent.Error(error.message ?: "实验模式工具回复解析失败", cause = error)
+                            } else {
+                                StreamEvent.Error("实验模式工具回复解析失败", AiTaskFailureKind.FORMAT)
+                            }
                             finalCompleted = false
                             replyCompletion.updateAndGet { it.copy(transportFailed = true) }
                         }
                     }
                     shouldStop = true
                     onReplyCompletion(replyCompletion.get())
-                    DebugLogManager.recordCompletion(mainLogId, replyCompletion.get().finishReason, replyCompletion.get().refused)
+                    DebugLogManager.recordCompletion(
+                        mainLogId, replyCompletion.get().finishReason.forModelLog(captureProviderText), replyCompletion.get().refused
+                    )
                     if (finalCompleted) {
                         com.example.chatbar.utils.DebugLogManager.completeRequest(mainLogId)
                     } else if (finalEvent is StreamEvent.Error) {
@@ -309,7 +318,7 @@ class StreamingChatService(
                             message = finalEvent.message.redactModelApiKey(modelConfig.apiKey),
                             cause = finalEvent.cause?.withoutModelApiKey(modelConfig.apiKey)
                         )
-                        com.example.chatbar.utils.DebugLogManager.logError(mainLogId, finalEvent.message)
+                        DebugLogManager.logError(mainLogId, finalEvent.message, finalEvent.failureKind)
                     }
                     trySend(finalEvent)
                     resumeAttempt()
@@ -326,7 +335,7 @@ class StreamingChatService(
                         if (terminalDelivered.get()) return
                         if (data.trim() == "[DONE]") {
                             finishReasonCompletionJob?.cancel()
-                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(mainLogId, data)
+                            if (captureProviderText) DebugLogManager.appendResponseChunk(mainLogId, data)
                             deliverTerminal(eventSource, StreamEvent.Done, completed = true)
                             return
                         }
@@ -351,7 +360,7 @@ class StreamingChatService(
                                     refused = previous.refused || delta.refused
                                 )
                             }
-                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(
+                            if (captureProviderText) DebugLogManager.appendResponseChunk(
                                 sessionId = mainLogId,
                                 chunkData = data,
                                 deltaText = delta.content,
@@ -378,10 +387,13 @@ class StreamingChatService(
                                 }
                             }
                         } catch (e: Exception) {
-                            com.example.chatbar.utils.DebugLogManager.appendResponseChunk(mainLogId, data)
+                            if (captureProviderText) DebugLogManager.appendResponseChunk(mainLogId, data)
                             deliverTerminal(
                                 eventSource,
-                                StreamEvent.Error("解析 SSE 数据失败: ${e.message}"),
+                                StreamEvent.Error(
+                                    if (captureProviderText) "解析 SSE 数据失败: ${e.message}" else "模型返回的流式数据格式不兼容",
+                                    AiTaskFailureKind.FORMAT
+                                ),
                                 completed = false
                             )
                         }
@@ -402,7 +414,9 @@ class StreamingChatService(
                             deliverTerminal(eventSource, StreamEvent.Done, completed = true)
                             return
                         }
-                        val body = try { response?.body?.string() } catch (_: Exception) { null }
+                        val body = if (captureProviderText || response?.code == 400) {
+                            runCatching { response?.body?.string() }.getOrNull()
+                        } else null
 
                         if (retryCount < maxRetries && response?.code == 400 && body?.contains("20015") == true) {
                             retrying = true
@@ -415,20 +429,11 @@ class StreamingChatService(
                             return
                         }
 
-                        val errorMsg = buildString {
-                            append("流式请求失败")
-                            if (response != null) {
-                                append(" (${response.code})")
-                                if (!body.isNullOrBlank()) append(": ${body.redactModelApiKey(modelConfig.apiKey).take(2000)}")
-                            }
-                            if (t != null) {
-                                append(" - ${t.message}")
-                            }
-                            if (retryCount > 0) append(" (已重试${retryCount}次)")
-                        }
+                        val error = modelConfig.providerFailure("流式请求失败", response, body, t)
+                        val suffix = if (retryCount > 0) " (已重试${retryCount}次)" else ""
                         deliverTerminal(
                             eventSource,
-                            StreamEvent.Error(errorMsg),
+                            StreamEvent.Error(error.message.orEmpty() + suffix, error.aiTaskFailureKind(), error),
                             completed = false
                         )
                     }
@@ -483,6 +488,7 @@ class StreamingChatService(
         isolatedTaskParameters: Boolean = false,
         responseFormatJson: Boolean = false
     ): Flow<StreamEvent> = callbackFlow {
+        val captureProviderText = modelConfig.llmAccountId == null
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
@@ -551,14 +557,14 @@ class StreamingChatService(
                         if (decoded.remainingText.isNotEmpty()) {
                             text.append(decoded.remainingText)
                             progress?.append(logId, null, decoded.remainingText)
-                            DebugLogManager.appendResponseChunk(logId, "", decoded.remainingText)
+                            if (captureProviderText) DebugLogManager.appendResponseChunk(logId, "", decoded.remainingText)
                             trySend(StreamEvent.Delta(decoded.remainingText))
                         }
                         if (!toolDecoder.hasToolCalls) {
                             DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
                         }
                     } catch (error: Exception) {
-                        fail(eventSource, error)
+                        fail(eventSource, if (captureProviderText) error else IllegalArgumentException("实验模式工具回复解析失败"))
                         return
                     }
                 }
@@ -610,11 +616,11 @@ class StreamingChatService(
                             rawDelta.copy(content = decodedContent)
                         }
                     } catch (error: Exception) {
-                        DebugLogManager.appendResponseChunk(logId, data)
-                        fail(eventSource, IllegalArgumentException(
-                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.redactModelApiKey(modelConfig.apiKey).take(2000)}",
-                            error
-                        ))
+                        if (captureProviderText) DebugLogManager.appendResponseChunk(logId, data)
+                        val failure = if (captureProviderText) IllegalArgumentException(
+                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.redactModelApiKey(modelConfig.apiKey).take(2000)}", error
+                        ) else IllegalArgumentException("模型返回的流式数据格式不兼容")
+                        fail(eventSource, failure)
                         return
                     }
                     finishReason = delta.finishReason ?: finishReason
@@ -624,8 +630,8 @@ class StreamingChatService(
                         lastMeaningfulEvent = System.nanoTime()
                     }
                     progress?.append(logId, delta.reasoningContent, delta.content)
-                    DebugLogManager.appendResponseChunk(logId, data, delta.content, delta.reasoningContent)
-                    DebugLogManager.recordCompletion(logId, finishReason, refused)
+                    if (captureProviderText) DebugLogManager.appendResponseChunk(logId, data, delta.content, delta.reasoningContent)
+                    DebugLogManager.recordCompletion(logId, finishReason.forModelLog(captureProviderText), refused)
                     parsePromptCacheUsage(data)?.let {
                         DebugLogManager.recordPromptCacheUsage(logId, it)
                         trySend(StreamEvent.Usage(it))
@@ -653,15 +659,9 @@ class StreamingChatService(
             override fun onFailure(eventSource: EventSource, t: Throwable?, response: Response?) {
                 synchronized(lock) {
                     if (closed.get()) return
-                    val body = runCatching { response?.body?.string() }.getOrNull()
+                    val body = if (captureProviderText) runCatching { response?.body?.string() }.getOrNull() else null
                     val rejection = AiTaskRefusalPolicy.failure(text.toString(), finishReason, refused)
-                    fail(eventSource, rejection ?: ModelRequestException(
-                        message = "流式文本补全失败${response?.code?.let { " ($it)" }.orEmpty()}: ${body?.redactModelApiKey(modelConfig.apiKey)?.take(2000) ?: t?.message.orEmpty()}",
-                        httpStatus = response?.code,
-                        traceId = response?.header("x-request-id") ?: response?.header("x-trace-id"),
-                        retryAfterMillis = response?.header("Retry-After")?.toRetryAfterMillis(),
-                        cause = t
-                    ))
+                    fail(eventSource, rejection ?: modelConfig.providerFailure("流式文本补全失败", response, body, t))
                 }
             }
 
@@ -734,6 +734,7 @@ class StreamingChatService(
         readTimeoutSeconds: Long? = null,
         taskContext: AiTaskContext? = null
     ): String {
+        val captureProviderText = modelConfig.llmAccountId == null
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
@@ -762,33 +763,30 @@ class StreamingChatService(
                 call.enqueue(object : Callback {
                     override fun onFailure(call: Call, e: IOException) {
                         if (continuation.isActive) continuation.resumeWithException(
-                            ModelRequestException("文本补全请求失败: ${e.message}", cause = e)
+                            modelConfig.providerFailure("文本补全请求失败", cause = e)
                         )
                     }
                     override fun onResponse(call: Call, response: Response) {
                         response.use {
                             try {
-                                val raw = response.body?.string().orEmpty()
                                 if (!continuation.isActive) return
-                                if (!response.isSuccessful) continuation.resumeWithException(ModelRequestException(
-                                    "文本补全失败 (${response.code}): ${raw.redactModelApiKey(modelConfig.apiKey).take(2000)}",
-                                    httpStatus = response.code,
-                                    traceId = response.header("x-request-id") ?: response.header("x-trace-id"),
-                                    retryAfterMillis = response.header("Retry-After")?.toRetryAfterMillis()
-                                )) else continuation.resume(raw)
+                                if (!response.isSuccessful) {
+                                    val raw = if (captureProviderText) response.body?.string() else null
+                                    continuation.resumeWithException(modelConfig.providerFailure("文本补全失败", response, raw))
+                                } else continuation.resume(response.body?.string().orEmpty())
                             } catch (error: IOException) {
                                 if (continuation.isActive) continuation.resumeWithException(
-                                    ModelRequestException("读取文本补全响应失败: ${error.message}", cause = error)
+                                    modelConfig.providerFailure("读取文本补全响应失败", cause = error)
                                 )
                             }
                         }
                     }
                 })
             }
-            DebugLogManager.appendResponseChunk(logId, body)
+            if (captureProviderText) DebugLogManager.appendResponseChunk(logId, body)
             val finishReason = parseFinishReason(body)
             val refused = AiTaskRefusalPolicy.responseRefused(body)
-            DebugLogManager.recordCompletion(logId, finishReason, refused)
+            DebugLogManager.recordCompletion(logId, finishReason.forModelLog(captureProviderText), refused)
             parsePromptCacheUsage(body)?.let { DebugLogManager.recordPromptCacheUsage(logId, it) }
             AiTaskRefusalPolicy.failure("", finishReason, refused)?.let { throw it }
             if (finishReason == "length") throw ModelResponseTruncatedException()
@@ -800,13 +798,18 @@ class StreamingChatService(
                     DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
                 }
             }
-            DebugLogManager.appendResponseChunk(logId, "", content)
+            if (captureProviderText) DebugLogManager.appendResponseChunk(logId, "", content)
             AiTaskRefusalPolicy.failure(content, finishReason, refused)?.let { throw it }
             if (content.isBlank()) throw AiTaskEmptyResponseException(false)
             DebugLogManager.completeRequest(logId)
             return content
         } catch (error: Throwable) {
-            val safeError = error.withoutModelApiKey(modelConfig.apiKey)
+            val safeError = when {
+                captureProviderText -> error.withoutModelApiKey(modelConfig.apiKey)
+                error is CancellationException || error is ModelRequestException || error is ModelResponseTruncatedException ||
+                    error is AiTaskRefusalException || error is AiTaskEmptyResponseException -> error
+                else -> IllegalArgumentException("模型返回的数据格式不兼容")
+            }
             DebugLogManager.logError(logId, safeError.message ?: safeError::class.java.simpleName, error.aiTaskFailureKind())
             throw safeError
         }
@@ -1131,6 +1134,35 @@ private fun Throwable.withoutModelApiKey(apiKey: String): Throwable {
         retryAfterMillis = requestError?.retryAfterMillis
     )
 }
+
+private fun ModelConfig.providerFailure(
+    summary: String,
+    response: Response? = null,
+    body: String? = null,
+    cause: Throwable? = null
+): ModelRequestException {
+    val captureProviderText = llmAccountId == null
+    val status = response?.code
+    val detail = if (captureProviderText) {
+        (body?.takeIf { it.isNotBlank() } ?: cause?.message)?.redactModelApiKey(apiKey)?.take(2000)
+    } else when (status) {
+        401, 403 -> "请检查所选账户的 API Key 和访问权限"
+        404 -> "请检查所选账户的 API 地址和模型标识"
+        429 -> "服务限制了请求频率，请稍后再试"
+        null -> "请检查网络、代理及账户的 API 地址"
+        else -> if (status in 300..399) "请填写服务商最终使用的 API 地址" else null
+    }
+    return ModelRequestException(
+        message = summary + status?.let { " (HTTP $it)" }.orEmpty() + detail?.let { "：$it" }.orEmpty(),
+        httpStatus = status,
+        traceId = if (captureProviderText) response?.header("x-request-id") ?: response?.header("x-trace-id") else null,
+        retryAfterMillis = response?.header("Retry-After")?.toRetryAfterMillis(),
+        cause = cause.takeIf { captureProviderText }
+    )
+}
+
+private fun String?.forModelLog(captureProviderText: Boolean): String? =
+    takeIf { captureProviderText || it in setOf("stop", "length", "content_filter", "tool_calls", "function_call") }
 
 internal const val MODEL_OUTPUT_TRUNCATED_MESSAGE =
     "模型服务返回输出截断（finish_reason=length），本次内容未完整生成"
