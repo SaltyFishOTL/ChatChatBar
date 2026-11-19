@@ -41,15 +41,18 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 if (message.role == MessageRole.USER) {
                     val content = message.displayContent
                     if (message.images.isNotEmpty() || mayReferToEarlierChoices(content) ||
-                        (ambiguousLabelsSeen.isNotEmpty() && ambiguousLetterLabel.findAll(content)
-                            .any { it.value.single().uppercaseChar() in ambiguousLabelsSeen })
+                        (ambiguousLabelsSeen.isNotEmpty() && ambiguousLetterLabel.findAll(content).any { match ->
+                            val label = match.value.single()
+                            if (label == 'a') label in ambiguousLabelsSeen
+                            else ambiguousLabelsSeen.any { it.equals(label, ignoreCase = true) }
+                        })
                     ) last = index
-                } else if (message.role == MessageRole.ASSISTANT && ambiguousLabelsSeen.size < 2) {
+                } else if (message.role == MessageRole.ASSISTANT && ambiguousLabelsSeen.size < ambiguousLetters.length) {
                     val format = message.displayActionOptionsFormat
                     if (format?.labels != ActionOptionLabels.LETTERS) continue
                     for (block in RoleplayActionOptionsPolicy.blocks(message.displayContent, format)) {
                         block.options.mapNotNullTo(ambiguousLabelsSeen) { option ->
-                            option.label.singleOrNull()?.uppercaseChar()?.takeIf { it == 'A' || it == 'I' }
+                            option.label.singleOrNull()?.takeIf { it in ambiguousLetters }
                         }
                     }
                 }
@@ -73,8 +76,9 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         private fun standaloneLetter(characters: String) =
             Regex("(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[$characters](?![\\p{L}\\p{N}_]|['’]\\p{L})")
         private val standaloneLetterLabel = standaloneLetter("b-hj-z")
-        // A and I can be ordinary English. Keep the source when an earlier menu defines them.
-        private val ambiguousLetterLabel = standaloneLetter("AIi")
+        // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
+        private const val ambiguousLetters = "AaIi"
+        private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +

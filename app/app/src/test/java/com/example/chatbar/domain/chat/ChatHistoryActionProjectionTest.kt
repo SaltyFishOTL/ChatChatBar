@@ -75,6 +75,11 @@ class ChatHistoryActionProjectionTest {
         val referenceI = message("u", MessageRole.USER, "She suggested I so we will wait quietly.", 2)
         val projection = known(listOf(longMenu, referenceI), setOf(longMenu.id, referenceI.id))
         assertEquals(longMenu.content, projection.project(longMenu, longMenu.content))
+
+        val lowerMenu = assistant.copy(content = source.replace("A)", "a)").replace("B)", "b)"))
+        val lowerReference = message("u", MessageRole.USER, "a 然后静静地等待门口下一轮反应。", 2)
+        val lowerProjection = known(listOf(lowerMenu, lowerReference), setOf(lowerMenu.id, lowerReference.id))
+        assertEquals(lowerMenu.content, lowerProjection.project(lowerMenu, lowerMenu.content))
     }
 
     @Test fun `unreliable list narration code and legacy status projection keep their separate semantics`() {

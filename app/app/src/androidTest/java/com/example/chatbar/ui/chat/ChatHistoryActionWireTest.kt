@@ -78,6 +78,12 @@ class ChatHistoryActionWireTest {
             assertTrue(wire.contains("I) Action I"))
             assertTrue(contents.contains(referenceI))
         }
+        val lowerMenu = letterChoices.copy(content = letterChoices.content.replace("A)", "a)").replace("B)", "b)"))
+        val lowerReference = "a 然后静静地等待门口下一轮反应。"
+        verify("declared-letter-lowercase-reference", listOf(lowerMenu), lowerReference) { wire, contents ->
+            assertTrue(wire.contains("a) Read the map"))
+            assertTrue(contents.contains(lowerReference))
+        }
     }
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {
         for (exclude in listOf(true, false)) {
