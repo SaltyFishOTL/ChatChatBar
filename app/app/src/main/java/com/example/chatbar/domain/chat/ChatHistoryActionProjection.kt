@@ -6,7 +6,7 @@ import com.example.chatbar.data.local.entity.MessageRole
 /** Describes the current request's owner; a no-current-USER control may have older USER history. */
 enum class ChatHistoryActionRequestSource { PERSISTED_USER, UI_CONTINUATION, NO_USER_REGENERATION, UNKNOWN }
 
-/** Request-only projection. A numeric/deictic choice remains unresolved, never expanded to text.
+/** Request-only projection. An unresolved choice reference retains its source options.
  * The query owner supplies a complete recent suffix; separately pinned old turns are not proof
  * that all intervening user references were loaded. Existing status projection runs independently. */
 class ChatHistoryActionProjection private constructor(private val omittable: Map<String, ChatMessage>) {
@@ -39,13 +39,18 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         fun mayReferToEarlierChoices(text: String): Boolean {
             val normalized = text.trim().lowercase()
             if (normalized.isBlank() || numeric.containsMatchIn(normalized) ||
-                normalized.contains("```") || reference.containsMatchIn(normalized) || acknowledgement.matches(normalized)) return true
+                normalized.contains("```") || reference.containsMatchIn(normalized) ||
+                standaloneLetterLabel.containsMatchIn(normalized) || acknowledgement.matches(normalized)) return true
             if (normalized.any { it.isLetter() && it !in 'a'..'z' && it !in '\u3400'..'\u9fff' }) return true
             // Bare numbers, labels, emoji and short/unknown responses do not prove independence.
             return normalized.count(Char::isLetter) < 8
         }
 
         private val numeric = Regex("\\p{N}")
+        // Avoid treating the English article, pronoun and parts of contractions as labels.
+        private val standaloneLetterLabel = Regex(
+            "(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[b-hj-z](?![\\p{L}\\p{N}_]|['’]\\p{L})"
+        )
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
@@ -54,7 +59,9 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 "(?:前|后)[一二三四五六七八九十两]*(?:个|项|条)|" +
                 "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
                 "\\b(?:option|options|choice|choices|above|previous|former|latter|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|last|this|that|those|these|it|them|same|aforementioned)\\b|" +
-                "\\b(?:choose|select|pick|take)\\s+(?:the\\s+)?(?:one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\\b"
+                "\\b(?:choose|select|pick|take|do|go\\s+with|go\\s+for|opt\\s+for|settle\\s+on)\\s+" +
+                "(?:the\\s+)?['’\"“‘]?(?:one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\\b(?!['’]\\p{L})|" +
+                "['\"“‘][ai]['\"”’]"
         )
         private val acknowledgement = Regex("(?:(?:请|再|那就|那么)?(?:继续|接着|接下来).*|好[的吧啊呀]?|行|可以|是|不|随便|都行|嗯+|快点|ok|yes|no|(?:please\\s+)?(?:continue|go on|keep going).*|do it)[。.!！?？\\s]*")
     }

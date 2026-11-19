@@ -4,6 +4,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
+import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.*
@@ -20,6 +21,7 @@ import kotlinx.serialization.json.*
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Before
 import org.junit.Rule
 import org.junit.Test
@@ -35,8 +37,9 @@ class ChatHistoryActionWireTest {
     private fun u(text: String = independent) = row(MessageRole.USER, text)
 
     @Before fun surface() {
+        assumeTrue("Run with -PCHATBAR_ISOLATED_ANDROID_TEST=true on a clean emulator", BuildConfig.ISOLATED_ANDROID_TEST)
         val app = ChatBarApp.instance
-        check(app.packageName == "com.example.chatbar.actionhistory.r1")
+        check(app.packageName == BuildConfig.APPLICATION_ID && app.packageName.startsWith("com.example.chatbar."))
         runBlocking { withTimeout(30000) { app.dependenciesReady.first { it } } }
         runBlocking { withTimeout(30000) { app.settingsRepository.isInitialized.first { it } } }
         rule.setContent { ChatBarTheme { CbText("Synthetic action projection wire verification") } }
@@ -55,6 +58,14 @@ class ChatHistoryActionWireTest {
             verify("current-${UUID.randomUUID()}", listOf(a("OLD")), input) { wire, contents ->
                 assertTrue(wire.contains("OLD_LEFT")); assertTrue(contents.contains(input))
             }
+        }
+        val letterChoices = row(MessageRole.ASSISTANT, "我看向木门。\n<cyoa>\nA) Read the map\nB) Wait by the door\n</cyoa>")
+            .copy(actionOptionsFormat = ActionOptionsFormat("<cyoa>", "</cyoa>", "", ActionOptionLabels.LETTERS))
+        val reference = "Let's go with B and wait quietly."
+        verify("declared-letter-reference", listOf(letterChoices), reference) { wire, contents ->
+            assertTrue(wire.contains("A) Read the map"))
+            assertTrue(wire.contains("B) Wait by the door"))
+            assertTrue(contents.contains(reference))
         }
     }
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {

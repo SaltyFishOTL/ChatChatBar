@@ -50,6 +50,25 @@ class ChatHistoryActionProjectionTest {
         }
     }
 
+    @Test fun `retain an unknown letter reference without treating ordinary English as a choice`() {
+        val source = "旁白\n<choices>\nA) Read the map\nB) Wait by the door\n</choices>"
+        val assistant = message("a", MessageRole.ASSISTANT, source, 1)
+            .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
+        for (reference in listOf(
+            "Let's go with B and wait quietly.",
+            "Perhaps ‘b’ would work better here.",
+            "Let's go with A and wait quietly.",
+            "She suggested B so we will wait quietly."
+        )) {
+            val user = message("u", MessageRole.USER, reference, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            assertEquals(reference, source, projection.project(assistant, source))
+        }
+        val independent = message("u", MessageRole.USER, "I'll open a window while we're waiting nearby.", 2)
+        val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
+        assertEquals("旁白", projection.project(assistant, source))
+    }
+
     @Test fun `unreliable list narration code and legacy status projection keep their separate semantics`() {
         val text = "旁白与衣着：蓝色长裙\n清单\n1. 地图\n2. 水\n```text\n$options\n```\n" +
             "————————\n【行动选项】\n1. 地图\n3. 水\n————————"
