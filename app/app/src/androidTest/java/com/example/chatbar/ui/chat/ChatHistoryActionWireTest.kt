@@ -92,10 +92,10 @@ class ChatHistoryActionWireTest {
     @Test fun possessiveLetterReferenceKeepsOnlyARealSourceInTheRequest() {
         val menu = row(MessageRole.ASSISTANT, "山路边有一块路牌。\n<choices>\nA) Read the map\nB) Follow the mountain path\n</choices>")
             .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
-        for (label in listOf("B", "C")) {
+        for ((label, shouldKeep) in listOf("B" to true, " B " to true, "C" to false, " C " to false)) {
             val input = "我赞成${label}的方案，今天沿着山路向前探索。"
-            verify("possessive-letter-$label", listOf(menu), input) { wire, contents ->
-                assertEquals(label == "B", wire.contains("B) Follow the mountain path"))
+            verify("possessive-letter-${label.trim()}-${label.length}", listOf(menu), input) { wire, contents ->
+                assertEquals(shouldKeep, wire.contains("B) Follow the mountain path"))
                 assertTrue(wire.contains("山路边有一块路牌。"))
                 assertTrue(contents.contains(input))
             }

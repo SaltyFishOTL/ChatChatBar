@@ -257,7 +257,17 @@ class ActionOptionsFormatTest {
         }
 
         val indentedTopLevel = topLevel.lineSequence().joinToString("\n") { "  $it" }
-        for (outer in listOf(topLevel, "-\n$topLevel", "-\n\n$indentedTopLevel", "正文\n*\n$indentedTopLevel")) {
+        val afterIndentedCode = "    普通代码\n-\n$indentedTopLevel"
+        assertTrue(RoleplayActionOptionsPolicy.blocks(afterIndentedCode, format).isEmpty())
+        val sibling = "- 前一个项目\n-\n$indentedTopLevel"
+        assertTrue(RoleplayActionOptionsPolicy.blocks(sibling, format).isEmpty())
+        val tabUnderList = "-\n" + indentedTopLevel.replaceFirst("  ", " \t")
+        assertEquals(tabUnderList, RoleplayActionOptionsPolicy.withoutExplicitOptions(tabUnderList))
+        for (outer in listOf(
+            topLevel, "-\n$topLevel", "-\n\n$indentedTopLevel", "正文\n*\n$indentedTopLevel",
+            "> 说明文字\n+\n$indentedTopLevel", "=\n+\n$indentedTopLevel",
+            "1. 前一个项目\n+\n$indentedTopLevel"
+        )) {
             assertEquals(outer, listOf("example one", "example two"),
                 RoleplayActionOptionsPolicy.blocks(outer, format).single().options.map { it.text })
         }

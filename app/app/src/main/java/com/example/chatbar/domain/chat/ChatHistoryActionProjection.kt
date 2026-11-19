@@ -96,7 +96,10 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
             val normalized = text.trim().lowercase()
             if (normalized.isBlank() || numeric.containsMatchIn(normalized) ||
                 normalized.contains("```") || reference.containsMatchIn(normalized) ||
-                standaloneLetterLabel.containsMatchIn(normalized) || acknowledgement.matches(normalized)) return true
+                acknowledgement.matches(normalized)) return true
+            if (standaloneLetterLabel.findAll(normalized).any { !possessiveMenuSuffix.matchesAt(normalized, it.range.last + 1) }) {
+                return true
+            }
             if (normalized.any { it.isLetter() && it !in 'a'..'z' && it !in '\u3400'..'\u9fff' }) return true
             // Bare numbers, labels, emoji and short/unknown responses do not prove independence.
             return normalized.count(Char::isLetter) < 8
@@ -110,8 +113,10 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
         private const val ambiguousLetters = "AaIi"
         private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
+        private const val menuNoun = "(?:方案|计划|路线)"
+        private val possessiveMenuSuffix = Regex("[ \\t　]*的[ \\t　]*$menuNoun")
         private val hanMenuLetter = Regex(
-            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:的[ \\t　]*)?(?:方案|计划|路线)|" +
+            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:的[ \\t　]*)?$menuNoun|" +
                 "(?:同意|赞成|接受)[ \\t　]*([A-Ta-t])[ \\t　]*(?=$|[,，、.。:：;；!！?？]|并|然后|再)"
         )
         private val reference = Regex(

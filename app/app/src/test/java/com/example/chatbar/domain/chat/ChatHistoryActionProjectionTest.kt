@@ -115,6 +115,7 @@ class ChatHistoryActionProjectionTest {
             "我同意B，并请她把补给送到码头。",
             "我同意B并请她把补给送到码头。",
             "我赞成B的方案，今天沿着山路向前探索。",
+            "我赞成 B 的方案，今天沿着山路向前探索。",
             "我同意b　的　计划，今天沿着山路向前探索。",
             "我赞成C，并请她把补给送到码头。",
             "Please carry out the penultimate plan quietly."
@@ -133,11 +134,13 @@ class ChatHistoryActionProjectionTest {
         val unrelated = message("u", MessageRole.USER, "我沿着C路线巡查空置工厂并锁门。", 2)
         val projection = known(listOf(twoOptions, unrelated), setOf(twoOptions.id, unrelated.id))
         assertEquals("旁白\n", projection.project(twoOptions, twoOptions.displayContent))
-        val possessiveWithoutMatchingLabel = unrelated.copy(content = "我赞成C的方案，今天沿着山路向前探索。")
-        val unknownReference = known(listOf(twoOptions, possessiveWithoutMatchingLabel), setOf(twoOptions.id, unrelated.id))
-        assertEquals("旁白\n", unknownReference.project(twoOptions, twoOptions.displayContent))
+        for (text in listOf("我赞成C的方案，今天沿着山路向前探索。", "我赞成 C 的方案，今天沿着山路向前探索。")) {
+            val possessiveWithoutMatchingLabel = unrelated.copy(content = text)
+            val unknownReference = known(listOf(twoOptions, possessiveWithoutMatchingLabel), setOf(twoOptions.id, unrelated.id))
+            assertEquals(text, "旁白\n", unknownReference.project(twoOptions, twoOptions.displayContent))
+        }
         val numbered = assistant.copy(content = "旁白\n$options", actionOptionsFormat = null)
-        val noLetterMenu = possessiveWithoutMatchingLabel.copy(content = "我赞成B的方案，今天沿着山路向前探索。")
+        val noLetterMenu = unrelated.copy(content = "我赞成 B 的方案，今天沿着山路向前探索。")
         val numberedProjection = known(listOf(numbered, noLetterMenu), setOf(numbered.id, noLetterMenu.id))
         assertEquals("旁白\n", numberedProjection.project(numbered, numbered.displayContent))
     }
