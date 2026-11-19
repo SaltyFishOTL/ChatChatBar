@@ -3263,13 +3263,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                     val ctx = ChatBarApp.instance
                     fun updateStreamingDraft(rawBody: String): String {
-                        val body = NarrativeHistoryEcho.replyBody(rawBody, streaming = true)
-                        val renderedBody = renderSessionText(body)
+                        val renderedBody = renderSessionText(NarrativeHistoryEcho.replyBody(rawBody, streaming = true))
                         val draft = ChatMessage(
                             id = assistantMsgId,
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT,
-                            content = body,
+                            content = rawBody,
                             narrativeMode = requestNarrativeMode,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
@@ -3430,7 +3429,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (e is BackgroundGenerationProtectionCancellationException) {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
-                        val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
+                        val finalDraft = interruptedReplyDraft?.let { partial ->
+                            partial.copy(content = NarrativeHistoryEcho.replyBody(partial.content))
+                        }
+                        val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)
                         if (draft != null || assistantReplyPersisted) {
                             withContext(NonCancellable) {
                                 try {

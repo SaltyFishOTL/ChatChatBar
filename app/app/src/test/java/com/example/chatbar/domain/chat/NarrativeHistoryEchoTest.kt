@@ -27,6 +27,8 @@ class NarrativeHistoryEchoTest {
         }
         assertEquals("门开了。", NarrativeHistoryEcho.replyBody("$opening\n门开了。"))
         assertEquals("门开了。", NarrativeHistoryEcho.replyBody("$opening\n门开了。\n</历史回复"))
+        assertEquals("2", NarrativeHistoryEcho.replyBody("$opening\n2 <", streaming = true))
+        assertEquals("2 <", NarrativeHistoryEcho.replyBody("$opening\n2 <"))
     }
 
     @Test
