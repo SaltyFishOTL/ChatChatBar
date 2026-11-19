@@ -17,8 +17,7 @@ internal fun officialVisionModelSuggestion(baseUrl: String): String? =
 
 internal fun visionProviderLabel(baseUrl: String): String {
     val base = visionApiBase(baseUrl) ?: return "接口未配置"
-    val host = if (base.port == if (base.isHttps) 443 else 80) base.host else "${base.host}:${base.port}"
-    val endpoint = "${base.scheme}://$host${base.encodedPath.trimEnd('/')}"
+    val endpoint = base.toString().trimEnd('/')
     return when (base.host) {
         "api.deepseek.com" -> "DeepSeek · $endpoint"
         "api.siliconflow.cn", "api.siliconflow.com" -> "硅基流动 · $endpoint"

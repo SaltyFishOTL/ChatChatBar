@@ -43,6 +43,7 @@ class VisionModelDiscoveryTest {
             "https://api.deepseek.com.example.test", "https://api.deepseek.com/anthropic",
             "https://api.deepseek.com/?key=no", "https://secret@api.deepseek.com"
         )) assertNull(url, officialVisionModelSuggestion(url))
+        assertEquals("http://[::1]:18080/v1", visionProviderLabel("http://[::1]:18080/v1"))
     }
 
     @Test

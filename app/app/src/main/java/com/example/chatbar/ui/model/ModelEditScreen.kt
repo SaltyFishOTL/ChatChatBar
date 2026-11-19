@@ -191,12 +191,18 @@ fun ModelEditScreen(
                 onCheckedChange = { viewModel.isMultimodal = it }
             )
             if (!viewModel.isMultimodal) {
-                val configured = listOfNotNull(viewModel.stagedVisionModel) + multimodalModels
+                val configured = (listOfNotNull(viewModel.stagedVisionModel) + multimodalModels)
+                    .groupBy { "${it.displayName} · ${visionProviderLabel(it.baseUrl)}" }
+                    .flatMap { (label, models) ->
+                        models.mapIndexed { index, model ->
+                            VisionOption(model.id, if (models.size == 1) label else "$label · 连接 ${index + 1}")
+                        }
+                    }
                 val options = listOf(
                     VisionOption(null, "不关联视觉模型"),
                     VisionOption(null, "从当前接口添加…", VisionSetup.Current),
                     VisionOption(null, "新增其他接口…", VisionSetup.Other)
-                ) + configured.map { VisionOption(it.id, "${it.displayName} · ${visionProviderLabel(it.baseUrl)}") }
+                ) + configured
                 CbField("图片解析视觉模型", description = "文本模型收到图片时，先由此模型生成描述。") {
                     CbSelect(
                         value = options.firstOrNull { it.setup == null && it.id == viewModel.visionModelId },
