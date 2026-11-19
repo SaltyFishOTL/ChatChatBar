@@ -101,4 +101,38 @@ class NarrativeHistoryEchoTest {
             assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n</历史回复>"))
         }
     }
+
+    @Test
+    fun escapedWrapperTokensStayLiteralEvenWhenTheRealOuterClosingIsMissing() {
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val closing = "</历史回复>"
+            for (streaming in listOf(false, true)) {
+                val story = "写作 \\$opening 和 \\$closing，再继续。"
+                assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
+                for (literal in listOf(closing, closing.dropLast(1))) {
+                    val tail = "她输入了 \\$literal"
+                    assertEquals(tail, NarrativeHistoryEcho.replyBody("$opening\n$tail", streaming))
+                }
+                val beforeClosing = "两个反斜杠\\\\"
+                assertEquals(beforeClosing, NarrativeHistoryEcho.replyBody("$opening\n$beforeClosing$closing", streaming))
+            }
+        }
+    }
+
+    @Test
+    fun quotedFencesProtectLiteralTagsOnlyInsideTheirQuote() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        for (streaming in listOf(false, true)) {
+            for (marker in listOf("~~~", "```")) {
+                val example = "> > ${marker}text\r\n> > $closing\r\n> > $marker\r\n外面的正文。"
+                assertEquals(example, NarrativeHistoryEcho.replyBody("$opening\r\n$example\r\n$closing", streaming))
+            }
+            val unclosedQuote = "> ~~~text\n> $closing"
+            assertEquals(unclosedQuote, NarrativeHistoryEcho.replyBody("$opening\n$unclosedQuote\n$closing", streaming))
+            val topLevelCode = "~~~text\n> ~~~text\n$closing\n~~~"
+            assertEquals(topLevelCode, NarrativeHistoryEcho.replyBody("$opening\n$topLevelCode\n$closing", streaming))
+        }
+    }
 }
