@@ -22,7 +22,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import com.example.chatbar.domain.model.ModelDiscoveryService
-import com.example.chatbar.domain.model.resolveEffectiveModelApiKey
+import com.example.chatbar.domain.model.isSiliconFlowVisionApiBase
 import com.example.chatbar.domain.model.visionApiBase
 import com.example.chatbar.domain.model.withBoundVisionApiKey
 
@@ -116,13 +116,15 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
         val generation = discoveryGeneration
         val url = baseUrl.trim()
         val key = apiKey
+        val allowsLegacyKey = _modelConfig.value?.requiresExplicitApiKey != true && isSiliconFlowVisionApiBase(url)
         isDiscoveringModels = true
         discoveryJob = viewModelScope.launch {
             try {
                 val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
-                val ids = discoveryService.fetch(
-                    url, resolveEffectiveModelApiKey(key, url, settings), settings.allowCleartextModelApi
-                )
+                val lookupKey = key.trim().ifEmpty {
+                    if (allowsLegacyKey) settings.siliconFlowApiKey.trim() else ""
+                }
+                val ids = discoveryService.fetch(url, lookupKey, settings.allowCleartextModelApi)
                 if (generation == discoveryGeneration) {
                     discoveredModelIds = ids
                 }

@@ -4,10 +4,13 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PendingVisionModelLink
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.PresetEmbeddingModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
+import com.example.chatbar.data.local.entity.VISION_LINK_TRANSACTION_TYPE
+import com.example.chatbar.data.local.entity.uncommittedVisionModels
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.model.matchesVisionConnection
@@ -21,10 +24,6 @@ import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.Serializable
-
-@Serializable
-private data class PendingVisionModelLink(val visionId: String, val visionCreatedAt: Long)
 
 /**
  * 模型配置仓库 - 管理LLM和Embedding模型配置
@@ -33,7 +32,6 @@ class ModelRepository(private val storage: JsonFileStorage) {
 
     companion object {
         private const val MODEL_TYPE = "model_configs"
-        private const val VISION_LINK_TRANSACTION_TYPE = "model_vision_links_pending"
         private const val EMBEDDING_TYPE = "embedding_configs"
         private const val EMBEDDING_SINGLETON_TYPE = "embedding_model_config"
         private const val EMBEDDING_SINGLETON_ID = "default"
@@ -69,14 +67,11 @@ class ModelRepository(private val storage: JsonFileStorage) {
     private suspend fun refreshModelCache() {
         val durable = storage.loadAll(MODEL_TYPE, ModelConfig.serializer())
         val transactions = storage.loadAll(VISION_LINK_TRANSACTION_TYPE, PendingVisionModelLink.serializer())
-        val linkedIds = durable.mapNotNullTo(mutableSetOf()) { it.visionModelId }
-        val uncommitted = mutableSetOf<String>()
+        val uncommitted = uncommittedVisionModels(durable, transactions)
         for (transaction in transactions) {
-            val child = durable.firstOrNull { it.id == transaction.visionId && it.createdAt == transaction.visionCreatedAt }
-            if (child != null && child.id !in linkedIds) uncommitted += child.id
             try {
-                if (child != null && child.id in uncommitted) {
-                    storage.deleteEntity<ModelConfig>(MODEL_TYPE, child.id, requireSuccess = true)
+                if (transaction.visionId in uncommitted) {
+                    storage.deleteEntity<ModelConfig>(MODEL_TYPE, transaction.visionId, requireSuccess = true)
                 }
                 storage.deleteEntity<PendingVisionModelLink>(
                     VISION_LINK_TRANSACTION_TYPE, transaction.visionId, requireSuccess = true

@@ -18,7 +18,7 @@ internal fun officialVisionModelSuggestion(baseUrl: String): String? =
 internal fun visionProviderLabel(baseUrl: String): String {
     val base = visionApiBase(baseUrl) ?: return "接口未配置"
     val host = if (base.port == if (base.isHttps) 443 else 80) base.host else "${base.host}:${base.port}"
-    val endpoint = host + base.encodedPath.trimEnd('/')
+    val endpoint = "${base.scheme}://$host${base.encodedPath.trimEnd('/')}"
     return when (base.host) {
         "api.deepseek.com" -> "DeepSeek · $endpoint"
         "api.siliconflow.cn", "api.siliconflow.com" -> "硅基流动 · $endpoint"
@@ -34,15 +34,19 @@ internal fun ModelConfig.matchesVisionConnection(other: ModelConfig): Boolean =
         sameVisionApiBase(baseUrl, other.baseUrl) &&
         copy(id = other.id, baseUrl = other.baseUrl, apiKey = other.apiKey, createdAt = other.createdAt) == other
 
+internal fun isSiliconFlowVisionApiBase(baseUrl: String): Boolean =
+    visionApiBase(baseUrl)?.let {
+        it.isHttps && it.port == 443 && it.encodedPath in setOf("/", "/v1") &&
+            it.host in setOf("api.siliconflow.cn", "api.siliconflow.com")
+    } == true
+
 internal fun ModelConfig.withBoundVisionApiKey(settings: AppSettings): ModelConfig? {
     if (!isMultimodal) return null
     val endpoint = visionApiBase(baseUrl) ?: return null
     if (!endpoint.isHttps && !settings.allowCleartextModelApi) return null
     val scopedKey = apiKey.trim().ifEmpty {
-        if (endpoint.isHttps && endpoint.port == 443 && endpoint.encodedPath in setOf("/", "/v1") &&
-            endpoint.host in setOf("api.siliconflow.cn", "api.siliconflow.com")
-        ) settings.siliconFlowApiKey.trim() else ""
+        if (!requiresExplicitApiKey && isSiliconFlowVisionApiBase(baseUrl)) settings.siliconFlowApiKey.trim() else ""
     }
-    if (scopedKey.isEmpty() && endpoint.isHttps) return null
+    if (scopedKey.isEmpty() && (endpoint.isHttps || requiresExplicitApiKey)) return null
     return copy(apiKey = scopedKey)
 }

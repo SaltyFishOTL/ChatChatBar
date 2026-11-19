@@ -117,7 +117,7 @@ internal fun VisionModelSetupDialog(
                         val model = ModelConfig.create(
                             displayName = alias.trim().ifBlank { id }, baseUrl = baseUrl.trim(),
                             apiKey = explicitKey, modelName = id, isMultimodal = true
-                        ).copy(selectableForChat = showInChat)
+                        ).copy(selectableForChat = showInChat, requiresExplicitApiKey = true)
                         onSelect(model)
                     },
                     enabled = canUseConnection && modelId.isNotBlank() && when (imageInput) {

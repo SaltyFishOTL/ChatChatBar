@@ -75,7 +75,7 @@ class VisionModelSetupWireTest {
         val visionKey = if (separateEndpoint) "synthetic-other-key" else text.apiKey
         val vision = ModelConfig.create(
             "Synthetic Flash", visionServer.url("/v1").toString(), visionKey, "deepseek-flash", isMultimodal = true
-        ).copy(selectableForChat = false)
+        ).copy(selectableForChat = false, requiresExplicitApiKey = true)
         val abandoned = vision.copy(id = UUID.randomUUID().toString(), modelName = "unconfirmed")
         val character = CharacterCard.create("Synthetic vision test")
         val session = ChatSession.create(character.id, "Synthetic vision request").copy(

@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
+import com.example.chatbar.domain.backup.BackupDataRegistry
 import java.io.File
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -91,6 +92,9 @@ class ModelRepositoryStateTest {
                 """{"visionId":"${vision.id}","visionCreatedAt":${vision.createdAt}}"""
             )
         }
+        val snapshot = BackupDataRegistry.entityFiles(directory).map { it.nameWithoutExtension }.toSet()
+        assertTrue(owner.id in snapshot && linked.id in snapshot && committed.id in snapshot)
+        assertTrue(interrupted.id !in snapshot)
         val cold = ModelRepository(storage)
         assertEquals(owner, cold.getModel(owner.id))
         assertEquals(linked, cold.getModel(linked.id))

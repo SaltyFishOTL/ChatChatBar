@@ -79,6 +79,7 @@ data class ModelConfig(
     val supportsDisableThinking: Boolean = false,
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null,
+    val requiresExplicitApiKey: Boolean = false,
     val createdAt: Long
 ) {
     companion object {

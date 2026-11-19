@@ -5,6 +5,7 @@ import com.example.chatbar.domain.image.*
 import java.io.File
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.Serializable
+import kotlinx.serialization.json.Json
 
 /** Registered user stores define export selection and restore-owned directories. */
 object BackupDataRegistry {
@@ -95,6 +96,7 @@ object BackupDataRegistry {
         val parent = File(directory, "entities")
         if (!parent.exists()) return@sequence
         checkedDirectory(directory, parent)
+        val unfinishedVisionIds = unfinishedVisionModels(directory, parent)
         for (type in entitySerializers.keys) {
             val singleton = File(parent, "$type.json")
             if (singleton.exists()) {
@@ -108,11 +110,38 @@ object BackupDataRegistry {
             val records = requireNotNull(collection.listFiles()) { "无法读取用户数据目录：entities/$type" }
             for (file in records) {
                 if (file.name.startsWith(".") || file.extension != "json") continue
+                if (type == "model_configs" && file.nameWithoutExtension in unfinishedVisionIds) continue
                 val relative = "entities/$type/${file.name}"
                 require(file.isFile) { "用户数据文件损坏：" + relative }
                 target(directory, relative)
                 yield(file)
             }
+        }
+    }
+
+    /** An interrupted save may still be waiting for permission to remove its staged model. */
+    private fun unfinishedVisionModels(directory: File, entities: File): Set<String> {
+        val journal = File(entities, VISION_LINK_TRANSACTION_TYPE)
+        if (!journal.exists()) return emptySet()
+        checkedDirectory(directory, journal)
+        val journalFiles = requireNotNull(journal.listFiles()).filter { it.isFile && it.extension == "json" }
+        if (journalFiles.isEmpty()) return emptySet()
+        val json = Json { ignoreUnknownKeys = true }
+        val models = File(entities, "model_configs")
+        if (!models.exists()) return emptySet()
+        checkedDirectory(directory, models)
+        return runCatching {
+            val transactions = journalFiles.map { file ->
+                target(directory, file.relativeTo(directory).invariantSeparatorsPath)
+                json.decodeFromString(PendingVisionModelLink.serializer(), file.readText())
+            }
+            val saved = requireNotNull(models.listFiles()).filter { it.isFile && it.extension == "json" }.map { file ->
+                target(directory, file.relativeTo(directory).invariantSeparatorsPath)
+                json.decodeFromString(ModelConfig.serializer(), file.readText())
+            }
+            uncommittedVisionModels(saved, transactions)
+        }.getOrElse {
+            throw IllegalStateException("无法核对未完成的视觉模型保存，请重新打开应用后重试")
         }
     }
 

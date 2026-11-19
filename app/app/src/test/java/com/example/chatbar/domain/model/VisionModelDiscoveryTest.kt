@@ -54,6 +54,8 @@ class VisionModelDiscoveryTest {
         assertEquals("synthetic-own", vision.copy(apiKey = "synthetic-own").withBoundVisionApiKey(settings)?.apiKey)
         assertEquals("synthetic-global",
             vision.copy(baseUrl = "https://api.siliconflow.cn/v1/").withBoundVisionApiKey(settings)?.apiKey)
+        assertNull(vision.copy(baseUrl = "https://api.siliconflow.cn/v1", requiresExplicitApiKey = true)
+            .withBoundVisionApiKey(settings))
         assertNull(vision.copy(baseUrl = "https://api.siliconflow.cn:8443/v1").withBoundVisionApiKey(settings))
         val local = vision.copy(baseUrl = "http://127.0.0.1:11434/v1")
         assertNull(local.withBoundVisionApiKey(settings))

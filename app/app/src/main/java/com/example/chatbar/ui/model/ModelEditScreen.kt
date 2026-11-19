@@ -123,11 +123,13 @@ fun ModelEditScreen(
             CbField("Base URL") {
                 CbInput(viewModel.baseUrl, { viewModel.baseUrl = it }, placeholder = "https://api.openai.com/v1")
             }
-            CbField("API Key", description = "留空时使用设置里的全局默认 API Key。") {
+            val explicitCredential = originalModel?.requiresExplicitApiKey == true
+            CbField("API Key", description = if (explicitCredential) "填写这个模型接口自己的 API Key。"
+                else "留空时可使用设置里的全局默认 API Key。") {
                 CbInput(
                     viewModel.apiKey,
                     { viewModel.apiKey = it },
-                    placeholder = "可留空，默认使用全局 API Key",
+                    placeholder = if (explicitCredential) "此接口的 Key" else "可留空，默认使用全局 API Key",
                     secure = true
                 )
             }
