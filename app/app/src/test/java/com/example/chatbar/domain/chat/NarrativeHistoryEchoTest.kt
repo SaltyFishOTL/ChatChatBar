@@ -46,10 +46,14 @@ class NarrativeHistoryEchoTest {
     @Test
     fun aNestedExampleKeepsItsClosingWithOrWithoutAnOuterClosing() {
         val opening = "<历史回复 模式=\"聚焦\">"
-        val example = "示例：<历史回复 模式=\"推进\">内容</历史回复>"
         for (streaming in listOf(false, true)) {
-            assertEquals(example, NarrativeHistoryEcho.replyBody("$opening\n$example", streaming))
-            assertEquals(example, NarrativeHistoryEcho.replyBody("$opening\n$example\n</历史回复>", streaming))
+            for (mode in listOf("推进", "自定义")) {
+                val example = "示例：<历史回复 模式=\"$mode\">内容</历史回复>"
+                assertEquals(example, NarrativeHistoryEcho.replyBody("$opening\n$example", streaming))
+                assertEquals(example, NarrativeHistoryEcho.replyBody("$opening\n$example\n</历史回复>", streaming))
+            }
+            val code = "~~~text\n</历史回复>"
+            assertEquals(code, NarrativeHistoryEcho.replyBody("$opening\n$code", streaming))
         }
     }
 }
