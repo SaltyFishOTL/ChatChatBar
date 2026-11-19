@@ -11,6 +11,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.repository.ModelRepository
+import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.model.ModelDiscoveryService
 import com.example.chatbar.domain.model.ModelImageInput
 import com.example.chatbar.ui.kit.CbText
@@ -62,6 +63,27 @@ class VisionModelSetupWireTest {
     @Test
     fun separateVisionEndpointUsesItsOwnKeyAndProReceivesTheDescription() {
         verifyVisionRouting(separateEndpoint = true)
+    }
+
+    @Test
+    fun explicitVisionDoesNotFollowARedirectToAnotherPath() {
+        MockWebServer().use { server ->
+            server.start()
+            server.enqueue(MockResponse().setResponseCode(307).setHeader("Location", server.url("/another/v1/chat/completions")))
+            server.enqueue(stream("A redirected request would be a failure"))
+            val model = ModelConfig.create(
+                "Synthetic Flash", server.url("/vision/v1").toString(), "synthetic-vision-key",
+                "deepseek-flash", isMultimodal = true
+            ).copy(requiresExplicitApiKey = true)
+            val failure = runBlocking {
+                runCatching { StreamingChatService(allowCleartextHttp = { true }).describeImageStreaming("c3ludGhldGlj", model) }
+            }
+            assertTrue(failure.isFailure)
+            val onlyRequest = request(server)
+            assertEquals("/vision/v1/chat/completions", onlyRequest.path)
+            assertEquals("Bearer synthetic-vision-key", onlyRequest.getHeader("Authorization"))
+            assertNull(server.takeRequest(500, TimeUnit.MILLISECONDS))
+        }
     }
 
     private fun verifyVisionRouting(separateEndpoint: Boolean) {

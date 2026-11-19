@@ -189,6 +189,15 @@ class StreamingChatService(
         .readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
         .writeTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
         .build()
+    private val explicitEndpointClient = client.newBuilder()
+        .followRedirects(false)
+        .followSslRedirects(false)
+        .build()
+
+    private fun requestClient(model: ModelConfig, readTimeoutSeconds: Long? = null): okhttp3.OkHttpClient {
+        val selected = if (model.requiresExplicitApiKey) explicitEndpointClient else client
+        return readTimeoutSeconds?.let { selected.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: selected
+    }
 
     /**
      * 流式聊天补全
@@ -440,7 +449,7 @@ class StreamingChatService(
                     }
                 }
 
-                val eventSource = EventSources.createFactory(client)
+                val eventSource = EventSources.createFactory(requestClient(modelConfig))
                     .newEventSource(request, listener)
 
                 continuation.invokeOnCancellation {
@@ -661,7 +670,7 @@ class StreamingChatService(
                 }
             }
         }
-        val requestClient = readTimeoutSeconds?.let { client.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: client
+        val requestClient = requestClient(modelConfig, readTimeoutSeconds)
         val eventSource = EventSources.createFactory(requestClient).newEventSource(request, listener)
         // Heartbeats/comments keep socket reads alive without advancing the model output.
         val inactivitySeconds = readTimeoutSeconds ?: READ_TIMEOUT
@@ -744,7 +753,7 @@ class StreamingChatService(
                 val request = Request.Builder().url(url).addModelApiAuthorization(modelConfig.apiKey)
                     .addHeader("Content-Type", "application/json")
                     .post(requestBody.toRequestBody(JSON_MEDIA_TYPE)).build()
-                val requestClient = readTimeoutSeconds?.let { client.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: client
+                val requestClient = requestClient(modelConfig, readTimeoutSeconds)
                 val call = requestClient.newCall(request)
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
