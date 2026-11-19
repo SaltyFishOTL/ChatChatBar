@@ -18,6 +18,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatHistoryActionProjection
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.ChatHistoryActionRequestSource
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
@@ -743,7 +744,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         VoiceGenerationPolicy.generationSegments(
             content = message.displayContent,
             audiobookEnabled = _audiobookModeEnabled.value,
-            segmentedBubblesEnabled = _assistantSegmentedBubblesEnabled.value
+            segmentedBubblesEnabled = _assistantSegmentedBubblesEnabled.value,
+            actionOptionsFormat = message.displayActionOptionsFormat
         )
 
     fun cancelVoiceGeneration(batchId: String) {
@@ -2375,7 +2377,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val currentSession = chatRepository.getSession(sessionId) ?: return message
         val renderContext = placeholderRenderContext(currentSession)
         val formatCardId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
-        val formatCard = formatCardId
+        val renderedFormatCard = formatCardId
             ?.let { formatCardRepository.getById(it) }
             ?.content
             ?.let { content ->
@@ -2384,6 +2386,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } ?: content
             }
             ?.takeIf(String::isNotBlank)
+        val originalContent = message.displayContent
+        val optionsFormat = message.displayActionOptionsFormat
+        val repairInput = RoleplayActionOptionsPolicy.completeTrailingBlock(originalContent, optionsFormat)
+        fun actionItems(text: String) = RoleplayActionOptionsPolicy.blocks(text, optionsFormat).map { block ->
+            block.options.map { option -> option.text }
+        }
+        val originalActions = actionItems(repairInput)
+        val formatCard = listOfNotNull(
+            renderedFormatCard,
+            PromptTemplates.actionOptionsRepairRequirement(optionsFormat).takeIf { originalActions.isNotEmpty() }
+        ).joinToString("\n\n").takeIf(String::isNotBlank)
         val segmentedFormat = if (appSettings.assistantSegmentedBubblesEnabled) {
             val card = _characterCard.value?.takeIf { it.id == currentSession.characterCardId }
                 ?: characterRepository.getById(currentSession.characterCardId)
@@ -2406,7 +2419,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效")
         }
 
-        val originalContent = message.displayContent
         var result = message
         var repairedPrefix = ""
         var sawDone = false
@@ -2420,7 +2432,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             val repairJob = launch {
                 try {
                     messageFormatRepairService.streamRepair(
-                        originalContent = originalContent,
+                        originalContent = repairInput,
                         formatCard = formatCard,
                         segmentedBubbleFormat = segmentedFormat,
                         modelConfig = model
@@ -2446,9 +2458,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (!sawDone || repairedPrefix.isBlank()) {
                         throw IllegalStateException("格式修复模型返回空结果")
                     }
+                    val candidate = if (MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix)) repairInput
+                        else RoleplayActionOptionsPolicy.completeTrailingBlock(repairedPrefix, optionsFormat)
+                    check(actionItems(candidate) == originalActions) { "修复结果改动了行动选项，已保留原文" }
                     result = when {
-                        MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
-                            repairedPrefix == originalContent -> {
+                        candidate == originalContent -> {
                             val unchanged = message.copy(
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
@@ -2460,12 +2474,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         else -> {
                             val notice = MessageFormatRepairPolicy.completedRepairNotice(
                                 original = originalContent,
-                                repaired = repairedPrefix
+                                repaired = candidate
                             )
                             persistFormatRepairMessage(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
-                                    replacement = repairedPrefix,
+                                    replacement = candidate,
                                     notice = notice
                                 )
                             )
@@ -2476,7 +2490,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
                         original = originalContent,
                         repairedPrefix = repairedPrefix
-                    )
+                    ).takeIf { actionItems(it) == actionItems(originalContent) } ?: originalContent
                     result = persistFormatRepairMessage(
                         MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                             message = message,
@@ -3288,6 +3302,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             role = MessageRole.ASSISTANT,
                             content = body,
                             narrativeMode = requestNarrativeMode,
+                            actionOptionsFormat = activeFormatCard?.actionOptionsFormat,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
                             updatedAt = System.currentTimeMillis(),
@@ -3356,6 +3371,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     role = MessageRole.ASSISTANT,
                                     content = accumulatedText,
                                     narrativeMode = requestNarrativeMode,
+                                    actionOptionsFormat = activeFormatCard?.actionOptionsFormat,
                                     reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                                     createdAt = streamCreatedAt,
                                     updatedAt = System.currentTimeMillis(),
@@ -3561,7 +3577,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             message = old,
             content = generatedMessage.content,
             newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
-            narrativeMode = generatedMessage.narrativeMode
+            narrativeMode = generatedMessage.narrativeMode,
+            actionOptionsFormat = generatedMessage.actionOptionsFormat
         ).copy(
             reasoningContent = generatedMessage.reasoningContent,
             formatRepairNotice = null

@@ -1,5 +1,8 @@
 package com.example.chatbar.domain.card
 
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
+
 import com.example.chatbar.data.local.entity.CharacterEditMode
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
@@ -132,7 +135,8 @@ data class FormatCardPackage(
     val content: String,
     val userTools: List<FormatCardUserToolConfig> = emptyList(),
     val sourcePresetKey: String? = null,
-    val sourcePresetVersion: Int? = null
+    val sourcePresetVersion: Int? = null,
+    val actionOptionsFormat: ActionOptionsFormat? = null
 )
 
 const val FORMAT_CARD_PACKAGE_SCHEMA_VERSION = 2
@@ -144,6 +148,9 @@ fun FormatCardPackage.validateForImport() {
     require(name.isNotBlank()) { "格式卡名称不能为空" }
     require(content.isNotBlank()) { "格式卡内容不能为空" }
     FormatCardUserToolPolicy.requireValid(userTools)
+    actionOptionsFormat?.let { rule ->
+        RoleplayActionOptionsPolicy.validationError(rule)?.let { error -> throw IllegalArgumentException(error) }
+    }
 }
 
 @Serializable

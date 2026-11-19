@@ -45,7 +45,8 @@ data class FormatCard(
     val isDefault: Boolean = false,
     val sourcePresetKey: String? = null,
     val sourcePresetVersion: Int? = null,
-    val createdAt: Long
+    val createdAt: Long,
+    val actionOptionsFormat: ActionOptionsFormat? = null
 ) {
     companion object {
         @OptIn(ExperimentalUuidApi::class)

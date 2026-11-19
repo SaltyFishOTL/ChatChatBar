@@ -11,7 +11,9 @@ enum class ChatHistoryActionRequestSource { PERSISTED_USER, UI_CONTINUATION, NO_
  * that all intervening user references were loaded. Existing status projection runs independently. */
 class ChatHistoryActionProjection private constructor(private val omittable: Map<String, ChatMessage>) {
     fun project(message: ChatMessage, source: String): String =
-        if (omittable[message.id] == message) RoleplayActionOptionsPolicy.withoutExplicitOptions(source) else source
+        if (omittable[message.id] == message) {
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(source, message.displayActionOptionsFormat)
+        } else source
 
     companion object {
         fun prepare(candidates: List<ChatMessage>, completeRecentMessageIds: Set<String>,

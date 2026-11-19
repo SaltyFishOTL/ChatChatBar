@@ -10,6 +10,8 @@ import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.domain.image.NovelAiImageModel
 import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
+import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.data.local.entity.WorldBook
 import com.example.chatbar.data.local.entity.WorldBookEntry
@@ -72,7 +74,7 @@ data class NovelAiCodexEvidence(
  * - 角色发言格式：`roleplaySpeakerFormatSystemPrompt`
  * - 空消息继续生成：`CONTINUE_GENERATION_USER_PROMPT`、`continueGenerationUserPrompt`
  * - user工具请求尾缀：`randomNumberUserToolSuffix`、`appendUserToolSuffixBlock`
- * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`
+ * - 消息格式修复：`MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT`、`messageFormatRepairUserPrompt`、`actionOptionsRepairRequirement`
  * - 自动生图资格检查：`AUTOMATIC_CHAT_IMAGE_JUDGE_SYSTEM`、`automaticChatImageJudgeUser`
  * - 回复长度/语言尾部约束：`replyLengthConstraint`、`replyLengthTailSystemPrompt`、
  *   `replyTailSystemPrompt`、`replyLanguageConstraint`
@@ -418,7 +420,7 @@ object PromptTemplates {
 交付说明：
 只输出一个 JSON 对象，包含 name（名称）、content（完整格式卡正文）、userTools（按顺序排列的用户工具数组）。JSON 字符串中的换行与引号需正确转义；无工具时返回空数组。
 
-回复样张沿用这些标记：对白为 <n="完整角色名"/>[对白内容]()；需要内心描写时用 <n="完整角色名"/>『**内心内容**』。状态栏用成对的三反引号代码围栏；若有行动选项，用独立成行的 --- 在选项区前后包裹。正文放在这些区块之外，人物标记仅用于对白与内心。样张中的说明应由实际剧情内容替换，状态随上下文变化，正文篇幅遵循会话要求。
+回复样张沿用这些标记：对白为 <n="完整角色名"/>[对白内容]()；需要内心描写时用 <n="完整角色名"/>『**内心内容**』。状态栏用成对的三反引号代码围栏。若有行动选项，用独立成行的 --- 在选项区前后包裹，第一行标题写【行动选项】，随后每项各占一行，按 1.、2.、3. 的形式连续编号。正文放在这些区块之外，人物标记仅用于对白与内心。样张中的说明应由实际剧情内容替换，状态随上下文变化，正文篇幅遵循会话要求。
 
 工具按需要设计：
 - 强化尾缀：{"type":"STRONG_PROMPT_SUFFIX","text":"一句简短的关键格式提醒"}。与正文要求一致，不写需要替换的角色占位符。
@@ -786,6 +788,19 @@ CCB大师只存在于幕后，正文不得提及CCB大师、握手过程或这�
         }
         add("{待修复消息}\n$message")
     }.joinToString("\n\n")
+
+    fun actionOptionsRepairRequirement(format: ActionOptionsFormat?): String = buildString {
+        append("仅整理原回复已经列出的行动选项。保留每个选项的文字、数目与顺序，不能新增或合并选项。")
+        if (format != null) {
+            append("\n行动区单独一行开始于：${format.opening.trim()}")
+            append("\n行动区单独一行结束于：${format.closing.trim()}")
+            if (format.heading.isNotBlank()) append("\n区块标题：${format.heading.trim()}")
+            append(if (format.labels == ActionOptionLabels.LETTERS) "\n每项单独一行，从 A) 起连续编号。"
+                else "\n每项单独一行，从 1. 起连续编号。")
+        } else {
+            append("\n识别到有效的行动选项区时，保留原围栏、标题和编号。")
+        }
+    }
 
     fun replyLengthConstraint(replyLength: Int): String {
         return "请按照「${replyLengthLabel(replyLength)}」的长度要求构建正文进行回复。"
@@ -2220,7 +2235,8 @@ JSON only, no Markdown, no explanation:
 
     private fun novelAiImagePromptSceneSource(message: ChatMessage): String =
         if (message.role == MessageRole.ASSISTANT)
-            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent) else message.displayContent
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent, message.displayActionOptionsFormat)
+        else message.displayContent
 
     fun novelAiImagePromptConversation(
         messages: List<ChatMessage>,

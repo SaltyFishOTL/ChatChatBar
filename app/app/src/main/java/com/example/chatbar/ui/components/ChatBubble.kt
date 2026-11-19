@@ -79,6 +79,8 @@ import com.example.chatbar.data.repository.VoiceMessagePlacement
 import com.example.chatbar.domain.chat.PlaceholderRenderer
 import com.example.chatbar.domain.chat.RoleplaySegmentKind
 import com.example.chatbar.domain.chat.RoleplayTextSegment
+import com.example.chatbar.domain.chat.RoleplayActionOptionsBlock
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.parseRoleplayTextSegments
 import com.example.chatbar.domain.chat.roleplayDialogueMarkerPattern
 import com.example.chatbar.domain.chat.roleplayImageBlockId
@@ -242,7 +244,8 @@ fun ChatBubble(
     blockFilterIds: Set<String>? = null,
     showMessageMeta: Boolean = true,
     statusBlockExpansionOverrides: Map<String, Boolean> = emptyMap(),
-    onStatusExpandedChange: ((String, Boolean) -> Unit)? = null
+    onStatusExpandedChange: ((String, Boolean) -> Unit)? = null,
+    actionBlocks: List<RoleplayActionOptionsBlock> = emptyList()
 ) {
     // Keep stored attachment indexes stable, but omit archive-only image placeholders from the UI.
     if (message.images.isNotEmpty() && message.images.all(::isOmittedSaveSlotImage) &&
@@ -284,7 +287,8 @@ fun ChatBubble(
             blockFilterIds = blockFilterIds,
             showMessageMeta = showMessageMeta,
             statusBlockExpansionOverrides = statusBlockExpansionOverrides,
-            onStatusExpandedChange = onStatusExpandedChange
+            onStatusExpandedChange = onStatusExpandedChange,
+            actionBlocks = actionBlocks
         )
     } else {
         LegacyChatBubble(
@@ -315,7 +319,8 @@ fun ChatBubble(
             selectedBlockIds = selectedBlockIds,
             onToggleBlockSelected = onToggleBlockSelected,
             blockFilterIds = blockFilterIds,
-            showMessageMeta = showMessageMeta
+            showMessageMeta = showMessageMeta,
+            actionBlocks = actionBlocks
         )
     }
 }
@@ -355,7 +360,8 @@ private fun SegmentedAssistantBubble(
     blockFilterIds: Set<String>?,
     showMessageMeta: Boolean,
     statusBlockExpansionOverrides: Map<String, Boolean>,
-    onStatusExpandedChange: ((String, Boolean) -> Unit)?
+    onStatusExpandedChange: ((String, Boolean) -> Unit)?,
+    actionBlocks: List<RoleplayActionOptionsBlock>
 ) {
     val rawContent = message.displayContent
     val textSegments = remember(message.id, message.currentAlternativeIndex, rawContent) {
@@ -446,7 +452,13 @@ private fun SegmentedAssistantBubble(
             )
             textSegments.forEachIndexed { index, segment ->
                 val blockId = roleplayTextBlockId(message.id, index)
-                val showTextBlock = blockFilterIds == null || blockId in blockFilterIds
+                val visibleSegmentText = if (actionBlocks.any {
+                    it.range.first < segment.endExclusive && it.range.last >= segment.start
+                }) {
+                    RoleplayActionOptionsPolicy.textOutsideBlocks(rawContent, actionBlocks, segment.start, segment.endExclusive)
+                } else segment.displayText
+                val showTextBlock = (blockFilterIds == null || blockId in blockFilterIds) &&
+                    (actionBlocks.isEmpty() || visibleSegmentText.isNotBlank())
                 val segmentVoices = voicePlacements
                     .filter { placement ->
                         placement.segmentIndex == index &&
@@ -473,7 +485,7 @@ private fun SegmentedAssistantBubble(
                         segment.endExclusive.coerceIn(segment.start.coerceIn(0, rawContent.length), rawContent.length)
                     )
                     val copyText = PlaceholderRenderer.render(rawFragment, renderPlayerName, renderBotName)
-                    val displayText = PlaceholderRenderer.render(segment.displayText, renderPlayerName, renderBotName)
+                    val displayText = PlaceholderRenderer.render(visibleSegmentText, renderPlayerName, renderBotName)
                     SegmentBubble(
                         messageId = message.id,
                         blockId = blockId,
@@ -903,13 +915,14 @@ private fun LegacyChatBubble(
     selectedBlockIds: Set<String>,
     onToggleBlockSelected: ((String) -> Unit)?,
     blockFilterIds: Set<String>?,
-    showMessageMeta: Boolean
+    showMessageMeta: Boolean,
+    actionBlocks: List<RoleplayActionOptionsBlock>
 ) {
     val isUser = message.role == MessageRole.USER
     val visibleContent = if (isUser) {
         message.displayContent
     } else {
-        stripRoleplaySpeakerMarkers(message.displayContent)
+        stripRoleplaySpeakerMarkers(RoleplayActionOptionsPolicy.textOutsideBlocks(message.displayContent, actionBlocks))
     }
     val renderedContent = PlaceholderRenderer.render(visibleContent, renderPlayerName, renderBotName)
     val contentSegments = remember(message.id, message.currentAlternativeIndex, renderedContent) {

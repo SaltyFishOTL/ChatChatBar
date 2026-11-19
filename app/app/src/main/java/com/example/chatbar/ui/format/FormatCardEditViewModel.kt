@@ -6,6 +6,7 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.card.FormatCardAutoFillDraft
@@ -18,6 +19,7 @@ import com.example.chatbar.data.local.entity.FormatCardUserToolType
 import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.card.FormatCardUserToolValidation
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import java.util.UUID
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
@@ -82,6 +84,8 @@ class FormatCardEditViewModel(
 
     var name by mutableStateOf("")
     var content by mutableStateOf("")
+    var actionOptionsFormat by mutableStateOf<ActionOptionsFormat?>(null)
+        private set
     var userTools by mutableStateOf<List<FormatCardUserToolConfig>>(emptyList())
         private set
     var isDefault by mutableStateOf(false)
@@ -105,7 +109,13 @@ class FormatCardEditViewModel(
     val canSave: Boolean
         get() = name.isNotBlank() &&
             content.isNotBlank() &&
+            actionOptionsFormat?.let(RoleplayActionOptionsPolicy::validationError) == null &&
             FormatCardUserToolPolicy.firstValidationError(userTools) == null
+
+    fun updateActionOptionsFormat(format: ActionOptionsFormat?) {
+        actionOptionsFormat = format
+        scheduleDraftSave()
+    }
 
     init {
         loadFormatCard()
@@ -334,12 +344,14 @@ class FormatCardEditViewModel(
             val card = targetId?.let { repository.getById(it) }?.copy(
                 name = name,
                 content = content,
+                actionOptionsFormat = actionOptionsFormat,
                 userTools = userTools,
                 isDefault = isDefault
             ) ?: FormatCard(
                 id = targetId ?: UUID.randomUUID().toString(),
                 name = name,
                 content = content,
+                actionOptionsFormat = actionOptionsFormat,
                 userTools = userTools,
                 isDefault = isDefault,
                 createdAt = _formatCard.value?.createdAt ?: System.currentTimeMillis()
@@ -437,12 +449,14 @@ class FormatCardEditViewModel(
         _formatCard.value?.copy(
             name = name,
             content = content,
+            actionOptionsFormat = actionOptionsFormat,
             userTools = userTools,
             isDefault = isDefault
         ) ?: FormatCard(
             id = UUID.randomUUID().toString(),
             name = name,
             content = content,
+            actionOptionsFormat = actionOptionsFormat,
             userTools = userTools,
             isDefault = isDefault,
             createdAt = System.currentTimeMillis()
@@ -452,6 +466,7 @@ class FormatCardEditViewModel(
         _formatCard.value = card
         name = card.name
         content = card.content
+        actionOptionsFormat = card.actionOptionsFormat
         userTools = card.userTools
         isDefault = card.isDefault
     }
@@ -459,7 +474,8 @@ class FormatCardEditViewModel(
     private fun refreshChangeState() {
         val base = baseCard
         hasLocalChanges = if (base == null) {
-            sourceDeleted || name.isNotBlank() || content.isNotBlank() || userTools.isNotEmpty() || isDefault
+            sourceDeleted || name.isNotBlank() || content.isNotBlank() || actionOptionsFormat != null ||
+                userTools.isNotEmpty() || isDefault
         } else {
             currentPayload() != base
         }

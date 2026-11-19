@@ -442,7 +442,8 @@ class FishAudioGenerationCoordinator(
             target.targetId to target.segment.spokenText
         }
         val assistantPromptContext = VoiceAnchorPolicy.promptContextText(
-            context.message.displayContent
+            context.message.displayContent,
+            context.message.displayActionOptionsFormat
         )
         if (!shouldGenerateTags && !translationRequested) {
             updateBatch(batchId) {
@@ -819,7 +820,8 @@ class FishAudioGenerationCoordinator(
         val segments = VoiceGenerationPolicy.generationSegments(
             content = context.message.displayContent,
             audiobookEnabled = context.audiobookEnabled,
-            segmentedBubblesEnabled = context.segmentedBubblesEnabled
+            segmentedBubblesEnabled = context.segmentedBubblesEnabled,
+            actionOptionsFormat = context.message.displayActionOptionsFormat
         )
         if (VoiceGenerationPolicy.requiresNarratorSelection(context.card, segments)) {
             require(

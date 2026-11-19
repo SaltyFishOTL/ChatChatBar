@@ -18,7 +18,8 @@ class FormatCardTransferService(
                 content = card.content,
                 userTools = card.userTools,
                 sourcePresetKey = card.sourcePresetKey,
-                sourcePresetVersion = card.sourcePresetVersion
+                sourcePresetVersion = card.sourcePresetVersion,
+                actionOptionsFormat = card.actionOptionsFormat
             )
         )
     }
@@ -48,7 +49,8 @@ class FormatCardTransferService(
         return repository.getAll().firstOrNull {
             (packageData.sourcePresetKey != null && it.sourcePresetKey == packageData.sourcePresetKey) ||
                 (NamePolicy.isSame(it.name, packageData.name) &&
-                    it.content == packageData.content && it.userTools == packageData.userTools)
+                    it.content == packageData.content && it.userTools == packageData.userTools &&
+                    it.actionOptionsFormat == packageData.actionOptionsFormat)
         } ?: importNew(packageData)
     }
 
@@ -63,6 +65,7 @@ class FormatCardTransferService(
             name = name,
             content = packageData.content,
             userTools = packageData.userTools,
+            actionOptionsFormat = packageData.actionOptionsFormat,
             isDefault = false,
             sourcePresetKey = presetKey ?: packageData.sourcePresetKey,
             sourcePresetVersion = presetVersion ?: packageData.sourcePresetVersion,
@@ -77,6 +80,7 @@ class FormatCardTransferService(
             name = NamePolicy.normalize(existing.name),
             content = packageData.content,
             userTools = packageData.userTools,
+            actionOptionsFormat = packageData.actionOptionsFormat,
             sourcePresetKey = presetKey ?: packageData.sourcePresetKey,
             sourcePresetVersion = presetVersion ?: packageData.sourcePresetVersion
         ).also { repository.save(it) }

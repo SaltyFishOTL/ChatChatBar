@@ -199,7 +199,8 @@ class CharacterCardTransferService(
                     content = format.content,
                     userTools = format.userTools,
                     sourcePresetKey = format.sourcePresetKey,
-                    sourcePresetVersion = format.sourcePresetVersion
+                    sourcePresetVersion = format.sourcePresetVersion,
+                    actionOptionsFormat = format.actionOptionsFormat
                 ).also { it.validateForImport() }
             },
             worldBooks = (

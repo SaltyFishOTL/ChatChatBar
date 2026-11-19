@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import java.nio.charset.StandardCharsets
 import java.util.UUID
@@ -8,7 +9,8 @@ import java.util.UUID
 data class MessageVersionSnapshot(
     val id: String,
     val content: String,
-    val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
+    val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS,
+    val actionOptionsFormat: ActionOptionsFormat? = null
 )
 
 object MessageAlternativeVersionPolicy {
@@ -32,7 +34,8 @@ object MessageAlternativeVersionPolicy {
                         ?.takeIf(String::isNotBlank)
                         ?: message.id,
                     content = message.content,
-                    narrativeMode = message.narrativeMode
+                    narrativeMode = message.narrativeMode,
+                    actionOptionsFormat = message.actionOptionsFormat
                 )
             )
         }
@@ -42,7 +45,8 @@ object MessageAlternativeVersionPolicy {
                 ids[index], content,
                 if (index in message.alternativeNarrativeModes.indices) {
                     message.alternativeNarrativeModes[index]
-                } else ChatNarrativeMode.FOCUS
+                } else ChatNarrativeMode.FOCUS,
+                actionOptionsFormat = message.alternativeActionOptionsFormats.getOrNull(index)
             )
         }
     }
@@ -60,7 +64,8 @@ object MessageAlternativeVersionPolicy {
                     ?.takeIf(String::isNotBlank)
                     ?: message.id,
                 content = message.content,
-                narrativeMode = message.narrativeMode
+                narrativeMode = message.narrativeMode,
+                actionOptionsFormat = message.actionOptionsFormat
             )
         }
     }
@@ -77,6 +82,8 @@ object MessageAlternativeVersionPolicy {
             },
             currentAlternativeVersionId = active.id,
             narrativeMode = active.narrativeMode,
+            actionOptionsFormat = active.actionOptionsFormat,
+            alternativeActionOptionsFormats = versions(message).retainedActionFormats(message.alternatives.isNotEmpty()),
             alternativeNarrativeModes = if (message.alternatives.isEmpty()) {
                 emptyList()
             } else {
@@ -91,7 +98,8 @@ object MessageAlternativeVersionPolicy {
         newVersionId: String,
         maxVersions: Int = 5,
         updatedAt: Long = System.currentTimeMillis(),
-        narrativeMode: ChatNarrativeMode? = message.narrativeMode
+        narrativeMode: ChatNarrativeMode? = message.narrativeMode,
+        actionOptionsFormat: ActionOptionsFormat? = message.displayActionOptionsFormat
     ): ChatMessage {
         require(newVersionId.isNotBlank()) { "消息版本 ID 不能为空" }
         require(maxVersions > 0) { "消息版本数量上限必须大于 0" }
@@ -101,7 +109,8 @@ object MessageAlternativeVersionPolicy {
             existing + MessageVersionSnapshot(
                 id = newVersionId,
                 content = content,
-                narrativeMode = narrativeMode
+                narrativeMode = narrativeMode,
+                actionOptionsFormat = actionOptionsFormat
             )
         ).takeLast(maxVersions)
         return message.copy(
@@ -111,6 +120,8 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeIndex = retained.lastIndex,
             currentAlternativeVersionId = newVersionId,
             narrativeMode = narrativeMode,
+            actionOptionsFormat = actionOptionsFormat,
+            alternativeActionOptionsFormats = retained.retainedActionFormats(),
             alternativeNarrativeModes = retained.map(MessageVersionSnapshot::narrativeMode),
             updatedAt = updatedAt
         )
@@ -131,6 +142,8 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeIndex = alternativeIndex,
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
+            actionOptionsFormat = selected.actionOptionsFormat,
+            alternativeActionOptionsFormats = versions.retainedActionFormats(),
             alternativeNarrativeModes = versions.map(MessageVersionSnapshot::narrativeMode),
             updatedAt = updatedAt
         )
@@ -149,6 +162,10 @@ object MessageAlternativeVersionPolicy {
             updatedAt = updatedAt
         )
     }
+
+    private fun List<MessageVersionSnapshot>.retainedActionFormats(hasAlternatives: Boolean = true): List<ActionOptionsFormat?> =
+        if (!hasAlternatives || none { it.actionOptionsFormat != null }) emptyList()
+        else map(MessageVersionSnapshot::actionOptionsFormat)
 
     private fun alignedVersionIds(message: ChatMessage): List<String> {
         val used = mutableSetOf<String>()

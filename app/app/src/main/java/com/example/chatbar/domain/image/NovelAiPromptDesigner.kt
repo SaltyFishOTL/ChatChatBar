@@ -859,7 +859,8 @@ class NovelAiPromptDesigner(
             val msg = messages.firstOrNull { it.id == anchorMessageId }
                 ?: return emptyList()
             val scene = if (msg.role == MessageRole.ASSISTANT)
-                RoleplayActionOptionsPolicy.withoutExplicitOptions(msg.displayContent) else msg.displayContent
+                RoleplayActionOptionsPolicy.withoutExplicitOptions(msg.displayContent, msg.displayActionOptionsFormat)
+            else msg.displayContent
             if (msg.role == MessageRole.SYSTEM || scene.isBlank()) return emptyList()
             return listOf(msg)
         }
