@@ -146,10 +146,14 @@ class NarrativeHistoryEchoTest {
                 "> >     $closing\n引用外的正文。",
                 "- ~~~text\n  $closing\n  ~~~\n列表外的正文。",
                 "2. ~~~text\n   $closing\n   ~~~\n列表外的正文。",
+                "- 代码示例\n\n  ~~~\n  $closing\n\n列表外的正文。",
+                "- > ~~~\n  > $closing\n  > ~~~",
                 "- ~~~text\n  $closing\n> ~~~text\n> $closing\n> ~~~"
             )) {
                 assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
             }
+            val paragraph = "她站在墙边。\n2. ~~~"
+            assertEquals(paragraph, NarrativeHistoryEcho.replyBody("$opening\n$paragraph\n   $closing", streaming))
         }
     }
 }
