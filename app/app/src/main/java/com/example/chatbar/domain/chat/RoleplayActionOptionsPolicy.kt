@@ -83,7 +83,7 @@ object RoleplayActionOptionsPolicy {
             if (hasHeading && !(if (format == null) heading(lines[1]) else lines[1].trim() == literal.heading.trim())) {
                 return@mapNotNull null
             }
-            parseItems(lines.subList(if (hasHeading) 2 else 1, lines.lastIndex), literal.labels)
+            parseBlockItems(lines.subList(if (hasHeading) 2 else 1, lines.lastIndex), format)
                 ?.let { RoleplayActionOptionsBlock(range, it) }
         }
         return (plain + fenced).sortedBy { it.range.first }
@@ -121,11 +121,17 @@ object RoleplayActionOptionsPolicy {
             else if (first.info.isEmpty()) return null
         }
 
-        val options = parseItems(body, format?.labels ?: ActionOptionLabels.NUMBERS) ?: return null
-        if (format == null && (options.map { it.text }.distinct().size != options.size || options.any {
-            markdownLink.containsMatchIn(it.text) || "```" in it.text || '<' in it.text || '>' in it.text
-        })) return null
+        val options = parseBlockItems(body, format) ?: return null
         return RoleplayActionOptionsBlock(range, options)
+    }
+
+    private fun parseBlockItems(
+        lines: List<String>,
+        format: ActionOptionsFormat?
+    ): List<RoleplayActionOption>? = parseItems(lines, format?.labels ?: defaultFormat.labels)?.takeIf { options ->
+        format != null || (options.map { it.text }.distinct().size == options.size && options.none {
+            markdownLink.containsMatchIn(it.text) || "```" in it.text || '<' in it.text || '>' in it.text
+        })
     }
 
     private fun fenceMarker(line: String): FenceMarker? {

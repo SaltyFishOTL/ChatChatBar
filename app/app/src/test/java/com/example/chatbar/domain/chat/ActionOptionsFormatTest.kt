@@ -115,6 +115,33 @@ class ActionOptionsFormatTest {
     }
 
     @Test
+    fun defaultFenceKindsUseTheSameTrustRulesWithoutRestrictingCustomCards() {
+        val valid = "1. 查地图\n2. 找向导"
+        val rejected = listOf(
+            "1. 查看地图\n2. 查看地图",
+            "1. [查看地图](https://example.invalid)\n2. 找向导",
+            "1. https://example.invalid\n2. 找向导"
+        )
+        for ((opening, closing) in listOf(
+            "---\n【行动选项】" to "---",
+            "```行动选项" to "```"
+        )) {
+            val good = "$opening\n$valid\n$closing"
+            assertEquals(listOf("查地图", "找向导"), RoleplayActionOptionsPolicy.blocks(good).single().options.map { it.text })
+            for (body in rejected) {
+                val literal = "$opening\n$body\n$closing"
+                assertTrue(RoleplayActionOptionsPolicy.blocks(literal).isEmpty())
+                assertEquals(literal, RoleplayActionOptionsPolicy.withoutExplicitOptions(literal))
+            }
+        }
+        val configured = ActionOptionsFormat("<actions>", "</actions>", "")
+        for (body in rejected) {
+            assertEquals(2, RoleplayActionOptionsPolicy.blocks("<actions>\n$body\n</actions>", configured)
+                .single().options.size)
+        }
+    }
+
+    @Test
     fun customRuleRoundTripsAndRemainsBoundToItsReplyVersion() {
         val formatCard = FormatCardPackage(name = "冒险样本", content = "按场景接续", actionOptionsFormat = custom)
         val codec = Json { ignoreUnknownKeys = true }
