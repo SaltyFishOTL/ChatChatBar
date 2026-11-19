@@ -294,6 +294,7 @@ class CharacterEditViewModel(
 
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
+    private var formalSaveInProgress = false
 
     private val _indexingStatus = MutableStateFlow<String?>(null)
     val indexingStatus: StateFlow<String?> = _indexingStatus.asStateFlow()
@@ -617,6 +618,7 @@ class CharacterEditViewModel(
         }
         if (_isSaving.value) return
         if (validateForSave().isNotEmpty()) return
+        formalSaveInProgress = true
         _isSaving.value = true
 
         viewModelScope.launch {
@@ -752,7 +754,7 @@ class CharacterEditViewModel(
     }
 
     fun scheduleDraftSave() {
-        if (!draftReady || restoreDraft != null || _isSaving.value) return
+        if (!draftReady || restoreDraft != null || formalSaveInProgress) return
         refreshChangeState()
         if (!hasLocalChanges) {
             hasUnsavedDraftChanges = false
@@ -786,7 +788,7 @@ class CharacterEditViewModel(
     }
 
     private suspend fun saveDraftNow() {
-        if (!draftReady || restoreDraft != null || _isSaving.value) return
+        if (!draftReady || restoreDraft != null || formalSaveInProgress) return
         refreshChangeState()
         if (!hasLocalChanges) {
             hasUnsavedDraftChanges = false
@@ -813,6 +815,7 @@ class CharacterEditViewModel(
     }
 
     private fun finishCharacterSave() {
+        formalSaveInProgress = false
         _isSaving.value = false
         // Formal save owns draft cleanup. Resume only a genuine outstanding edit,
         // including a failed save, rather than a delayed UI snapshot of that cleanup.

@@ -1,5 +1,7 @@
 package com.example.chatbar.ui.character
 
+import android.graphics.Bitmap
+import android.net.Uri
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
@@ -8,9 +10,13 @@ import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.CharacterInfo
 import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.repository.EditorDraftRepository
+import com.example.chatbar.domain.draft.CharacterOpenModalKind
+import com.example.chatbar.domain.draft.CharacterOpenModalState
+import com.example.chatbar.domain.image.ImageCropFractionRect
 import java.util.UUID
 import java.io.File
 import kotlinx.coroutines.CompletableDeferred
@@ -93,6 +99,44 @@ class CharacterDraftSaveLifecycleTest {
             assertEquals(secondName, reopened.name)
             assertTrue(reopened.hasLocalChanges)
         }
+    }
+
+    @Test fun croppedAvatarInUnconfirmedCharacterDialogSurvivesDraftRestore() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        editAndSaveDraft(vm, "unsaved card name")
+        val image = File(app.filesDir, "synthetic-avatar-${UUID.randomUUID()}.png").also { files += it }
+        val bitmap = Bitmap.createBitmap(4, 4, Bitmap.Config.ARGB_8888)
+        try {
+            image.outputStream().use { check(bitmap.compress(Bitmap.CompressFormat.PNG, 100, it)) }
+        } finally {
+            bitmap.recycle()
+        }
+        val croppedPath = CompletableDeferred<String>()
+        val character = CharacterInfo.create("Synthetic draft character")
+        withContext(Dispatchers.Main) {
+            vm.cropUriToLocalFile(Uri.fromFile(image), ImageCropFractionRect(0f, 0f, 1f, 1f), 4, 4) { path ->
+                assertTrue(vm.isSaving.value)
+                vm.updateOpenModalState(
+                    CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, character.copy(appearanceImage = path))
+                )
+                croppedPath.complete(path)
+            }
+        }
+        val path = withTimeout(15_000) { croppedPath.await() }
+        files += File(path)
+        withTimeout(8_000) {
+            while (coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id)
+                    ?.openModalState.isNullOrBlank()) delay(40)
+        }
+        val reopened = editor(card.id)
+        withContext(Dispatchers.Main) {
+            assertNotNull(reopened.restoreDraft)
+            reopened.restoreDraft()
+            assertEquals(path, reopened.restoredOpenModalState?.character?.appearanceImage)
+        }
+        assertTrue(File(path).isFile)
+        assertTrue(app.characterRepository.getById(card.id)?.characters.isNullOrEmpty())
     }
 
     @Test fun rejectedFormalSaveStillAutosavesTheActualUnsavedEdit() = runBlocking<Unit> {
