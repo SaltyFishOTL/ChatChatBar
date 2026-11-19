@@ -4,12 +4,19 @@ import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PendingVisionModelLink
 import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.PresetEmbeddingModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
+import com.example.chatbar.data.local.entity.VISION_LINK_TRANSACTION_TYPE
+import com.example.chatbar.data.local.entity.uncommittedVisionModels
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.model.matchesVisionConnection
+import com.example.chatbar.domain.model.sameVisionApiBase
 import java.util.UUID
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -58,8 +65,24 @@ class ModelRepository(private val storage: JsonFileStorage) {
     }
 
     private suspend fun refreshModelCache() {
-        _models.value = storage.loadAll(MODEL_TYPE, ModelConfig.serializer())
-            .sortedBy { it.displayName }
+        val durable = storage.loadAll(MODEL_TYPE, ModelConfig.serializer())
+        val transactions = storage.loadAll(VISION_LINK_TRANSACTION_TYPE, PendingVisionModelLink.serializer())
+        val uncommitted = uncommittedVisionModels(durable, transactions)
+        for (transaction in transactions) {
+            try {
+                if (transaction.visionId in uncommitted) {
+                    storage.deleteEntity<ModelConfig>(MODEL_TYPE, transaction.visionId, requireSuccess = true)
+                }
+                storage.deleteEntity<PendingVisionModelLink>(
+                    VISION_LINK_TRANSACTION_TYPE, transaction.visionId, requireSuccess = true
+                )
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                // Retain the marker for later recovery and keep an uncommitted child out of selectors.
+            }
+        }
+        _models.value = durable.filterNot { it.id in uncommitted }.sortedBy { it.displayName }
     }
 
     private suspend fun refreshEmbeddingCache() {
@@ -112,9 +135,40 @@ class ModelRepository(private val storage: JsonFileStorage) {
         return _models.value.firstOrNull { it.id == id }
     }
 
-    suspend fun saveModel(model: ModelConfig) = mutate {
+    suspend fun saveModel(model: ModelConfig, expectedVision: ModelConfig? = null) = mutate {
+        if (expectedVision != null) {
+            require(expectedVision.id == model.visionModelId && expectedVision.isMultimodal &&
+                _models.value.any { it == expectedVision }
+            ) { "所选视觉模型已变化，请重新选择" }
+        }
         storage.saveEntity(MODEL_TYPE, model.id, model, ModelConfig.serializer())
         refreshModelCache()
+    }
+
+    /** Commit a staged visual connection only when its owning text model is saved. */
+    suspend fun saveModelWithVision(model: ModelConfig, vision: ModelConfig) = mutate {
+        require(model.id != vision.id && model.visionModelId == vision.id && vision.isMultimodal)
+        val oldWithId = _models.value.firstOrNull { it.id == vision.id }
+        check(oldWithId == null || oldWithId == vision) { "视觉模型记录已变化，请重新选择" }
+        val existing = oldWithId ?: _models.value.firstOrNull {
+            it.id != model.id && it.matchesVisionConnection(vision)
+        }
+        val linked = model.copy(visionModelId = existing?.id ?: vision.id)
+        LocalDataMaintenance.access {
+            try {
+                if (existing == null) {
+                    // Keep the old owner intact until the new vision record is durable.
+                    storage.saveEntity(
+                        VISION_LINK_TRANSACTION_TYPE, vision.id, PendingVisionModelLink(vision.id, vision.createdAt),
+                        PendingVisionModelLink.serializer()
+                    )
+                    storage.saveEntity(MODEL_TYPE, vision.id, vision, ModelConfig.serializer())
+                }
+                storage.saveEntity(MODEL_TYPE, linked.id, linked, ModelConfig.serializer())
+            } finally {
+                refreshModelCache()
+            }
+        }
     }
 
     suspend fun duplicateModel(id: String): ModelConfig = mutate {
@@ -185,7 +239,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         id = existing?.id ?: PRESET_MODEL_ID_PREFIX + modelKey,
         displayName = displayName,
         baseUrl = catalog.baseUrl,
-        apiKey = existing?.apiKey.orEmpty(),
+        apiKey = existing?.takeIf { sameVisionApiBase(it.baseUrl, catalog.baseUrl) }?.apiKey.orEmpty(),
         modelName = modelName,
         selectableForChat = selectableForChat,
         isMultimodal = isMultimodal,

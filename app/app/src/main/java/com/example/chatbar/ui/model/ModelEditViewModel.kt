@@ -22,7 +22,9 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import com.example.chatbar.domain.model.ModelDiscoveryService
-import com.example.chatbar.domain.model.resolveEffectiveModelApiKey
+import com.example.chatbar.domain.model.isSiliconFlowVisionApiBase
+import com.example.chatbar.domain.model.visionApiBase
+import com.example.chatbar.domain.model.withBoundVisionApiKey
 
 /**
  * 大模型连接设置编辑器 ViewModel
@@ -48,16 +50,32 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
             baseUrlDraft = value
         }
     private var apiKeyDraft by mutableStateOf("")
+    private var apiKeyBase by mutableStateOf("")
+    private val endpointScope: String
+        get() = visionApiBase(baseUrl)?.toString() ?: baseUrl.trim()
     var apiKey: String
         get() = apiKeyDraft
         set(value) {
             if (value != apiKeyDraft) invalidateModelDiscovery()
             apiKeyDraft = value
+            apiKeyBase = endpointScope
         }
+    val apiKeyForCurrentVision: String
+        get() = apiKey.takeIf { apiKeyBase == endpointScope }.orEmpty()
+    private val hasKeyForPreviousEndpoint: Boolean
+        get() = apiKey.isNotBlank() && apiKeyForCurrentVision.isBlank()
     var modelName by mutableStateOf("")
     var templateType by mutableStateOf(ModelTemplate.OPENAI)
     var isMultimodal by mutableStateOf(false)
+    var selectableForChat by mutableStateOf(true)
     var visionModelId by mutableStateOf<String?>(null)
+        private set
+    var stagedVisionModel by mutableStateOf<ModelConfig?>(null)
+        private set
+    var isSaving by mutableStateOf(false)
+        private set
+    var saveError by mutableStateOf<String?>(null)
+        private set
     var formatPromptPosition by mutableStateOf(FormatPromptPosition.BOTH)
     val customParamsMap = mutableStateMapOf<String, ParamValue>()
 
@@ -88,19 +106,29 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
 
     fun fetchAvailableModels() {
         if (isDiscoveringModels) return
+        if (hasKeyForPreviousEndpoint) {
+            modelDiscoveryError = "接口地址已变化，请重新填写它自己的 API Key"
+            return
+        }
+        if (_modelConfig.value?.requiresExplicitApiKey == true && apiKey.isBlank()) {
+            modelDiscoveryError = "请填写此接口的 API Key 后查找模型"
+            return
+        }
         discoveryGeneration++
         modelDiscoveryError = null
         showModelPicker = true
         val generation = discoveryGeneration
         val url = baseUrl.trim()
         val key = apiKey
+        val allowsLegacyKey = _modelConfig.value?.requiresExplicitApiKey != true && isSiliconFlowVisionApiBase(url)
         isDiscoveringModels = true
         discoveryJob = viewModelScope.launch {
             try {
                 val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
-                val ids = discoveryService.fetch(
-                    url, resolveEffectiveModelApiKey(key, url, settings), settings.allowCleartextModelApi
-                )
+                val lookupKey = key.trim().ifEmpty {
+                    if (allowsLegacyKey) settings.siliconFlowApiKey.trim() else ""
+                }
+                val ids = discoveryService.fetch(url, lookupKey, settings.allowCleartextModelApi)
                 if (generation == discoveryGeneration) {
                     discoveredModelIds = ids
                 }
@@ -123,6 +151,16 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
         showModelPicker = false
     }
 
+    fun selectVisionModel(id: String?) {
+        visionModelId = id
+        saveError = null
+    }
+
+    fun stageVisionModel(model: ModelConfig) {
+        stagedVisionModel = model
+        selectVisionModel(model.id)
+    }
+
     init {
         loadModelConfig()
     }
@@ -139,6 +177,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                     modelName = config.modelName
                     templateType = config.templateType
                     isMultimodal = config.isMultimodal
+                    selectableForChat = config.selectableForChat
                     visionModelId = config.visionModelId
                     formatPromptPosition = config.formatPromptPosition
                     customParamsMap.putAll(config.customParams)
@@ -184,17 +223,24 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
      * 保存模型配置
      */
     fun saveModelConfig(onSuccess: () -> Unit) {
-        if (displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
-
-        viewModelScope.launch {
+        if (isSaving || displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
+        if (hasKeyForPreviousEndpoint) {
+            saveError = "接口地址已变化，请重新填写它自己的 API Key"
+            return
+        }
+        isSaving = true
+        saveError = null
+        val original = _modelConfig.value
+        val config = run {
             val now = System.currentTimeMillis()
-            val config = _modelConfig.value?.copy(
+            original?.copy(
                 displayName = displayName,
                 baseUrl = baseUrl,
                 apiKey = apiKey.trim(),
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,
+                selectableForChat = selectableForChat,
                 visionModelId = visionModelId.takeIf { !isMultimodal },
                 formatPromptPosition = formatPromptPosition,
                 customParams = customParamsMap.toMap()
@@ -206,14 +252,41 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,
+                selectableForChat = selectableForChat,
                 visionModelId = visionModelId.takeIf { !isMultimodal },
                 formatPromptPosition = formatPromptPosition,
                 customParams = customParamsMap.toMap(),
                 createdAt = now
             )
 
-            modelRepository.saveModel(config)
-            onSuccess()
+        }
+        val staged = stagedVisionModel?.takeIf { it.id == config.visionModelId }
+        viewModelScope.launch {
+            try {
+                if (staged != null) {
+                    modelRepository.saveModelWithVision(config, staged)
+                } else {
+                    val expectedVision = if (config.visionModelId != null && config.visionModelId != original?.visionModelId) {
+                        val saved = modelRepository.getModel(config.visionModelId)
+                            ?: throw IllegalArgumentException("已保存的视觉模型不存在，请重新选择")
+                        val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
+                        require(saved.withBoundVisionApiKey(settings) != null) {
+                            "请先给所选视觉模型填写它自己的 API Key，或使用图片解析模型的添加入口"
+                        }
+                        saved
+                    } else null
+                    modelRepository.saveModel(config, expectedVision)
+                }
+                onSuccess()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: IllegalArgumentException) {
+                saveError = e.message ?: "模型配置无法保存"
+            } catch (_: Exception) {
+                saveError = "保存模型失败，请重试"
+            } finally {
+                isSaving = false
+            }
         }
     }
 }

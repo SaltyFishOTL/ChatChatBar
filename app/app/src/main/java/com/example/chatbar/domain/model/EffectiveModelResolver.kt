@@ -104,10 +104,21 @@ class EffectiveModelResolver(
     suspend fun auxiliaryChatModel(id: String?, appSettings: AppSettings): ModelConfig? {
         if (id == null) return null
         return models.getModel(id)?.withEffectiveApiKey(appSettings)
-            ?: id.removePrefix(PresetModelCatalogService.PRESET_REF_PREFIX)
-                .let { key -> presets.catalog.chatModels.firstOrNull { it.modelKey == key && isConfigured(it) } }
-                ?.toModelConfig(appSettings)
+            ?: auxiliaryPresetModel(id, appSettings)
     }
+
+    private fun auxiliaryPresetModel(id: String, appSettings: AppSettings): ModelConfig? =
+        id.removePrefix(PresetModelCatalogService.PRESET_REF_PREFIX)
+            .let { key -> presets.catalog.chatModels.firstOrNull { it.modelKey == key && isConfigured(it) } }
+            ?.toModelConfig(appSettings)
+
+    suspend fun boundVisionModel(id: String?, appSettings: AppSettings): ModelConfig? {
+        if (id == null) return null
+        return (models.getModel(id) ?: auxiliaryPresetModel(id, appSettings))?.withBoundVisionApiKey(appSettings)
+    }
+
+    suspend fun boundVisionModel(id: String?): ModelConfig? =
+        boundVisionModel(id, settings.getAppSettings())
 
     suspend fun auxiliaryChatModel(id: String?): ModelConfig? =
         auxiliaryChatModel(id, settings.getAppSettings())
@@ -197,7 +208,7 @@ class EffectiveModelResolver(
     private fun presetRef(key: String): String = PresetModelCatalogService.PRESET_REF_PREFIX + key
 
     private fun ModelConfig.withEffectiveApiKey(appSettings: AppSettings): ModelConfig =
-        copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
+        copy(apiKey = if (requiresExplicitApiKey) apiKey.trim() else resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
         copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
@@ -210,7 +221,7 @@ internal fun ModelConfig.hasConfiguredAuthentication(appSettings: AppSettings): 
     hasConfiguredAuthentication(appSettings.allowCleartextModelApi)
 
 internal fun ModelConfig.hasConfiguredAuthentication(allowCleartextModelApi: Boolean): Boolean =
-    isModelAuthenticationConfigured(baseUrl, apiKey, allowCleartextModelApi)
+    (!requiresExplicitApiKey || apiKey.isNotBlank()) && isModelAuthenticationConfigured(baseUrl, apiKey, allowCleartextModelApi)
 
 internal fun selectFormatRepairModel(
     requestedId: String?,
@@ -253,7 +264,7 @@ internal fun modelConfigurationStatus(
 ): ModelConfigurationStatus {
     val errors = buildList {
         if (default == null) add("未配置可用默认对话模型")
-        else if (!isModelAuthenticationConfigured(default.baseUrl, default.apiKey, allowCleartextModelApi)) {
+        else if (!default.hasConfiguredAuthentication(allowCleartextModelApi)) {
             add("默认对话模型/API Key 未配置")
         }
     }

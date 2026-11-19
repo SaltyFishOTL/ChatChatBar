@@ -24,7 +24,8 @@ data class ModelTemplatePackage(
     val reasoningEffort: String? = null,
     val enableThinking: Boolean? = null,
     val maxOutputTokens: Int? = null,
-    val formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH
+    val formatPromptPosition: FormatPromptPosition = FormatPromptPosition.BOTH,
+    val requiresExplicitApiKey: Boolean = false
 )
 
 const val MODEL_TEMPLATE_PACKAGE_SCHEMA_VERSION = 1
@@ -55,7 +56,8 @@ class ModelTemplateTransferService(
                 reasoningEffort = model.reasoningEffort,
                 enableThinking = model.enableThinking,
                 maxOutputTokens = model.maxOutputTokens,
-                formatPromptPosition = model.formatPromptPosition
+                formatPromptPosition = model.formatPromptPosition,
+                requiresExplicitApiKey = model.requiresExplicitApiKey
             )
         )
     }
@@ -81,6 +83,7 @@ class ModelTemplateTransferService(
             enableThinking = packageData.enableThinking,
             maxOutputTokens = packageData.maxOutputTokens,
             formatPromptPosition = packageData.formatPromptPosition,
+            requiresExplicitApiKey = packageData.requiresExplicitApiKey,
             createdAt = System.currentTimeMillis()
         ).also { repository.saveModel(it) }
     }
