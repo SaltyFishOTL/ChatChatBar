@@ -629,7 +629,7 @@ class CharacterEditViewModel(
             val targetId = if (saveAsNew || sourceDeleted) null else characterId
             if (!forceOverwrite && targetId != null && loadedDraft != null && draftRepository.isChanged(characterRepository.getById(targetId), loadedDraft!!)) {
                 saveConflict = true
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             val conflict = characterRepository.getAll().firstOrNull {
@@ -637,7 +637,7 @@ class CharacterEditViewModel(
             }
             if (conflict != null && targetId != null) {
                 _indexingStatus.value = "角色卡名称与“${conflict.name}”冲突"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             if (targetId == null && conflict != null) {
@@ -656,7 +656,7 @@ class CharacterEditViewModel(
                 draftAssetService.materializeCharacterAssets(rawCard)
             } catch (error: Throwable) {
                 _indexingStatus.value = "角色卡保存失败：${error.message ?: "草稿资源读取失败"}"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             val speakerRenames = buildSpeakerRenames(oldCard, materializedCard)
@@ -673,7 +673,7 @@ class CharacterEditViewModel(
                 characterRepository.save(card)
             } catch (error: Throwable) {
                 _indexingStatus.value = "角色卡保存失败：${error.message}"
-                _isSaving.value = false
+                finishCharacterSave()
                 return@launch
             }
             transientGeneratedAvatarPaths.removeAll(
@@ -721,12 +721,13 @@ class CharacterEditViewModel(
             pendingDeletedAssets.clear()
             pendingDeletedDocumentIds.clear()
             loadedDraft = null
+            draftSavedAt = null
             openModalState = null
             restoredOpenModalState = null
             baseCard = effectiveCard
             hasLocalChanges = false
             hasUnsavedDraftChanges = false
-            _isSaving.value = false
+            finishCharacterSave()
             startBackgroundIndex(effectiveCard)
             if (effectiveCard.momentsEnabled) ChatBarApp.instance.momentScheduler.kick("character-save")
             if (speakerRenameFailure == null) {
@@ -751,7 +752,7 @@ class CharacterEditViewModel(
     }
 
     fun scheduleDraftSave() {
-        if (!draftReady || restoreDraft != null) return
+        if (!draftReady || restoreDraft != null || _isSaving.value) return
         refreshChangeState()
         if (!hasLocalChanges) {
             hasUnsavedDraftChanges = false
@@ -785,7 +786,12 @@ class CharacterEditViewModel(
     }
 
     private suspend fun saveDraftNow() {
-        if (!draftReady || restoreDraft != null) return
+        if (!draftReady || restoreDraft != null || _isSaving.value) return
+        refreshChangeState()
+        if (!hasLocalChanges) {
+            hasUnsavedDraftChanges = false
+            return
+        }
         val payload = buildCurrentCard(markDirty = false)
         val draftAssetPaths = draftAssetService.ownedAssetPaths(payload)
             .filter { draftAssetService.isDraftAsset(it) }
@@ -804,6 +810,13 @@ class CharacterEditViewModel(
         loadedDraft = draftRepository.save(draft)
         draftSavedAt = loadedDraft?.updatedAt
         hasUnsavedDraftChanges = false
+    }
+
+    private fun finishCharacterSave() {
+        _isSaving.value = false
+        // Formal save owns draft cleanup. Resume only a genuine outstanding edit,
+        // including a failed save, rather than a delayed UI snapshot of that cleanup.
+        scheduleDraftSave()
     }
 
     private fun restoreOpenModal(raw: String?) {
