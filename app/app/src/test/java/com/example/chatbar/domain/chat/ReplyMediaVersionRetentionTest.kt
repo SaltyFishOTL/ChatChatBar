@@ -71,6 +71,13 @@ class ReplyMediaVersionRetentionTest {
         assertEquals("before", MessageFormatRepairPolicy.restoreOriginal(removeOther(repaired))?.displayContent)
         assertEquals("after", MessageFormatRepairPolicy.redoRepair(removeOther(undone))?.displayContent)
         assertNull(MessageAlternativeVersionPolicy.remove(repaired, first.id)?.formatRepairNotice)
+
+        val oldSwitched = MessageAlternativeVersionPolicy.select(undone, 1).copy(
+            formatRepairNotice = undone.formatRepairNotice?.copy(versionId = null)
+        )
+        val oldSurvivor = requireNotNull(MessageAlternativeVersionPolicy.remove(oldSwitched, "other"))
+        assertEquals(first.id, oldSurvivor.formatRepairNotice?.versionId)
+        assertEquals("after", MessageFormatRepairPolicy.redoRepair(oldSurvivor)?.displayContent)
     }
 
     @Test fun `moments retain original images metadata and prompts across selection and serialization`() {

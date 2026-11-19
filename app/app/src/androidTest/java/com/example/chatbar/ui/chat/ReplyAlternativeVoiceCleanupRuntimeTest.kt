@@ -115,6 +115,54 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         }
     }
 
+    @Test fun failedMessageFileDeletionPreservesTheMessageIndex() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val root = File(app.cacheDir, "delete-message-failure-" + UUID.randomUUID()).also(File::mkdirs)
+        val context = object : ContextWrapper(app) { override fun getFilesDir() = root }
+        val directory = File(root, "entities/chat_messages")
+        try {
+            val repository = ChatRepository(JsonFileStorage(context))
+            val session = repository.createSession(ChatSession.create("fixture", "Fixture"))
+            val message = repository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "Fixture reply"))
+            assertTrue(directory.setWritable(false))
+            val result = runCatching { repository.deleteMessageIfUnchanged(message) }
+            assertEquals("未能删除消息文件，请稍后重试", result.exceptionOrNull()?.message)
+            val cold = ChatRepository(JsonFileStorage(context))
+            assertEquals(message, cold.getMessage(message.id, session.id))
+            assertEquals(listOf(message.id), cold.getMessages(session.id).map { it.id })
+        } finally {
+            directory.setWritable(true)
+            root.deleteRecursively()
+        }
+    }
+
+    @Test fun cleanupChecksPersistedMessagesEvenWhenTheLiveIndexMissesOne() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val root = File(app.cacheDir, "unindexed-image-" + UUID.randomUUID()).also(File::mkdirs)
+        val context = object : ContextWrapper(app) { override fun getFilesDir() = root }
+        val storage = JsonFileStorage(context)
+        val repository = ChatRepository(storage)
+        val image = File(root, "shared.png").also { it.writeBytes(byteArrayOf(1, 2, 3, 4)) }
+        try {
+            val session = repository.createSession(ChatSession.create("fixture", "Fixture"))
+            val indexed = repository.addMessage(
+                ChatMessage.create(session.id, MessageRole.ASSISTANT, "First").copy(images = listOf(image.path))
+            )
+            val unindexed = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Pending index write")
+                .copy(images = listOf(image.path))
+            storage.saveEntityUncached(
+                "chat_messages", "${session.id}_${unindexed.id}", unindexed, ChatMessage.serializer()
+            )
+            assertTrue(repository.deleteMessageIfUnchanged(indexed))
+            assertTrue(repository.getMessages(session.id).isEmpty())
+            repository.deleteUnreferencedChatImages(listOf(image.path)) { File(it).delete() }
+            assertTrue(image.isFile)
+            assertEquals(unindexed.id, ChatRepository(JsonFileStorage(context)).getMessages(session.id).single().id)
+        } finally {
+            root.deleteRecursively()
+        }
+    }
+
     @Test fun legacyLateWriteAndUiReadWaitUntilCasCleanupCompletes() = runBlocking<Unit> { withTimeout(40_000) {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         val root = File(app.cacheDir, "atomic-version-voice-" + UUID.randomUUID()).also(File::mkdirs)

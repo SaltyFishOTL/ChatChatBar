@@ -283,21 +283,24 @@ class JsonFileStorage(private val context: Context) {
         entityType: String,
         serializer: KSerializer<T>,
         predicate: (T) -> Boolean = { true },
+        requireCompleteRead: Boolean = false,
         action: suspend (T) -> Unit
     ) = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
-            entityDir(entityType)
-                .listFiles { file -> file.extension == "json" }
-                .orEmpty()
-                .forEach { file ->
-                    val entity = runCatching {
-                        file.inputStream().buffered().use { input ->
-                            @OptIn(ExperimentalSerializationApi::class)
-                            json.decodeFromStream(serializer, input)
-                        }
-                    }.getOrNull() ?: return@forEach
-                    if (predicate(entity)) action(entity)
+            val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
+            check(!requireCompleteRead || files != null) { "无法读取 $entityType 文件目录" }
+            for (file in files.orEmpty()) {
+                val entity = try {
+                    openSerializedInput(file).use { input ->
+                        @OptIn(ExperimentalSerializationApi::class)
+                        json.decodeFromStream(serializer, input)
+                    }
+                } catch (error: Exception) {
+                    if (requireCompleteRead || error is kotlinx.coroutines.CancellationException) throw error
+                    continue
                 }
+                if (predicate(entity)) action(entity)
+            }
         }
     }
 

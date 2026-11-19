@@ -730,16 +730,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
         val candidates = paths.map(::File).filter { it.isAbsolute }.mapTo(linkedSetOf()) { it.canonicalPath }
         if (candidates.isEmpty()) return
         messageAppendMutex.withDataAccess {
-            for (session in getAllSessions()) {
-                session.chatBackground?.let { candidates.remove(File(it).canonicalPath) }
-                if (candidates.isEmpty()) break
-                forEachMessage(session.id) { message ->
-                    message.images.forEach { path ->
-                        if (candidates.isNotEmpty()) {
-                            val file = File(path)
-                            if (file.isAbsolute) candidates.remove(file.canonicalPath)
-                        }
-                    }
+            fun retain(path: String) {
+                val file = File(path)
+                if (file.isAbsolute) candidates.remove(file.canonicalPath)
+            }
+            storage.forEachUncached(SESSION_TYPE, ChatSession.serializer(), requireCompleteRead = true) { session ->
+                session.chatBackground?.let(::retain)
+            }
+            if (candidates.isNotEmpty()) {
+                storage.forEachUncached(MESSAGE_TYPE, ChatMessage.serializer(), requireCompleteRead = true) { message ->
+                    message.images.forEach(::retain)
                 }
             }
             candidates.forEach(deleteOwnedImage)
@@ -749,7 +749,10 @@ class ChatRepository(private val storage: JsonFileStorage) {
     private suspend fun deleteMessageLocked(messageId: String, sessionId: String) {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
-        storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
+        if (removed == null && index.entries.none { it.messageId == messageId }) return
+        check(storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId))) {
+            "未能删除消息文件，请稍后重试"
+        }
         val remainingEntries = index.entries.filterNot { it.messageId == messageId }
         updateMessageIndex(sessionId, index) { remainingEntries }
         val latest = remainingEntries.lastOrNull()?.let { getMessage(it.messageId, sessionId) }

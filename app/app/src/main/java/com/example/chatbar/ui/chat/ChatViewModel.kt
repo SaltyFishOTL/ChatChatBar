@@ -3635,10 +3635,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 com.example.chatbar.domain.backup.LocalDataMaintenance.access {
                     coroutineContext.ensureActive()
                     withContext(NonCancellable) {
-                        if (expected != null) {
-                            check(chatRepository.deleteMessageIfUnchanged(expected)) { "消息已变化，请重新操作" }
-                        } else {
-                            chatRepository.deleteMessage(messageId, sessionId)
+                        if (deletedMessage != null) {
+                            check(chatRepository.deleteMessageIfUnchanged(deletedMessage)) { "消息已变化，请重新操作" }
                         }
                         removeDeletedMessageMedia(messageId, deletedMessage)
                     }
@@ -3729,32 +3727,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
             if (remaining.isEmpty() && message.content.isBlank()) {
-                selectNeighborWindowAnchor(messageId)
-                chatRepository.deleteMessage(messageId, sessionId)
-                _messages.value = _messages.value.filterNot { it.id == messageId }
-                refreshMessages()
-                enqueueLongTermMemoryAfterMessageDeletion()
-
-                val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
-                if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
-                    fishAudioCoordinator.stopPlayback()
-                }
-                deletedVoices.forEach { voice ->
-                    ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
-                }
-                removeUnreferencedMessageImages(listOf(imagePath))
-                if (ChatMemoryIndexPolicy.contributesToIndex(message)) {
-                    ragMemoryMutationMutex.withLock {
-                        refreshMemoryAfterMessageDeletion(message)
-                    }
-                }
+                deleteMessage(messageId, message)
             } else {
                 val updatedMessage = message.copy(
                     images = remaining,
                     generatedImageMetadata = message.generatedImageMetadata
                         .filter { it.imagePath in remaining }
                 )
-                chatRepository.updateMessage(updatedMessage)
+                if (!chatRepository.updateMessageIfUnchanged(message, updatedMessage)) {
+                    _messageActionError.value = "消息已变化，请重新操作"
+                    return@launch
+                }
                 _messages.value = _messages.value.map { current ->
                     if (current.id == messageId) updatedMessage else current
                 }
@@ -3839,7 +3822,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             formatRepairNotice = null
         )
 
-        chatRepository.updateMessage(updatedMessage)
+        if (!chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage)) {
+            _messageActionError.value = "消息已变化，请重新操作"
+            return
+        }
         if (deleteRemovedImages) {
             removeUnreferencedMessageImages(oldMessage.images.filterNot(imagePaths::contains))
         }

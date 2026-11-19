@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -68,6 +69,16 @@ object MessageAlternativeVersionPolicy {
     }
 
     fun activeVersionId(message: ChatMessage): String = activeVersion(message).id
+
+    private fun MessageFormatRepairNotice.checkpointContent(): String? =
+        if (restored) originalContent else targetContent
+
+    private fun linkedRepairNotice(message: ChatMessage, versions: List<MessageVersionSnapshot>): MessageFormatRepairNotice? {
+        val notice = message.formatRepairNotice ?: return null
+        if (notice.versionId != null) return notice
+        val owner = versions.singleOrNull { it.content == notice.checkpointContent() } ?: return notice
+        return notice.copy(versionId = owner.id)
+    }
 
     fun normalize(message: ChatMessage): ChatMessage {
         val active = activeVersion(message)
@@ -137,8 +148,9 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = retained.map { it.narrativeMode },
-            formatRepairNotice = message.formatRepairNotice?.takeUnless { notice ->
-                (notice.versionId ?: activeId) == versionId
+            formatRepairNotice = linkedRepairNotice(message, all)?.takeUnless { notice ->
+                notice.versionId == versionId ||
+                    (notice.versionId == null && notice.checkpointContent() == all[removedIndex].content)
             },
             updatedAt = updatedAt
         )
@@ -160,6 +172,7 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = versions.map(MessageVersionSnapshot::narrativeMode),
+            formatRepairNotice = linkedRepairNotice(message, versions),
             updatedAt = updatedAt
         )
     }
