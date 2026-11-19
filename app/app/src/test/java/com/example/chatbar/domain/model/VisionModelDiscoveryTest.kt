@@ -3,6 +3,7 @@ package com.example.chatbar.domain.model
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.ModelConfig
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Test
 
@@ -60,5 +61,6 @@ class VisionModelDiscoveryTest {
         val local = vision.copy(baseUrl = "http://127.0.0.1:11434/v1")
         assertNull(local.withBoundVisionApiKey(settings))
         assertEquals("", local.withBoundVisionApiKey(settings.copy(allowCleartextModelApi = true))?.apiKey)
+        assertFalse(local.copy(requiresExplicitApiKey = true).hasConfiguredAuthentication(true))
     }
 }
