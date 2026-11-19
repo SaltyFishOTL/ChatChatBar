@@ -18,10 +18,24 @@ import java.util.UUID
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.Assert.*
+import org.junit.BeforeClass
 import org.junit.Test
 
 /** Actual VM, private JSON/audio ownership, cold reads and export. No speech or image service. */
 class ReplyAlternativeVoiceCleanupRuntimeTest {
+    companion object {
+        @JvmStatic
+        @BeforeClass
+        fun finishStartupAudioCleanupBeforeCreatingFixtures() = runBlocking<Unit> {
+            val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+            withTimeout(30_000) {
+                app.dependenciesReady.first { it }
+                // The dependency signal precedes the queued persistent-state orphan sweep.
+                app.initializePersistentState().join()
+            }
+        }
+    }
+
     @Test fun deletingCurrentVersionCleansVoiceAndAnchorFromColdStorageAndBackup() = verify()
     @Test fun clearingLastTextSegmentCleansRemovedVersionVoiceAndAnchorFromBackup() = verify(viaSegmentEdit = true)
     @Test fun clearingOnlyAlternativeThroughSegmentDeletesMessageAndVoice() = verify(viaSegmentEdit = true, last = true)
