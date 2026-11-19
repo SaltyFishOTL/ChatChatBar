@@ -55,6 +55,66 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun lateAnchorResolutionCannotRestoreDeletedVersionAnchor() = verify(lateAnchor = true)
     @Test fun staleUiPlacementReadCannotRecreateDeletedVersionAnchor() = verify(staleUi = true)
 
+    @Test fun deletingRepliesKeepsSharedSaveSlotImageUntilItsLastReference() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val card = CharacterCard.create("Synthetic shared archive image")
+        val session = ChatSession.create(card.id, "Synthetic shared archive image").copy(
+            longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
+        )
+        val source = File.createTempFile("shared-archive-", ".png", app.cacheDir)
+        val imageBytes = byteArrayOf(1, 2, 3, 4)
+        source.writeBytes(imageBytes)
+        val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "First reply").copy(images = listOf(source.path))
+        val second = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Second reply").copy(images = listOf(source.path))
+        val slot = app.saveSlotPackageStorage.createPackage(
+            baseSlot = SaveSlot.create(session.id, "Shared image slot"),
+            imagePolicy = SaveSlotImagePolicy.ORIGINAL, includeAudio = false,
+            messageSource = { emit -> emit(first); emit(second) }, ragSource = {}, voices = emptyList()
+        )
+        val store = ViewModelStore()
+        var restoredFile: File? = null
+        try {
+            app.characterRepository.save(card)
+            app.chatRepository.createSession(session)
+            app.saveSlotRepository.save(slot)
+            val vm = withContext(Dispatchers.Main) {
+                ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(30_000) { vm.session.first { it?.id == session.id } }
+            withContext(Dispatchers.Main) { vm.loadSaveSlot(slot.toSummary()) }
+            withTimeout(30_000) { vm.saveSlotOperation.first { it.status == "读档完成。" } }
+            withTimeout(30_000) { vm.messages.first { rows -> rows.count { it.id == first.id || it.id == second.id } == 2 } }
+            suspend fun coldMessage(id: String) = ChatRepository(JsonFileStorage(app)).getMessage(id, session.id)
+            val restoredFirst = requireNotNull(coldMessage(first.id))
+            val restoredSecond = requireNotNull(coldMessage(second.id))
+            val shared = File(restoredSecond.images.single())
+            restoredFile = shared
+            assertEquals(restoredFirst.images.single(), shared.path)
+            assertArrayEquals(imageBytes, shared.readBytes())
+
+            withContext(Dispatchers.Main) {
+                vm.deleteMessageAlternative(first.id, MessageAlternativeVersionPolicy.activeVersionId(restoredFirst))
+            }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.none { it.id == first.id } } }
+            assertNull(coldMessage(first.id))
+            assertEquals(shared.path, coldMessage(second.id)?.images?.single())
+            assertArrayEquals(imageBytes, shared.readBytes())
+
+            withContext(Dispatchers.Main) { vm.deleteMessage(second.id) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.none { it.id == second.id } } }
+            assertNull(coldMessage(second.id))
+            assertFalse("The final owner should release the stored file", shared.exists())
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            app.chatRepository.deleteMessagesForSession(session.id)
+            app.chatRepository.deleteSessionRecord(session.id)
+            app.characterRepository.delete(card.id)
+            app.saveSlotRepository.delete(slot.id)
+            restoredFile?.delete()
+            source.delete()
+        }
+    }
+
     @Test fun legacyLateWriteAndUiReadWaitUntilCasCleanupCompletes() = runBlocking<Unit> { withTimeout(40_000) {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         val root = File(app.cacheDir, "atomic-version-voice-" + UUID.randomUUID()).also(File::mkdirs)

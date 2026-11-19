@@ -21,6 +21,7 @@ import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import java.io.File
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.Flow
@@ -722,6 +723,27 @@ class ChatRepository(private val storage: JsonFileStorage) {
         if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
         deleteMessageLocked(expected.id, expected.sessionId)
         true
+    }
+
+    /** Restored messages and the chat background can refer to the same local file. */
+    suspend fun deleteUnreferencedChatImages(paths: Collection<String>, deleteOwnedImage: (String) -> Unit) {
+        val candidates = paths.map(::File).filter { it.isAbsolute }.mapTo(linkedSetOf()) { it.canonicalPath }
+        if (candidates.isEmpty()) return
+        messageAppendMutex.withDataAccess {
+            for (session in getAllSessions()) {
+                session.chatBackground?.let { candidates.remove(File(it).canonicalPath) }
+                if (candidates.isEmpty()) break
+                forEachMessage(session.id) { message ->
+                    message.images.forEach { path ->
+                        if (candidates.isNotEmpty()) {
+                            val file = File(path)
+                            if (file.isAbsolute) candidates.remove(file.canonicalPath)
+                        }
+                    }
+                }
+            }
+            candidates.forEach(deleteOwnedImage)
+        }
     }
 
     private suspend fun deleteMessageLocked(messageId: String, sessionId: String) {

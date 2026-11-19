@@ -3630,27 +3630,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
             val deletedMessage = expected ?: chatRepository.getMessage(messageId, sessionId)
-            val audioCleanupSucceeded = if (expected != null) {
-                try {
-                    com.example.chatbar.domain.backup.LocalDataMaintenance.access {
-                        coroutineContext.ensureActive()
-                        withContext(NonCancellable) {
+            if (expected == null) selectNeighborWindowAnchor(messageId)
+            val audioCleanupSucceeded = try {
+                com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+                    coroutineContext.ensureActive()
+                    withContext(NonCancellable) {
+                        if (expected != null) {
                             check(chatRepository.deleteMessageIfUnchanged(expected)) { "消息已变化，请重新操作" }
-                            removeDeletedMessageMedia(messageId, expected)
+                        } else {
+                            chatRepository.deleteMessage(messageId, sessionId)
                         }
+                        removeDeletedMessageMedia(messageId, deletedMessage)
                     }
-                } catch (error: Exception) {
-                    if (error is CancellationException) throw error
-                    _messageActionError.value = error.message ?: "删除备选失败"
-                    return@launch
                 }
-            } else {
-                selectNeighborWindowAnchor(messageId)
-                removeDeletedMessageMedia(messageId, deletedMessage)
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _messageActionError.value = error.message ?: if (expected == null) "删除消息失败" else "删除备选失败"
+                return@launch
             }
             if (expected != null) selectNeighborWindowAnchor(messageId)
             _messages.value = _messages.value.filter { it.id != messageId }
-            if (expected == null) chatRepository.deleteMessage(messageId, sessionId)
             refreshMessages()
             if (!audioCleanupSucceeded) _messageActionError.value = "消息已删除，但语音文件清理失败"
             enqueueLongTermMemoryAfterMessageDeletion()
@@ -3679,8 +3678,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             fishAudioCoordinator.stopPlayback()
         }
         val cleanedAudio = deleteUnreferencedVoiceAudio(deletedVoices)
-        deletedMessage?.images?.forEach { deleteDisposableChatImage(it) }
+        removeUnreferencedMessageImages(deletedMessage?.images.orEmpty())
         return cleanedAudio
+    }
+
+    private suspend fun removeUnreferencedMessageImages(paths: Collection<String>) {
+        if (paths.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            try {
+                chatRepository.deleteUnreferencedChatImages(paths) { deleteDisposableChatImage(it) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _messageActionError.value = "消息已更新，但无法核对图片引用，已保留图片文件"
+            }
+        }
     }
 
     private fun observeMemorySourceRepairProgress() {
@@ -3730,9 +3742,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 deletedVoices.forEach { voice ->
                     ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
                 }
-                withContext(Dispatchers.IO) {
-                    deleteDisposableChatImage(imagePath)
-                }
+                removeUnreferencedMessageImages(listOf(imagePath))
                 if (ChatMemoryIndexPolicy.contributesToIndex(message)) {
                     ragMemoryMutationMutex.withLock {
                         refreshMemoryAfterMessageDeletion(message)
@@ -3749,9 +3759,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (current.id == messageId) updatedMessage else current
                 }
                 refreshMessages()
-                withContext(Dispatchers.IO) {
-                    deleteDisposableChatImage(imagePath)
-                }
+                removeUnreferencedMessageImages(listOf(imagePath))
             }
         }
     }
@@ -3831,11 +3839,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             formatRepairNotice = null
         )
 
-        if (deleteRemovedImages) {
-            oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
-        }
-
         chatRepository.updateMessage(updatedMessage)
+        if (deleteRemovedImages) {
+            removeUnreferencedMessageImages(oldMessage.images.filterNot(imagePaths::contains))
+        }
         refreshMessages()
 
         if (deleteMemoryWhenTextBlank) {

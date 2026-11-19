@@ -58,6 +58,21 @@ class ReplyMediaVersionRetentionTest {
         assertNull(MessageFormatRepairPolicy.redoRepair(MessageAlternativeVersionPolicy.editCurrentContent(reopened, "manual edit")))
     }
 
+    @Test fun `removing a different alternative preserves local undo and redo`() {
+        val original = MessageAlternativeVersionPolicy.append(message().copy(content = "before"), "other", "other")
+        val first = MessageAlternativeVersionPolicy.select(original, 0)
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(first, "after",
+            MessageFormatRepairPolicy.completedRepairNotice("before", "after"))
+        val undone = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(repaired))
+
+        fun removeOther(current: ChatMessage): ChatMessage =
+            requireNotNull(MessageAlternativeVersionPolicy.remove(MessageAlternativeVersionPolicy.select(current, 1), "other"))
+
+        assertEquals("before", MessageFormatRepairPolicy.restoreOriginal(removeOther(repaired))?.displayContent)
+        assertEquals("after", MessageFormatRepairPolicy.redoRepair(removeOther(undone))?.displayContent)
+        assertNull(MessageAlternativeVersionPolicy.remove(repaired, first.id)?.formatRepairNotice)
+    }
+
     @Test fun `moments retain original images metadata and prompts across selection and serialization`() {
         val old = MomentPost("p", "card", "s", senderName = "name", text = "post", imagePath = "old.png",
             imagePrompt = "old prompt", scheduledAt = 1, generatedAt = 2)
