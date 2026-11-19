@@ -80,7 +80,9 @@ class ActionOptionsFormatTest {
             ActionOptionsFormat("<cyoa>", "```", "下一步"),
             ActionOptionsFormat("```", "```", ""),
             ActionOptionsFormat("> <cyoa>", "> </cyoa>", "下一步"),
-            ActionOptionsFormat("<cyoa>", "</cyoa>", "</cyoa>")
+            ActionOptionsFormat("<cyoa>", "</cyoa>", "</cyoa>"),
+            ActionOptionsFormat("<cyoa> ```", "</cyoa>", "下一步"),
+            ActionOptionsFormat("<cyoa>", "</cyoa>", "下一步 ```")
         )
         for (format in incompatible) {
             assertNotNull(format.toString(), RoleplayActionOptionsPolicy.validationError(format))

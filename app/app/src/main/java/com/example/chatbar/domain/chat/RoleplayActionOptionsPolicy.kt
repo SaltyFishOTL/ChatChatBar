@@ -45,6 +45,9 @@ object RoleplayActionOptionsPolicy {
                 (startFence.run.startsWith('`') && '`' in startFence.info)
             ) return "代码围栏须使用同一种符号，结尾不得带文字且不能比开头短"
             if (startFence.info.isEmpty() && title.isEmpty()) return "没有名称的代码围栏须填写区块标题"
+        } else if (listOf(opening, closing, title).any { "```" in it }) {
+            // The existing message parser also treats embedded backtick runs as code.
+            return "反引号围栏须独立成行，不能嵌入普通标记或标题"
         }
         if ((rule(opening) || rule(closing)) && title.isEmpty()) return "使用横线作为标记时，请填写区块标题"
         return null
