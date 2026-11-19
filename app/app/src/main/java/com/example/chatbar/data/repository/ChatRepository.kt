@@ -22,6 +22,7 @@ import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
 import java.io.File
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.Flow
@@ -734,15 +735,17 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 val file = File(path)
                 if (file.isAbsolute) candidates.remove(file.canonicalPath)
             }
-            storage.forEachUncached(SESSION_TYPE, ChatSession.serializer(), requireCompleteRead = true) { session ->
-                session.chatBackground?.let(::retain)
-            }
-            if (candidates.isNotEmpty()) {
-                storage.forEachUncached(MESSAGE_TYPE, ChatMessage.serializer(), requireCompleteRead = true) { message ->
-                    message.images.forEach(::retain)
+            sessionSettingsMutex.withDataAccess {
+                storage.forEachUncached(SESSION_TYPE, ChatSession.serializer(), requireCompleteRead = true) { session ->
+                    session.chatBackground?.let(::retain)
                 }
+                if (candidates.isNotEmpty()) {
+                    storage.forEachUncached(MESSAGE_TYPE, ChatMessage.serializer(), requireCompleteRead = true) { message ->
+                        message.images.forEach(::retain)
+                    }
+                }
+                candidates.forEach(deleteOwnedImage)
             }
-            candidates.forEach(deleteOwnedImage)
         }
     }
 
@@ -750,8 +753,10 @@ class ChatRepository(private val storage: JsonFileStorage) {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
         if (removed == null && index.entries.none { it.messageId == messageId }) return
-        check(storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId))) {
-            "未能删除消息文件，请稍后重试"
+        try {
+            storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId), requireSuccessfulDelete = true)
+        } catch (error: IOException) {
+            throw IllegalStateException("未能删除消息文件，请稍后重试", error)
         }
         val remainingEntries = index.entries.filterNot { it.messageId == messageId }
         updateMessageIndex(sessionId, index) { remainingEntries }
@@ -802,7 +807,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     /** 批量替换会话消息，避免逐条更新会话预览与反复全量加载。 */
-    suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) {
+    suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) = messageAppendMutex.withDataAccess {
         val entities = messages.associate { message ->
             val normalized = if (message.sessionId == sessionId) message else message.copy(sessionId = sessionId)
             messageStorageId(sessionId, normalized.id) to normalized

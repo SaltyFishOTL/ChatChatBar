@@ -530,10 +530,11 @@ class JsonFileStorage(private val context: Context) {
     }
 
     /** 删除未进入通用缓存的大型实体。 */
-    suspend fun deleteEntityUncached(entityType: String, id: String) =
+    suspend fun deleteEntityUncached(entityType: String, id: String, requireSuccessfulDelete: Boolean = false) =
         mutexFor(entityType).withStorageAccess {
             withContext(Dispatchers.IO) {
-                entityFile(entityType, id).delete()
+                val file = entityFile(entityType, id)
+                if (requireSuccessfulDelete) Files.deleteIfExists(file.toPath()) else file.delete()
             }
         }
 

@@ -3637,6 +3637,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     withContext(NonCancellable) {
                         if (deletedMessage != null) {
                             check(chatRepository.deleteMessageIfUnchanged(deletedMessage)) { "消息已变化，请重新操作" }
+                        } else {
+                            chatRepository.deleteMessage(messageId, sessionId)
                         }
                         removeDeletedMessageMedia(messageId, deletedMessage)
                     }

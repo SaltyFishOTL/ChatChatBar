@@ -130,6 +130,11 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             val cold = ChatRepository(JsonFileStorage(context))
             assertEquals(message, cold.getMessage(message.id, session.id))
             assertEquals(listOf(message.id), cold.getMessages(session.id).map { it.id })
+
+            assertTrue(directory.setWritable(true))
+            assertTrue(File(directory, "${session.id}_${message.id}.json").delete())
+            repository.deleteMessage(message.id, session.id)
+            assertTrue(repository.getMessages(session.id).isEmpty())
         } finally {
             directory.setWritable(true)
             root.deleteRecursively()
