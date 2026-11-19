@@ -58,15 +58,15 @@ object RoleplayActionOptionsPolicy {
     fun blocks(content: String, format: ActionOptionsFormat? = null): List<RoleplayActionOptionsBlock> {
         if (format != null && validationError(format) != null) return emptyList()
         if (content.isBlank()) return emptyList()
-        val markdownFences = MarkdownCodeFences.ranges(content, includeContainers = true)
+        val markdownFences = MarkdownCodeFences.blocks(content)
         val declaresFence = format != null && fenceMarker(format.opening.trim()) != null
         val fenced = if (format == null || declaresFence) {
-            markdownFences.mapNotNull { fencedBlock(content, it, format) }
+            markdownFences.mapNotNull { fence -> if (fence.topLevel) fencedBlock(content, fence.range, format) else null }
         } else emptyList()
         if (declaresFence) return fenced
         val codeRanges = parseRoleplayTextSegments(content).filter {
             it.kind == RoleplaySegmentKind.STATUS && it.rawText.trimStart().startsWith("```")
-        }.map { it.start until it.endExclusive } + markdownFences
+        }.map { it.start until it.endExclusive } + markdownFences.map { it.range }
 
         val literal = format ?: defaultFormat
         val ranges = literalRanges(content, literal, codeRanges)

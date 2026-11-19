@@ -113,6 +113,7 @@ class ChatHistoryActionProjectionTest {
             "我同意B方案，先检查营地周边。",
             "我同意b　方案，先检查营地周边。",
             "我同意B，并请她把补给送到码头。",
+            "我同意B并请她把补给送到码头。",
             "我赞成C，并请她把补给送到码头。",
             "Please carry out the penultimate plan quietly."
         )) {

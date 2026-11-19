@@ -234,5 +234,10 @@ class ActionOptionsFormatTest {
         val listCode = "- ~~~text\n  [ACTIONS]\n  下一步\n  1. 查地图\n  2. 核对日志标记 [END-ACTIONS]"
         assertEquals(listCode, RoleplayActionOptionsPolicy.completeTrailingBlock(listCode, format))
         assertTrue(RoleplayActionOptionsPolicy.blocks("$listCode\n  [END-ACTIONS]\n  ~~~", format).isEmpty())
+        val fenceFormat = ActionOptionsFormat("~~~actions", "~~~", "")
+        val fenceMenu = "~~~actions\n1. 去门口\n2. 等候\n~~~"
+        val nestedFence = "- 代码示例\n\n" + fenceMenu.lineSequence().joinToString("\n") { "  $it" }
+        assertTrue(RoleplayActionOptionsPolicy.blocks(nestedFence, fenceFormat).isEmpty())
+        assertEquals(listOf("去门口", "等候"), RoleplayActionOptionsPolicy.blocks(fenceMenu, fenceFormat).single().options.map { it.text })
     }
 }

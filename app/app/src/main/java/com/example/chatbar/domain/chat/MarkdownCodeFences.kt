@@ -4,68 +4,101 @@ package com.example.chatbar.domain.chat
 object MarkdownCodeFences {
     private val fenceLine = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
     private val quotePrefix = Regex(" {0,3}>[ \\t]?")
-    private val listPrefix = Regex(" {0,3}(?:[-+*]|[0-9]{1,9}[.)]) {1,4}(?=[^ ])")
+    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)]) {1,4}(?=[^ \\t\\r])")
+    private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
+    private val headingOrUnderline = Regex("^ {0,3}(?:#{1,6}(?:[ \\t]|$)|[=-]+[ \\t]*$)")
 
-    internal data class QuotePrefix(val depth: Int, val end: Int)
-    private data class Fence(val start: Int, val marker: String, val quoteDepth: Int, val listIndent: Int)
+    data class Block(val range: IntRange, val topLevel: Boolean)
 
-    internal fun quotePrefixAt(text: String, start: Int, maxDepth: Int = Int.MAX_VALUE): QuotePrefix {
-        var end = start
-        var depth = 0
-        while (depth < maxDepth) {
-            val prefix = quotePrefix.matchAt(text, end) ?: break
-            end = prefix.range.last + 1
-            depth++
-        }
-        return QuotePrefix(depth, end)
+    // A null indent identifies a block quote. A list item continues at its content indent.
+    private data class Container(val indent: Int? = null)
+    private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
+        fun to(endExclusive: Int) = Block(start until endExclusive, topLevel)
     }
 
-    fun ranges(content: String, includeContainers: Boolean = false): List<IntRange> = buildList {
+    internal fun afterQuotePrefixes(text: String, start: Int): Int {
+        var end = start
+        while (true) {
+            val prefix = quotePrefix.matchAt(text, end) ?: return end
+            end = prefix.range.last + 1
+        }
+    }
+
+    fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
+
+    fun blocks(content: String): List<Block> = buildList {
+        val containers = mutableListOf<Container>()
         var offset = 0
         var open: Fence? = null
+        var paragraph = false
         for (line in content.splitToSequence('\n')) {
             val start = offset
             offset += line.length + 1
-            var quote = if (includeContainers) quotePrefixAt(line, 0, open?.quoteDepth ?: Int.MAX_VALUE)
-                else QuotePrefix(0, 0)
-            var contentStart = quote.end
-            val active = open
-            if (active != null) {
-                val continuation = contentStart + active.listIndent
-                if (quote.depth < active.quoteDepth ||
-                    (active.listIndent > 0 && line.drop(contentStart).isNotBlank() &&
-                        (continuation > line.length || (contentStart until continuation).any { line[it] != ' ' }))
-                ) {
-                    // An unfinished fence ends with its containing quote or list item.
-                    add(active.start until start)
-                    open = null
-                    quote = quotePrefixAt(line, 0)
-                    contentStart = quote.end
-                } else {
-                    contentStart = continuation.coerceAtMost(line.length)
-                }
+            var cursor = 0
+            var continued = 0
+            for (container in containers) {
+                cursor = continueContainer(line, cursor, container) ?: break
+                continued++
             }
-            var listIndent = 0
-            if (includeContainers && open == null) {
+            if (continued < containers.size) {
+                open?.let { add(it.to(start)) }
+                open = null
+                containers.subList(continued, containers.size).clear()
+                paragraph = false
+            }
+
+            if (open == null) {
                 while (true) {
-                    val prefix = listPrefix.matchAt(line, contentStart) ?: break
-                    contentStart = prefix.range.last + 1
+                    val quote = quotePrefix.matchAt(line, cursor)
+                    if (quote != null) {
+                        containers.add(Container())
+                        cursor = quote.range.last + 1
+                    } else {
+                        val list = listPrefix.matchAt(line, cursor) ?: break
+                        val marker = list.groupValues[1]
+                        if (marker.length == 1 && thematicBreak.matches(line.substring(cursor))) break
+                        if (paragraph && marker.length > 1 && marker.dropLast(1).toInt() != 1) break
+                        val end = list.range.last + 1
+                        containers.add(Container(indent = end - cursor))
+                        cursor = end
+                    }
+                    paragraph = false
                 }
-                listIndent = contentStart - quote.end
             }
-            val match = fenceLine.matchEntire(line.substring(contentStart).removeSuffix("\r")) ?: continue
+
+            val remainder = line.substring(cursor).removeSuffix("\r")
+            val match = fenceLine.matchEntire(remainder)
+            val existing = open
+            if (match == null) {
+                if (existing == null) {
+                    paragraph = remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
+                        !headingOrUnderline.containsMatchIn(remainder)
+                }
+                continue
+            }
+
             val marker = match.groupValues[1]
             val rest = match.groupValues[2]
-            val existing = open
             if (existing == null) {
-                if (marker[0] == '~' || '`' !in rest) open = Fence(start, marker, quote.depth, listIndent)
+                if (marker[0] == '~' || '`' !in rest) {
+                    open = Fence(start, marker, topLevel = containers.isEmpty())
+                    paragraph = false
+                }
             } else if (marker[0] == existing.marker[0] &&
                 marker.length >= existing.marker.length && rest.isBlank()
             ) {
-                add(existing.start until (start + line.length))
+                add(existing.to(start + line.length))
                 open = null
             }
         }
-        open?.let { add(it.start until content.length) }
+        open?.let { add(it.to(content.length)) }
+    }
+
+    private fun continueContainer(line: String, start: Int, container: Container): Int? {
+        val indent = container.indent
+        if (indent == null) return quotePrefix.matchAt(line, start)?.range?.last?.plus(1)
+        val limit = start + indent
+        if (limit <= line.length && (start until limit).all { line[it] == ' ' }) return limit
+        return line.length.takeIf { line.substring(start).isBlank() }
     }
 }
