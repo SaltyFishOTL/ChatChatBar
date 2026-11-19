@@ -725,8 +725,13 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     suspend fun deleteMessageIfUnchanged(messageId: String, sessionId: String, expected: ChatMessage?): Boolean =
         messageAppendMutex.withDataAccess {
-            if (getMessage(messageId, sessionId) != expected) return@withDataAccess false
-            deleteMessageLocked(messageId, sessionId)
+            val unchanged = if (expected == null) {
+                storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
+            } else {
+                getMessage(messageId, sessionId) == expected
+            }
+            if (!unchanged) return@withDataAccess false
+            deleteMessageLocked(messageId, sessionId, repairMissingEntryOnly = expected == null)
             true
         }
 
@@ -753,14 +758,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    private suspend fun deleteMessageLocked(messageId: String, sessionId: String) {
+    private suspend fun deleteMessageLocked(messageId: String, sessionId: String, repairMissingEntryOnly: Boolean = false) {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
         if (removed == null && index.entries.none { it.messageId == messageId }) return
-        try {
-            storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId), requireSuccessfulDelete = true)
-        } catch (error: IOException) {
-            throw IllegalStateException("未能删除消息文件，请稍后重试", error)
+        if (!repairMissingEntryOnly) {
+            try {
+                storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId), requireSuccessfulDelete = true)
+            } catch (error: IOException) {
+                throw IllegalStateException("未能删除消息文件，请稍后重试", error)
+            }
         }
         val remainingEntries = index.entries.filterNot { it.messageId == messageId }
         updateMessageIndex(sessionId, index) { remainingEntries }

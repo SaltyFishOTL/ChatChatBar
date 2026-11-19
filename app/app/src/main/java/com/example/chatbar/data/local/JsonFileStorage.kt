@@ -22,6 +22,7 @@ import java.io.IOException
 import java.io.OutputStream
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.nio.file.NoSuchFileException
 import java.nio.file.StandardCopyOption
 import java.util.concurrent.ConcurrentHashMap
@@ -528,6 +529,14 @@ class JsonFileStorage(private val context: Context) {
             if (!preserveBackup) backup.deleteRecursively()
         }
     }
+
+    /** Only return true when the path is known to be absent. */
+    suspend fun isEntityFileMissing(entityType: String, id: String): Boolean =
+        mutexFor(entityType).withStorageAccess {
+            withContext(Dispatchers.IO) {
+                Files.notExists(entityFile(entityType, id).toPath(), LinkOption.NOFOLLOW_LINKS)
+            }
+        }
 
     /** 删除未进入通用缓存的大型实体。 */
     suspend fun deleteEntityUncached(entityType: String, id: String, requireSuccessfulDelete: Boolean = false) =

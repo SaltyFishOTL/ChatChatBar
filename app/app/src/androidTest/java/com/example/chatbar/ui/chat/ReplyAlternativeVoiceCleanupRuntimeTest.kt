@@ -132,7 +132,16 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertEquals(listOf(message.id), cold.getMessages(session.id).map { it.id })
 
             assertTrue(directory.setWritable(true))
-            assertTrue(File(directory, "${session.id}_${message.id}.json").delete())
+            val messageFile = File(directory, "${session.id}_${message.id}.json")
+            assertTrue(messageFile.setReadable(false))
+            try {
+                assertNull(repository.getMessage(message.id, session.id))
+                assertFalse(repository.deleteMessageIfUnchanged(message.id, session.id, null))
+                assertTrue(messageFile.isFile)
+            } finally {
+                messageFile.setReadable(true)
+            }
+            assertTrue(messageFile.delete())
             assertTrue(repository.deleteMessageIfUnchanged(message.id, session.id, null))
             assertTrue(repository.getMessages(session.id).isEmpty())
             repository.replaceMessagesForSession(session.id, listOf(message))
