@@ -9,6 +9,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.FormatCardRepository
 import java.io.File
 import kotlinx.coroutines.test.runTest
+import kotlinx.coroutines.flow.first
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -52,6 +53,39 @@ class CharacterSessionServiceTest {
         characters.save(card)
         assertNull(chats.getSession(unbound.id)?.formatCardId)
         assertEquals(first.id, chats.getSession(service.createSessionForCharacter(card.id))?.formatCardId)
+    }
+
+    @Test fun selectedAlternateCreatesOnlyThatOpeningWhileDefaultAndExistingSessionStayUnchanged() = runTest {
+        val directory = temp.newFolder()
+        val storage = JsonFileStorage(TestContext(directory))
+        val characters = CharacterRepository(storage)
+        val chats = ChatRepository(storage)
+        val service = CharacterSessionService(characters, chats, FormatCardRepository(storage))
+        val card = CharacterCard.create("synthetic", greeting = " main ").copy(alternateGreetings = listOf("", " alternate \n"))
+        characters.save(card)
+        val defaultId = service.createSessionForCharacter(card.id)
+        val choice = com.example.chatbar.domain.card.CharacterGreetingPolicy.choices(card).last()
+        val alternateId = service.createSessionForCharacter(card.id, choice)
+        assertEquals(listOf(" alternate \n"), chats.getMessages(alternateId).map { it.content })
+        assertEquals(listOf(" main "), chats.getMessages(defaultId).map { it.content })
+        assertEquals(card.alternateGreetings, characters.getById(card.id)?.alternateGreetings)
+        val reopened = ChatRepository(JsonFileStorage(TestContext(directory)))
+        assertEquals(" alternate \n", reopened.getMessages(alternateId).single().content)
+    }
+
+    @Test fun staleChoiceWritesNoSessionOrMessage() = runTest {
+        val storage = JsonFileStorage(TestContext(temp.newFolder()))
+        val characters = CharacterRepository(storage)
+        val chats = ChatRepository(storage)
+        val service = CharacterSessionService(characters, chats, FormatCardRepository(storage))
+        val card = CharacterCard.create("synthetic", greeting = "main").copy(alternateGreetings = listOf("old"))
+        characters.save(card)
+        val choice = com.example.chatbar.domain.card.CharacterGreetingPolicy.choices(card).last()
+        characters.save(card.copy(alternateGreetings = listOf("new")))
+        try { service.createSessionForCharacter(card.id, choice); org.junit.Assert.fail("stale selection created session") }
+        catch (_: IllegalArgumentException) { }
+        chats.initialize()
+        assertEquals(0, chats.sessions.first().size)
     }
 
     private class TestContext(private val dir: File) : ContextWrapper(null) {

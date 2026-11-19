@@ -6,6 +6,20 @@ plugins {
   alias(libs.plugins.kotlin.serialization)
 }
 
+// Opt-in device fixtures get a separate application/data directory without patching source.
+val isolatedAndroidTest = providers.gradleProperty("CHATBAR_ISOLATED_ANDROID_TEST").orElse("false").get().let {
+    it.toBooleanStrictOrNull() ?: throw org.gradle.api.GradleException("CHATBAR_ISOLATED_ANDROID_TEST must be true or false")
+}
+val isolatedTestAppId = providers.gradleProperty("CHATBAR_ISOLATED_ANDROID_TEST_APP_ID")
+    .orElse("com.example.chatbar.instrumented").get()
+if (isolatedAndroidTest) {
+    require(Regex("com\\.example\\.chatbar\\.[a-z][a-z0-9_]*(\\.[a-z][a-z0-9_]*)*").matches(isolatedTestAppId)) {
+        "Isolated tests require a non-production com.example.chatbar.* application ID"
+    }
+} else require(!providers.gradleProperty("CHATBAR_ISOLATED_ANDROID_TEST_APP_ID").isPresent) {
+    "A test application ID requires CHATBAR_ISOLATED_ANDROID_TEST=true"
+}
+
 android {
     namespace = "com.example.chatbar"
     compileSdk = 36
@@ -20,7 +34,8 @@ android {
         releaseKeyPassword.isPresent
 
     defaultConfig {
-        applicationId = "com.example.chatbar"
+        applicationId = if (isolatedAndroidTest) isolatedTestAppId else "com.example.chatbar"
+        buildConfigField("boolean", "ISOLATED_ANDROID_TEST", isolatedAndroidTest.toString())
         minSdk = 26
         targetSdk = 36
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"

@@ -226,10 +226,20 @@ class ManageViewModel : ViewModel() {
         viewModelScope.launch { onDone(characterTransfers.duplicate(id).id) }
     }
 
-    fun createSessionForCharacter(id: String, onDone: (String) -> Unit) {
+    fun createSessionForCharacter(
+        id: String,
+        greetingChoice: com.example.chatbar.domain.card.CharacterGreetingChoice? = null,
+        onFailure: (Exception) -> Unit = { throw it },
+        onDone: (String) -> Unit
+    ) {
         viewModelScope.launch {
-            if (modelResolver.status().isUsable) {
-                onDone(ChatBarApp.instance.characterSessionService.createSessionForCharacter(id))
+            try {
+                check(modelResolver.status().isUsable) { "模型配置不可用，无法创建会话。" }
+                onDone(ChatBarApp.instance.characterSessionService.createSessionForCharacter(id, greetingChoice))
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                onFailure(error)
             }
         }
     }

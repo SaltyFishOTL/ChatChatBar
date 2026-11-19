@@ -83,6 +83,13 @@ fun HomeScreen(
     val modelErrors by viewModel.modelConfigurationErrors.collectAsState()
     val modelWarnings by viewModel.modelConfigurationWarnings.collectAsState()
     val modelUsable by viewModel.isModelConfigurationUsable.collectAsState()
+    val greetingContext = androidx.compose.ui.platform.LocalContext.current
+    var greetingCardId by remember { mutableStateOf<String?>(null) }
+    var greetingBusy by remember { mutableStateOf(false) }
+    fun showCreationError(error: Exception) {
+        greetingBusy = false
+        android.widget.Toast.makeText(greetingContext, error.message ?: "创建会话失败", android.widget.Toast.LENGTH_LONG).show()
+    }
     var showStartDialog by remember { mutableStateOf(false) }
     var showRagNotice by remember { mutableStateOf(false) }
     var actionSession by remember { mutableStateOf<ChatSession?>(null) }
@@ -185,7 +192,10 @@ fun HomeScreen(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(8.dp))
 .clickable(enabled = modelUsable) {
-                                        viewModel.createSession(character) { sessionId ->
+                                    if (com.example.chatbar.domain.card.CharacterGreetingPolicy.choices(character).size > 1) {
+                                        showStartDialog = false
+                                        greetingCardId = character.id
+                                    } else viewModel.createSession(character, onFailure = ::showCreationError) { sessionId ->
                                         showStartDialog = false
                                         onNavigate(ChatRoute(sessionId))
                                     }
@@ -209,6 +219,23 @@ fun HomeScreen(
                 }
             }
         }
+    }
+
+    greetingCardId?.let { id ->
+        val card = characters.firstOrNull { it.id == id }
+        if (card == null) androidx.compose.runtime.LaunchedEffect(id) { greetingCardId = null }
+        else com.example.chatbar.ui.components.CharacterGreetingPickerDialog(
+            card = card, busy = greetingBusy,
+            onDismiss = { greetingCardId = null; showStartDialog = true },
+            onConfirm = { choice ->
+                greetingBusy = true
+                viewModel.createSession(card, choice, ::showCreationError) { sessionId ->
+                    greetingCardId = null
+                    greetingBusy = false
+                    onNavigate(ChatRoute(sessionId))
+                }
+            }
+        )
     }
 
     if (copyState.status.isNotEmpty()) {
