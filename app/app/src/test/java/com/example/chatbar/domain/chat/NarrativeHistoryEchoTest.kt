@@ -164,7 +164,8 @@ class NarrativeHistoryEchoTest {
             "-   \n  ~~~text\n  $closing",
             "    普通代码\n-\n  ~~~text\n  $closing",
             "-\n \t~~~text\n  $closing\n  ~~~",
-            "> 说明文字\n+\n  ~~~text\n$closing\n  ~~~"
+            "> 说明文字\n+\n  ~~~text\n  $closing\n  ~~~",
+            "> 说明文字\n接着说明。\n> +\n>   ~~~text\n> $closing\n>   ~~~"
         )
         for (mode in ChatNarrativeMode.entries) {
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"

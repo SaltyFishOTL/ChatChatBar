@@ -12,11 +12,7 @@ object MarkdownCodeFences {
     data class Block(val range: IntRange, val topLevel: Boolean)
 
     // A null indent identifies a block quote. A list item continues at its content indent.
-    private data class Container(
-        val indent: Int? = null,
-        val listDelimiter: Char? = null,
-        val awaitingContent: Boolean = false
-    )
+    private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
     private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
         fun to(endExclusive: Int) = Block(start until endExclusive, topLevel)
     }
@@ -42,7 +38,7 @@ object MarkdownCodeFences {
             val line = expandTabs(rawLine)
             var cursor = 0
             var continued = 0
-            var dedentedParagraph: Container? = null
+            var dedentedParagraph = emptyList<Container>()
             for (container in containers) {
                 cursor = continueContainer(line, cursor, container) ?: break
                 if (container.awaitingContent) containers[continued] = container.copy(awaitingContent = false)
@@ -50,7 +46,7 @@ object MarkdownCodeFences {
             }
             if (continued < containers.size) {
                 val endedContainers = containers.subList(continued, containers.size)
-                if (paragraph) dedentedParagraph = endedContainers.first()
+                if (paragraph) dedentedParagraph = endedContainers.toList()
                 open?.let { add(it.to(start)) }
                 open = null
                 endedContainers.clear()
@@ -69,22 +65,16 @@ object MarkdownCodeFences {
                         if (marker.value.length == 1 && thematicBreak.matches(line.substring(cursor))) break
                         val end = list.range.last + 1
                         val emptyItem = end == line.length
-                        val delimiter = marker.value.last()
-                        // A marker may be a lazy continuation unless it starts a sibling item in the same list.
-                        val interruptsParagraph = paragraph ||
-                            (dedentedParagraph != null && dedentedParagraph.listDelimiter != delimiter)
-                        if (interruptsParagraph &&
-                            (emptyItem || marker.value.length > 1 && marker.value.dropLast(1).toInt() != 1)
-                        ) {
+                        if (paragraph && (emptyItem || marker.value.length > 1 && marker.value.dropLast(1).toInt() != 1)) {
                             break
                         }
                         // An empty marker line sets the indent from the marker width, ignoring trailing spaces.
                         val contentColumn = if (emptyItem) marker.range.last + 2 else end
-                        containers.add(Container(contentColumn - cursor, delimiter, awaitingContent = emptyItem))
+                        containers.add(Container(indent = contentColumn - cursor, awaitingContent = emptyItem))
                         cursor = end
                     }
                     paragraph = false
-                    dedentedParagraph = null
+                    dedentedParagraph = emptyList()
                 }
             }
 
@@ -93,10 +83,12 @@ object MarkdownCodeFences {
             val existing = open
             if (match == null) {
                 if (existing == null) {
-                    val startsIndentedCode = !paragraph && remainder.startsWith("    ")
+                    val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")
                     val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
                         !endsSetextHeading && !heading.containsMatchIn(remainder)
+                    // A lazy paragraph line keeps its quote or list context for subsequent lines.
+                    if (paragraph) containers.addAll(dedentedParagraph)
                 }
                 continue
             }
