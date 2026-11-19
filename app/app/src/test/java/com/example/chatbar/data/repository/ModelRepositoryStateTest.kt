@@ -29,7 +29,7 @@ class ModelRepositoryStateTest {
         val text = ModelConfig.create("Pro", "https://a.test/v1", "chat-key", "pro")
         val vision = ModelConfig.create("Visual", "https://b.test/v1", "vision-key", "flash", isMultimodal = true)
         val otherKey = vision.copy(id = "other", apiKey = "a-different-key")
-        val staged = vision.copy(id = "staged", baseUrl = "https://B.TEST:443/v1/", selectableForChat = false)
+        val staged = vision.copy(id = "staged", baseUrl = "https://B.TEST:443/v1/")
         repository.saveModel(vision)
         repository.saveModel(otherKey)
         repository.saveModelWithVision(text.copy(visionModelId = staged.id), staged)
@@ -40,7 +40,13 @@ class ModelRepositoryStateTest {
         assertEquals(otherKey, cold.getModel(otherKey.id))
         assertNull(cold.getModel(staged.id))
 
-        val otherEndpoint = staged.copy(baseUrl = "https://another.test/v1")
+        val separateAlias = staged.copy(displayName = "My visual alias", selectableForChat = false)
+        repository.saveModelWithVision(text.copy(visionModelId = separateAlias.id), separateAlias)
+        val afterAlias = ModelRepository(storage)
+        assertEquals(separateAlias, afterAlias.getModel(separateAlias.id))
+        assertEquals(separateAlias.id, afterAlias.getModel(text.id)?.visionModelId)
+
+        val otherEndpoint = staged.copy(id = "another-endpoint", baseUrl = "https://another.test/v1")
         repository.saveModelWithVision(text.copy(visionModelId = otherEndpoint.id), otherEndpoint)
         val afterSwitch = ModelRepository(storage)
         assertEquals(otherEndpoint.id, afterSwitch.getModel(text.id)?.visionModelId)

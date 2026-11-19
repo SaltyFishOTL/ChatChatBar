@@ -24,6 +24,7 @@ import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import com.example.chatbar.domain.model.ModelDiscoveryService
 import com.example.chatbar.domain.model.resolveEffectiveModelApiKey
 import com.example.chatbar.domain.model.visionApiBase
+import com.example.chatbar.domain.model.withBoundVisionApiKey
 
 /**
  * 大模型连接设置编辑器 ViewModel
@@ -49,16 +50,20 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
             baseUrlDraft = value
         }
     private var apiKeyDraft by mutableStateOf("")
-    private var apiKeyBase by mutableStateOf(visionApiBase(""))
+    private var apiKeyBase by mutableStateOf("")
+    private val endpointScope: String
+        get() = visionApiBase(baseUrl)?.toString() ?: baseUrl.trim()
     var apiKey: String
         get() = apiKeyDraft
         set(value) {
             if (value != apiKeyDraft) invalidateModelDiscovery()
             apiKeyDraft = value
-            apiKeyBase = visionApiBase(baseUrl)
+            apiKeyBase = endpointScope
         }
     val apiKeyForCurrentVision: String
-        get() = apiKey.takeIf { apiKeyBase != null && apiKeyBase == visionApiBase(baseUrl) }.orEmpty()
+        get() = apiKey.takeIf { apiKeyBase == endpointScope }.orEmpty()
+    private val hasKeyForPreviousEndpoint: Boolean
+        get() = apiKey.isNotBlank() && apiKeyForCurrentVision.isBlank()
     var modelName by mutableStateOf("")
     var templateType by mutableStateOf(ModelTemplate.OPENAI)
     var isMultimodal by mutableStateOf(false)
@@ -101,6 +106,10 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
 
     fun fetchAvailableModels() {
         if (isDiscoveringModels) return
+        if (hasKeyForPreviousEndpoint) {
+            modelDiscoveryError = "接口地址已变化，请重新填写它自己的 API Key"
+            return
+        }
         discoveryGeneration++
         modelDiscoveryError = null
         showModelPicker = true
@@ -209,6 +218,10 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
      */
     fun saveModelConfig(onSuccess: () -> Unit) {
         if (isSaving || displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
+        if (hasKeyForPreviousEndpoint) {
+            saveError = "接口地址已变化，请重新填写它自己的 API Key"
+            return
+        }
         isSaving = true
         saveError = null
         val original = _modelConfig.value
@@ -251,13 +264,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                         val saved = modelRepository.getModel(config.visionModelId)
                             ?: throw IllegalArgumentException("已保存的视觉模型不存在，请重新选择")
                         val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
-                        val presetHost = visionApiBase(saved.baseUrl)
-                            ?.takeIf { it.isHttps && it.port == 443 && it.encodedPath in setOf("/", "/v1") }?.host
-                        val usesConfiguredSiliconFlow = saved.sourcePresetKey != null &&
-                            presetHost in setOf("api.siliconflow.cn", "api.siliconflow.com") &&
-                            settings.siliconFlowApiKey.isNotBlank()
-                        require(saved.isMultimodal) { "所选模型已不再支持图片解析，请重新选择" }
-                        require(saved.apiKey.isNotBlank() || usesConfiguredSiliconFlow) {
+                        require(saved.withBoundVisionApiKey(settings) != null) {
                             "请先给所选视觉模型填写它自己的 API Key，或使用图片解析模型的添加入口"
                         }
                         saved

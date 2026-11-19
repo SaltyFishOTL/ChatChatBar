@@ -104,10 +104,21 @@ class EffectiveModelResolver(
     suspend fun auxiliaryChatModel(id: String?, appSettings: AppSettings): ModelConfig? {
         if (id == null) return null
         return models.getModel(id)?.withEffectiveApiKey(appSettings)
-            ?: id.removePrefix(PresetModelCatalogService.PRESET_REF_PREFIX)
-                .let { key -> presets.catalog.chatModels.firstOrNull { it.modelKey == key && isConfigured(it) } }
-                ?.toModelConfig(appSettings)
+            ?: auxiliaryPresetModel(id, appSettings)
     }
+
+    private fun auxiliaryPresetModel(id: String, appSettings: AppSettings): ModelConfig? =
+        id.removePrefix(PresetModelCatalogService.PRESET_REF_PREFIX)
+            .let { key -> presets.catalog.chatModels.firstOrNull { it.modelKey == key && isConfigured(it) } }
+            ?.toModelConfig(appSettings)
+
+    suspend fun boundVisionModel(id: String?, appSettings: AppSettings): ModelConfig? {
+        if (id == null) return null
+        return (models.getModel(id) ?: auxiliaryPresetModel(id, appSettings))?.withBoundVisionApiKey(appSettings)
+    }
+
+    suspend fun boundVisionModel(id: String?): ModelConfig? =
+        boundVisionModel(id, settings.getAppSettings())
 
     suspend fun auxiliaryChatModel(id: String?): ModelConfig? =
         auxiliaryChatModel(id, settings.getAppSettings())

@@ -34,8 +34,7 @@ class ImageUnderstandingService(
             return ImageUnderstandingResult(directImageBase64s = images)
         }
 
-        val visionModel = modelResolver.auxiliaryChatModel(generationModel.visionModelId)
-            ?.takeIf { it.isMultimodal && it.apiKey.isNotBlank() }
+        val visionModel = modelResolver.boundVisionModel(generationModel.visionModelId)
         if (visionModel == null) {
             val reason = "当前模型不支持多模态，且未配置可用的视觉模型"
             if (requireUnderstanding) error("$reason，无法基于图片生成")

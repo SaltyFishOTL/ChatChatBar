@@ -61,6 +61,7 @@ fun ModelEditScreen(
     viewModel: ModelEditViewModel = viewModel(key = modelId, factory = ModelEditViewModelFactory(modelId))
 ) {
     val multimodalModels by viewModel.availableMultimodalModels.collectAsState()
+    val originalModel by viewModel.modelConfig.collectAsState()
     var showAddParam by remember { mutableStateOf(false) }
     var visionSetup by remember { mutableStateOf<VisionSetup?>(null) }
     val canSave = !viewModel.isSaving && viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
@@ -173,12 +174,14 @@ fun ModelEditScreen(
 
             CbDivider()
             SectionTitle("多模态")
-            SettingRow(
-                title = "在对话模型列表显示",
-                description = "关闭后仍可用于图片解析等辅助功能。",
-                checked = viewModel.selectableForChat,
-                onCheckedChange = { viewModel.selectableForChat = it }
-            )
+            if (originalModel?.selectableForChat == false) {
+                SettingRow(
+                    title = "加入对话模型列表",
+                    description = "开启后可以把此模型选作对话模型。",
+                    checked = viewModel.selectableForChat,
+                    onCheckedChange = { viewModel.selectableForChat = it }
+                )
+            }
             SettingRow(
                 title = "多模态模型",
                 description = "开启后，模型可以直接接收并识别用户图片。",

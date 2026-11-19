@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.model
 
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.ModelConfig
 import okhttp3.HttpUrl
 import okhttp3.HttpUrl.Companion.toHttpUrlOrNull
@@ -24,5 +25,19 @@ internal fun visionProviderLabel(baseUrl: String): String {
 }
 
 internal fun ModelConfig.matchesVisionConnection(other: ModelConfig): Boolean =
-    isMultimodal && modelName == other.modelName && apiKey.trim() == other.apiKey.trim() &&
-        visionApiBase(baseUrl)?.let { it == visionApiBase(other.baseUrl) } == true
+    isMultimodal && apiKey.trim() == other.apiKey.trim() &&
+        visionApiBase(baseUrl)?.let { it == visionApiBase(other.baseUrl) } == true &&
+        copy(id = other.id, baseUrl = other.baseUrl, apiKey = other.apiKey, createdAt = other.createdAt) == other
+
+internal fun ModelConfig.withBoundVisionApiKey(settings: AppSettings): ModelConfig? {
+    if (!isMultimodal) return null
+    val endpoint = visionApiBase(baseUrl) ?: return null
+    if (!endpoint.isHttps && !settings.allowCleartextModelApi) return null
+    val scopedKey = apiKey.trim().ifEmpty {
+        if (endpoint.isHttps && endpoint.port == 443 && endpoint.encodedPath in setOf("/", "/v1") &&
+            endpoint.host in setOf("api.siliconflow.cn", "api.siliconflow.com")
+        ) settings.siliconFlowApiKey.trim() else ""
+    }
+    if (scopedKey.isEmpty() && endpoint.isHttps) return null
+    return copy(apiKey = scopedKey)
+}

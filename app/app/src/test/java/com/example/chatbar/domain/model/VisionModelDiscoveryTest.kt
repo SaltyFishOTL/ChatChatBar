@@ -1,5 +1,7 @@
 package com.example.chatbar.domain.model
 
+import com.example.chatbar.data.local.entity.AppSettings
+import com.example.chatbar.data.local.entity.ModelConfig
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Test
@@ -39,5 +41,21 @@ class VisionModelDiscoveryTest {
             "https://api.deepseek.com.example.test", "https://api.deepseek.com/anthropic",
             "https://api.deepseek.com/?key=no", "https://secret@api.deepseek.com"
         )) assertNull(url, officialVisionModelSuggestion(url))
+    }
+
+    @Test
+    fun linkedVisionNeverSendsTheSiliconFlowDefaultKeyToAnotherEndpoint() {
+        val settings = AppSettings(siliconFlowApiKey = "synthetic-global")
+        val vision = ModelConfig.create(
+            "Vision", "https://api.example.test/v1", "", "flash", isMultimodal = true
+        )
+        assertNull(vision.withBoundVisionApiKey(settings))
+        assertEquals("synthetic-own", vision.copy(apiKey = "synthetic-own").withBoundVisionApiKey(settings)?.apiKey)
+        assertEquals("synthetic-global",
+            vision.copy(baseUrl = "https://api.siliconflow.cn/v1/").withBoundVisionApiKey(settings)?.apiKey)
+        assertNull(vision.copy(baseUrl = "https://api.siliconflow.cn:8443/v1").withBoundVisionApiKey(settings))
+        val local = vision.copy(baseUrl = "http://127.0.0.1:11434/v1")
+        assertNull(local.withBoundVisionApiKey(settings))
+        assertEquals("", local.withBoundVisionApiKey(settings.copy(allowCleartextModelApi = true))?.apiKey)
     }
 }

@@ -120,6 +120,8 @@ class VisionModelSetupWireTest {
                 if (separateEndpoint) {
                     editor.baseUrl = vision.baseUrl
                     assertEquals("", editor.apiKeyForCurrentVision)
+                    editor.saveModelConfig { error("Old endpoint credentials cannot be re-saved implicitly") }
+                    assertNotNull(editor.saveError)
                     editor.baseUrl = text.baseUrl
                 }
                 assertEquals(text.apiKey, editor.apiKeyForCurrentVision)
