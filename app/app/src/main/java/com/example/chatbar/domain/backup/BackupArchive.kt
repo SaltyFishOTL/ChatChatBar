@@ -77,7 +77,8 @@ internal class BackupArchive(
                             source.strictUtf8Reader().use { reader ->
                                 converted.bufferedWriter().use { writer ->
                                     BackupJsonStream(reader, writer, checkActive = checkActive,
-                                        replaceValue = { fields -> selection?.replacement(source, fields) },
+                                        replaceValue = { fields -> llmCredentialRedaction(relative, fields)
+                                            ?: selection?.replacement(source, fields) },
                                         extraRootFields = selection?.extraFields(source).orEmpty()
                                     ) { path, fields ->
                                         portablePath(selection?.resourcePath(source, path, fields) ?: path,

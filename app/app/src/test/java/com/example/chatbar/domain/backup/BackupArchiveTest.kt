@@ -1,8 +1,10 @@
 package com.example.chatbar.domain.backup
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.MomentPost
+import com.example.chatbar.data.local.entity.ModelConfig
 import java.io.File
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -77,6 +79,36 @@ class BackupArchiveTest {
             archive.inputStream().use { engine().extract(it, password, temporary.newFolder("truncated"), target, 5) }
         }
         assertEquals("original", original.readText())
+    }
+
+    @Test fun ordinaryArchiveKeepsModelReferencesWithoutLegacyInlineLlmKeys() {
+        val source = temporary.newFolder("llm-source")
+        val model = ModelConfig(
+            id = "pro", displayName = "Pro", baseUrl = "https://llm.example/v1",
+            apiKey = "synthetic-old-inline-key", modelName = "pro",
+            visionModelId = "flash", llmAccountId = "account-id", createdAt = 1
+        )
+        val settings = AppSettings(defaultModelId = "pro", siliconFlowApiKey = "synthetic-old-default-key",
+            siliconFlowLlmAccountId = "default-account-id")
+        File(source, "entities/model_configs/pro.json").apply {
+            parentFile!!.mkdirs()
+            writeText(json.encodeToString(model))
+        }
+        File(source, "entities/app_settings.json").writeText(json.encodeToString(settings))
+        val archive = temporary.newFile("llm-archive")
+        archive.outputStream().use {
+            engine().create(source, temporary.newFolder("llm-encode"), it, null, 10, "fixture", BackupPreferences())
+        }
+        val work = temporary.newFolder("llm-decode")
+        archive.inputStream().use {
+            engine().extract(it, null, work, temporary.newFolder("llm-target"), 10)
+        }
+        val modelJson = File(work, "files/entities/model_configs/pro.json").readText()
+        val settingsJson = File(work, "files/entities/app_settings.json").readText()
+        assertEquals(model.copy(apiKey = ""), json.decodeFromString<ModelConfig>(modelJson))
+        assertEquals(settings.copy(siliconFlowApiKey = ""), json.decodeFromString<AppSettings>(settingsJson))
+        assertEquals(model, json.decodeFromString<ModelConfig>(File(source, "entities/model_configs/pro.json").readText()))
+        assertEquals(settings, json.decodeFromString<AppSettings>(File(source, "entities/app_settings.json").readText()))
     }
 
     @Test fun unrelatedRuntimeAndUnknownStoresAreExcludedWithoutChangingUserFiles() {

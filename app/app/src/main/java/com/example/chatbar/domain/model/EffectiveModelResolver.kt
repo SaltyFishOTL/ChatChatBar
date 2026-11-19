@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.local.entity.PresetChatModel
+import com.example.chatbar.data.repository.LlmApiAccountRepository
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import java.net.URI
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.emitAll
 import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.flowOf
 
 data class ModelConfigurationStatus(
     val isUsable: Boolean,
@@ -22,13 +24,14 @@ data class ModelConfigurationStatus(
 class EffectiveModelResolver(
     private val models: ModelRepository,
     private val settings: SettingsRepository,
-    private val presets: PresetModelCatalogService
+    private val presets: PresetModelCatalogService,
+    private val llmAccounts: LlmApiAccountRepository? = null
 ) {
     /** All long-lived model consumers subscribe here instead of caching one-off reads. */
     fun observeConfiguration(): Flow<EffectiveModelConfiguration> = flow {
         models.initialize()
         settings.initialize()
-        emitAll(combine(models.models, models.embeddingModel, settings.appSettings) { stored, embedding, appSettings ->
+        emitAll(combine(models.models, models.embeddingModel, settings.appSettings, llmAccounts?.revision ?: flowOf(0L)) { stored, embedding, appSettings, _ ->
             configuration(stored, embedding, appSettings)
         }.distinctUntilChanged())
     }
@@ -162,7 +165,15 @@ class EffectiveModelResolver(
     }
 
     fun effectivePresetApiKey(appSettings: AppSettings): String =
-        appSettings.siliconFlowApiKey.trim()
+        appSettings.siliconFlowApiKey.trim().ifEmpty {
+            appSettings.siliconFlowLlmAccountId?.let { llmAccounts?.connection(it) }
+                ?.takeIf { isSiliconFlowLlmEndpoint(it.account.baseUrl) }?.apiKey.orEmpty()
+        }
+
+    internal fun unboundLlmApiKey(modelKey: String, baseUrl: String, appSettings: AppSettings): String =
+        modelKey.trim().ifEmpty {
+            effectivePresetApiKey(appSettings).takeIf { isSiliconFlowLlmEndpoint(baseUrl) }.orEmpty()
+        }
 
     private fun presetChatModels(appSettings: AppSettings): List<ModelConfig> {
         val configured = presets.catalog.chatModels.filter { it.selectableForChat && isConfigured(it) }
@@ -196,11 +207,19 @@ class EffectiveModelResolver(
     private fun isConfigured(model: PresetChatModel): Boolean = PresetModelPolicy.isConfigured(model.modelName)
     private fun presetRef(key: String): String = PresetModelCatalogService.PRESET_REF_PREFIX + key
 
-    private fun ModelConfig.withEffectiveApiKey(appSettings: AppSettings): ModelConfig =
-        copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
+    private fun ModelConfig.withEffectiveApiKey(appSettings: AppSettings): ModelConfig {
+        val accountId = llmAccountId ?: return copy(apiKey = unboundLlmApiKey(apiKey, baseUrl, appSettings))
+        val account = llmAccounts?.connection(accountId)?.takeIf {
+            canonicalLlmApiEndpoint(baseUrl) == it.account.baseUrl
+        }
+        return if (account != null) copy(baseUrl = account.account.baseUrl, apiKey = account.apiKey)
+        else copy(baseUrl = "", apiKey = "")
+    }
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
-        copy(apiKey = resolveEffectiveModelApiKey(apiKey, baseUrl, appSettings))
+        copy(apiKey = resolveEffectiveModelApiKey(
+            apiKey, baseUrl, appSettings.copy(siliconFlowApiKey = effectivePresetApiKey(appSettings))
+        ))
 
     private fun EmbeddingConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
         isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)

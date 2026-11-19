@@ -8,12 +8,16 @@ import com.example.chatbar.data.local.entity.PRESET_MODEL_ID_PREFIX
 import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.PresetEmbeddingModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.model.requireValidModelBinding
+import com.example.chatbar.domain.model.canonicalLlmApiEndpoint
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -21,7 +25,11 @@ import kotlinx.coroutines.sync.withLock
 /**
  * 模型配置仓库 - 管理LLM和Embedding模型配置
  */
-class ModelRepository(private val storage: JsonFileStorage) {
+class ModelRepository(
+    private val storage: JsonFileStorage,
+    private val llmAccounts: LlmApiAccountRepository? = null,
+    private val canMigrateLlmKeys: () -> Boolean = { true }
+) {
 
     companion object {
         private const val MODEL_TYPE = "model_configs"
@@ -32,6 +40,8 @@ class ModelRepository(private val storage: JsonFileStorage) {
 
     private val _models = MutableStateFlow<List<ModelConfig>>(emptyList())
     val models: Flow<List<ModelConfig>> = _models.asStateFlow()
+    private val _llmMigrationPending = MutableStateFlow(false)
+    val llmMigrationPending = _llmMigrationPending.asStateFlow()
 
     private val _embeddings = MutableStateFlow<List<EmbeddingConfig>>(emptyList())
     val embeddings: Flow<List<EmbeddingConfig>> = _embeddings.asStateFlow()
@@ -45,6 +55,7 @@ class ModelRepository(private val storage: JsonFileStorage) {
         if (initialized) return@withLock
         migrateLegacyPlanningModel()
         refreshModelCache()
+        migrateLegacyLlmKeysLocked()
         refreshEmbeddingCache()
         refreshEmbeddingModelCache()
         initialized = true
@@ -113,8 +124,50 @@ class ModelRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun saveModel(model: ModelConfig) = mutate {
-        storage.saveEntity(MODEL_TYPE, model.id, model, ModelConfig.serializer())
+        LocalDataMaintenance.enter().use {
+            val bound = withProtectedLlmCredential(model)
+            storage.saveEntity(MODEL_TYPE, bound.id, bound, ModelConfig.serializer())
+        }
         refreshModelCache()
+    }
+
+    suspend fun retryLlmKeyMigration() = mutate { migrateLegacyLlmKeysLocked() }
+
+    private suspend fun migrateLegacyLlmKeysLocked() {
+        if (llmAccounts == null) return
+        llmAccounts.initialize()
+        if (!canMigrateLlmKeys()) return
+        var pending = false
+        for (model in _models.value.filter { it.llmAccountId == null && it.apiKey.isNotBlank() }) {
+            try {
+                LocalDataMaintenance.enter().use {
+                    val migrated = withProtectedLlmCredential(model)
+                    storage.saveEntity(MODEL_TYPE, migrated.id, migrated, ModelConfig.serializer())
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                pending = true
+            }
+        }
+        refreshModelCache()
+        _llmMigrationPending.value = pending
+    }
+
+    private suspend fun withProtectedLlmCredential(model: ModelConfig): ModelConfig {
+        val accounts = llmAccounts ?: return model
+        if (model.llmAccountId != null) return accounts.requireValidModelBinding(model)
+        if (model.apiKey.isBlank()) return model
+        val account = accounts.adoptLegacy(
+            "model:${model.id}", model.displayName.ifBlank { model.modelName }.ifBlank { "旧模型账户" },
+            model.baseUrl, model.apiKey
+        )
+        return model.copy(baseUrl = account.baseUrl, apiKey = "", llmAccountId = account.id)
+    }
+
+    internal suspend fun removeLlmApiAccount(id: String) = mutate {
+        check(_models.value.none { it.llmAccountId == id }) { "请先为使用此账户的模型更换账户" }
+        checkNotNull(llmAccounts).remove(id)
     }
 
     suspend fun duplicateModel(id: String): ModelConfig = mutate {
@@ -126,9 +179,13 @@ class ModelRepository(private val storage: JsonFileStorage) {
             sourcePresetVersion = null,
             createdAt = System.currentTimeMillis()
         )
-        storage.saveEntity(MODEL_TYPE, copy.id, copy, ModelConfig.serializer())
+        val saved = LocalDataMaintenance.enter().use {
+            val bound = withProtectedLlmCredential(copy)
+            storage.saveEntity(MODEL_TYPE, bound.id, bound, ModelConfig.serializer())
+            bound
+        }
         refreshModelCache()
-        copy
+        saved
     }
 
     suspend fun ensurePresetChatModels(catalog: PresetModelCatalog, catalogVersion: Int): List<ModelConfig> =
@@ -185,7 +242,9 @@ class ModelRepository(private val storage: JsonFileStorage) {
         id = existing?.id ?: PRESET_MODEL_ID_PREFIX + modelKey,
         displayName = displayName,
         baseUrl = catalog.baseUrl,
-        apiKey = existing?.apiKey.orEmpty(),
+        apiKey = existing?.takeIf {
+            canonicalLlmApiEndpoint(it.baseUrl) == canonicalLlmApiEndpoint(catalog.baseUrl)
+        }?.apiKey.orEmpty(),
         modelName = modelName,
         selectableForChat = selectableForChat,
         isMultimodal = isMultimodal,
@@ -198,7 +257,10 @@ class ModelRepository(private val storage: JsonFileStorage) {
         formatPromptPosition = existing?.formatPromptPosition ?: FormatPromptPosition.BOTH,
         sourcePresetKey = modelKey,
         sourcePresetVersion = catalogVersion,
-        createdAt = existing?.createdAt ?: 0L
+        createdAt = existing?.createdAt ?: 0L,
+        llmAccountId = existing?.takeIf {
+            canonicalLlmApiEndpoint(it.baseUrl) == canonicalLlmApiEndpoint(catalog.baseUrl)
+        }?.llmAccountId
     )
 
     private suspend fun upsertPresetEmbeddingModel(

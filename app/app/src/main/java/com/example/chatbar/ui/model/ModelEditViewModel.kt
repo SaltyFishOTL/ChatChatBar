@@ -22,13 +22,16 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.CancellationException
 import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import com.example.chatbar.domain.model.ModelDiscoveryService
-import com.example.chatbar.domain.model.resolveEffectiveModelApiKey
+import com.example.chatbar.domain.model.canonicalLlmApiEndpoint
+import com.example.chatbar.data.local.entity.LlmApiAccount
 
 /**
  * 大模型连接设置编辑器 ViewModel
  */
 class ModelEditViewModel(private val modelId: String?) : ViewModel() {
     private val modelRepository = ChatBarApp.instance.modelRepository
+    private val llmAccounts = ChatBarApp.instance.llmApiAccountRepository
+    val apiAccounts = llmAccounts.accounts
 
     private val _modelConfig = MutableStateFlow<ModelConfig?>(null)
     val modelConfig: StateFlow<ModelConfig?> = _modelConfig.asStateFlow()
@@ -45,6 +48,9 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
         get() = baseUrlDraft
         set(value) {
             if (value != baseUrlDraft) invalidateModelDiscovery()
+            if (canonicalLlmApiEndpoint(value) != canonicalLlmApiEndpoint(baseUrlDraft)) {
+                apiKeyDraft = ""
+            }
             baseUrlDraft = value
         }
     private var apiKeyDraft by mutableStateOf("")
@@ -55,6 +61,12 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
             apiKeyDraft = value
         }
     var modelName by mutableStateOf("")
+    var llmAccountId by mutableStateOf<String?>(null)
+        private set
+    var accountSaveError by mutableStateOf<String?>(null)
+        private set
+    var savingModel by mutableStateOf(false)
+        private set
     var templateType by mutableStateOf(ModelTemplate.OPENAI)
     var isMultimodal by mutableStateOf(false)
     var visionModelId by mutableStateOf<String?>(null)
@@ -71,6 +83,15 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
     private var discoveryJob: Job? = null
     private var discoveryGeneration = 0L
     private val discoveryService = ModelDiscoveryService()
+
+    fun selectLlmAccount(account: LlmApiAccount?) {
+        if (llmAccountId == account?.id) return
+        invalidateModelDiscovery()
+        llmAccountId = account?.id
+        apiKey = ""
+        if (account != null) baseUrl = account.baseUrl
+        accountSaveError = null
+    }
 
     private fun invalidateModelDiscovery() {
         discoveryGeneration++
@@ -92,14 +113,20 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
         modelDiscoveryError = null
         showModelPicker = true
         val generation = discoveryGeneration
+        val accountId = llmAccountId
         val url = baseUrl.trim()
         val key = apiKey
         isDiscoveringModels = true
         discoveryJob = viewModelScope.launch {
             try {
                 val settings = ChatBarApp.instance.settingsRepository.getAppSettings()
+                val connection = accountId?.let {
+                    llmAccounts.connection(it) ?: throw IllegalArgumentException("所选对话 API 账户不可用")
+                }
                 val ids = discoveryService.fetch(
-                    url, resolveEffectiveModelApiKey(key, url, settings), settings.allowCleartextModelApi
+                    connection?.account?.baseUrl ?: url,
+                    connection?.apiKey ?: ChatBarApp.instance.effectiveModelResolver.unboundLlmApiKey(key, url, settings),
+                    settings.allowCleartextModelApi
                 )
                 if (generation == discoveryGeneration) {
                     discoveredModelIds = ids
@@ -134,8 +161,9 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 _modelConfig.value = config
                 if (config != null) {
                     displayName = config.displayName
-                    baseUrl = config.baseUrl
-                    apiKey = config.apiKey
+                    llmAccountId = config.llmAccountId
+                    baseUrl = config.llmAccountId?.let { llmAccounts.connection(it)?.account?.baseUrl } ?: config.baseUrl
+                    apiKey = config.apiKey.takeIf { config.llmAccountId == null }.orEmpty()
                     modelName = config.modelName
                     templateType = config.templateType
                     isMultimodal = config.isMultimodal
@@ -153,6 +181,7 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
      * 根据选择的模板，自动填充默认参数
      */
     fun applyTemplateDefaults(template: ModelTemplate) {
+        val accountBaseUrl = baseUrl.takeIf { llmAccountId != null }
         templateType = template
         customParamsMap.clear()
         
@@ -178,20 +207,23 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 modelName = ""
             }
         }
+        if (accountBaseUrl != null) baseUrl = accountBaseUrl
     }
 
     /**
      * 保存模型配置
      */
     fun saveModelConfig(onSuccess: () -> Unit) {
-        if (displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
-
-        viewModelScope.launch {
+        if (savingModel || displayName.isBlank() || baseUrl.isBlank() || modelName.isBlank()) return
+        accountSaveError = null
+        savingModel = true
+        val config = run {
             val now = System.currentTimeMillis()
-            val config = _modelConfig.value?.copy(
+            _modelConfig.value?.copy(
                 displayName = displayName,
                 baseUrl = baseUrl,
-                apiKey = apiKey.trim(),
+                apiKey = apiKey.trim().takeIf { llmAccountId == null }.orEmpty(),
+                llmAccountId = llmAccountId,
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,
@@ -202,7 +234,8 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 id = modelId ?: java.util.UUID.randomUUID().toString(),
                 displayName = displayName,
                 baseUrl = baseUrl,
-                apiKey = apiKey.trim(),
+                apiKey = apiKey.trim().takeIf { llmAccountId == null }.orEmpty(),
+                llmAccountId = llmAccountId,
                 modelName = modelName,
                 templateType = templateType,
                 isMultimodal = isMultimodal,
@@ -211,9 +244,20 @@ class ModelEditViewModel(private val modelId: String?) : ViewModel() {
                 customParams = customParamsMap.toMap(),
                 createdAt = now
             )
-
-            modelRepository.saveModel(config)
-            onSuccess()
+        }
+        viewModelScope.launch {
+            try {
+                modelRepository.saveModel(config)
+                onSuccess()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: IllegalArgumentException) {
+                accountSaveError = error.message ?: "模型配置无效"
+            } catch (_: Exception) {
+                accountSaveError = "保存模型或对话 API 账户失败，请重试"
+            } finally {
+                savingModel = false
+            }
         }
     }
 }

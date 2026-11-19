@@ -131,7 +131,12 @@ internal fun GlobalSettingsScreen(
     var imageModelId by rememberSettingDraft(settings.defaultImageModelId)
     var formatRepairModelId by rememberSettingDraft(settings.formatRepairModelId)
     var automaticFormatCheckEnabled by rememberSettingDraft(settings.automaticFormatCheckEnabled)
-    var siliconFlowApiKey by rememberSettingDraft(settings.siliconFlowApiKey)
+    val accountRevision by ChatBarApp.instance.llmApiAccountRepository.revision.collectAsState()
+    val savedSiliconFlowKey = remember(settings, accountRevision) {
+        ChatBarApp.instance.effectiveModelResolver.effectivePresetApiKey(settings)
+    }
+    val savedSettingsWithKey = settings.copy(siliconFlowApiKey = savedSiliconFlowKey)
+    var siliconFlowApiKey by rememberSettingDraft(savedSiliconFlowKey)
     var allowCleartextModelApi by rememberSettingDraft(settings.allowCleartextModelApi)
     var experimentalApiModeEnabled by rememberSettingDraft(settings.experimentalApiModeEnabled)
     var novelAiToken by rememberSettingDraft("")
@@ -236,7 +241,7 @@ internal fun GlobalSettingsScreen(
         themeColor = themeColor,
         themeColorHistory = themeColorHistory
     )
-    val savedSettingsComparable = settings
+    val savedSettingsComparable = savedSettingsWithKey
     val settingsDirty = draftSettings != savedSettingsComparable ||
     playerName != player.playerName ||
     persona != player.globalPersona
@@ -271,7 +276,7 @@ internal fun GlobalSettingsScreen(
         saving = true
         saveError = null
         scope.launch {
-            runCatching { onSave(settings, draftSettings, player, player.copy(playerName = playerName, globalPersona = persona)) }
+            runCatching { onSave(savedSettingsWithKey, draftSettings, player, player.copy(playerName = playerName, globalPersona = persona)) }
             .onSuccess { pendingLeave = null; after?.invoke() }
             .onFailure { saveError = "保存失败：${it.message}"; pendingLeave = null }
             saving = false
@@ -343,8 +348,13 @@ internal fun GlobalSettingsScreen(
         SettingsEntry("model-errors", "models", "模型与 API", "模型与 API", searchable = false) {
             modelErrors.forEach { CbText(it, color = ChatBarTheme.colors.destructive, style = ChatBarTheme.typography.caption) }
         },
-        SettingsEntry("global-api-key", "models", "全局默认 API Key", "API Key 密钥 凭据") {
-            SettingsDetails("全局默认 API Key", if (siliconFlowApiKey.isBlank()) "未配置" else "已填写", browser.target == "global-api-key") {
+        SettingsEntry("llm-api-accounts", "models", "对话 API 账户", "模型与连接 账户 API Key 别名 密钥 认证") {
+            SettingsDetails("对话 API 账户", "保存多个接口账户，供模型选择", browser.target == "llm-api-accounts", fullscreen = true) {
+                LlmApiAccountsContent(customModels, settings.siliconFlowLlmAccountId)
+            }
+        },
+        SettingsEntry("global-api-key", "models", "硅基流动默认 API Key", "全局 API Key 密钥 凭据 硅基流动") {
+            SettingsDetails("硅基流动默认 API Key", if (siliconFlowApiKey.isBlank()) "未配置" else "已填写", browser.target == "global-api-key") {
                 CbField("全局默认 API Key", description = "完成编辑后，点击页面顶部保存，与其他普通设置一起生效。") {
                     CbInput(siliconFlowApiKey, { siliconFlowApiKey = it }, placeholder = "sk-...", secure = true)
                 }

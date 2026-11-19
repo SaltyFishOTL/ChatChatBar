@@ -75,7 +75,7 @@ class EffectiveModelConfigurationFlowTest {
     @Test
     fun `default selection and inherited key changes reach existing collectors and fresh requests together`() = runTest {
         val (repository, settings, resolver) = fixture()
-        val vision = model("vision", multimodal = true).copy(apiKey = "")
+        val vision = model("vision", multimodal = true).copy(baseUrl = SILICON_FLOW_LLM_ENDPOINT, apiKey = "")
         repository.saveModel(vision)
         val snapshots = Channel<EffectiveModelConfiguration>(Channel.UNLIMITED)
         backgroundScope.launch(UnconfinedTestDispatcher(testScheduler)) {

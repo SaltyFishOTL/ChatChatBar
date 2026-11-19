@@ -852,8 +852,7 @@ class ManageViewModel : ViewModel() {
 
     fun saveSiliconFlowApiKey(apiKey: String) {
         viewModelScope.launch {
-            val current = settingsRepository.getAppSettings()
-            settingsRepository.saveAppSettings(current.copy(siliconFlowApiKey = apiKey.trim()))
+            settingsRepository.setSiliconFlowApiKey(apiKey.trim())
             _apiTestStatus.value = "API Key 已保存"
         }
     }
@@ -883,6 +882,7 @@ class ManageViewModel : ViewModel() {
                 val current = settingsRepository.getAppSettings().copy(
                     modelConfigurationMode = ModelConfigurationMode.CUSTOM_API,
                     siliconFlowApiKey = apiKey.trim(),
+                    siliconFlowLlmAccountId = null,
                     allowCleartextModelApi = allowCleartextModelApi
                 )
                 val chat = modelResolver.defaultChatModel(current)

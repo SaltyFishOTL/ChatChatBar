@@ -9,6 +9,17 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.JsonObject
 
+/** Legacy inline LLM secrets stay on this device even while secure migration is pending. */
+internal fun llmCredentialRedaction(relative: String, fields: List<String>): String? {
+    if (!relative.startsWith("entities/") || fields.size != 1) return null
+    val type = relative.removePrefix("entities/").substringBefore('/').removeSuffix(".json")
+    val field = fields.single()
+    return "\"\"".takeIf {
+        (type == "app_settings" && field == "siliconFlowApiKey") ||
+            (type in setOf("model_configs", "retrieval_model_config") && field == "apiKey")
+    }
+}
+
 data class BackupSettingOption(val id: String, val label: String, val group: String, val fields: Set<String> = emptySet())
 
 /** Product choices; hidden compatibility flags travel with their owning settings. */
@@ -19,11 +30,11 @@ object BackupSettingOptions {
         field("defaultModelId", "默认聊天模型", "模型与连接"),
         field("defaultImageModelId", "默认视觉模型", "模型与连接"),
         field("modelConfigurationMode", "模型配置方式", "模型与连接", "presetDefaultModelKey"),
-        field("siliconFlowApiKey", "硅基流动密钥", "模型与连接"),
+        field("siliconFlowApiKey", "硅基流动默认账户绑定", "模型与连接", "siliconFlowLlmAccountId"),
         field("allowCleartextModelApi", "允许本地 HTTP 模型", "模型与连接"),
         field("experimentalApiModeEnabled", "实验模式", "模型与连接"),
         field("defaultEmbeddingId", "默认向量模型", "模型与连接"),
-        BackupSettingOption("models", "全部模型配置与密钥", "模型与连接"),
+        BackupSettingOption("models", "全部模型配置", "模型与连接"),
         BackupSettingOption("embedding", "全部向量模型配置", "模型与连接"),
         field("defaultFormatCardId", "默认格式卡", "回复与记忆"),
         field("automaticFormatCheckEnabled", "自动格式检查", "回复与记忆"),
@@ -203,9 +214,15 @@ class BackupExportCatalog internal constructor(
         }.toSet()
         val formatIds = dependencies("defaultFormatCardId", "formatCardId") + if (chats.isNotEmpty()) sourceSettings?.strings("defaultFormatCardId").orEmpty() else emptySet()
         val worldIds = dependencies("worldBookIds", "boundWorldBookId", "extraWorldBookIds")
-        val modelIds = dependencies("modelId", "imageModelId", "defaultModelId", "defaultImageModelId", "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId") +
+        val modelIds = (dependencies("modelId", "imageModelId", "defaultModelId", "defaultImageModelId", "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId") +
             (if (chats.isNotEmpty() || selection.studioSettings || selection.moments) sourceSettings?.strings("defaultModelId").orEmpty() +
-                sourceSettings?.strings("defaultImageModelId").orEmpty() else emptySet())
+                sourceSettings?.strings("defaultImageModelId").orEmpty() else emptySet())).toMutableSet()
+        val storedModels = records.filter { it.type == "model_configs" }.associateBy { it.id }
+        val dependenciesToVisit = ArrayDeque(modelIds)
+        while (dependenciesToVisit.isNotEmpty()) {
+            val visual = storedModels[dependenciesToVisit.removeFirst()]?.string("visionModelId")
+            if (visual != null && modelIds.add(visual)) dependenciesToVisit.addLast(visual)
+        }
         val documentIds = cards.flatMap { it.strings("customDocuments.id") }.toSet()
         val selectedRecords = records.filter { record ->
             when (record.type) {
@@ -274,7 +291,8 @@ class BackupExportCatalog internal constructor(
             val fields = setOf("id", "sessionId", "messageId", "characterCardId", "name", "title", "displayTitleOverride",
                 "sourceId", "sourceType", "targetId", "modelId", "imageModelId", "defaultModelId", "defaultImageModelId",
                 "defaultFormatCardId", "formatCardId", "worldBookIds", "boundWorldBookId", "extraWorldBookIds",
-                "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId", "defaultEmbeddingId", "importedCharacterCardId", "fileName")
+                "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId", "visionModelId",
+                "defaultEmbeddingId", "importedCharacterCardId", "fileName")
             val records = BackupDataRegistry.entityFiles(root).map { file ->
                 checkActive()
                 val relative = file.relativeTo(root).invariantSeparatorsPath
