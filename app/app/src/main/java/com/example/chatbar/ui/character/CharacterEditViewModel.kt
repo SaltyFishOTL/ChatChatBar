@@ -2576,12 +2576,24 @@ class CharacterEditViewModel(
                 worldBookIds = selectedWorldBookIds.distinct(),
                 defaultFormatCardId = selectedDefaultFormatCardId,
                 characters = charactersList.map { it.copy(name = NamePolicy.normalize(it.name)) },
-                customDocuments = documentsList.toList()
+                customDocuments = documentsList.map { it.withoutIndexState() }
             ) != base.copy(
-                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(base.defaultImageNegativePrompt)
+                defaultImageNegativePrompt = PromptTemplates.effectiveCharacterNaiNegativePrompt(base.defaultImageNegativePrompt),
+                customDocuments = base.customDocuments.map { it.withoutIndexState() }
             )
         }
     }
+
+    // Indexing progress is derived state, matching the draft repository's conflict
+    // fingerprint. It must not turn an untouched editor into a new user draft.
+    private fun DocumentInfo.withoutIndexState(): DocumentInfo = copy(
+        contentHash = null,
+        indexedHash = null,
+        ragStatus = "",
+        ragChunkCount = 0,
+        ragIndexedAt = null,
+        ragError = null
+    )
 
     private fun hasNewCharacterInput(): Boolean =
         name.isNotBlank() || botName.isNotBlank() || greeting.isNotBlank() || alternateGreetings.any(String::isNotBlank) ||

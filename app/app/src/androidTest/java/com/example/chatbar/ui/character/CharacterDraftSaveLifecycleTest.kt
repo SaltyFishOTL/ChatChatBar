@@ -8,9 +8,11 @@ import com.example.chatbar.BuildConfig
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.CharacterCard
+import com.example.chatbar.data.local.entity.DocumentInfo
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.repository.EditorDraftRepository
 import java.util.UUID
+import java.io.File
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +34,7 @@ class CharacterDraftSaveLifecycleTest {
     private lateinit var app: ChatBarApp
     private val stores = mutableListOf<ViewModelStore>()
     private val cardIds = mutableListOf<String>()
+    private val files = mutableListOf<File>()
 
     @Before fun setup() = runBlocking<Unit> {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -48,6 +51,7 @@ class CharacterDraftSaveLifecycleTest {
             app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, it)
             app.characterRepository.delete(it)
         }
+        files.forEach { it.delete() }
     }
 
     @Test fun formalSaveDoesNotRecreateDraftWhenOpeningAnotherCard() = runBlocking<Unit> {
@@ -110,6 +114,36 @@ class CharacterDraftSaveLifecycleTest {
         assertEquals(other.name, app.characterRepository.getById(other.id)?.name)
     }
 
+    @Test fun derivedDocumentIndexUpdatesDoNotCreateADraftButRealDocumentEditsDo() = runBlocking<Unit> {
+        val file = File(app.filesDir, "synthetic-doc-${UUID.randomUUID()}.txt").also {
+            it.writeText("synthetic reference document")
+            files += it
+        }
+        val doc = DocumentInfo.create("original.txt", file.path, "txt")
+        val card = card(doc)
+        val vm = editor(card.id)
+        withContext(Dispatchers.Main) {
+            vm.documentsList[0] = doc.copy(contentHash = "derived-content-hash", indexedHash = "derived-index-hash",
+                ragStatus = "INDEXED", ragChunkCount = 4, ragIndexedAt = 123L, ragError = "derived status")
+            vm.scheduleDraftSave()
+        }
+        delay(1_100)
+        assertNull("Background index progress must not create a character draft",
+            coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        withContext(Dispatchers.Main) {
+            assertFalse(vm.hasLocalChanges)
+            vm.documentsList[0] = vm.documentsList[0].copy(fileName = "user-renamed.txt")
+            vm.scheduleDraftSave()
+        }
+        action { vm.saveDraftAndExit(it) }
+        val savedDoc = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+            .characterPayload!!.customDocuments.single()
+        assertEquals("user-renamed.txt", savedDoc.fileName)
+        assertEquals("derived-content-hash", savedDoc.contentHash)
+        assertEquals("original.txt", app.characterRepository.getById(card.id)?.customDocuments?.single()?.fileName)
+        assertEquals("synthetic reference document", file.readText())
+    }
+
     private suspend fun verifyCardSwitch(otherEdited: Boolean) = coroutineScope {
         val a = card()
         val b = card()
@@ -150,9 +184,9 @@ class CharacterDraftSaveLifecycleTest {
 
     private fun coldDrafts() = EditorDraftRepository(JsonFileStorage(app))
 
-    private suspend fun card(): CharacterCard = CharacterCard.create(
+    private suspend fun card(document: DocumentInfo? = null): CharacterCard = CharacterCard.create(
         "synthetic-${UUID.randomUUID()}", greeting = "synthetic main greeting"
-    ).copy(momentsEnabled = false).also {
+    ).copy(momentsEnabled = false, customDocuments = listOfNotNull(document)).also {
         cardIds += it.id
         app.characterRepository.save(it)
     }
