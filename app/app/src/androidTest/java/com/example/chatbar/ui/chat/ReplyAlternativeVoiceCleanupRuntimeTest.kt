@@ -129,7 +129,9 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val deletedVersion = if (legacy) versions.first() else versions.last()
         val retainedVersion = versions.firstOrNull { it.id != deletedVersion.id }
         val other = ChatMessage.create(session.id, MessageRole.ASSISTANT, "independent voice").let {
-            if (cancelAfterCommit) it.copy(createdAt = reply.createdAt - 1) else it
+            if (cancelAfterCommit) {
+                it.copy(createdAt = reply.createdAt - 1, orderKey = reply.orderKey - MESSAGE_ORDER_STEP)
+            } else it
         }
         fun voice(message: ChatMessage, version: String?, text: String, file: File) = GeneratedVoiceMessage(
             id = UUID.randomUUID().toString(), sessionId = session.id, messageId = message.id,
