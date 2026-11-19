@@ -61,7 +61,8 @@ class ChatHistoryActionProjectionTest {
             "She suggested B so we will wait quietly.",
             "She suggested A so we will wait quietly.",
             "a 然后静静地等待门口下一轮反应。",
-            "A然后静静地等待门口下一轮反应。"
+            "A然后静静地等待门口下一轮反应。",
+            "a　然后静静地等待门口下一轮反应。"
         )) {
             val user = message("u", MessageRole.USER, reference, 2)
             val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
@@ -72,6 +73,9 @@ class ChatHistoryActionProjectionTest {
             val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
             assertEquals("旁白\n", projection.project(assistant, source))
         }
+        val nameEndingInA = message("u", MessageRole.USER, "Maria 然后静静地等待门口下一轮反应。", 2)
+        val nameProjection = known(listOf(assistant, nameEndingInA), setOf(assistant.id, nameEndingInA.id))
+        assertEquals("旁白\n", nameProjection.project(assistant, source))
         val nineOptions = ('A'..'I').joinToString("\n") { "$it) Action $it" }
         val longMenu = assistant.copy(content = "旁白\n<choices>\n$nineOptions\n</choices>")
         val referenceI = message("u", MessageRole.USER, "She suggested I so we will wait quietly.", 2)

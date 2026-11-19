@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.chat
 
+import java.lang.Character.UnicodeScript
 import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
@@ -58,12 +59,33 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
 
         private fun hasAmbiguousLetterReference(text: String, seen: Set<Char>): Boolean {
             if (seen.isEmpty()) return false
-            if (('A' in seen || 'a' in seen) && aBeforeHan.containsMatchIn(text)) return true
+            if (('A' in seen || 'a' in seen) && hasAWithHanContinuation(text)) return true
             return ambiguousLetterLabel.findAll(text).any { match ->
                 val label = match.value.single()
                 if (label == 'a') label in seen
                 else seen.any { it.equals(label, ignoreCase = true) }
             }
+        }
+
+        // Check code points directly so Android's ICU and the desktop JVM use the same rule.
+        private fun hasAWithHanContinuation(text: String): Boolean {
+            for (index in text.indices) {
+                if (text[index] != 'a' && text[index] != 'A') continue
+                if (index > 0) {
+                    val previous = Character.codePointBefore(text, index)
+                    if (previous == '_'.code || Character.isDigit(previous) ||
+                        UnicodeScript.of(previous) == UnicodeScript.LATIN
+                    ) continue
+                }
+                var next = index + 1
+                while (next < text.length &&
+                    (text[next] == '\t' || Character.getType(text[next]) == Character.SPACE_SEPARATOR.toInt())
+                ) next++
+                if (next < text.length && UnicodeScript.of(Character.codePointAt(text, next)) == UnicodeScript.HAN) {
+                    return true
+                }
+            }
+            return false
         }
 
         /** Deliberately conservative lexical admission, not natural-language intent inference. */
@@ -85,8 +107,6 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
         private const val ambiguousLetters = "AaIi"
         private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
-        // The token may be adjacent to the Chinese continuation, including within a CJK sentence.
-        private val aBeforeHan = Regex("(?<![\\p{IsLatin}\\p{N}_])[Aa](?=\\h*\\p{IsHan})")
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
