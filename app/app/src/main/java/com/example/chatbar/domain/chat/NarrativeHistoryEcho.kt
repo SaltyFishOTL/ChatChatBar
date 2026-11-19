@@ -57,7 +57,7 @@ object NarrativeHistoryEcho {
             // While receiving deltas, withhold a potential closing tag until it can be classified.
             // At completion, only discard a truncated tag if its name already identifies it.
             val identifiable = suffix.startsWith("</历史回复") || suffix.startsWith("</聚焦模式")
-            if ((streaming || identifiable) && wrapper.closings.any { it.startsWith(suffix) } &&
+            if ((streaming || identifiable) && wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 literalRanges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
             ) {
                 return end.substring(0, lastTag).trimEnd()
