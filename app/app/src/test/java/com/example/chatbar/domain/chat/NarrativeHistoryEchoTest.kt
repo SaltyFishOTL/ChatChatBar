@@ -58,6 +58,38 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun preservesALeadingExampleWhenProseFollowsItsClosingTag() {
+        for (mode in ChatNarrativeMode.entries) {
+            val example = PromptTemplates.narrativeModeHistoryReply("标签里是一段示例。", mode)
+            val raw = " $example\n\n这里开始解释。"
+            assertEquals("标签里是一段示例。", NarrativeHistoryEcho.replyBody(example, streaming = true))
+            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, streaming = true))
+            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw))
+            assertEquals("$raw\n</历史回复>", NarrativeHistoryEcho.replyBody("$raw\n</历史回复>"))
+        }
+    }
+
+    @Test
+    fun inlineCodeDoesNotAffectPairingForEitherMode() {
+        for (mode in ChatNarrativeMode.entries) {
+            val opener = "<历史回复 模式=\"${mode.shortLabel}\">"
+            for (story in listOf(
+                "开头标记是 `$opener`，正文继续。",
+                "写成 ``例：`$opener` 或\n</历史回复>`` 后接正文。",
+                "转义的开头 \\` 保留，之后的 `$opener` 是代码。",
+                "在 `</历史回复>` 后继续叙述。"
+            )) {
+                val raw = PromptTemplates.narrativeModeHistoryReply(story, mode)
+                assertEquals(story, NarrativeHistoryEcho.replyBody(raw, streaming = true))
+                assertEquals(story, NarrativeHistoryEcho.replyBody(raw))
+            }
+            val differentParagraph = "$opener\n未闭合的 `\n\n$opener\n</历史回复>\n一个 ` 示例"
+            val expected = differentParagraph.substringAfter('\n')
+            assertEquals(expected, NarrativeHistoryEcho.replyBody(differentParagraph))
+        }
+    }
+
+    @Test
     fun preservesIndentationThatMakesATagALiteralExample() {
         val wrapped = PromptTemplates.narrativeModeHistoryReply("示例", ChatNarrativeMode.FOCUS)
         for (indent in listOf("    ", "\t")) {
