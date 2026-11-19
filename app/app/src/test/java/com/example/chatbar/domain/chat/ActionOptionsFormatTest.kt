@@ -82,7 +82,9 @@ class ActionOptionsFormatTest {
             ActionOptionsFormat("> <cyoa>", "> </cyoa>", "下一步"),
             ActionOptionsFormat("<cyoa>", "</cyoa>", "</cyoa>"),
             ActionOptionsFormat("<cyoa> ```", "</cyoa>", "下一步"),
-            ActionOptionsFormat("<cyoa>", "</cyoa>", "下一步 ```")
+            ActionOptionsFormat("<cyoa>", "</cyoa>", "下一步 ```"),
+            ActionOptionsFormat("~~~choices", "~~~", "下一步 ```"),
+            ActionOptionsFormat("~~~choices ```", "~~~", "")
         )
         for (format in incompatible) {
             assertNotNull(format.toString(), RoleplayActionOptionsPolicy.validationError(format))
@@ -112,6 +114,9 @@ class ActionOptionsFormatTest {
             assertTrue(literal, RoleplayActionOptionsPolicy.blocks(literal).isEmpty())
             assertEquals(literal, RoleplayActionOptionsPolicy.withoutExplicitOptions(literal, declared))
         }
+        val ambiguous = "~~~choices\n1. 样例 ``` 继续\n2. 找向导\n~~~\n门口亮着灯。"
+        val tildeRule = ActionOptionsFormat("~~~choices", "~~~", "")
+        assertEquals(ambiguous, RoleplayActionOptionsPolicy.withoutExplicitOptions(ambiguous, tildeRule))
     }
 
     @Test

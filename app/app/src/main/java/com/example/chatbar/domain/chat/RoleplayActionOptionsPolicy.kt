@@ -38,16 +38,18 @@ object RoleplayActionOptionsPolicy {
         if (title == opening || title == closing || fenceMarker(title) != null) {
             return "区块标题不能同时作为围栏或开头、结尾标记"
         }
+        if ("```" in title) return "区块标题不能包含反引号围栏"
         val startFence = fenceMarker(opening)
         val endFence = fenceMarker(closing)
         if (startFence != null || endFence != null) {
             if (startFence == null || !startFence.isClosedBy(endFence) ||
                 (startFence.run.startsWith('`') && '`' in startFence.info)
             ) return "代码围栏须使用同一种符号，结尾不得带文字且不能比开头短"
+            if ("```" in startFence.info) return "代码围栏名称不能包含另一个围栏"
             if (startFence.info.isEmpty() && title.isEmpty()) return "没有名称的代码围栏须填写区块标题"
-        } else if (listOf(opening, closing, title).any { "```" in it }) {
+        } else if ("```" in opening || "```" in closing) {
             // The existing message parser also treats embedded backtick runs as code.
-            return "反引号围栏须独立成行，不能嵌入普通标记或标题"
+            return "反引号围栏须独立成行，不能嵌入普通标记"
         }
         if ((rule(opening) || rule(closing)) && title.isEmpty()) return "使用横线作为标记时，请填写区块标题"
         return null
@@ -121,6 +123,8 @@ object RoleplayActionOptionsPolicy {
             else if (first.info.isEmpty()) return null
         }
 
+        // A second fence inside an option would also change legacy speech segmentation.
+        if (body.any { "```" in it }) return null
         val options = parseBlockItems(body, format) ?: return null
         return RoleplayActionOptionsBlock(range, options)
     }
