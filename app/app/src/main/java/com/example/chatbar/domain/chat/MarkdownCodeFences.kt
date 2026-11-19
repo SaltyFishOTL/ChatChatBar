@@ -4,14 +4,14 @@ package com.example.chatbar.domain.chat
 object MarkdownCodeFences {
     private val fenceLine = Regex("^ {0,3}(`{3,}|~{3,})(.*)$")
     private val quotePrefix = Regex(" {0,3}>[ \\t]?")
-    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)]) {1,4}(?=[^ \\t\\r])")
+    private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])|[ \\t]*\\r?$)")
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
     private val headingOrUnderline = Regex("^ {0,3}(?:#{1,6}(?:[ \\t]|$)|[=-]+[ \\t]*$)")
 
     data class Block(val range: IntRange, val topLevel: Boolean)
 
     // A null indent identifies a block quote. A list item continues at its content indent.
-    private data class Container(val indent: Int? = null)
+    private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
     private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
         fun to(endExclusive: Int) = Block(start until endExclusive, topLevel)
     }
@@ -38,6 +38,7 @@ object MarkdownCodeFences {
             var continued = 0
             for (container in containers) {
                 cursor = continueContainer(line, cursor, container) ?: break
+                if (container.awaitingContent) containers[continued] = container.copy(awaitingContent = false)
                 continued++
             }
             if (continued < containers.size) {
@@ -55,11 +56,16 @@ object MarkdownCodeFences {
                         cursor = quote.range.last + 1
                     } else {
                         val list = listPrefix.matchAt(line, cursor) ?: break
-                        val marker = list.groupValues[1]
-                        if (marker.length == 1 && thematicBreak.matches(line.substring(cursor))) break
-                        if (paragraph && marker.length > 1 && marker.dropLast(1).toInt() != 1) break
+                        val marker = requireNotNull(list.groups[1])
+                        if (marker.value.length == 1 && thematicBreak.matches(line.substring(cursor))) break
                         val end = list.range.last + 1
-                        containers.add(Container(indent = end - cursor))
+                        val emptyItem = end == line.length
+                        if (paragraph && (emptyItem || marker.value.length > 1 && marker.value.dropLast(1).toInt() != 1)) {
+                            break
+                        }
+                        // An empty marker line sets the indent from the marker width, ignoring trailing spaces.
+                        val contentColumn = if (emptyItem) marker.range.last + 2 else end
+                        containers.add(Container(indent = contentColumn - cursor, awaitingContent = emptyItem))
                         cursor = end
                     }
                     paragraph = false
@@ -97,6 +103,8 @@ object MarkdownCodeFences {
     private fun continueContainer(line: String, start: Int, container: Container): Int? {
         val indent = container.indent
         if (indent == null) return quotePrefix.matchAt(line, start)?.range?.last?.plus(1)
+        // A second blank line ends an item that has not had any content yet.
+        if (container.awaitingContent && line.substring(start).isBlank()) return null
         val limit = start + indent
         if (limit <= line.length && (start until limit).all { line[it] == ' ' }) return limit
         return line.length.takeIf { line.substring(start).isBlank() }

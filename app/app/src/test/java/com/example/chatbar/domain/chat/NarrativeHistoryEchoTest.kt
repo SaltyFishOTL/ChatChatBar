@@ -156,4 +156,16 @@ class NarrativeHistoryEchoTest {
             assertEquals(paragraph, NarrativeHistoryEcho.replyBody("$opening\n$paragraph\n   $closing", streaming))
         }
     }
+
+    @Test
+    fun theRealClosingTagIsOutsideTheCodeUnderAnEmptyListMarker() {
+        val closing = "</历史回复>"
+        val story = "-   \n  ~~~text\n  $closing"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            for (streaming in listOf(false, true)) {
+                assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
+            }
+        }
+    }
 }
