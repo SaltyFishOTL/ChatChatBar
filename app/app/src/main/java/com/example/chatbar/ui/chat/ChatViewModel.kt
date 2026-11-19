@@ -2381,7 +2381,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             try {
                 fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+                val message = chatRepository.getMessage(messageId, sessionId)
+                if (message == null) {
+                    check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) { "消息已变化，请重新操作" }
+                    refreshMessages()
+                    return@launch
+                }
                 val changed = MessageAlternativeVersionPolicy.remove(message, versionId)
                 if (changed == null) {
                     deleteMessage(messageId, message)
@@ -3635,10 +3640,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 com.example.chatbar.domain.backup.LocalDataMaintenance.access {
                     coroutineContext.ensureActive()
                     withContext(NonCancellable) {
-                        if (deletedMessage != null) {
-                            check(chatRepository.deleteMessageIfUnchanged(deletedMessage)) { "消息已变化，请重新操作" }
-                        } else {
-                            chatRepository.deleteMessage(messageId, sessionId)
+                        check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, deletedMessage)) {
+                            "消息已变化，请重新操作"
                         }
                         removeDeletedMessageMedia(messageId, deletedMessage)
                     }

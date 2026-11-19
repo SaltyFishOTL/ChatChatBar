@@ -719,12 +719,16 @@ class ChatRepository(private val storage: JsonFileStorage) {
         deleteMessageLocked(messageId, sessionId)
     }
 
-    /** Last-candidate deletion cannot erase a newly edited or appended version. */
-    suspend fun deleteMessageIfUnchanged(expected: ChatMessage): Boolean = messageAppendMutex.withDataAccess {
-        if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
-        deleteMessageLocked(expected.id, expected.sessionId)
-        true
-    }
+    /** A stale action cannot erase an edited or restored message. */
+    suspend fun deleteMessageIfUnchanged(expected: ChatMessage): Boolean =
+        deleteMessageIfUnchanged(expected.id, expected.sessionId, expected)
+
+    suspend fun deleteMessageIfUnchanged(messageId: String, sessionId: String, expected: ChatMessage?): Boolean =
+        messageAppendMutex.withDataAccess {
+            if (getMessage(messageId, sessionId) != expected) return@withDataAccess false
+            deleteMessageLocked(messageId, sessionId)
+            true
+        }
 
     /** Restored messages and the chat background can refer to the same local file. */
     suspend fun deleteUnreferencedChatImages(paths: Collection<String>, deleteOwnedImage: (String) -> Unit) {

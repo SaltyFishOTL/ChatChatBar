@@ -133,8 +133,11 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
 
             assertTrue(directory.setWritable(true))
             assertTrue(File(directory, "${session.id}_${message.id}.json").delete())
-            repository.deleteMessage(message.id, session.id)
+            assertTrue(repository.deleteMessageIfUnchanged(message.id, session.id, null))
             assertTrue(repository.getMessages(session.id).isEmpty())
+            repository.replaceMessagesForSession(session.id, listOf(message))
+            assertFalse(repository.deleteMessageIfUnchanged(message.id, session.id, null))
+            assertEquals(message, repository.getMessage(message.id, session.id))
         } finally {
             directory.setWritable(true)
             root.deleteRecursively()
