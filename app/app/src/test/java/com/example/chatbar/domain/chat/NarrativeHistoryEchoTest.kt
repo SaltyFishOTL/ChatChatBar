@@ -135,4 +135,21 @@ class NarrativeHistoryEchoTest {
             assertEquals(topLevelCode, NarrativeHistoryEcho.replyBody("$opening\n$topLevelCode\n$closing", streaming))
         }
     }
+
+    @Test
+    fun quotesWithIndentedCodeAndListFencesDoNotCloseTheOuterWrapper() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (streaming in listOf(false, true)) {
+            for (story in listOf(
+                ">     $closing\n引用外的正文。",
+                "> >     $closing\n引用外的正文。",
+                "- ~~~text\n  $closing\n  ~~~\n列表外的正文。",
+                "2. ~~~text\n   $closing\n   ~~~\n列表外的正文。",
+                "- ~~~text\n  $closing\n> ~~~text\n> $closing\n> ~~~"
+            )) {
+                assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
+            }
+        }
+    }
 }

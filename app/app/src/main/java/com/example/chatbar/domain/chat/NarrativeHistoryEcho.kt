@@ -69,7 +69,7 @@ object NarrativeHistoryEcho {
     }
 
     private fun codeLiteralRanges(body: String): List<IntRange> {
-        val fences = MarkdownCodeFences.ranges(body, includeQuoted = true)
+        val fences = MarkdownCodeFences.ranges(body, includeContainers = true)
         if ('`' !in body) return fences
         val boundaries = (fences + paragraphBreak.findAll(body).map { it.range }.toList())
             .sortedBy { it.first }
@@ -109,7 +109,8 @@ object NarrativeHistoryEcho {
 
     private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
         val lineStart = text.lastIndexOf('\n', offset - 1) + 1
-        val indent = text.substring(lineStart, offset).takeWhile { it == ' ' || it == '\t' }
+        val contentStart = MarkdownCodeFences.quotePrefixAt(text, lineStart).end
+        val indent = text.substring(contentStart.coerceAtMost(offset), offset).takeWhile { it == ' ' || it == '\t' }
         return indent.length >= 4 || '\t' in indent
     }
 }
