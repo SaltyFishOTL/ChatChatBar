@@ -6,4 +6,8 @@ import kotlinx.serialization.Serializable
 data class LlmApiAccount(val id: String, val displayName: String, val baseUrl: String)
 
 /** A request-time credential. Keep it out of persisted model configurations and UI state. */
-class LlmApiConnection(val account: LlmApiAccount, val apiKey: String)
+class LlmApiConnection(
+    val account: LlmApiAccount,
+    val apiKey: String,
+    internal val legacySource: String? = null
+)

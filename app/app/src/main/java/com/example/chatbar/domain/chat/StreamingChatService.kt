@@ -47,6 +47,7 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.addModelApiAuthorization
+import com.example.chatbar.domain.redactModelApiKey
 import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
@@ -189,6 +190,12 @@ class StreamingChatService(
         .readTimeout(READ_TIMEOUT, TimeUnit.SECONDS)
         .writeTimeout(CONNECT_TIMEOUT, TimeUnit.SECONDS)
         .build()
+    private val accountClient = client.newBuilder().followRedirects(false).followSslRedirects(false).build()
+
+    private fun requestClient(model: ModelConfig, readTimeoutSeconds: Long? = null): OkHttpClient {
+        val selected = if (model.llmAccountId != null) accountClient else client
+        return readTimeoutSeconds?.let { selected.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: selected
+    }
 
     /**
      * 流式聊天补全
@@ -298,6 +305,10 @@ class StreamingChatService(
                     if (finalCompleted) {
                         com.example.chatbar.utils.DebugLogManager.completeRequest(mainLogId)
                     } else if (finalEvent is StreamEvent.Error) {
+                        finalEvent = finalEvent.copy(
+                            message = finalEvent.message.redactModelApiKey(modelConfig.apiKey),
+                            cause = finalEvent.cause?.withoutModelApiKey(modelConfig.apiKey)
+                        )
                         com.example.chatbar.utils.DebugLogManager.logError(mainLogId, finalEvent.message)
                     }
                     trySend(finalEvent)
@@ -408,7 +419,7 @@ class StreamingChatService(
                             append("流式请求失败")
                             if (response != null) {
                                 append(" (${response.code})")
-                                if (!body.isNullOrBlank()) append(": $body")
+                                if (!body.isNullOrBlank()) append(": ${body.redactModelApiKey(modelConfig.apiKey).take(2000)}")
                             }
                             if (t != null) {
                                 append(" - ${t.message}")
@@ -440,7 +451,7 @@ class StreamingChatService(
                     }
                 }
 
-                val eventSource = EventSources.createFactory(client)
+                val eventSource = EventSources.createFactory(requestClient(modelConfig))
                     .newEventSource(request, listener)
 
                 continuation.invokeOnCancellation {
@@ -519,9 +530,10 @@ class StreamingChatService(
             if (!closed.compareAndSet(false, true)) return
             graceJob?.cancel()
             inactivityJob?.cancel()
-            progress?.finish(logId, error.message ?: "请求失败")
-            DebugLogManager.logError(logId, error.message ?: error::class.java.simpleName, error.aiTaskFailureKind())
-            trySend(StreamEvent.Error(error.message ?: "AI 请求失败", error.aiTaskFailureKind(), error))
+            val safeError = error.withoutModelApiKey(modelConfig.apiKey)
+            progress?.finish(logId, safeError.message ?: "请求失败")
+            DebugLogManager.logError(logId, safeError.message ?: safeError::class.java.simpleName, error.aiTaskFailureKind())
+            trySend(StreamEvent.Error(safeError.message ?: "AI 请求失败", error.aiTaskFailureKind(), safeError))
             close()
             eventSource.cancel()
         }
@@ -600,7 +612,7 @@ class StreamingChatService(
                     } catch (error: Exception) {
                         DebugLogManager.appendResponseChunk(logId, data)
                         fail(eventSource, IllegalArgumentException(
-                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.take(2000)}",
+                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.redactModelApiKey(modelConfig.apiKey).take(2000)}",
                             error
                         ))
                         return
@@ -644,7 +656,7 @@ class StreamingChatService(
                     val body = runCatching { response?.body?.string() }.getOrNull()
                     val rejection = AiTaskRefusalPolicy.failure(text.toString(), finishReason, refused)
                     fail(eventSource, rejection ?: ModelRequestException(
-                        message = "流式文本补全失败${response?.code?.let { " ($it)" }.orEmpty()}: ${body?.take(2000) ?: t?.message.orEmpty()}",
+                        message = "流式文本补全失败${response?.code?.let { " ($it)" }.orEmpty()}: ${body?.redactModelApiKey(modelConfig.apiKey)?.take(2000) ?: t?.message.orEmpty()}",
                         httpStatus = response?.code,
                         traceId = response?.header("x-request-id") ?: response?.header("x-trace-id"),
                         retryAfterMillis = response?.header("Retry-After")?.toRetryAfterMillis(),
@@ -661,7 +673,7 @@ class StreamingChatService(
                 }
             }
         }
-        val requestClient = readTimeoutSeconds?.let { client.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: client
+        val requestClient = requestClient(modelConfig, readTimeoutSeconds)
         val eventSource = EventSources.createFactory(requestClient).newEventSource(request, listener)
         // Heartbeats/comments keep socket reads alive without advancing the model output.
         val inactivitySeconds = readTimeoutSeconds ?: READ_TIMEOUT
@@ -744,7 +756,7 @@ class StreamingChatService(
                 val request = Request.Builder().url(url).addModelApiAuthorization(modelConfig.apiKey)
                     .addHeader("Content-Type", "application/json")
                     .post(requestBody.toRequestBody(JSON_MEDIA_TYPE)).build()
-                val requestClient = readTimeoutSeconds?.let { client.newBuilder().readTimeout(it, TimeUnit.SECONDS).build() } ?: client
+                val requestClient = requestClient(modelConfig, readTimeoutSeconds)
                 val call = requestClient.newCall(request)
                 continuation.invokeOnCancellation { call.cancel() }
                 call.enqueue(object : Callback {
@@ -759,7 +771,7 @@ class StreamingChatService(
                                 val raw = response.body?.string().orEmpty()
                                 if (!continuation.isActive) return
                                 if (!response.isSuccessful) continuation.resumeWithException(ModelRequestException(
-                                    "文本补全失败 (${response.code}): ${raw.take(2000)}",
+                                    "文本补全失败 (${response.code}): ${raw.redactModelApiKey(modelConfig.apiKey).take(2000)}",
                                     httpStatus = response.code,
                                     traceId = response.header("x-request-id") ?: response.header("x-trace-id"),
                                     retryAfterMillis = response.header("Retry-After")?.toRetryAfterMillis()
@@ -780,7 +792,7 @@ class StreamingChatService(
             parsePromptCacheUsage(body)?.let { DebugLogManager.recordPromptCacheUsage(logId, it) }
             AiTaskRefusalPolicy.failure("", finishReason, refused)?.let { throw it }
             if (finishReason == "length") throw ModelResponseTruncatedException()
-            val content = parseNonStreamResponse(body, experimentalApiMode)
+            val content = parseNonStreamResponse(body, experimentalApiMode, modelConfig.apiKey)
             if (experimentalApiMode) {
                 val responseMessage = (json.parseToJsonElement(body) as? JsonObject)?.get("choices")
                     ?.let { it as? JsonArray }?.firstOrNull()?.let { it as? JsonObject }?.get("message") as? JsonObject
@@ -794,8 +806,9 @@ class StreamingChatService(
             DebugLogManager.completeRequest(logId)
             return content
         } catch (error: Throwable) {
-            DebugLogManager.logError(logId, error.message ?: error::class.java.simpleName, error.aiTaskFailureKind())
-            throw error
+            val safeError = error.withoutModelApiKey(modelConfig.apiKey)
+            DebugLogManager.logError(logId, safeError.message ?: safeError::class.java.simpleName, error.aiTaskFailureKind())
+            throw safeError
         }
     }
 
@@ -1022,7 +1035,7 @@ class StreamingChatService(
     }
 
     /** 从非流式响应解析完整回复内容 */
-    private fun parseNonStreamResponse(body: String, experimentalApiMode: Boolean = false): String {
+    private fun parseNonStreamResponse(body: String, experimentalApiMode: Boolean, apiKey: String): String {
         val obj = json.decodeFromString<JsonObject>(body)
         val message = obj["choices"]?.jsonArray?.firstOrNull()
             ?.jsonObject?.get("message")
@@ -1056,7 +1069,7 @@ class StreamingChatService(
         val outputText = obj["output_text"]?.jsonPrimitive?.contentOrNull
         if (outputText != null) return outputText
 
-        throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
+        throw RuntimeException("无法解析响应内容。Raw body: ${body.redactModelApiKey(apiKey).take(2000)}")
     }
 
     private fun parseFinishReason(body: String): String? = runCatching {
@@ -1097,6 +1110,26 @@ class ModelRequestException(
     val isAuthenticationFailure: Boolean get() = httpStatus == 401 || httpStatus == 403
     val isRetryable: Boolean get() = httpStatus == null || httpStatus in setOf(408, 425, 429) ||
         (httpStatus != null && httpStatus in 500..599)
+}
+
+private fun Throwable.withoutModelApiKey(apiKey: String): Throwable {
+    if (apiKey.isBlank()) return this
+    val requestError = this as? ModelRequestException
+    val safeTraceId = requestError?.traceId?.redactModelApiKey(apiKey)
+    val messages = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
+    var current: Throwable? = this
+    while (current != null && messages.add(current)) {
+        val text = current.message.orEmpty()
+        if (text != text.redactModelApiKey(apiKey)) break
+        current = current.cause
+    }
+    if (current == null && safeTraceId == requestError?.traceId) return this
+    return ModelRequestException(
+        message.orEmpty().redactModelApiKey(apiKey).ifBlank { "AI 请求失败" },
+        httpStatus = requestError?.httpStatus,
+        traceId = safeTraceId,
+        retryAfterMillis = requestError?.retryAfterMillis
+    )
 }
 
 internal const val MODEL_OUTPUT_TRUNCATED_MESSAGE =

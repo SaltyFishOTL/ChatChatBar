@@ -21,5 +21,6 @@ internal fun isSiliconFlowLlmEndpoint(value: String): Boolean {
 internal fun LlmApiAccountRepository.requireValidModelBinding(model: ModelConfig): ModelConfig {
     val id = model.llmAccountId ?: return model
     val account = connection(id)?.account ?: throw IllegalArgumentException("所选对话 API 账户不存在或不可用，请重新选择")
+    require(canonicalLlmApiEndpoint(model.baseUrl) == account.baseUrl) { "模型与所选账户的 API 地址不匹配，请重新选择账户" }
     return model.copy(baseUrl = account.baseUrl, apiKey = "")
 }

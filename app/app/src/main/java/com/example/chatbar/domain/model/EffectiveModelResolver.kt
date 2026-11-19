@@ -146,7 +146,7 @@ class EffectiveModelResolver(
                     id = presetRef(it.modelKey),
                     displayName = it.displayName,
                     baseUrl = presets.catalog.baseUrl,
-                    apiKey = effectivePresetApiKey(appSettings),
+                    apiKey = unboundLlmApiKey("", presets.catalog.baseUrl, appSettings),
                     modelName = it.modelName,
                     dimensions = it.dimensions
                 )
@@ -171,9 +171,7 @@ class EffectiveModelResolver(
         }
 
     internal fun unboundLlmApiKey(modelKey: String, baseUrl: String, appSettings: AppSettings): String =
-        modelKey.trim().ifEmpty {
-            effectivePresetApiKey(appSettings).takeIf { isSiliconFlowLlmEndpoint(baseUrl) }.orEmpty()
-        }
+        resolveEffectiveModelApiKey(modelKey, baseUrl, appSettings, effectivePresetApiKey(appSettings))
 
     private fun presetChatModels(appSettings: AppSettings): List<ModelConfig> {
         val configured = presets.catalog.chatModels.filter { it.selectableForChat && isConfigured(it) }
@@ -187,7 +185,7 @@ class EffectiveModelResolver(
         id = presetRef(modelKey),
         displayName = displayName,
         baseUrl = presets.catalog.baseUrl,
-        apiKey = effectivePresetApiKey(appSettings),
+        apiKey = unboundLlmApiKey("", presets.catalog.baseUrl, appSettings),
         modelName = modelName,
         selectableForChat = selectableForChat,
         isMultimodal = isMultimodal,
@@ -217,9 +215,7 @@ class EffectiveModelResolver(
     }
 
     private fun EmbeddingConfig.withEffectiveApiKey(appSettings: AppSettings): EmbeddingConfig =
-        copy(apiKey = resolveEffectiveModelApiKey(
-            apiKey, baseUrl, appSettings.copy(siliconFlowApiKey = effectivePresetApiKey(appSettings))
-        ))
+        copy(apiKey = unboundLlmApiKey(apiKey, baseUrl, appSettings))
 
     private fun EmbeddingConfig.hasConfiguredAuthentication(appSettings: AppSettings): Boolean =
         isModelAuthenticationConfigured(baseUrl, apiKey, appSettings.allowCleartextModelApi)
@@ -289,12 +285,12 @@ internal fun modelConfigurationStatus(
 internal fun resolveEffectiveModelApiKey(
     modelApiKey: String,
     baseUrl: String,
-    appSettings: AppSettings
+    appSettings: AppSettings,
+    presetApiKey: String = appSettings.siliconFlowApiKey
 ): String {
     val localKey = modelApiKey.trim()
     if (localKey.isNotEmpty()) return localKey
-    if (appSettings.allowCleartextModelApi && baseUrl.isCleartextHttpUrl()) return ""
-    return appSettings.siliconFlowApiKey.trim()
+    return presetApiKey.trim().takeIf { isSiliconFlowLlmEndpoint(baseUrl) }.orEmpty()
 }
 
 internal fun isModelAuthenticationConfigured(

@@ -9,6 +9,7 @@ import java.net.InetSocketAddress
 import java.net.Proxy
 import java.net.ProxySelector
 import java.net.URI
+import kotlinx.serialization.json.JsonPrimitive
 
 object ProxyAwareClient {
 
@@ -93,4 +94,12 @@ internal fun Request.Builder.addModelApiAuthorization(apiKey: String): Request.B
     apiKey.trim()
         .takeIf(String::isNotEmpty)
         ?.let { addHeader("Authorization", "Bearer $it") }
+}
+
+/** Provider errors may repeat the Authorization header, including as a JSON-escaped string. */
+internal fun String.redactModelApiKey(apiKey: String): String {
+    val key = apiKey.trim()
+    if (key.isEmpty()) return this
+    val jsonKey = JsonPrimitive(key).toString().removeSurrounding("\"")
+    return replace(jsonKey, "<redacted>").replace(key, "<redacted>")
 }

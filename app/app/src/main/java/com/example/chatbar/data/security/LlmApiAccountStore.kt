@@ -31,7 +31,7 @@ internal class LlmApiAccountStore(
     private val file = AtomicFile(File(context.noBackupFilesDir, filename))
 
     @Serializable
-    private data class Entry(val account: LlmApiAccount, val apiKey: String)
+    private data class Entry(val account: LlmApiAccount, val apiKey: String, val legacySource: String? = null)
 
     override fun read(): List<LlmApiConnection> {
         val encrypted = try {
@@ -50,7 +50,7 @@ internal class LlmApiAccountStore(
         val plaintext = cipher.doFinal(encrypted, IV_BYTES, encrypted.size - IV_BYTES)
         return try {
             Json.decodeFromString<List<Entry>>(plaintext.decodeToString()).map { entry ->
-                LlmApiConnection(entry.account, entry.apiKey)
+                LlmApiConnection(entry.account, entry.apiKey, entry.legacySource)
             }
         } finally {
             plaintext.fill(0)
@@ -61,7 +61,9 @@ internal class LlmApiAccountStore(
         val cipher = Cipher.getInstance(TRANSFORMATION)
         cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKey())
         check(cipher.iv.size == IV_BYTES)
-        val plaintext = Json.encodeToString(connections.map { Entry(it.account, it.apiKey) }).encodeToByteArray()
+        val plaintext = Json.encodeToString(connections.map {
+            Entry(it.account, it.apiKey, it.legacySource)
+        }).encodeToByteArray()
         val encrypted = try {
             cipher.iv + cipher.doFinal(plaintext)
         } finally {

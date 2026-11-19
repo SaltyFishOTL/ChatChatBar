@@ -21,6 +21,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.addModelApiAuthorization
+import com.example.chatbar.domain.redactModelApiKey
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -93,7 +94,11 @@ class EmbeddingService(
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    continuation.resumeWithException(EmbeddingException("Embedding 请求失败: ${e.message}", e))
+                    val detail = e.message.orEmpty()
+                    val safeDetail = detail.redactModelApiKey(config.apiKey)
+                    continuation.resumeWithException(EmbeddingException(
+                        "Embedding 请求失败: $safeDetail", e.takeIf { detail == safeDetail }
+                    ))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
@@ -101,13 +106,17 @@ class EmbeddingService(
                         response.use {
                             val body = it.body?.string() ?: throw EmbeddingException("空响应体")
                             if (!it.isSuccessful) {
-                                throw EmbeddingException("API 错误 (${it.code}): $body")
+                                throw EmbeddingException("API 错误 (${it.code}): ${body.redactModelApiKey(config.apiKey)}")
                             }
                             parseEmbeddingsResponse(body)
                         }
                     }.recoverCatching { error ->
                         throw if (error is EmbeddingException) error
-                        else EmbeddingException("Embedding 请求失败: ${error.message}", error)
+                        else {
+                            val detail = error.message.orEmpty()
+                            val safeDetail = detail.redactModelApiKey(config.apiKey)
+                            EmbeddingException("Embedding 请求失败: $safeDetail", error.takeIf { detail == safeDetail })
+                        }
                     }
                     continuation.resumeWith(result)
                 }

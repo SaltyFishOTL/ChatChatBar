@@ -213,7 +213,7 @@ class ModelRepository(
             catalog.chatModels.forEach { preset ->
                 val stableId = PRESET_MODEL_ID_PREFIX + preset.modelKey
                 val existing = current.firstOrNull { it.sourcePresetKey == preset.modelKey || it.id == stableId }
-                val next = if (existing != null && !overwriteExisting) {
+                val next = if (existing != null && (!overwriteExisting || existing.llmAccountId != null)) {
                     existing
                 } else {
                     preset.toModelConfig(
@@ -257,10 +257,7 @@ class ModelRepository(
         formatPromptPosition = existing?.formatPromptPosition ?: FormatPromptPosition.BOTH,
         sourcePresetKey = modelKey,
         sourcePresetVersion = catalogVersion,
-        createdAt = existing?.createdAt ?: 0L,
-        llmAccountId = existing?.takeIf {
-            canonicalLlmApiEndpoint(it.baseUrl) == canonicalLlmApiEndpoint(catalog.baseUrl)
-        }?.llmAccountId
+        createdAt = existing?.createdAt ?: 0L
     )
 
     private suspend fun upsertPresetEmbeddingModel(

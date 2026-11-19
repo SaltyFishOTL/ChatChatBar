@@ -54,7 +54,7 @@ class LlmApiAccountRepository internal constructor(private val vault: LlmApiAcco
     suspend fun update(id: String, displayName: String, apiKey: String?) = mutate {
         val old = connection(id) ?: error("对话 API 账户不存在")
         val account = old.account.copy(displayName = name(displayName))
-        commit(connections + (id to LlmApiConnection(account, apiKey?.let(::credential) ?: old.apiKey)))
+        commit(connections + (id to LlmApiConnection(account, apiKey?.let(::credential) ?: old.apiKey, old.legacySource)))
     }
 
     internal suspend fun remove(id: String) = mutate {
@@ -70,16 +70,11 @@ class LlmApiAccountRepository internal constructor(private val vault: LlmApiAcco
     ): LlmApiAccount = mutate {
         val endpoint = endpoint(baseUrl)
         val key = credential(apiKey)
-        // The secret is never used to generate an identifier.
-        val slots = generateSequence(0) { it + 1 }
-        val id = slots.map { index ->
-            UUID.nameUUIDFromBytes("chatbar:legacy-llm:$source:$index".encodeToByteArray()).toString()
-        }.first { id ->
-            val prior = connection(id)
-            prior == null || (prior.account.baseUrl == endpoint && prior.apiKey == key)
+        val prior = connections.values.firstOrNull {
+            it.legacySource == source && it.account.baseUrl == endpoint && it.apiKey == key
         }
-        connection(id)?.account ?: LlmApiAccount(id, name(displayName), endpoint).also { account ->
-            commit(connections + (id to LlmApiConnection(account, key)))
+        prior?.account ?: LlmApiAccount(UUID.randomUUID().toString(), name(displayName), endpoint).also { account ->
+            commit(connections + (account.id to LlmApiConnection(account, key, source)))
         }
     }
 
@@ -94,13 +89,22 @@ class LlmApiAccountRepository internal constructor(private val vault: LlmApiAcco
     }
 
     private fun commit(next: Map<String, LlmApiConnection>) {
-        vault.write(next.values.toList())
-        // Verify the same durable contents are readable before callers clear a legacy key.
-        val saved = vault.read().associateBy { it.account.id }
-        check(next.keys == saved.keys && next.all { (id, value) ->
-            saved[id]?.let { it.account == value.account && it.apiKey == value.apiKey } == true
-        }) { "无法读取已保存的对话 API 账户" }
-        publish(saved)
+        try {
+            vault.write(next.values.toList())
+            // Verify durable contents before clearing the legacy key.
+            val saved = vault.read().associateBy { it.account.id }
+            check(next.keys == saved.keys && next.all { (id, value) ->
+                saved[id]?.let {
+                    it.account == value.account && it.apiKey == value.apiKey && it.legacySource == value.legacySource
+                } == true
+            }) { "无法读取已保存的对话 API 账户" }
+            publish(saved)
+        } catch (error: Exception) {
+            // The write may have reached disk. Reload before another mutation.
+            loaded = false
+            _loadError.value = true
+            throw error
+        }
     }
 
     private fun publish(next: Map<String, LlmApiConnection>) {

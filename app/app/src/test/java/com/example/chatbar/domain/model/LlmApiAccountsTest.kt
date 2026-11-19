@@ -6,6 +6,8 @@ import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.EmbeddingConfig
 import com.example.chatbar.data.local.entity.LlmApiConnection
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.PresetChatModel
+import com.example.chatbar.data.local.entity.PresetModelCatalog
 import com.example.chatbar.data.repository.LlmApiAccountRepository
 import com.example.chatbar.data.repository.ModelRepository
 import com.example.chatbar.data.repository.SettingsRepository
@@ -96,6 +98,63 @@ class LlmApiAccountsTest {
         assertFalse(instance.settings.siliconFlowMigrationPending.value)
     }
 
+    @Test fun `another device's backup cannot attach identical legacy slots to local keys`() = runTest {
+        val firstDevice = Fixture(temp.newFolder())
+        val otherDevice = Fixture(temp.newFolder())
+        for ((fixture, key) in listOf(firstDevice to "synthetic-local", otherDevice to "synthetic-remote")) {
+            fixture.writeModel(model("same-model-id", SILICON_FLOW_LLM_ENDPOINT, key))
+            fixture.writeModel(model("bundled", SILICON_FLOW_LLM_ENDPOINT, ""))
+            fixture.writeSettings(AppSettings(defaultModelId = "same-model-id", siliconFlowApiKey = "$key-global"))
+            fixture.open()
+        }
+        val localModel = firstDevice.readModel("same-model-id")!!
+        val remoteModel = otherDevice.readModel("same-model-id")!!
+        val localSettings = firstDevice.readSettings()!!
+        val remoteSettings = otherDevice.readSettings()!!
+        assertNotEquals(localModel.llmAccountId, remoteModel.llmAccountId)
+        assertNotEquals(localSettings.siliconFlowLlmAccountId, remoteSettings.siliconFlowLlmAccountId)
+        assertEquals("", remoteModel.apiKey)
+        assertEquals("", remoteSettings.siliconFlowApiKey)
+
+        firstDevice.writeModel(remoteModel)
+        firstDevice.writeSettings(remoteSettings)
+        val restored = firstDevice.open()
+        assertEquals("", restored.resolver.auxiliaryChatModel("same-model-id")?.apiKey)
+        assertEquals("", restored.resolver.auxiliaryChatModel("same-model-id")?.baseUrl)
+        assertEquals("", restored.resolver.auxiliaryChatModel("bundled")?.apiKey)
+        assertEquals("", restored.resolver.effectivePresetApiKey(restored.settings.getAppSettings()))
+        assertNull(restored.resolver.embeddingModel())
+        assertEquals("synthetic-local", restored.accounts.connection(localModel.llmAccountId!!)?.apiKey)
+        assertEquals("synthetic-local-global", restored.accounts.connection(localSettings.siliconFlowLlmAccountId!!)?.apiKey)
+    }
+
+    @Test fun `restoring preset does not redirect a model already bound to a named account`() = runTest {
+        val data = Fixture(temp.newFolder())
+        val instance = data.open()
+        val account = instance.accounts.create("Shared", "https://llm.example/v1", "synthetic-own")
+        val bound = model("existing", account.baseUrl, "").copy(
+            sourcePresetKey = "preset", llmAccountId = account.id, visionModelId = "explicit-vision"
+        )
+        instance.models.saveModel(bound)
+        val presets = PresetModelCatalog(chatModels = listOf(PresetChatModel("preset", "Default", "preset-model")))
+        assertEquals(listOf(bound), instance.models.restorePresetChatModels(presets, 1))
+        assertEquals(bound, data.readModel(bound.id))
+        assertEquals("synthetic-own", instance.resolver.auxiliaryChatModel(bound.id)?.apiKey)
+    }
+
+    @Test fun `SiliconFlow credential never authenticates third party vector endpoints`() = runTest {
+        val data = Fixture(temp.newFolder())
+        data.writeSettings(AppSettings(siliconFlowApiKey = "synthetic-silicon", allowCleartextModelApi = true))
+        val instance = data.open()
+        val bundled = instance.models.getEmbeddingModel()!!
+        instance.models.saveEmbeddingModel(bundled.copy(baseUrl = "https://vectors.example/v1"))
+        assertNull(instance.resolver.embeddingModel())
+        instance.models.saveEmbeddingModel(bundled.copy(baseUrl = "https://vectors.example/v1", apiKey = "synthetic-vectors"))
+        assertEquals("synthetic-vectors", instance.resolver.embeddingModel()?.apiKey)
+        instance.models.saveEmbeddingModel(bundled.copy(baseUrl = "http://localhost:4567/v1"))
+        assertEquals("", instance.resolver.embeddingModel()?.apiKey)
+    }
+
     @Test fun `two named keys can share an endpoint while models link by stable ID`() = runTest {
         val data = Fixture(temp.newFolder())
         val instance = data.open()
@@ -160,7 +219,7 @@ class LlmApiAccountsTest {
             val settings = SettingsRepository(storage, accounts)
             models.initialize()
             models.saveEmbeddingModel(EmbeddingConfig(
-                id = "embedding", displayName = "Embedding", baseUrl = "https://embeddings.example/v1",
+                id = "embedding", displayName = "Embedding", baseUrl = SILICON_FLOW_LLM_ENDPOINT,
                 apiKey = "", modelName = "embedding-model", dimensions = 8
             ))
             settings.initialize()
