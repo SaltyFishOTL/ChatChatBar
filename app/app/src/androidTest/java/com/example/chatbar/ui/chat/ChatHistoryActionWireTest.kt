@@ -84,6 +84,10 @@ class ChatHistoryActionWireTest {
             assertTrue(wire.contains("a) Read the map"))
             assertTrue(contents.contains(lowerReference))
         }
+        verify("declared-uppercase-menu-lowercase-reference", listOf(letterChoices), lowerReference) { wire, contents ->
+            assertTrue(wire.contains("A) Read the map"))
+            assertTrue(contents.contains(lowerReference))
+        }
     }
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {
         for (exclude in listOf(true, false)) {

@@ -41,11 +41,7 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 if (message.role == MessageRole.USER) {
                     val content = message.displayContent
                     if (message.images.isNotEmpty() || mayReferToEarlierChoices(content) ||
-                        (ambiguousLabelsSeen.isNotEmpty() && ambiguousLetterLabel.findAll(content).any { match ->
-                            val label = match.value.single()
-                            if (label == 'a') label in ambiguousLabelsSeen
-                            else ambiguousLabelsSeen.any { it.equals(label, ignoreCase = true) }
-                        })
+                        hasAmbiguousLetterReference(content, ambiguousLabelsSeen)
                     ) last = index
                 } else if (message.role == MessageRole.ASSISTANT && ambiguousLabelsSeen.size < ambiguousLetters.length) {
                     val format = message.displayActionOptionsFormat
@@ -58,6 +54,16 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 }
             }
             return last
+        }
+
+        private fun hasAmbiguousLetterReference(text: String, seen: Set<Char>): Boolean {
+            if (seen.isEmpty()) return false
+            if (('A' in seen || 'a' in seen) && aBeforeHan.containsMatchIn(text)) return true
+            return ambiguousLetterLabel.findAll(text).any { match ->
+                val label = match.value.single()
+                if (label == 'a') label in seen
+                else seen.any { it.equals(label, ignoreCase = true) }
+            }
         }
 
         /** Deliberately conservative lexical admission, not natural-language intent inference. */
@@ -79,6 +85,8 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
         private const val ambiguousLetters = "AaIi"
         private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
+        // The token may be adjacent to the Chinese continuation, including within a CJK sentence.
+        private val aBeforeHan = Regex("(?<![\\p{IsLatin}\\p{N}_])[Aa](?=\\h*\\p{IsHan})")
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
