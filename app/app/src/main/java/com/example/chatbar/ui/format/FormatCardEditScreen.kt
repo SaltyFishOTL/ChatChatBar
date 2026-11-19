@@ -361,8 +361,15 @@ private fun ActionOptionsFormatEditor(
             "用独立成行的 --- 包住【行动选项】标题和 1.、2. 等连续编号。也支持原来的长横线。",
             style = ChatBarTheme.typography.caption
         )
+        CbText(
+            "旧卡的行动代码围栏也可识别，围栏名称或区内首行须明确写出行动标题。",
+            style = ChatBarTheme.typography.caption
+        )
     } else {
-        CbText("开头和结尾各占一行。使用普通横线时须填写标题。", style = ChatBarTheme.typography.caption)
+        CbText(
+            "开头和结尾各占一行。使用横线或无名称的代码围栏时须填写标题。",
+            style = ChatBarTheme.typography.caption
+        )
         CbField(label = "区块开头", error = error) {
             CbInput(format.opening, { onChange(format.copy(opening = it)) }, placeholder = "例如 <cyoa>")
         }
