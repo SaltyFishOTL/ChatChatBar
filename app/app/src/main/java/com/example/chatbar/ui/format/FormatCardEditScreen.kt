@@ -357,7 +357,10 @@ private fun ActionOptionsFormatEditor(
         )
     }
     if (format == null) {
-        CbText("默认识别由横线、行动选项标题和连续数字组成的区块。", style = ChatBarTheme.typography.caption)
+        CbText(
+            "用独立成行的 --- 包住【行动选项】标题和 1.、2. 等连续编号。也支持原来的长横线。",
+            style = ChatBarTheme.typography.caption
+        )
     } else {
         CbText("开头和结尾各占一行。使用普通横线时须填写标题。", style = ChatBarTheme.typography.caption)
         CbField(label = "区块开头", error = error) {
@@ -380,7 +383,13 @@ private fun ActionOptionsFormatEditor(
         }
     }
     CbField(label = "粘贴回复预览") {
-        CbInput(sample, { sample = it }, singleLine = false, minLines = 3)
+        CbInput(
+            sample,
+            { sample = it },
+            placeholder = if (format == null) "---\n【行动选项】\n1. 去图书馆\n2. 回旅店\n---" else "",
+            singleLine = false,
+            minLines = 3
+        )
     }
     if (sample.isNotBlank()) {
         val options = remember(sample, format) { RoleplayActionOptionsPolicy.blocks(sample, format).flatMap { it.options } }

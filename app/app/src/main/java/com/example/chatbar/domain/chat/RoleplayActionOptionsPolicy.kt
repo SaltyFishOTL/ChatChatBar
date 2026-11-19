@@ -34,7 +34,7 @@ object RoleplayActionOptionsPolicy {
         if (content.isBlank()) return emptyList()
         val codeRanges = parseRoleplayTextSegments(content).filter {
             it.kind == RoleplaySegmentKind.STATUS && it.rawText.trimStart().startsWith("```")
-        }.map { it.start until it.endExclusive }
+        }.map { it.start until it.endExclusive } + MarkdownCodeFences.ranges(content)
 
         val literal = format ?: defaultFormat
         val ranges = literalRanges(content, literal, codeRanges)
@@ -43,6 +43,7 @@ object RoleplayActionOptionsPolicy {
             if (codeRanges.any { it.overlaps(range) }) return@mapNotNull null
             val lines = content.substring(range).lineSequence().filter(String::isNotBlank).toList()
             if (lines.size < 4) return@mapNotNull null
+            if (isCodeIndented(lines.first()) || isCodeIndented(lines.last())) return@mapNotNull null
             val literalBoundary = lines.first().trim() == literal.opening.trim() &&
                 lines.last().trim() == literal.closing.trim()
             if (!literalBoundary && (format != null || !rule(lines.first()) || !rule(lines.last()))) {
@@ -133,6 +134,11 @@ object RoleplayActionOptionsPolicy {
     }
 
     private fun IntRange.overlaps(other: IntRange): Boolean = first <= other.last && other.first <= last
+
+    private fun isCodeIndented(line: String): Boolean {
+        val prefix = line.takeWhile { it == ' ' || it == '\t' }
+        return prefix.length >= 4 || '\t' in prefix
+    }
 }
 
 data class ActionOptionInsertion(val text: String, val cursor: Int)

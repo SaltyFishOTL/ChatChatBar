@@ -29,6 +29,18 @@ class ActionOptionsFormatTest {
     }
 
     @Test
+    fun markdownCodeExamplesRemainLiteralText() {
+        val plain = "---\n【行动选项】\n1. 查地图\n2. 找向导\n---"
+        val indented = plain.lineSequence().joinToString("\n") { "    $it" }
+        for (literal in listOf("~~~text\n$plain\n~~~", "~~~text\n$plain", indented)) {
+            assertTrue(RoleplayActionOptionsPolicy.blocks(literal).isEmpty())
+            assertEquals(literal, RoleplayActionOptionsPolicy.withoutExplicitOptions(literal))
+        }
+        val afterExample = "~~~text\n$plain\n~~~\n$plain"
+        assertEquals(1, RoleplayActionOptionsPolicy.blocks(afterExample).size)
+    }
+
+    @Test
     fun customRuleRoundTripsAndRemainsBoundToItsReplyVersion() {
         val formatCard = FormatCardPackage(name = "冒险样本", content = "按场景接续", actionOptionsFormat = custom)
         val codec = Json { ignoreUnknownKeys = true }
