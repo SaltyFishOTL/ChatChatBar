@@ -66,7 +66,7 @@ class ChatHistoryActionProjectionTest {
         }
         val independent = message("u", MessageRole.USER, "I'll open a window while we're waiting nearby.", 2)
         val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
-        assertEquals("旁白", projection.project(assistant, source))
+        assertEquals("旁白\n", projection.project(assistant, source))
     }
 
     @Test fun `unreliable list narration code and legacy status projection keep their separate semantics`() {
