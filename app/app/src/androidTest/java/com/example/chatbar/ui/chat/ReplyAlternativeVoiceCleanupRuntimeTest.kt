@@ -2,6 +2,7 @@ package com.example.chatbar.ui.chat
 
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
+import androidx.lifecycle.viewModelScope
 import androidx.test.core.app.ApplicationProvider
 import android.content.ContextWrapper
 import com.example.chatbar.ChatBarApp
@@ -30,6 +31,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingInactiveLegacyVersionResolvesOwnershipBeforeRemoval() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
+    @Test fun lastVersionDeletionFinishesVoiceCleanupAfterEditorCancellation() = verify(last = true, cancelAfterCommit = true)
     @Test fun deletingLastVersionKeepsAudioReferencedByIndependentMessage() = verify(last = true, sharedAudio = true)
     @Test fun deletingLastVersionReportsCleanupFailureWithoutCrashing() = verify(last = true, cleanupFailure = true)
     @Test fun deletingOneVersionReportsCleanupFailureAfterRefreshingMessage() = verify(cleanupFailure = true)
@@ -94,7 +96,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     private fun verify(
         legacy: Boolean = false, sharedAudio: Boolean = false, last: Boolean = false,
         missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false,
-        cleanupFailure: Boolean = false, viaSegmentEdit: Boolean = false
+        cleanupFailure: Boolean = false, viaSegmentEdit: Boolean = false, cancelAfterCommit: Boolean = false
     ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
@@ -126,7 +128,9 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val versions = MessageAlternativeVersionPolicy.versions(reply)
         val deletedVersion = if (legacy) versions.first() else versions.last()
         val retainedVersion = versions.firstOrNull { it.id != deletedVersion.id }
-        val other = ChatMessage.create(session.id, MessageRole.ASSISTANT, "independent voice")
+        val other = ChatMessage.create(session.id, MessageRole.ASSISTANT, "independent voice").let {
+            if (cancelAfterCommit) it.copy(createdAt = reply.createdAt - 1) else it
+        }
         fun voice(message: ChatMessage, version: String?, text: String, file: File) = GeneratedVoiceMessage(
             id = UUID.randomUUID().toString(), sessionId = session.id, messageId = message.id,
             messageVersionId = version, sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
@@ -140,8 +144,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         try {
             app.characterRepository.save(card)
             app.chatRepository.createSession(session)
-            app.chatRepository.addMessage(reply)
-            app.chatRepository.addMessage(other)
+            val ordered = if (cancelAfterCommit) listOf(other, reply) else listOf(reply, other)
+            ordered.forEach { app.chatRepository.addMessage(it) }
             for (v in versions) app.voiceMessageRepository.ensureAnchorsForVersion(reply, v.id, v.content)
             app.voiceMessageRepository.ensureAnchors(other)
             app.voiceMessageRepository.save(removedVoice)
@@ -153,21 +157,40 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
             }
             withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
-            withContext(Dispatchers.Main) {
-                if (viaSegmentEdit) {
-                    vm.editMessageSegment(reply.id, 0, reply.displayContent.length, "")
-                } else {
-                    vm.deleteMessageAlternative(reply.id, if (missing) "does-not-exist" else deletedVersion.id)
-                }
+            val cancelledAfterDelete = CompletableDeferred<Unit>()
+            if (cancelAfterCommit) {
+                assertEquals(reply.displayContent, app.chatRepository.getSession(session.id)?.lastMessagePreview)
             }
-            if (missing) {
-                withTimeout(15_000) { vm.messageActionError.first { it != null } }
-            } else {
-                withTimeout(15_000) { vm.messages.first { rows ->
-                    val current = rows.firstOrNull { it.id == reply.id }
-                    if (last) current == null else current != null &&
-                        MessageAlternativeVersionPolicy.versions(current).none { it.id == deletedVersion.id }
-                } }
+            val watcher = if (cancelAfterCommit) launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                app.chatRepository.sessions.first { rows ->
+                    rows.any { it.id == session.id && it.lastMessagePreview == other.displayContent }
+                }
+                vm.viewModelScope.cancel()
+                cancelledAfterDelete.complete(Unit)
+            } else null
+            try {
+                withContext(Dispatchers.Main) {
+                    if (viaSegmentEdit) {
+                        vm.editMessageSegment(reply.id, 0, reply.displayContent.length, "")
+                    } else {
+                        vm.deleteMessageAlternative(reply.id, if (missing) "does-not-exist" else deletedVersion.id)
+                    }
+                }
+                if (cancelAfterCommit) {
+                    withTimeout(15_000) { cancelledAfterDelete.await() }
+                    // A backup started now must wait for any in-flight data mutation.
+                    LocalDataMaintenance.acquire().close()
+                } else if (missing) {
+                    withTimeout(15_000) { vm.messageActionError.first { it != null } }
+                } else {
+                    withTimeout(15_000) { vm.messages.first { rows ->
+                        val current = rows.firstOrNull { it.id == reply.id }
+                        if (last) current == null else current != null &&
+                            MessageAlternativeVersionPolicy.versions(current).none { it.id == deletedVersion.id }
+                    } }
+                }
+            } finally {
+                watcher?.cancel()
             }
             val cold = VoiceMessageRepository(JsonFileStorage(app))
             val coldVoices = cold.listForSession(session.id)
