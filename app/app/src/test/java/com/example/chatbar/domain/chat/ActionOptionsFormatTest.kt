@@ -208,4 +208,21 @@ class ActionOptionsFormatTest {
         assertEquals("我准备\n找向导\n找向导\n出门", repeated.text)
         assertEquals("等一等\n再出门", insertActionOption("等一等", null, "再出门").text)
     }
+
+    @Test
+    fun repairDistinguishesAClosingLineFromAnOptionEndingInTheSameMarker() {
+        val format = ActionOptionsFormat("[ACTIONS]", "[END-ACTIONS]", "下一步")
+        val partial = "营地很安静。\n[ACTIONS]\n下一步\n1. 查地图\n2. 核对日志标记 [END-ACTIONS]"
+        val complete = "$partial\n[END-ACTIONS]"
+        assertTrue(RoleplayActionOptionsPolicy.blocks(partial, format).isEmpty())
+        val repaired = RoleplayActionOptionsPolicy.completeTrailingBlock(partial, format)
+        assertEquals(complete, repaired)
+        assertEquals(
+            listOf("查地图", "核对日志标记 [END-ACTIONS]"),
+            RoleplayActionOptionsPolicy.blocks(repaired, format).single().options.map { it.text }
+        )
+        for (unchanged in listOf("$complete\r\n ", "$partial\n已经开始行动。", "纯旁白 [END-ACTIONS]")) {
+            assertEquals(unchanged, RoleplayActionOptionsPolicy.completeTrailingBlock(unchanged, format))
+        }
+    }
 }

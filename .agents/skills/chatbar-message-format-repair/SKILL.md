@@ -31,6 +31,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Send only applicable format rules and the full assistant message. Do not inherit ordinary chat context.
 - Treat an exact trimmed `[[CHATBAR_FORMAT_OK]]` response as unchanged and keep any possible streamed marker prefix out of the message preview.
 - Skip automatic repair when no format rule exists. Make manual unavailability visible.
+- Complete a missing action-block closing line before comparing the source and repaired options. A marker at the end of an option is still option text, and only a standalone marker closes the block.
 
 ## Mutation Invariants
 

@@ -165,10 +165,11 @@ object RoleplayActionOptionsPolicy {
 
     /** Only restore a missing closing line when the declared opener and every option are present. */
     fun completeTrailingBlock(content: String, format: ActionOptionsFormat?): String {
-        val active = format ?: defaultFormat
+        val closing = (format ?: defaultFormat).closing.trim()
         val last = content.trimEnd()
-        if (last.endsWith(active.closing.trim())) return content
-        val candidate = last + "\n" + active.closing.trim()
+        val lastLine = last.substringAfterLast('\n')
+        if (!isCodeIndented(lastLine) && lastLine.trim() == closing) return content
+        val candidate = "$last\n$closing"
         val tail = blocks(candidate, format).lastOrNull() ?: return content
         return if (tail.range.last == candidate.lastIndex) candidate else content
     }

@@ -105,6 +105,27 @@ class ChatHistoryActionProjectionTest {
         assertFalse(q.project(reliable, earlier).contains("STATUS_STAYS"))
     }
 
+    @Test fun `attached Chinese labels and English order references keep the source menu`() {
+        val letters = "旁白\n<choices>\nA) 查地图\nB) 问向导\nC) 等一会儿\n</choices>"
+        val assistant = message("a", MessageRole.ASSISTANT, letters, 1)
+            .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
+        for (reference in listOf(
+            "我同意B方案，先检查营地周边。",
+            "我同意b　方案，先检查营地周边。",
+            "Please carry out the penultimate plan quietly."
+        )) {
+            val user = message("u", MessageRole.USER, reference, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            assertEquals(reference, letters, projection.project(assistant, letters))
+            assertEquals(reference, projection.project(user, reference))
+        }
+        for (narration in listOf("我看见B站门口有几个人在等车。", "我看见LAB方案的标牌旁边有一扇门。")) {
+            val user = message("u", MessageRole.USER, narration, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            assertEquals(narration, "旁白\n", projection.project(assistant, letters))
+        }
+    }
+
     @Test fun `trusted regeneration without a current user may still have older users in its candidate universe`() {
         val old = message("u", MessageRole.USER, "我推开木门，走到窗边观察街上的雨。", 1)
         val a = message("a", MessageRole.ASSISTANT, options, 2)
