@@ -6,12 +6,17 @@ object MarkdownCodeFences {
     private val quotePrefix = Regex(" {0,3}>[ \\t]?")
     private val listPrefix = Regex(" {0,3}([-+*]|[0-9]{1,9}[.)])(?: {1,4}(?=[^ \\t\\r])|[ \\t]*\\r?$)")
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
-    private val headingOrUnderline = Regex("^ {0,3}(?:#{1,6}(?:[ \\t]|$)|[=-]+[ \\t]*$)")
+    private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
+    private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
 
     data class Block(val range: IntRange, val topLevel: Boolean)
 
     // A null indent identifies a block quote. A list item continues at its content indent.
-    private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
+    private data class Container(
+        val indent: Int? = null,
+        val listDelimiter: Char? = null,
+        val awaitingContent: Boolean = false
+    )
     private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
         fun to(endExclusive: Int) = Block(start until endExclusive, topLevel)
     }
@@ -31,20 +36,24 @@ object MarkdownCodeFences {
         var offset = 0
         var open: Fence? = null
         var paragraph = false
-        for (line in content.splitToSequence('\n')) {
+        for (rawLine in content.splitToSequence('\n')) {
             val start = offset
-            offset += line.length + 1
+            offset += rawLine.length + 1
+            val line = expandTabs(rawLine)
             var cursor = 0
             var continued = 0
+            var dedentedParagraph: Container? = null
             for (container in containers) {
                 cursor = continueContainer(line, cursor, container) ?: break
                 if (container.awaitingContent) containers[continued] = container.copy(awaitingContent = false)
                 continued++
             }
             if (continued < containers.size) {
+                val endedContainers = containers.subList(continued, containers.size)
+                if (paragraph) dedentedParagraph = endedContainers.first()
                 open?.let { add(it.to(start)) }
                 open = null
-                containers.subList(continued, containers.size).clear()
+                endedContainers.clear()
                 paragraph = false
             }
 
@@ -60,15 +69,22 @@ object MarkdownCodeFences {
                         if (marker.value.length == 1 && thematicBreak.matches(line.substring(cursor))) break
                         val end = list.range.last + 1
                         val emptyItem = end == line.length
-                        if (paragraph && (emptyItem || marker.value.length > 1 && marker.value.dropLast(1).toInt() != 1)) {
+                        val delimiter = marker.value.last()
+                        // A marker may be a lazy continuation unless it starts a sibling item in the same list.
+                        val interruptsParagraph = paragraph ||
+                            (dedentedParagraph != null && dedentedParagraph.listDelimiter != delimiter)
+                        if (interruptsParagraph &&
+                            (emptyItem || marker.value.length > 1 && marker.value.dropLast(1).toInt() != 1)
+                        ) {
                             break
                         }
                         // An empty marker line sets the indent from the marker width, ignoring trailing spaces.
                         val contentColumn = if (emptyItem) marker.range.last + 2 else end
-                        containers.add(Container(indent = contentColumn - cursor, awaitingContent = emptyItem))
+                        containers.add(Container(contentColumn - cursor, delimiter, awaitingContent = emptyItem))
                         cursor = end
                     }
                     paragraph = false
+                    dedentedParagraph = null
                 }
             }
 
@@ -77,8 +93,10 @@ object MarkdownCodeFences {
             val existing = open
             if (match == null) {
                 if (existing == null) {
-                    paragraph = remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
-                        !headingOrUnderline.containsMatchIn(remainder)
+                    val startsIndentedCode = !paragraph && remainder.startsWith("    ")
+                    val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
+                    paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
+                        !endsSetextHeading && !heading.containsMatchIn(remainder)
                 }
                 continue
             }
@@ -93,7 +111,7 @@ object MarkdownCodeFences {
             } else if (marker[0] == existing.marker[0] &&
                 marker.length >= existing.marker.length && rest.isBlank()
             ) {
-                add(existing.to(start + line.length))
+                add(existing.to(start + rawLine.length))
                 open = null
             }
         }
@@ -108,5 +126,14 @@ object MarkdownCodeFences {
         val limit = start + indent
         if (limit <= line.length && (start until limit).all { line[it] == ' ' }) return limit
         return line.length.takeIf { line.substring(start).isBlank() }
+    }
+
+    private fun expandTabs(line: String): String {
+        if ('\t' !in line) return line
+        return buildString(line.length) {
+            for (character in line) {
+                if (character == '\t') repeat(4 - length % 4) { append(' ') } else append(character)
+            }
+        }
     }
 }

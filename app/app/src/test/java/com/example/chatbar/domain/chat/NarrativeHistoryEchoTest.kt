@@ -160,11 +160,18 @@ class NarrativeHistoryEchoTest {
     @Test
     fun theRealClosingTagIsOutsideTheCodeUnderAnEmptyListMarker() {
         val closing = "</历史回复>"
-        val story = "-   \n  ~~~text\n  $closing"
+        val stories = listOf(
+            "-   \n  ~~~text\n  $closing",
+            "    普通代码\n-\n  ~~~text\n  $closing",
+            "-\n \t~~~text\n  $closing\n  ~~~",
+            "> 说明文字\n+\n  ~~~text\n$closing\n  ~~~"
+        )
         for (mode in ChatNarrativeMode.entries) {
             val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
             for (streaming in listOf(false, true)) {
-                assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
+                for (story in stories) {
+                    assertEquals(story, NarrativeHistoryEcho.replyBody("$opening\n$story\n$closing", streaming))
+                }
             }
         }
     }
