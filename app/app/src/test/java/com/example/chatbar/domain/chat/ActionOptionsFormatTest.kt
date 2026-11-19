@@ -240,4 +240,26 @@ class ActionOptionsFormatTest {
         assertTrue(RoleplayActionOptionsPolicy.blocks(nestedFence, fenceFormat).isEmpty())
         assertEquals(listOf("去门口", "等候"), RoleplayActionOptionsPolicy.blocks(fenceMenu, fenceFormat).single().options.map { it.text })
     }
+
+    @Test
+    fun actionFencesUnderEmptyListMarkersStayLiteral() {
+        val format = ActionOptionsFormat("```action options", "```", "")
+        val topLevel = "```action options\n1. example one\n2. example two\n```"
+        for ((marker, indent) in listOf("-" to 2, "- " to 2, "-     " to 2, "-\t" to 2, "12.  " to 4, "  +" to 4)) {
+            val prefix = " ".repeat(indent)
+            val nested = topLevel.lineSequence().joinToString("\n") { "$prefix$it" }
+            val literal = "$marker\n$nested"
+            assertTrue(marker, RoleplayActionOptionsPolicy.blocks(literal).isEmpty())
+            assertTrue(marker, RoleplayActionOptionsPolicy.blocks(literal, format).isEmpty())
+            assertEquals(marker, literal, RoleplayActionOptionsPolicy.withoutExplicitOptions(literal))
+            val unfinished = literal.substringBeforeLast('\n')
+            assertEquals(marker, unfinished, RoleplayActionOptionsPolicy.completeTrailingBlock(unfinished, format))
+        }
+
+        val indentedTopLevel = topLevel.lineSequence().joinToString("\n") { "  $it" }
+        for (outer in listOf(topLevel, "-\n$topLevel", "-\n\n$indentedTopLevel", "正文\n*\n$indentedTopLevel")) {
+            assertEquals(outer, listOf("example one", "example two"),
+                RoleplayActionOptionsPolicy.blocks(outer, format).single().options.map { it.text })
+        }
+    }
 }

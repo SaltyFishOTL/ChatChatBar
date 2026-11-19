@@ -111,7 +111,7 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         private const val ambiguousLetters = "AaIi"
         private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
         private val hanMenuLetter = Regex(
-            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:方案|计划|路线)|" +
+            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:的[ \\t　]*)?(?:方案|计划|路线)|" +
                 "(?:同意|赞成|接受)[ \\t　]*([A-Ta-t])[ \\t　]*(?=$|[,，、.。:：;；!！?？]|并|然后|再)"
         )
         private val reference = Regex(

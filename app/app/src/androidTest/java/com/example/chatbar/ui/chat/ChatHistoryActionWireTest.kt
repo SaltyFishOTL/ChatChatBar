@@ -89,6 +89,32 @@ class ChatHistoryActionWireTest {
             assertTrue(contents.contains(lowerReference))
         }
     }
+    @Test fun possessiveLetterReferenceKeepsOnlyARealSourceInTheRequest() {
+        val menu = row(MessageRole.ASSISTANT, "山路边有一块路牌。\n<choices>\nA) Read the map\nB) Follow the mountain path\n</choices>")
+            .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
+        for (label in listOf("B", "C")) {
+            val input = "我赞成${label}的方案，今天沿着山路向前探索。"
+            verify("possessive-letter-$label", listOf(menu), input) { wire, contents ->
+                assertEquals(label == "B", wire.contains("B) Follow the mountain path"))
+                assertTrue(wire.contains("山路边有一块路牌。"))
+                assertTrue(contents.contains(input))
+            }
+        }
+    }
+
+    @Test fun listCodeUnderAnEmptyMarkerStaysInTheActualRequest() {
+        val literal = row(MessageRole.ASSISTANT, "- \n  ```action options\n  1. LIST_CODE_A\n  2. LIST_CODE_B\n  ```")
+        val topLevel = row(MessageRole.ASSISTANT, "场景保留。\n```action options\n1. TOP_LEVEL_A\n2. TOP_LEVEL_B\n```")
+        verify("empty-list-code", listOf(literal, u(), topLevel), independent, exclude = false) { wire, contents ->
+            assertTrue(wire.contains("LIST_CODE_A"))
+            assertTrue(wire.contains("LIST_CODE_B"))
+            assertFalse(wire.contains("TOP_LEVEL_A"))
+            assertFalse(wire.contains("TOP_LEVEL_B"))
+            assertTrue(wire.contains("场景保留。"))
+            assertTrue(contents.contains(independent))
+        }
+    }
+
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {
         for (exclude in listOf(true, false)) {
             verify("historical-$exclude", listOf(u(), a("OLD"), u("2"), a("NEW")), independent, exclude = exclude) { wire, contents ->
