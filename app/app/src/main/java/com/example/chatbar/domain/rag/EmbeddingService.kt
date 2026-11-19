@@ -21,7 +21,6 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.put
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.addModelApiAuthorization
-import com.example.chatbar.domain.redactModelApiKey
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -71,6 +70,7 @@ class EmbeddingService(
         config: EmbeddingConfig
     ): List<List<Float>> = withContext(Dispatchers.IO) {
         if (texts.isEmpty()) return@withContext emptyList()
+        val captureProviderText = config.apiKey.isBlank()
 
         val baseUrl = config.baseUrl.trimEnd('/')
         val url = "$baseUrl/embeddings"
@@ -94,29 +94,28 @@ class EmbeddingService(
             continuation.invokeOnCancellation { call.cancel() }
             call.enqueue(object : Callback {
                 override fun onFailure(call: Call, e: IOException) {
-                    val detail = e.message.orEmpty()
-                    val safeDetail = detail.redactModelApiKey(config.apiKey)
-                    continuation.resumeWithException(EmbeddingException(
-                        "Embedding 请求失败: $safeDetail", e.takeIf { detail == safeDetail }
-                    ))
+                    val detail = if (captureProviderText) e.message.orEmpty() else "请检查网络、代理及向量模型的 API 地址"
+                    continuation.resumeWithException(EmbeddingException("向量请求失败：$detail", e.takeIf { captureProviderText }))
                 }
 
                 override fun onResponse(call: Call, response: Response) {
                     val result = runCatching {
                         response.use {
-                            val body = it.body?.string() ?: throw EmbeddingException("空响应体")
                             if (!it.isSuccessful) {
-                                throw EmbeddingException("API 错误 (${it.code}): ${body.redactModelApiKey(config.apiKey)}")
+                                val detail = if (captureProviderText) {
+                                    it.body?.string()?.take(2000)
+                                } else if (it.code == 401 || it.code == 403) {
+                                    "请检查向量模型的 API Key 和访问权限"
+                                } else null
+                                throw EmbeddingException("向量请求失败 (HTTP ${it.code})" + detail?.let { "：$it" }.orEmpty())
                             }
+                            val body = it.body?.string() ?: throw EmbeddingException("空响应体")
                             parseEmbeddingsResponse(body)
                         }
                     }.recoverCatching { error ->
                         throw if (error is EmbeddingException) error
-                        else {
-                            val detail = error.message.orEmpty()
-                            val safeDetail = detail.redactModelApiKey(config.apiKey)
-                            EmbeddingException("Embedding 请求失败: $safeDetail", error.takeIf { detail == safeDetail })
-                        }
+                        else if (captureProviderText) EmbeddingException("向量请求失败：${error.message}", error)
+                        else EmbeddingException("向量模型响应格式不兼容")
                     }
                     continuation.resumeWith(result)
                 }

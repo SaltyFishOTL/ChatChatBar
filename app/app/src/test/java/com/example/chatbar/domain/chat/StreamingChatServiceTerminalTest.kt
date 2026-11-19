@@ -1,6 +1,8 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.EmbeddingConfig
+import com.example.chatbar.domain.rag.EmbeddingService
 import com.example.chatbar.utils.DebugLogManager
 import java.net.InetAddress
 import java.net.ServerSocket
@@ -18,34 +20,41 @@ import org.junit.Test
 class StreamingChatServiceTerminalTest {
     @Test
     fun `provider errors do not expose the current Authorization key`() = runBlocking {
-        val key = "synthetic-reflected-key"
-        val escapedKey = key.map { "\\u%04x".format(it.code) }.joinToString("")
-        val responseBody = """{"error":{"message":"Invalid Authorization: Bearer $key / $escapedKey; check access"}}"""
         val messages = listOf(ChatApiMessage.text("user", "hello"))
-        for (transport in listOf("chat", "text", "nonstream")) {
-            SseTestServer(emptyList(), "401 Unauthorized", responseBody).use { server ->
-                val model = model(server.baseUrl).copy(apiKey = key, llmAccountId = "test-account")
-                val error = withTimeout(5_000) {
-                    when (transport) {
-                        "chat" -> service().streamChat("error", messages, model).toList()
-                            .filterIsInstance<StreamEvent.Error>().single().message
-                        "text" -> service().streamText(messages, model).toList()
-                            .filterIsInstance<StreamEvent.Error>().single().message
-                        else -> runCatching { service().completeText(messages, model) }.exceptionOrNull()?.message.orEmpty()
+        // Resolved defaults and pending legacy inline migrations can both carry a key without an account ID.
+        val credentials = listOf(
+            "synthetic-named" to "test-account",
+            "synthetic-effective-default" to null,
+            "synthetic-pending-migration" to null
+        )
+        for ((key, accountId) in credentials) {
+            val escapedKey = key.map { "\\u%04x".format(it.code) }.joinToString("")
+            val response = """{"error":{"message":"Invalid Authorization: Bearer $key / $escapedKey; check access"}}"""
+            for (transport in listOf("chat", "text", "nonstream")) {
+                SseTestServer(emptyList(), "401 Unauthorized", response).use { server ->
+                    val model = model(server.baseUrl).copy(apiKey = key, llmAccountId = accountId)
+                    val error = withTimeout(5_000) {
+                        when (transport) {
+                            "chat" -> service().streamChat("error", messages, model).toList()
+                                .filterIsInstance<StreamEvent.Error>().single().message
+                            "text" -> service().streamText(messages, model).toList()
+                                .filterIsInstance<StreamEvent.Error>().single().message
+                            else -> runCatching { service().completeText(messages, model) }.exceptionOrNull()?.message.orEmpty()
+                        }
                     }
+                    assertTrue(error.contains("401"))
+                    assertTrue(error.contains("API Key"))
+                    assertFalse(error.contains("check access"))
+                    assertFalse(error.contains(key))
+                    assertFalse(error.contains(escapedKey))
+                    assertEquals("Bearer $key", server.authorization)
                 }
-                assertTrue(error.contains("401"))
-                assertTrue(error.contains("API Key"))
-                assertFalse(error.contains("check access"))
-                assertFalse(error.contains(key))
-                assertFalse(error.contains(escapedKey))
-                assertEquals("Bearer $key", server.authorization)
             }
         }
     }
 
     @Test
-    fun `named account parser errors and request logs exclude raw provider content`() = runBlocking {
+    fun `authenticated parser errors and request logs exclude raw provider content even without an account ID`() = runBlocking {
         val key = "synthetic-provider-echo"
         val session = "account-invalid-provider-chunk"
         val messages = listOf(ChatApiMessage.text("user", "hello"))
@@ -55,7 +64,7 @@ class StreamingChatServiceTerminalTest {
         )
         try {
             SseTestServer(payloads).use { server ->
-                val model = model(server.baseUrl).copy(apiKey = key, llmAccountId = "test-account")
+                val model = model(server.baseUrl).copy(apiKey = key)
                 val events = withTimeout(5_000) { service().streamChat(session, messages, model).toList() }
                 assertEquals("normal visible reply", events.filterIsInstance<StreamEvent.Delta>().single().text)
                 val error = events.filterIsInstance<StreamEvent.Error>().single()
@@ -68,6 +77,34 @@ class StreamingChatServiceTerminalTest {
             }
         } finally {
             DebugLogManager.clearLogs(session)
+        }
+    }
+
+    @Test
+    fun `authenticated embedding failures omit the provider body while anonymous access stays usable`() = runBlocking {
+        val key = "synthetic-inherited-vectors"
+        val body = """{"error":{"message":"invalid Authorization Bearer $key"}}"""
+        for (configKey in listOf(key, "")) {
+            SseTestServer(emptyList(), "401 Unauthorized", body).use { server ->
+                val config = EmbeddingConfig("vec", "Vec", server.baseUrl, configKey, "vectors", 1)
+                val error = withTimeout(5_000) {
+                    runCatching { EmbeddingService { true }.getEmbedding("sample", config) }.exceptionOrNull()
+                }
+                assertTrue(error?.message.orEmpty().contains("401"))
+                if (configKey.isNotEmpty()) {
+                    assertEquals("Bearer $key", server.authorization)
+                    assertFalse(error?.message.orEmpty().contains(key))
+                    assertTrue(error?.message.orEmpty().contains("API Key"))
+                } else {
+                    assertEquals(null, server.authorization)
+                    assertTrue(error?.message.orEmpty().contains("invalid Authorization"))
+                }
+            }
+        }
+        SseTestServer(emptyList(), "200 OK", """{"data":[{"index":0,"embedding":[0.5]}]}""").use { server ->
+            val config = EmbeddingConfig("vec", "Vec", server.baseUrl, "", "vectors", 1)
+            assertEquals(listOf(0.5f), withTimeout(5_000) { EmbeddingService { true }.getEmbedding("sample", config) })
+            assertEquals(null, server.authorization)
         }
     }
 

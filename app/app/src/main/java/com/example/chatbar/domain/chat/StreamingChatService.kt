@@ -49,7 +49,6 @@ import okhttp3.Response
 import okhttp3.sse.EventSource
 import com.example.chatbar.domain.ProxyAwareClient
 import com.example.chatbar.domain.addModelApiAuthorization
-import com.example.chatbar.domain.redactModelApiKey
 import com.example.chatbar.domain.model.GeminiOpenAiEndpoint
 import okhttp3.sse.EventSourceListener
 import okhttp3.sse.EventSources
@@ -220,7 +219,7 @@ class StreamingChatService(
         onReplyCompletion: (ChatReplyCompletion) -> Unit = {}
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
-        val captureProviderText = modelConfig.llmAccountId == null
+        val captureProviderText = modelConfig.apiKey.isBlank()
         var retryCount = 0
         var shouldStop = false
 
@@ -314,10 +313,6 @@ class StreamingChatService(
                     if (finalCompleted) {
                         com.example.chatbar.utils.DebugLogManager.completeRequest(mainLogId)
                     } else if (finalEvent is StreamEvent.Error) {
-                        finalEvent = finalEvent.copy(
-                            message = finalEvent.message.redactModelApiKey(modelConfig.apiKey),
-                            cause = finalEvent.cause?.withoutModelApiKey(modelConfig.apiKey)
-                        )
                         DebugLogManager.logError(mainLogId, finalEvent.message, finalEvent.failureKind)
                     }
                     trySend(finalEvent)
@@ -488,7 +483,7 @@ class StreamingChatService(
         isolatedTaskParameters: Boolean = false,
         responseFormatJson: Boolean = false
     ): Flow<StreamEvent> = callbackFlow {
-        val captureProviderText = modelConfig.llmAccountId == null
+        val captureProviderText = modelConfig.apiKey.isBlank()
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
@@ -536,10 +531,9 @@ class StreamingChatService(
             if (!closed.compareAndSet(false, true)) return
             graceJob?.cancel()
             inactivityJob?.cancel()
-            val safeError = error.withoutModelApiKey(modelConfig.apiKey)
-            progress?.finish(logId, safeError.message ?: "请求失败")
-            DebugLogManager.logError(logId, safeError.message ?: safeError::class.java.simpleName, error.aiTaskFailureKind())
-            trySend(StreamEvent.Error(safeError.message ?: "AI 请求失败", error.aiTaskFailureKind(), safeError))
+            progress?.finish(logId, error.message ?: "请求失败")
+            DebugLogManager.logError(logId, error.message ?: error::class.java.simpleName, error.aiTaskFailureKind())
+            trySend(StreamEvent.Error(error.message ?: "AI 请求失败", error.aiTaskFailureKind(), error))
             close()
             eventSource.cancel()
         }
@@ -569,7 +563,7 @@ class StreamingChatService(
                     }
                 }
                 val content = text.toString()
-                val rejection = AiTaskRefusalPolicy.failure(content, finishReason, refused)
+                val rejection = AiTaskRefusalPolicy.failure(content, finishReason.forModelLog(captureProviderText), refused)
                 if (rejection != null) {
                     fail(eventSource, rejection)
                     return
@@ -618,7 +612,7 @@ class StreamingChatService(
                     } catch (error: Exception) {
                         if (captureProviderText) DebugLogManager.appendResponseChunk(logId, data)
                         val failure = if (captureProviderText) IllegalArgumentException(
-                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.redactModelApiKey(modelConfig.apiKey).take(2000)}", error
+                            "解析 SSE 数据失败: ${error.message}\n原始数据: ${data.take(2000)}", error
                         ) else IllegalArgumentException("模型返回的流式数据格式不兼容")
                         fail(eventSource, failure)
                         return
@@ -660,7 +654,7 @@ class StreamingChatService(
                 synchronized(lock) {
                     if (closed.get()) return
                     val body = if (captureProviderText) runCatching { response?.body?.string() }.getOrNull() else null
-                    val rejection = AiTaskRefusalPolicy.failure(text.toString(), finishReason, refused)
+                    val rejection = AiTaskRefusalPolicy.failure(text.toString(), finishReason.forModelLog(captureProviderText), refused)
                     fail(eventSource, rejection ?: modelConfig.providerFailure("流式文本补全失败", response, body, t))
                 }
             }
@@ -734,7 +728,7 @@ class StreamingChatService(
         readTimeoutSeconds: Long? = null,
         taskContext: AiTaskContext? = null
     ): String {
-        val captureProviderText = modelConfig.llmAccountId == null
+        val captureProviderText = modelConfig.apiKey.isBlank()
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
         val experimentalApiMode = experimentalApiModeEnabled()
@@ -784,13 +778,13 @@ class StreamingChatService(
                 })
             }
             if (captureProviderText) DebugLogManager.appendResponseChunk(logId, body)
-            val finishReason = parseFinishReason(body)
+            val finishReason = parseFinishReason(body).forModelLog(captureProviderText)
             val refused = AiTaskRefusalPolicy.responseRefused(body)
-            DebugLogManager.recordCompletion(logId, finishReason.forModelLog(captureProviderText), refused)
+            DebugLogManager.recordCompletion(logId, finishReason, refused)
             parsePromptCacheUsage(body)?.let { DebugLogManager.recordPromptCacheUsage(logId, it) }
             AiTaskRefusalPolicy.failure("", finishReason, refused)?.let { throw it }
             if (finishReason == "length") throw ModelResponseTruncatedException()
-            val content = parseNonStreamResponse(body, experimentalApiMode, modelConfig.apiKey)
+            val content = parseNonStreamResponse(body, experimentalApiMode)
             if (experimentalApiMode) {
                 val responseMessage = (json.parseToJsonElement(body) as? JsonObject)?.get("choices")
                     ?.let { it as? JsonArray }?.firstOrNull()?.let { it as? JsonObject }?.get("message") as? JsonObject
@@ -805,7 +799,7 @@ class StreamingChatService(
             return content
         } catch (error: Throwable) {
             val safeError = when {
-                captureProviderText -> error.withoutModelApiKey(modelConfig.apiKey)
+                captureProviderText -> error
                 error is CancellationException || error is ModelRequestException || error is ModelResponseTruncatedException ||
                     error is AiTaskRefusalException || error is AiTaskEmptyResponseException -> error
                 else -> IllegalArgumentException("模型返回的数据格式不兼容")
@@ -1038,7 +1032,7 @@ class StreamingChatService(
     }
 
     /** 从非流式响应解析完整回复内容 */
-    private fun parseNonStreamResponse(body: String, experimentalApiMode: Boolean, apiKey: String): String {
+    private fun parseNonStreamResponse(body: String, experimentalApiMode: Boolean): String {
         val obj = json.decodeFromString<JsonObject>(body)
         val message = obj["choices"]?.jsonArray?.firstOrNull()
             ?.jsonObject?.get("message")
@@ -1072,7 +1066,7 @@ class StreamingChatService(
         val outputText = obj["output_text"]?.jsonPrimitive?.contentOrNull
         if (outputText != null) return outputText
 
-        throw RuntimeException("无法解析响应内容。Raw body: ${body.redactModelApiKey(apiKey).take(2000)}")
+        throw RuntimeException("无法解析响应内容。Raw body: ${body.take(2000)}")
     }
 
     private fun parseFinishReason(body: String): String? = runCatching {
@@ -1115,41 +1109,21 @@ class ModelRequestException(
         (httpStatus != null && httpStatus in 500..599)
 }
 
-private fun Throwable.withoutModelApiKey(apiKey: String): Throwable {
-    if (apiKey.isBlank()) return this
-    val requestError = this as? ModelRequestException
-    val safeTraceId = requestError?.traceId?.redactModelApiKey(apiKey)
-    val messages = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<Throwable, Boolean>())
-    var current: Throwable? = this
-    while (current != null && messages.add(current)) {
-        val text = current.message.orEmpty()
-        if (text != text.redactModelApiKey(apiKey)) break
-        current = current.cause
-    }
-    if (current == null && safeTraceId == requestError?.traceId) return this
-    return ModelRequestException(
-        message.orEmpty().redactModelApiKey(apiKey).ifBlank { "AI 请求失败" },
-        httpStatus = requestError?.httpStatus,
-        traceId = safeTraceId,
-        retryAfterMillis = requestError?.retryAfterMillis
-    )
-}
-
 private fun ModelConfig.providerFailure(
     summary: String,
     response: Response? = null,
     body: String? = null,
     cause: Throwable? = null
 ): ModelRequestException {
-    val captureProviderText = llmAccountId == null
+    val captureProviderText = apiKey.isBlank()
     val status = response?.code
     val detail = if (captureProviderText) {
-        (body?.takeIf { it.isNotBlank() } ?: cause?.message)?.redactModelApiKey(apiKey)?.take(2000)
+        (body?.takeIf { it.isNotBlank() } ?: cause?.message)?.take(2000)
     } else when (status) {
-        401, 403 -> "请检查所选账户的 API Key 和访问权限"
-        404 -> "请检查所选账户的 API 地址和模型标识"
+        401, 403 -> "请检查模型使用的 API Key 和访问权限"
+        404 -> "请检查模型的 API 地址和模型标识"
         429 -> "服务限制了请求频率，请稍后再试"
-        null -> "请检查网络、代理及账户的 API 地址"
+        null -> "请检查网络、代理及模型的 API 地址"
         else -> if (status in 300..399) "请填写服务商最终使用的 API 地址" else null
     }
     return ModelRequestException(
