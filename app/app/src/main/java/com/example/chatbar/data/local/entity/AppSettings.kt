@@ -65,7 +65,8 @@ data class AppSettings(
     val momentsBackgroundGuideDismissed: Boolean = false,
     val momentsAutoStartConfirmed: Boolean = false,
     val lastSeenMomentsAt: Long = 0L,
-    val lastSeenChatAt: Long = 0L
+    val lastSeenChatAt: Long = 0L,
+    val siliconFlowLlmAccountId: String? = null
 )
 
 const val DEFAULT_CHAT_BACKGROUND_IMAGE_OPACITY = 0.16f

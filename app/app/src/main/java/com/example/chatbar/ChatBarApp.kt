@@ -32,6 +32,8 @@ import com.example.chatbar.domain.voice.qq.QqVoiceTransferNotificationManager
 import com.example.chatbar.domain.worldbook.*
 import com.example.chatbar.utils.diagnostics.CrashReportManager
 import com.example.chatbar.data.security.FishAudioCredentialStore
+import com.example.chatbar.data.security.LlmApiAccountStore
+import com.example.chatbar.data.repository.LlmApiAccountRepository
 import com.example.chatbar.data.security.NovelAiCredentialStore
 import kotlinx.serialization.json.Json
 import kotlinx.coroutines.CoroutineScope
@@ -185,6 +187,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var fishAudioCredentialStore: FishAudioCredentialStore
         private set
+    lateinit var llmApiAccountRepository: LlmApiAccountRepository
+        private set
     lateinit var fishAudioStorage: FishAudioStorage
         private set
     lateinit var fishAudioService: FishAudioService
@@ -259,11 +263,12 @@ class ChatBarApp : Application() {
         // 2. 初始化各个仓库
         characterRepository = CharacterRepository(jsonFileStorage)
         chatRepository = ChatRepository(jsonFileStorage)
-        modelRepository = ModelRepository(jsonFileStorage)
+        llmApiAccountRepository = LlmApiAccountRepository(LlmApiAccountStore(this))
+        modelRepository = ModelRepository(jsonFileStorage, llmApiAccountRepository) { !backupRestoreActive }
         formatCardRepository = FormatCardRepository(jsonFileStorage)
         saveSlotPackageStorage = SaveSlotPackageStorage(this)
         saveSlotRepository = SaveSlotRepository(jsonFileStorage, saveSlotPackageStorage)
-        settingsRepository = SettingsRepository(jsonFileStorage)
+        settingsRepository = SettingsRepository(jsonFileStorage, llmApiAccountRepository) { !backupRestoreActive }
         momentRepository = MomentRepository(jsonFileStorage)
         voiceMessageRepository = VoiceMessageRepository(jsonFileStorage)
         novelAiCredentialStore = NovelAiCredentialStore(this)
@@ -387,7 +392,7 @@ class ChatBarApp : Application() {
         val transferJson = Json { ignoreUnknownKeys = true; prettyPrint = true; encodeDefaults = true }
         presetModelCatalogService = PresetModelCatalogService(this, transferJson)
         novelAiStyleCatalogService = NovelAiStyleCatalogService(this, transferJson)
-        effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService)
+        effectiveModelResolver = EffectiveModelResolver(modelRepository, settingsRepository, presetModelCatalogService, llmApiAccountRepository)
         fishAudioGenerationCoordinator = FishAudioGenerationCoordinator(
             scope = applicationScope,
             chatRepository = chatRepository,
@@ -538,6 +543,14 @@ class ChatBarApp : Application() {
                 if (backupRestoreActive) {
                     AppBackupBootstrap.initializationSucceeded(this@ChatBarApp)
                     backupRestoreActive = false
+                    try {
+                        modelRepository.retryLlmKeyMigration()
+                        settingsRepository.retrySiliconFlowKeyMigration()
+                    } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                        throw cancelled
+                    } catch (_: Exception) {
+                        Log.w(TAG, "旧对话 API 密钥将在下次启动时继续迁移")
+                    }
                     backupStartupReady.value = true
                     backupStartupNotice.value = "全量存档恢复成功。通知、电池和无障碍等系统授权需要在新机重新确认。"
                 }

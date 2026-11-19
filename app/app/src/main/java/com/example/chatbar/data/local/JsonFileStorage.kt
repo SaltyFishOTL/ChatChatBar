@@ -101,7 +101,11 @@ class JsonFileStorage(private val context: Context) {
 
     @OptIn(ExperimentalSerializationApi::class)
     private fun <T : Any> writeJsonFile(file: File, entity: T, serializer: KSerializer<T>) {
-        val tempFile = File(file.parentFile, ".${file.name}.${UUID.randomUUID()}.tmp")
+        // Android's backup rules exclude the settings file and its interrupted writes.
+        val stagingDir = if (file.name == "app_settings.json" && file.parentFile?.name == ENTITIES_DIR) {
+            File(file.parentFile, ".app-settings-staging").also { it.mkdirs() }
+        } else file.parentFile
+        val tempFile = File(stagingDir, ".${file.name}.${UUID.randomUUID()}.tmp")
         try {
             tempFile.outputStream().buffered().use { output ->
                 json.encodeToStream(serializer, entity, output)
