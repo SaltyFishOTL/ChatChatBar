@@ -17,16 +17,21 @@ internal fun officialVisionModelSuggestion(baseUrl: String): String? =
 
 internal fun visionProviderLabel(baseUrl: String): String {
     val base = visionApiBase(baseUrl) ?: return "接口未配置"
+    val host = if (base.port == if (base.isHttps) 443 else 80) base.host else "${base.host}:${base.port}"
+    val endpoint = host + base.encodedPath.trimEnd('/')
     return when (base.host) {
-        "api.deepseek.com" -> "DeepSeek · ${base.host}"
-        "api.siliconflow.cn", "api.siliconflow.com" -> "硅基流动 · ${base.host}"
-        else -> if (base.port == if (base.isHttps) 443 else 80) base.host else "${base.host}:${base.port}"
+        "api.deepseek.com" -> "DeepSeek · $endpoint"
+        "api.siliconflow.cn", "api.siliconflow.com" -> "硅基流动 · $endpoint"
+        else -> endpoint
     }
 }
 
+internal fun sameVisionApiBase(first: String, second: String): Boolean =
+    visionApiBase(first)?.let { it == visionApiBase(second) } == true
+
 internal fun ModelConfig.matchesVisionConnection(other: ModelConfig): Boolean =
     isMultimodal && apiKey.trim() == other.apiKey.trim() &&
-        visionApiBase(baseUrl)?.let { it == visionApiBase(other.baseUrl) } == true &&
+        sameVisionApiBase(baseUrl, other.baseUrl) &&
         copy(id = other.id, baseUrl = other.baseUrl, apiKey = other.apiKey, createdAt = other.createdAt) == other
 
 internal fun ModelConfig.withBoundVisionApiKey(settings: AppSettings): ModelConfig? {

@@ -160,7 +160,9 @@ internal fun VisionModelSetupDialog(
                     CbText("明文 HTTP 模型 API 已禁用。", color = ChatBarTheme.colors.destructive)
                 }
                 CbButton("从接口查找模型", { picker = true }, enabled = canUseConnection, variant = ButtonVariant.Outline)
-                if (suggestion != null && modelId.trim() != suggestion) {
+                if (suggestion != null && modelId.trim() != suggestion &&
+                    models.none { it.id == suggestion && it.imageInput == ModelImageInput.NOT_SUPPORTED }
+                ) {
                     CbButton("选用 DeepSeek Flash", { updateModelId(suggestion) }, variant = ButtonVariant.Ghost)
                 }
                 CbField("视觉模型标识") {

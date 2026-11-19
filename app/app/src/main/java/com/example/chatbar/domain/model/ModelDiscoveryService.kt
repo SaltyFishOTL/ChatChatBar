@@ -98,7 +98,15 @@ internal fun parseDiscoveredModels(body: String): List<DiscoveredModel> {
             else -> ModelImageInput.UNKNOWN
         }
         DiscoveredModel(id, imageInput)
-    }.distinctBy(DiscoveredModel::id).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, DiscoveredModel::id)).also {
+    }.groupBy(DiscoveredModel::id).map { (id, copies) ->
+        // Do not let missing capability on a duplicate ID override an explicit negative.
+        val support = when {
+            copies.any { it.imageInput == ModelImageInput.NOT_SUPPORTED } -> ModelImageInput.NOT_SUPPORTED
+            copies.any { it.imageInput == ModelImageInput.SUPPORTED } -> ModelImageInput.SUPPORTED
+            else -> ModelImageInput.UNKNOWN
+        }
+        DiscoveredModel(id, support)
+    }.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, DiscoveredModel::id)).also {
         if (it.isEmpty()) throw IOException("服务商未返回可用模型标识，请检查账号权限或手动填写")
     }
 }

@@ -13,6 +13,7 @@ class VisionModelDiscoveryTest {
             {"id":"Flash","input_modalities":["text","image"]},
             {"id":"pro","input_modalities":["text"]},
             {"id":"unknown"},
+            {"id":"unknown","input_modalities":["text"]},
             {"id":"partial","input_modalities":["text",12]},
             {"id":"empty","input_modalities":[]},
             {"id":"Flash"},
@@ -25,7 +26,7 @@ class VisionModelDiscoveryTest {
                 "Flash" to ModelImageInput.SUPPORTED,
                 "partial" to ModelImageInput.UNKNOWN,
                 "pro" to ModelImageInput.NOT_SUPPORTED,
-                "unknown" to ModelImageInput.UNKNOWN
+                "unknown" to ModelImageInput.NOT_SUPPORTED
             ),
             parseDiscoveredModels(response).associate { it.id to it.imageInput }
         )
