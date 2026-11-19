@@ -10,6 +10,7 @@ import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -17,6 +18,52 @@ import org.junit.rules.TemporaryFolder
 
 class ModelRepositoryStateTest {
     @get:Rule val temp = TemporaryFolder()
+
+    @Test
+    fun visionPairReusesOnlyTheSameEndpointAndKeyAndPersistsTheEffectiveLink() = runTest {
+        val directory = temp.newFolder()
+        val storage = JsonFileStorage(object : ContextWrapper(null) {
+            override fun getFilesDir(): File = directory
+        })
+        val repository = ModelRepository(storage)
+        val text = ModelConfig.create("Pro", "https://a.test/v1", "chat-key", "pro")
+        val vision = ModelConfig.create("Visual", "https://b.test/v1", "vision-key", "flash", isMultimodal = true)
+        val otherKey = vision.copy(id = "other", apiKey = "a-different-key")
+        val staged = vision.copy(id = "staged", baseUrl = "https://B.TEST:443/v1/", selectableForChat = false)
+        repository.saveModel(vision)
+        repository.saveModel(otherKey)
+        repository.saveModelWithVision(text.copy(visionModelId = staged.id), staged)
+
+        val cold = ModelRepository(storage)
+        assertEquals(vision.id, cold.getModel(text.id)?.visionModelId)
+        assertEquals(vision, cold.getModel(vision.id))
+        assertEquals(otherKey, cold.getModel(otherKey.id))
+        assertNull(cold.getModel(staged.id))
+
+        val otherEndpoint = staged.copy(baseUrl = "https://another.test/v1")
+        repository.saveModelWithVision(text.copy(visionModelId = otherEndpoint.id), otherEndpoint)
+        val afterSwitch = ModelRepository(storage)
+        assertEquals(otherEndpoint.id, afterSwitch.getModel(text.id)?.visionModelId)
+        assertEquals(otherEndpoint, afterSwitch.getModel(otherEndpoint.id))
+    }
+
+    @Test
+    fun failedPairSaveDoesNotPublishOrLeaveTheNewVisionModel() = runTest {
+        val directory = temp.newFolder()
+        val storage = JsonFileStorage(object : ContextWrapper(null) {
+            override fun getFilesDir(): File = directory
+        })
+        val repository = ModelRepository(storage)
+        val blocked = File(directory, "entities/model_configs/blocked.json").apply { mkdirs() }
+        File(blocked, "keep").writeText("synthetic")
+        val vision = ModelConfig.create("Visual", "https://b.test/v1", "vision-key", "flash", isMultimodal = true)
+        val text = ModelConfig.create("Pro", "https://a.test/v1", "chat-key", "pro")
+            .copy(id = "blocked", visionModelId = vision.id)
+        assertTrue(runCatching { repository.saveModelWithVision(text, vision) }.isFailure)
+        assertNull(repository.getModel(vision.id))
+        assertNull(ModelRepository(storage).getModel(vision.id))
+        assertTrue(File(blocked, "keep").isFile)
+    }
 
     @Test
     fun `concurrent writes publish durable models and concurrent copies keep unique names`() = runTest {

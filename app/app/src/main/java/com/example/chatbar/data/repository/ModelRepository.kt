@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.PresetChatModel
 import com.example.chatbar.data.local.entity.PresetEmbeddingModel
 import com.example.chatbar.data.local.entity.PresetModelCatalog
 import com.example.chatbar.domain.card.NamePolicy
+import com.example.chatbar.domain.model.matchesVisionConnection
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -112,8 +113,27 @@ class ModelRepository(private val storage: JsonFileStorage) {
         return _models.value.firstOrNull { it.id == id }
     }
 
-    suspend fun saveModel(model: ModelConfig) = mutate {
+    suspend fun saveModel(model: ModelConfig, expectedVision: ModelConfig? = null) = mutate {
+        if (expectedVision != null) {
+            require(expectedVision.id == model.visionModelId && expectedVision.isMultimodal &&
+                _models.value.any { it == expectedVision }
+            ) { "所选视觉模型已变化，请重新选择" }
+        }
         storage.saveEntity(MODEL_TYPE, model.id, model, ModelConfig.serializer())
+        refreshModelCache()
+    }
+
+    /** Commit a staged visual connection only when its owning text model is saved. */
+    suspend fun saveModelWithVision(model: ModelConfig, vision: ModelConfig) = mutate {
+        require(model.id != vision.id && model.visionModelId == vision.id && vision.isMultimodal)
+        val oldWithId = _models.value.firstOrNull { it.id == vision.id }
+        check(oldWithId == null || oldWithId == vision) { "视觉模型记录已变化，请重新选择" }
+        val existing = oldWithId ?: _models.value.firstOrNull {
+            it.id != model.id && it.matchesVisionConnection(vision)
+        }
+        val linked = model.copy(visionModelId = existing?.id ?: vision.id)
+        val changes = if (existing == null) mapOf(vision.id to vision, linked.id to linked) else mapOf(linked.id to linked)
+        storage.applyEntityChanges(MODEL_TYPE, changes, ModelConfig.serializer())
         refreshModelCache()
     }
 

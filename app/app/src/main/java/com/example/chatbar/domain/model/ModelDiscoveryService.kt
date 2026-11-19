@@ -15,6 +15,10 @@ import okhttp3.Response
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 
+enum class ModelImageInput { SUPPORTED, NOT_SUPPORTED, UNKNOWN }
+
+data class DiscoveredModel(val id: String, val imageInput: ModelImageInput)
+
 /** Uses the same OpenAI-compatible base URL and authentication as chat requests. */
 class ModelDiscoveryService {
     private val httpsClient by lazy { createClient(false) }
@@ -28,7 +32,10 @@ class ModelDiscoveryService {
             .callTimeout(30, TimeUnit.SECONDS)
             .build()
 
-    suspend fun fetch(baseUrl: String, apiKey: String, allowCleartext: Boolean): List<String> {
+    suspend fun fetch(baseUrl: String, apiKey: String, allowCleartext: Boolean): List<String> =
+        fetchModels(baseUrl, apiKey, allowCleartext).map(DiscoveredModel::id)
+
+    suspend fun fetchModels(baseUrl: String, apiKey: String, allowCleartext: Boolean): List<DiscoveredModel> {
         val base = baseUrl.trim().trimEnd('/').toHttpUrlOrNull()
             ?: throw IOException("Base URL 无效，请填写完整的 http:// 或 https:// 地址")
         if (base.username.isNotEmpty() || base.password.isNotEmpty() || base.query != null || base.fragment != null) {
@@ -63,7 +70,7 @@ class ModelDiscoveryService {
                                 404, 405 -> "服务商未提供此模型列表接口（HTTP ${it.code}），请检查 Base URL 或手动填写模型标识"
                                 else -> "获取模型列表失败（HTTP ${it.code}），请检查服务商状态后重试"
                             })
-                            parseModelIds(it.body?.string().orEmpty())
+                            parseDiscoveredModels(it.body?.string().orEmpty())
                         }
                     })
                 }
@@ -72,14 +79,26 @@ class ModelDiscoveryService {
     }
 }
 
-internal fun parseModelIds(body: String): List<String> {
+internal fun parseModelIds(body: String): List<String> = parseDiscoveredModels(body).map(DiscoveredModel::id)
+
+internal fun parseDiscoveredModels(body: String): List<DiscoveredModel> {
     val root = runCatching { Json.parseToJsonElement(body) as? JsonObject }.getOrNull()
     val data = root?.get("data") as? JsonArray
         ?: throw IOException("模型列表格式不兼容，需要 OpenAI 兼容接口的 data 列表")
     return data.mapNotNull { entry ->
-        ((entry as? JsonObject)?.get("id") as? JsonPrimitive)
+        val model = entry as? JsonObject ?: return@mapNotNull null
+        val id = (model["id"] as? JsonPrimitive)
             ?.takeIf { it.isString }?.content?.trim()?.takeIf { it.isNotEmpty() }
-    }.distinct().sortedWith(String.CASE_INSENSITIVE_ORDER).also {
+            ?: return@mapNotNull null
+        val modalities = (model["input_modalities"] as? JsonArray)
+        val inputs = modalities?.mapNotNull { (it as? JsonPrimitive)?.takeIf { value -> value.isString }?.content }
+        val imageInput = when {
+            inputs?.contains("image") == true -> ModelImageInput.SUPPORTED
+            !inputs.isNullOrEmpty() && inputs.size == modalities?.size -> ModelImageInput.NOT_SUPPORTED
+            else -> ModelImageInput.UNKNOWN
+        }
+        DiscoveredModel(id, imageInput)
+    }.distinctBy(DiscoveredModel::id).sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER, DiscoveredModel::id)).also {
         if (it.isEmpty()) throw IOException("服务商未返回可用模型标识，请检查账号权限或手动填写")
     }
 }
