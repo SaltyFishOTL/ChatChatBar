@@ -16,6 +16,7 @@ object NarrativeHistoryEcho {
 
     fun replyBody(text: String, streaming: Boolean = false): String {
         val start = text.trimStart()
+        if (isIndentedCodeLine(text, text.length - start.length)) return text
         val wrapper = wrappers.firstOrNull { start.startsWith(it.opening) }
         if (wrapper == null) {
             val identifiable = start.startsWith("<历史回复 模式=") || start.startsWith("<聚焦模式=")
@@ -50,10 +51,10 @@ object NarrativeHistoryEcho {
 
     private fun canCloseOuterWrapper(body: String, closingStart: Int, wrapper: Wrapper): Boolean {
         val literalRanges = MarkdownCodeFences.ranges(body)
-        if (literalRanges.any { closingStart in it }) return false
+        if (literalRanges.any { closingStart in it } || isIndentedCodeLine(body, closingStart)) return false
         var innerDepth = 0
         for (match in wrapperFamilyTokens.getValue(wrapper.name).findAll(body.substring(0, closingStart))) {
-            if (literalRanges.any { match.range.first in it }) continue
+            if (literalRanges.any { match.range.first in it } || isIndentedCodeLine(body, match.range.first)) continue
             if (match.value.startsWith("</")) {
                 if (innerDepth == 0) return false
                 innerDepth--
@@ -62,5 +63,11 @@ object NarrativeHistoryEcho {
             }
         }
         return innerDepth == 0
+    }
+
+    private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
+        val lineStart = text.lastIndexOf('\n', offset - 1) + 1
+        val indent = text.substring(lineStart, offset).takeWhile { it == ' ' || it == '\t' }
+        return indent.length >= 4 || '\t' in indent
     }
 }

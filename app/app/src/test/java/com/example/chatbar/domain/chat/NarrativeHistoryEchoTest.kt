@@ -56,4 +56,17 @@ class NarrativeHistoryEchoTest {
             assertEquals(code, NarrativeHistoryEcho.replyBody("$opening\n$code", streaming))
         }
     }
+
+    @Test
+    fun preservesIndentationThatMakesATagALiteralExample() {
+        val wrapped = PromptTemplates.narrativeModeHistoryReply("示例", ChatNarrativeMode.FOCUS)
+        for (indent in listOf("    ", "\t")) {
+            val literal = wrapped.lineSequence().joinToString("\n") { indent + it }
+            assertEquals(literal, NarrativeHistoryEcho.replyBody(literal))
+            val opening = "<历史回复 模式=\"推进\">"
+            val body = "这是一段示例。\n\n$indent</历史回复>"
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body"))
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n</历史回复>"))
+        }
+    }
 }
