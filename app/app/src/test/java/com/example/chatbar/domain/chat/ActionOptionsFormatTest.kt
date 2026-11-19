@@ -224,5 +224,15 @@ class ActionOptionsFormatTest {
         for (unchanged in listOf("$complete\r\n ", "$partial\n已经开始行动。", "纯旁白 [END-ACTIONS]")) {
             assertEquals(unchanged, RoleplayActionOptionsPolicy.completeTrailingBlock(unchanged, format))
         }
+        val continued = "营地很安静。\n[ACTIONS]\n下一步\n1. 查地图\n2. 核对日志标记\n    [END-ACTIONS]"
+        val repairedContinuation = RoleplayActionOptionsPolicy.completeTrailingBlock(continued, format)
+        assertEquals("$continued\n[END-ACTIONS]", repairedContinuation)
+        assertEquals(
+            "核对日志标记\n[END-ACTIONS]",
+            RoleplayActionOptionsPolicy.blocks(repairedContinuation, format).single().options.last().text
+        )
+        val listCode = "- ~~~text\n  [ACTIONS]\n  下一步\n  1. 查地图\n  2. 核对日志标记 [END-ACTIONS]"
+        assertEquals(listCode, RoleplayActionOptionsPolicy.completeTrailingBlock(listCode, format))
+        assertTrue(RoleplayActionOptionsPolicy.blocks("$listCode\n  [END-ACTIONS]\n  ~~~", format).isEmpty())
     }
 }

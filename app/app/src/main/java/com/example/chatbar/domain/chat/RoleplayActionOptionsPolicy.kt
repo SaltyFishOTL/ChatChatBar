@@ -58,7 +58,7 @@ object RoleplayActionOptionsPolicy {
     fun blocks(content: String, format: ActionOptionsFormat? = null): List<RoleplayActionOptionsBlock> {
         if (format != null && validationError(format) != null) return emptyList()
         if (content.isBlank()) return emptyList()
-        val markdownFences = MarkdownCodeFences.ranges(content)
+        val markdownFences = MarkdownCodeFences.ranges(content, includeContainers = true)
         val declaresFence = format != null && fenceMarker(format.opening.trim()) != null
         val fenced = if (format == null || declaresFence) {
             markdownFences.mapNotNull { fencedBlock(content, it, format) }
@@ -188,6 +188,7 @@ object RoleplayActionOptionsPolicy {
                 start = null
                 continue
             }
+            if (isCodeIndented(line)) continue
             val marker = line.trim()
             val openStart = start
             when {

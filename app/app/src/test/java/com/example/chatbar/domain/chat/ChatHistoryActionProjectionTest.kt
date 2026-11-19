@@ -112,6 +112,8 @@ class ChatHistoryActionProjectionTest {
         for (reference in listOf(
             "我同意B方案，先检查营地周边。",
             "我同意b　方案，先检查营地周边。",
+            "我同意B，并请她把补给送到码头。",
+            "我赞成C，并请她把补给送到码头。",
             "Please carry out the penultimate plan quietly."
         )) {
             val user = message("u", MessageRole.USER, reference, 2)
@@ -124,6 +126,10 @@ class ChatHistoryActionProjectionTest {
             val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
             assertEquals(narration, "旁白\n", projection.project(assistant, letters))
         }
+        val twoOptions = assistant.copy(content = letters.replace("\nC) 等一会儿", ""))
+        val unrelated = message("u", MessageRole.USER, "我沿着C路线巡查空置工厂并锁门。", 2)
+        val projection = known(listOf(twoOptions, unrelated), setOf(twoOptions.id, unrelated.id))
+        assertEquals("旁白\n", projection.project(twoOptions, twoOptions.displayContent))
     }
 
     @Test fun `trusted regeneration without a current user may still have older users in its candidate universe`() {

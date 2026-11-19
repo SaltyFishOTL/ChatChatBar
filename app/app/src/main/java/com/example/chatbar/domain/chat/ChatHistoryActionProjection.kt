@@ -37,29 +37,32 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
 
         private fun lastPossibleChoiceReference(candidates: List<ChatMessage>): Int {
             var last = -1
-            val ambiguousLabelsSeen = mutableSetOf<Char>()
+            val menuLabelsSeen = mutableSetOf<Char>()
             for ((index, message) in candidates.withIndex()) {
                 if (message.role == MessageRole.USER) {
                     val content = message.displayContent
                     if (message.images.isNotEmpty() || mayReferToEarlierChoices(content) ||
-                        hasAmbiguousLetterReference(content, ambiguousLabelsSeen)
+                        hasMenuLetterReference(content, menuLabelsSeen)
                     ) last = index
-                } else if (message.role == MessageRole.ASSISTANT && ambiguousLabelsSeen.size < ambiguousLetters.length) {
+                } else if (message.role == MessageRole.ASSISTANT) {
                     val format = message.displayActionOptionsFormat
                     if (format?.labels != ActionOptionLabels.LETTERS) continue
                     for (block in RoleplayActionOptionsPolicy.blocks(message.displayContent, format)) {
-                        block.options.mapNotNullTo(ambiguousLabelsSeen) { option ->
-                            option.label.singleOrNull()?.takeIf { it in ambiguousLetters }
-                        }
+                        block.options.mapNotNullTo(menuLabelsSeen) { it.label.singleOrNull() }
                     }
                 }
             }
             return last
         }
 
-        private fun hasAmbiguousLetterReference(text: String, seen: Set<Char>): Boolean {
+        private fun hasMenuLetterReference(text: String, seen: Set<Char>): Boolean {
             if (seen.isEmpty()) return false
             if (('A' in seen || 'a' in seen) && hasAWithHanContinuation(text)) return true
+            if (hanMenuLetter.findAll(text).any { match ->
+                    val label = match.groupValues[1].ifEmpty { match.groupValues[2] }.single()
+                    label.uppercaseChar() in seen || label.lowercaseChar() in seen
+                }
+            ) return true
             return ambiguousLetterLabel.findAll(text).any { match ->
                 val label = match.value.single()
                 if (label == 'a') label in seen
@@ -107,12 +110,15 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
         // A and I can be ordinary English. Lowercase a needs a menu that actually uses that case.
         private const val ambiguousLetters = "AaIi"
         private val ambiguousLetterLabel = standaloneLetter(ambiguousLetters)
+        private val hanMenuLetter = Regex(
+            "(?<![A-Za-z0-9_])([A-Ta-t])[ \\t　]*(?:方案|计划|路线)|" +
+                "(?:同意|赞成|接受)[ \\t　]*([A-Ta-t])[ \\t　]*(?=$|[,，、.。:：;；!！?？])"
+        )
         private val reference = Regex(
             "第[\\s一二三四五六七八九十百两〇零壹贰叁肆伍陆柒捌玖拾0-9０-９]+(?:个|项|条|种|步|段|选|方案)|" +
                 "(?:选|选择|采用|执行|按照|按|走|用|要)[\\s:：\"'“‘（(]*[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾0-9０-９①-⑳甲乙丙丁戊己庚辛壬癸a-z]|" +
                 "^[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾甲乙丙丁]+(?:[,，.、。)）：\\s]|号|然后|再|并)|" +
                 "^[a-t][,，.、。)）：]|" +
-                "(?<![a-z0-9_])[a-t][ \\t　]*(?:方案|计划|路线)|" +
                 "(?:前|后)[一二三四五六七八九十两]*(?:个|项|条)|" +
                 "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
                 "\\b(?:option|options|choice|choices|above|previous|former|latter|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:ante)?penultimate|last|this|that|those|these|it|them|same|aforementioned)\\b|" +
