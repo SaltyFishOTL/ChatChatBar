@@ -166,6 +166,7 @@ object NarrativeHistoryEcho {
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
+            if (symbol == '’' && followsWord && (precedesWord || hasClosingAfterCurlyPossessive(text, index))) continue
             if (symbol == '"' && open < 0 && text.getOrNull(index - 1)?.isDigit() == true && !precedesWord) continue
             when {
                 open < 0 && matchingClose != null -> {
@@ -184,6 +185,15 @@ object NarrativeHistoryEcho {
             }
         }
         if (includeUnclosed && open >= 0) add(open..text.lastIndex)
+    }
+
+    private fun hasClosingAfterCurlyPossessive(text: String, position: Int): Boolean {
+        if (!text[position - 1].equals('s', ignoreCase = true) ||
+            text.getOrNull(position + 1) != ' ' || text.getOrNull(position + 2)?.isLetter() != true
+        ) return false
+        val nextClose = text.indexOf('’', position + 1)
+        val nextOpen = text.indexOf('‘', position + 1)
+        return nextClose >= 0 && (nextOpen < 0 || nextClose < nextOpen)
     }
 
     private fun isEscaped(text: String, position: Int): Boolean {

@@ -126,6 +126,15 @@ class NarrativeHistoryEchoTest {
         assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true, interrupted = true))
     }
 
+    @Test fun curlyPossessiveDoesNotEndTheOuterProseQuote() {
+        val closing = "</历史回复>"
+        val body = "‘James’ book uses\n$closing\nas an example’."
+        val raw = "<历史回复 模式=\"推进\">\n$body\n$closing"
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true))
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true, interrupted = true))
+    }
+
     @Test fun onlyCompletedToolOutputCanJoinSeparateEchoParts() {
         val first = "<历史回复 模式=\"聚焦\">\n甲\n</历史回复>"
         val second = "<历史回复 模式=\"推进\">\n乙\n</历史回复>"
