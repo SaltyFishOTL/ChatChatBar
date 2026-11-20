@@ -140,12 +140,20 @@ class ManagementDraftDiscardTest {
             pendingDeletedAssets = emptyList(),
             pendingDeletedDocumentIds = emptyList(),
         ))
-        val other = app.editorDraftRepository.save(first.copy(
-            mode = EditorDraftMode.CREATE,
-            targetId = null,
-            draftAssetPaths = emptyList(),
-        ))
         try {
+            app.characterRepository.delete(profile.id)
+            val retained = characterEditor(profile.id, session)
+            withContext(Dispatchers.Main) { assertTrue(retained.sourceDeleted) }
+            saveCardDraft(retained)
+            val recovered = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+            assertNull(managerDiscard(recovered))
+            awaitMain { retained.draftReady && !retained.sourceDeleted && retained.name.isEmpty() }
+            assertEquals(first, EditorDraftRepository(JsonFileStorage(app)).getById(first.id))
+            assertEquals("Shared recovery bytes", staged.readText())
+
+            val reopened = characterEditor(profile.id, session)
+            saveCardDraft(reopened)
+            val other = requireNotNull(app.editorDraftRepository.getForTarget(EditorDraftType.CHARACTER_CARD, null))
             assertNull(managerDiscard(first))
             assertNull(EditorDraftRepository(JsonFileStorage(app)).getById(first.id))
             assertEquals(other, EditorDraftRepository(JsonFileStorage(app)).getById(other.id))
@@ -238,12 +246,13 @@ class ManagementDraftDiscardTest {
         withTimeout(10_000) { while (!predicate()) delay(10) }
     }
 
-    private suspend fun characterEditor(id: String?): CharacterEditViewModel = withContext(Dispatchers.Main) {
-        val store = ViewModelStore().also { stores += it }
-        ViewModelProvider(store, CharacterEditViewModelFactory(id, UUID.randomUUID().toString()))[
-            CharacterEditViewModel::class.java
-        ].also { vm -> withTimeout(30_000) { while (!vm.draftReady) delay(10) } }
-    }
+    private suspend fun characterEditor(id: String?, draftSessionId: String = UUID.randomUUID().toString()): CharacterEditViewModel =
+        withContext(Dispatchers.Main) {
+            val store = ViewModelStore().also { stores += it }
+            ViewModelProvider(store, CharacterEditViewModelFactory(id, draftSessionId))[
+                CharacterEditViewModel::class.java
+            ].also { vm -> withTimeout(30_000) { while (!vm.draftReady) delay(10) } }
+        }
 
     private suspend fun worldEditor(id: String?): WorldBookEditViewModel = withContext(Dispatchers.Main) {
         val store = ViewModelStore().also { stores += it }

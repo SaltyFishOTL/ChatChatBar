@@ -583,13 +583,15 @@ class CharacterEditViewModel(
                 // A management-list discard must also invalidate a retained editor.
                 // Internal discard/save already owns its reset while not ready/saving.
                 if (draftReady && !_isSaving.value && remembered != null && drafts.none { it.id == remembered.id }) {
-                    discardDraft()
+                    discardDraft(recordAlreadyDeleted = true)
                 }
             }
         }
     }
 
-    fun discardDraft(onDone: (() -> Unit)? = null) {
+    fun discardDraft(onDone: (() -> Unit)? = null) = discardDraft(recordAlreadyDeleted = false, onDone = onDone)
+
+    private fun discardDraft(recordAlreadyDeleted: Boolean, onDone: (() -> Unit)? = null) {
         if (_isSaving.value || !draftReady) return
         _isSaving.value = true
         draftReady = false
@@ -598,8 +600,8 @@ class CharacterEditViewModel(
             try {
                 finishDraftAutosave()
                 val savedCard = characterId?.let { characterRepository.getById(it) }
-                deleteCharacterDraftAndAssets {
-                    // Once the record is gone, a resource cleanup failure must not revive its draft.
+                val reset = {
+                    // Reset once the selected record is gone, even if its resource cleanup fails.
                     discarded = true
                     loadedDraft = null
                     baseCard = savedCard
@@ -617,6 +619,12 @@ class CharacterEditViewModel(
                     hasUnsavedDraftChanges = false
                     restoreDraft = null
                     restoreConflict = false
+                }
+                if (recordAlreadyDeleted) {
+                    // Management owns the selected row and its assets. A recovery draft can have a different target row.
+                    reset()
+                } else {
+                    deleteCharacterDraftAndAssets { reset() }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
