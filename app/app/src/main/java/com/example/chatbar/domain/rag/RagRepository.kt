@@ -73,6 +73,12 @@ class RagRepository(private val storage: JsonFileStorage) {
         }
     }
 
+    suspend fun deleteChatMemoryDependingOnActionReply(sessionId: String, messageId: String) {
+        storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer()) { chunk ->
+            chunk.isChatMemoryForSession(sessionId) && messageId in chunk.actionChoiceSourceIds()
+        }
+    }
+
     suspend fun deleteAllChunksBySourceType(sourceType: ChunkSourceType) {
         storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer()) { it.sourceType == sourceType }
     }
@@ -212,7 +218,7 @@ internal fun chatMemoryChunkIdsToPrune(
 ): Set<String> {
     val idsToDelete = mutableSetOf<String>()
     val liveChunks = chunks.filter { chunk ->
-        val messageIds = chunk.metadataMessageIds() + listOfNotNull(chunk.messageId)
+        val messageIds = chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) + chunk.actionChoiceSourceIds()
         val isOrphan = messageIds.isNotEmpty() && messageIds.any { it !in liveMessageIds }
         if (isOrphan) idsToDelete.add(chunk.id)
         !isOrphan
@@ -254,6 +260,9 @@ internal fun automaticChatMemoryChunkIdsToReplace(
 
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
     sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId
+
+private fun VectorChunk.actionChoiceSourceIds(): List<String> =
+    metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS]?.split(",").orEmpty().filter(String::isNotBlank)
 
 private fun VectorChunk.metadataMessageIds(): Set<String> {
     return metadata["messageIds"]

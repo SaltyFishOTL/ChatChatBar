@@ -71,6 +71,21 @@ class MemorySourceFingerprintTest {
         assertEquals(setOf("s0"), MemorySourceFingerprint.sourceIdsWithProjectedActions(projected + plain))
     }
 
+    @Test fun `source proof changes when a confirmed prior menu choice changes`() {
+        val menu = base[1].copy(
+            id = "menu",
+            content = "地图展开。\n[choices]\nChoices\n1. 关闭地图\n2. 交出钥匙\n[/choices]",
+            actionOptionsFormat = ActionOptionsFormat("[choices]", "[/choices]", "Choices"),
+        )
+        val user = base[0].copy(orderKey = 3, content = "2", sourceTurnId = "s1", sourceTurnOrder = 1)
+        val original = listOf(menu, user)
+        val amended = listOf(menu.copy(content = menu.content.replace("交出钥匙", "交出地图")), user)
+        assertEquals("2", user.displayContent)
+        assertEquals(setOf("s0", "s1"), MemorySourceFingerprint.sourceIdsWithProjectedActions(original))
+        assertNotEquals(MemorySourceFingerprint.semantic("s1", original, session),
+            MemorySourceFingerprint.semantic("s1", amended, session))
+    }
+
     private fun fingerprint(messages: List<ChatMessage>) =
         MemorySourceFingerprint.semantic("s0", messages, session)
 

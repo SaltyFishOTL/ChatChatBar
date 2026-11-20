@@ -97,13 +97,6 @@ class ChatHistoryActionProjection private constructor(
             )
         }
 
-        private val bareChoice = Regex("([A-T]|[1-9][0-9]?)[.。]?", RegexOption.IGNORE_CASE)
-        private val englishChoice = Regex(
-            "(?:(?:please\\s+)?(?:select|choose|pick)\\s+)?(?:option|choice)\\s+([A-T]|[1-9][0-9]?)[.。]?",
-            RegexOption.IGNORE_CASE,
-        )
-        private val chineseChoice = Regex("(?:(?:请)?选(?:择)?\\s*)?(?:第\\s*)?([1-9][0-9]?)\\s*(?:项|号)[.。]?")
-
         private fun confirmedRetrievalChoice(
             candidates: List<ChatMessage>,
             completeRecentMessageIds: Set<String>,
@@ -111,14 +104,10 @@ class ChatHistoryActionProjection private constructor(
         ): Pair<ChatMessage, String>? {
             if (requestSource != ChatHistoryActionRequestSource.PERSISTED_USER) return null
             val user = candidates.lastOrNull()?.takeIf { it.images.isEmpty() } ?: return null
-            val reply = candidates.dropLast(1).lastOrNull { it.role != MessageRole.SYSTEM }
+            val reply = candidates.dropLast(1)
+                .lastOrNull { it.role != MessageRole.SYSTEM && !it.isGeneratedImageOnlyReply() }
                 ?.takeIf { it.role == MessageRole.ASSISTANT && it.id in completeRecentMessageIds } ?: return null
-            val input = user.displayContent.trim()
-            val label = (bareChoice.matchEntire(input) ?: englishChoice.matchEntire(input) ?: chineseChoice.matchEntire(input))
-                ?.groupValues?.get(1) ?: return null
-            val choice = RoleplayActionOptionsPolicy.blocks(reply.displayContent, reply.displayActionOptionsFormat)
-                .singleOrNull()?.options?.singleOrNull { it.label.equals(label, ignoreCase = true) }
-                ?: return null
+            val choice = RoleplayActionOptionsPolicy.confirmedChoice(reply, user.displayContent) ?: return null
             return reply to choice.text
         }
 

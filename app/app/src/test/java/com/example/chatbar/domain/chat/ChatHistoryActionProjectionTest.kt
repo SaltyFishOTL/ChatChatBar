@@ -71,6 +71,12 @@ class ChatHistoryActionProjectionTest {
         val prepared = known(listOf(assistant, user), setOf(assistant.id, user.id))
         assertTrue("B) 问守卫" in prepared.sourceForHistory(assistant, stripStatus = false))
         assertEquals("站台亮了。\n检查站台", prepared.forRetrieval(assistant).displayContent)
+        val autoImage = message("image", MessageRole.ASSISTANT, "", 1).copy(
+            images = listOf("test.png"), generatedFromMessageId = assistant.id,
+        )
+        val withImage = listOf(assistant, autoImage, user)
+        assertEquals("站台亮了。\n检查站台",
+            known(withImage, withImage.mapTo(mutableSetOf()) { it.id }).forRetrieval(assistant).displayContent)
         val sparse = known(listOf(assistant, user), setOf(user.id))
         assertEquals("站台亮了。", sparse.forRetrieval(assistant).displayContent.trim())
     }

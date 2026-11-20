@@ -111,6 +111,10 @@ class RagManager(
                     metadata = buildMap {
                         put("sessionId", sessionId)
                         put("messageIds", turn.messageIds.joinToString(","))
+                        if (turn.confirmedChoices.isNotEmpty()) {
+                            put(ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS,
+                                turn.confirmedChoices.values.map { it.replyId }.distinct().joinToString(","))
+                        }
                         put("messageTime", turn.anchorMessage.createdAt.toString())
                         put("indexMode", ChatMemoryIndexPolicy.INDEX_MODE)
                         put("contentVersion", ChatMemoryIndexPolicy.CONTENT_VERSION)

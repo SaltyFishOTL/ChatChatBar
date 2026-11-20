@@ -91,6 +91,24 @@ class ChatMemoryIdentityTest {
     }
 
     @Test
+    fun actionChoiceChunkRequiresTheSourceReplyWithoutOwningItsTurn() {
+        val chosen = chunk("kept-choice", "user", 1).copy(
+            metadata = mapOf(
+                "indexMode" to ChatMemoryIndexPolicy.INDEX_MODE,
+                "sourceTurnId" to "user-turn",
+                "messageIds" to "user",
+                ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS to "menu",
+            ),
+        )
+        assertEquals(emptySet<String>(), chatMemoryChunkIdsToPrune(listOf(chosen), setOf("user", "menu")))
+        assertEquals(setOf("kept-choice"), chatMemoryChunkIdsToPrune(listOf(chosen), setOf("user")))
+        assertEquals(emptySet<String>(), automaticChatMemoryChunkIdsToReplace(
+            chunks = listOf(chosen), sourceTurnId = "menu-turn", messageIds = setOf("menu"),
+            keepChunkIds = emptySet(),
+        ))
+    }
+
+    @Test
     fun manualChunk_survivesMessageOrphanPruning() {
         val manual = VectorChunk(
             id = "manual",

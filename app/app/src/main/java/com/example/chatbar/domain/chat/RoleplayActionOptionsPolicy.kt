@@ -2,10 +2,13 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.data.local.entity.ActionOptionsFormat
+import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.MessageRole
 
 /** Derived projection only; original replies, versions, status and user text are unchanged. */
 data class RoleplayActionOption(val ordinal: Int, val text: String, val label: String = ordinal.toString())
 data class RoleplayActionOptionsBlock(val range: IntRange, val options: List<RoleplayActionOption>)
+data class ConfirmedActionChoice(val replyId: String, val text: String)
 
 object RoleplayActionOptionsPolicy {
     val defaultFormat = ActionOptionsFormat()
@@ -175,6 +178,51 @@ object RoleplayActionOptionsPolicy {
     fun withoutExplicitOptions(content: String, format: ActionOptionsFormat? = null): String =
         textOutsideBlocks(content, blocks(content, format))
 
+    private val bareChoice = Regex("([A-T]|[1-9][0-9]?)[.。]?", RegexOption.IGNORE_CASE)
+    private val englishChoice = Regex(
+        "(?:(?:please\\s+)?(?:select|choose|pick)\\s+)?(?:option|choice)\\s+([A-T]|[1-9][0-9]?)[.。]?",
+        RegexOption.IGNORE_CASE,
+    )
+    private val chineseChoice = Regex("(?:(?:请)?选(?:择)?\\s*)?(?:第\\s*)?([1-9][0-9]?)\\s*(?:项|号)[.。]?")
+
+    private fun confirmedChoiceLabel(userText: String): String? {
+        val input = userText.trim()
+        return (bareChoice.matchEntire(input) ?: englishChoice.matchEntire(input) ?: chineseChoice.matchEntire(input))
+            ?.groupValues?.get(1)
+    }
+
+    fun confirmedChoice(reply: ChatMessage, userText: String): ConfirmedActionChoice? =
+        confirmedChoiceLabel(userText)?.let { confirmedChoiceForLabel(reply, it) }
+
+    private fun confirmedChoiceForLabel(reply: ChatMessage, label: String): ConfirmedActionChoice? =
+        blocks(reply.displayContent, reply.displayActionOptionsFormat)
+            .singleOrNull()?.options?.singleOrNull { it.label.equals(label, ignoreCase = true) }
+            ?.let { ConfirmedActionChoice(reply.id, it.text) }
+
+    /** Stable consecutive turns prove adjacency even when an automatic index loads a sparse window. */
+    fun confirmedMemoryChoice(user: ChatMessage, messages: List<ChatMessage>): ConfirmedActionChoice? {
+        if (user.role != MessageRole.USER || user.images.isNotEmpty()) return null
+        val label = confirmedChoiceLabel(user.displayContent) ?: return null
+        val order = user.sourceTurnOrder?.takeIf { it > 0 } ?: return null
+        val isFirstInSource = messages.none {
+            it.sessionId == user.sessionId && it.sourceTurnOrder == order &&
+                it.role != MessageRole.SYSTEM && !it.isGeneratedImageOnlyReply() &&
+                ChatMessage.TimelineComparator.compare(it, user) < 0
+        }
+        if (!isFirstInSource) return null
+        val reply = messages.asSequence()
+            .filter {
+                it.sessionId == user.sessionId && it.sourceTurnOrder == order - 1 &&
+                    it.role != MessageRole.SYSTEM && !it.isGeneratedImageOnlyReply()
+            }
+            .maxWithOrNull(ChatMessage.TimelineComparator)
+            ?.takeIf { it.role == MessageRole.ASSISTANT } ?: return null
+        return confirmedChoiceForLabel(reply, label)
+    }
+
+    fun preserveConfirmedUserChoice(sourceText: String, choice: ConfirmedActionChoice?): String =
+        if (choice == null) sourceText else "$sourceText\n${choice.text}"
+
     private val chineseImageChoice = Regex(
         "^(?:(?:请(?:帮我)?|帮我)\\s*)?(?:画|绘制|生成)\\s*" +
             "(?:第\\s*([1-9][0-9]?|[一二三四五六七八九十]+)\\s*(?:项|条|个选项|个行动选项)|" +
@@ -287,6 +335,9 @@ object RoleplayActionOptionsPolicy {
         return prefix.length >= 4 || '\t' in prefix
     }
 }
+
+internal fun ChatMessage.isGeneratedImageOnlyReply(): Boolean =
+    role == MessageRole.ASSISTANT && displayContent.isBlank() && images.isNotEmpty() && generatedFromMessageId != null
 
 data class ActionOptionInsertion(val text: String, val cursor: Int)
 

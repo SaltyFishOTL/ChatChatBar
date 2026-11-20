@@ -3803,6 +3803,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
         val messageId = updatedMessage.id
         val repository = ChatBarApp.instance.ragRepository
+        if (updatedMessage.role == MessageRole.ASSISTANT) {
+            repository.deleteChatMemoryDependingOnActionReply(sessionId, messageId)
+        }
         val contextSize = effectiveContextWindowSize()
         val recentAndTurn = chatRepository.getContextCandidateMessages(
             sessionId = sessionId,
@@ -3865,6 +3868,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     private suspend fun refreshMemoryAfterMessageDeletion(deletedMessage: ChatMessage) {
+        if (deletedMessage.role == MessageRole.ASSISTANT) {
+            ChatBarApp.instance.ragRepository.deleteChatMemoryDependingOnActionReply(sessionId, deletedMessage.id)
+        }
         if (!ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) return
 
         val remainingTurnMessage = deletedMessage.sourceTurnId?.let { sourceTurnId ->

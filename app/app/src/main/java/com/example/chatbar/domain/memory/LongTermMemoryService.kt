@@ -40,6 +40,7 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.SettingsRepository
 import com.example.chatbar.domain.chat.ContextWindowManager
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.StreamingChatService
 import com.example.chatbar.domain.prompt.PromptTemplates
 import java.util.concurrent.ConcurrentHashMap
@@ -3153,9 +3154,18 @@ class LongTermMemoryService internal constructor(
 
     private fun injectableLegacyReferences(loaded: LoadedMemory): List<MemoryNode> {
         val references = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
-        if (references.none { it.sourceTurnIds.isNotEmpty() }) return references
+        if (references.isEmpty()) return references
         val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(loaded.messages)
-        return references.filterNot { reference -> reference.sourceTurnIds.any(projectedActionSources::contains) }
+        if (projectedActionSources.isEmpty()) return references
+        val orderBySourceId = loaded.state.timeline.associate { it.sourceTurnId to it.sourceOrder }
+        if (projectedActionSources.any { it !in orderBySourceId }) return emptyList()
+        val earliestAffectedOrder = projectedActionSources.minOf(orderBySourceId::getValue)
+        return references.filter { reference ->
+            // Legacy reference source IDs can mark an accumulation boundary, not exact coverage.
+            if (reference.sourceTurnIds.any { it !in orderBySourceId }) return@filter false
+            val throughOrder = reference.sourceTurnIds.maxOfOrNull(orderBySourceId::getValue)
+            throughOrder != null && throughOrder < earliestAffectedOrder
+        }
     }
 
     private fun effectiveArchiveFrontier(loaded: LoadedMemory): MemorySafeFrontier {
@@ -3804,7 +3814,8 @@ class LongTermMemoryService internal constructor(
         val content = messages.filter { it.sourceTurnId == id && it.role != MessageRole.SYSTEM }
             .joinToString("\n") { message ->
                 val role = if (message.role == MessageRole.USER) "用户" else "AI"
-                val body = MemorySourceFingerprint.modelFacingBody(message)
+                val choice = RoleplayActionOptionsPolicy.confirmedMemoryChoice(message, messages)
+                val body = MemorySourceFingerprint.modelFacingBody(message, choice)
                 "$role：$body"
             }
         "[sourceTurnId=$id｜T${displayT ?: "?"}]\n${content.ifBlank { "[已删除轮次 tombstone]" }}"

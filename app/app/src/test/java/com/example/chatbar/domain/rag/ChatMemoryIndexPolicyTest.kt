@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.rag
 
+import com.example.chatbar.data.local.entity.ActionOptionLabels
 import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChunkSourceType
@@ -26,6 +27,26 @@ class ChatMemoryIndexPolicyTest {
 
         assertEquals(listOf("user:\n我选去码头。\n\nassistant:\n窗外天亮了。"), ChatMemoryIndexPolicy.contentsForIndex(turn))
         assertTrue(assistant.displayContent.contains("打开秘密仓库"))
+    }
+
+    @Test
+    fun indexCarriesOnlyTheConfirmedPreviousTurnChoice() {
+        val menu = message("menu", MessageRole.ASSISTANT,
+            "星图展开了。\n[choices]\nChoices\nA. 封好地图\nB. 把铜钥匙交给天文学家\n[/choices]",
+            sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = ActionOptionsFormat(
+            "[choices]", "[/choices]", "Choices", ActionOptionLabels.LETTERS,
+        ))
+        val image = message("image", MessageRole.ASSISTANT, "", listOf("test.png"), "turn-7")
+            .copy(generatedFromMessageId = menu.id)
+        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8")
+        val turn = ChatMemoryIndexPolicy.buildIndexableTurns(listOf(menu, image, user), emptySet()).last()
+        assertEquals("turn-8", turn.sourceTurnId)
+        assertEquals(menu.id, turn.confirmedChoices[user.id]?.replyId)
+        assertEquals(listOf("user:\nB\n把铜钥匙交给天文学家"), ChatMemoryIndexPolicy.contentsForIndex(turn))
+        assertEquals("B", user.displayContent)
+        val gap = user.copy(sourceTurnId = "turn-9", sourceTurnOrder = 9)
+        assertTrue(ChatMemoryIndexPolicy.buildTurns(listOf(menu, gap)).last().confirmedChoices.isEmpty())
     }
 
     @Test
