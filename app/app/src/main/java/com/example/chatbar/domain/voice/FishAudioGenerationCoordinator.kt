@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -117,6 +119,7 @@ class FishAudioGenerationCoordinator(
     @Volatile
     private var foregroundSessionId: String? = null
     private val foregroundGeneration = AtomicLong(0L)
+    private val playbackRequest = AtomicLong(0L)
 
     private val _batches = MutableStateFlow<List<VoiceGenerationBatchState>>(emptyList())
     val batches: StateFlow<List<VoiceGenerationBatchState>> = _batches.asStateFlow()
@@ -374,20 +377,46 @@ class FishAudioGenerationCoordinator(
 
     fun playFrom(
         voice: GeneratedVoiceMessage,
-        orderedVisibleVoices: List<GeneratedVoiceMessage>
-    ) {
-        playback.stop()
+        orderedVisibleVoices: List<GeneratedVoiceMessage>,
+        mayStart: () -> Boolean = { true },
+    ): Job {
+        val request = playbackRequest.incrementAndGet()
         val sequence = VoicePlaybackQueuePolicy.sequenceFrom(voice, orderedVisibleVoices)
-        scope.launch {
-            clearAutoPlay()
-            playback.playSequence(sequence)
+        return scope.launch {
+            autoPlayMutex.withLock {
+                if (request != playbackRequest.get()) return@withLock
+                val playable = try {
+                    val following = sequence.drop(1).mapNotNull { voiceRepository.currentVoiceForPlayback(it) }
+                    val selected = voiceRepository.currentVoiceForPlayback(voice) ?: return@withLock
+                    listOf(selected) + following
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    return@withLock
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    if (request == playbackRequest.get() && mayStart()) {
+                        clearAutoPlayLocked()
+                        playback.playSequence(playable)
+                    }
+                }
+            }
         }
     }
 
     fun stopPlayback() {
+        playbackRequest.incrementAndGet()
         playback.stop()
         scope.launch {
             clearAutoPlay()
+        }
+    }
+
+    internal suspend fun stopPlaybackForRestore() {
+        playbackRequest.incrementAndGet()
+        autoPlayMutex.withLock {
+            clearAutoPlayLocked()
+            withContext(Dispatchers.Main.immediate) { playback.stop() }
         }
     }
 
@@ -926,7 +955,7 @@ class FishAudioGenerationCoordinator(
         }
     }
 
-    private fun drainAutoPlayLocked() {
+    private suspend fun drainAutoPlayLocked() {
         while (true) {
             val next = pendingAutoPlay.values.minWithOrNull(
                 compareBy<PendingAutoPlay>(PendingAutoPlay::messageOrder)
@@ -934,18 +963,20 @@ class FishAudioGenerationCoordinator(
             ) ?: return
             if (!next.terminal) return
             pendingAutoPlay.remove(next.batchId)
-            val shouldPlay = next.voices?.isNotEmpty() == true &&
-                foregroundSessionId == next.sessionId &&
-                foregroundGeneration.get() == next.foregroundGeneration
-            if (shouldPlay) playback.enqueueSequence(checkNotNull(next.voices))
+            val voices = next.voices?.takeIf { it.isNotEmpty() } ?: continue
+            withContext(Dispatchers.Main.immediate) {
+                if (foregroundSessionId == next.sessionId && foregroundGeneration.get() == next.foregroundGeneration) {
+                    playback.enqueueSequence(voices)
+                }
+            }
         }
     }
 
-    private suspend fun clearAutoPlay() {
-        autoPlayMutex.withLock {
-            foregroundGeneration.incrementAndGet()
-            pendingAutoPlay.clear()
-        }
+    private suspend fun clearAutoPlay() = autoPlayMutex.withLock { clearAutoPlayLocked() }
+
+    private fun clearAutoPlayLocked() {
+        foregroundGeneration.incrementAndGet()
+        pendingAutoPlay.clear()
     }
 
     private fun setBatch(state: VoiceGenerationBatchState) {

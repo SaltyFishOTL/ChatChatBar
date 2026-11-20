@@ -89,6 +89,18 @@ class VoiceMessageRepository(
         }
     }
 
+    internal suspend fun currentVoiceForPlayback(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? = mutex.withLock {
+        ensureInitializedLocked()
+        val current = _voices.value.firstOrNull { it.id == captured.id } ?: return@withLock null
+        if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
+            current.audioPath != captured.audioPath) return@withLock null
+        if (!current.requiresCompatibleVersion && !captured.requiresCompatibleVersion) return@withLock current
+
+        val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return@withLock null
+        val version = MessageAlternativeVersionPolicy.activeVersion(message)
+        current.takeIf { it.messageVersionId == version.id && VoiceMessageVersionPolicy.isCompatibleVersion(version, it) }
+    }
+
     suspend fun listForMessage(messageId: String): List<GeneratedVoiceMessage> {
         initialize()
         return _voices.value.filter { it.messageId == messageId }

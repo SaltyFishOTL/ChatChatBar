@@ -169,6 +169,7 @@ class ReplyRemovalDurabilityTest {
             requiresCompatibleVersion = true, anchorId = "original-anchor")
         fixture.voices.save(voice)
         assertEquals(listOf(voice.id), fixture.voices.listForCurrentVersion(original).map { it.id })
+        assertEquals(voice.id, fixture.voices.currentVoiceForPlayback(voice)?.id)
         val changed = MessageAlternativeVersionPolicy.editCurrentContent(original, "Edited incompatible reply")
         assertTrue(fixture.chats.updateMessageIfUnchanged(original, changed))
         val persisted = requireNotNull(fixture.chats.getMessage(original.id, session.id))
@@ -184,6 +185,7 @@ class ReplyRemovalDurabilityTest {
             assertTrue(archived.requiresCompatibleVersion)
             assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
             assertTrue(cold.voices.placementsForMessage(original).isEmpty())
+            assertNull(cold.voices.currentVoiceForPlayback(voice))
             assertEquals("synthetic audio", File(archived.audioPath).readText())
         }
     }

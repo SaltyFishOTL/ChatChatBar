@@ -762,8 +762,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         voice: GeneratedVoiceMessage,
         orderedVisibleVoices: List<GeneratedVoiceMessage>
     ) {
-        fishAudioCoordinator.playFrom(voice, orderedVisibleVoices)
+        if (voice.sessionId != sessionId || !canStartVoicePlayback()) return
+        fishAudioCoordinator.playFrom(voice, orderedVisibleVoices, ::canStartVoicePlayback)
     }
+
+    private fun canStartVoicePlayback(): Boolean =
+        saveSlotOperationJob?.isActive != true && !_saveSlotOperation.value.busy
 
     fun stopVoicePlayback() {
         fishAudioCoordinator.stopPlayback()
@@ -4396,7 +4400,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       lastMessageRole = latest?.role
                   )
                   val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
-                  fishAudioCoordinator.stopPlayback()
+                  fishAudioCoordinator.stopPlaybackForRestore()
                   try {
                       chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
                       voiceMessageRepository.restoreForSession(
@@ -4467,6 +4471,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     fishAudioStorage = ChatBarApp.instance.fishAudioStorage
                 )
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复消息…", true)
+                fishAudioCoordinator.stopPlaybackForRestore()
                 chatRepository.replaceMessagesForSessionStreaming(sessionId) { emit ->
                     reader.streamMessages(sessionId, emit)
                 }

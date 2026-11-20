@@ -1222,7 +1222,7 @@ fun ChatScreen(
                         assistantSegmentedBubblesEnabled = assistantSegmentedBubblesEnabled,
                         voicePlacements = messageVoices,
                         voicePlaybackState = voicePlaybackState,
-                        onVoiceClick = if (screenshotSelectionMode) {
+                        onVoiceClick = if (screenshotSelectionMode || saveSlotOperation.busy) {
                             null
                         } else {
                             { voice ->

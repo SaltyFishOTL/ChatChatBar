@@ -43,7 +43,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 ## Restore and Ownership
 
 - Stage and validate the package plus materialize resources before committing session data. Replace message and RAG entity sets through their streaming transactional APIs.
-- Remap restored message session IDs, RAG IDs, voice IDs, image paths, metadata paths, and background path to the target session.
+- Remap restored message session IDs, RAG IDs, voice IDs, image paths, metadata paths, and background path to the target session. Stop queued and active voice playback before replacing messages in both restore routes.
 - Persist replacement records before deleting old owned media. Legacy and v8 reads reuse reply-media ownership scans for current messages, backgrounds, other surviving references and legacy archives. The final media check runs after publication with cancellation disabled. Failed cleanup leaves the newly read conversation available and reports the remaining files. On pre-commit failure or cancellation, delete only files created by that attempt.
 - Never delete external files. Package deletion may target only the deterministic app-private SaveSlot package path.
 - Restore only the current long-term-memory snapshot. Do not archive histories, running jobs, coordinator state, or stale runtime progress.

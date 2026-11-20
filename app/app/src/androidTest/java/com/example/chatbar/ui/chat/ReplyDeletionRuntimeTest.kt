@@ -136,19 +136,31 @@ class ReplyDeletionRuntimeTest {
             audioPath = file.path, durationMs = 1000, byteLength = file.length(), createdAt = 1, updatedAt = 1
         )
         val remainingVoice = voice("${retained.id}-shared", retained, sharedAudio)
+        val playingVoice = voice("${old.id}-shared", old, sharedAudio).copy(
+            messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(old), requiresCompatibleVersion = true,
+        )
         try {
             app.chatRepository.createSession(other)
             app.chatRepository.addMessage(old)
             app.chatRepository.addMessage(retained)
-            app.voiceMessageRepository.save(voice("${old.id}-shared", old, sharedAudio))
+            app.voiceMessageRepository.save(playingVoice)
             app.voiceMessageRepository.save(voice("${old.id}-unused", old, unusedAudio))
             app.voiceMessageRepository.save(remainingVoice)
             app.saveSlotRepository.save(slot)
             openModel(old.id)
+            app.fishAudioGenerationCoordinator.playFrom(playingVoice, listOf(playingVoice)) { false }.join()
+            assertTrue(app.voicePlaybackController.state.value.queueVoiceIds.isEmpty())
 
-            withContext(Dispatchers.Main) { vm.loadSaveSlot(slot.toSummary()) }
+            withContext(Dispatchers.Main) {
+                app.voicePlaybackController.playSingle(playingVoice)
+                assertEquals(playingVoice.id, app.voicePlaybackController.state.value.currentVoiceId)
+                vm.loadSaveSlot(slot.toSummary())
+            }
             val result = stageSaveSlotResult()
             assertEquals("读档完成。", result.status)
+            assertTrue(app.voicePlaybackController.state.value.queueVoiceIds.isEmpty())
+            app.fishAudioGenerationCoordinator.playFrom(playingVoice, listOf(playingVoice)).join()
+            assertTrue(app.voicePlaybackController.state.value.queueVoiceIds.isEmpty())
             val data = com.example.chatbar.data.local.JsonFileStorage(app)
             val chats = com.example.chatbar.data.repository.ChatRepository(data)
             val voices = com.example.chatbar.data.repository.VoiceMessageRepository(data)
@@ -161,6 +173,7 @@ class ReplyDeletionRuntimeTest {
             assertFalse(File(unusedImage).exists())
             assertFalse(unusedAudio.exists())
         } finally {
+            withContext(Dispatchers.Main) { app.voicePlaybackController.stop() }
             app.saveSlotRepository.delete(slot.id)
             app.voiceMessageRepository.deleteForSession(other.id)
             app.chatRepository.deleteMessagesForSession(other.id)
