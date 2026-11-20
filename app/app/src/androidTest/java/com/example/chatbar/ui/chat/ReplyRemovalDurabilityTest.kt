@@ -36,6 +36,12 @@ class ReplyRemovalDurabilityTest {
     @Test fun recoveredSameIdMessageRetainsRestoredAttachments() = verifyFailure("chat_message_indexes", restoreOwner = true)
     @Test fun restoredDifferentImageRetainsNewFilesAndReleasesOldImage() =
         verifyFailure("chat_message_indexes", restoreOwner = true, replaceImage = true)
+
+    @Test fun ambiguousLegacyVoiceSurvivesDirectAlternativeRemoval() = verifyAmbiguousLegacyVoice()
+    @Test fun ambiguousLegacyVoiceSurvivesRemovalAfterDisplayMigration() = verifyAmbiguousLegacyVoice(openFirst = true)
+    @Test fun oldPersistedDisplayAssignmentCannotAuthorizeVoiceDeletion() = verifyAmbiguousLegacyVoice(assigned = true)
+    @Test fun failedAlternativeBodyWriteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = true)
+    @Test fun failedWholeMessageBodyDeleteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = false)
     @Test fun legacyArchiveStillOwnsAudioAndImageAfterMessageRemoval() = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly = false)
@@ -74,14 +80,69 @@ class ReplyRemovalDurabilityTest {
         val otherSession = fixture.createSession()
         val message = fixture.addReply(session, versionOnly = true)
         val voice = fixture.addVoice(message)
-        fixture.voices.save(voice.copy(messageVersionId = null))
-        val otherVoice = voice.copy(id = "other-legacy", sessionId = otherSession.id, messageVersionId = null)
+        fixture.voices.save(voice.copy(messageVersionId = null, versionOwnershipConfirmed = false))
+        val otherVoice = voice.copy(id = "other-legacy", sessionId = otherSession.id,
+            messageVersionId = null, versionOwnershipConfirmed = false)
         fixture.voices.save(otherVoice)
         val version = MessageAlternativeVersionPolicy.activeVersionId(message)
         val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(message, version))
         assertNull(fixture.removals.remove(message, replacement, version))
         assertEquals(otherVoice, fixture.voices.get(otherVoice.id))
         assertTrue(File(otherVoice.audioPath).isFile)
+    }
+
+    private fun verifyAmbiguousLegacyVoice(openFirst: Boolean = false, assigned: Boolean = false) = withFixture { fixture ->
+        val session = fixture.createSession()
+        val reply = fixture.addReply(session, versionOnly = true, sameText = true)
+        val removedId = MessageAlternativeVersionPolicy.activeVersionId(reply)
+        val legacy = fixture.addVoice(reply).copy(
+            id = "legacy-voice", messageVersionId = removedId.takeIf { assigned }, versionOwnershipConfirmed = false
+        )
+        fixture.voices.save(legacy)
+        if (openFirst) {
+            assertEquals(removedId, fixture.voices.listForCurrentVersion(reply).single { it.id == legacy.id }.messageVersionId)
+        }
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, removedId))
+        assertNull(fixture.removals.remove(reply, replacement, removedId))
+
+        val cold = Fixture(fixture.context, fixture.app)
+        val survivingReply = requireNotNull(cold.chats.getMessage(reply.id, session.id))
+        val survivingVersion = MessageAlternativeVersionPolicy.versions(survivingReply).single()
+        assertEquals(reply.displayContent, survivingVersion.content)
+        assertNotEquals(removedId, survivingVersion.id)
+        val survivingVoice = cold.voices.listForCurrentVersion(survivingReply).single()
+        assertEquals(legacy.id, survivingVoice.id)
+        assertEquals(survivingVersion.id, survivingVoice.messageVersionId)
+        assertFalse(survivingVoice.versionOwnershipConfirmed)
+        assertEquals("synthetic audio", File(survivingVoice.audioPath).readText())
+        assertEquals("synthetic image", File(survivingReply.images.single()).readText())
+    }
+
+    private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->
+        val session = fixture.createSession()
+        val message = fixture.addReply(session, versionOnly)
+        val voice = fixture.addVoice(message)
+        val target = MessageAlternativeVersionPolicy.activeVersionId(message).takeIf { versionOnly }
+        val replacement = target?.let { MessageAlternativeVersionPolicy.remove(message, it) }
+        val directory = File(fixture.context.filesDir, "entities/chat_messages")
+        assertTrue(directory.isDirectory)
+        assertTrue(directory.setWritable(false))
+        try {
+            assertTrue(runCatching { fixture.removals.remove(message, replacement, target) }.isFailure)
+            assertEquals(message, fixture.chats.getMessage(message.id, session.id))
+            assertEquals(voice, fixture.voices.get(voice.id))
+            assertTrue(File(voice.audioPath).isFile)
+            assertEquals(1, File(fixture.context.filesDir, "entities/pending_reply_removals").listFiles().orEmpty().size)
+        } finally {
+            assertTrue(directory.setWritable(true))
+        }
+        val cold = Fixture(fixture.context, fixture.app)
+        assertFalse(cold.removals.retryMessage(session.id, message.id, target))
+        assertNull(cold.removals.remove(message, replacement, target))
+        assertEquals(replacement?.displayContent, cold.chats.getMessage(message.id, session.id)?.displayContent)
+        assertNull(cold.voices.get(voice.id))
+        assertFalse(File(voice.audioPath).exists())
+        ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
     }
 
     private fun verifyFailure(
@@ -190,7 +251,8 @@ class ReplyRemovalDurabilityTest {
         suspend fun addReply(
             session: ChatSession,
             versionOnly: Boolean,
-            imagePath: String = "images/save_slots/synthetic/image.png"
+            imagePath: String = "images/save_slots/synthetic/image.png",
+            sameText: Boolean = false
         ): ChatMessage {
             val image = File(context.filesDir, imagePath).also {
                 check(it.parentFile!!.mkdirs())
@@ -199,7 +261,9 @@ class ReplyRemovalDurabilityTest {
             val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "First version").copy(
                 images = listOf(image.path), sourceTurnId = "synthetic-turn", sourceTurnOrder = 1
             )
-            val message = if (versionOnly) MessageAlternativeVersionPolicy.append(first, "Second version", "second") else first
+            val message = if (versionOnly) {
+                MessageAlternativeVersionPolicy.append(first, if (sameText) first.content else "Second version", "second")
+            } else first
             return chats.addMessage(message)
         }
 
@@ -212,6 +276,7 @@ class ReplyRemovalDurabilityTest {
             voices.ensureAnchorsForVersion(message, version.id, version.content)
             val voice = GeneratedVoiceMessage(
                 id = "synthetic-voice", sessionId = message.sessionId, messageId = message.id, messageVersionId = version.id,
+                versionOwnershipConfirmed = true,
                 sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND, sourceSpeakerName = "",
                 sourceText = version.content, taggedText = version.content, characterId = "synthetic-card",
                 characterName = "Synthetic", voice = FishAudioVoiceBinding("synthetic-reference", "Synthetic"),

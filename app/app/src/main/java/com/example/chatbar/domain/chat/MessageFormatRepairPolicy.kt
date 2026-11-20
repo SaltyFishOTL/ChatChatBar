@@ -53,9 +53,12 @@ object MessageFormatRepairPolicy {
     }
 
     fun applicableNotice(message: ChatMessage): MessageFormatRepairNotice? =
-        message.formatRepairNotice?.takeIf {
-            (it.versionId == null || it.versionId == MessageAlternativeVersionPolicy.activeVersionId(message)) &&
-                (if (it.restored) it.originalContent else it.targetContent) == message.displayContent
+        message.formatRepairNotice?.takeIf { notice ->
+            val checkpoint = if (notice.restored) notice.originalContent else notice.targetContent
+            if (checkpoint != message.displayContent) return@takeIf false
+            val ownerId = notice.versionId ?: MessageAlternativeVersionPolicy.versions(message)
+                .singleOrNull { it.content == checkpoint }?.id
+            ownerId == MessageAlternativeVersionPolicy.activeVersionId(message)
         }
 
     /** A successful no-op clears failures, retaining only a usable local undo/redo pair. */

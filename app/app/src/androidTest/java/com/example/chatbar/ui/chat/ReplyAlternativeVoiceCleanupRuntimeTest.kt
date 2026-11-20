@@ -38,11 +38,13 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
 
     @Test fun deletingCurrentVersionCleansVoiceAndAnchorFromColdStorageAndBackup() = verify()
     @Test fun clearingLastTextSegmentCleansRemovedVersionVoiceAndAnchorFromBackup() = verify(viaSegmentEdit = true)
+    @Test fun clearingLastTextSegmentWithSharedImageKeepsImageAndSurvivingVoice() =
+        verify(viaSegmentEdit = true, segmentWithImage = true)
     @Test fun clearingOnlyAlternativeThroughSegmentDeletesMessageAndVoice() = verify(viaSegmentEdit = true, last = true)
     @Test fun clearingOnlyAlternativePreservesAudioReferencedByIndependentMessage() = verify(viaSegmentEdit = true, last = true, sharedAudio = true)
     @Test fun clearingLastTextSegmentRejectsLateVoiceAndAnchorRecreation() = verify(viaSegmentEdit = true, lateVoice = true, lateAnchor = true, staleUi = true)
     @Test fun clearingLastTextSegmentReportsCleanupFailureAfterRefreshingMessage() = verify(viaSegmentEdit = true, cleanupFailure = true)
-    @Test fun deletingInactiveLegacyVersionResolvesOwnershipBeforeRemoval() = verify(legacy = true)
+    @Test fun deletingInactiveLegacyVersionPreservesUnconfirmedAudio() = verify(legacy = true)
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
     @Test fun lastVersionDeletionFinishesVoiceCleanupAfterEditorCancellation() = verify(last = true, cancelAfterCommit = true)
@@ -181,7 +183,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         }
     }
 
-    @Test fun legacyLateWriteAndUiReadWaitUntilCasCleanupCompletes() = runBlocking<Unit> { withTimeout(40_000) {
+    @Test fun confirmedVoiceLateWriteAndUiReadWaitUntilCasCleanupCompletes() = runBlocking<Unit> { withTimeout(40_000) {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         val root = File(app.cacheDir, "atomic-version-voice-" + UUID.randomUUID()).also(File::mkdirs)
         val context = object : ContextWrapper(app) { override fun getFilesDir() = root }
@@ -191,7 +193,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val first = ChatMessage.create("synthetic-session", MessageRole.ASSISTANT, "old candidate")
         val message = MessageAlternativeVersionPolicy.append(first, "kept candidate", "kept-version")
         val removedId = MessageAlternativeVersionPolicy.versions(message).first().id
-        val legacy = GeneratedVoiceMessage(id = "legacy", sessionId = message.sessionId, messageId = message.id,
+        val voice = GeneratedVoiceMessage(id = "confirmed", sessionId = message.sessionId, messageId = message.id,
+            messageVersionId = removedId, versionOwnershipConfirmed = true,
             sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
             sourceSpeakerName = "", sourceText = first.content, taggedText = first.content,
             characterId = "fixture", characterName = "Fixture", voice = FishAudioVoiceBinding("fixture", "Fixture"),
@@ -199,10 +202,10 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             durationMs = 1000, byteLength = 1, createdAt = 1, updatedAt = 1)
         try {
             val persistedMessage = chats.addMessage(message)
-            voices.save(legacy)
+            voices.save(voice)
             val rejected = runCatching { voices.deleteForVersion(message, removedId) { false } }
             assertTrue(rejected.exceptionOrNull() is IllegalStateException)
-            assertEquals(legacy, voices.get(legacy.id))
+            assertEquals(voice, voices.get(voice.id))
             assertTrue(voices.snapshotAnchorsForMessages(setOf(message.id)).isEmpty())
             val afterCas = CompletableDeferred<Unit>()
             val finishCommit = CompletableDeferred<Unit>()
@@ -219,12 +222,14 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             withTimeout(15_000) { afterCas.await() }
             val late = async(Dispatchers.Default) {
                 attempt.complete(Unit)
-                runCatching { voices.saveForExistingVersion(legacy) { chats.getMessage(message.id, message.sessionId) } }
+                runCatching {
+                    voices.saveForExistingVersion(voice, replacing = voice) { chats.getMessage(message.id, message.sessionId) }
+                }
             }
             val ui = async(Dispatchers.Default) { voices.placementsForMessage(first) }
             withTimeout(15_000) { attempt.await() }
             finishCommit.complete(Unit)
-            assertEquals(listOf("legacy"), withTimeout(15_000) { mutation.await() }.map { it.id })
+            assertEquals(listOf(voice.id), withTimeout(15_000) { mutation.await() }.map { it.id })
             assertTrue(withTimeout(15_000) { late.await() }.exceptionOrNull() is IllegalStateException)
             assertTrue(withTimeout(15_000) { ui.await() }.isEmpty())
             val cold = VoiceMessageRepository(JsonFileStorage(context))
@@ -236,7 +241,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     private fun verify(
         legacy: Boolean = false, sharedAudio: Boolean = false, last: Boolean = false,
         missing: Boolean = false, lateVoice: Boolean = false, lateAnchor: Boolean = false, staleUi: Boolean = false,
-        cleanupFailure: Boolean = false, viaSegmentEdit: Boolean = false, cancelAfterCommit: Boolean = false
+        cleanupFailure: Boolean = false, viaSegmentEdit: Boolean = false, cancelAfterCommit: Boolean = false,
+        segmentWithImage: Boolean = false
     ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
@@ -262,7 +268,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val retainedAudio = if (sharedAudio) deletedAudio else audio("retained")
         val otherAudio = if (last && sharedAudio) deletedAudio else audio("other")
         val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "synthetic first voice")
-            .copy(images = if (viaSegmentEdit) emptyList() else listOf(image.path))
+            .copy(images = if (!viaSegmentEdit || segmentWithImage) listOf(image.path) else emptyList())
         val reply = if (last) first else MessageAlternativeVersionPolicy.append(first,
             "synthetic second voice", "second-version")
         val versions = MessageAlternativeVersionPolicy.versions(reply)
@@ -275,7 +281,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         }
         fun voice(message: ChatMessage, version: String?, text: String, file: File) = GeneratedVoiceMessage(
             id = UUID.randomUUID().toString(), sessionId = session.id, messageId = message.id,
-            messageVersionId = version, sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
+            messageVersionId = version, versionOwnershipConfirmed = version != null,
+            sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
             sourceSpeakerName = "", sourceText = text, taggedText = text, characterId = "synthetic-character",
             characterName = "Synthetic", voice = FishAudioVoiceBinding("synthetic-reference", "Synthetic"),
             fishModelId = "synthetic-model", audioPath = file.path, durationMs = 1000, byteLength = file.length(),
@@ -344,7 +351,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 assertTrue(coldAnchors.any { it.messageVersionId == deletedVersion.id })
                 return@runBlocking
             }
-            assertFalse("Deleted alternative must not retain its dedicated voice", coldVoices.any { it.id == removedVoice.id })
+            assertEquals("Only confirmed version ownership permits voice deletion", legacy, coldVoices.any { it.id == removedVoice.id })
             assertFalse("Deleted alternative must not retain its anchor state", coldAnchors.any {
                 it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
             if (cleanupFailure) {
@@ -357,7 +364,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 assertTrue(otherAudio.exists())
                 return@runBlocking
             }
-            assertEquals("Shared audio must survive until its last remaining voice is deleted", sharedAudio, deletedAudio.exists())
+            assertEquals("Shared and unconfirmed audio must remain available", sharedAudio || legacy, deletedAudio.exists())
             assertTrue(otherAudio.exists())
             assertTrue(coldVoices.any { it == independent })
             assertTrue(coldAnchors.any { it.messageId == other.id })
@@ -378,7 +385,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                     app.chatRepository.getMessage(reply.id, session.id)
                 } } catch (_: IllegalStateException) { rejected = true }
                 assertTrue("Late TTS result must be rejected", rejected)
-                assertNull(VoiceMessageRepository(JsonFileStorage(app)).get(removedVoice.id))
+                assertEquals(legacy, VoiceMessageRepository(JsonFileStorage(app)).get(removedVoice.id) != null)
             }
             if (lateAnchor) {
                 var rejected = false
@@ -411,7 +418,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertEquals(coldVoices.map { it.id }.toSet(), exported.map { it.id }.toSet())
             assertFalse(exportedAnchors.any { it.messageId == reply.id && it.messageVersionId == deletedVersion.id })
             val exportedAudio = File(restore, "files/audio/generated/${session.id}")
-            assertEquals(sharedAudio, File(exportedAudio, "deleted.mp3").exists())
+            assertEquals(sharedAudio || legacy, File(exportedAudio, "deleted.mp3").exists())
             assertArrayEquals(otherAudio.readBytes(), File(exportedAudio, otherAudio.name).readBytes())
         } finally {
             withContext(Dispatchers.Main) { store.clear() }

@@ -62,8 +62,13 @@ internal class ReplyRemovalCoordinator(
     suspend fun retryMessage(sessionId: String, messageId: String, versionId: String?) = mutex.withLock {
         LocalDataMaintenance.access {
             val matching = pending().filter { it.sessionId == sessionId && it.messageId == messageId }
-            matching.forEach { finish(it) }
-            matching.any { it.versionId == null || it.versionId == versionId }
+            var committed = false
+            matching.forEach { removal ->
+                if (finish(removal) && (removal.versionId == null || removal.versionId == versionId)) {
+                    committed = true
+                }
+            }
+            committed
         }
     }
 
@@ -116,7 +121,7 @@ internal class ReplyRemovalCoordinator(
             }
         }
         storage.deleteEntityUncached(STORE, removal.id, requireSuccessfulDelete = true)
-        Unit
+        committed
     }
 
     companion object {

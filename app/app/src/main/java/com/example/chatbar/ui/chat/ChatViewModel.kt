@@ -576,6 +576,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val hiddenRegenerationMessageId = AtomicReference<String?>(null)
     private var manualFormatRepairJob: Job? = null
     private var activeFormatRepairJob: Job? = null
+    private val formatRepairCommitMutex = Mutex()
     private var formatRepairStopRequested = false
     private val imageGenerationJobs = ConcurrentHashMap<String, Job>()
     private val imageGenerationPromptCheckpoints =
@@ -2335,16 +2336,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun repairMessageFormat(messageId: String) {
-        if (_isResponding.value) return
+        if (_isResponding.value || saveSlotOperationJob?.isActive == true) return
         _isResponding.value = true
         val job = viewModelScope.launch {
             try {
+                val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
                 if (message.role != MessageRole.ASSISTANT) return@launch
-                val repaired = performMessageFormatRepair(message, automatic = false)
-                if (repaired.displayContent != message.displayContent) {
-                    refreshMemoryAfterMessageEdit(repaired)
-                }
+                performMessageFormatRepair(message, automatic = false, timelineRevision = timelineRevision)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messageActionError.value = error.message ?: "保存格式修复结果失败"
             } finally {
                 _messageFormatRepairState.value = null
                 _isResponding.value = false
@@ -2414,18 +2417,38 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun commitReplyAlternativeRemoval(
         message: ChatMessage,
         versionId: String,
-        changed: ChatMessage
+        changed: ChatMessage,
+        deleteMemoryForMessage: Boolean = false
     ) {
         val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
         replaceMessagesFromRepository()
         if (cleanupError != null) _messageActionError.value = cleanupError
+        if (deleteMemoryForMessage) ragManager.deleteMemoryForMessage(message.id)
         refreshMemoryAfterMessageEdit(changed)
     }
 
     private suspend fun performMessageFormatRepair(
         message: ChatMessage,
-        automatic: Boolean
-    ): ChatMessage {
+        automatic: Boolean,
+        timelineRevision: Long
+    ): ChatMessage? {
+        suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
+            formatRepairCommitMutex.withLock {
+                if (!chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)) {
+                    _messageFormatRepairEvents.tryEmit("消息已变化，已放弃本次格式修复")
+                    return@withLock null
+                }
+                replaceMessagesFromRepository()
+                if (!automatic && replacement.displayContent != message.displayContent) {
+                    refreshMemoryAfterMessageEdit(replacement)
+                }
+                if (unchanged) _messageFormatRepairEvents.tryEmit("格式无需修复")
+                replacement
+            }
+
+        fun failure(error: String) =
+            message.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error))
+
         val appSettings = settingsRepository.getAppSettings()
         val currentSession = chatRepository.getSession(sessionId) ?: return message
         val renderContext = placeholderRenderContext(currentSession)
@@ -2458,11 +2481,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             appSettings
         )
         if (model == null || model.apiKey.isBlank()) {
-            return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效")
+            return commit(failure("格式修复模型及默认对话模型未配置或已失效"))
         }
 
         val originalContent = message.displayContent
-        var result = message
+        var result: ChatMessage? = null
+        var unchanged = false
         var repairedPrefix = ""
         var sawDone = false
         formatRepairStopRequested = false
@@ -2471,69 +2495,55 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             previewContent = originalContent
         )
 
-        coroutineScope {
-            val repairJob = launch {
-                try {
-                    messageFormatRepairService.streamRepair(
-                        originalContent = originalContent,
-                        formatCard = formatCard,
-                        segmentedBubbleFormat = segmentedFormat,
-                        modelConfig = model
-                    ).collect { event ->
-                        when (event) {
-                            is StreamEvent.Delta -> {
-                                repairedPrefix += event.text
-                                _messageFormatRepairState.value = MessageFormatRepairState(
-                                    messageId = message.id,
-                                    previewContent = MessageFormatRepairPolicy.progressiveOverlay(
-                                        original = originalContent,
-                                        repairedPrefix = repairedPrefix
+        try {
+            coroutineScope {
+                val repairJob = launch {
+                    try {
+                        messageFormatRepairService.streamRepair(
+                            originalContent = originalContent,
+                            formatCard = formatCard,
+                            segmentedBubbleFormat = segmentedFormat,
+                            modelConfig = model
+                        ).collect { event ->
+                            when (event) {
+                                is StreamEvent.Delta -> {
+                                    repairedPrefix += event.text
+                                    _messageFormatRepairState.value = MessageFormatRepairState(
+                                        messageId = message.id,
+                                        previewContent = MessageFormatRepairPolicy.progressiveOverlay(
+                                            original = originalContent,
+                                            repairedPrefix = repairedPrefix
+                                        )
                                     )
-                                )
+                                }
+                                is StreamEvent.Error -> throw IllegalStateException(event.message)
+                                StreamEvent.Done -> sawDone = true
+                                is StreamEvent.ReasoningDelta,
+                                is StreamEvent.ContentPreview,
+                                is StreamEvent.Usage -> Unit
                             }
-                            is StreamEvent.Error -> throw IllegalStateException(event.message)
-                            StreamEvent.Done -> sawDone = true
-                            is StreamEvent.ReasoningDelta,
-                            is StreamEvent.ContentPreview,
-                            is StreamEvent.Usage -> Unit
                         }
-                    }
-                    if (!sawDone || repairedPrefix.isBlank()) {
-                        throw IllegalStateException("格式修复模型返回空结果")
-                    }
-                    result = when {
-                        MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
-                            repairedPrefix == originalContent -> {
-                            val unchanged = message.copy(
-                                formatRepairNotice = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(message),
-                                updatedAt = System.currentTimeMillis()
-                            )
-                            if (unchanged != message) persistFormatRepairMessage(unchanged)
-                            _messageFormatRepairEvents.tryEmit("格式无需修复")
-                            unchanged
+                        if (!sawDone || repairedPrefix.isBlank()) {
+                            throw IllegalStateException("格式修复模型返回空结果")
                         }
-                        else -> {
-                            val notice = MessageFormatRepairPolicy.completedRepairNotice(
-                                original = originalContent,
-                                repaired = repairedPrefix
-                            )
-                            persistFormatRepairMessage(
-                                MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                                    message = message,
-                                    replacement = repairedPrefix,
-                                    notice = notice
-                                )
+                        unchanged = MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
+                            repairedPrefix == originalContent
+                        result = if (unchanged) {
+                            message.copy(formatRepairNotice = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(message))
+                        } else {
+                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                message = message,
+                                replacement = repairedPrefix,
+                                notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repairedPrefix)
                             )
                         }
-                    }
-                } catch (cancelled: CancellationException) {
-                    if (!formatRepairStopRequested) throw cancelled
-                    val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
-                        original = originalContent,
-                        repairedPrefix = repairedPrefix
-                    )
-                    result = persistFormatRepairMessage(
-                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                    } catch (cancelled: CancellationException) {
+                        if (!formatRepairStopRequested) throw cancelled
+                        val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
+                            original = originalContent,
+                            repairedPrefix = repairedPrefix
+                        )
+                        result = MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                             message = message,
                             replacement = mixedContent,
                             notice = MessageFormatRepairNotice(
@@ -2542,40 +2552,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 originalContent = originalContent
                             )
                         )
-                    )
-                } catch (error: Exception) {
-                    result = persistFormatRepairFailure(
-                        message = message,
-                        error = error.message ?: "格式修复失败"
-                    )
+                    } catch (error: Exception) {
+                        result = failure(error.message ?: "格式修复失败")
+                    }
+                }
+                activeFormatRepairJob = repairJob
+                try {
+                    repairJob.join()
+                } finally {
+                    if (activeFormatRepairJob == repairJob) activeFormatRepairJob = null
+                    formatRepairStopRequested = false
                 }
             }
-            activeFormatRepairJob = repairJob
-            try {
-                repairJob.join()
-            } finally {
-                if (activeFormatRepairJob == repairJob) activeFormatRepairJob = null
-                formatRepairStopRequested = false
-            }
+            return result?.let { commit(it, unchanged) }
+        } finally {
+            _messageFormatRepairState.value = null
         }
-        _messageFormatRepairState.value = null
-        return result
-    }
-
-    private suspend fun persistFormatRepairFailure(
-        message: ChatMessage,
-        error: String
-    ): ChatMessage = persistFormatRepairMessage(
-        message.copy(
-            formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error),
-            updatedAt = System.currentTimeMillis()
-        )
-    )
-
-    private suspend fun persistFormatRepairMessage(message: ChatMessage): ChatMessage {
-        chatRepository.updateMessage(message)
-        replaceMessagesFromRepository()
-        return message
     }
 
     fun updateDraftInput(text: String) {
@@ -3410,8 +3402,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 if (appSettings.automaticFormatCheckEnabled) {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
-                                        automatic = true
-                                    )
+                                        automatic = true,
+                                        timelineRevision = chatRepository.messageTimelineRevision(sessionId)
+                                    ) ?: run {
+                                        _isResponding.value = false
+                                        return@collect
+                                    }
                                 }
                                 if (!automaticImageHandled &&
                                     chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true
@@ -3599,8 +3595,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             reasoningContent = generatedMessage.reasoningContent,
             formatRepairNotice = null
         )
-        chatRepository.updateMessage(updated)
-        return updated
+        return chatRepository.updateMessage(updated)
     }
 
     /**
@@ -3780,7 +3775,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != oldVersionId) {
                 try {
                     fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage)
+                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage, editOutcome.deleteMemoryForMessage)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -4311,7 +4306,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun loadSaveSlot(summary: SaveSlotSummary) {
         if (saveSlotOperationJob?.isActive == true || _saveSlotOperation.value.busy) return
         saveSlotOperationJob = viewModelScope.launch {
-            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            formatRepairCommitMutex.withLock {
+                val dataAccess = com.example.chatbar.domain.backup.LocalDataMaintenance.enter()
                 try {
                   _saveSlotOperation.value = SaveSlotOperationState(
                       busy = true,
@@ -4432,6 +4428,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   _saveSlotOperation.value = SaveSlotOperationState(
                       status = "读档失败：${error.message ?: error::class.simpleName}"
                   )
+                } finally {
+                    dataAccess.close()
                 }
             }
         }

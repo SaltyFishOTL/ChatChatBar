@@ -76,7 +76,7 @@ object MessageAlternativeVersionPolicy {
     private fun linkedRepairNotice(message: ChatMessage, versions: List<MessageVersionSnapshot>): MessageFormatRepairNotice? {
         val notice = message.formatRepairNotice ?: return null
         if (notice.versionId != null) return notice
-        val owner = versions.singleOrNull { it.content == notice.checkpointContent() } ?: return notice
+        val owner = versions.singleOrNull { it.content == notice.checkpointContent() } ?: return null
         return notice.copy(versionId = owner.id)
     }
 
@@ -125,6 +125,9 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = newVersionId,
             narrativeMode = narrativeMode,
             alternativeNarrativeModes = retained.map(MessageVersionSnapshot::narrativeMode),
+            formatRepairNotice = linkedRepairNotice(message, existing)?.takeIf { notice ->
+                retained.any { it.id == notice.versionId }
+            },
             updatedAt = updatedAt
         )
     }
@@ -148,10 +151,7 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = retained.map { it.narrativeMode },
-            formatRepairNotice = linkedRepairNotice(message, all)?.takeUnless { notice ->
-                notice.versionId == versionId ||
-                    (notice.versionId == null && notice.checkpointContent() == all[removedIndex].content)
-            },
+            formatRepairNotice = linkedRepairNotice(message, all)?.takeUnless { it.versionId == versionId },
             updatedAt = updatedAt
         )
     }
@@ -187,6 +187,7 @@ object MessageAlternativeVersionPolicy {
             alternatives = message.alternatives.mapIndexed { index, previous ->
                 if (index == message.currentAlternativeIndex) content else previous
             },
+            formatRepairNotice = linkedRepairNotice(message, versions(message)),
             updatedAt = updatedAt
         )
     }

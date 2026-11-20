@@ -51,6 +51,27 @@ class ChatRepositoryTest {
         assertEquals("new reply", retained.content)
     }
 
+    @Test fun `restore invalidates an in-flight message update even when the restored row is identical`() = runTest {
+        for (streaming in listOf(false, true)) {
+            val chats = repository("timeline-restore-$streaming")
+            val session = chats.createSession(ChatSession.create("card", "synthetic"))
+            val original = chats.addMessage(ChatMessage("reply", session.id, MessageRole.ASSISTANT,
+                "saved reply", createdAt = 1, updatedAt = 1))
+            val revision = chats.messageTimelineRevision(session.id)
+            if (streaming) {
+                chats.replaceMessagesForSessionStreaming(session.id) { emit -> emit(original) }
+            } else {
+                chats.replaceMessagesForSession(session.id, listOf(original))
+            }
+            assertEquals(original, chats.getMessage(original.id, session.id))
+            val replacement = original.copy(content = "late result")
+            assertFalse(chats.updateMessageIfUnchanged(original, replacement, revision))
+            assertEquals(original, chats.getRecentMessages(session.id, 1).single())
+            assertTrue(chats.updateMessageIfUnchanged(original, replacement, chats.messageTimelineRevision(session.id)))
+            assertEquals(replacement.content, chats.getMessage(original.id, session.id)?.displayContent)
+        }
+    }
+
     @Test
     fun `stale asynchronous session update and settings draft preserve mode while restore replaces it`() = runTest {
         val chats = repository("narrative-mode")

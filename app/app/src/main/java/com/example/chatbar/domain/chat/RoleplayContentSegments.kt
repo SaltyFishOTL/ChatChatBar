@@ -175,10 +175,27 @@ fun editRoleplayMessageSegment(
         endExclusive = endExclusive,
         replacement = replacement
     )
-    if (updatedContent.isBlank() && message.images.isEmpty()) {
+    val hasImages = message.images.isNotEmpty() || message.generatedImageMetadata.isNotEmpty()
+    if (updatedContent.isBlank() && !hasImages) {
         return RoleplaySegmentEditOutcome(
             message = MessageAlternativeVersionPolicy.remove(message, MessageAlternativeVersionPolicy.activeVersionId(message), updatedAt),
             deleteMemoryForMessage = false
+        )
+    }
+    if (updatedContent.isBlank() && message.displayContent.isNotBlank() && message.role == MessageRole.ASSISTANT) {
+        val retained = MessageAlternativeVersionPolicy.remove(message, MessageAlternativeVersionPolicy.activeVersionId(message), updatedAt)
+        return RoleplaySegmentEditOutcome(
+            message = retained ?: MessageAlternativeVersionPolicy.normalize(message).copy(
+                content = "",
+                alternatives = emptyList(),
+                alternativeVersionIds = emptyList(),
+                currentAlternativeIndex = 0,
+                currentAlternativeVersionId = MessageAlternativeVersionPolicy.newVersionId(message),
+                alternativeNarrativeModes = emptyList(),
+                formatRepairNotice = null,
+                updatedAt = updatedAt
+            ),
+            deleteMemoryForMessage = retained == null
         )
     }
     return RoleplaySegmentEditOutcome(

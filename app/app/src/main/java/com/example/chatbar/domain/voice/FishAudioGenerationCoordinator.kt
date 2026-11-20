@@ -211,11 +211,16 @@ class FishAudioGenerationCoordinator(
         )
         val job = scope.launch {
             try {
-                val existing = voiceRepository.get(voiceId) ?: error("语音消息不存在")
+                val record = voiceRepository.get(voiceId) ?: error("语音消息不存在")
                 updateBatch(batchId) {
-                    it.copy(sessionId = existing.sessionId, messageId = existing.messageId)
+                    it.copy(sessionId = record.sessionId, messageId = record.messageId)
                 }
-                val context = loadContext(existing.sessionId, existing.messageId)
+                val context = loadContext(record.sessionId, record.messageId)
+                if (record.messageVersionId.isNullOrBlank()) voiceRepository.ensureAnchors(context.message)
+                val existing = voiceRepository.get(voiceId) ?: error("语音消息不存在")
+                check(MessageAlternativeVersionPolicy.versions(context.message).any { it.id == existing.messageVersionId }) {
+                    "回复备选已删除"
+                }
                 val currentCharacter = VoiceGenerationPolicy.resolveRegenerationCharacter(
                     card = context.card,
                     characterId = existing.characterId
@@ -272,7 +277,7 @@ class FishAudioGenerationCoordinator(
                     updatedAt = System.currentTimeMillis()
                 )
                 try {
-                    voiceRepository.saveForExistingVersion(replacement) {
+                    voiceRepository.saveForExistingVersion(replacement, replacing = existing) {
                         chatRepository.getMessage(replacement.messageId, replacement.sessionId)
                     }
                 } catch (error: Throwable) {

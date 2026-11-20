@@ -36,12 +36,12 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 
 - Repair the owning full assistant message even when invoked from one segmented bubble.
 - Persist normalized explicit alternative IDs before attaching a repair notice, preserving narrativeMode/alternativeNarrativeModes exactly; notices keep that stable ID across backup copies. BackupMessageVersionIdentity resolves legacy implicit IDs before message-ID remapping without changing notice.versionId.
-- Candidate switching uses repository expected-snapshot writes and reloads persisted state; it must not publish an optimistic stale message over deletion or undo/redo.
+- Candidate switching uses repository expected-snapshot writes and reloads persisted state. Terminal model success, unchanged, stop and failure results also check the expected message and its timeline revision under the message write lock. Legacy and streaming save-slot replacement invalidate earlier repair requests even when a restored row matches byte for byte.
 - Replace only the current displayed candidate. Preserve other alternatives, images, reasoning, timestamps/order identity, and source-turn identity unless the owning operation explicitly changes them.
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
 - Keep streamed overlay in UI memory. Persist only terminal content or an explicit stopped result.
 - Whenever repair changes content, persist an APPLIED or recoverable terminal notice containing the exact pre-repair text.
-- Show a notice only for the matching stable version and expected display text (originalContent when restored, targetContent otherwise).
+- Show a notice only for the matching stable version and expected display text (originalContent when restored, targetContent otherwise). A legacy notice without a version ID applies only if its checkpoint matches one version. Drop ambiguous notices when versions change.
 - Restore only the current candidate from notice.originalContent; persist restored=true while retaining the exact repaired targetContent and versionId. Redo switches to that target locally without a model request. Another version or a manual edit must not accept a stale recovery pair.
 - A successful marker/original-text no-change result clears notices without a local undo/redo pair through retainedNoticeAfterUnchangedSuccess. Preserve applicable original/target/version/restored data; clear legacy error metadata without discarding a usable pair. FormatRepairRetryRuntimeTest exercises real loopback failure followed by each no-change success, then a cold storage read.
 - Keep legacy notice enum values readable. Do not revive the removed length-anomaly gate without a new product decision.

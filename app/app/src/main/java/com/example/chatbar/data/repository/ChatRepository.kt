@@ -55,6 +55,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private var initialized = false
     private val messageAppendMutex = Mutex()
+    private val messageTimelineRevisions = mutableMapOf<String, Long>()
     private val messageIndexMutex = Mutex()
     private val messageIndexes = ConcurrentHashMap<String, ChatMessageIndex>()
     private val scrollPositionMutex = Mutex()
@@ -600,14 +601,24 @@ class ChatRepository(private val storage: JsonFileStorage) {
         updateMessageLocked(message)
     }
 
-    suspend fun updateMessageIfUnchanged(expected: ChatMessage, replacement: ChatMessage): Boolean = messageAppendMutex.withDataAccess {
+    internal suspend fun messageTimelineRevision(sessionId: String): Long =
+        messageAppendMutex.withDataAccess { messageTimelineRevisions[sessionId] ?: 0L }
+
+    suspend fun updateMessageIfUnchanged(
+        expected: ChatMessage,
+        replacement: ChatMessage,
+        expectedTimelineRevision: Long? = null
+    ): Boolean = messageAppendMutex.withDataAccess {
         require(expected.id == replacement.id && expected.sessionId == replacement.sessionId)
+        if (expectedTimelineRevision != null &&
+            expectedTimelineRevision != (messageTimelineRevisions[expected.sessionId] ?: 0L)
+        ) return@withDataAccess false
         if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
         updateMessageLocked(replacement)
         true
     }
 
-    private suspend fun updateMessageLocked(message: ChatMessage) {
+    private suspend fun updateMessageLocked(message: ChatMessage): ChatMessage {
         val persisted = getMessage(message.id, message.sessionId)
         val updated = message.copy(
             updatedAt = System.currentTimeMillis(),
@@ -627,6 +638,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 )
             }
         }
+        return updated
     }
 
     private suspend fun latestMessage(sessionId: String): ChatMessage? {
@@ -880,6 +892,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             val normalized = if (message.sessionId == sessionId) message else message.copy(sessionId = sessionId)
             messageStorageId(sessionId, normalized.id) to normalized
         }
+        invalidateMessageTimeline(sessionId)
         deleteMessagesForSession(sessionId)
         deleteScrollPosition(sessionId)
         storage.saveAllUncached(MESSAGE_TYPE, entities, ChatMessage.serializer())
@@ -913,6 +926,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         var latest: ChatMessage? = null
         var maxSourceOrder = 0L
         var maxTimelineTurn = 0L
+        invalidateMessageTimeline(sessionId)
         storage.replaceByIdPrefixStreamingUncached(
             entityType = MESSAGE_TYPE,
             prefix = "${sessionId}_",
@@ -949,6 +963,10 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 )
             )
         }
+    }
+
+    private fun invalidateMessageTimeline(sessionId: String) {
+        messageTimelineRevisions[sessionId] = (messageTimelineRevisions[sessionId] ?: 0L) + 1L
     }
 
     /** 旧消息首次使用时补稳定source turn；不改消息ID、时间、orderKey。 */

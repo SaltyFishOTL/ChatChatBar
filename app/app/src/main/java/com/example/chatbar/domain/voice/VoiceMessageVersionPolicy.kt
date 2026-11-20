@@ -15,7 +15,7 @@ object VoiceMessageVersionPolicy {
     ): List<GeneratedVoiceMessage> {
         val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
         return voices.filter {
-            it.messageId == message.id && it.messageVersionId == activeVersionId
+            it.sessionId == message.sessionId && it.messageId == message.id && it.messageVersionId == activeVersionId
         }
     }
 

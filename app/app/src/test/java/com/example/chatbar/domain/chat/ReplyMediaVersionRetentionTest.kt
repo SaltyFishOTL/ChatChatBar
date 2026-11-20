@@ -45,6 +45,28 @@ class ReplyMediaVersionRetentionTest {
         assertNull(editRoleplayMessageSegment(message(), 0, 5, "").message)
     }
 
+    @Test fun `deleting last text of the sole version preserves the image under a fresh version`() {
+        val source = message().copy(images = listOf("shared.png"))
+        val outcome = editRoleplayMessageSegment(source, 0, source.displayContent.length, "")
+        val retained = requireNotNull(outcome.message)
+        assertEquals(source.id, retained.id)
+        assertEquals(source.images, retained.images)
+        assertTrue(retained.displayContent.isBlank())
+        assertNotEquals(MessageAlternativeVersionPolicy.activeVersionId(source), MessageAlternativeVersionPolicy.activeVersionId(retained))
+        assertTrue(outcome.deleteMemoryForMessage)
+    }
+
+    @Test fun `legacy undo with duplicate checkpoints never moves to another version`() {
+        val notice = MessageFormatRepairPolicy.completedRepairNotice("before", "same")
+        val legacy = MessageAlternativeVersionPolicy.append(message().copy(content = "same"), "same", "second")
+            .copy(formatRepairNotice = notice)
+        assertNull(MessageFormatRepairPolicy.restoreOriginal(legacy))
+        val switched = MessageAlternativeVersionPolicy.select(legacy, 0)
+        assertNull(MessageFormatRepairPolicy.restoreOriginal(switched))
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(legacy, "second"))
+        assertNull(MessageFormatRepairPolicy.restoreOriginal(survivor))
+    }
+
     @Test fun `undo and redo survive persistence and cannot apply to edited or other version`() {
         val original = MessageAlternativeVersionPolicy.append(message().copy(content = "before"), "before", "version")
         val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(original, "after",
