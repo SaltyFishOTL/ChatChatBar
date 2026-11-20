@@ -10,6 +10,8 @@ import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoicePlaybackController
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.LinkOption
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -67,7 +69,15 @@ internal class ReplyRemovalCoordinator(
 
     suspend fun resumePending(sessionId: String? = null) = mutex.withLock {
         LocalDataMaintenance.access {
-            pending().filter { sessionId == null || it.sessionId == sessionId }.forEach { removal ->
+            val removals = try {
+                pending()
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                Log.w("ReplyRemoval", "Local cleanup could not be read")
+                return@access
+            }
+            removals.filter { sessionId == null || it.sessionId == sessionId }.forEach { removal ->
                 try {
                     finish(removal)
                 } catch (error: CancellationException) {
@@ -87,8 +97,11 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
-    private suspend fun pending(): List<ReplyRemoval> =
-        storage.queryUncached(STORE, ReplyRemoval.serializer()) { true }
+    private suspend fun pending(): List<ReplyRemoval> {
+        val removals = mutableListOf<ReplyRemoval>()
+        storage.forEachUncached(STORE, ReplyRemoval.serializer(), requireCompleteRead = true) { removals += it }
+        return removals
+    }
 
     private suspend fun finish(removal: ReplyRemoval) = withContext(Dispatchers.IO) {
         val committed = voices.finishReplyRemoval(
@@ -112,7 +125,7 @@ internal class ReplyRemovalCoordinator(
         /** Run under the exclusive data lease. The local recovery journal is not portable. */
         fun requireSettledForBackup(filesDir: File) {
             val directory = File(filesDir, "entities/$STORE")
-            if (!directory.exists()) return
+            if (Files.notExists(directory.toPath(), LinkOption.NOFOLLOW_LINKS)) return
             val entries = checkNotNull(directory.listFiles()) { "无法核对本地回复清理状态" }
             check(entries.none { it.extension == "json" }) { "仍有回复附件待清理，请重新打开会话后再试备份或恢复" }
         }

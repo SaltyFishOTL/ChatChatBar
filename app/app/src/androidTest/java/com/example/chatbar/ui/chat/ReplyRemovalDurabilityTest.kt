@@ -120,6 +120,16 @@ class ReplyRemovalDurabilityTest {
                 assertNotNull(runCatching {
                     fixture.removals.withSettledSession(session.id) { error("A pending removal must block this capture") }
                 }.exceptionOrNull()?.takeUnless { it.message == "A pending removal must block this capture" })
+                if (entity == "chat_message_indexes" && !restoreOwner) {
+                    val journalDirectory = journal.single().parentFile!!
+                    assertTrue(journalDirectory.setReadable(false))
+                    try {
+                        val captured = runCatching { fixture.removals.withSettledSession(session.id) { true } }
+                        assertTrue("An unreadable recovery journal must not permit a new save slot", captured.isFailure)
+                    } finally {
+                        assertTrue(journalDirectory.setReadable(true))
+                    }
+                }
             } finally {
                 assertTrue(directory.setWritable(true))
             }
