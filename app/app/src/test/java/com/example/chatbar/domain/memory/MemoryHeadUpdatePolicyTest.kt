@@ -49,7 +49,13 @@ class MemoryHeadUpdatePolicyTest {
         assertEquals(rolled.goals, cold.goals)
         assertEquals(withheld, MemoryHeadUpdatePolicy.actionProjection(cold, timeline, emptySet()))
 
-        val regenerated = rolled.copy(actionProjection = MemoryHeadActionProjection.VERIFIED)
+        val backfilled = rolled.copy(
+            sourceFingerprints = mapOf("source-0" to "early-evidence", "source-2" to "tail-evidence"),
+        )
+        assertEquals(MemoryHeadActionProjection.WITHHELD,
+            MemoryHeadUpdatePolicy.actionProjection(backfilled, timeline, setOf("source-1")))
+        assertNull(MemoryHeadUpdatePolicy.actionProjection(backfilled, timeline, setOf("source-0", "source-3")))
+        val regenerated = backfilled.copy(actionProjection = MemoryHeadActionProjection.VERIFIED)
         assertEquals(MemoryHeadActionProjection.VERIFIED,
             MemoryHeadUpdatePolicy.actionProjection(regenerated, timeline, setOf("source-1")))
     }

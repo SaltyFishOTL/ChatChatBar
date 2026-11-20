@@ -133,7 +133,6 @@ class ChatHistoryActionProjection private constructor(
                     RoleplayActionOptionsPolicy.confirmedChoice(reply, user.displayContent)
                 ChatHistoryActionRequestSource.RESUMED_USER ->
                     RoleplayActionOptionsPolicy.confirmedMemoryChoice(user, candidates)?.takeIf { it.replyId == reply.id }
-                else -> null
             } ?: return null
             return reply to choice.text
         }

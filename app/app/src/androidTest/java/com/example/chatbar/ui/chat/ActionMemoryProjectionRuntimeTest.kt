@@ -55,6 +55,13 @@ class ActionMemoryProjectionRuntimeTest {
         val store = ViewModelStore()
         app.chatRepository.createSession(session)
         try {
+            val earlier = if (deleteReply) {
+                val question = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "阁楼里有灯吗？"))
+                val answer = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "窗边亮着一盏油灯。"))
+                listOf(question, answer)
+            } else {
+                emptyList()
+            }
             val user = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "查看星图"))
             val menu = app.chatRepository.addMessage(ChatMessage.create(
                 session.id, MessageRole.ASSISTANT,
@@ -71,10 +78,14 @@ class ActionMemoryProjectionRuntimeTest {
             val oldHead = if (deleteReply) {
                 val tail = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "收好已经看过的星图"))
                 val tailId = requireNotNull(tail.sourceTurnId)
+                val earlyId = requireNotNull(earlier.first().sourceTurnId)
                 MemoryHead(
                     throughSourceTurnId = tailId,
                     goals = "合成旧HEAD里的选项目标",
-                    sourceFingerprints = mapOf(tailId to MemorySourceFingerprint.semantic(tailId, listOf(tail), session)),
+                    sourceFingerprints = mapOf(
+                        earlyId to MemorySourceFingerprint.semantic(earlyId, earlier, session),
+                        tailId to MemorySourceFingerprint.semantic(tailId, listOf(tail), session),
+                    ),
                 )
             } else {
                 MemoryHead(throughSourceTurnId = sourceId, goals = "合成旧HEAD里的选项目标")

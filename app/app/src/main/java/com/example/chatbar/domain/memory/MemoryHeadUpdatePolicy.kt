@@ -28,7 +28,7 @@ object MemoryHeadUpdatePolicy {
     fun canInject(hasHeadContent: Boolean, sourceAvailable: Boolean): Boolean =
         hasHeadContent && sourceAvailable
 
-    /** Rolling an old HEAD forward only proves the new tail, even when it adds source hashes. */
+    /** A legacy HEAD's recorded inputs do not prove the safety of its unmapped source turns. */
     internal fun actionProjection(
         head: MemoryHead,
         timeline: List<MemoryTimelineEntry>,
@@ -39,12 +39,11 @@ object MemoryHeadUpdatePolicy {
         val throughOrder = timeline.firstOrNull { it.sourceTurnId == head.throughSourceTurnId }?.sourceOrder
             ?: return null
         val evidence = head.sourceHashes.keys + head.sourceFingerprints.keys
-        val firstProvedOrder = timeline.asSequence().filter { it.sourceTurnId in evidence }.minOfOrNull { it.sourceOrder }
-        val unprovedActionPrefix = timeline.any { entry ->
-            entry.sourceTurnId in projectedActionSourceIds && entry.sourceOrder <= throughOrder &&
-                (firstProvedOrder == null || entry.sourceOrder < firstProvedOrder)
+        val hasUnprovedActionSource = timeline.any { entry ->
+            entry.sourceOrder <= throughOrder &&
+                entry.sourceTurnId in projectedActionSourceIds && entry.sourceTurnId !in evidence
         }
-        return MemoryHeadActionProjection.WITHHELD.takeIf { unprovedActionPrefix }
+        return MemoryHeadActionProjection.WITHHELD.takeIf { hasUnprovedActionSource }
     }
 
     /** A hashless HEAD cannot prove that a later edit removed the contents it summarized. */
