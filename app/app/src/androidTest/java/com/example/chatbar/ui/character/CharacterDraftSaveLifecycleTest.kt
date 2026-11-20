@@ -158,6 +158,52 @@ class CharacterDraftSaveLifecycleTest {
         assertEquals(other.name, app.characterRepository.getById(other.id)?.name)
     }
 
+    @Test fun autosavingAfterRejectedStaleDraftPreservesTheSourceConflictOnRetry() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        editAndSaveDraft(vm, "stale local name")
+        val firstDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val updatedSource = original.copy(creatorNotes = "new notes from a different editor")
+        app.characterRepository.save(updatedSource)
+
+        val reopened = editor(original.id)
+        var saved = false
+        withContext(Dispatchers.Main) {
+            assertTrue(reopened.restoreConflict)
+            reopened.restoreDraft()
+            reopened.name = "stale local name with another edit"
+            reopened.scheduleDraftSave()
+            reopened.saveCharacterCard({ saved = true })
+        }
+        withTimeout(15_000) {
+            while (withContext(Dispatchers.Main) { reopened.isSaving.value }) delay(20)
+        }
+        withContext(Dispatchers.Main) { assertTrue(reopened.saveConflict) }
+        withTimeout(15_000) {
+            app.editorDraftRepository.drafts.first { rows ->
+                rows.any { it.targetId == original.id && it.characterPayload?.name == "stale local name with another edit" }
+            }
+        }
+        val updatedDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertNotNull(firstDraft.baseHash)
+        assertEquals(firstDraft.baseHash, updatedDraft.baseHash)
+        assertEquals(firstDraft.baseUpdatedAt, updatedDraft.baseUpdatedAt)
+
+        withContext(Dispatchers.Main) {
+            reopened.saveConflict = false
+            reopened.saveCharacterCard({ saved = true })
+        }
+        withTimeout(15_000) {
+            while (withContext(Dispatchers.Main) { reopened.isSaving.value }) delay(20)
+        }
+        withContext(Dispatchers.Main) {
+            assertTrue(reopened.saveConflict)
+            assertFalse(saved)
+        }
+        assertEquals(updatedSource.creatorNotes, app.characterRepository.getById(original.id)?.creatorNotes)
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
     @Test fun derivedDocumentIndexUpdatesDoNotCreateADraftButRealDocumentEditsDo() = runBlocking<Unit> {
         val file = File(app.filesDir, "synthetic-doc-${UUID.randomUUID()}.txt").also {
             it.writeText("synthetic reference document")

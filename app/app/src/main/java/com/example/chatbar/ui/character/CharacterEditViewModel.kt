@@ -797,8 +797,10 @@ class CharacterEditViewModel(
         val payload = buildCurrentCard(markDirty = false)
         val draftAssetPaths = draftAssetService.ownedAssetPaths(payload)
             .filter { draftAssetService.isDraftAsset(it) }
+        val targetId = if (sourceDeleted) null else characterId
+        val previous = loadedDraft?.takeIf { it.targetId == targetId }
         val draft = draftRepository.characterDraft(
-            targetId = if (sourceDeleted) null else characterId,
+            targetId = targetId,
             draftSessionId = draftSessionId,
             payload = payload,
             base = baseCard,
@@ -809,7 +811,9 @@ class CharacterEditViewModel(
                 draftJson.encodeToString(CharacterOpenModalState.serializer(), it)
             }
         )
-        loadedDraft = draftRepository.save(draft)
+        // Loading a draft does not acknowledge changes made to its source card.
+        val update = previous?.let { draft.copy(baseHash = it.baseHash, baseUpdatedAt = it.baseUpdatedAt) } ?: draft
+        loadedDraft = draftRepository.save(update)
         draftSavedAt = loadedDraft?.updatedAt
         hasUnsavedDraftChanges = false
     }
