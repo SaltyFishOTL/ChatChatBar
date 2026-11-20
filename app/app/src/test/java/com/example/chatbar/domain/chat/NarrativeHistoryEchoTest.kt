@@ -21,6 +21,38 @@ class NarrativeHistoryEchoTest {
             assertEquals("纯正文。", NarrativeHistoryEcho.replyBody("$opening\n纯正文。\n$closing"))
         }
     }
+
+    @Test fun proseOnLazyMarkdownQuoteLinesKeepsLiteralMarkers() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val partial = closing.take(5)
+        for ((quote, indent) in listOf("> 引用第一行" to "", "- > 引用第一行" to "  ")) {
+            val body = "$quote\n${indent}字面标签 $closing"
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body"))
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n$closing", streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n$closing"))
+            val interruptedBody = "$quote\n${indent}字面标签 $partial"
+            assertEquals(interruptedBody, NarrativeHistoryEcho.replyBody("$opening\n$interruptedBody", interrupted = true))
+
+            val first = "$opening\n$body\n$closing"
+            val second = "$opening\n另一段正文。\n$closing"
+            assertEquals("$body\n另一段正文。", NarrativeHistoryEcho.completedBody(
+                "$first\n$second", enabled = true, partLengths = listOf(first.length, second.length),
+            ))
+        }
+    }
+
+    @Test fun standaloneOuterMarkerEndsReplyImmediatelyAfterQuote() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val quote = "> 引用第一行\n引用的续行。"
+        assertEquals(quote, NarrativeHistoryEcho.replyBody("$opening\n$quote\n  $closing"))
+        val partial = closing.take(5)
+        assertEquals(quote, NarrativeHistoryEcho.replyBody("$opening\n$quote\n$partial", streaming = true))
+        assertEquals(quote, NarrativeHistoryEcho.replyBody("$opening\n$quote\n$partial", interrupted = true))
+        assertEquals("$quote\n\n正文。", NarrativeHistoryEcho.replyBody("$opening\n$quote\n\n正文。$closing"))
+    }
+
     @Test fun interruptedTrailingMarkerStaysHiddenOnSave() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

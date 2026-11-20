@@ -36,7 +36,9 @@ object MarkdownCodeFences {
 
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
-    fun blocks(content: String): List<Block> = buildList {
+    fun blocks(content: String): List<Block> = blocks(content, null)
+
+    internal fun blocks(content: String, onLazyQuoteLine: ((Int) -> Unit)?): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
         var open: Fence? = null
@@ -97,7 +99,12 @@ object MarkdownCodeFences {
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
                         !endsSetextHeading && !heading.containsMatchIn(remainder)
                     // A lazy paragraph line keeps its quote or list context for subsequent lines.
-                    if (paragraph) containers.addAll(dedentedParagraph)
+                    if (paragraph) {
+                        if (onLazyQuoteLine != null && dedentedParagraph.any { it.indent == null }) {
+                            onLazyQuoteLine(start)
+                        }
+                        containers.addAll(dedentedParagraph)
+                    }
                 }
                 continue
             }

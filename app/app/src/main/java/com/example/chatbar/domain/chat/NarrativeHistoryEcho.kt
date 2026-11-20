@@ -5,6 +5,7 @@ import com.example.chatbar.data.local.entity.ChatNarrativeMode
 /** Removes request-only history wrappers when the model echoes them around its new reply. */
 object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
+    private data class ReplyLiterals(val ranges: List<IntRange>, val lazyQuoteLineStarts: Set<Int>)
 
     private val wrappers = ChatNarrativeMode.entries.map { mode ->
         Wrapper("历史回复", "<历史回复 模式=\"${mode.shortLabel}\">", listOf("</历史回复>"))
@@ -62,9 +63,18 @@ object NarrativeHistoryEcho {
 
         val body = start.removePrefix(wrapper.opening).trimStart('\r', '\n')
         val end = body.trimEnd()
-        val literalRanges by lazy(LazyThreadSafetyMode.NONE) {
-            codeLiteralRanges(bareCarriageReturn.replace(end, "\n")) +
-                quotedText.findAll(end).map { it.range }.toList()
+        val literals by lazy(LazyThreadSafetyMode.NONE) {
+            val markdown = bareCarriageReturn.replace(end, "\n")
+            val lazyQuoteLineStarts = mutableSetOf<Int>()
+            val fences = MarkdownCodeFences.blocks(markdown) { lazyQuoteLineStarts += it }.map { it.range }
+            val ranges = codeLiteralRanges(markdown, fences) + quotedText.findAll(end).map { it.range }.toList()
+            ReplyLiterals(ranges, lazyQuoteLineStarts)
+        }
+        fun isMarkdownQuoteLine(offset: Int): Boolean {
+            val lineStart = lineStart(end, offset)
+            // A standalone closing marker also ends the wrapper directly after a quoted paragraph.
+            return MarkdownCodeFences.hasQuoteContainerPrefix(end, lineStart) ||
+                (end.subSequence(lineStart, offset).isNotBlank() && lineStart in literals.lazyQuoteLineStarts)
         }
         var innerDepth = 0
         var unmatchedClosing = false
@@ -72,7 +82,7 @@ object NarrativeHistoryEcho {
             val position = match.range.first
             val quote = end.getOrNull(position - 1)
             val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
-            if (asciiQuoted || isMarkdownQuoteLine(end, position) || isEscaped(end, position) || literalRanges.any { position in it } ||
+            if (asciiQuoted || isEscaped(end, position) || isMarkdownQuoteLine(position) || literals.ranges.any { position in it } ||
                 isIndentedCodeLine(end, position)
             ) continue
 
@@ -97,15 +107,14 @@ object NarrativeHistoryEcho {
             val aloneOnLine = end.substring(0, lastTag).substringAfterLast('\n').substringAfterLast('\r').isBlank()
             if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
-                !isMarkdownQuoteLine(end, lastTag) && !isEscaped(end, lastTag) &&
-                literalRanges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
+                !isEscaped(end, lastTag) && !isMarkdownQuoteLine(lastTag) &&
+                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
             ) return end.substring(0, lastTag).trimEnd()
         }
         return body
     }
 
-    private fun codeLiteralRanges(body: String): List<IntRange> {
-        val fences = MarkdownCodeFences.blocks(body).map { it.range }
+    private fun codeLiteralRanges(body: String, fences: List<IntRange>): List<IntRange> {
         if ('`' !in body) return fences
         val boundaries = (fences + paragraphBreak.findAll(body).map { it.range }.toList())
             .sortedBy { it.first }
@@ -145,11 +154,6 @@ object NarrativeHistoryEcho {
 
     private fun lineStart(text: String, offset: Int): Int =
         maxOf(text.lastIndexOf('\n', offset - 1), text.lastIndexOf('\r', offset - 1)) + 1
-
-    private fun isMarkdownQuoteLine(text: String, offset: Int): Boolean {
-        val start = lineStart(text, offset)
-        return MarkdownCodeFences.hasQuoteContainerPrefix(text, start)
-    }
 
     private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
         val lineStart = lineStart(text, offset)
