@@ -25,6 +25,15 @@ object MarkdownCodeFences {
         }
     }
 
+    internal fun hasQuoteContainerPrefix(text: String, start: Int): Boolean {
+        var offset = start
+        while (true) {
+            if (quotePrefix.matchAt(text, offset) != null) return true
+            val list = listPrefix.matchAt(text, offset) ?: return false
+            offset = list.range.last + 1
+        }
+    }
+
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
     fun blocks(content: String): List<Block> = buildList {

@@ -15,6 +15,10 @@ class NarrativeHistoryEchoTest {
             assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n$closing"))
             assertEquals("> $closing", NarrativeHistoryEcho.replyBody("$opening\n> $closing"))
             assertEquals("> </历史回", NarrativeHistoryEcho.replyBody("$opening\n> </历史回", interrupted = true))
+            val nested = "- > $closing\n\n继续正文。"
+            assertEquals(nested, NarrativeHistoryEcho.replyBody("$opening\n$nested\n$closing"))
+            assertEquals("1. > </历史回", NarrativeHistoryEcho.replyBody("$opening\n1. > </历史回", interrupted = true))
+            assertEquals("纯正文。", NarrativeHistoryEcho.replyBody("$opening\n纯正文。\n$closing"))
         }
     }
     @Test fun interruptedTrailingMarkerStaysHiddenOnSave() {

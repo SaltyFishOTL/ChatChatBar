@@ -148,7 +148,7 @@ object NarrativeHistoryEcho {
 
     private fun isMarkdownQuoteLine(text: String, offset: Int): Boolean {
         val start = lineStart(text, offset)
-        return MarkdownCodeFences.afterQuotePrefixes(text, start) > start
+        return MarkdownCodeFences.hasQuoteContainerPrefix(text, start)
     }
 
     private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
