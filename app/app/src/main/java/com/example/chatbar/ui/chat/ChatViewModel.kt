@@ -2389,7 +2389,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             try {
                 fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                if (withContext(NonCancellable) { replyRemovalCoordinator.retryMessage(sessionId, messageId) }) {
+                if (withContext(NonCancellable) { replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId) }) {
                     refreshMessages()
                     return@launch
                 }
@@ -3631,7 +3631,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             try {
                 coroutineContext.ensureActive()
                 recovered = withContext(NonCancellable) {
-                    if (replyRemovalCoordinator.retryMessage(sessionId, messageId)) {
+                    if (replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId = null)) {
                         true
                     } else {
                         if (expected == null) {

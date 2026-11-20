@@ -277,7 +277,7 @@ class ChatBarApp : Application() {
         novelAiImageStorage = NovelAiImageStorage(this)
         novelAiStudioRepository = NovelAiStudioRepository(jsonFileStorage, novelAiImageStorage)
         novelAiDesignConversationRepository = NovelAiDesignConversationRepository(jsonFileStorage)
-        appBackupService = AppBackupService(this, applicationScope) {
+        appBackupService = AppBackupService(this, applicationScope, settleReplyRemovals = { replyRemovalCoordinator.resumePending() }) {
             persistentInitializationMutex.withLock { novelAiStudioRepository.flushLatestDraft() }
         }
         editorDraftAssetService = EditorDraftAssetService(this)
@@ -580,7 +580,7 @@ class ChatBarApp : Application() {
         fishAudioStorage.cleanupPartialFiles()
         saveSlotPackageStorage.cleanupPartialFiles()
         try {
-            voiceMessageRepository.withPersistedAudioPaths(fishAudioStorage::cleanupOrphanFiles)
+            voiceMessageRepository.withPersistedAudioPaths { fishAudioStorage.cleanupOrphanFiles(it, jsonFileStorage) }
         } catch (error: kotlinx.coroutines.CancellationException) {
             throw error
         } catch (_: Exception) {

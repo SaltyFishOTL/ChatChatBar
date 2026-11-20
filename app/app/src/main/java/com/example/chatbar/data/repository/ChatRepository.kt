@@ -23,7 +23,6 @@ import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
 import com.example.chatbar.domain.deletion.ReplyRemoval
-import java.io.File
 import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
@@ -794,28 +793,15 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     /** Restored messages and the chat background can refer to the same local file. */
     suspend fun deleteUnreferencedChatImages(paths: Collection<String>, deleteOwnedImage: (String) -> Unit) {
-        val candidates = paths.map(::File).filter { it.isAbsolute }.mapTo(linkedSetOf()) { it.canonicalPath }
+        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
         if (candidates.isEmpty()) return
         messageAppendMutex.withDataAccess {
-            fun retain(path: String) {
-                val file = File(path)
-                if (file.isAbsolute) candidates.remove(file.canonicalPath)
-            }
             sessionSettingsMutex.withDataAccess {
-                storage.forEachUncached(SESSION_TYPE, ChatSession.serializer(), requireCompleteRead = true) { session ->
-                    session.chatBackground?.let(::retain)
-                }
-                if (candidates.isNotEmpty()) {
-                    storage.forEachUncached(MESSAGE_TYPE, ChatMessage.serializer(), requireCompleteRead = true) { message ->
-                        message.images.forEach(::retain)
-                    }
-                }
-                storage.retainRegisteredMedia(candidates, setOf(
-                    "save_slots", "character_cards", "edit_drafts", "chat_drafts", "moment_posts",
+                storage.deleteUnreferencedRegisteredMedia(candidates, setOf(
+                    MESSAGE_TYPE, SESSION_TYPE, "save_slots", "character_cards", "edit_drafts", "chat_drafts", "moment_posts",
                     "novelai_generation_history", "novelai_studio_draft", "novelai_studio_history_undo",
                     "novelai_studio_guidance_checkpoint", "novelai_design_conversations"
-                ))
-                candidates.forEach(deleteOwnedImage)
+                ), deleteOwnedImage)
             }
         }
     }

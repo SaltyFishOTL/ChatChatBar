@@ -122,17 +122,21 @@ object BackupDataRegistry {
         for (file in entityFiles(directory, types)) {
             file.strictUtf8Reader().use { reader ->
                 BackupJsonStream(reader, BackupMergeCatalog.discardWriter) { path, _ ->
-                    val filePath = File(path)
-                    val resolved = when {
-                        filePath.isAbsolute -> filePath
-                        path.substringBefore('/') in roots && '/' in path -> File(directory, path)
-                        else -> null
-                    }
-                    if (resolved != null) candidates.remove(resolved.canonicalPath)
+                    canonicalLocalMediaPath(directory, path)?.let(candidates::remove)
                     path
                 }.copy()
             }
             if (candidates.isEmpty()) return
+        }
+    }
+
+    internal fun canonicalLocalMediaPath(directory: File, path: String): String? {
+        val file = File(path)
+        return when {
+            path.startsWith("file:") -> File(java.net.URI(path)).canonicalPath
+            file.isAbsolute -> file.canonicalPath
+            path.substringBefore('/') in roots && '/' in path -> target(directory, path).canonicalPath
+            else -> null
         }
     }
 

@@ -9,6 +9,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
+import com.example.chatbar.data.local.entity.GeneratedImageMetadata
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.repository.ChatRepository
@@ -33,12 +34,15 @@ class ReplyRemovalDurabilityTest {
     @Test fun missingMessageAfterIndexWriteFailureFinishesAllMediaOnColdRetry() = verifyFailure("chat_message_indexes")
     @Test fun missingMessageAfterSessionWriteFailureRepairsPreviewAndTurnOnColdRetry() = verifyFailure("chat_sessions")
     @Test fun recoveredSameIdMessageRetainsRestoredAttachments() = verifyFailure("chat_message_indexes", restoreOwner = true)
+    @Test fun restoredDifferentImageRetainsNewFilesAndReleasesOldImage() =
+        verifyFailure("chat_message_indexes", restoreOwner = true, replaceImage = true)
     @Test fun legacyArchiveStillOwnsAudioAndImageAfterMessageRemoval() = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly = false)
         val voice = fixture.addVoice(message)
-        val slot = SaveSlot.create(session.id, "Legacy fixture", messages = listOf(message)).copy(
-            schemaVersion = 4, voiceMessages = listOf(voice)
+        val aliased = message.copy(images = listOf(File(message.images.single()).toURI().toString()))
+        val slot = SaveSlot.create(session.id, "Legacy fixture", messages = listOf(aliased)).copy(
+            schemaVersion = 4, voiceMessages = listOf(voice.copy(audioPath = File(voice.audioPath).toURI().toString()))
         )
         fixture.storage.saveEntityUncached("save_slots", slot.id, slot, SaveSlot.serializer())
         assertNull(fixture.removals.remove(message, null, null))
@@ -46,11 +50,29 @@ class ReplyRemovalDurabilityTest {
         assertNull(fixture.voices.get(voice.id))
         assertTrue(File(voice.audioPath).isFile)
         assertTrue(File(message.images.single()).isFile)
-        fixture.audio.cleanupOrphanFiles(emptySet())
+        fixture.audio.cleanupOrphanFiles(emptySet(), fixture.storage)
         assertTrue("The startup sweep must also respect legacy archive ownership", File(voice.audioPath).isFile)
     }
 
-    private fun verifyFailure(entity: String, versionOnly: Boolean = false, restoreOwner: Boolean = false) =
+    @Test fun anotherMessageImageMetadataKeepsItsOwnedImage() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val message = fixture.addReply(session, versionOnly = false)
+        val file = File(message.images.single())
+        fixture.chats.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "Metadata owner").copy(
+            generatedImageMetadata = listOf(GeneratedImageMetadata(
+                file.toURI().toString(), "synthetic", emptyList(), "", "normal", 64, 64
+            ))
+        ))
+        assertNull(fixture.removals.remove(message, null, null))
+        assertTrue(file.isFile)
+    }
+
+    private fun verifyFailure(
+        entity: String,
+        versionOnly: Boolean = false,
+        restoreOwner: Boolean = false,
+        replaceImage: Boolean = false
+    ) =
         withFixture { fixture ->
             val session = fixture.createSession()
             val message = fixture.addReply(session, versionOnly)
@@ -75,21 +97,30 @@ class ReplyRemovalDurabilityTest {
                 val journal = File(fixture.context.filesDir, "entities/pending_reply_removals").listFiles().orEmpty()
                 assertEquals(1, journal.size)
                 assertFalse(BackupDataRegistry.isSelectedFile("entities/pending_reply_removals/${journal.single().name}"))
+                assertTrue(runCatching {
+                    ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
+                }.exceptionOrNull() is IllegalStateException)
             } finally {
                 assertTrue(directory.setWritable(true))
             }
 
             val cold = Fixture(fixture.context, fixture.app)
             if (restoreOwner) {
-                cold.chats.replaceMessagesForSession(session.id, listOf(message.copy(content = "restored")))
+                val restoredImages = if (replaceImage) listOf(File(File(message.images.single()).parentFile, "restored.png").also {
+                    it.writeText("restored image")
+                }.path) else message.images
+                cold.chats.replaceMessagesForSession(session.id, listOf(message.copy(content = "restored", images = restoredImages)))
             }
             cold.removals.resumePending()
             assertEquals(0, File(fixture.context.filesDir, "entities/pending_reply_removals").listFiles().orEmpty().size)
+            ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
             if (restoreOwner) {
-                assertEquals("restored", cold.chats.getMessage(message.id, session.id)?.content)
+                val restored = requireNotNull(cold.chats.getMessage(message.id, session.id))
+                assertEquals("restored", restored.content)
                 assertNotNull(cold.voices.get(voice.id))
                 assertTrue(File(voice.audioPath).isFile)
-                assertTrue(File(message.images.single()).isFile)
+                assertTrue(File(restored.images.single()).isFile)
+                assertEquals(!replaceImage, File(message.images.single()).isFile)
             } else {
                 assertNull(cold.voices.get(voice.id))
                 assertFalse(cold.voices.snapshotAnchorsForMessages(setOf(message.id)).any { it.messageVersionId == target })

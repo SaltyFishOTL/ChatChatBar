@@ -11,7 +11,6 @@ import com.example.chatbar.domain.voice.CurrentVoiceSegment
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
 import java.nio.charset.StandardCharsets
-import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -284,12 +283,14 @@ class VoiceMessageRepository(
             stopPlayback(removed.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
             deleteVoiceRecordsLocked(removed)
             anchorKeys.forEach { deleteAnchorLocked(it) }
-            val candidates = removal.audioPaths.mapTo(linkedSetOf()) { File(it).canonicalPath }
-            candidates.removeAll(persistedAudioPathsLocked())
-            storage.retainRegisteredMedia(candidates, setOf("save_slots"))
-            candidates.forEach { path ->
-                check(deleteAudio(path)) { "回复已删除，语音文件清理失败，将在重试时继续" }
-            }
+            deleteUnownedReplyAudio(removal.audioPaths, deleteAudio)
+        }
+    }
+
+    internal suspend fun deleteUnownedReplyAudio(paths: List<String>, deleteAudio: (String) -> Boolean) {
+        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
+        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots")) { path ->
+            check(deleteAudio(path)) { "回复已删除，语音文件清理失败，将在重试时继续" }
         }
     }
 
@@ -302,14 +303,14 @@ class VoiceMessageRepository(
         return result
     }
 
-    internal suspend fun withPersistedAudioPaths(action: (Set<String>) -> Unit) = mutex.withLock {
+    internal suspend fun withPersistedAudioPaths(action: suspend (Set<String>) -> Unit) = mutex.withLock {
         action(persistedAudioPathsLocked())
     }
 
     private suspend fun persistedAudioPathsLocked(): Set<String> {
         val paths = mutableSetOf<String>()
         storage.forEachUncached(VOICE_TYPE, GeneratedVoiceMessage.serializer(), requireCompleteRead = true) {
-            paths += File(it.audioPath).canonicalPath
+            storage.canonicalMediaPath(it.audioPath)?.let(paths::add)
         }
         return paths
     }
@@ -447,9 +448,9 @@ class VoiceMessageRepository(
 
     private suspend fun migrateLegacyVoiceVersionsLocked(message: ChatMessage) {
         val legacyKey = VoiceAnchorStateKey(message.id, null)
-        val legacyState = anchorsByVersion[legacyKey]
+        val legacyState = anchorsByVersion[legacyKey]?.takeIf { it.sessionId == message.sessionId || it.sessionId.isBlank() }
         val legacyVoices = _voices.value.filter {
-            it.messageId == message.id && it.messageVersionId.isNullOrBlank()
+            it.sessionId == message.sessionId && it.messageId == message.id && it.messageVersionId.isNullOrBlank()
         }
         if (legacyState == null && legacyVoices.isEmpty()) return
 

@@ -35,8 +35,29 @@ import java.util.UUID
  * 单例文件: filesDir/entities/<entityType>.json
  */
 class JsonFileStorage(private val context: Context) {
-    internal fun retainRegisteredMedia(candidates: MutableSet<String>, types: Set<String>) =
-        com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(context.filesDir, candidates, types)
+    internal fun canonicalMediaPath(path: String): String? =
+        com.example.chatbar.domain.backup.BackupDataRegistry.canonicalLocalMediaPath(context.filesDir, path)
+
+    internal suspend fun deleteUnreferencedRegisteredMedia(
+        candidates: MutableSet<String>,
+        types: Set<String>,
+        delete: (String) -> Unit
+    ) {
+        if (candidates.isEmpty()) return
+        // Hold the same per-store locks as writers until the files have been checked and removed.
+        val locks = types.sorted().map(::mutexFor)
+        suspend fun withLocks(index: Int) {
+            if (index < locks.size) {
+                locks[index].withStorageAccess { withLocks(index + 1) }
+            } else {
+                withContext(Dispatchers.IO) {
+                    com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(context.filesDir, candidates, types)
+                    candidates.forEach(delete)
+                }
+            }
+        }
+        withLocks(0)
+    }
 
 
     data class FileSetSignature(

@@ -9,6 +9,7 @@ import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoicePlaybackController
+import java.io.File
 import java.util.UUID
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
@@ -54,11 +55,11 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
-    suspend fun retryMessage(sessionId: String, messageId: String) = mutex.withLock {
+    suspend fun retryMessage(sessionId: String, messageId: String, versionId: String?) = mutex.withLock {
         LocalDataMaintenance.access {
             val matching = pending().filter { it.sessionId == sessionId && it.messageId == messageId }
             matching.forEach { finish(it) }
-            matching.isNotEmpty()
+            matching.any { it.versionId == null || it.versionId == versionId }
         }
     }
 
@@ -85,7 +86,8 @@ internal class ReplyRemovalCoordinator(
             { ids -> if (playback.state.value.currentVoiceId in ids) playback.stop() },
             audio::deleteIfOwned
         )
-        if (committed && removal.images.isNotEmpty()) {
+        if (!committed) voices.deleteUnownedReplyAudio(removal.audioPaths, audio::deleteIfOwned)
+        if (removal.images.isNotEmpty()) {
             chat.deleteUnreferencedChatImages(removal.images) { path ->
                 check(images.deleteChatAttachmentIfOwned(path)) { "无法清理已删除回复的图片文件" }
             }
@@ -94,7 +96,15 @@ internal class ReplyRemovalCoordinator(
         Unit
     }
 
-    private companion object {
+    companion object {
         const val STORE = "pending_reply_removals"
+
+        /** Run under the exclusive data lease. The local recovery journal is not portable. */
+        fun requireSettledForBackup(filesDir: File) {
+            val directory = File(filesDir, "entities/$STORE")
+            if (!directory.exists()) return
+            val entries = checkNotNull(directory.listFiles()) { "无法核对本地回复清理状态" }
+            check(entries.none { it.extension == "json" }) { "仍有回复附件待清理，请重新打开会话后再试备份或恢复" }
+        }
     }
 }

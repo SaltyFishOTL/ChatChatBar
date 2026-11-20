@@ -26,6 +26,7 @@ data class AppBackupImportRequest(val path: String, val consumed: () -> Unit)
 class AppBackupService(
     private val context: Context,
     private val scope: CoroutineScope,
+    private val settleReplyRemovals: suspend () -> Unit = {},
     private val flushDrafts: suspend () -> Unit
 ) {
     private val _state = MutableStateFlow(readLastOperation())
@@ -138,7 +139,9 @@ class AppBackupService(
         if (removed) message else message + "；所选位置可能留有不完整文件，请删除后重试"
     }) {
         flushDrafts()
+        settleReplyRemovals()
         LocalDataMaintenance.acquire().use {
+            com.example.chatbar.domain.deletion.ReplyRemovalCoordinator.requireSettledForBackup(context.filesDir)
             val work = File(workspace, "export").also { it.deleteRecursively(); it.mkdirs() }
             try {
                 val activeCoroutine = currentCoroutineContext()
@@ -237,10 +240,12 @@ class AppBackupService(
         require(requireNotNull(inspected.summary).requiresRestorePreview(mode)) { "旧版全量存档不需要选择范围预览" }
         start(null, recoverState = inspected) {
             flushDrafts()
+            settleReplyRemovals()
             val lease = LocalDataMaintenance.acquire()
             val work = File(workspace, "prepared")
             var ready = false
             try {
+                com.example.chatbar.domain.deletion.ReplyRemovalCoordinator.requireSettledForBackup(context.filesDir)
                 BackupPreferenceTransfer.flush(context)
                 check(!AppBackupBootstrap.transaction(context).pending()) { "已有待恢复事务" }
                 work.deleteRecursively()
@@ -275,8 +280,10 @@ class AppBackupService(
             _state.value = inspected.copy(phase = AppBackupPhase.PREPARING, label = "正在记录恢复事务")
             operation = scope.launch(Dispatchers.IO) {
                 try {
+                    if (restoreAdmission == null) settleReplyRemovals()
                     val lease = restoreAdmission ?: LocalDataMaintenance.acquire()
                     try {
+                        com.example.chatbar.domain.deletion.ReplyRemovalCoordinator.requireSettledForBackup(context.filesDir)
                         currentCoroutineContext().ensureActive()
                         BackupPreferenceTransfer.flush(context)
                         currentCoroutineContext().ensureActive()
