@@ -2753,12 +2753,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val currentIndex = allMsgs.indexOfLast { it.id == userMsg.id && it.role == MessageRole.USER }
                     if (currentIndex >= 0) allMsgs.take(currentIndex + 1) else emptyList()
                 } else allMsgs
-                val actionRequestSource = when {
-                    persistUserMessage || resumedUserMessage != null -> ChatHistoryActionRequestSource.PERSISTED_USER
-                    alternativeTargetMessageId != null -> ChatHistoryActionRequestSource.NO_USER_REGENERATION
-                    resumeLatestUser -> ChatHistoryActionRequestSource.UI_CONTINUATION
-                    else -> ChatHistoryActionRequestSource.UNKNOWN
-                }
+                val actionRequestSource = ChatHistoryActionRequestSource.forSend(
+                    persistsNewUser = persistUserMessage,
+                    resumedUser = resumedUserMessage,
+                    regeneratesAlternative = alternativeTargetMessageId != null,
+                    continuesFromUi = resumeLatestUser,
+                )
                 val actionProjection = ChatHistoryActionProjection.prepare(
                     candidates = actionCandidates,
                     completeRecentMessageIds = candidateSnapshot.completeRecentMessageIds,

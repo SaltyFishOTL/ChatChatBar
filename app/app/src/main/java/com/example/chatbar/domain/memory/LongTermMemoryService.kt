@@ -21,6 +21,7 @@ import com.example.chatbar.data.local.entity.MemoryFailureCategory
 import com.example.chatbar.data.local.entity.MemoryFailureInfo
 import com.example.chatbar.data.local.entity.MemoryFailureStage
 import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemoryPageState
 import com.example.chatbar.data.local.entity.MemoryRevisionOperation
@@ -193,8 +194,7 @@ class LongTermMemoryService internal constructor(
             val session = chatRepository.getSession(previous.sessionId) ?: return@stateLock
             val state = memoryRepository.getState(previous.sessionId)
             if (state?.legacyReferenceNodeIds?.isNotEmpty() == true ||
-                (state != null && state.head.sourceHashes.isEmpty() && state.head.sourceFingerprints.isEmpty() &&
-                    state.head.throughSourceTurnId != null && !state.head.stale) ||
+                (state?.head?.throughSourceTurnId != null && state.head.actionProjection == null) ||
                 ((state == null || state.schemaVersion < CURRENT_LONG_TERM_MEMORY_SCHEMA_VERSION) &&
                     (session.longTermMemory.isNotBlank() || memoryRepository.legacyHistory(previous.sessionId).isNotEmpty()))
             ) {
@@ -659,7 +659,8 @@ class LongTermMemoryService internal constructor(
             }
             val plan = candidatePlan?.takeUnless { selected ->
                 selected.mode == MemoryHeadUpdateMode.UPDATE &&
-                    headPathCrossesGap(base, selected.targetSourceTurnId)
+                    (base.state.head.actionProjection == MemoryHeadActionProjection.WITHHELD ||
+                        headPathCrossesGap(base, selected.targetSourceTurnId))
             }
             if (plan == null) {
                 stateLock(sessionId) {
@@ -770,7 +771,12 @@ class LongTermMemoryService internal constructor(
                         MemoryHeadUpdateMode.BACKFILL -> archiveFingerprints + inputFingerprints
                     },
                     version = baseHeadVersion + 1,
-                    stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale
+                    stale = plan.mode == MemoryHeadUpdateMode.UPDATE && current.state.head.stale,
+                    actionProjection = if (plan.mode == MemoryHeadUpdateMode.UPDATE) {
+                        current.state.head.actionProjection
+                    } else {
+                        MemoryHeadActionProjection.VERIFIED
+                    }
                 )
                 val next = current.state.copy(
                     head = head,
@@ -860,7 +866,8 @@ class LongTermMemoryService internal constructor(
                     worldState = response.worldState.trim(),
                     sourceHashes = refs.associate { it.sourceTurnId to it.sourceHash },
                     sourceFingerprints = refs.associate { it.sourceTurnId to it.sourceFingerprint },
-                    version = baseVersion + 1
+                    version = baseVersion + 1,
+                    actionProjection = MemoryHeadActionProjection.VERIFIED
                 )
                 val next = current.state.copy(
                     head = head,
@@ -3119,22 +3126,23 @@ class LongTermMemoryService internal constructor(
         }
         val headAlreadyCurrent = headSafelyMatchesPrevious &&
             state.head.sourceFingerprints == currentHeadFingerprints
-        val migratedHead = if (headSafelyMatchesPrevious && !headAlreadyCurrent) {
-            state.head.copy(
-                sourceFingerprints = currentHeadFingerprints,
-                stale = false
-            )
-        } else {
-            state.head
-        }
+        val projection = MemoryHeadUpdatePolicy.actionProjection(state.head, state.timeline, projectedActionSources)
+        val migratedHead = state.head.copy(
+            sourceFingerprints = if (headSafelyMatchesPrevious && !headAlreadyCurrent) {
+                currentHeadFingerprints
+            } else {
+                state.head.sourceFingerprints
+            },
+            actionProjection = projection
+        )
         val headEvidence = migratedHead.sourceFingerprints.ifEmpty { migratedHead.sourceHashes }
         val headCurrent = if (migratedHead.sourceFingerprints.isEmpty()) currentLegacyHashes else currentFingerprints
-        val headStale = if (headEvidence.isNotEmpty()) {
-            headEvidence.any { (sourceId, storedHash) ->
+        val headStale = when {
+            projection == MemoryHeadActionProjection.WITHHELD -> true
+            headEvidence.isNotEmpty() -> headEvidence.any { (sourceId, storedHash) ->
                 headCurrent[sourceId] != storedHash
             }
-        } else {
-            MemoryHeadUpdatePolicy.hashlessHeadIsStale(
+            else -> MemoryHeadUpdatePolicy.hashlessHeadIsStale(
                 head = migratedHead,
                 timeline = state.timeline,
                 staleOrUnverifiedSourceIds = stale.values.flatten().toSet() + projectedActionSources

@@ -37,10 +37,10 @@ class ChatMemoryIndexPolicyTest {
             sourceTurnId = "turn-7",
         ).copy(actionOptionsFormat = ActionOptionsFormat(
             "[choices]", "[/choices]", "Choices", ActionOptionLabels.LETTERS,
-        ))
+        ), createdAt = 100, updatedAt = 100)
         val image = message("image", MessageRole.ASSISTANT, "", listOf("test.png"), "turn-7")
             .copy(generatedFromMessageId = menu.id)
-        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8")
+        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8").copy(createdAt = 200, updatedAt = 200)
         val turn = ChatMemoryIndexPolicy.buildIndexableTurns(listOf(menu, image, user), emptySet()).last()
         assertEquals("turn-8", turn.sourceTurnId)
         assertEquals(menu.id, turn.confirmedChoices[user.id]?.replyId)

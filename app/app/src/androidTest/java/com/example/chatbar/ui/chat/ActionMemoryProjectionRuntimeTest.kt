@@ -13,12 +13,14 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemorySessionState
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.MemoryRepository
+import com.example.chatbar.domain.memory.MemorySourceFingerprint
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -66,7 +68,17 @@ class ActionMemoryProjectionRuntimeTest {
                 id = MemoryNode.newId(), sessionId = session.id, tier = MemoryTier.LEGACY_REFERENCE,
                 sourceTurnIds = listOf(sourceId), content = "合成旧档案里的选项正文",
             )
-            val oldHead = MemoryHead(throughSourceTurnId = sourceId, goals = "合成旧HEAD里的选项目标")
+            val oldHead = if (deleteReply) {
+                val tail = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "收好已经看过的星图"))
+                val tailId = requireNotNull(tail.sourceTurnId)
+                MemoryHead(
+                    throughSourceTurnId = tailId,
+                    goals = "合成旧HEAD里的选项目标",
+                    sourceFingerprints = mapOf(tailId to MemorySourceFingerprint.semantic(tailId, listOf(tail), session)),
+                )
+            } else {
+                MemoryHead(throughSourceTurnId = sourceId, goals = "合成旧HEAD里的选项目标")
+            }
             app.memoryRepository.saveNodes(listOf(reference))
             app.memoryRepository.saveState(MemorySessionState(
                 sessionId = session.id, head = oldHead, legacyReferenceNodeIds = listOf(reference.id),
@@ -105,7 +117,8 @@ class ActionMemoryProjectionRuntimeTest {
 
             val fresh = MemoryRepository(JsonFileStorage(app))
             assertEquals(reference.copy(actionProjectionWithheld = true), fresh.getNode(reference.id))
-            assertEquals(oldHead.copy(stale = true), requireNotNull(fresh.getState(session.id)).head)
+            assertEquals(oldHead.copy(stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD),
+                requireNotNull(fresh.getState(session.id)).head)
             val prompt = app.longTermMemoryService.promptView(session.id)
             assertFalse(prompt.archive.contains(reference.body))
             assertFalse(prompt.headAndTimeline.contains(oldHead.goals))

@@ -77,13 +77,18 @@ class MemorySourceFingerprintTest {
             content = "地图展开。\n[choices]\nChoices\n1. 关闭地图\n2. 交出钥匙\n[/choices]",
             actionOptionsFormat = ActionOptionsFormat("[choices]", "[/choices]", "Choices"),
         )
-        val user = base[0].copy(orderKey = 3, content = "2", sourceTurnId = "s1", sourceTurnOrder = 1)
+        val user = base[0].copy(createdAt = 3, updatedAt = 3, orderKey = 3, content = "2", sourceTurnId = "s1", sourceTurnOrder = 1)
         val original = listOf(menu, user)
         val amended = listOf(menu.copy(content = menu.content.replace("交出钥匙", "交出地图")), user)
         assertEquals("2", user.displayContent)
         assertEquals(setOf("s0", "s1"), MemorySourceFingerprint.sourceIdsWithProjectedActions(original))
         assertNotEquals(MemorySourceFingerprint.semantic("s1", original, session),
             MemorySourceFingerprint.semantic("s1", amended, session))
+
+        val afterSourceEdit = listOf(amended.first().copy(updatedAt = 4), user)
+        assertEquals(setOf("s0"), MemorySourceFingerprint.sourceIdsWithProjectedActions(afterSourceEdit))
+        assertEquals(MemorySourceFingerprint.semantic("s1", listOf(user), session),
+            MemorySourceFingerprint.semantic("s1", afterSourceEdit, session))
     }
 
     private fun fingerprint(messages: List<ChatMessage>) =

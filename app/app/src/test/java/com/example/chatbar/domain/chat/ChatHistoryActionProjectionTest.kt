@@ -81,6 +81,36 @@ class ChatHistoryActionProjectionTest {
         assertEquals("站台亮了。", sparse.forRetrieval(assistant).displayContent.trim())
     }
 
+    @Test fun `blank Continue after a cancelled request does not reinterpret its saved choice`() {
+        val original = message("menu", MessageRole.ASSISTANT, "星图亮了。\n$options", 1)
+            .copy(sourceTurnId = "menu-turn", sourceTurnOrder = 1)
+        val interruptedUser = message("old-user", MessageRole.USER, "1", 2)
+            .copy(sourceTurnId = "user-turn", sourceTurnOrder = 2)
+        val replaced = original.copy(content = original.content.replace("OLD_", "REPLACED_"), updatedAt = 3)
+        val freshUser = interruptedUser.copy(id = "new-user", orderKey = 4, createdAt = 4, updatedAt = 4)
+
+        val resumed = ChatHistoryActionRequestSource.forSend(false, interruptedUser, false, true)
+        val typed = ChatHistoryActionRequestSource.forSend(true, null, false, false)
+        assertEquals(ChatHistoryActionRequestSource.RESUMED_USER, resumed)
+        assertEquals(ChatHistoryActionRequestSource.PERSISTED_USER, typed)
+        assertEquals(ChatHistoryActionRequestSource.UI_CONTINUATION,
+            ChatHistoryActionRequestSource.forSend(false, null, false, true))
+        assertEquals(ChatHistoryActionRequestSource.NO_USER_REGENERATION,
+            ChatHistoryActionRequestSource.forSend(false, null, true, false))
+
+        fun projection(menu: ChatMessage, user: ChatMessage, request: ChatHistoryActionRequestSource) =
+            ChatHistoryActionProjection.prepare(listOf(menu, user), setOf(menu.id, user.id), request)
+        assertTrue(projection(original, interruptedUser, resumed).forRetrieval(original).displayContent
+            .contains("OLD_NOT_TAKEN_LEFT"))
+        val continued = projection(replaced, interruptedUser, resumed)
+        assertEquals("星图亮了。", continued.forRetrieval(replaced).displayContent.trim())
+        assertEquals("1", continued.forRetrieval(interruptedUser).displayContent)
+        assertEquals(replaced.displayContent, continued.sourceForHistory(replaced, stripStatus = false))
+
+        val fromNewInput = projection(replaced, freshUser, typed)
+        assertEquals("星图亮了。\nREPLACED_NOT_TAKEN_LEFT", fromNewInput.forRetrieval(replaced).displayContent)
+    }
+
     @Test fun `earlier history retains fenced examples while removing actual statuses`() {
         val literal = "```text\n$options\n```"
         val quoted = "> ```status\n> 衣着：示例\n> ```"

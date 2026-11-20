@@ -153,6 +153,10 @@ data class MemoryNode(
 }
 
 @Serializable
+enum class MemoryHeadActionProjection { VERIFIED, WITHHELD }
+
+@Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class MemoryHead(
     val throughSourceTurnId: String? = null,
     /** 仅用于旧schema解码及AI返回核验；显示T运行时派生。 */
@@ -168,7 +172,9 @@ data class MemoryHead(
     /** 仅包含记忆模型实际看到的来源语义；排除消息ID、文件路径及排序数值等元数据。 */
     val sourceFingerprints: Map<String, String> = emptyMap(),
     val version: Long = 0,
-    val stale: Boolean = false
+    val stale: Boolean = false,
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val actionProjection: MemoryHeadActionProjection? = null
 ) {
     fun render(): String = buildList {
         if (location.isNotBlank()) add("位置：$location")
