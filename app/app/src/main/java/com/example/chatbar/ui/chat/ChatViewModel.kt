@@ -2649,6 +2649,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 startStreamingForegroundWork()
                 val generationJob = coroutineContext[Job]
                 var interruptedReplyDraft: ChatMessage? = null
+                var receivedToolReplyPartLengths = emptyList<Int>()
                 var assistantReplyPersisted = false
                 var cleanNarrativeEcho = false
                 val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
@@ -3266,7 +3267,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val ctx = ChatBarApp.instance
                     fun updateStreamingDraft(rawBody: String): String {
                         val renderedBody = renderSessionText(
-                            NarrativeHistoryEcho.replyBody(rawBody, streaming = true, enabled = cleanNarrativeEcho)
+                            NarrativeHistoryEcho.completedBody(
+                                rawBody, enabled = cleanNarrativeEcho, partLengths = receivedToolReplyPartLengths,
+                                streaming = true,
+                            )
                         )
                         val draft = ChatMessage(
                             id = assistantMsgId,
@@ -3326,6 +3330,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Delta -> {
                                 ordinaryPreview = null
                                 accumulatedText += event.text
+                                receivedToolReplyPartLengths = event.toolReplyPartLengths
                                 val body = updateStreamingDraft(accumulatedText)
                                 StreamingNotificationManager.update(ctx, body, sessionId)
                             }
@@ -3440,8 +3445,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
                         val finalDraft = interruptedReplyDraft?.let { partial ->
-                            partial.copy(content = NarrativeHistoryEcho.replyBody(
+                            partial.copy(content = NarrativeHistoryEcho.completedBody(
                                 partial.content, enabled = cleanNarrativeEcho, interrupted = true,
+                                partLengths = receivedToolReplyPartLengths,
                             ))
                         }
                         val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)

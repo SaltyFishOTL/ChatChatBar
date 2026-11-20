@@ -17,7 +17,7 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
-    private val quotedText = Regex("「[^」\\r\\n]*」|『[^』\\r\\n]*』|“[^”\\r\\n]*”|‘[^’\\r\\n]*’")
+    private val quotedText = Regex("「[^「」]*」|『[^『』]*』|“[^“”]*”|‘[^‘’]*’")
 
     fun appliesToRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): Boolean =
         narrativeMode != null && (formatCard == null || wrappers.none { it.opening in formatCard })
@@ -27,20 +27,22 @@ object NarrativeHistoryEcho {
         enabled: Boolean,
         interrupted: Boolean = false,
         partLengths: List<Int> = emptyList(),
+        streaming: Boolean = false,
     ): String {
         if (!enabled) return text
+        fun clean(part: String) = replyBody(part, streaming = streaming, interrupted = interrupted)
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
             var offset = 0
             val parts = partLengths.map { length ->
                 val end = offset + length
                 if (length < 0 || end !in offset..text.length ||
                     (end < text.length && text[end] != '\n')
-                ) return replyBody(text, interrupted = interrupted)
+                ) return clean(text)
                 text.substring(offset, end).also { offset = end + 1 }
             }
-            return parts.joinToString("\n") { replyBody(it, interrupted = interrupted) }
+            return parts.joinToString("\n", transform = ::clean)
         }
-        return replyBody(text, interrupted = interrupted)
+        return clean(text)
     }
 
     fun replyBody(
@@ -63,12 +65,14 @@ object NarrativeHistoryEcho {
 
         val body = start.removePrefix(wrapper.opening).trimStart('\r', '\n')
         val end = body.trimEnd()
+        val familyTags = wrapperFamilyTokens.getValue(wrapper.name).findAll(end).toList()
         val literals by lazy(LazyThreadSafetyMode.NONE) {
             val markdown = bareCarriageReturn.replace(end, "\n")
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val fences = MarkdownCodeFences.blocks(markdown) { lazyQuoteLineStarts += it }.map { it.range }
             val ranges = codeLiteralRanges(markdown, fences) + quotedText.findAll(end).map { it.range }.toList()
-            ReplyLiterals(ranges, lazyQuoteLineStarts)
+            val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
+            ReplyLiterals(ranges + asciiQuoteRanges(end, quoteDelimitersToSkip), lazyQuoteLineStarts)
         }
         fun isMarkdownQuoteLine(offset: Int): Boolean {
             val lineStart = lineStart(end, offset)
@@ -78,7 +82,7 @@ object NarrativeHistoryEcho {
         }
         var innerDepth = 0
         var unmatchedClosing = false
-        for (match in wrapperFamilyTokens.getValue(wrapper.name).findAll(end)) {
+        for (match in familyTags) {
             val position = match.range.first
             val quote = end.getOrNull(position - 1)
             val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
@@ -143,6 +147,24 @@ object NarrativeHistoryEcho {
             val close = (index until runs.size).firstOrNull { runs[it].value.length == length } ?: continue
             add(unescapedStart..runs[close].range.last)
             index = close + 1
+        }
+    }
+
+    private fun asciiQuoteRanges(text: String, delimiterExclusions: List<IntRange>): List<IntRange> = buildList {
+        var open = -1
+        for (index in text.indices) {
+            val symbol = text[index]
+            if (symbol != '\'' && symbol != '"') continue
+            if (isEscaped(text, index) || delimiterExclusions.any { index in it }) continue
+            val followsWord = text.getOrNull(index - 1)?.isLetterOrDigit() == true
+            val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
+            // Apostrophes in contractions and possessives do not start a prose quote.
+            if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
+            if (open < 0) open = index
+            else if (text[open] == symbol) {
+                add(open..index)
+                open = -1
+            }
         }
     }
 

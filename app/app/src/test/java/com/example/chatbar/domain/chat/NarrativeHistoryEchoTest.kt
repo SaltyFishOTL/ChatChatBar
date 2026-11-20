@@ -83,6 +83,31 @@ class NarrativeHistoryEchoTest {
         assertEquals(code, NarrativeHistoryEcho.replyBody("$opening\r$code\r$closing"))
     }
 
+    @Test fun pairedProseQuotesKeepLiteralTagsAcrossLines() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val body = "她念道：“示例的结束标签是\n$closing\n就这样写。”\n旁白继续。"
+            val wrapped = "$opening\n$body\n$closing"
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true))
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true, streaming = true))
+        }
+    }
+
+    @Test fun asciiProseQuotesKeepLiteralClosingTags() {
+        for ((opening, closing) in listOf(
+            "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
+            "<历史回复 模式=\"推进\">" to "</历史回复>",
+        )) {
+            val body = "He said: \"Type \\\"the label\\\" $closing to finish.\"\nThen she continued."
+            val wrapped = "$opening\n$body\n$closing"
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true, interrupted = true))
+            val contraction = "Don't stop now."
+            assertEquals(contraction, NarrativeHistoryEcho.replyBody("$opening\n$contraction\n$closing"))
+        }
+    }
+
     @Test fun onlyCompletedToolOutputCanJoinSeparateEchoParts() {
         val first = "<历史回复 模式=\"聚焦\">\n甲\n</历史回复>"
         val second = "<历史回复 模式=\"推进\">\n乙\n</历史回复>"
@@ -90,6 +115,13 @@ class NarrativeHistoryEchoTest {
         assertEquals("甲\n乙", NarrativeHistoryEcho.completedBody(raw, enabled = true,
             partLengths = listOf(first.length, second.length)))
         assertEquals(raw, NarrativeHistoryEcho.completedBody(raw, enabled = true))
+        val boundaries = listOf(first.length, second.length)
+        assertEquals("甲\n乙", NarrativeHistoryEcho.completedBody(
+            raw, enabled = true, partLengths = boundaries, streaming = true,
+        ))
+        assertEquals("甲\n乙", NarrativeHistoryEcho.completedBody(
+            raw, enabled = true, partLengths = boundaries, interrupted = true,
+        ))
         assertEquals("甲\n普通正文", NarrativeHistoryEcho.completedBody("$first\n普通正文", enabled = true,
             partLengths = listOf(first.length, "普通正文".length)))
     }
