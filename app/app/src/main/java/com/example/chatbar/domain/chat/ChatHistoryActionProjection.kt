@@ -112,7 +112,7 @@ class ChatHistoryActionProjection private constructor(
 
         private fun hasMenuLetterReference(text: String, seen: Set<Char>): Boolean {
             if (seen.isEmpty()) return false
-            if (('A' in seen || 'a' in seen) && hasAWithHanContinuation(text)) return true
+            if (hasMenuLetterWithHanContinuation(text, seen)) return true
             if (hanMenuLetter.findAll(text).any { match ->
                     val label = match.groupValues[1].ifEmpty { match.groupValues[2] }.single()
                     label.uppercaseChar() in seen || label.lowercaseChar() in seen
@@ -126,9 +126,10 @@ class ChatHistoryActionProjection private constructor(
         }
 
         // Check code points directly so Android's ICU and the desktop JVM use the same rule.
-        private fun hasAWithHanContinuation(text: String): Boolean {
+        private fun hasMenuLetterWithHanContinuation(text: String, labels: Set<Char>): Boolean {
             for (index in text.indices) {
-                if (text[index] != 'a' && text[index] != 'A') continue
+                val letter = text[index].uppercaseChar()
+                if (letter !in 'A'..'T' || labels.none { it.equals(letter, ignoreCase = true) }) continue
                 if (index > 0) {
                     val previous = Character.codePointBefore(text, index)
                     if (previous == '_'.code || Character.isDigit(previous) ||

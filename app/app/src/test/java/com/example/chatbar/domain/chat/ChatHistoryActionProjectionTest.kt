@@ -5,6 +5,18 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class ChatHistoryActionProjectionTest {
+    @Test fun `Chinese continuation retains an offered letter adjacent to Han text`() {
+        val assistant = message("assistant", MessageRole.ASSISTANT,
+            "场景。\n<actions>\nA) 检查站台\nB) 问守卫\n</actions>", 1).copy(
+            actionOptionsFormat = ActionOptionsFormat("<actions>", "</actions>", "", ActionOptionLabels.LETTERS),
+        )
+        for ((label, expected) in listOf("B" to true, "b" to true, "C" to false)) {
+            val user = message("user", MessageRole.USER, "${label}保持安静并贴着墙走", 2)
+            val projected = known(listOf(assistant, user), setOf(assistant.id, user.id))
+                .sourceForHistory(assistant, stripStatus = false)
+            assertEquals(expected, "B) 问守卫" in projected)
+        }
+    }
     @Test fun `nested examples stay literal and an explicit image hint retains one chosen item`() {
         val format = ActionOptionsFormat("<actions>", "</actions>", "Actions")
         val menu = "<actions>\nActions\n1. 检查站台\n2. 问守卫\n</actions>"
