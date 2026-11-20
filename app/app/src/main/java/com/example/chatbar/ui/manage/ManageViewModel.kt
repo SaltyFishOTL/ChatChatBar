@@ -207,11 +207,25 @@ class ManageViewModel : ViewModel() {
         _editorDrafts.value = editorDraftRepository.getAll().sortedByDescending { it.updatedAt }
     }
 
-    fun discardEditorDraft(draft: EditorDraft) {
+    fun discardEditorDraft(draft: EditorDraft, onResult: (String?) -> Unit = {}) {
         viewModelScope.launch {
-            editorDraftRepository.delete(draft.id)
-            editorDraftAssetService.deleteDraft(draft.draftSessionId)
+            var discarded = false
+            val errorMessage = try {
+                check(editorDraftRepository.deleteIfUnchanged(draft)) { "草稿已更新，请重新确认" }
+                discarded = true
+                check(editorDraftAssetService.deleteDraft(draft.draftSessionId)) { "删除草稿资源目录失败" }
+                null
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                if (discarded) {
+                    "草稿已清除，临时资源清理失败：${error.message}"
+                } else {
+                    "清除草稿失败：${error.message}"
+                }
+            }
             refreshDraftsNow()
+            onResult(errorMessage)
         }
     }
 

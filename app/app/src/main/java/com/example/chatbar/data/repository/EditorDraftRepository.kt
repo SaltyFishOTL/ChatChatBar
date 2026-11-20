@@ -10,6 +10,8 @@ import com.example.chatbar.data.local.entity.WorldBook
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -30,6 +32,7 @@ class EditorDraftRepository(
 
     private val _drafts = MutableStateFlow<List<EditorDraft>>(emptyList())
     val drafts: Flow<List<EditorDraft>> = _drafts.asStateFlow()
+    private val mutationMutex = Mutex()
 
     private var initialized = false
 
@@ -63,17 +66,24 @@ class EditorDraftRepository(
     suspend fun hasDraft(type: EditorDraftType, targetId: String): Boolean =
         getForTarget(type, targetId) != null
 
-    suspend fun save(draft: EditorDraft): EditorDraft {
+    suspend fun save(draft: EditorDraft): EditorDraft = mutationMutex.withLock {
         val now = System.currentTimeMillis()
         val normalized = draft.copy(id = draftId(draft.entityType, draft.targetId), updatedAt = now)
         storage.saveEntity(ENTITY_TYPE, normalized.id, normalized, EditorDraft.serializer())
         refreshCache()
-        return normalized
+        normalized
     }
 
-    suspend fun delete(id: String, requireSuccess: Boolean = false) {
+    suspend fun delete(id: String, requireSuccess: Boolean = false) = mutationMutex.withLock {
         storage.deleteEntity<EditorDraft>(ENTITY_TYPE, id, requireSuccess)
         refreshCache()
+    }
+
+    suspend fun deleteIfUnchanged(draft: EditorDraft): Boolean = mutationMutex.withLock {
+        if (getById(draft.id) != draft) return@withLock false
+        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, draft.id, requireSuccess = true)
+        refreshCache()
+        true
     }
 
     suspend fun deleteForTarget(type: EditorDraftType, targetId: String?) {

@@ -279,6 +279,67 @@ class CharacterDraftSaveLifecycleTest {
         assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
     }
 
+    @Test fun revertingOnlyAddedDocumentRetainsBytesUntilTheOldDraftCanBeRemoved() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("temporary.txt", "Synthetic draft content", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val document = retained.characterPayload!!.customDocuments.single()
+        val staged = File(document.filePath).also(files::add)
+        val directory = File(app.filesDir, "entities/edit_drafts")
+        val mode = Os.stat(directory.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        var navigated = false
+        try {
+            Os.chmod(directory.path, mode and writePermissions.inv())
+            withContext(Dispatchers.Main) { vm.deleteDocument(document) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            withContext(Dispatchers.Main) {
+                vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = { navigated = true })
+            }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            assertFalse(navigated)
+            assertEquals(retained, coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+            assertEquals("Synthetic draft content", staged.readText())
+        } finally {
+            Os.chmod(directory.path, mode)
+        }
+        action { vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertFalse(staged.exists())
+        assertEquals(original, app.characterRepository.getById(original.id))
+    }
+
+    @Test fun manualDiscardDoesNotReviveADraftAfterResourceCleanupFails() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("locked.txt", "Synthetic draft content", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(retained.characterPayload!!.customDocuments.single().filePath)
+        val folder = requireNotNull(staged.parentFile)
+        val mode = Os.stat(folder.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+        try {
+            Os.chmod(folder.path, mode and writePermissions.inv())
+            action { vm.discardDraft(it) }
+            assertTrue(staged.exists())
+            assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+            withContext(Dispatchers.Main) {
+                assertEquals(original.name, vm.name)
+                assertTrue(vm.documentsList.isEmpty())
+                assertNull(vm.draftSavedAt)
+                vm.scheduleDraftSave()
+            }
+            delay(900)
+            assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        } finally {
+            Os.chmod(folder.path, mode)
+            app.editorDraftAssetService.deleteDraft(retained.draftSessionId)
+        }
+    }
+
     @Test fun failedDraftDeletionRetainsItsResourcesAndCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
         val original = card()
         val vm = editor(original.id)

@@ -11,7 +11,9 @@ import androidx.lifecycle.ViewModelStore
 import androidx.test.platform.app.InstrumentationRegistry
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.BuildConfig
+import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.data.repository.EditorDraftRepository
 import com.example.chatbar.domain.card.CharacterCardPackage
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
@@ -162,6 +164,42 @@ class CharacterCardFieldsPersistenceTest {
             rule.runOnIdle { visible.value = false }
             rule.waitForIdle()
             rule.runOnIdle { store.clear() }
+            runBlocking {
+                app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, card.id)
+                app.characterRepository.delete(card.id)
+            }
+        }
+    }
+
+    @Test fun actualBackAfterRevertingTheLastEditRemovesThePreviousDraft() {
+        val card = CharacterCard.create("synthetic-${UUID.randomUUID()}", greeting = "main").copy(momentsEnabled = false)
+        val store = ViewModelStore()
+        val visible = mutableStateOf(true)
+        val coldDrafts = EditorDraftRepository(JsonFileStorage(app))
+        val exited = java.util.concurrent.atomic.AtomicBoolean(false)
+        runBlocking { app.characterRepository.save(card) }
+        try {
+            val vm = editor(store, card.id)
+            rule.setContent {
+                if (visible.value) ChatBarTheme {
+                    CharacterEditScreen(card.id, onBack = { exited.set(true); visible.value = false }, viewModel = vm)
+                }
+            }
+            rule.runOnIdle { vm.name = "temporary draft name" }
+            rule.waitUntil(15_000) { vm.draftSavedAt != null }
+            assertNotNull(runBlocking { coldDrafts.getForTarget(EditorDraftType.CHARACTER_CARD, card.id) })
+            rule.runOnIdle {
+                vm.name = card.name
+                rule.activity.onBackPressedDispatcher.onBackPressed()
+            }
+            rule.waitUntil(15_000) { exited.get() }
+            runBlocking {
+                val reopened = EditorDraftRepository(JsonFileStorage(app))
+                assertNull(reopened.getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+                assertEquals(card, app.characterRepository.getById(card.id))
+            }
+        } finally {
+            rule.runOnIdle { visible.value = false; store.clear() }
             runBlocking {
                 app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, card.id)
                 app.characterRepository.delete(card.id)
