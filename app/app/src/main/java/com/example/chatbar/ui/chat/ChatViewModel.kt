@@ -2392,7 +2392,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         fun actionItems(text: String) = RoleplayActionOptionsPolicy.blocks(text, optionsFormat).map { block ->
             block.options.map { option -> option.text }
         }
-        val originalActions = actionItems(repairInput)
+        val originalActions = RoleplayActionOptionsPolicy.blocksBeforeRepair(repairInput, optionsFormat)
+            .map { block -> block.options.map { it.text } }
         val formatCard = listOfNotNull(
             renderedFormatCard,
             PromptTemplates.actionOptionsRepairRequirement(optionsFormat).takeIf { originalActions.isNotEmpty() }
@@ -2460,16 +2461,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     }
                     val candidate = if (MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix)) repairInput
                         else RoleplayActionOptionsPolicy.completeTrailingBlock(repairedPrefix, optionsFormat)
-                    check(actionItems(candidate) == originalActions) { "修复结果改动了行动选项，已保留原文" }
+                    check(candidate == repairInput || actionItems(candidate) == originalActions) {
+                        "修复结果改动了行动选项，已保留原文"
+                    }
                     result = when {
                         candidate == originalContent -> {
                             val unchanged = message.copy(
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
                             )
-                            if (unchanged != message) persistFormatRepairMessage(unchanged)
+                            val displayed = if (unchanged != message) persistFormatRepairMessage(message, unchanged)
+                            else message
                             _messageFormatRepairEvents.tryEmit("格式无需修复")
-                            unchanged
+                            displayed
                         }
                         else -> {
                             val notice = MessageFormatRepairPolicy.completedRepairNotice(
@@ -2477,6 +2481,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 repaired = candidate
                             )
                             persistFormatRepairMessage(
+                                message,
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
                                     replacement = candidate,
@@ -2491,17 +2496,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         original = originalContent,
                         repairedPrefix = repairedPrefix
                     ).takeIf { actionItems(it) == actionItems(originalContent) } ?: originalContent
-                    result = persistFormatRepairMessage(
-                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                            message = message,
-                            replacement = mixedContent,
-                            notice = MessageFormatRepairNotice(
-                                kind = MessageFormatRepairNoticeKind.STOPPED,
-                                targetContent = mixedContent,
-                                originalContent = originalContent
+                    result = withContext(NonCancellable) {
+                        persistFormatRepairMessage(
+                            message,
+                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                message = message,
+                                replacement = mixedContent,
+                                notice = MessageFormatRepairNotice(
+                                    kind = MessageFormatRepairNoticeKind.STOPPED,
+                                    targetContent = mixedContent,
+                                    originalContent = originalContent
+                                )
                             )
                         )
-                    )
+                    }
                 } catch (error: Exception) {
                     result = persistFormatRepairFailure(
                         message = message,
@@ -2525,6 +2533,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         message: ChatMessage,
         error: String
     ): ChatMessage = persistFormatRepairMessage(
+        message,
         message.copy(
             formatRepairNotice = MessageFormatRepairNotice(
                 kind = MessageFormatRepairNoticeKind.ERROR,
@@ -2535,10 +2544,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
     )
 
-    private suspend fun persistFormatRepairMessage(message: ChatMessage): ChatMessage {
-        chatRepository.updateMessage(message)
+    private suspend fun persistFormatRepairMessage(expected: ChatMessage, message: ChatMessage): ChatMessage {
+        val saved = chatRepository.updateMessageIfUnchanged(expected, message)
         replaceMessagesFromRepository()
-        return message
+        if (saved != null) return saved
+        _messageFormatRepairEvents.tryEmit("回复已变化，已保留当前版本")
+        return chatRepository.getMessage(expected.id, expected.sessionId) ?: expected
     }
 
     fun updateDraftInput(text: String) {
@@ -2769,7 +2780,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     )
                 }
                 val renderedContextMsgs = contextMsgs.map {
-                    PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName)
+                    PlaceholderRenderer.renderMessage(actionProjection.forRetrieval(it), activePlayerNameOrNull, charCard.effectiveBotName)
                 }
                 val currentRetrievalUserContent = when {
                     persistUserMessage || resumedUserMessage != null -> finalUserContent
@@ -3119,13 +3130,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         zone: ChatHistoryPromptZone
                     ) {
                         val role = msg.role.name.lowercase()
-                        val sourceText = ChatHistoryPromptPolicy.sourceText(
-                            message = msg,
-                            excludeAssistantStatusFromHistory =
-                                appSettings.excludeAssistantStatusFromHistory,
-                            zone = zone
+                        val sourceText = actionProjection.sourceForHistory(
+                            msg, stripStatus = appSettings.excludeAssistantStatusFromHistory &&
+                                zone == ChatHistoryPromptZone.EARLIER_HISTORY,
                         )
-                        val renderedBody = renderSessionText(actionProjection.project(msg, sourceText))
+                        val renderedBody = renderSessionText(sourceText)
                         val hasSupportedImage = msg.images.isNotEmpty() &&
                             modelConfig.isMultimodal &&
                             msg.role == MessageRole.USER

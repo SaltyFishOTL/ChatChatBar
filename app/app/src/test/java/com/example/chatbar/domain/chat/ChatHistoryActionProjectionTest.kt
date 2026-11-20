@@ -5,6 +5,58 @@ import org.junit.Test
 import org.junit.Assert.*
 
 class ChatHistoryActionProjectionTest {
+    @Test fun `nested examples stay literal and an explicit image hint retains one chosen item`() {
+        val format = ActionOptionsFormat("<actions>", "</actions>", "Actions")
+        val menu = "<actions>\nActions\n1. 检查站台\n2. 问守卫\n</actions>"
+        val nested = "- 格式示例\n\n" + menu.lineSequence().joinToString("\n") { "  $it" }
+        assertTrue(RoleplayActionOptionsPolicy.blocks(nested, format).isEmpty())
+        assertEquals(nested, RoleplayActionOptionsPolicy.withoutExplicitOptions(nested, format))
+        assertEquals("站台。", RoleplayActionOptionsPolicy.imageScene("站台。\n$menu", format, "").trim())
+        assertEquals("站台。\n问守卫", RoleplayActionOptionsPolicy.imageScene("站台。\n$menu", format, "请画第2项"))
+        assertEquals("站台。", RoleplayActionOptionsPolicy.imageScene("站台。\n$menu", format, "不要画第2项").trim())
+    }
+
+    @Test fun `repair can recognize a declared title typo without making it clickable`() {
+        val format = ActionOptionsFormat("<actions>", "</actions>", "Actions")
+        val draft = "<actions>\nAcitons\n1. 检查站台\n2. 问守卫\n</actions>"
+        assertTrue(RoleplayActionOptionsPolicy.blocks(draft, format).isEmpty())
+        assertEquals(
+            RoleplayActionOptionsPolicy.blocks(draft.replace("Acitons", "Actions"), format).single().options,
+            RoleplayActionOptionsPolicy.blocksBeforeRepair(draft, format).single().options,
+        )
+    }
+
+    @Test fun `status filtering retains a referenced earlier menu and removes separate statuses`() {
+        val original = "她拉开门。\n\n---\n行动选项\n1. 检查站台\n2. 问守卫\n3. 等下一班\n---\n\n```status\n实际位置：站里\n```"
+        val assistant = message("assistant", MessageRole.ASSISTANT, original, 1)
+        for (reference in listOf("Please select option 2.", "Please carry out the middle one quietly.")) {
+            val user = message("user", MessageRole.USER, reference, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            val earlier = projection.sourceForHistory(assistant, stripStatus = true)
+            assertTrue("2. 问守卫" in earlier)
+            assertFalse("实际位置" in earlier)
+            assertEquals(original, projection.forRetrieval(assistant).displayContent)
+        }
+        val independent = message("user", MessageRole.USER, "我们安静地给窗台边的花草浇水。", 2)
+        val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
+        assertFalse("2. 问守卫" in projection.sourceForHistory(assistant, stripStatus = true))
+        assertFalse("2. 问守卫" in projection.forRetrieval(assistant).displayContent)
+        assertEquals(original, assistant.displayContent)
+    }
+
+    @Test fun `earlier history retains fenced examples while removing actual statuses`() {
+        val literal = "```text\n$options\n```"
+        val quoted = "> ```status\n> 衣着：示例\n> ```"
+        val listed = "- 格式示例\n\n  ```status\n  位置：示例\n  ```"
+        val statuses = "```status\n真实状态\n```\n\n```text\n🕰时间：黄昏\n```"
+        val body = "$literal\n\n$quoted\n\n$listed"
+        val assistant = message("assistant", MessageRole.ASSISTANT, "$body\n\n$statuses", 1)
+        for (content in listOf("我们安静地给窗台边的花草浇水。", "Please select option 2.")) {
+            val user = message("user", MessageRole.USER, content, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            assertEquals(body, projection.sourceForHistory(assistant, stripStatus = true))
+        }
+    }
     private fun message(id: String, role: MessageRole, content: String, order: Long) =
         ChatMessage(id, "s", role, content, orderKey = order, createdAt = order, updatedAt = order)
     private val options = "————————\n【行动选项】\n1. OLD_NOT_TAKEN_LEFT\n2. OLD_NOT_TAKEN_RIGHT\n————————"

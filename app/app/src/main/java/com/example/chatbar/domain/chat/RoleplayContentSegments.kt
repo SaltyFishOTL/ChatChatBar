@@ -86,13 +86,19 @@ fun stripRoleplaySpeakerMarkers(content: String): String =
     roleplaySpeakerMarkerPattern.replace(content, "")
 
 /** 移除状态栏与横线包裹的选项块，保留叙事、对白、心理和人物标记。 */
-fun stripRoleplayStatusSegments(content: String): String {
-    val excludedRanges = excludedRoleplayRawRanges(content)
+fun stripRoleplayStatusSegments(
+    content: String,
+    preserving: List<IntRange> = emptyList(),
+    removing: List<IntRange> = emptyList(),
+): String {
+    val excludedRanges = historyRemovalRanges(
+        excludedRoleplayRawRanges(content).map { it.start until it.endExclusive }, preserving, removing,
+    )
     if (excludedRanges.isEmpty()) return content
     return excludedRanges
-        .sortedByDescending { range -> range.start }
+        .asReversed()
         .fold(content) { text, range ->
-            text.removeRange(range.start, range.endExclusive)
+            text.removeRange(range.first, range.last + 1)
         }
         .let(::cleanupAfterRoleplaySegmentDeletion)
 }

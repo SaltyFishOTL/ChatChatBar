@@ -27,7 +27,9 @@ object MarkdownCodeFences {
 
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
-    fun blocks(content: String): List<Block> = buildList {
+    fun blocks(content: String): List<Block> = findBlocks(content) {}
+
+    internal fun findBlocks(content: String, onContainerLine: (Int) -> Unit): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
         var open: Fence? = null
@@ -78,6 +80,7 @@ object MarkdownCodeFences {
                 }
             }
 
+            if (containers.isNotEmpty()) onContainerLine(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
             val match = fenceLine.matchEntire(remainder)
             val existing = open

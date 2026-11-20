@@ -55,13 +55,27 @@ object RoleplayActionOptionsPolicy {
         return null
     }
 
-    fun blocks(content: String, format: ActionOptionsFormat? = null): List<RoleplayActionOptionsBlock> {
+    fun blocks(content: String, format: ActionOptionsFormat? = null): List<RoleplayActionOptionsBlock> =
+        parseBlocks(content, format, allowHeadingTypo = false)
+
+    /** Format repair may fix a typo in a declared title while retaining the existing items. */
+    fun blocksBeforeRepair(content: String, format: ActionOptionsFormat?): List<RoleplayActionOptionsBlock> =
+        parseBlocks(content, format, allowHeadingTypo = true)
+
+    private fun parseBlocks(
+        content: String,
+        format: ActionOptionsFormat?,
+        allowHeadingTypo: Boolean,
+    ): List<RoleplayActionOptionsBlock> {
         if (format != null && validationError(format) != null) return emptyList()
         if (content.isBlank()) return emptyList()
-        val markdownFences = MarkdownCodeFences.blocks(content)
+        val containerLines = mutableSetOf<Int>()
+        val markdownFences = MarkdownCodeFences.findBlocks(content) { containerLines += it }
         val declaresFence = format != null && fenceMarker(format.opening.trim()) != null
         val fenced = if (format == null || declaresFence) {
-            markdownFences.mapNotNull { fence -> if (fence.topLevel) fencedBlock(content, fence.range, format) else null }
+            markdownFences.mapNotNull { fence ->
+                if (fence.topLevel) fencedBlock(content, fence.range, format, allowHeadingTypo) else null
+            }
         } else emptyList()
         if (declaresFence) return fenced
         val codeRanges = parseRoleplayTextSegments(content).filter {
@@ -69,9 +83,10 @@ object RoleplayActionOptionsPolicy {
         }.map { it.start until it.endExclusive } + markdownFences.map { it.range }
 
         val literal = format ?: defaultFormat
-        val ranges = literalRanges(content, literal, codeRanges)
+        val ranges = literalRanges(content, literal, codeRanges, containerLines)
         val legacy = if (format == null) roleplayLongDashRawRanges(content) else emptyList()
         val plain = (ranges + legacy).distinct().mapNotNull { range ->
+            if (range.first in containerLines || content.lastIndexOf('\n', range.last) + 1 in containerLines) return@mapNotNull null
             if (codeRanges.any { it.overlaps(range) }) return@mapNotNull null
             val lines = content.substring(range).lineSequence().filter(String::isNotBlank).toList()
             if (lines.size < 4) return@mapNotNull null
@@ -82,7 +97,9 @@ object RoleplayActionOptionsPolicy {
                 return@mapNotNull null
             }
             val hasHeading = literal.heading.isNotBlank()
-            if (hasHeading && !(if (format == null) heading(lines[1]) else lines[1].trim() == literal.heading.trim())) {
+            if (hasHeading && !(if (format == null) heading(lines[1])
+                else matchesDeclaredHeading(lines[1], literal.heading, allowHeadingTypo))
+            ) {
                 return@mapNotNull null
             }
             parseBlockItems(lines.subList(if (hasHeading) 2 else 1, lines.lastIndex), format)
@@ -94,7 +111,8 @@ object RoleplayActionOptionsPolicy {
     private fun fencedBlock(
         content: String,
         sourceRange: IntRange,
-        format: ActionOptionsFormat?
+        format: ActionOptionsFormat?,
+        allowHeadingTypo: Boolean,
     ): RoleplayActionOptionsBlock? {
         // Only inspect the full top-level fence reported by the Markdown walker. An action
         // example inside an ordinary code fence is never considered separately.
@@ -112,7 +130,7 @@ object RoleplayActionOptionsPolicy {
         if (format != null) {
             if (opening != format.opening.trim() || closing != format.closing.trim()) return null
             if (format.heading.isNotBlank()) {
-                if (body.firstOrNull()?.trim() != format.heading.trim()) return null
+                if (!matchesDeclaredHeading(body.firstOrNull().orEmpty(), format.heading, allowHeadingTypo)) return null
                 body = body.drop(1)
             }
         } else {
@@ -138,6 +156,16 @@ object RoleplayActionOptionsPolicy {
         })
     }
 
+    private fun matchesDeclaredHeading(actual: String, expected: String, allowTypo: Boolean): Boolean {
+        val value = actual.trim()
+        val title = expected.trim()
+        if (value == title) return true
+        if (!allowTypo || title.length < 3 || value.length != title.length) return false
+        val differing = title.indices.filter { title[it] != value[it] }
+        return differing.size == 1 || (differing.size == 2 && differing[1] == differing[0] + 1 &&
+            title[differing[0]] == value[differing[1]] && title[differing[1]] == value[differing[0]])
+    }
+
     private fun fenceMarker(line: String): FenceMarker? {
         val mark = line.firstOrNull()?.takeIf { it == '`' || it == '~' } ?: return null
         val run = line.takeWhile { it == mark }.takeIf { it.length >= 3 } ?: return null
@@ -146,6 +174,31 @@ object RoleplayActionOptionsPolicy {
 
     fun withoutExplicitOptions(content: String, format: ActionOptionsFormat? = null): String =
         textOutsideBlocks(content, blocks(content, format))
+
+    private val chineseImageChoice = Regex(
+        "^(?:(?:请(?:帮我)?|帮我)\\s*)?(?:画|绘制|生成)\\s*" +
+            "(?:第\\s*([1-9][0-9]?|[一二三四五六七八九十]+)\\s*(?:项|条|个选项|个行动选项)|" +
+            "(?:行动选项|选项)\\s*([A-Ta-t]))(?=$|\\s|[，。,.！!：:])",
+    )
+    private val englishImageChoice = Regex(
+        "^(?:please\\s+)?(?:draw|illustrate|depict)\\s+(?:the\\s+)?(?:option|choice)\\s+" +
+            "([A-T]|[1-9][0-9]?)(?=$|\\s|[,.!:])", RegexOption.IGNORE_CASE,
+    )
+    private val chineseOrdinals = "一 二 三 四 五 六 七 八 九 十 十一 十二 十三 十四 十五 十六 十七 十八 十九 二十".split(' ')
+
+    fun imageScene(content: String, format: ActionOptionsFormat?, hint: String): String {
+        val blocks = blocks(content, format)
+        val scene = textOutsideBlocks(content, blocks)
+        val trimmedHint = hint.trim()
+        val label = chineseImageChoice.find(trimmedHint)?.let { it.groupValues[1].ifEmpty { it.groupValues[2] } }
+            ?: englishImageChoice.find(trimmedHint)?.groupValues?.get(1)
+            ?: return scene
+        val ordinal = label.toIntOrNull() ?: (chineseOrdinals.indexOf(label) + 1).takeIf { it > 0 }
+        val selected = blocks.singleOrNull()?.options?.singleOrNull { option ->
+            if (ordinal != null) option.ordinal == ordinal else option.label.equals(label, ignoreCase = true)
+        } ?: return scene
+        return listOf(scene.trimEnd(), selected.text).filter(String::isNotBlank).joinToString("\n")
+    }
 
     /** Slice a presentation or speech fragment using its original source coordinates. */
     fun textOutsideBlocks(
@@ -174,7 +227,12 @@ object RoleplayActionOptionsPolicy {
         return if (tail.range.last == candidate.lastIndex) candidate else content
     }
 
-    private fun literalRanges(content: String, format: ActionOptionsFormat, codeRanges: List<IntRange>): List<IntRange> {
+    private fun literalRanges(
+        content: String,
+        format: ActionOptionsFormat,
+        codeRanges: List<IntRange>,
+        containerLines: Set<Int>,
+    ): List<IntRange> {
         val opening = format.opening.trim()
         val closing = format.closing.trim()
         val ranges = mutableListOf<IntRange>()
@@ -190,6 +248,7 @@ object RoleplayActionOptionsPolicy {
             }
             if (isCodeIndented(line)) continue
             val marker = line.trim()
+            if (lineStart in containerLines && (marker == opening || marker == closing)) continue
             val openStart = start
             when {
                 openStart != null && marker == closing -> {

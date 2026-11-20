@@ -118,9 +118,7 @@ class ChatHistoryActionWireTest {
     @Test fun historicalNumericReferenceProtectsEarlierButNotLaterIndependentOptions() {
         for (exclude in listOf(true, false)) {
             verify("historical-$exclude", listOf(u(), a("OLD"), u("2"), a("NEW")), independent, exclude = exclude) { wire, contents ->
-                // A reference protects what remains after the existing earlier-status policy;
-                // it must not restore a block that the user's old setting already excludes.
-                assertEquals(!exclude, wire.contains("OLD_LEFT")); assertFalse(wire.contains("NEW_LEFT"))
+                assertTrue(wire.contains("OLD_LEFT")); assertFalse(wire.contains("NEW_LEFT"))
                 assertTrue(contents.contains("2"))
             }
         }

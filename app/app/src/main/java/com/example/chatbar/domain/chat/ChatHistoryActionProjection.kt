@@ -10,14 +10,65 @@ enum class ChatHistoryActionRequestSource { PERSISTED_USER, UI_CONTINUATION, NO_
 
 /** Request-only projection. An unresolved choice reference retains its source options.
  * The query owner supplies a complete recent suffix; separately pinned old turns are not proof
- * that all intervening user references were loaded. Existing status projection runs independently. */
-class ChatHistoryActionProjection private constructor(private val omittable: Map<String, ChatMessage>) {
+ * that all intervening user references were loaded. */
+class ChatHistoryActionProjection private constructor(
+    private val omittable: Map<String, ChatMessage>,
+    private val referenced: Map<String, ChatMessage>,
+) {
     fun project(message: ChatMessage, source: String): String =
         if (omittable[message.id] == message) {
             RoleplayActionOptionsPolicy.withoutExplicitOptions(source, message.displayActionOptionsFormat)
         } else source
 
+    fun sourceForHistory(message: ChatMessage, stripStatus: Boolean): String {
+        val raw = message.displayContent
+        if (!stripStatus || message.role != MessageRole.ASSISTANT) return project(message, raw)
+        val isOmittable = omittable[message.id] == message
+        val isReferenced = referenced[message.id] == message
+        val actionRanges = if (isOmittable || isReferenced) {
+            RoleplayActionOptionsPolicy.blocks(raw, message.displayActionOptionsFormat).map { it.range }
+        } else emptyList()
+        val literalFences = MarkdownCodeFences.blocks(raw).filterNot { fence ->
+            fence.topLevel && isStatusFence(raw.substring(fence.range))
+        }.map { it.range }
+        return stripRoleplayStatusSegments(
+            raw,
+            preserving = if (isReferenced) literalFences + actionRanges else literalFences,
+            removing = if (isOmittable) actionRanges else emptyList(),
+        )
+    }
+
+    fun forRetrieval(message: ChatMessage): ChatMessage {
+        val source = message.displayContent
+        val projected = project(message, source)
+        if (projected == source) return message
+        val activeIndex = message.currentAlternativeIndex
+        return if (activeIndex in message.alternatives.indices) {
+            message.copy(alternatives = message.alternatives.mapIndexed { index, alternative ->
+                if (index == activeIndex) projected else alternative
+            })
+        } else message.copy(content = projected)
+    }
+
     companion object {
+        private val explicitStatusFence = Regex("status|状态|状态栏", RegexOption.IGNORE_CASE)
+        private val legacyStatusFence = Regex("(?:text|plaintext|txt)?", RegexOption.IGNORE_CASE)
+        private val legacyStatusHeading = Regex("^(?:[【\\[])?(?:状态栏|状态|status)(?:[】\\]])?[:：]?$", RegexOption.IGNORE_CASE)
+        private val legacyStatusField = Regex(
+            "^[\\p{So}\\p{Sk}\\p{M}\\s\\u200D•●▪*_-]*(?:姓名|人物|角色|时间|位置|衣着|当前动作|内心想法|Name|Character|Time|Location|Clothing|Current Action|Inner Thoughts)\\s*[:：]",
+            RegexOption.IGNORE_CASE,
+        )
+
+        private fun isStatusFence(source: String): Boolean {
+            val lines = source.lineSequence().iterator()
+            val opening = lines.next().trimStart()
+            if (!opening.startsWith("```")) return false
+            val info = opening.dropWhile { it == '`' }.trim()
+            return explicitStatusFence.matches(info) || legacyStatusFence.matches(info) && lines.asSequence().any {
+                legacyStatusHeading.matches(it.trim().trim('*', '_')) || legacyStatusField.containsMatchIn(it)
+            }
+        }
+
         fun prepare(candidates: List<ChatMessage>, completeRecentMessageIds: Set<String>,
             requestSource: ChatHistoryActionRequestSource = ChatHistoryActionRequestSource.UNKNOWN): ChatHistoryActionProjection {
             if (requestSource == ChatHistoryActionRequestSource.UNKNOWN ||
@@ -25,14 +76,18 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 candidates.map { it.id }.distinct().size != candidates.size ||
                 candidates.map { it.sessionId }.distinct().size > 1 ||
                 candidates.zipWithNext().any { (a, b) -> ChatMessage.TimelineComparator.compare(a, b) > 0 })
-                return ChatHistoryActionProjection(emptyMap())
+                return ChatHistoryActionProjection(emptyMap(), emptyMap())
             // Protect every earlier action source, not only the immediately preceding assistant:
             // an old pure-number or image-bearing reply may depend on an older block.
             // A generated visual description is not proof of independent typed intent.
             val lastUnresolvedReference = lastPossibleChoiceReference(candidates)
-            return ChatHistoryActionProjection(candidates.withIndex().filter { (index, message) ->
-                index > lastUnresolvedReference && message.id in completeRecentMessageIds && message.role == MessageRole.ASSISTANT
-            }.associate { it.value.id to it.value })
+            val assistants = candidates.withIndex().filter { it.value.role == MessageRole.ASSISTANT }
+            return ChatHistoryActionProjection(
+                omittable = assistants.filter { (index, message) ->
+                    index > lastUnresolvedReference && message.id in completeRecentMessageIds
+                }.associate { it.value.id to it.value },
+                referenced = assistants.filter { it.index < lastUnresolvedReference }.associate { it.value.id to it.value },
+            )
         }
 
         private fun lastPossibleChoiceReference(candidates: List<ChatMessage>): Int {
@@ -125,12 +180,35 @@ class ChatHistoryActionProjection private constructor(private val omittable: Map
                 "^[一二三四五六七八九十壹贰叁肆伍陆柒捌玖拾甲乙丙丁]+(?:[,，.、。)）：\\s]|号|然后|再|并)|" +
                 "^[a-t][,，.、。)）：]|" +
                 "(?:前|后)[一二三四五六七八九十两]*(?:个|项|条)|" +
-                "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
+                "(?:选项|行动选项|可选行动|上面|上述|上边|刚才|之前|先前|前面|前者|后者|这个|那个|这条|那条|这些|那些|此项|此条|上个|下个|这样|那样|照着|照做|照办|最后一个|中间那个|照旧|照常|如上|所说的|说的做|说的办|照她|照他|照你|照我)|" +
                 "\\b(?:option|options|choice|choices|above|previous|former|latter|first|second|third|fourth|fifth|sixth|seventh|eighth|ninth|tenth|(?:ante)?penultimate|last|this|that|those|these|it|them|same|aforementioned)\\b|" +
+                "\\b(?:the\\s+middle\\s+(?:one|plan|route|action)|(?:the\\s+)?menu['’]s\\s+middle)\\b|" +
                 "\\b(?:choose|select|pick|take|do|go\\s+with|go\\s+for|opt\\s+for|settle\\s+on)\\s+" +
                 "(?:the\\s+)?['’\"“‘]?(?:one|two|three|four|five|six|seven|eight|nine|ten|[a-z])\\b(?!['’]\\p{L})|" +
                 "['\"“‘][ai]['\"”’]"
         )
         private val acknowledgement = Regex("(?:(?:请|再|那就|那么)?(?:继续|接着|接下来).*|好[的吧啊呀]?|行|可以|是|不|随便|都行|嗯+|快点|ok|yes|no|(?:please\\s+)?(?:continue|go on|keep going).*|do it)[。.!！?？\\s]*")
     }
+}
+
+/** Resolves status and action ranges before either projection changes the source coordinates. */
+internal fun historyRemovalRanges(
+    statuses: List<IntRange>,
+    preserving: List<IntRange>,
+    removing: List<IntRange>,
+): List<IntRange> {
+    val statusParts = preserving.sortedBy { it.first }.fold(statuses) { remaining, keep ->
+        remaining.flatMap { remove ->
+            if (keep.last < remove.first || keep.first > remove.last) listOf(remove)
+            else listOf(remove.first until keep.first, (keep.last + 1)..remove.last).filterNot { it.isEmpty() }
+        }
+    }
+    val merged = mutableListOf<IntRange>()
+    for (range in (statusParts + removing).sortedBy { it.first }) {
+        val prior = merged.lastOrNull()
+        if (prior != null && range.first <= prior.last + 1) {
+            merged[merged.lastIndex] = prior.first..maxOf(prior.last, range.last)
+        } else merged += range
+    }
+    return merged
 }

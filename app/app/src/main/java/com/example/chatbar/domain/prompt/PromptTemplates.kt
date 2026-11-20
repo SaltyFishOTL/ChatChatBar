@@ -2223,9 +2223,10 @@ JSON only, no Markdown, no explanation:
         message: ChatMessage,
         playerName: String? = null,
         botName: String = "",
-        preserveUsername: Boolean = false
+        preserveUsername: Boolean = false,
+        imageContentHint: String = "",
     ): String {
-        val scene = novelAiImagePromptSceneSource(message)
+        val scene = novelAiImagePromptSceneSource(message, imageContentHint)
         return if (preserveUsername) {
             renderNovelAiChatPromptText(scene, playerName, botName)
         } else {
@@ -2233,9 +2234,9 @@ JSON only, no Markdown, no explanation:
         }
     }
 
-    private fun novelAiImagePromptSceneSource(message: ChatMessage): String =
+    private fun novelAiImagePromptSceneSource(message: ChatMessage, imageContentHint: String = ""): String =
         if (message.role == MessageRole.ASSISTANT)
-            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent, message.displayActionOptionsFormat)
+            RoleplayActionOptionsPolicy.imageScene(message.displayContent, message.displayActionOptionsFormat, imageContentHint)
         else message.displayContent
 
     fun novelAiImagePromptConversation(
@@ -2249,7 +2250,8 @@ JSON only, no Markdown, no explanation:
         appendLine("Design an image for this scene. Recent messages:")
         messages.forEach {
             val role = if (it.role == MessageRole.USER) "User" else "Assistant"
-            appendLine("$role: ${novelAiImagePromptSceneSource(it)}")
+            val hint = imageContentHint.takeIf { messages.size == 1 }.orEmpty()
+            appendLine("$role: ${novelAiImagePromptSceneSource(it, hint)}")
         }
         appendNovelAiImageManualRequirements(
             imageContentHint = imageContentHint,

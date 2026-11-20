@@ -595,7 +595,19 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withDataAccess {
-        val persisted = getMessage(message.id, message.sessionId)
+        updateMessageLocked(message, getMessage(message.id, message.sessionId))
+        Unit
+    }
+
+    suspend fun updateMessageIfUnchanged(expected: ChatMessage, replacement: ChatMessage): ChatMessage? =
+        messageAppendMutex.withDataAccess {
+            require(expected.id == replacement.id && expected.sessionId == replacement.sessionId)
+            val current = getMessage(expected.id, expected.sessionId)
+            if (current != expected) return@withDataAccess null
+            updateMessageLocked(replacement, current)
+        }
+
+    private suspend fun updateMessageLocked(message: ChatMessage, persisted: ChatMessage?): ChatMessage {
         val updated = message.copy(
             updatedAt = System.currentTimeMillis(),
             orderKey = persisted?.orderKey ?: message.orderKey
@@ -614,6 +626,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 )
             }
         }
+        return updated
     }
 
     private suspend fun latestMessage(sessionId: String): ChatMessage? {
