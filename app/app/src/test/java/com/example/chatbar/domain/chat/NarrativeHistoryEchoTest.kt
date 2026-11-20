@@ -223,15 +223,20 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test fun finishedPluralQuoteStillAllowsARealOuterClose() {
-        val opening = "<历史回复 模式=\"推进\">"
-        val closing = "</历史回复>"
-        val body = "她重复‘the visitors’ and walked away."
-        val wrapped = "$opening\n$body\n$closing"
-        val standaloneExample = "$wrapped\n她在解释刚才的示例。"
-        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
-            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, true, interrupted, streaming = streaming))
-            assertEquals(standaloneExample,
-                NarrativeHistoryEcho.completedBody(standaloneExample, true, interrupted, streaming = streaming))
+        val closedQuotes = listOf(
+            "She titled it ‘Visitors’ before leaving",
+            "She repeated ‘the visitors’ aloud",
+            "She repeated ‘the visitors’ yesterday",
+            "她重复‘the visitors’ and walked away.",
+        )
+        for (mode in ChatNarrativeMode.entries) for (body in closedQuotes) {
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val standaloneExample = "$wrapped\nThis is a markup example."
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, true, interrupted, streaming = streaming))
+                assertEquals(standaloneExample,
+                    NarrativeHistoryEcho.completedBody(standaloneExample, true, interrupted, streaming = streaming))
+            }
         }
     }
 

@@ -18,6 +18,14 @@ object NarrativeHistoryEcho {
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
     private val proseDelimiters = mapOf('「' to '」', '『' to '』', '“' to '”', '‘' to '’', '"' to '"', '\'' to '\'')
+    private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
+    private val unfinishedPossessedWord = Regex("[a-z]{2,}")
+    private val ordinaryProseFollowers = setOf(
+        "after", "again", "all", "already", "aloud", "and", "as", "away", "before", "but",
+        "elsewhere", "for", "here", "in", "instead", "later", "now", "or", "outside", "so",
+        "then", "there", "through", "to", "today", "tomorrow", "until", "when", "where", "while",
+        "with", "without", "yesterday",
+    )
 
     fun appliesToRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): Boolean =
         narrativeMode != null && (formatCard == null || wrappers.none { it.opening in formatCard })
@@ -183,7 +191,7 @@ object NarrativeHistoryEcho {
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
             if (symbol == '’' && followsWord && (precedesWord ||
-                    isCurlyPossessive(text, index, if (closing == '’') interiorClosings else emptyList()))
+                    isCurlyPossessive(text, open, index, interiorClosings))
             ) continue
             if (symbol == '"' && open < 0 && text.getOrNull(index - 1)?.isDigit() == true && !precedesWord) continue
             when {
@@ -205,7 +213,9 @@ object NarrativeHistoryEcho {
         if (includeUnclosed && open >= 0) add(open..text.lastIndex)
     }
 
-    private fun isCurlyPossessive(text: String, position: Int, interiorClosings: List<Int>): Boolean {
+    private fun isCurlyPossessive(
+        text: String, quoteStart: Int, position: Int, interiorClosings: List<Int>,
+    ): Boolean {
         if (!text[position - 1].equals('s', ignoreCase = true) ||
             text.getOrNull(position + 1)?.isWhitespace() != true
         ) return false
@@ -215,11 +225,12 @@ object NarrativeHistoryEcho {
         val nextOpen = text.indexOf('‘', position + 1)
         if (nextClose >= 0) return nextOpen < 0 || nextClose < nextOpen
         if (nextOpen >= 0) return false
-        // A standalone interior tag and prose beyond it can resolve an unfinished quote.
-        // A terminal-looking tag alone still takes the ordinary wrapper-closing path.
+        // A lowercase plural noun phrase and its next word can support an unfinished possessive.
+        if (!unfinishedPluralPossessor.matches(text.subSequence(quoteStart + 1, position))) return false
         val tagLine = interiorClosings.firstOrNull { it > wordStart }?.let { lineStart(text, it) } ?: return false
-        if (tagLine <= wordStart) return false
-        return text.subSequence(wordStart, tagLine).lastOrNull { !it.isWhitespace() }?.isLetterOrDigit() == true
+        if (tagLine <= wordStart || lineStart(text, wordStart) != lineStart(text, position)) return false
+        val possessed = text.substring(wordStart, tagLine).trimEnd()
+        return unfinishedPossessedWord.matches(possessed) && possessed !in ordinaryProseFollowers && !possessed.endsWith("ly")
     }
 
     private fun isEscaped(text: String, position: Int): Boolean {
