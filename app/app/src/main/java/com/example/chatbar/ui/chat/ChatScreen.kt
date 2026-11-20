@@ -296,7 +296,7 @@ fun ChatScreen(
     var clearConfirm by remember { mutableStateOf(false) }
     var fullComposer by remember { mutableStateOf(false) }
     var actionMessageId by remember { mutableStateOf<String?>(null) }
-    var actionSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var actionSegment by remember(sessionId) { mutableStateOf<MessageSegmentTarget?>(null) }
     var pendingVoiceGeneration by remember(sessionId) {
         mutableStateOf<PendingVoiceGeneration?>(null)
     }
@@ -316,14 +316,14 @@ fun ChatScreen(
     var imageRegenerationError by remember(sessionId) { mutableStateOf<String?>(null) }
     var imageRegenerationBatchSizeInput by remember(sessionId) { mutableStateOf("1") }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
-    var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var deleteSegmentTarget by remember(sessionId) { mutableStateOf<MessageSegmentTarget?>(null) }
     var deleteMessageTarget by remember { mutableStateOf<ChatMessage?>(null) }
     var deleteAlternativeTarget by remember { mutableStateOf<Pair<ChatMessage, String>?>(null) }
     val messageActionError by viewModel.messageActionError.collectAsState()
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var editingText by remember { mutableStateOf(TextFieldValue("")) }
     val editingImages = remember { mutableStateListOf<String>() }
-    var editingSegment by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
+    var editingSegment by remember(sessionId) { mutableStateOf<MessageSegmentTarget?>(null) }
     var editingSegmentText by remember { mutableStateOf(TextFieldValue("")) }
     var viewportAnchor by remember { mutableStateOf(0 to 0) }
     var restoringViewport by remember { mutableStateOf(false) }
@@ -1087,11 +1087,11 @@ fun ChatScreen(
             images = emptyList(),
             onDismiss = { editingSegment = null },
             onConfirm = { finalValue ->
-                editingSegment?.let {
+                editingSegment?.let { (expected, segment) ->
                     viewModel.editMessageSegment(
-                        messageId = it.messageId,
-                        start = it.start,
-                        endExclusive = it.endExclusive,
+                        expected = expected,
+                        start = segment.start,
+                        endExclusive = segment.endExclusive,
                         replacement = finalValue.text
                     )
                 }
@@ -1237,7 +1237,9 @@ fun ChatScreen(
                             voiceActionTarget = voice
                         }),
                         onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
-                        onSegmentLongPress = if (!isResponding && !screenshotSelectionMode) ({ segment -> actionSegment = segment }) else null,
+                        onSegmentLongPress = if (!isResponding && repairState == null && !screenshotSelectionMode) ({ segment ->
+                            actionSegment = MessageSegmentTarget(message, segment)
+                        }) else null,
                         onImageClick = if (screenshotSelectionMode) null else ({ path ->
                             expandedImageIndex = previewImages.indexOfFirst {
                                 it.messageId == message.id && it.path == path
@@ -1754,7 +1756,7 @@ fun ChatScreen(
             CbText("确定删除这张图片？此操作不可撤销。", color = ChatBarTheme.colors.mutedForeground)
         }
     }
-    deleteSegmentTarget?.let { segment ->
+    deleteSegmentTarget?.let { (expected, segment) ->
         CbDialog(
             onDismissRequest = { deleteSegmentTarget = null },
             title = "删除此段",
@@ -1766,7 +1768,7 @@ fun ChatScreen(
                     "删除",
                     {
                         viewModel.editMessageSegment(
-                            messageId = segment.messageId,
+                            expected = expected,
                             start = segment.start,
                             endExclusive = segment.endExclusive,
                             replacement = ""
@@ -1802,7 +1804,9 @@ fun ChatScreen(
             onDismiss = { deleteMessageTarget = null },
             onDelete = { viewModel.deleteMessage(target); deleteMessageTarget = null })
     }
-    actionSegment?.let { segment ->
+    actionSegment?.let { selection ->
+        val segment = selection.segment
+        val canMutateSegment = !isResponding && !saveSlotOperation.busy
         val target = messages.find { it.id == segment.messageId }
         val canRegenerate = target?.id == regenerableId && !isResponding && !saveSlotOperation.busy
         val segmentActions = mutableListOf(
@@ -1811,8 +1815,8 @@ fun ChatScreen(
                 Toast.makeText(context, "已复制本段", Toast.LENGTH_SHORT).show()
                 actionSegment = null
             }),
-            SegmentMenuAction("编辑", "编辑本段", AppIcons.Edit, onClick = {
-                editingSegment = segment
+            SegmentMenuAction("编辑", "编辑本段", AppIcons.Edit, enabled = canMutateSegment, onClick = {
+                editingSegment = selection
                 editingSegmentText = TextFieldValue(segment.rawText, selection = TextRange(segment.rawText.length))
                 actionSegment = null
             }),
@@ -1820,8 +1824,8 @@ fun ChatScreen(
                 enterScreenshotSelection(segment.blockId)
                 actionSegment = null
             }),
-            SegmentMenuAction("删除", "删除本段", AppIcons.Delete, destructive = true, onClick = {
-                deleteSegmentTarget = segment
+            SegmentMenuAction("删除", "删除本段", AppIcons.Delete, enabled = canMutateSegment, destructive = true, onClick = {
+                deleteSegmentTarget = selection
                 actionSegment = null
             })
         )
@@ -2373,6 +2377,8 @@ private fun StreamingChatBubble(
         )
     }
 }
+
+private data class MessageSegmentTarget(val message: ChatMessage, val segment: ChatBubbleSegmentAction)
 
 private data class SegmentMenuAction(
     val label: String,

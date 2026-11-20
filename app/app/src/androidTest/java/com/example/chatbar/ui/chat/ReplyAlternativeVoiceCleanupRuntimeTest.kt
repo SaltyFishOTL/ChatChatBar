@@ -321,7 +321,8 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             try {
                 withContext(Dispatchers.Main) {
                     if (viaSegmentEdit) {
-                        vm.editMessageSegment(reply.id, 0, reply.displayContent.length, "")
+                        val expected = vm.messages.value.single { it.id == reply.id }
+                        vm.editMessageSegment(expected, 0, expected.displayContent.length, "")
                     } else {
                         vm.deleteMessageAlternative(reply.id, if (missing) "does-not-exist" else deletedVersion.id)
                     }

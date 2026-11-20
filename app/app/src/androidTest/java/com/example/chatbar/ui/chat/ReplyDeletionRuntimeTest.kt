@@ -9,6 +9,8 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.voice.VoiceGenerationPolicy
+import java.io.File
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.After
@@ -75,6 +77,101 @@ class ReplyDeletionRuntimeTest {
         assertEquals(separate.content, app.chatRepository.getMessage(separate.id, session.id)?.content)
     }
 
+
+    @Test fun staleSegmentDeletionCannotEraseShorterRepairedReply() = verifyStaleSegmentDeletion(switchCandidate = false)
+    @Test fun staleSegmentDeletionCannotEraseNewlySelectedCandidate() = verifyStaleSegmentDeletion(switchCandidate = true)
+
+    private fun verifyStaleSegmentDeletion(switchCandidate: Boolean) = runBlocking<Unit> {
+        val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "A long synthetic reply to confirm")
+        val reply = if (switchCandidate) {
+            MessageAlternativeVersionPolicy.select(
+                MessageAlternativeVersionPolicy.append(original, "New", "next-candidate"), 0
+            )
+        } else original
+        app.chatRepository.addMessage(reply)
+        openModel(reply.id)
+        val confirmation = vm.messages.value.single { it.id == reply.id }
+        val replacement = if (switchCandidate) MessageAlternativeVersionPolicy.select(confirmation, 1)
+        else MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+            confirmation, "New", MessageFormatRepairPolicy.completedRepairNotice(confirmation.displayContent, "New")
+        )
+        assertTrue(app.chatRepository.updateMessageIfUnchanged(confirmation, replacement))
+        val saved = requireNotNull(app.chatRepository.getMessage(reply.id, session.id))
+
+        withContext(Dispatchers.Main) {
+            vm.editMessageSegment(confirmation, 0, confirmation.displayContent.length, "")
+        }
+        stage("stale segment confirmation rejected") { vm.messageActionError.first { it != null } }
+        val cold = com.example.chatbar.data.repository.ChatRepository(com.example.chatbar.data.local.JsonFileStorage(app))
+        assertEquals(saved, cold.getMessage(reply.id, session.id))
+        assertEquals("New", saved.displayContent)
+    }
+
+    @Test fun legacyReadbackKeepsMediaOwnedByAnotherConversation() = verifySaveSlotMediaOwnership(packaged = false)
+    @Test fun packagedReadbackKeepsMediaOwnedByAnotherConversation() = verifySaveSlotMediaOwnership(packaged = true)
+
+    private fun verifySaveSlotMediaOwnership(packaged: Boolean) = runBlocking<Unit> {
+        val other = ChatSession.create("synthetic-missing-card", "synthetic shared owner").copy(longTermMemoryEnabled = false)
+        val sharedImage = app.novelAiImageStorage.save(session.id, byteArrayOf(1, 4, 7))
+        val unusedImage = app.novelAiImageStorage.save(session.id, byteArrayOf(2, 5, 8))
+        val audioDir = File(app.filesDir, "audio/generated/${session.id}").also { it.mkdirs() }
+        val sharedAudio = File(audioDir, "shared-reply.mp3").also { it.writeText("shared reply audio") }
+        val unusedAudio = File(audioDir, "unused-reply.mp3").also { it.writeText("obsolete reply audio") }
+        val old = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Replace this reply", listOf(sharedImage, unusedImage))
+        val retained = ChatMessage.create(other.id, MessageRole.ASSISTANT, "Keep this reply", listOf(sharedImage))
+        val restored = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Restored reply")
+        val inline = SaveSlot.create(session.id, "Synthetic readback", messages = listOf(restored))
+            .copy(longTermMemoryEnabled = false)
+        val slot = if (packaged) app.saveSlotPackageStorage.createPackage(
+            baseSlot = inline, imagePolicy = SaveSlotImagePolicy.NONE, includeAudio = false,
+            messageSource = { emit -> emit(restored) }, ragSource = {}, voices = emptyList()
+        ) else inline
+
+        fun voice(id: String, reply: ChatMessage, file: File) = GeneratedVoiceMessage(
+            id = id, sessionId = reply.sessionId, messageId = reply.id,
+            sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
+            sourceSpeakerName = "", sourceText = reply.content, taggedText = reply.content,
+            characterId = "synthetic", characterName = "Synthetic",
+            voice = FishAudioVoiceBinding("synthetic-reference", "Synthetic"), fishModelId = "synthetic-model",
+            audioPath = file.path, durationMs = 1000, byteLength = file.length(), createdAt = 1, updatedAt = 1
+        )
+        val remainingVoice = voice("${retained.id}-shared", retained, sharedAudio)
+        try {
+            app.chatRepository.createSession(other)
+            app.chatRepository.addMessage(old)
+            app.chatRepository.addMessage(retained)
+            app.voiceMessageRepository.save(voice("${old.id}-shared", old, sharedAudio))
+            app.voiceMessageRepository.save(voice("${old.id}-unused", old, unusedAudio))
+            app.voiceMessageRepository.save(remainingVoice)
+            app.saveSlotRepository.save(slot)
+            openModel(old.id)
+
+            withContext(Dispatchers.Main) { vm.loadSaveSlot(slot.toSummary()) }
+            val result = stageSaveSlotResult()
+            assertEquals("读档完成。", result.status)
+            val data = com.example.chatbar.data.local.JsonFileStorage(app)
+            val chats = com.example.chatbar.data.repository.ChatRepository(data)
+            val voices = com.example.chatbar.data.repository.VoiceMessageRepository(data)
+            assertNull(chats.getMessage(old.id, session.id))
+            assertEquals(restored.content, chats.getMessages(session.id).single().displayContent)
+            assertEquals(listOf(sharedImage), chats.getMessage(retained.id, other.id)?.images)
+            assertEquals(listOf(remainingVoice), voices.listForSession(other.id))
+            assertArrayEquals(byteArrayOf(1, 4, 7), File(sharedImage).readBytes())
+            assertEquals("shared reply audio", sharedAudio.readText())
+            assertFalse(File(unusedImage).exists())
+            assertFalse(unusedAudio.exists())
+        } finally {
+            app.saveSlotRepository.delete(slot.id)
+            app.voiceMessageRepository.deleteForSession(other.id)
+            app.chatRepository.deleteMessagesForSession(other.id)
+            app.chatRepository.deleteSessionRecord(other.id)
+            listOf(File(sharedImage), File(unusedImage), sharedAudio, unusedAudio).forEach { it.delete() }
+        }
+    }
+
+    private suspend fun stageSaveSlotResult() = withTimeout(20_000) {
+        vm.saveSlotOperation.first { !it.busy && !it.status.isNullOrBlank() }
+    }
 
     @Test fun staleSwitchCannotResurrectCandidateDeletedBeforeUiRefresh() = competingSwitch("delete")
     @Test fun staleSwitchCannotOverwriteUndoBeforeUiRefresh() = competingSwitch("undo")

@@ -3752,13 +3752,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun editMessageSegment(
-        messageId: String,
+        expected: ChatMessage,
         start: Int,
         endExclusive: Int,
         replacement: String
     ) {
         viewModelScope.launch {
-            val oldMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            if (_isResponding.value || _saveSlotOperation.value.busy) {
+                _messageActionError.value = "请等待回复或读档完成后再编辑片段"
+                return@launch
+            }
+            val messageId = expected.id
+            if (chatRepository.getMessage(messageId, sessionId) != expected || start !in expected.displayContent.indices ||
+                endExclusive <= start || endExclusive > expected.displayContent.length) {
+                _messageActionError.value = "回复片段已变化，请重新打开片段操作"
+                return@launch
+            }
+            val oldMessage = expected
             val editOutcome = editRoleplayMessageSegment(
                 message = oldMessage,
                 start = start,
@@ -4321,8 +4331,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
                       slot.packageRef != null
                   ) {
-                      loadPackagedSaveSlot(curSession, slot)
-                      _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                      val status = loadPackagedSaveSlot(curSession, slot)
+                      _saveSlotOperation.value = SaveSlotOperationState(status = status)
                       return@launch
                   }
                   val materializedImages = materializeSaveSlotImages(slot)
@@ -4333,16 +4343,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       throw error
                   }
                   val materializedSlot = materializedAudio.slot
-                  val preservedImages = materializedSlot.messages
-                      .flatMap { it.images }
-                      .toSet() + listOfNotNull(materializedSlot.chatBackground)
-                  val preservedAudio = materializedSlot.voiceMessages.mapTo(mutableSetOf()) { it.audioPath }
                   val currentMsgs = chatRepository.getMessages(sessionId)
                   val currentVoices = voiceMessageRepository.listForSession(sessionId)
                   val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
                   longTermMemoryService.ensureMigrated(sessionId)
                   val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
-                  val currentImages = currentMsgs.flatMap { it.images }.toSet() +
+                  val currentImages = currentMsgs.flatMap { it.images + it.generatedImageMetadata.map { metadata -> metadata.imagePath } }.toSet() +
                       listOfNotNull(curSession.chatBackground)
                   val latest = materializedSlot.messages.lastOrNull()
                   val restoredSession = curSession.copy(
@@ -4405,7 +4411,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
                       chatRepository.updateSession(curSession, restoreNarrativeMode = true)
                       runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
-                      preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
                       materializedAudio.createdPaths.forEach {
                           ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
                       }
@@ -4413,13 +4418,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       throw error
                   }
 
-                  currentImages.filterNot { it in preservedImages }.forEach { deleteDisposableChatImage(it) }
-                  currentVoices
-                      .map(GeneratedVoiceMessage::audioPath)
-                      .filterNot { it in preservedAudio }
-                      .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
+                  val status = cleanupReplacedSaveSlotMedia(currentImages, currentVoices)
                   loadSessionData()
-                  _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                  _saveSlotOperation.value = SaveSlotOperationState(status = status)
                 } catch (error: Throwable) {
                   if (error is CancellationException) {
                       _saveSlotOperation.value = SaveSlotOperationState(status = "已取消读档。")
@@ -4435,9 +4436,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot) {
+    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot): String {
         val currentImages = linkedSetOf<String>()
-        chatRepository.forEachMessage(sessionId) { message -> currentImages += message.images }
+        chatRepository.forEachMessage(sessionId) { message ->
+            currentImages += message.images
+            message.generatedImageMetadata.mapTo(currentImages) { it.imagePath }
+        }
         curSession.chatBackground?.let(currentImages::add)
         val currentVoices = voiceMessageRepository.listForSession(sessionId)
         val packageStorage = ChatBarApp.instance.saveSlotPackageStorage
@@ -4507,12 +4511,37 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 throw error
             }
 
-            currentImages.forEach(::deleteDisposableChatImage)
-            currentVoices.map(GeneratedVoiceMessage::audioPath)
-                .filterNot { it in reader.createdAudioPaths }
-                .forEach(ChatBarApp.instance.fishAudioStorage::deleteIfOwned)
         }
+        val status = cleanupReplacedSaveSlotMedia(currentImages, currentVoices)
         loadSessionData()
+        return status
+    }
+
+    private suspend fun cleanupReplacedSaveSlotMedia(
+        imagePaths: Collection<String>,
+        voices: List<GeneratedVoiceMessage>
+    ): String {
+        var complete = true
+        try {
+            chatRepository.deleteUnreferencedChatImages(imagePaths) { path ->
+                check(novelAiImageStorage.deleteChatAttachmentIfOwned(path))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            complete = false
+        }
+        try {
+            voiceMessageRepository.deleteUnownedReplyAudio(
+                voices.map(GeneratedVoiceMessage::audioPath),
+                ChatBarApp.instance.fishAudioStorage::deleteIfOwned
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            complete = false
+        }
+        return if (complete) "读档完成。" else "读档完成，部分旧附件未清理。"
     }
 
     /**
