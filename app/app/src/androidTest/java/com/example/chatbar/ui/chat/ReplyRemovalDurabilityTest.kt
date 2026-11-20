@@ -56,15 +56,17 @@ class ReplyRemovalDurabilityTest {
 
     @Test fun anotherMessageImageMetadataKeepsItsOwnedImage() = withFixture { fixture ->
         val session = fixture.createSession()
-        val message = fixture.addReply(session, versionOnly = false)
+        val message = fixture.addReply(session, versionOnly = false, imagePath = "images/migrated_backup/synthetic/chat_img_case.png")
         val file = File(message.images.single())
-        fixture.chats.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "Metadata owner").copy(
+        val owner = fixture.chats.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "Metadata owner").copy(
             generatedImageMetadata = listOf(GeneratedImageMetadata(
                 file.toURI().toString(), "synthetic", emptyList(), "", "normal", 64, 64
             ))
         ))
         assertNull(fixture.removals.remove(message, null, null))
         assertTrue(file.isFile)
+        assertNull(fixture.removals.remove(owner, null, null))
+        assertFalse(file.exists())
     }
 
     @Test fun legacyVoiceWithSameMessageIdInAnotherSessionIsNotMigrated() = withFixture { fixture ->
@@ -175,8 +177,12 @@ class ReplyRemovalDurabilityTest {
         suspend fun createSession(): ChatSession =
             chats.createSession(ChatSession.create("synthetic-card", "Synthetic chat"))
 
-        suspend fun addReply(session: ChatSession, versionOnly: Boolean): ChatMessage {
-            val image = File(context.filesDir, "images/save_slots/synthetic/image.png").also {
+        suspend fun addReply(
+            session: ChatSession,
+            versionOnly: Boolean,
+            imagePath: String = "images/save_slots/synthetic/image.png"
+        ): ChatMessage {
+            val image = File(context.filesDir, imagePath).also {
                 check(it.parentFile!!.mkdirs())
                 it.writeText("synthetic image")
             }

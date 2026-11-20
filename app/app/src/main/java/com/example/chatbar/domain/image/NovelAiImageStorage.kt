@@ -38,9 +38,11 @@ class NovelAiImageStorage(private val context: Context) {
         com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val file = File(path).canonicalFile
             val images = File(context.filesDir, "images").canonicalFile
-            val archives = File(images, "save_slots").canonicalPath + File.separator
+            val imported = listOf("save_slots", "migrated_backup", "migrated_external").any {
+                file.path.startsWith(File(images, it).canonicalPath + File.separator)
+            }
             val owned = file.path.startsWith(root.canonicalPath + File.separator) ||
-                file.path.startsWith(archives) || (file.parentFile == images && file.name.startsWith("chat_img_"))
+                imported || (file.parentFile == images && file.name.startsWith("chat_img_"))
             !owned || !file.exists() || file.delete()
         }
 

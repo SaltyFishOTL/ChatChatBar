@@ -37,7 +37,9 @@ internal class ReplyRemovalCoordinator(
                         id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
                         versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
                         sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
-                        images = if (replacement == null) expected.images else emptyList(),
+                        images = if (replacement == null) {
+                            (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
+                        } else emptyList(),
                         audioPaths = collectAudioPaths()
                     )
                     storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
