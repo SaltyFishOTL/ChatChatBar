@@ -967,19 +967,20 @@ class FishAudioGenerationCoordinator(
             val voices = next.voices?.takeIf { it.isNotEmpty() } ?: continue
             if (foregroundSessionId != next.sessionId || foregroundGeneration.get() != next.foregroundGeneration) continue
             // A later completed batch can wait behind unfinished earlier audio while its reply changes.
-            val playable = try {
-                voiceRepository.currentVoicesForPlayback(voices)
+            try {
+                voiceRepository.withCurrentAutoPlayQueue(voices, chatRepository) { playable ->
+                    if (playable.isEmpty()) return@withCurrentAutoPlayQueue
+                    withContext(Dispatchers.Main.immediate) {
+                        if (request == playbackRequest.get() && foregroundSessionId == next.sessionId &&
+                            foregroundGeneration.get() == next.foregroundGeneration) {
+                            playback.enqueueSequence(playable)
+                        }
+                    }
+                }
             } catch (cancelled: CancellationException) {
                 throw cancelled
             } catch (_: Exception) {
                 continue
-            }
-            if (playable.isEmpty()) continue
-            withContext(Dispatchers.Main.immediate) {
-                if (request == playbackRequest.get() && foregroundSessionId == next.sessionId &&
-                    foregroundGeneration.get() == next.foregroundGeneration) {
-                    playback.enqueueSequence(playable)
-                }
             }
         }
     }

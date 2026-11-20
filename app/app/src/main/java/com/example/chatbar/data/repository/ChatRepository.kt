@@ -604,6 +604,9 @@ class ChatRepository(private val storage: JsonFileStorage) {
     internal suspend fun messageTimelineRevision(sessionId: String): Long =
         messageAppendMutex.withDataAccess { messageTimelineRevisions[sessionId] ?: 0L }
 
+    internal suspend fun withStableMessagesForPlayback(admit: suspend () -> Unit) =
+        messageAppendMutex.withDataAccess { admit() }
+
     suspend fun updateMessageIfUnchanged(
         expected: ChatMessage,
         replacement: ChatMessage,

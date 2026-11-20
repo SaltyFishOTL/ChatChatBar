@@ -98,15 +98,34 @@ class VoiceMessageRepository(
             captured.mapNotNull { currentVoiceForPlaybackLocked(it) }
         }
 
-    private suspend fun currentVoiceForPlaybackLocked(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? {
+    internal suspend fun withCurrentAutoPlayQueue(
+        captured: List<GeneratedVoiceMessage>,
+        chats: ChatRepository,
+        enqueue: suspend (List<GeneratedVoiceMessage>) -> Unit,
+    ) = mutex.withLock {
+        ensureInitializedLocked()
+        // Use the same voice-to-message lock order as reply removal for validation and handoff.
+        chats.withStableMessagesForPlayback {
+            enqueue(captured.mapNotNull { currentVoiceForPlaybackLocked(it, requireActiveVersion = true) })
+        }
+    }
+
+    private suspend fun currentVoiceForPlaybackLocked(
+        captured: GeneratedVoiceMessage,
+        requireActiveVersion: Boolean = false,
+    ): GeneratedVoiceMessage? {
         val current = _voices.value.firstOrNull { it.id == captured.id } ?: return null
         if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
             current.audioPath != captured.audioPath) return null
-        if (!current.requiresCompatibleVersion && !captured.requiresCompatibleVersion) return current
+        val requiresCompatibility = current.requiresCompatibleVersion || captured.requiresCompatibleVersion
+        if (!requireActiveVersion && !requiresCompatibility) return current
 
         val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return null
         val version = MessageAlternativeVersionPolicy.activeVersion(message)
-        return current.takeIf { it.messageVersionId == version.id && VoiceMessageVersionPolicy.isCompatibleVersion(version, it) }
+        return current.takeIf {
+            it.messageVersionId == version.id &&
+                (!requiresCompatibility || VoiceMessageVersionPolicy.isCompatibleVersion(version, it))
+        }
     }
 
     suspend fun listForMessage(messageId: String): List<GeneratedVoiceMessage> {

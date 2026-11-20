@@ -200,24 +200,35 @@ class ReplyRemovalDurabilityTest {
         fixture.voices.save(removed)
 
         val edited = MessageAlternativeVersionPolicy.editCurrentContent(original, "Updated reply")
-        assertTrue(fixture.chats.updateMessageIfUnchanged(original, edited))
-        assertEquals(legacy.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(edited))
-        fixture.voices.delete(removed.id)
-
-        fun liveRecording(id: String): GeneratedVoiceMessage {
+        fun recording(id: String, owner: ChatMessage): GeneratedVoiceMessage {
             val audio = File(File(initial.audioPath).parentFile, "$id.mp3").also {
                 it.writeText("synthetic $id")
             }
-            return initial.copy(id = id, sourceText = edited.displayContent, audioPath = audio.path)
+            return initial.copy(
+                id = id, sourceText = owner.displayContent, audioPath = audio.path,
+                messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(owner),
+            )
         }
-        val first = liveRecording("current-first")
-        val last = liveRecording("current-last")
+        val alternate = MessageAlternativeVersionPolicy.append(edited, "Another reply", "other-version")
+        assertTrue(fixture.chats.updateMessageIfUnchanged(original, alternate))
+        val capturedAlternative = recording("other-recording", alternate)
+        fixture.voices.save(capturedAlternative)
+        val current = requireNotNull(fixture.chats.getMessage(original.id, session.id))
+        val selected = MessageAlternativeVersionPolicy.select(current, 0)
+        assertEquals(legacy.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(selected))
+        assertTrue(fixture.chats.updateMessageIfUnchanged(current, selected))
+        fixture.voices.delete(removed.id)
+
+        val first = recording("current-first", selected)
+        val last = recording("current-last", selected)
         fixture.voices.save(first)
         fixture.voices.save(last)
-        val queue = fixture.voices.currentVoicesForPlayback(listOf(first, legacy, removed, last))
-        assertEquals(listOf(first.id, last.id), queue.map { it.id })
-        assertTrue(queue.all { File(it.audioPath).isFile })
+        fixture.voices.withCurrentAutoPlayQueue(listOf(first, legacy, capturedAlternative, removed, last), fixture.chats) { queue ->
+            assertEquals(listOf(first.id, last.id), queue.map { it.id })
+            assertTrue(queue.all { File(it.audioPath).isFile })
+        }
         assertTrue(File(legacy.audioPath).isFile)
+        assertTrue(File(capturedAlternative.audioPath).isFile)
     }
 
     private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->
