@@ -4,12 +4,19 @@ import android.content.Context
 import android.net.Uri
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.DocumentInfo
+import com.example.chatbar.data.local.entity.EditorDraft
+import com.example.chatbar.data.local.entity.EditorDraftType
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import java.io.File
+import java.nio.file.Path
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.serialization.json.Json
 
 class EditorDraftAssetService(private val context: Context) {
+    private val modalJson = Json { ignoreUnknownKeys = true }
+
     fun isDraftAsset(path: String?): Boolean =
         !path.isNullOrBlank() && runCatching {
             File(path).canonicalFile.toPath().startsWith(draftRoot().canonicalFile.toPath())
@@ -67,6 +74,43 @@ class EditorDraftAssetService(private val context: Context) {
     suspend fun deleteDraft(draftSessionId: String) = withContext(Dispatchers.IO) {
         com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             draftDir(draftSessionId).deleteRecursively()
+        }
+    }
+
+    suspend fun deleteUnreferencedDraftAssets(
+        remainingDrafts: List<EditorDraft>,
+        sessions: List<String> = emptyList(),
+        files: Set<String> = emptySet(),
+    ): Set<String> = withContext(Dispatchers.IO) {
+        LocalDataMaintenance.access {
+            val root = draftRoot().canonicalFile.toPath()
+            fun sessionDirectory(session: String): Path = draftDir(session).canonicalFile.toPath().also {
+                check(it.parent == root) { "草稿资源目录无效" }
+            }
+            fun namespace(path: Path): Path? = path.takeIf { it != root && it.startsWith(root) }
+                ?.let { root.resolve(root.relativize(it).getName(0)) }
+            val protectedDirectories = buildSet {
+                for (draft in remainingDrafts) {
+                    add(sessionDirectory(draft.draftSessionId))
+                    val modalImage = draft.openModalState?.takeIf { draft.entityType == EditorDraftType.CHARACTER_CARD }?.let {
+                        modalJson.decodeFromString(CharacterOpenModalState.serializer(), it).character?.appearanceImage
+                    }
+                    val references = draft.draftAssetPaths + draft.pendingDeletedAssets +
+                        draft.characterPayload?.let(::ownedAssetPaths).orEmpty() + listOfNotNull(modalImage)
+                    references.mapNotNullTo(this) { namespace(File(it).canonicalFile.toPath()) }
+                }
+            }
+            val removed = files.filterTo(mutableSetOf()) { file ->
+                val path = File(file).canonicalFile.toPath()
+                val directory = namespace(path) ?: return@filterTo false
+                directory !in protectedDirectories && path.toFile().let { it.delete() || !it.exists() }
+            }
+            for (directory in sessions.distinct().map(::sessionDirectory)) {
+                if (directory !in protectedDirectories) {
+                    check(directory.toFile().deleteRecursively()) { "删除草稿资源目录失败" }
+                }
+            }
+            removed
         }
     }
 

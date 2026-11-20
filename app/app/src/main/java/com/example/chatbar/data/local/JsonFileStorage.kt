@@ -176,18 +176,23 @@ class JsonFileStorage(private val context: Context) {
     @OptIn(ExperimentalSerializationApi::class)
     suspend fun <T : Any> loadAll(
         entityType: String,
-        serializer: KSerializer<T>
+        serializer: KSerializer<T>,
+        requireComplete: Boolean = false
     ): List<T> = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val dir = entityDir(entityType)
             val entities = mutableMapOf<String, T>()
-            dir.listFiles { f -> f.extension == "json" }?.forEach { file ->
+            val files = dir.listFiles { f -> f.extension == "json" }
+            if (requireComplete && files == null) throw IOException("无法读取全部本地记录")
+            files?.forEach { file ->
                 try {
                     val entity = openSerializedInput(file).use { input ->
                         json.decodeFromStream(serializer, input)
                     }
                     entities[file.nameWithoutExtension] = entity
-                } catch (_: Exception) { /* skip corrupt files */ }
+                } catch (error: Exception) {
+                    if (requireComplete) throw IOException("无法读取全部本地记录", error)
+                }
             }
 
             // 初始化缓存

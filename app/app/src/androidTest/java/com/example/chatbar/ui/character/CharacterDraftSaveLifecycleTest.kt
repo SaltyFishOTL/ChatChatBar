@@ -340,6 +340,32 @@ class CharacterDraftSaveLifecycleTest {
         }
     }
 
+    @Test fun revertingAnAddedDocumentKeepsItForADraftReusingItsStagedPath() = runBlocking<Unit> {
+        val original = card()
+        val recoveryTarget = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("shared.txt", "Retained recovery bytes", it) }
+        action { vm.saveDraftAndExit(it) }
+        val draft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val document = draft.characterPayload!!.customDocuments.single()
+        val staged = File(document.filePath)
+        val other = app.editorDraftRepository.save(draft.copy(
+            targetId = recoveryTarget.id,
+            draftSessionId = UUID.randomUUID().toString(),
+            draftAssetPaths = emptyList(),
+        ))
+        try {
+            withContext(Dispatchers.Main) { vm.deleteDocument(document) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            action { vm.requestExit(onUnsavedChanges = { fail("Reverted form is clean") }, onDone = it) }
+            assertNull(coldDrafts().getById(draft.id))
+            assertEquals(other, coldDrafts().getById(other.id))
+            assertEquals("Retained recovery bytes", staged.readText())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(draft.draftSessionId)
+        }
+    }
+
     @Test fun failedDraftDeletionRetainsItsResourcesAndCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
         val original = card()
         val vm = editor(original.id)

@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.EditorDraftMode
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -84,6 +85,12 @@ class EditorDraftRepository(
         storage.deleteEntity<EditorDraft>(ENTITY_TYPE, draft.id, requireSuccess = true)
         refreshCache()
         true
+    }
+
+    suspend fun <T> withDraftsForAssetCleanup(cleanup: suspend (List<EditorDraft>) -> T): T = mutationMutex.withLock {
+        LocalDataMaintenance.access {
+            cleanup(storage.loadAll(ENTITY_TYPE, EditorDraft.serializer(), requireComplete = true))
+        }
     }
 
     suspend fun deleteForTarget(type: EditorDraftType, targetId: String?) {

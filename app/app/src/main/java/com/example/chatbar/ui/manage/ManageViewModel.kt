@@ -213,7 +213,9 @@ class ManageViewModel : ViewModel() {
             val errorMessage = try {
                 check(editorDraftRepository.deleteIfUnchanged(draft)) { "草稿已更新，请重新确认" }
                 discarded = true
-                check(editorDraftAssetService.deleteDraft(draft.draftSessionId)) { "删除草稿资源目录失败" }
+                editorDraftRepository.withDraftsForAssetCleanup { remaining ->
+                    editorDraftAssetService.deleteUnreferencedDraftAssets(remaining, sessions = listOf(draft.draftSessionId))
+                }
                 null
             } catch (cancelled: CancellationException) {
                 throw cancelled

@@ -125,6 +125,38 @@ class ManagementDraftDiscardTest {
         assertEquals(saved, app.characterRepository.getById(saved.id))
     }
 
+    @Test fun managementDiscardPreservesTheOtherRecoveryDraftInTheSameAssetDirectory() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val profile = card()
+        val session = UUID.randomUUID().toString()
+        val path = app.editorDraftAssetService.writeDocumentToDraft(session, "shared.txt", "Shared recovery bytes")
+        val staged = File(path)
+        val first = app.editorDraftRepository.save(app.editorDraftRepository.characterDraft(
+            targetId = profile.id,
+            draftSessionId = session,
+            payload = profile.copy(customDocuments = listOf(DocumentInfo.create("shared.txt", path, "txt"))),
+            base = profile,
+            draftAssetPaths = listOf(path),
+            pendingDeletedAssets = emptyList(),
+            pendingDeletedDocumentIds = emptyList(),
+        ))
+        val other = app.editorDraftRepository.save(first.copy(
+            mode = EditorDraftMode.CREATE,
+            targetId = null,
+            draftAssetPaths = emptyList(),
+        ))
+        try {
+            assertNull(managerDiscard(first))
+            assertNull(EditorDraftRepository(JsonFileStorage(app)).getById(first.id))
+            assertEquals(other, EditorDraftRepository(JsonFileStorage(app)).getById(other.id))
+            assertEquals("Shared recovery bytes", staged.readText())
+            assertNull(managerDiscard(other))
+            assertFalse(staged.exists())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(session)
+        }
+    }
+
     @Test fun managementDiscardResetsRetainedBookAndDoesNotRecreateItsDraft() = runBlocking<Unit> {
         val saved = book()
         val vm = worldEditor(saved.id)

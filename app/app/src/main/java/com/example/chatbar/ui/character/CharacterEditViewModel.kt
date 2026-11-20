@@ -796,8 +796,11 @@ class CharacterEditViewModel(
             draftRepository.delete(draftId, requireSuccess = true)
         }
         afterDeletingDraft()
-        for (session in listOfNotNull(previous?.draftSessionId, draftSessionId).distinct()) {
-            check(draftAssetService.deleteDraft(session)) { "删除草稿资源目录失败" }
+        draftRepository.withDraftsForAssetCleanup { remaining ->
+            draftAssetService.deleteUnreferencedDraftAssets(
+                remaining,
+                sessions = listOfNotNull(previous?.draftSessionId, draftSessionId),
+            )
         }
     }
 
@@ -819,7 +822,9 @@ class CharacterEditViewModel(
                 restoreConflict = restoreDraft?.let { draftRepository.isChanged(baseCard, it) } == true
                 return
             }
-            check(draftAssetService.deleteDraft(draft.draftSessionId)) { "删除草稿资源目录失败" }
+            draftRepository.withDraftsForAssetCleanup { remaining ->
+                draftAssetService.deleteUnreferencedDraftAssets(remaining, sessions = listOf(draft.draftSessionId))
+            }
         } catch (cancelled: CancellationException) {
             throw cancelled
         } catch (error: Exception) {
@@ -970,8 +975,17 @@ class CharacterEditViewModel(
         val retainedPaths = documentsList.map { it.filePath } +
             baseCard?.customDocuments.orEmpty().map { it.filePath } + loadedDraft?.draftAssetPaths.orEmpty()
         val removed = removedDraftDocuments - retainedPaths.toSet()
-        draftAssetService.deleteFiles(removed)
-        removedDraftDocuments.removeAll(removed)
+        if (removed.isEmpty()) return
+        try {
+            val reclaimed = draftRepository.withDraftsForAssetCleanup { remaining ->
+                draftAssetService.deleteUnreferencedDraftAssets(remaining, files = removed)
+            }
+            removedDraftDocuments.removeAll(reclaimed)
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            _indexingStatus.value = "清理草稿临时资源失败：${error.message}"
+        }
     }
 
     private fun finishCharacterSave() {
@@ -2697,7 +2711,13 @@ class CharacterEditViewModel(
             val retained = com.example.chatbar.domain.card.CharacterBackgroundRetention.currentReferences(app, newCard.id) +
                 newCard.chatBackgroundImages + listOfNotNull(newCard.chatBackground)
             val removableAssets = MomentMediaRetention.unreferencedPaths(removedAssets, app.momentRepository.getAllPosts(), retained)
-            draftAssetService.deleteFiles(removableAssets)
+            val stagedAssets = removableAssets.filter(draftAssetService::isDraftAsset).toSet()
+            draftAssetService.deleteFiles(removableAssets - stagedAssets)
+            if (stagedAssets.isNotEmpty()) {
+                draftRepository.withDraftsForAssetCleanup { remaining ->
+                    draftAssetService.deleteUnreferencedDraftAssets(remaining, files = stagedAssets)
+                }
+            }
         }
 
         val newDocsById = newCard.customDocuments.associateBy { it.id }
