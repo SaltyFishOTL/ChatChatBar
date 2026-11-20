@@ -165,6 +165,22 @@ class ManagementDraftDiscardTest {
         }
     }
 
+    @Test fun queuedAutosaveCannotPublishEitherIdentityAfterItsExpectedRowIsDiscarded() = runBlocking<Unit> {
+        assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
+        val saved = card()
+        val retained = characterEditor(saved.id)
+        saveCardDraft(retained)
+        val repository = app.editorDraftRepository
+        val expected = requireNotNull(repository.getForTarget(EditorDraftType.CHARACTER_CARD, saved.id))
+        val queued = expected.copy(characterPayload = expected.characterPayload!!.copy(name = "queued autosave"))
+        assertNull(managerDiscard(expected))
+        assertNull(repository.saveIfUnchanged(queued, expected))
+        assertNull(repository.saveIfUnchanged(queued.copy(mode = EditorDraftMode.CREATE, targetId = null), expected))
+        val cold = EditorDraftRepository(JsonFileStorage(app))
+        assertNull(cold.getById(expected.id))
+        assertNull(cold.getForTarget(EditorDraftType.CHARACTER_CARD, null))
+    }
+
     @Test fun managementDiscardResetsRetainedBookAndDoesNotRecreateItsDraft() = runBlocking<Unit> {
         val saved = book()
         val vm = worldEditor(saved.id)

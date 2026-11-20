@@ -68,11 +68,24 @@ class EditorDraftRepository(
         getForTarget(type, targetId) != null
 
     suspend fun save(draft: EditorDraft): EditorDraft = mutationMutex.withLock {
+        write(draft)
+    }
+
+    suspend fun saveIfUnchanged(draft: EditorDraft, expected: EditorDraft): EditorDraft? = mutationMutex.withLock {
+        LocalDataMaintenance.access {
+            if (readStrict(expected.id) != expected) return@access null
+            val destination = draftId(draft.entityType, draft.targetId)
+            if (destination != expected.id && readStrict(destination) != null) return@access null
+            write(draft)
+        }
+    }
+
+    private suspend fun write(draft: EditorDraft): EditorDraft {
         val now = System.currentTimeMillis()
         val normalized = draft.copy(id = draftId(draft.entityType, draft.targetId), updatedAt = now)
         storage.saveEntity(ENTITY_TYPE, normalized.id, normalized, EditorDraft.serializer())
         refreshCache()
-        normalized
+        return normalized
     }
 
     suspend fun delete(id: String, requireSuccess: Boolean = false) = mutationMutex.withLock {
@@ -81,11 +94,16 @@ class EditorDraftRepository(
     }
 
     suspend fun deleteIfUnchanged(draft: EditorDraft): Boolean = mutationMutex.withLock {
-        if (getById(draft.id) != draft) return@withLock false
-        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, draft.id, requireSuccess = true)
-        refreshCache()
-        true
+        LocalDataMaintenance.access {
+            if (readStrict(draft.id) != draft) return@access false
+            storage.deleteEntity<EditorDraft>(ENTITY_TYPE, draft.id, requireSuccess = true)
+            refreshCache()
+            true
+        }
     }
+
+    private suspend fun readStrict(id: String): EditorDraft? =
+        storage.loadEntity(ENTITY_TYPE, id, EditorDraft.serializer(), requireReadable = true)
 
     suspend fun <T> withDraftsForAssetCleanup(cleanup: suspend (List<EditorDraft>) -> T): T = mutationMutex.withLock {
         LocalDataMaintenance.access {

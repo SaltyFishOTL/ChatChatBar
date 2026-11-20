@@ -366,6 +366,45 @@ class CharacterDraftSaveLifecycleTest {
         }
     }
 
+    @Test fun discardingTheRecoveredDraftPreservesItsOriginalRecoveryRow() = runBlocking<Unit> {
+        verifyRecoveredDraftCleanup(saveFormally = false)
+    }
+
+    @Test fun formallySavingTheRecoveredDraftPreservesItsOriginalRecoveryRow() = runBlocking<Unit> {
+        verifyRecoveredDraftCleanup(saveFormally = true)
+    }
+
+    private suspend fun verifyRecoveredDraftCleanup(saveFormally: Boolean) {
+        val original = card()
+        val active = editor(original.id)
+        action { active.addDocument("recover.txt", "Shared draft bytes", it) }
+        action { active.saveDraftAndExit(it) }
+        val oldDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(oldDraft.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        app.characterRepository.delete(original.id)
+        val recovery = editor(original.id)
+        withContext(Dispatchers.Main) { assertTrue(recovery.sourceDeleted) }
+        try {
+            action { recovery.saveDraftAndExit(it) }
+            val newDraft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, null))
+            if (saveFormally) {
+                action { recovery.saveCharacterCard(it) }
+                val saved = requireNotNull(withContext(Dispatchers.Main) { recovery.characterCard.value })
+                cardIds += saved.id
+                val durable = File(saved.customDocuments.single().filePath).also(files::add)
+                assertEquals("Shared draft bytes", durable.readText())
+            } else {
+                action { recovery.discardDraft(it) }
+            }
+            assertNull(coldDrafts().getById(newDraft.id))
+            assertEquals(oldDraft, coldDrafts().getById(oldDraft.id))
+            assertEquals("Shared draft bytes", staged.readText())
+        } finally {
+            app.editorDraftRepository.deleteForTarget(EditorDraftType.CHARACTER_CARD, null)
+            app.editorDraftAssetService.deleteDraft(oldDraft.draftSessionId)
+        }
+    }
+
     @Test fun failedDraftDeletionRetainsItsResourcesAndCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
         val original = card()
         val vm = editor(original.id)

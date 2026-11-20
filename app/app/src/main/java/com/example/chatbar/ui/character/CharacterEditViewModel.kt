@@ -301,7 +301,11 @@ class CharacterEditViewModel(
     private val _isSaving = MutableStateFlow(false)
     val isSaving: StateFlow<Boolean> = _isSaving.asStateFlow()
     private var formalSaveInProgress = false
-    private data class CommittedDraftCleanup(val oldCard: CharacterCard?, val savedCard: CharacterCard)
+    private data class CommittedDraftCleanup(
+        val oldCard: CharacterCard?,
+        val savedCard: CharacterCard,
+        val consumedDraft: EditorDraft?,
+    )
     private var committedDraftCleanup by mutableStateOf<CommittedDraftCleanup?>(null)
     val isDraftCleanupPending: Boolean get() = committedDraftCleanup != null
 
@@ -526,7 +530,7 @@ class CharacterEditViewModel(
                 }
                 if (draft != null) {
                     if (card == null) {
-                        loadedDraft = draft.copy(targetId = null)
+                        loadedDraft = draft
                         draft.characterPayload?.let(::applyCard)
                         restoreOpenModal(draft.openModalState)
                         pendingDeletedAssets.addAll(draft.pendingDeletedAssets)
@@ -624,7 +628,7 @@ class CharacterEditViewModel(
                     // Management owns the selected row and its assets. A recovery draft can have a different target row.
                     reset()
                 } else {
-                    deleteCharacterDraftAndAssets { reset() }
+                    deleteCharacterDraftAndAssets(loadedDraft ?: restoreDraft) { reset() }
                 }
             } catch (cancelled: CancellationException) {
                 throw cancelled
@@ -758,7 +762,7 @@ class CharacterEditViewModel(
             baseCard = effectiveCard
             hasLocalChanges = false
             hasUnsavedDraftChanges = false
-            val cleanup = CommittedDraftCleanup(oldCard, effectiveCard)
+            val cleanup = CommittedDraftCleanup(oldCard, effectiveCard, loadedDraft)
             val cleaned = completeCommittedDraftCleanup(cleanup)
             finishCharacterSave()
             startBackgroundIndex(effectiveCard)
@@ -774,7 +778,7 @@ class CharacterEditViewModel(
 
     private suspend fun completeCommittedDraftCleanup(cleanup: CommittedDraftCleanup): Boolean {
         return try {
-            deleteCharacterDraftAndAssets {
+            deleteCharacterDraftAndAssets(cleanup.consumedDraft) {
                 // Consumed drafts no longer retain images removed by this save; other drafts still do.
                 cleanupAfterCharacterSave(cleanup.oldCard, cleanup.savedCard)
             }
@@ -797,17 +801,13 @@ class CharacterEditViewModel(
         }
     }
 
-    private suspend fun deleteCharacterDraftAndAssets(afterDeletingDraft: suspend () -> Unit = {}) {
-        val previous = loadedDraft ?: restoreDraft
-        val target = EditorDraftRepository.draftId(EditorDraftType.CHARACTER_CARD, characterId)
-        for (draftId in listOfNotNull(previous?.id, target).distinct()) {
-            draftRepository.delete(draftId, requireSuccess = true)
-        }
+    private suspend fun deleteCharacterDraftAndAssets(draft: EditorDraft?, afterDeletingDraft: suspend () -> Unit) {
+        draft?.let { draftRepository.deleteIfUnchanged(it) }
         afterDeletingDraft()
         draftRepository.withDraftsForAssetCleanup { remaining ->
             draftAssetService.deleteUnreferencedDraftAssets(
                 remaining,
-                sessions = listOfNotNull(previous?.draftSessionId, draftSessionId),
+                sessions = listOfNotNull(draft?.draftSessionId, draftSessionId),
             )
         }
     }
@@ -941,7 +941,7 @@ class CharacterEditViewModel(
             loadedDraft?.let { previous ->
                 loadedDraft = null
                 try {
-                    check(draftRepository.deleteIfUnchanged(previous)) { "草稿已更新，请重新打开角色卡" }
+                    draftRepository.deleteIfUnchanged(previous)
                     draftSavedAt = null
                 } catch (error: Exception) {
                     loadedDraft = previous
@@ -957,7 +957,8 @@ class CharacterEditViewModel(
             listOfNotNull(openModalState?.character?.appearanceImage)).distinct()
             .filter { draftAssetService.isDraftAsset(it) }
         val targetId = if (sourceDeleted) null else characterId
-        val previous = loadedDraft?.takeIf { it.targetId == targetId }
+        val owner = loadedDraft
+        val previous = owner?.takeIf { it.targetId == targetId }
         val draft = draftRepository.characterDraft(
             targetId = targetId,
             draftSessionId = draftSessionId,
@@ -972,7 +973,11 @@ class CharacterEditViewModel(
         )
         // Loading a draft does not acknowledge changes made to its source card.
         val update = previous?.let { draft.copy(baseHash = it.baseHash, baseUpdatedAt = it.baseUpdatedAt) } ?: draft
-        loadedDraft = draftRepository.save(update)
+        loadedDraft = if (owner == null) {
+            draftRepository.save(update)
+        } else {
+            checkNotNull(draftRepository.saveIfUnchanged(update, owner)) { "草稿已更新或清除，请重新打开角色卡" }
+        }
         draftSavedAt = loadedDraft?.updatedAt
         reclaimRemovedDraftDocuments()
         hasUnsavedDraftChanges = false

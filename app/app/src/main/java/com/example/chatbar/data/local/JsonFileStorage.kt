@@ -155,16 +155,21 @@ class JsonFileStorage(private val context: Context) {
     suspend fun <T : Any> loadEntity(
         entityType: String,
         id: String,
-        serializer: KSerializer<T>
+        serializer: KSerializer<T>,
+        requireReadable: Boolean = false
     ): T? = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
-            if (!file.exists()) return@withContext null
+            if (!requireReadable && !file.exists()) return@withContext null
             try {
-                file.inputStream().buffered().use { input ->
+                val source = if (requireReadable) Files.newInputStream(file.toPath()) else file.inputStream()
+                source.buffered().use { input ->
                     json.decodeFromStream(serializer, input)
                 }
-            } catch (e: Exception) {
+            } catch (_: NoSuchFileException) {
+                null
+            } catch (error: Exception) {
+                if (requireReadable) throw IOException("无法读取本地记录", error)
                 null
             }
         }
