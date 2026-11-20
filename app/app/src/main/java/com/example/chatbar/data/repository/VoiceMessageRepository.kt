@@ -89,16 +89,24 @@ class VoiceMessageRepository(
         }
     }
 
-    internal suspend fun currentVoiceForPlayback(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? = mutex.withLock {
-        ensureInitializedLocked()
-        val current = _voices.value.firstOrNull { it.id == captured.id } ?: return@withLock null
-        if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
-            current.audioPath != captured.audioPath) return@withLock null
-        if (!current.requiresCompatibleVersion && !captured.requiresCompatibleVersion) return@withLock current
+    internal suspend fun currentVoiceForPlayback(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? =
+        currentVoicesForPlayback(listOf(captured)).singleOrNull()
 
-        val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return@withLock null
+    internal suspend fun currentVoicesForPlayback(captured: List<GeneratedVoiceMessage>): List<GeneratedVoiceMessage> =
+        mutex.withLock {
+            ensureInitializedLocked()
+            captured.mapNotNull { currentVoiceForPlaybackLocked(it) }
+        }
+
+    private suspend fun currentVoiceForPlaybackLocked(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? {
+        val current = _voices.value.firstOrNull { it.id == captured.id } ?: return null
+        if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
+            current.audioPath != captured.audioPath) return null
+        if (!current.requiresCompatibleVersion && !captured.requiresCompatibleVersion) return current
+
+        val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return null
         val version = MessageAlternativeVersionPolicy.activeVersion(message)
-        current.takeIf { it.messageVersionId == version.id && VoiceMessageVersionPolicy.isCompatibleVersion(version, it) }
+        return current.takeIf { it.messageVersionId == version.id && VoiceMessageVersionPolicy.isCompatibleVersion(version, it) }
     }
 
     suspend fun listForMessage(messageId: String): List<GeneratedVoiceMessage> {

@@ -190,6 +190,36 @@ class ReplyRemovalDurabilityTest {
         }
     }
 
+    @Test fun delayedPlaybackRechecksCapturedRecordingsInTheirOriginalOrder() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val original = fixture.addReply(session, versionOnly = false)
+        val initial = fixture.addVoice(original)
+        val legacy = initial.copy(versionOwnershipConfirmed = false, requiresCompatibleVersion = true)
+        fixture.voices.save(legacy)
+        val removed = initial.copy(id = "removed-recording")
+        fixture.voices.save(removed)
+
+        val edited = MessageAlternativeVersionPolicy.editCurrentContent(original, "Updated reply")
+        assertTrue(fixture.chats.updateMessageIfUnchanged(original, edited))
+        assertEquals(legacy.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(edited))
+        fixture.voices.delete(removed.id)
+
+        fun liveRecording(id: String): GeneratedVoiceMessage {
+            val audio = File(File(initial.audioPath).parentFile, "$id.mp3").also {
+                it.writeText("synthetic $id")
+            }
+            return initial.copy(id = id, sourceText = edited.displayContent, audioPath = audio.path)
+        }
+        val first = liveRecording("current-first")
+        val last = liveRecording("current-last")
+        fixture.voices.save(first)
+        fixture.voices.save(last)
+        val queue = fixture.voices.currentVoicesForPlayback(listOf(first, legacy, removed, last))
+        assertEquals(listOf(first.id, last.id), queue.map { it.id })
+        assertTrue(queue.all { File(it.audioPath).isFile })
+        assertTrue(File(legacy.audioPath).isFile)
+    }
+
     private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly)

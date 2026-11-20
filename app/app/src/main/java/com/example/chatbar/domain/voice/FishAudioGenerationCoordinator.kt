@@ -386,7 +386,7 @@ class FishAudioGenerationCoordinator(
             autoPlayMutex.withLock {
                 if (request != playbackRequest.get()) return@withLock
                 val playable = try {
-                    val following = sequence.drop(1).mapNotNull { voiceRepository.currentVoiceForPlayback(it) }
+                    val following = voiceRepository.currentVoicesForPlayback(sequence.drop(1))
                     val selected = voiceRepository.currentVoiceForPlayback(voice) ?: return@withLock
                     listOf(selected) + following
                 } catch (cancelled: CancellationException) {
@@ -956,7 +956,8 @@ class FishAudioGenerationCoordinator(
     }
 
     private suspend fun drainAutoPlayLocked() {
-        while (true) {
+        val request = playbackRequest.get()
+        while (request == playbackRequest.get()) {
             val next = pendingAutoPlay.values.minWithOrNull(
                 compareBy<PendingAutoPlay>(PendingAutoPlay::messageOrder)
                     .thenBy(PendingAutoPlay::createdAt)
@@ -964,9 +965,20 @@ class FishAudioGenerationCoordinator(
             if (!next.terminal) return
             pendingAutoPlay.remove(next.batchId)
             val voices = next.voices?.takeIf { it.isNotEmpty() } ?: continue
+            if (foregroundSessionId != next.sessionId || foregroundGeneration.get() != next.foregroundGeneration) continue
+            // A later completed batch can wait behind unfinished earlier audio while its reply changes.
+            val playable = try {
+                voiceRepository.currentVoicesForPlayback(voices)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                continue
+            }
+            if (playable.isEmpty()) continue
             withContext(Dispatchers.Main.immediate) {
-                if (foregroundSessionId == next.sessionId && foregroundGeneration.get() == next.foregroundGeneration) {
-                    playback.enqueueSequence(voices)
+                if (request == playbackRequest.get() && foregroundSessionId == next.sessionId &&
+                    foregroundGeneration.get() == next.foregroundGeneration) {
+                    playback.enqueueSequence(playable)
                 }
             }
         }
