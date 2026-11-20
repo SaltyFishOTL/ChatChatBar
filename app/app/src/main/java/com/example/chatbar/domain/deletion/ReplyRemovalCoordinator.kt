@@ -77,6 +77,14 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
+    /** A new save slot must not capture voice records from a half-completed reply removal. */
+    suspend fun <T> withSettledSession(sessionId: String, capture: suspend () -> T): T = mutex.withLock {
+        LocalDataMaintenance.access {
+            pending().filter { it.sessionId == sessionId }.forEach { finish(it) }
+            capture()
+        }
+    }
+
     private suspend fun pending(): List<ReplyRemoval> =
         storage.queryUncached(STORE, ReplyRemoval.serializer()) { true }
 

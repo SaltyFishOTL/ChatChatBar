@@ -478,7 +478,7 @@ class VoiceMessageRepository(
         }
 
         val changed = _voices.value.map { voice ->
-            if (voice.messageId != message.id || !voice.messageVersionId.isNullOrBlank()) {
+            if (voice.sessionId != message.sessionId || voice.messageId != message.id || !voice.messageVersionId.isNullOrBlank()) {
                 voice
             } else {
                 val versionId = VoiceMessageVersionPolicy.inferLegacyVersionId(

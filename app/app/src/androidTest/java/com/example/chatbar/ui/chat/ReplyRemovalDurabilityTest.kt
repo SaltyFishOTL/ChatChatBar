@@ -67,6 +67,21 @@ class ReplyRemovalDurabilityTest {
         assertTrue(file.isFile)
     }
 
+    @Test fun legacyVoiceWithSameMessageIdInAnotherSessionIsNotMigrated() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val otherSession = fixture.createSession()
+        val message = fixture.addReply(session, versionOnly = true)
+        val voice = fixture.addVoice(message)
+        fixture.voices.save(voice.copy(messageVersionId = null))
+        val otherVoice = voice.copy(id = "other-legacy", sessionId = otherSession.id, messageVersionId = null)
+        fixture.voices.save(otherVoice)
+        val version = MessageAlternativeVersionPolicy.activeVersionId(message)
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(message, version))
+        assertNull(fixture.removals.remove(message, replacement, version))
+        assertEquals(otherVoice, fixture.voices.get(otherVoice.id))
+        assertTrue(File(otherVoice.audioPath).isFile)
+    }
+
     private fun verifyFailure(
         entity: String,
         versionOnly: Boolean = false,
@@ -100,6 +115,9 @@ class ReplyRemovalDurabilityTest {
                 assertTrue(runCatching {
                     ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
                 }.exceptionOrNull() is IllegalStateException)
+                assertNotNull(runCatching {
+                    fixture.removals.withSettledSession(session.id) { error("A pending removal must block this capture") }
+                }.exceptionOrNull()?.takeUnless { it.message == "A pending removal must block this capture" })
             } finally {
                 assertTrue(directory.setWritable(true))
             }

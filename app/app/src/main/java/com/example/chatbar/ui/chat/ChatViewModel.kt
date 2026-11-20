@@ -4195,7 +4195,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     private suspend fun captureSaveSlot(
         name: String, description: String?, imagePolicy: SaveSlotImagePolicy, includeAudio: Boolean, cancellable: Boolean = true
-    ): Pair<SaveSlot, ChatSession> {
+    ): Pair<SaveSlot, ChatSession> = replyRemovalCoordinator.withSettledSession(sessionId) {
         var packagedSlot: SaveSlot? = null
         var committed = false
         try {
@@ -4262,7 +4262,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             saveSlotRepository.save(packagedSlot)
             committed = true
             refreshSaveSlots()
-            return requireNotNull(packagedSlot) to curSession
+            requireNotNull(packagedSlot) to curSession
         } catch (error: Throwable) {
             if (!committed) packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
             throw error
