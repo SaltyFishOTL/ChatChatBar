@@ -67,7 +67,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
         val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "First reply").copy(images = listOf(source.path))
         val second = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Second reply").copy(images = listOf(source.path))
         val slot = app.saveSlotPackageStorage.createPackage(
-            baseSlot = SaveSlot.create(session.id, "Shared image slot"),
+            baseSlot = SaveSlot.create(session.id, "Shared image slot").copy(longTermMemoryEnabled = false),
             imagePolicy = SaveSlotImagePolicy.ORIGINAL, includeAudio = false,
             messageSource = { emit -> emit(first); emit(second) }, ragSource = {}, voices = emptyList()
         )
@@ -106,6 +106,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertFalse("The final owner should release the stored file", shared.exists())
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
+            app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
             app.chatRepository.deleteMessagesForSession(session.id)
             app.chatRepository.deleteSessionRecord(session.id)
             app.characterRepository.delete(card.id)
@@ -414,6 +415,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertArrayEquals(otherAudio.readBytes(), File(exportedAudio, otherAudio.name).readBytes())
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
+            app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
             app.voiceMessageRepository.deleteForSession(session.id)
             app.chatRepository.deleteMessagesForSession(session.id)
             app.chatRepository.deleteSessionRecord(session.id)
