@@ -1,0 +1,100 @@
+package com.example.chatbar.domain.deletion
+
+import android.util.Log
+import com.example.chatbar.data.local.JsonFileStorage
+import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.repository.ChatRepository
+import com.example.chatbar.data.repository.VoiceMessageRepository
+import com.example.chatbar.domain.backup.LocalDataMaintenance
+import com.example.chatbar.domain.image.NovelAiImageStorage
+import com.example.chatbar.domain.voice.FishAudioStorage
+import com.example.chatbar.domain.voice.VoicePlaybackController
+import java.util.UUID
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
+
+internal class ReplyRemovalCoordinator(
+    private val storage: JsonFileStorage,
+    private val chat: ChatRepository,
+    private val voices: VoiceMessageRepository,
+    private val audio: FishAudioStorage,
+    private val images: NovelAiImageStorage,
+    private val playback: VoicePlaybackController
+) {
+    private val mutex = Mutex()
+
+    suspend fun remove(expected: ChatMessage, replacement: ChatMessage?, versionId: String?): String? = mutex.withLock {
+        require((replacement == null) == (versionId == null))
+        LocalDataMaintenance.access {
+            var removal: ReplyRemoval? = null
+            check(voices.prepareReplyRemoval(expected, versionId) { collectAudioPaths ->
+                chat.commitReplyRemoval(expected, replacement) {
+                    val pending = ReplyRemoval(
+                        id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
+                        versionId = versionId, role = expected.role, sourceTurnId = expected.sourceTurnId,
+                        sourceTurnOrder = expected.sourceTurnOrder, timelineTurn = expected.timelineTurn,
+                        images = if (replacement == null) expected.images else emptyList(),
+                        audioPaths = collectAudioPaths()
+                    )
+                    storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
+                    removal = pending
+                }
+            }) { "消息已变化，请重新操作" }
+            try {
+                finish(checkNotNull(removal))
+                null
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                "回复已删除，附件或语音文件清理失败，将在重新打开会话时重试"
+            }
+        }
+    }
+
+    suspend fun retryMessage(sessionId: String, messageId: String) = mutex.withLock {
+        LocalDataMaintenance.access {
+            val matching = pending().filter { it.sessionId == sessionId && it.messageId == messageId }
+            matching.forEach { finish(it) }
+            matching.isNotEmpty()
+        }
+    }
+
+    suspend fun resumePending(sessionId: String? = null) = mutex.withLock {
+        LocalDataMaintenance.access {
+            pending().filter { sessionId == null || it.sessionId == sessionId }.forEach { removal ->
+                try {
+                    finish(removal)
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    Log.w("ReplyRemoval", "Local cleanup is still pending")
+                }
+            }
+        }
+    }
+
+    private suspend fun pending(): List<ReplyRemoval> =
+        storage.queryUncached(STORE, ReplyRemoval.serializer()) { true }
+
+    private suspend fun finish(removal: ReplyRemoval) = withContext(Dispatchers.IO) {
+        val committed = voices.finishReplyRemoval(
+            removal, { cleanup -> chat.finishReplyRemoval(removal, cleanup) },
+            { ids -> if (playback.state.value.currentVoiceId in ids) playback.stop() },
+            audio::deleteIfOwned
+        )
+        if (committed && removal.images.isNotEmpty()) {
+            chat.deleteUnreferencedChatImages(removal.images) { path ->
+                check(images.deleteChatAttachmentIfOwned(path)) { "无法清理已删除回复的图片文件" }
+            }
+        }
+        storage.deleteEntityUncached(STORE, removal.id, requireSuccessfulDelete = true)
+        Unit
+    }
+
+    private companion object {
+        const val STORE = "pending_reply_removals"
+    }
+}

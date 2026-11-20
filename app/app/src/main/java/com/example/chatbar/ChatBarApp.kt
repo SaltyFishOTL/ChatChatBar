@@ -193,6 +193,8 @@ class ChatBarApp : Application() {
         private set
     lateinit var voicePlaybackController: VoicePlaybackController
         private set
+    internal lateinit var replyRemovalCoordinator: com.example.chatbar.domain.deletion.ReplyRemovalCoordinator
+        private set
     lateinit var qqVoiceTransferCoordinator: QqVoiceTransferCoordinator
         private set
     lateinit var qqVoiceGestureGateway: QqVoiceGestureGatewayRegistry
@@ -295,6 +297,9 @@ class ChatBarApp : Application() {
         fishAudioService = FishAudioService(fishAudioStorage)
         fishAudioTagService = FishAudioTagService(streamingChatService)
         voicePlaybackController = VoicePlaybackController(this)
+        replyRemovalCoordinator = com.example.chatbar.domain.deletion.ReplyRemovalCoordinator(
+            jsonFileStorage, chatRepository, voiceMessageRepository, fishAudioStorage, novelAiImageStorage, voicePlaybackController
+        )
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()
         val novelAiCodexJson = Json {
@@ -571,11 +576,16 @@ class ChatBarApp : Application() {
         ).run()
         settingsRepository.initialize()
         voiceMessageRepository.initialize()
+        replyRemovalCoordinator.resumePending()
         fishAudioStorage.cleanupPartialFiles()
         saveSlotPackageStorage.cleanupPartialFiles()
-        fishAudioStorage.cleanupOrphanFiles(
-            voiceMessageRepository.voices.value.mapTo(mutableSetOf()) { it.audioPath }
-        )
+        try {
+            voiceMessageRepository.withPersistedAudioPaths(fishAudioStorage::cleanupOrphanFiles)
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            Log.w(TAG, "Skipped orphan audio cleanup because ownership could not be verified")
+        }
         momentRepository.initialize()
         novelAiStudioRepository.initialize()
         novelAiDesignConversationRepository.initialize()

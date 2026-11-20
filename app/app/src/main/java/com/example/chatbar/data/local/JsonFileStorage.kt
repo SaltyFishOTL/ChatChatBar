@@ -35,6 +35,9 @@ import java.util.UUID
  * 单例文件: filesDir/entities/<entityType>.json
  */
 class JsonFileStorage(private val context: Context) {
+    internal fun retainRegisteredMedia(candidates: MutableSet<String>, types: Set<String>) =
+        com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(context.filesDir, candidates, types)
+
 
     data class FileSetSignature(
         val count: Int,
@@ -579,10 +582,7 @@ class JsonFileStorage(private val context: Context) {
     ) = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val file = entityFile(entityType, id)
-            val deleted = file.delete()
-            if (requireSuccess && !deleted && file.exists()) {
-                throw java.io.IOException("删除本地记录失败")
-            }
+            if (requireSuccess) Files.deleteIfExists(file.toPath()) else file.delete()
 
             // 更新缓存
             val flow = getCacheFlow<T>(entityType)

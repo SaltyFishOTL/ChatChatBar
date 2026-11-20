@@ -224,10 +224,15 @@ class FishAudioStorage(private val context: Context) {
             val referenced = referencedPaths.mapNotNullTo(mutableSetOf()) { path ->
                 runCatching { File(path).canonicalPath }.getOrNull()
             }
-            root.walkTopDown()
+            val candidates = root.walkTopDown()
                 .filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
-                .filterNot { runCatching { it.canonicalPath in referenced }.getOrDefault(false) }
-                .forEach(File::delete)
+                .map { it.canonicalPath }
+                .filterNot(referenced::contains)
+                .toMutableSet()
+            com.example.chatbar.domain.backup.BackupDataRegistry.retainReferencedMedia(
+                context.filesDir, candidates, setOf("save_slots")
+            )
+            candidates.forEach { File(it).delete() }
         }
     }
 

@@ -15,12 +15,14 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.toIndexEntry
 import com.example.chatbar.domain.chat.ChatMessageOrdering
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPlan
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPolicy
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import com.example.chatbar.domain.deletion.ReplyRemoval
 import java.io.File
 import java.io.IOException
 import java.util.UUID
@@ -735,6 +737,61 @@ class ChatRepository(private val storage: JsonFileStorage) {
             true
         }
 
+    internal suspend fun commitReplyRemoval(
+        expected: ChatMessage,
+        replacement: ChatMessage?,
+        prepare: suspend () -> Unit
+    ): Boolean = messageAppendMutex.withDataAccess {
+        if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
+        require(replacement == null || replacement.id == expected.id && replacement.sessionId == expected.sessionId)
+        prepare()
+        if (replacement == null) {
+            storage.deleteEntityUncached(
+                MESSAGE_TYPE, messageStorageId(expected.sessionId, expected.id), requireSuccessfulDelete = true
+            )
+        } else {
+            saveMessageRecord(replacement.copy(updatedAt = System.currentTimeMillis(), orderKey = expected.orderKey),
+                updateIndex = false)
+        }
+        true
+    }
+
+    /** Never replay the destructive write. Resume only when the original target is already absent. */
+    internal suspend fun finishReplyRemoval(removal: ReplyRemoval, cleanup: suspend () -> Unit): Boolean =
+        messageAppendMutex.withDataAccess {
+            val current = getMessage(removal.messageId, removal.sessionId)
+            val missing = current == null
+            if (missing) {
+                check(storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(removal.sessionId, removal.messageId))) {
+                    "暂时无法读取消息，附件清理将在重试时继续"
+                }
+            }
+            if (current != null && (removal.versionId == null ||
+                    MessageAlternativeVersionPolicy.versions(current).any { it.id == removal.versionId })) {
+                return@withDataAccess false
+            }
+            val index = loadMessageIndex(removal.sessionId)
+            val retained = index.entries.filterNot { it.messageId == removal.messageId }
+            if (current == null) {
+                if (removal.versionId == null) {
+                    updateMessageIndex(removal.sessionId, index) { retained }
+                    updateSessionAfterMessageDeletion(removal.sessionId, retained, removal.role,
+                        removal.sourceTurnId, removal.sourceTurnOrder, removal.timelineTurn)
+                }
+            } else {
+                val entries = (retained + current.toIndexEntry()).sortedWith(indexComparator)
+                updateMessageIndex(removal.sessionId, index) { entries }
+                if (entries.lastOrNull()?.messageId == current.id) {
+                    getSession(current.sessionId)?.let { session ->
+                        updateSession(session.copy(lastMessagePreview = current.previewText(),
+                            lastMessageTime = current.createdAt, lastMessageRole = current.role))
+                    }
+                }
+            }
+            cleanup()
+            true
+        }
+
     /** Restored messages and the chat background can refer to the same local file. */
     suspend fun deleteUnreferencedChatImages(paths: Collection<String>, deleteOwnedImage: (String) -> Unit) {
         val candidates = paths.map(::File).filter { it.isAbsolute }.mapTo(linkedSetOf()) { it.canonicalPath }
@@ -753,6 +810,11 @@ class ChatRepository(private val storage: JsonFileStorage) {
                         message.images.forEach(::retain)
                     }
                 }
+                storage.retainRegisteredMedia(candidates, setOf(
+                    "save_slots", "character_cards", "edit_drafts", "chat_drafts", "moment_posts",
+                    "novelai_generation_history", "novelai_studio_draft", "novelai_studio_history_undo",
+                    "novelai_studio_guidance_checkpoint", "novelai_design_conversations"
+                ))
                 candidates.forEach(deleteOwnedImage)
             }
         }
@@ -771,12 +833,22 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
         val remainingEntries = index.entries.filterNot { it.messageId == messageId }
         updateMessageIndex(sessionId, index) { remainingEntries }
+        updateSessionAfterMessageDeletion(sessionId, remainingEntries, removed?.role,
+            removed?.sourceTurnId, removed?.sourceTurnOrder, removed?.timelineTurn)
+    }
+
+    private suspend fun updateSessionAfterMessageDeletion(
+        sessionId: String,
+        remainingEntries: List<ChatMessageIndexEntry>,
+        removedRole: MessageRole?,
+        removedSourceId: String?,
+        removedSourceOrder: Long?,
+        removedLegacyTurn: Long?
+    ) {
         val latest = remainingEntries.lastOrNull()?.let { getMessage(it.messageId, sessionId) }
         getSession(sessionId)?.let { session ->
-            val removedSourceId = removed?.sourceTurnId
-            val removedSourceOrder = removed?.sourceTurnOrder
             val sourceTombstones = if (
-                removed?.role != MessageRole.SYSTEM &&
+                removedRole != MessageRole.SYSTEM &&
                 removedSourceId != null && removedSourceOrder != null &&
                 remainingEntries.none {
                     it.role != MessageRole.SYSTEM && it.sourceTurnId == removedSourceId
@@ -789,7 +861,6 @@ class ChatRepository(private val storage: JsonFileStorage) {
             } else {
                 session.sourceTurnTombstones
             }
-            val removedLegacyTurn = removed?.timelineTurn
             val legacyTombstones = if (
                 removedLegacyTurn != null && remainingEntries.none { it.timelineTurn == removedLegacyTurn }
             ) {

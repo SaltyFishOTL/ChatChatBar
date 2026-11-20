@@ -317,8 +317,8 @@ fun ChatScreen(
     var imageRegenerationBatchSizeInput by remember(sessionId) { mutableStateOf("1") }
     var deleteImageTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
     var deleteSegmentTarget by remember { mutableStateOf<ChatBubbleSegmentAction?>(null) }
-    var deleteMessageTargetId by remember { mutableStateOf<String?>(null) }
-    var deleteAlternativeTarget by remember { mutableStateOf<Pair<String, String>?>(null) }
+    var deleteMessageTarget by remember { mutableStateOf<ChatMessage?>(null) }
+    var deleteAlternativeTarget by remember { mutableStateOf<Pair<ChatMessage, String>?>(null) }
     val messageActionError by viewModel.messageActionError.collectAsState()
     var editingMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var editingText by remember { mutableStateOf(TextFieldValue("")) }
@@ -1784,24 +1784,23 @@ fun ChatScreen(
         CbDialog(onDismissRequest = viewModel::clearMessageActionError, title = "操作未完成",
             confirm = { CbButton("知道了", viewModel::clearMessageActionError) }) { CbText(error) }
     }
-    deleteAlternativeTarget?.let { (messageId, versionId) ->
-        val target = messages.find { it.id == messageId }
-        ReplyDeletionConfirmation(messageId, versionId,
-            hasOtherAlternatives = target?.alternatives?.size?.let { it > 1 } == true,
+    deleteAlternativeTarget?.let { (target, versionId) ->
+        ReplyDeletionConfirmation(target.id, versionId,
+            hasOtherAlternatives = target.alternatives.size > 1,
             onDismiss = { deleteAlternativeTarget = null },
             onDeleteAlternative = {
-                viewModel.deleteMessageAlternative(messageId, versionId)
+                viewModel.deleteMessageAlternative(target, versionId)
                 deleteAlternativeTarget = null
             },
             onDeleteWholeMessage = {
-                viewModel.deleteMessage(messageId)
+                viewModel.deleteMessage(target)
                 deleteAlternativeTarget = null
             })
     }
-    deleteMessageTargetId?.let { messageId ->
+    deleteMessageTarget?.let { target ->
         WholeMessageDeletionConfirmation(
-            onDismiss = { deleteMessageTargetId = null },
-            onDelete = { viewModel.deleteMessage(messageId); deleteMessageTargetId = null })
+            onDismiss = { deleteMessageTarget = null },
+            onDelete = { viewModel.deleteMessage(target); deleteMessageTarget = null })
     }
     actionSegment?.let { segment ->
         val target = messages.find { it.id == segment.messageId }
@@ -1851,8 +1850,8 @@ fun ChatScreen(
             SegmentMenuAction("删除", "删除消息或当前备选", AppIcons.Delete, enabled = target != null, destructive = true, onClick = {
                 target?.let {
                     if (it.role == MessageRole.ASSISTANT)
-                        deleteAlternativeTarget = it.id to MessageAlternativeVersionPolicy.activeVersionId(it)
-                    else deleteMessageTargetId = it.id
+                        deleteAlternativeTarget = it to MessageAlternativeVersionPolicy.activeVersionId(it)
+                    else deleteMessageTarget = it
                 }
                 actionSegment = null
             })
@@ -1968,8 +1967,8 @@ fun ChatScreen(
                 target?.let {
                     CbButton("删除", {
                         if (it.role == MessageRole.ASSISTANT)
-                            deleteAlternativeTarget = it.id to MessageAlternativeVersionPolicy.activeVersionId(it)
-                        else deleteMessageTargetId = it.id
+                            deleteAlternativeTarget = it to MessageAlternativeVersionPolicy.activeVersionId(it)
+                        else deleteMessageTarget = it
                         actionMessageId = null
                     }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
                 }

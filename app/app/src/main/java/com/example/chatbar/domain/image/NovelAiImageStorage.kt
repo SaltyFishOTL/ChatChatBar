@@ -34,6 +34,16 @@ class NovelAiImageStorage(private val context: Context) {
         }
     }
 
+    fun deleteChatAttachmentIfOwned(path: String): Boolean =
+        com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            val file = File(path).canonicalFile
+            val images = File(context.filesDir, "images").canonicalFile
+            val archives = File(images, "save_slots").canonicalPath + File.separator
+            val owned = file.path.startsWith(root.canonicalPath + File.separator) ||
+                file.path.startsWith(archives) || (file.parentFile == images && file.name.startsWith("chat_img_"))
+            !owned || !file.exists() || file.delete()
+        }
+
     fun deleteSession(sessionId: String): Boolean {
         return com.example.chatbar.domain.backup.LocalDataMaintenance.access {
             val directory = File(root, safeSegment(sessionId))

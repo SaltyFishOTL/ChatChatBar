@@ -299,22 +299,10 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             }
             withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
             val cancelledAfterDelete = CompletableDeferred<Unit>()
-            val releaseVoiceWrite = CompletableDeferred<Unit>()
-            val voiceWriteStarted = CompletableDeferred<Unit>()
             if (cancelAfterCommit) {
                 assertEquals(reply.displayContent, app.chatRepository.getSession(session.id)?.lastMessagePreview)
             }
-            // Hold the real voice repository lock until the message has committed and the VM has been cancelled.
-            val voiceWrite = if (cancelAfterCommit) launch(Dispatchers.Default) {
-                val rejected = runCatching {
-                    app.voiceMessageRepository.deleteForVersion(other, MessageAlternativeVersionPolicy.activeVersionId(other)) {
-                        voiceWriteStarted.complete(Unit)
-                        releaseVoiceWrite.await()
-                        false
-                    }
-                }
-                assertTrue(rejected.exceptionOrNull() is IllegalStateException)
-            } else null
+            // The session preview is published after the message commit and before voice cleanup.
             val watcher = if (cancelAfterCommit) launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
                 app.chatRepository.sessions.first { rows ->
                     rows.any { it.id == session.id && it.lastMessagePreview == other.displayContent }
@@ -323,7 +311,6 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 cancelledAfterDelete.complete(Unit)
             } else null
             try {
-                if (cancelAfterCommit) withTimeout(15_000) { voiceWriteStarted.await() }
                 withContext(Dispatchers.Main) {
                     if (viaSegmentEdit) {
                         vm.editMessageSegment(reply.id, 0, reply.displayContent.length, "")
@@ -333,8 +320,6 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                 }
                 if (cancelAfterCommit) {
                     withTimeout(15_000) { cancelledAfterDelete.await() }
-                    releaseVoiceWrite.complete(Unit)
-                    withTimeout(15_000) { voiceWrite?.join() }
                     // A backup started now must wait for any in-flight data mutation.
                     LocalDataMaintenance.acquire().close()
                 } else if (missing) {
@@ -347,7 +332,6 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                     } }
                 }
             } finally {
-                releaseVoiceWrite.complete(Unit)
                 watcher?.cancel()
             }
             val cold = VoiceMessageRepository(JsonFileStorage(app))
@@ -436,6 +420,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             app.characterRepository.delete(card.id)
             image.delete()
             audioDir.deleteRecursively()
+            app.replyRemovalCoordinator.resumePending(session.id)
             workspace.deleteRecursively()
         }
     }
