@@ -127,9 +127,13 @@ class ChatHistoryActionProjection private constructor(
 
         // Check code points directly so Android's ICU and the desktop JVM use the same rule.
         private fun hasMenuLetterWithHanContinuation(text: String, labels: Set<Char>): Boolean {
+            val lead = text.indexOfFirst { !it.isWhitespace() && it !in "「『（(“‘\"'" }
             for (index in text.indices) {
                 val letter = text[index].uppercaseChar()
                 if (letter !in 'A'..'T' || labels.none { it.equals(letter, ignoreCase = true) }) continue
+                // Other bare labels select when they lead the reply. Embedded names
+                // such as B站 keep their ordinary narrative meaning.
+                if (letter != 'A' && index != lead) continue
                 if (index > 0) {
                     val previous = Character.codePointBefore(text, index)
                     if (previous == '_'.code || Character.isDigit(previous) ||
