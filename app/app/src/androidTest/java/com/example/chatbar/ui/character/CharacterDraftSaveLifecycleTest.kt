@@ -215,15 +215,18 @@ class CharacterDraftSaveLifecycleTest {
         val vm = editor(card.id)
         val confirmed = CompletableDeferred<Unit>()
         var prematureSave = false
+        var prematureExit = false
         withContext(Dispatchers.Main) {
             // The document stage must return to Main to publish its file. Request
             // Save in the same turn, before the file is registered in the editor.
             vm.updateDocument(doc, "after.txt", "Confirmed replacement bytes") { confirmed.complete(Unit) }
             assertTrue(vm.isSaving.value)
             vm.saveCharacterCard({ prematureSave = true })
+            vm.saveDraftAndExit { prematureExit = true }
         }
         withTimeout(15_000) { confirmed.await() }
         assertFalse(prematureSave)
+        assertFalse(prematureExit)
         action { vm.saveDraftAndExit(it) }
         val draft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
         val staged = draft.characterPayload!!.customDocuments.single()

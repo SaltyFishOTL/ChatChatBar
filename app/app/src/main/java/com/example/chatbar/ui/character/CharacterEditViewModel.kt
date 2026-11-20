@@ -843,11 +843,22 @@ class CharacterEditViewModel(
     }
 
     fun saveDraftAndExit(onDone: () -> Unit) {
+        if (_isSaving.value || !draftReady || restoreDraft != null || isDraftCleanupPending) return
+        _isSaving.value = true
         viewModelScope.launch {
-            draftJob?.cancelAndJoin()
-            draftJob = null
-            if (hasUnsavedDraftChanges) saveDraftNow()
-            onDone()
+            try {
+                draftJob?.cancelAndJoin()
+                draftJob = null
+                if (hasUnsavedDraftChanges) saveDraftNow()
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _indexingStatus.value = "保存草稿失败：${error.message}"
+                return@launch
+            } finally {
+                _isSaving.value = false
+            }
+            if (!hasUnsavedDraftChanges) onDone()
         }
     }
 

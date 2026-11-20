@@ -335,6 +335,7 @@ fun CharacterEditScreen(
     }
 
     fun requestExit() {
+        if (viewModel.isSaving.value || viewModel.isDraftCleanupPending) return
         if (viewModel.hasLocalChanges) showExitDialog = true else onBack()
     }
 
