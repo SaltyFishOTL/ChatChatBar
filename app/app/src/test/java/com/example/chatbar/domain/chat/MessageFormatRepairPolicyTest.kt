@@ -178,6 +178,19 @@ class MessageFormatRepairPolicyTest {
         assertEquals("after", MessageFormatRepairPolicy.redoRepair(restored.copy(formatRepairNotice = kept))?.displayContent)
     }
 
+    @Test fun unchangedSuccessKeepsValidInactiveRedoWithoutDisplayingItOnTheSibling() {
+        val original = MessageAlternativeVersionPolicy.append(message(), "active before", "repair-owner")
+        val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(original, "fixed",
+            MessageFormatRepairPolicy.completedRepairNotice("active before", "fixed"))
+        val undone = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(repaired))
+        val sibling = MessageAlternativeVersionPolicy.select(undone, 0)
+        assertNull(MessageFormatRepairPolicy.applicableNotice(sibling))
+        val kept = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(sibling)
+        assertEquals(undone.formatRepairNotice, kept)
+        val reselected = MessageAlternativeVersionPolicy.select(sibling.copy(formatRepairNotice = kept), 1)
+        assertEquals("fixed", MessageFormatRepairPolicy.redoRepair(reselected)?.displayContent)
+    }
+
     @Test fun unchangedSuccessRejectsStaleVersionAndEditedText() {
         val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(message(), "after",
             MessageFormatRepairPolicy.completedRepairNotice(message().content, "after"))

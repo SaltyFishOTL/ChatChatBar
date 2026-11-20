@@ -11,12 +11,11 @@ import kotlin.math.abs
 object VoiceMessageVersionPolicy {
     fun visibleVoices(
         message: ChatMessage,
-        voices: List<GeneratedVoiceMessage>
-    ): List<GeneratedVoiceMessage> {
-        val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
-        return voices.filter {
-            it.sessionId == message.sessionId && it.messageId == message.id && it.messageVersionId == activeVersionId
-        }
+        voices: List<GeneratedVoiceMessage>,
+        version: MessageVersionSnapshot = MessageAlternativeVersionPolicy.activeVersion(message)
+    ): List<GeneratedVoiceMessage> = voices.filter { voice ->
+        voice.sessionId == message.sessionId && voice.messageId == message.id && voice.messageVersionId == version.id &&
+            (!voice.requiresCompatibleVersion || isCompatibleVersion(version, voice))
     }
 
     fun applyAnchorReplacements(
@@ -75,9 +74,10 @@ object VoiceMessageVersionPolicy {
     }
 
     internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
-        MessageAlternativeVersionPolicy.versions(message).singleOrNull { version ->
-            versionContainsVoice(version, voice, requireMatchingSpeaker = true)
-        }?.id
+        MessageAlternativeVersionPolicy.versions(message).singleOrNull { isCompatibleVersion(it, voice) }?.id
+
+    internal fun isCompatibleVersion(version: MessageVersionSnapshot, voice: GeneratedVoiceMessage): Boolean =
+        versionContainsVoice(version, voice, requireMatchingSpeaker = true)
 
     fun anchorIdForVoice(
         voice: GeneratedVoiceMessage,

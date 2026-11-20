@@ -162,6 +162,32 @@ class ReplyRemovalDurabilityTest {
         }
     }
 
+    @Test fun restrictedRecordingStaysDetachedFromEditedSameIdVersionAfterRestore() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val original = fixture.addReply(session, versionOnly = false)
+        val voice = fixture.addVoice(original).copy(versionOwnershipConfirmed = false,
+            requiresCompatibleVersion = true, anchorId = "original-anchor")
+        fixture.voices.save(voice)
+        assertEquals(listOf(voice.id), fixture.voices.listForCurrentVersion(original).map { it.id })
+        val changed = MessageAlternativeVersionPolicy.editCurrentContent(original, "Edited incompatible reply")
+        assertTrue(fixture.chats.updateMessageIfUnchanged(original, changed))
+        val persisted = requireNotNull(fixture.chats.getMessage(original.id, session.id))
+        assertEquals(voice.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(persisted))
+
+        for (legacySlot in listOf(true, false)) {
+            if (legacySlot) fixture.voices.restoreForSession(session.id, listOf(voice), listOf(persisted))
+            else fixture.voices.restoreForSession(session.id, listOf(voice))
+            val cold = Fixture(fixture.context, fixture.app)
+            val archived = cold.voices.listForSession(session.id).single()
+            assertNull(archived.anchorId)
+            assertEquals(voice.messageVersionId, archived.messageVersionId)
+            assertTrue(archived.requiresCompatibleVersion)
+            assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
+            assertTrue(cold.voices.placementsForMessage(original).isEmpty())
+            assertEquals("synthetic audio", File(archived.audioPath).readText())
+        }
+    }
+
     private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->
         val session = fixture.createSession()
         val message = fixture.addReply(session, versionOnly)

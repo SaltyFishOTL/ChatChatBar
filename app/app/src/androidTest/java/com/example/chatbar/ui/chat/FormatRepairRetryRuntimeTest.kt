@@ -31,6 +31,7 @@ class FormatRepairRetryRuntimeTest {
     @Test fun originalTextSuccessClearsPreviousFailure() = verifyRetry(false)
 
     @Test fun undoThenFailedAiRetryStillAllowsLocalRedo() = verifyRetry(true, keepRedo = true)
+    @Test fun inactiveRedoSurvivesSiblingFailureAndNoOp() = verifyRetry(true, keepRedo = true, repairSibling = true)
     @Test fun lateRepairSuccessCannotResurrectMessageAfterRestore() =
         verifyRetry(lateResponse = repairResponse("synthetic late repair"))
     @Test fun lateUnchangedResultCannotResurrectMessageAfterRestore() =
@@ -38,7 +39,8 @@ class FormatRepairRetryRuntimeTest {
     @Test fun lateRepairFailureCannotResurrectMessageAfterRestore() =
         verifyRetry(lateResponse = failureResponse())
 
-    private fun verifyRetry(marker: Boolean = false, keepRedo: Boolean = false, lateResponse: MockResponse? = null) = runBlocking<Unit> {
+    private fun verifyRetry(marker: Boolean = false, keepRedo: Boolean = false, lateResponse: MockResponse? = null,
+        repairSibling: Boolean = false) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
@@ -78,6 +80,10 @@ class FormatRepairRetryRuntimeTest {
                 withTimeout(15_000) { vm.messages.first { messages -> messages.any {
                     it.id == reply.id && it.formatRepairNotice?.restored == true } } }
             }
+            if (repairSibling) {
+                withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, -1) }
+                withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.currentAlternativeIndex == 0 } } }
+            }
             server.enqueue(failureResponse())
             suspend fun repair() {
                 withContext(Dispatchers.Main) { vm.repairMessageFormat(reply.id) }
@@ -93,9 +99,21 @@ class FormatRepairRetryRuntimeTest {
                 val notice = requireNotNull(failed.formatRepairNotice)
                 assertNotNull("Failed AI retry must retain the cached redo pair", notice.originalContent)
                 assertTrue(notice.restored)
-                assertEquals(baseReply.displayContent, failed.displayContent)
                 assertEquals("cached repaired result", notice.targetContent)
-                assertNotNull(notice.errorMessage)
+                if (repairSibling) {
+                    assertEquals("another candidate", failed.displayContent)
+                    assertNull(notice.errorMessage)
+                    assertNull(MessageFormatRepairPolicy.applicableNotice(failed))
+                    assertTrue(vm.messageActionError.value.orEmpty().contains("synthetic first failure"))
+                    server.enqueue(repairResponse(PromptTemplates.MESSAGE_FORMAT_REPAIR_UNCHANGED_MARKER))
+                    repair()
+                    assertEquals(notice, cold.getMessage(reply.id, session.id)?.formatRepairNotice)
+                    withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, 1) }
+                    withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.currentAlternativeIndex == 1 } } }
+                } else {
+                    assertEquals(baseReply.displayContent, failed.displayContent)
+                    assertNotNull(notice.errorMessage)
+                }
                 withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id) }
                 withTimeout(15_000) { vm.messages.first { messages -> messages.any {
                     it.id == reply.id && it.displayContent == "cached repaired result" && it.formatRepairNotice?.restored == false } } }
@@ -104,7 +122,7 @@ class FormatRepairRetryRuntimeTest {
                 assertNull(redone.formatRepairNotice?.errorMessage)
                 assertEquals(reply.alternativeVersionIds, redone.alternativeVersionIds)
                 assertEquals(other.content, cold.getMessage(other.id, session.id)?.content)
-                assertEquals("Local redo must not send a model request", 1, server.requestCount)
+                assertEquals("Local redo must not send a model request", if (repairSibling) 2 else 1, server.requestCount)
                 return@runBlocking
             }
             assertEquals(MessageFormatRepairNoticeKind.ERROR, failed.formatRepairNotice?.kind)

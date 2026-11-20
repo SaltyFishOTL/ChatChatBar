@@ -61,9 +61,19 @@ object MessageFormatRepairPolicy {
             ownerId == MessageAlternativeVersionPolicy.activeVersionId(message)
         }
 
-    /** A successful no-op clears failures, retaining only a usable local undo/redo pair. */
+    /** A successful no-op clears the current candidate's failure while retaining valid recovery data. */
     fun retainedNoticeAfterUnchangedSuccess(message: ChatMessage): MessageFormatRepairNotice? =
         applicableNotice(message)?.takeIf { it.originalContent != null }?.withoutAttemptError()
+            ?: inactiveRecoveryNotice(message)
+
+    internal fun inactiveRecoveryNotice(message: ChatMessage): MessageFormatRepairNotice? {
+        val notice = message.formatRepairNotice?.takeIf { it.originalContent != null } ?: return null
+        val checkpoint = if (notice.restored) notice.originalContent else notice.targetContent
+        val owner = MessageAlternativeVersionPolicy.versions(message).singleOrNull { version ->
+            version.content == checkpoint && (notice.versionId == null || notice.versionId == version.id)
+        } ?: return null
+        return notice.takeIf { owner.id != MessageAlternativeVersionPolicy.activeVersionId(message) }
+    }
 
     /** Attach the latest request error without replacing the selected version's recovery pair. */
     fun failedAttemptNotice(message: ChatMessage, error: String): MessageFormatRepairNotice =

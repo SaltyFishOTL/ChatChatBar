@@ -2432,6 +2432,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         automatic: Boolean,
         timelineRevision: Long
     ): ChatMessage? {
+        val inactiveRecovery = MessageFormatRepairPolicy.inactiveRecoveryNotice(message)
+        var attemptError: String? = null
         suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
             formatRepairCommitMutex.withLock {
                 if (!chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)) {
@@ -2443,11 +2445,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     refreshMemoryAfterMessageEdit(replacement)
                 }
                 if (unchanged) _messageFormatRepairEvents.tryEmit("格式无需修复")
+                attemptError?.let { _messageActionError.value = it }
                 replacement
             }
 
-        fun failure(error: String) =
-            message.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error))
+        fun failure(error: String): ChatMessage {
+            if (inactiveRecovery == null) {
+                return message.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error))
+            }
+            // The existing durable checkpoint belongs to a different reply version.
+            attemptError = error
+            return message
+        }
 
         val appSettings = settingsRepository.getAppSettings()
         val currentSession = chatRepository.getSession(sessionId) ?: return message
@@ -2543,7 +2552,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             original = originalContent,
                             repairedPrefix = repairedPrefix
                         )
-                        result = MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                        result = if (mixedContent == originalContent && inactiveRecovery != null) message
+                        else MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                             message = message,
                             replacement = mixedContent,
                             notice = MessageFormatRepairNotice(
@@ -4418,7 +4428,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       throw error
                   }
 
-                  val status = cleanupReplacedSaveSlotMedia(currentImages, currentVoices)
+                  val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
                   loadSessionData()
                   _saveSlotOperation.value = SaveSlotOperationState(status = status)
                 } catch (error: Throwable) {
@@ -4512,15 +4522,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
 
         }
-        val status = cleanupReplacedSaveSlotMedia(currentImages, currentVoices)
+        val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
         loadSessionData()
         return status
     }
 
-    private suspend fun cleanupReplacedSaveSlotMedia(
+    private suspend fun finishSaveSlotMediaCleanup(
         imagePaths: Collection<String>,
         voices: List<GeneratedVoiceMessage>
-    ): String {
+    ): String = withContext(NonCancellable) {
+        _saveSlotOperation.value = SaveSlotOperationState(true, "正在核对旧附件…", false)
         var complete = true
         try {
             chatRepository.deleteUnreferencedChatImages(imagePaths) { path ->
@@ -4541,7 +4552,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         } catch (_: Exception) {
             complete = false
         }
-        return if (complete) "读档完成。" else "读档完成，部分旧附件未清理。"
+        if (complete) "读档完成。" else "读档完成，部分旧附件未清理。"
     }
 
     /**
