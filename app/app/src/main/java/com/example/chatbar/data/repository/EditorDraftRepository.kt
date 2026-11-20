@@ -7,9 +7,12 @@ import com.example.chatbar.data.local.entity.EditorDraftMode
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.data.local.entity.FormatCard
 import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.domain.backup.LocalDataMaintenance
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.KSerializer
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -30,6 +33,7 @@ class EditorDraftRepository(
 
     private val _drafts = MutableStateFlow<List<EditorDraft>>(emptyList())
     val drafts: Flow<List<EditorDraft>> = _drafts.asStateFlow()
+    private val mutationMutex = Mutex()
 
     private var initialized = false
 
@@ -63,7 +67,20 @@ class EditorDraftRepository(
     suspend fun hasDraft(type: EditorDraftType, targetId: String): Boolean =
         getForTarget(type, targetId) != null
 
-    suspend fun save(draft: EditorDraft): EditorDraft {
+    suspend fun save(draft: EditorDraft): EditorDraft = mutationMutex.withLock {
+        write(draft)
+    }
+
+    suspend fun saveIfUnchanged(draft: EditorDraft, expected: EditorDraft): EditorDraft? = mutationMutex.withLock {
+        LocalDataMaintenance.access {
+            if (readStrict(expected.id) != expected) return@access null
+            val destination = draftId(draft.entityType, draft.targetId)
+            if (destination != expected.id && readStrict(destination) != null) return@access null
+            write(draft)
+        }
+    }
+
+    private suspend fun write(draft: EditorDraft): EditorDraft {
         val now = System.currentTimeMillis()
         val normalized = draft.copy(id = draftId(draft.entityType, draft.targetId), updatedAt = now)
         storage.saveEntity(ENTITY_TYPE, normalized.id, normalized, EditorDraft.serializer())
@@ -71,9 +88,27 @@ class EditorDraftRepository(
         return normalized
     }
 
-    suspend fun delete(id: String) {
-        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, id)
+    suspend fun delete(id: String, requireSuccess: Boolean = false) = mutationMutex.withLock {
+        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, id, requireSuccess)
         refreshCache()
+    }
+
+    suspend fun deleteIfUnchanged(draft: EditorDraft): Boolean = mutationMutex.withLock {
+        LocalDataMaintenance.access {
+            if (readStrict(draft.id) != draft) return@access false
+            storage.deleteEntity<EditorDraft>(ENTITY_TYPE, draft.id, requireSuccess = true)
+            refreshCache()
+            true
+        }
+    }
+
+    private suspend fun readStrict(id: String): EditorDraft? =
+        storage.loadEntity(ENTITY_TYPE, id, EditorDraft.serializer(), requireReadable = true)
+
+    suspend fun <T> withDraftsForAssetCleanup(cleanup: suspend (List<EditorDraft>) -> T): T = mutationMutex.withLock {
+        LocalDataMaintenance.access {
+            cleanup(storage.loadAll(ENTITY_TYPE, EditorDraft.serializer(), requireComplete = true))
+        }
     }
 
     suspend fun deleteForTarget(type: EditorDraftType, targetId: String?) {
@@ -142,6 +177,9 @@ class EditorDraftRepository(
 
     fun isChanged(base: CharacterCard?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && characterHash(base) != draft.baseHash
+
+    fun sameCharacterContent(left: CharacterCard, right: CharacterCard): Boolean =
+        characterHash(left) == characterHash(right)
 
     fun isChanged(base: FormatCard?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && hash(base, FormatCard.serializer()) != draft.baseHash
