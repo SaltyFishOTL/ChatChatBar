@@ -6,6 +6,17 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NarrativeHistoryEchoTest {
+    @Test fun markdownQuotesAreLiteralDuringPreviewCompletionAndStop() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val body = "段落。\n> > $closing\n\n继续正文。"
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n$closing", streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody("$opening\n$body\n$closing"))
+            assertEquals("> $closing", NarrativeHistoryEcho.replyBody("$opening\n> $closing"))
+            assertEquals("> </历史回", NarrativeHistoryEcho.replyBody("$opening\n> </历史回", interrupted = true))
+        }
+    }
     @Test fun interruptedTrailingMarkerStaysHiddenOnSave() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

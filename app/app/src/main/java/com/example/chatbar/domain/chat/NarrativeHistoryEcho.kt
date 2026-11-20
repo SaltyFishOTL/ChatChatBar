@@ -72,7 +72,7 @@ object NarrativeHistoryEcho {
             val position = match.range.first
             val quote = end.getOrNull(position - 1)
             val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
-            if (asciiQuoted || isEscaped(end, position) || literalRanges.any { position in it } ||
+            if (asciiQuoted || isMarkdownQuoteLine(end, position) || isEscaped(end, position) || literalRanges.any { position in it } ||
                 isIndentedCodeLine(end, position)
             ) continue
 
@@ -97,7 +97,8 @@ object NarrativeHistoryEcho {
             val aloneOnLine = end.substring(0, lastTag).substringAfterLast('\n').substringAfterLast('\r').isBlank()
             if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
-                !isEscaped(end, lastTag) && literalRanges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
+                !isMarkdownQuoteLine(end, lastTag) && !isEscaped(end, lastTag) &&
+                literalRanges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
             ) return end.substring(0, lastTag).trimEnd()
         }
         return body
@@ -142,8 +143,16 @@ object NarrativeHistoryEcho {
         return (position - preceding) % 2 != 0
     }
 
+    private fun lineStart(text: String, offset: Int): Int =
+        maxOf(text.lastIndexOf('\n', offset - 1), text.lastIndexOf('\r', offset - 1)) + 1
+
+    private fun isMarkdownQuoteLine(text: String, offset: Int): Boolean {
+        val start = lineStart(text, offset)
+        return MarkdownCodeFences.afterQuotePrefixes(text, start) > start
+    }
+
     private fun isIndentedCodeLine(text: String, offset: Int): Boolean {
-        val lineStart = maxOf(text.lastIndexOf('\n', offset - 1), text.lastIndexOf('\r', offset - 1)) + 1
+        val lineStart = lineStart(text, offset)
         val contentStart = MarkdownCodeFences.afterQuotePrefixes(text, lineStart)
         val indent = text.substring(contentStart.coerceAtMost(offset), offset).takeWhile { it == ' ' || it == '\t' }
         return indent.length >= 4 || '\t' in indent
