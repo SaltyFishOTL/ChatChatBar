@@ -27,8 +27,10 @@ import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.domain.memory.MemorySourceFingerprint
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.dropWhile
@@ -47,7 +49,7 @@ class ActionMemoryProjectionRuntimeTest {
     @Test
     fun firstMenuMutationWhileMemoryIsDisabledProtectsLegacyDataAndInvalidatesDependentChunks() = runBlocking {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
-        withTimeout(30_000) { app.dependenciesReady.first { it } }
+        awaitPhase("starting the app") { app.dependenciesReady.first { it } }
         val card = CharacterCard.create("synthetic-action-memory")
         app.characterRepository.save(card)
         try {
@@ -59,6 +61,7 @@ class ActionMemoryProjectionRuntimeTest {
     }
 
     private suspend fun verifyFirstMutation(app: ChatBarApp, cardId: String, deleteReply: Boolean) {
+        val action = if (deleteReply) "delete" else "edit"
         val session = ChatSession.create(cardId, "synthetic-action-memory").copy(longTermMemoryEnabled = false)
         val store = ViewModelStore()
         app.chatRepository.createSession(session)
@@ -108,7 +111,12 @@ class ActionMemoryProjectionRuntimeTest {
                 sourceId = session.id,
                 content = "选择衍生卡片",
                 embedding = listOf(1f),
-                metadata = mapOf(ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS to menu.id),
+                metadata = mapOf(
+                    "sessionId" to session.id,
+                    "indexMode" to ChatMemoryIndexPolicy.INDEX_MODE,
+                    "contentVersion" to ChatMemoryIndexPolicy.CONTENT_VERSION,
+                    ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS to menu.id,
+                ),
             )
             app.ragRepository.saveChunks(listOf(independent, dependent))
 
@@ -119,7 +127,9 @@ class ActionMemoryProjectionRuntimeTest {
                 }
                 ViewModelProvider(store, factory)[ChatViewModel::class.java]
             }
-            withTimeout(30_000) { vm.messages.first { messages -> messages.any { it.id == menu.id } } }
+            awaitPhase("loading the menu for $action") {
+                vm.messages.first { messages -> messages.any { it.id == menu.id } }
+            }
             assertFalse(requireNotNull(app.memoryRepository.getNode(reference.id)).actionProjectionWithheld)
             assertFalse(requireNotNull(app.memoryRepository.getState(session.id)).head.stale)
 
@@ -127,7 +137,7 @@ class ActionMemoryProjectionRuntimeTest {
             withContext(Dispatchers.Main) {
                 if (deleteReply) vm.deleteMessage(menu.id) else vm.editMessage(menu.id, replacement, emptyList())
             }
-            withTimeout(30_000) {
+            awaitPhase("removing the dependent index after menu $action") {
                 while (app.ragRepository.getAllChunksForSession(session.id).any { it.id == dependent.id }) delay(25)
             }
             val durableReply = app.chatRepository.getMessage(menu.id, session.id)
@@ -186,7 +196,7 @@ class ActionMemoryProjectionRuntimeTest {
         val oldPackage = createLegacyPackage(sessionId, oldSnapshot)
         app.saveSlotRepository.save(oldPackage)
         assertEquals(oldSnapshot, app.saveSlotRepository.getById(oldPackage.id)?.memorySnapshot)
-        loadPackage(app, vm, oldPackage.id)
+        loadPackage(app, vm, oldPackage.id, "same-session archive and HEAD")
 
         val fresh = MemoryRepository(JsonFileStorage(app))
         assertEquals(reference.copy(actionProjectionWithheld = true), fresh.getNode(reference.id))
@@ -201,7 +211,7 @@ class ActionMemoryProjectionRuntimeTest {
         )
         val localHeadOnly = createLegacyPackage(sessionId, headOnly)
         app.saveSlotRepository.save(localHeadOnly)
-        loadPackage(app, vm, localHeadOnly.id)
+        loadPackage(app, vm, localHeadOnly.id, "same-session HEAD only")
         assertEquals(MemoryHeadActionProjection.WITHHELD,
             MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head?.actionProjection)
 
@@ -211,21 +221,28 @@ class ActionMemoryProjectionRuntimeTest {
             app.saveSlotPackageStorage.export(external, bytes)
             val imported = vm.importSaveSlotJson(bytes.toByteArray().inputStream())
             assertEquals(sessionId, imported.sessionId)
-            loadPackage(app, vm, imported.id)
+            loadPackage(app, vm, imported.id, "imported foreign HEAD only")
             assertEquals(oldHead, MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head)
         } finally {
             app.saveSlotPackageStorage.delete(external)
         }
     }
 
-    private suspend fun loadPackage(app: ChatBarApp, vm: ChatViewModel, slotId: String) {
+    private suspend fun loadPackage(app: ChatBarApp, vm: ChatViewModel, slotId: String, description: String) {
         val summary = requireNotNull(app.saveSlotRepository.getSummaryById(slotId))
-        withTimeout(30_000) {
+        awaitPhase("restoring $description") {
             val result = async(start = CoroutineStart.UNDISPATCHED) {
                 vm.saveSlotOperation.dropWhile { !it.busy }.first { !it.busy }
             }
             withContext(Dispatchers.Main) { vm.loadSaveSlot(summary) }
-            assertEquals("读档完成。", result.await().status)
+            assertEquals(description, "读档完成。", result.await().status)
         }
     }
+
+    private suspend fun <T> awaitPhase(phase: String, block: suspend CoroutineScope.() -> T): T =
+        try {
+            withTimeout(30_000, block)
+        } catch (error: TimeoutCancellationException) {
+            throw AssertionError("Timed out while $phase", error)
+        }
 }
