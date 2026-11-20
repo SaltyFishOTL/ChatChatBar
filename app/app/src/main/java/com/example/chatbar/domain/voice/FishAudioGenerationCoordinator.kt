@@ -21,6 +21,7 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -31,6 +32,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
@@ -117,6 +119,7 @@ class FishAudioGenerationCoordinator(
     @Volatile
     private var foregroundSessionId: String? = null
     private val foregroundGeneration = AtomicLong(0L)
+    private val playbackRequest = AtomicLong(0L)
 
     private val _batches = MutableStateFlow<List<VoiceGenerationBatchState>>(emptyList())
     val batches: StateFlow<List<VoiceGenerationBatchState>> = _batches.asStateFlow()
@@ -211,11 +214,16 @@ class FishAudioGenerationCoordinator(
         )
         val job = scope.launch {
             try {
-                val existing = voiceRepository.get(voiceId) ?: error("语音消息不存在")
+                val record = voiceRepository.get(voiceId) ?: error("语音消息不存在")
                 updateBatch(batchId) {
-                    it.copy(sessionId = existing.sessionId, messageId = existing.messageId)
+                    it.copy(sessionId = record.sessionId, messageId = record.messageId)
                 }
-                val context = loadContext(existing.sessionId, existing.messageId)
+                val context = loadContext(record.sessionId, record.messageId)
+                if (record.messageVersionId.isNullOrBlank()) voiceRepository.ensureAnchors(context.message)
+                val existing = voiceRepository.get(voiceId) ?: error("语音消息不存在")
+                check(MessageAlternativeVersionPolicy.versions(context.message).any { it.id == existing.messageVersionId }) {
+                    "回复备选已删除"
+                }
                 val currentCharacter = VoiceGenerationPolicy.resolveRegenerationCharacter(
                     card = context.card,
                     characterId = existing.characterId
@@ -272,7 +280,9 @@ class FishAudioGenerationCoordinator(
                     updatedAt = System.currentTimeMillis()
                 )
                 try {
-                    voiceRepository.replace(replacement)
+                    voiceRepository.saveForExistingVersion(replacement, replacing = existing) {
+                        chatRepository.getMessage(replacement.messageId, replacement.sessionId)
+                    }
                 } catch (error: Throwable) {
                     storage.deleteIfOwned(audio.path)
                     throw error
@@ -367,20 +377,46 @@ class FishAudioGenerationCoordinator(
 
     fun playFrom(
         voice: GeneratedVoiceMessage,
-        orderedVisibleVoices: List<GeneratedVoiceMessage>
-    ) {
-        playback.stop()
+        orderedVisibleVoices: List<GeneratedVoiceMessage>,
+        mayStart: () -> Boolean = { true },
+    ): Job {
+        val request = playbackRequest.incrementAndGet()
         val sequence = VoicePlaybackQueuePolicy.sequenceFrom(voice, orderedVisibleVoices)
-        scope.launch {
-            clearAutoPlay()
-            playback.playSequence(sequence)
+        return scope.launch {
+            autoPlayMutex.withLock {
+                if (request != playbackRequest.get()) return@withLock
+                val playable = try {
+                    val following = voiceRepository.currentVoicesForPlayback(sequence.drop(1))
+                    val selected = voiceRepository.currentVoiceForPlayback(voice) ?: return@withLock
+                    listOf(selected) + following
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (_: Exception) {
+                    return@withLock
+                }
+                withContext(Dispatchers.Main.immediate) {
+                    if (request == playbackRequest.get() && mayStart()) {
+                        clearAutoPlayLocked()
+                        playback.playSequence(playable)
+                    }
+                }
+            }
         }
     }
 
     fun stopPlayback() {
+        playbackRequest.incrementAndGet()
         playback.stop()
         scope.launch {
             clearAutoPlay()
+        }
+    }
+
+    internal suspend fun stopPlaybackForRestore() {
+        playbackRequest.incrementAndGet()
+        autoPlayMutex.withLock {
+            clearAutoPlayLocked()
+            withContext(Dispatchers.Main.immediate) { playback.stop() }
         }
     }
 
@@ -729,7 +765,9 @@ class FishAudioGenerationCoordinator(
                 durationMs = audio.durationMs,
                 byteLength = audio.byteLength
             )
-            voiceRepository.save(voice)
+            voiceRepository.saveForExistingVersion(voice) {
+                chatRepository.getMessage(voice.messageId, voice.sessionId)
+            }
             TargetGenerationResult(target, voice = voice)
         } catch (error: Throwable) {
             storage.deleteIfOwned(audio.path)
@@ -750,11 +788,14 @@ class FishAudioGenerationCoordinator(
         val targetVersion = MessageAlternativeVersionPolicy.activeVersion(target.message)
         val currentVersion = MessageAlternativeVersionPolicy.versions(currentMessage)
             .firstOrNull { it.id == targetVersion.id }
-            ?: targetVersion
+            ?: error("回复备选已删除")
         val currentAnchors = voiceRepository.ensureAnchorsForVersion(
             message = currentMessage,
             messageVersionId = currentVersion.id,
-            content = currentVersion.content
+            content = currentVersion.content,
+            loadCurrentMessage = {
+                chatRepository.getMessage(target.message.id, target.message.sessionId)
+            }
         )
         currentAnchors.firstOrNull { it.anchor.id == target.anchorId }?.let { return it.anchor.id }
         return currentAnchors
@@ -914,26 +955,41 @@ class FishAudioGenerationCoordinator(
         }
     }
 
-    private fun drainAutoPlayLocked() {
-        while (true) {
+    private suspend fun drainAutoPlayLocked() {
+        val request = playbackRequest.get()
+        while (request == playbackRequest.get()) {
             val next = pendingAutoPlay.values.minWithOrNull(
                 compareBy<PendingAutoPlay>(PendingAutoPlay::messageOrder)
                     .thenBy(PendingAutoPlay::createdAt)
             ) ?: return
             if (!next.terminal) return
             pendingAutoPlay.remove(next.batchId)
-            val shouldPlay = next.voices?.isNotEmpty() == true &&
-                foregroundSessionId == next.sessionId &&
-                foregroundGeneration.get() == next.foregroundGeneration
-            if (shouldPlay) playback.enqueueSequence(checkNotNull(next.voices))
+            val voices = next.voices?.takeIf { it.isNotEmpty() } ?: continue
+            if (foregroundSessionId != next.sessionId || foregroundGeneration.get() != next.foregroundGeneration) continue
+            // A later completed batch can wait behind unfinished earlier audio while its reply changes.
+            try {
+                voiceRepository.withCurrentAutoPlayQueue(voices, chatRepository) { playable ->
+                    if (playable.isEmpty()) return@withCurrentAutoPlayQueue
+                    withContext(Dispatchers.Main.immediate) {
+                        if (request == playbackRequest.get() && foregroundSessionId == next.sessionId &&
+                            foregroundGeneration.get() == next.foregroundGeneration) {
+                            playback.enqueueSequence(playable)
+                        }
+                    }
+                }
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                continue
+            }
         }
     }
 
-    private suspend fun clearAutoPlay() {
-        autoPlayMutex.withLock {
-            foregroundGeneration.incrementAndGet()
-            pendingAutoPlay.clear()
-        }
+    private suspend fun clearAutoPlay() = autoPlayMutex.withLock { clearAutoPlayLocked() }
+
+    private fun clearAutoPlayLocked() {
+        foregroundGeneration.incrementAndGet()
+        pendingAutoPlay.clear()
     }
 
     private fun setBatch(state: VoiceGenerationBatchState) {

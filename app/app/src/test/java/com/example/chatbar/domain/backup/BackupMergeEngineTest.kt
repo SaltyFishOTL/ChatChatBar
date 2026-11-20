@@ -9,6 +9,8 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.encodeToString
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonObject
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -265,6 +267,105 @@ class BackupMergeEngineTest {
         assertEquals(original, backupJson.decodeFromString<ChatMessage>(File(local, "entities/chat_messages/session_message.json").readText()))
     }
 
+    @Test fun scopedReplacementKeepsUnselectedMomentImagePromptWithItsVersionBundle() {
+        checkMomentImageBundleRestore(includeImages = false)
+    }
+
+    @Test fun scopedReplacementWithImagesUsesIncomingMomentImagePromptAndVersions() {
+        checkMomentImageBundleRestore(includeImages = true)
+    }
+
+    @Test fun scopedReplacementLegacyLocalMomentWithoutPromptUsesEmptyDefault() {
+        checkMomentImageBundleRestore(includeImages = false, legacyLocal = true)
+    }
+
+    @Test fun scopedReplacementWithoutLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore(null, "")
+    @Test fun scopedReplacementBlankLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore("", "old prompt without image")
+    @Test fun scopedReplacementWhitespaceLocalMomentImageKeepsIncomingPrompt() = checkPromptOnlyMomentRestore("  ", "old prompt without image")
+
+    private fun checkPromptOnlyMomentRestore(localPath: String?, localPrompt: String) {
+        val local = temporary.newFolder()
+        val source = temporary.newFolder()
+        card(local, "card"); session(local, "session", "card")
+        card(source, "card"); session(source, "session", "card")
+        val old = MomentPost("post", "card", "session", senderName = "synthetic", text = "local text",
+            imagePath = localPath, imagePrompt = localPrompt, scheduledAt = 1, generatedAt = 2)
+        val localFile = write(local, "entities/moment_posts/post.json", backupJson.encodeToString(old))
+        val incomingPost = old.copy(text = "incoming text", imagePath = null, imagePrompt = "incoming prompt without image")
+        val sourceFile = write(source, "entities/moment_posts/post.json", backupJson.encodeToString(incomingPost))
+        val beforeLocal = localFile.readBytes(); val beforeSource = sourceFile.readBytes()
+        val selection = AppBackupSelection(characterIds = setOf("card"),
+            sessions = mapOf("session" to BackupSessionChoice(false, false, false)), moments = true, momentsImages = false)
+        val (staged, _) = merge(local, incoming(source, local, selection), AppBackupRestoreMode.REPLACE_ALL)
+        val restored = records<MomentPost>(staged, "moment_posts").single()
+        assertEquals("incoming prompt without image", restored.imagePrompt)
+        assertEquals("incoming text", restored.text)
+        assertEquals(localPath, restored.imagePath)
+        assertNull(restored.generatedImageMetadata)
+        assertTrue(restored.imageVersions.isEmpty())
+        assertArrayEquals(beforeLocal, localFile.readBytes()); assertArrayEquals(beforeSource, sourceFile.readBytes())
+    }
+
+    private fun checkMomentImageBundleRestore(includeImages: Boolean, legacyLocal: Boolean = false) {
+        val local = temporary.newFolder()
+        val source = temporary.newFolder()
+        card(local, "card"); session(local, "session", "card")
+        card(source, "card"); session(source, "session", "card")
+        val firstImage = asset(local, "images/generated/moments/local-first.png", 21)
+        val currentImage = asset(local, "images/generated/moments/local-current.png", 22)
+        val incomingImage = asset(source, "images/generated/moments/incoming.png", 23)
+        fun metadata(path: String, caption: String) = GeneratedImageMetadata(path, caption,
+            negativePrompt = "", sizePreset = "custom", width = 64, height = 64)
+        val currentMetadata = metadata(currentImage.path, "local caption")
+        val localPost = MomentPost("post", "card", "session", senderName = "synthetic sender", text = "local text",
+            imagePath = currentImage.path, imagePrompt = "local current prompt", generatedImageMetadata = currentMetadata,
+            imageBrief = "local brief", scheduledAt = 1, generatedAt = 2,
+            imageVersions = listOf(MomentImageVersion("first", firstImage.path, "local first prompt", metadata(firstImage.path, "first caption")),
+                MomentImageVersion("current", currentImage.path, "local current prompt", currentMetadata)))
+        val encodedLocal = backupJson.encodeToString(localPost)
+        val localJson = if (legacyLocal) JsonObject(backupJson.parseToJsonElement(encodedLocal).jsonObject -
+            setOf("imagePrompt", "imageVersions")).toString() else encodedLocal
+        val localFile = write(local, "entities/moment_posts/post.json", localJson)
+        val expectedLocal = backupJson.decodeFromString<MomentPost>(localJson)
+        val incomingPost = localPost.copy(text = "incoming text", imagePath = incomingImage.path,
+            imagePrompt = "incoming current prompt", imageBrief = "incoming brief",
+            generatedImageMetadata = metadata(incomingImage.path, "incoming caption"),
+            imageVersions = listOf(MomentImageVersion("incoming-version", incomingImage.path,
+                "incoming current prompt", metadata(incomingImage.path, "incoming caption"))))
+        val sourceFile = write(source, "entities/moment_posts/post.json", backupJson.encodeToString(incomingPost))
+        write(source, "entities/moment_posts/new-post.json", backupJson.encodeToString(incomingPost.copy(id = "new-post")))
+        val sourceBefore = sourceFile.readBytes()
+        val selection = AppBackupSelection(characterIds = setOf("card"),
+            sessions = mapOf("session" to BackupSessionChoice(false, false, false)),
+            moments = true, momentsImages = includeImages)
+        val (staged, _) = merge(local, incoming(source, local, selection), AppBackupRestoreMode.REPLACE_ALL)
+        val restored = records<MomentPost>(staged, "moment_posts").single { it.id == "post" }
+        assertEquals("incoming text", restored.text)
+        assertEquals("incoming brief", restored.imageBrief)
+        if (includeImages) {
+            assertEquals(incomingPost.imagePrompt, restored.imagePrompt)
+            assertNotEquals(expectedLocal.imagePath, restored.imagePath)
+            assertEquals(restored.imagePath, restored.generatedImageMetadata!!.imagePath)
+            assertEquals(restored.imagePath, restored.imageVersions.single().imagePath)
+            assertEquals(incomingPost.imagePrompt, restored.imageVersions.single().imagePrompt)
+            val preparedImage = File(staged, File(restored.imagePath!!).relativeTo(local).path)
+            assertArrayEquals(incomingImage.readBytes(), preparedImage.readBytes())
+        } else {
+            assertEquals(expectedLocal.imagePath, restored.imagePath)
+            assertEquals(expectedLocal.imagePrompt, restored.imagePrompt)
+            assertEquals(expectedLocal.generatedImageMetadata, restored.generatedImageMetadata)
+            assertEquals(expectedLocal.imageVersions, restored.imageVersions)
+        }
+        val newPost = records<MomentPost>(staged, "moment_posts").single { it.id == "new-post" }
+        assertEquals(incomingPost.imagePrompt, newPost.imagePrompt)
+        if (!includeImages) {
+            assertNull(newPost.imagePath); assertNull(newPost.generatedImageMetadata)
+            assertTrue(newPost.imageVersions.isEmpty())
+        }
+        assertEquals(localJson, localFile.readText())
+        assertArrayEquals(sourceBefore, sourceFile.readBytes())
+    }
+
     @Test fun scopedReplacementDistinguishesSelectedEmptyCollectionsFromUnselectedOnes() {
         for (selected in listOf(false, true)) {
             val local = temporary.newFolder()
@@ -449,5 +550,86 @@ class BackupMergeEngineTest {
                 { if (++active > 10) throw kotlinx.coroutines.CancellationException("synthetic cancel") }).build()
         }
         before.forEach { (path, bytes) -> assertArrayEquals(bytes, File(local, path).readBytes()) }
+    }
+
+    @Test fun copiedLiveMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("live")
+    @Test fun copiedInlineSaveMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("inline")
+    @Test fun copiedV8JsonlMessagesPreserveRepairIdentityAcrossLegacyMetadata() = copiedRepairIdentity("package")
+
+    private fun copiedRepairIdentity(carrier: String) {
+        for (variant in 0..3) for (restored in listOf(false, true)) {
+            val local = temporary.newFolder()
+            val source = temporary.newFolder()
+            card(source, "card")
+            session(source, "session", "card")
+            val base = ChatMessage(id = "legacy-message", sessionId = "session", role = MessageRole.ASSISTANT,
+                content = "after", alternatives = if (variant == 0) emptyList() else listOf("other", "after"),
+                alternativeVersionIds = when (variant) { 2 -> listOf("explicit-other"); 3 -> listOf("duplicate", "duplicate"); else -> emptyList() },
+                currentAlternativeIndex = if (variant == 0) 0 else 1,
+                currentAlternativeVersionId = if (variant == 2) "explicit-current" else null,
+                createdAt = 5, updatedAt = 6)
+            val active = com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.activeVersionId(base)
+            val notice = MessageFormatRepairNotice(kind = MessageFormatRepairNoticeKind.APPLIED,
+                originalContent = "before", targetContent = "after", versionId = active, restored = restored)
+            // Deliberately retain the old writer's implicit/partial IDs and put id last in JSON.
+            val original = base.copy(content = if (restored) "before" else "after",
+                alternatives = if (base.alternatives.isEmpty()) emptyList() else listOf("other", if (restored) "before" else "after"),
+                formatRepairNotice = notice)
+            val fields = backupJson.parseToJsonElement(backupJson.encodeToString(original)).jsonObject
+            val raw = JsonObject(fields.filterKeys { it != "id" } + ("id" to fields.getValue("id"))).toString()
+            val slot = SaveSlot(id = "slot", sessionId = "session", name = "synthetic", createdAt = 1,
+                schemaVersion = if (carrier == "package") 8 else 7,
+                packageRef = if (carrier == "package") SaveSlotPackageRef("slot.cbsave", messageCount = 2) else null)
+            when (carrier) {
+                "live" -> write(source, "entities/chat_messages/session_legacy-message.json", raw)
+                "inline" -> {
+                    val slotFields = backupJson.parseToJsonElement(backupJson.encodeToString(slot)).jsonObject
+                    write(source, "entities/save_slots/slot.json", JsonObject(slotFields + ("messages" to
+                        kotlinx.serialization.json.JsonArray(listOf(backupJson.parseToJsonElement(raw))))).toString())
+                }
+                else -> {
+                    val file = File(source, "save_slot_packages/slot.cbsave").also { it.parentFile!!.mkdirs() }
+                    val second = backupJson.encodeToString(ChatMessage(id = "second-message", sessionId = "session",
+                        role = MessageRole.USER, content = "independent", createdAt = 7, updatedAt = 8))
+                    ZipOutputStream(file.outputStream()).use { out ->
+                        fun put(name: String, text: String) { out.putNextEntry(ZipEntry(name)); out.write(text.toByteArray()); out.closeEntry() }
+                        put("manifest.json", backupJson.encodeToString(slot))
+                        put("messages.jsonl", raw + "\n" + second + "\n")
+                    }
+                    write(source, "entities/save_slots/slot.json", backupJson.encodeToString(slot.copy(
+                        packageRef = slot.packageRef!!.copy(byteLength = file.length()))))
+                }
+            }
+            val before = source.walkTopDown().filter(File::isFile).associate { it.relativeTo(source).path to it.readBytes().toList() }
+            val (staged, _) = merge(local, incoming(source, local), AppBackupRestoreMode.ADD_COPIES)
+            val copied = when (carrier) {
+                "live" -> records<ChatMessage>(staged, "chat_messages").single()
+                "inline" -> records<SaveSlot>(staged, "save_slots").single().messages.single()
+                else -> {
+                    val saved = records<SaveSlot>(staged, "save_slots").single()
+                    ZipFile(File(staged, "save_slot_packages/" + saved.packageRef!!.fileName)).use { zip ->
+                        val messages = zip.getInputStream(zip.getEntry("messages.jsonl")).bufferedReader().useLines { lines ->
+                            lines.filter(String::isNotBlank).map { backupJson.decodeFromString<ChatMessage>(it) }.toList() }
+                        assertEquals(2, messages.size)
+                        assertNotEquals(messages[0].currentAlternativeVersionId, messages[1].currentAlternativeVersionId)
+                        messages[0]
+                    }
+                }
+            }
+            assertNotEquals(original.id, copied.id)
+            assertEquals(active, com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy.activeVersionId(copied))
+            assertEquals(notice, copied.formatRepairNotice)
+            val policy = com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+            assertNotNull(policy.applicableNotice(copied))
+            val undone = if (restored) copied else requireNotNull(policy.restoreOriginal(copied))
+            assertEquals("before", undone.displayContent)
+            val redone = requireNotNull(policy.redoRepair(undone))
+            assertEquals("after", redone.displayContent)
+            assertEquals(copied.alternativeVersionIds, redone.alternativeVersionIds)
+            if (variant > 0) assertEquals("other", redone.alternatives.first())
+            assertNull(policy.applicableNotice(copied.copy(formatRepairNotice = notice.copy(versionId = "unrelated-stale-version"))))
+            assertEquals(before, source.walkTopDown().filter(File::isFile).associate { it.relativeTo(source).path to it.readBytes().toList() })
+            assertTrue(local.walkTopDown().none(File::isFile))
+        }
     }
 }

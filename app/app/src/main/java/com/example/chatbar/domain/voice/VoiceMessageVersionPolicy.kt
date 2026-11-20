@@ -11,12 +11,11 @@ import kotlin.math.abs
 object VoiceMessageVersionPolicy {
     fun visibleVoices(
         message: ChatMessage,
-        voices: List<GeneratedVoiceMessage>
-    ): List<GeneratedVoiceMessage> {
-        val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
-        return voices.filter {
-            it.messageId == message.id && it.messageVersionId == activeVersionId
-        }
+        voices: List<GeneratedVoiceMessage>,
+        version: MessageVersionSnapshot = MessageAlternativeVersionPolicy.activeVersion(message)
+    ): List<GeneratedVoiceMessage> = voices.filter { voice ->
+        voice.sessionId == message.sessionId && voice.messageId == message.id && voice.messageVersionId == version.id &&
+            (!voice.requiresCompatibleVersion || isCompatibleVersion(version, voice))
     }
 
     fun applyAnchorReplacements(
@@ -74,6 +73,12 @@ object VoiceMessageVersionPolicy {
         }
     }
 
+    internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
+        MessageAlternativeVersionPolicy.versions(message).singleOrNull { isCompatibleVersion(it, voice) }?.id
+
+    internal fun isCompatibleVersion(version: MessageVersionSnapshot, voice: GeneratedVoiceMessage): Boolean =
+        versionContainsVoice(version, voice, requireMatchingSpeaker = true)
+
     fun anchorIdForVoice(
         voice: GeneratedVoiceMessage,
         state: VoiceAnchorState
@@ -99,7 +104,8 @@ object VoiceMessageVersionPolicy {
 
     private fun versionContainsVoice(
         version: MessageVersionSnapshot,
-        voice: GeneratedVoiceMessage
+        voice: GeneratedVoiceMessage,
+        requireMatchingSpeaker: Boolean = false
     ): Boolean {
         if (voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) {
             return (
@@ -113,6 +119,7 @@ object VoiceMessageVersionPolicy {
             includeNarration = true
         ).any { segment ->
             segment.kind.name == voice.sourceSegmentKind &&
+                (!requireMatchingSpeaker || normalize(segment.speakerName.orEmpty()) == normalize(voice.sourceSpeakerName)) &&
                 normalize(segment.spokenText) == normalize(voice.sourceText)
         }
     }

@@ -22,7 +22,7 @@ data class GeneratedVoiceMessage(
     val id: String,
     val sessionId: String,
     val messageId: String,
-    /** 所属消息版本；旧记录为空时由仓库按锚点与源文本懒迁移。 */
+    /** 显示时选择的消息版本；旧记录可能由锚点与源文本推断。 */
     val messageVersionId: String? = null,
     val anchorId: String? = null,
     val sourceOrder: Long,
@@ -40,7 +40,11 @@ data class GeneratedVoiceMessage(
     val durationMs: Long,
     val byteLength: Long,
     val createdAt: Long,
-    val updatedAt: Long
+    val updatedAt: Long,
+    /** 只有生成时记录的版本才可用于随备选删除语音。 */
+    val versionOwnershipConfirmed: Boolean = false,
+    /** 被删备选的旧录音只可在找到相容版本后重新显示。 */
+    val requiresCompatibleVersion: Boolean = false
 ) {
     val effectiveSynthesisText: String
         get() = synthesisText ?: sourceText
@@ -71,6 +75,7 @@ data class GeneratedVoiceMessage(
                 sessionId = sessionId,
                 messageId = messageId,
                 messageVersionId = messageVersionId,
+                versionOwnershipConfirmed = !messageVersionId.isNullOrBlank(),
                 anchorId = anchorId,
                 sourceOrder = sourceOrder,
                 sourceSegmentKind = sourceSegmentKind,

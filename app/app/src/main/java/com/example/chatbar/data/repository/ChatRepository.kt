@@ -15,12 +15,15 @@ import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.toIndexEntry
 import com.example.chatbar.domain.chat.ChatMessageOrdering
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPlan
 import com.example.chatbar.domain.chat.ChatMessageOrderRepairPolicy
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.SessionDisplayTitlePolicy
 import com.example.chatbar.domain.chat.TimelineTurnPolicy
 import com.example.chatbar.domain.chat.renameRoleplaySpeakerMarkers
+import com.example.chatbar.domain.deletion.ReplyRemoval
+import java.io.IOException
 import java.util.UUID
 import java.util.concurrent.ConcurrentHashMap
 import kotlinx.coroutines.flow.Flow
@@ -52,6 +55,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private var initialized = false
     private val messageAppendMutex = Mutex()
+    private val messageTimelineRevisions = mutableMapOf<String, Long>()
     private val messageIndexMutex = Mutex()
     private val messageIndexes = ConcurrentHashMap<String, ChatMessageIndex>()
     private val scrollPositionMutex = Mutex()
@@ -594,6 +598,30 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withDataAccess {
+        updateMessageLocked(message)
+    }
+
+    internal suspend fun messageTimelineRevision(sessionId: String): Long =
+        messageAppendMutex.withDataAccess { messageTimelineRevisions[sessionId] ?: 0L }
+
+    internal suspend fun withStableMessagesForPlayback(admit: suspend () -> Unit) =
+        messageAppendMutex.withDataAccess { admit() }
+
+    suspend fun updateMessageIfUnchanged(
+        expected: ChatMessage,
+        replacement: ChatMessage,
+        expectedTimelineRevision: Long? = null
+    ): Boolean = messageAppendMutex.withDataAccess {
+        require(expected.id == replacement.id && expected.sessionId == replacement.sessionId)
+        if (expectedTimelineRevision != null &&
+            expectedTimelineRevision != (messageTimelineRevisions[expected.sessionId] ?: 0L)
+        ) return@withDataAccess false
+        if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
+        updateMessageLocked(replacement)
+        true
+    }
+
+    private suspend fun updateMessageLocked(message: ChatMessage): ChatMessage {
         val persisted = getMessage(message.id, message.sessionId)
         val updated = message.copy(
             updatedAt = System.currentTimeMillis(),
@@ -613,6 +641,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 )
             }
         }
+        return updated
     }
 
     private suspend fun latestMessage(sessionId: String): ChatMessage? {
@@ -703,17 +732,124 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun deleteMessage(messageId: String, sessionId: String) = messageAppendMutex.withDataAccess {
+        deleteMessageLocked(messageId, sessionId)
+    }
+
+    /** A stale action cannot erase an edited or restored message. */
+    suspend fun deleteMessageIfUnchanged(expected: ChatMessage): Boolean =
+        deleteMessageIfUnchanged(expected.id, expected.sessionId, expected)
+
+    suspend fun deleteMessageIfUnchanged(messageId: String, sessionId: String, expected: ChatMessage?): Boolean =
+        messageAppendMutex.withDataAccess {
+            val unchanged = if (expected == null) {
+                storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
+            } else {
+                getMessage(messageId, sessionId) == expected
+            }
+            if (!unchanged) return@withDataAccess false
+            deleteMessageLocked(messageId, sessionId, repairMissingEntryOnly = expected == null)
+            true
+        }
+
+    internal suspend fun commitReplyRemoval(
+        expected: ChatMessage,
+        replacement: ChatMessage?,
+        prepare: suspend () -> Unit
+    ): Boolean = messageAppendMutex.withDataAccess {
+        if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
+        require(replacement == null || replacement.id == expected.id && replacement.sessionId == expected.sessionId)
+        prepare()
+        if (replacement == null) {
+            storage.deleteEntityUncached(
+                MESSAGE_TYPE, messageStorageId(expected.sessionId, expected.id), requireSuccessfulDelete = true
+            )
+        } else {
+            saveMessageRecord(replacement.copy(updatedAt = System.currentTimeMillis(), orderKey = expected.orderKey),
+                updateIndex = false)
+        }
+        true
+    }
+
+    /** Never replay the destructive write. Resume only when the original target is already absent. */
+    internal suspend fun finishReplyRemoval(removal: ReplyRemoval, cleanup: suspend () -> Unit): Boolean =
+        messageAppendMutex.withDataAccess {
+            val current = getMessage(removal.messageId, removal.sessionId)
+            val missing = current == null
+            if (missing) {
+                check(storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(removal.sessionId, removal.messageId))) {
+                    "暂时无法读取消息，附件清理将在重试时继续"
+                }
+            }
+            if (current != null && (removal.versionId == null ||
+                    MessageAlternativeVersionPolicy.versions(current).any { it.id == removal.versionId })) {
+                return@withDataAccess false
+            }
+            val index = loadMessageIndex(removal.sessionId)
+            val retained = index.entries.filterNot { it.messageId == removal.messageId }
+            if (current == null) {
+                if (removal.versionId == null) {
+                    updateMessageIndex(removal.sessionId, index) { retained }
+                    updateSessionAfterMessageDeletion(removal.sessionId, retained, removal.role,
+                        removal.sourceTurnId, removal.sourceTurnOrder, removal.timelineTurn)
+                }
+            } else {
+                val entries = (retained + current.toIndexEntry()).sortedWith(indexComparator)
+                updateMessageIndex(removal.sessionId, index) { entries }
+                if (entries.lastOrNull()?.messageId == current.id) {
+                    getSession(current.sessionId)?.let { session ->
+                        updateSession(session.copy(lastMessagePreview = current.previewText(),
+                            lastMessageTime = current.createdAt, lastMessageRole = current.role))
+                    }
+                }
+            }
+            cleanup()
+            true
+        }
+
+    /** Restored messages and the chat background can refer to the same local file. */
+    suspend fun deleteUnreferencedChatImages(paths: Collection<String>, deleteOwnedImage: (String) -> Unit) {
+        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
+        if (candidates.isEmpty()) return
+        messageAppendMutex.withDataAccess {
+            sessionSettingsMutex.withDataAccess {
+                storage.deleteUnreferencedRegisteredMedia(candidates, setOf(
+                    MESSAGE_TYPE, SESSION_TYPE, "save_slots", "character_cards", "edit_drafts", "chat_drafts", "moment_posts",
+                    "novelai_generation_history", "novelai_studio_draft", "novelai_studio_history_undo",
+                    "novelai_studio_guidance_checkpoint", "novelai_design_conversations"
+                ), deleteOwnedImage)
+            }
+        }
+    }
+
+    private suspend fun deleteMessageLocked(messageId: String, sessionId: String, repairMissingEntryOnly: Boolean = false) {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
-        storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
+        if (removed == null && index.entries.none { it.messageId == messageId }) return
+        if (!repairMissingEntryOnly) {
+            try {
+                storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId), requireSuccessfulDelete = true)
+            } catch (error: IOException) {
+                throw IllegalStateException("未能删除消息文件，请稍后重试", error)
+            }
+        }
         val remainingEntries = index.entries.filterNot { it.messageId == messageId }
         updateMessageIndex(sessionId, index) { remainingEntries }
+        updateSessionAfterMessageDeletion(sessionId, remainingEntries, removed?.role,
+            removed?.sourceTurnId, removed?.sourceTurnOrder, removed?.timelineTurn)
+    }
+
+    private suspend fun updateSessionAfterMessageDeletion(
+        sessionId: String,
+        remainingEntries: List<ChatMessageIndexEntry>,
+        removedRole: MessageRole?,
+        removedSourceId: String?,
+        removedSourceOrder: Long?,
+        removedLegacyTurn: Long?
+    ) {
         val latest = remainingEntries.lastOrNull()?.let { getMessage(it.messageId, sessionId) }
         getSession(sessionId)?.let { session ->
-            val removedSourceId = removed?.sourceTurnId
-            val removedSourceOrder = removed?.sourceTurnOrder
             val sourceTombstones = if (
-                removed?.role != MessageRole.SYSTEM &&
+                removedRole != MessageRole.SYSTEM &&
                 removedSourceId != null && removedSourceOrder != null &&
                 remainingEntries.none {
                     it.role != MessageRole.SYSTEM && it.sourceTurnId == removedSourceId
@@ -726,7 +862,6 @@ class ChatRepository(private val storage: JsonFileStorage) {
             } else {
                 session.sourceTurnTombstones
             }
-            val removedLegacyTurn = removed?.timelineTurn
             val legacyTombstones = if (
                 removedLegacyTurn != null && remainingEntries.none { it.timelineTurn == removedLegacyTurn }
             ) {
@@ -755,11 +890,12 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     /** 批量替换会话消息，避免逐条更新会话预览与反复全量加载。 */
-    suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) {
+    suspend fun replaceMessagesForSession(sessionId: String, messages: List<ChatMessage>) = messageAppendMutex.withDataAccess {
         val entities = messages.associate { message ->
             val normalized = if (message.sessionId == sessionId) message else message.copy(sessionId = sessionId)
             messageStorageId(sessionId, normalized.id) to normalized
         }
+        invalidateMessageTimeline(sessionId)
         deleteMessagesForSession(sessionId)
         deleteScrollPosition(sessionId)
         storage.saveAllUncached(MESSAGE_TYPE, entities, ChatMessage.serializer())
@@ -793,6 +929,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         var latest: ChatMessage? = null
         var maxSourceOrder = 0L
         var maxTimelineTurn = 0L
+        invalidateMessageTimeline(sessionId)
         storage.replaceByIdPrefixStreamingUncached(
             entityType = MESSAGE_TYPE,
             prefix = "${sessionId}_",
@@ -829,6 +966,10 @@ class ChatRepository(private val storage: JsonFileStorage) {
                 )
             )
         }
+    }
+
+    private fun invalidateMessageTimeline(sessionId: String) {
+        messageTimelineRevisions[sessionId] = (messageTimelineRevisions[sessionId] ?: 0L) + 1L
     }
 
     /** 旧消息首次使用时补稳定source turn；不改消息ID、时间、orderKey。 */

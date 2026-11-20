@@ -91,11 +91,11 @@ object BackupDataRegistry {
         }
     }
 
-    internal fun entityFiles(directory: File): Sequence<File> = sequence {
+    internal fun entityFiles(directory: File, types: Set<String> = entitySerializers.keys): Sequence<File> = sequence {
         val parent = File(directory, "entities")
         if (!parent.exists()) return@sequence
         checkedDirectory(directory, parent)
-        for (type in entitySerializers.keys) {
+        for (type in types) {
             val singleton = File(parent, "$type.json")
             if (singleton.exists()) {
                 require(singleton.isFile) { "用户数据文件损坏：entities/$type.json" }
@@ -113,6 +113,30 @@ object BackupDataRegistry {
                 target(directory, relative)
                 yield(file)
             }
+        }
+    }
+
+    /** Read the same durable resource fields as export, including old archive path references. */
+    internal fun retainReferencedMedia(directory: File, candidates: MutableSet<String>, types: Set<String>) {
+        if (candidates.isEmpty()) return
+        for (file in entityFiles(directory, types)) {
+            file.strictUtf8Reader().use { reader ->
+                BackupJsonStream(reader, BackupMergeCatalog.discardWriter) { path, _ ->
+                    canonicalLocalMediaPath(directory, path)?.let(candidates::remove)
+                    path
+                }.copy()
+            }
+            if (candidates.isEmpty()) return
+        }
+    }
+
+    internal fun canonicalLocalMediaPath(directory: File, path: String): String? {
+        val file = File(path)
+        return when {
+            path.startsWith("file:") -> File(java.net.URI(path)).canonicalPath
+            file.isAbsolute -> file.canonicalPath
+            path.substringBefore('/') in roots && '/' in path -> target(directory, path).canonicalPath
+            else -> null
         }
     }
 

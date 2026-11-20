@@ -2,6 +2,7 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -10,6 +11,8 @@ data class MessageVersionSnapshot(
     val content: String,
     val narrativeMode: ChatNarrativeMode? = ChatNarrativeMode.FOCUS
 )
+
+data class MessageVersionIdentity(val alternativeVersionIds: List<String>, val currentAlternativeVersionId: String)
 
 object MessageAlternativeVersionPolicy {
     fun newVersionId(
@@ -67,6 +70,16 @@ object MessageAlternativeVersionPolicy {
 
     fun activeVersionId(message: ChatMessage): String = activeVersion(message).id
 
+    private fun MessageFormatRepairNotice.checkpointContent(): String? =
+        if (restored) originalContent else targetContent
+
+    private fun linkedRepairNotice(message: ChatMessage, versions: List<MessageVersionSnapshot>): MessageFormatRepairNotice? {
+        val notice = message.formatRepairNotice ?: return null
+        if (notice.versionId != null) return notice
+        val owner = versions.singleOrNull { it.content == notice.checkpointContent() } ?: return null
+        return notice.copy(versionId = owner.id)
+    }
+
     fun normalize(message: ChatMessage): ChatMessage {
         val active = activeVersion(message)
         return message.copy(
@@ -89,7 +102,7 @@ object MessageAlternativeVersionPolicy {
         message: ChatMessage,
         content: String,
         newVersionId: String,
-        maxVersions: Int = 5,
+        maxVersions: Int = Int.MAX_VALUE,
         updatedAt: Long = System.currentTimeMillis(),
         narrativeMode: ChatNarrativeMode? = message.narrativeMode
     ): ChatMessage {
@@ -112,6 +125,33 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = newVersionId,
             narrativeMode = narrativeMode,
             alternativeNarrativeModes = retained.map(MessageVersionSnapshot::narrativeMode),
+            formatRepairNotice = linkedRepairNotice(message, existing)?.takeIf { notice ->
+                retained.any { it.id == notice.versionId }
+            },
+            updatedAt = updatedAt
+        )
+    }
+
+    /** Removes one stable version; shared message media and surviving version identities are unchanged. */
+    fun remove(message: ChatMessage, versionId: String, updatedAt: Long = System.currentTimeMillis()): ChatMessage? {
+        val all = versions(message)
+        val removedIndex = all.indexOfFirst { it.id == versionId }
+        require(removedIndex >= 0) { "消息版本不存在" }
+        val retained = all.filterNot { it.id == versionId }
+        if (retained.isEmpty()) return null
+        val activeId = activeVersionId(message)
+        val selectedIndex = retained.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }
+            ?: removedIndex.coerceAtMost(retained.lastIndex)
+        val selected = retained[selectedIndex]
+        return message.copy(
+            content = selected.content,
+            alternatives = retained.map { it.content },
+            alternativeVersionIds = retained.map { it.id },
+            currentAlternativeIndex = selectedIndex,
+            currentAlternativeVersionId = selected.id,
+            narrativeMode = selected.narrativeMode,
+            alternativeNarrativeModes = retained.map { it.narrativeMode },
+            formatRepairNotice = linkedRepairNotice(message, all)?.takeUnless { it.versionId == versionId },
             updatedAt = updatedAt
         )
     }
@@ -132,6 +172,7 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = versions.map(MessageVersionSnapshot::narrativeMode),
+            formatRepairNotice = linkedRepairNotice(message, versions),
             updatedAt = updatedAt
         )
     }
@@ -146,25 +187,37 @@ object MessageAlternativeVersionPolicy {
             alternatives = message.alternatives.mapIndexed { index, previous ->
                 if (index == message.currentAlternativeIndex) content else previous
             },
+            formatRepairNotice = linkedRepairNotice(message, versions(message)),
             updatedAt = updatedAt
         )
     }
 
-    private fun alignedVersionIds(message: ChatMessage): List<String> {
+    private fun alignedVersionIds(message: ChatMessage): List<String> = identity(
+        message.id, message.alternatives.size, message.alternativeVersionIds,
+        message.currentAlternativeIndex, message.currentAlternativeVersionId
+    ).alternativeVersionIds
+
+    /** Metadata-only identity resolution, also used before backup message IDs are remapped. */
+    fun identity(
+        messageId: String,
+        alternativeCount: Int,
+        explicitIds: List<String>,
+        currentIndex: Int,
+        currentId: String?
+    ): MessageVersionIdentity {
+        require(alternativeCount >= 0)
         val used = mutableSetOf<String>()
-        return message.alternatives.indices.map { index ->
-            val preferred = message.alternativeVersionIds.getOrNull(index)
-                ?.takeIf(String::isNotBlank)
-                ?: message.currentAlternativeVersionId
-                    ?.takeIf { index == message.currentAlternativeIndex && it.isNotBlank() }
-                ?: legacyVersionId(message.id, index)
+        val ids = (0 until alternativeCount).map { index ->
+            val preferred = explicitIds.getOrNull(index)?.takeIf(String::isNotBlank)
+                ?: currentId?.takeIf { index == currentIndex && it.isNotBlank() }
+                ?: legacyVersionId(messageId, index)
             var candidate = preferred
             var collisionIndex = 0
-            while (!used.add(candidate)) {
-                candidate = legacyVersionId(message.id, index, collisionIndex++)
-            }
+            while (!used.add(candidate)) candidate = legacyVersionId(messageId, index, collisionIndex++)
             candidate
         }
+        return MessageVersionIdentity(ids, ids.getOrNull(currentIndex)
+            ?: currentId?.takeIf(String::isNotBlank) ?: messageId)
     }
 
     private fun legacyVersionId(

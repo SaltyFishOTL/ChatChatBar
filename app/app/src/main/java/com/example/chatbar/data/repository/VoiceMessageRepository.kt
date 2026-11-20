@@ -6,6 +6,8 @@ import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.VoiceAnchor
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
+import com.example.chatbar.domain.chat.MessageVersionSnapshot
+import com.example.chatbar.domain.deletion.ReplyRemoval
 import com.example.chatbar.domain.voice.CurrentVoiceSegment
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
@@ -28,13 +30,16 @@ data class VoiceMessagePlacement(
     val segmentIndex: Int?
 )
 
+private data class VoiceVersionAnchors(val version: MessageVersionSnapshot, val anchors: List<VoiceSegmentAnchor>)
+
 private data class VoiceAnchorStateKey(
     val messageId: String,
     val messageVersionId: String?
 )
 
 class VoiceMessageRepository(
-    private val storage: JsonFileStorage
+    private val storage: JsonFileStorage,
+    private val loadCurrentMessage: (suspend (String, String) -> ChatMessage?)? = null
 ) {
     private val mutex = Mutex()
     private val _voices = MutableStateFlow<List<GeneratedVoiceMessage>>(emptyList())
@@ -84,31 +89,92 @@ class VoiceMessageRepository(
         }
     }
 
+    internal suspend fun currentVoiceForPlayback(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? =
+        currentVoicesForPlayback(listOf(captured)).singleOrNull()
+
+    internal suspend fun currentVoicesForPlayback(captured: List<GeneratedVoiceMessage>): List<GeneratedVoiceMessage> =
+        mutex.withLock {
+            ensureInitializedLocked()
+            captured.mapNotNull { currentVoiceForPlaybackLocked(it) }
+        }
+
+    internal suspend fun withCurrentAutoPlayQueue(
+        captured: List<GeneratedVoiceMessage>,
+        chats: ChatRepository,
+        enqueue: suspend (List<GeneratedVoiceMessage>) -> Unit,
+    ) = mutex.withLock {
+        ensureInitializedLocked()
+        // Use the same voice-to-message lock order as reply removal for validation and handoff.
+        chats.withStableMessagesForPlayback {
+            enqueue(captured.mapNotNull { currentVoiceForPlaybackLocked(it, requireActiveVersion = true) })
+        }
+    }
+
+    private suspend fun currentVoiceForPlaybackLocked(
+        captured: GeneratedVoiceMessage,
+        requireActiveVersion: Boolean = false,
+    ): GeneratedVoiceMessage? {
+        val current = _voices.value.firstOrNull { it.id == captured.id } ?: return null
+        if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
+            current.audioPath != captured.audioPath) return null
+        val requiresCompatibility = current.requiresCompatibleVersion || captured.requiresCompatibleVersion
+        if (!requireActiveVersion && !requiresCompatibility) return current
+
+        val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return null
+        val version = MessageAlternativeVersionPolicy.activeVersion(message)
+        return current.takeIf {
+            it.messageVersionId == version.id &&
+                (!requiresCompatibility || VoiceMessageVersionPolicy.isCompatibleVersion(version, it))
+        }
+    }
+
     suspend fun listForMessage(messageId: String): List<GeneratedVoiceMessage> {
         initialize()
         return _voices.value.filter { it.messageId == messageId }
     }
 
-    suspend fun listForCurrentVersion(message: ChatMessage): List<GeneratedVoiceMessage> {
-        ensureAnchors(message)
-        return VoiceMessageVersionPolicy.visibleVoices(message, _voices.value)
+    suspend fun listForCurrentVersion(message: ChatMessage): List<GeneratedVoiceMessage> = mutex.withLock {
+        val current = ensureAnchorsIfVersionExistsLocked(message) ?: return@withLock emptyList()
+        VoiceMessageVersionPolicy.visibleVoices(message, _voices.value, current.version)
     }
 
     suspend fun ensureAnchors(message: ChatMessage): List<VoiceSegmentAnchor> = mutex.withLock {
+        ensureAnchorsIfVersionExistsLocked(message)?.anchors.orEmpty()
+    }
+
+    private suspend fun ensureAnchorsIfVersionExistsLocked(message: ChatMessage): VoiceVersionAnchors? {
         ensureInitializedLocked()
-        migrateLegacyVoiceVersionsLocked(message)
-        val version = MessageAlternativeVersionPolicy.activeVersion(message)
-        ensureVersionAnchorsLocked(message, version.id, version.content)
+        val versionId = MessageAlternativeVersionPolicy.activeVersionId(message)
+        val current = if (loadCurrentMessage == null) message else
+            loadCurrentMessage.invoke(message.id, message.sessionId) ?: return null
+        val currentVersion = MessageAlternativeVersionPolicy.versions(current).firstOrNull { it.id == versionId }
+            ?: return null
+        migrateLegacyVoiceVersionsLocked(current)
+        return VoiceVersionAnchors(currentVersion, ensureVersionAnchorsLocked(current, versionId, currentVersion.content))
     }
 
     suspend fun ensureAnchorsForVersion(
         message: ChatMessage,
         messageVersionId: String,
-        content: String
+        content: String,
+        loadCurrentMessage: (suspend () -> ChatMessage?)? = null
     ): List<VoiceSegmentAnchor> = mutex.withLock {
         ensureInitializedLocked()
-        migrateLegacyVoiceVersionsLocked(message)
-        ensureVersionAnchorsLocked(message, messageVersionId, content)
+        val loader = loadCurrentMessage ?: this.loadCurrentMessage?.let { provider ->
+            suspend { provider(message.id, message.sessionId) }
+        }
+        val current = if (loader == null) message else {
+            val owner = loader()
+            check(owner != null && owner.id == message.id && owner.sessionId == message.sessionId &&
+                MessageAlternativeVersionPolicy.versions(owner).any { it.id == messageVersionId }) {
+                "消息或回复备选已删除"
+            }
+            owner
+        }
+        migrateLegacyVoiceVersionsLocked(current)
+        val currentContent = if (loader == null) content else
+            MessageAlternativeVersionPolicy.versions(current).first { it.id == messageVersionId }.content
+        ensureVersionAnchorsLocked(current, messageVersionId, currentContent)
     }
 
     private suspend fun ensureVersionAnchorsLocked(
@@ -165,10 +231,10 @@ class VoiceMessageRepository(
         }
     }
 
-    suspend fun placementsForMessage(message: ChatMessage): List<VoiceMessagePlacement> {
-        val anchors = ensureAnchors(message)
-        val indexByAnchor = anchors.associate { it.anchor.id to it.segment.segmentIndex }
-        return VoiceMessageVersionPolicy.visibleVoices(message, _voices.value)
+    suspend fun placementsForMessage(message: ChatMessage): List<VoiceMessagePlacement> = mutex.withLock {
+        val current = ensureAnchorsIfVersionExistsLocked(message) ?: return@withLock emptyList()
+        val indexByAnchor = current.anchors.associate { it.anchor.id to it.segment.segmentIndex }
+        VoiceMessageVersionPolicy.visibleVoices(message, _voices.value, current.version)
             .map { voice -> VoiceMessagePlacement(voice, voice.anchorId?.let(indexByAnchor::get)) }
             .sortedWith(
                 compareBy<VoiceMessagePlacement> { it.segmentIndex ?: -1 }
@@ -185,24 +251,168 @@ class VoiceMessageRepository(
 
     suspend fun replace(voice: GeneratedVoiceMessage) = save(voice)
 
+    /** Check ownership under the same lock as version cleanup, including late TTS responses. */
+    suspend fun saveForExistingVersion(
+        voice: GeneratedVoiceMessage,
+        replacing: GeneratedVoiceMessage? = null,
+        loadMessage: suspend () -> ChatMessage?
+    ) = mutex.withLock {
+        ensureInitializedLocked()
+        val message = loadMessage()
+        check(message != null && message.id == voice.messageId && message.sessionId == voice.sessionId) {
+            "消息或回复备选已删除"
+        }
+        if (replacing != null) {
+            check(voice.id == replacing.id && _voices.value.firstOrNull { it.id == replacing.id } == replacing) {
+                "语音消息已变化，请重新操作"
+            }
+        }
+        check(MessageAlternativeVersionPolicy.versions(message).any { it.id == voice.messageVersionId }) {
+            "回复备选已删除"
+        }
+        storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
+        _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
+    }
+
+    /** Keep version deletion and voice operations serialized. */
+    suspend fun deleteForVersion(
+        message: ChatMessage,
+        versionId: String,
+        commitMessage: suspend () -> Boolean
+    ): List<GeneratedVoiceMessage> = mutex.withLock {
+        ensureInitializedLocked()
+        require(MessageAlternativeVersionPolicy.versions(message).any { it.id == versionId })
+        check(commitMessage()) { "消息已变化，请重新操作" }
+        val targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
+        val removed = targeted.filter { it.messageVersionId == versionId && it.versionOwnershipConfirmed }
+        val key = VoiceAnchorStateKey(message.id, versionId)
+        deleteVoiceRecordsLocked(removed)
+        restrictUnconfirmedReplyVoices(targeted)
+        deleteAnchorLocked(key)
+        removed
+    }
+
+    /** Capture only audio with confirmed ownership before changing a reply. */
+    internal suspend fun prepareReplyRemoval(
+        message: ChatMessage,
+        versionId: String?,
+        commit: suspend (suspend () -> List<String>) -> Boolean
+    ): Boolean = mutex.withLock {
+        ensureInitializedLocked()
+        var targeted = emptyList<GeneratedVoiceMessage>()
+        val committed = commit {
+            targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
+            targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
+                .map(GeneratedVoiceMessage::audioPath).distinct()
+        }
+        if (committed && versionId != null) restrictUnconfirmedReplyVoices(targeted)
+        committed
+    }
+
+    /** The owner guard also holds the message write lock until all voice effects finish. */
+    internal suspend fun finishReplyRemoval(
+        removal: ReplyRemoval,
+        whileOwnerRemoved: suspend (suspend () -> Unit) -> Boolean,
+        stopPlayback: (Set<String>) -> Unit,
+        deleteAudio: (String) -> Boolean
+    ): Boolean = mutex.withLock {
+        ensureInitializedLocked()
+        whileOwnerRemoved {
+            val targeted = persistedReplyVoices(removal.sessionId, removal.messageId, removal.versionId,
+                includeUnassigned = true)
+            val removed = targeted.filter {
+                removal.versionId == null || it.messageVersionId == removal.versionId && it.versionOwnershipConfirmed
+            }
+            val anchorKeys = mutableSetOf<VoiceAnchorStateKey>()
+            storage.forEachUncached(ANCHOR_TYPE, VoiceAnchorState.serializer(), requireCompleteRead = true) { state ->
+                if (state.messageId == removal.messageId &&
+                    (state.sessionId == removal.sessionId || state.sessionId.isBlank()) &&
+                    (removal.versionId == null || state.messageVersionId == removal.versionId)) {
+                    anchorKeys += VoiceAnchorStateKey(state.messageId, state.messageVersionId)
+                }
+            }
+            stopPlayback(removed.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
+            deleteVoiceRecordsLocked(removed)
+            if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted)
+            anchorKeys.forEach { deleteAnchorLocked(it) }
+            deleteUnownedReplyAudio(removal.audioPaths, deleteAudio)
+        }
+    }
+
+    internal suspend fun deleteUnownedReplyAudio(paths: List<String>, deleteAudio: (String) -> Boolean) {
+        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
+        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots")) { path ->
+            check(deleteAudio(path)) { "回复已删除，语音文件清理失败，将在重试时继续" }
+        }
+    }
+
+    private suspend fun persistedReplyVoices(
+        sessionId: String,
+        messageId: String,
+        versionId: String?,
+        includeUnassigned: Boolean = false
+    ): List<GeneratedVoiceMessage> {
+        val result = mutableListOf<GeneratedVoiceMessage>()
+        storage.forEachUncached(VOICE_TYPE, GeneratedVoiceMessage.serializer(), requireCompleteRead = true) { voice ->
+            if (voice.sessionId == sessionId && voice.messageId == messageId &&
+                (versionId == null || voice.messageVersionId == versionId ||
+                    includeUnassigned && voice.messageVersionId.isNullOrBlank())) result += voice
+        }
+        return result
+    }
+
+    private suspend fun restrictUnconfirmedReplyVoices(voices: List<GeneratedVoiceMessage>) {
+        // Keep any recorded version ID for recovery. A deleted version's former
+        // recording must never fall back to whichever alternative happens to be active.
+        voices.filterNot(GeneratedVoiceMessage::versionOwnershipConfirmed).forEach { voice ->
+            val retained = voice.copy(anchorId = null, requiresCompatibleVersion = true)
+            if (retained != voice) {
+                storage.saveEntity(VOICE_TYPE, retained.id, retained, GeneratedVoiceMessage.serializer())
+                _voices.value = _voices.value.map { if (it.id == retained.id) retained else it }
+            }
+        }
+    }
+
+    internal suspend fun withPersistedAudioPaths(action: suspend (Set<String>) -> Unit) = mutex.withLock {
+        action(persistedAudioPathsLocked())
+    }
+
+    private suspend fun persistedAudioPathsLocked(): Set<String> {
+        val paths = mutableSetOf<String>()
+        storage.forEachUncached(VOICE_TYPE, GeneratedVoiceMessage.serializer(), requireCompleteRead = true) {
+            storage.canonicalMediaPath(it.audioPath)?.let(paths::add)
+        }
+        return paths
+    }
+
+    private suspend fun deleteVoiceRecordsLocked(removed: List<GeneratedVoiceMessage>) {
+        removed.forEach { voice ->
+            storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, voice.id, requireSuccess = true)
+            _voices.value = _voices.value.filterNot { it.id == voice.id }
+        }
+    }
+
+    private suspend fun deleteAnchorLocked(key: VoiceAnchorStateKey) {
+        storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, anchorStorageId(key), requireSuccess = true)
+        anchorsByVersion = anchorsByVersion - key
+    }
+
     suspend fun delete(id: String): GeneratedVoiceMessage? = mutex.withLock {
         ensureInitializedLocked()
         val existing = _voices.value.firstOrNull { it.id == id } ?: return@withLock null
-        storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, id)
-        _voices.value = _voices.value.filterNot { it.id == id }
+        deleteVoiceRecordsLocked(listOf(existing))
         existing
     }
 
     suspend fun deleteForMessage(messageId: String): List<GeneratedVoiceMessage> = mutex.withLock {
         ensureInitializedLocked()
         val removed = _voices.value.filter { it.messageId == messageId }
-        removed.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
+        deleteVoiceRecordsLocked(removed)
         val anchorKeys = anchorsByVersion.keys.filter { it.messageId == messageId }
         anchorKeys.map(::anchorStorageId).plus(messageId).distinct().forEach { storageId ->
-            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId)
+            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId, requireSuccess = true)
         }
         anchorsByVersion = anchorsByVersion.filterKeys { it.messageId != messageId }
-        _voices.value = _voices.value.filterNot { it.messageId == messageId }
         removed
     }
 
@@ -215,14 +425,13 @@ class VoiceMessageRepository(
                 .filter { it.sessionId == sessionId }
                 .mapTo(this, VoiceAnchorState::messageId)
         }
-        removed.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
+        deleteVoiceRecordsLocked(removed)
         val anchorKeys = anchorsByVersion.keys.filter { it.messageId in messageIds }
         val anchorStorageIds = anchorKeys.map(::anchorStorageId) + messageIds
         anchorStorageIds.distinct().forEach { storageId ->
-            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId)
+            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, storageId, requireSuccess = true)
         }
         anchorsByVersion = anchorsByVersion.filterKeys { it.messageId !in messageIds }
-        _voices.value = _voices.value.filterNot { it.sessionId == sessionId }
         removed
     }
 
@@ -231,18 +440,20 @@ class VoiceMessageRepository(
         voices: List<GeneratedVoiceMessage>
     ) = mutex.withLock {
         ensureInitializedLocked()
+        val restored = voices.map { archived ->
+            val voice = archived.copy(sessionId = sessionId)
+            if (!voice.requiresCompatibleVersion || voice.anchorId == null || loadCurrentMessage == null) return@map voice
+            val message = loadCurrentMessage.invoke(voice.messageId, sessionId)
+            val recorded = message?.let(MessageAlternativeVersionPolicy::versions)?.firstOrNull { it.id == voice.messageVersionId }
+            if (recorded != null && VoiceMessageVersionPolicy.isCompatibleVersion(recorded, voice)) voice
+            else voice.copy(anchorId = null)
+        }
         val old = _voices.value.filter { it.sessionId == sessionId }
         old.forEach { storage.deleteEntity<GeneratedVoiceMessage>(VOICE_TYPE, it.id) }
-        voices.forEach { voice ->
-            storage.saveEntity(
-                VOICE_TYPE,
-                voice.id,
-                voice.copy(sessionId = sessionId),
-                GeneratedVoiceMessage.serializer()
-            )
+        restored.forEach { voice ->
+            storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
         }
-        _voices.value = _voices.value.filterNot { it.sessionId == sessionId } +
-            voices.map { it.copy(sessionId = sessionId) }
+        _voices.value = _voices.value.filterNot { it.sessionId == sessionId } + restored
     }
 
     suspend fun restoreForSession(
@@ -271,28 +482,24 @@ class VoiceMessageRepository(
         }
         val remapped = voices.map { voice ->
             val message = messagesById[voice.messageId]
-            val versionId = if (message == null) {
-                voice.messageVersionId
-            } else {
-                voice.messageVersionId
-                    ?.takeIf { id ->
-                        MessageAlternativeVersionPolicy.versions(message).any { it.id == id }
-                    }
-                    ?: VoiceMessageVersionPolicy.inferLegacyVersionId(
-                        message = message,
-                        voice = voice,
-                        legacyState = null
-                    )
+            val versions = message?.let(MessageAlternativeVersionPolicy::versions).orEmpty()
+            val recorded = versions.firstOrNull { it.id == voice.messageVersionId }
+            val versionId = when {
+                message == null || voice.versionOwnershipConfirmed -> voice.messageVersionId
+                recorded != null && (!voice.requiresCompatibleVersion || VoiceMessageVersionPolicy.isCompatibleVersion(recorded, voice)) -> recorded.id
+                voice.requiresCompatibleVersion || !voice.messageVersionId.isNullOrBlank() ->
+                    VoiceMessageVersionPolicy.compatibleVersionId(message, voice) ?: voice.messageVersionId
+                else -> VoiceMessageVersionPolicy.inferLegacyVersionId(message, voice, legacyState = null)
             }
-            val state = versionId?.let {
-                anchorStatesByMessageVersion[voice.messageId to it]
-            }
+            val version = versions.firstOrNull { it.id == versionId }
+            val state = version?.takeIf { !voice.requiresCompatibleVersion || VoiceMessageVersionPolicy.isCompatibleVersion(it, voice) }
+                ?.let { anchorStatesByMessageVersion[voice.messageId to it.id] }
+            val anchorId = state?.let { VoiceMessageVersionPolicy.anchorIdForVoice(voice, it) }
             voice.copy(
                 sessionId = sessionId,
                 messageVersionId = versionId,
-                anchorId = state?.let {
-                    VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
-                } ?: voice.anchorId,
+                versionOwnershipConfirmed = voice.versionOwnershipConfirmed && versionId == voice.messageVersionId,
+                anchorId = anchorId ?: voice.anchorId.takeUnless { voice.requiresCompatibleVersion },
                 updatedAt = System.currentTimeMillis()
             )
         }
@@ -309,13 +516,19 @@ class VoiceMessageRepository(
 
     private suspend fun migrateLegacyVoiceVersionsLocked(message: ChatMessage) {
         val legacyKey = VoiceAnchorStateKey(message.id, null)
-        val legacyState = anchorsByVersion[legacyKey]
-        val legacyVoices = _voices.value.filter {
-            it.messageId == message.id && it.messageVersionId.isNullOrBlank()
-        }
-        if (legacyState == null && legacyVoices.isEmpty()) return
-
+        val legacyState = anchorsByVersion[legacyKey]?.takeIf { it.sessionId == message.sessionId || it.sessionId.isBlank() }
         val versions = MessageAlternativeVersionPolicy.versions(message)
+        val versionsById = versions.associateBy { it.id }
+        val legacyVoiceIds = _voices.value.filter { voice ->
+            if (voice.sessionId != message.sessionId || voice.messageId != message.id || voice.versionOwnershipConfirmed) {
+                return@filter false
+            }
+            if (voice.messageVersionId.isNullOrBlank()) return@filter true
+            val recorded = versionsById[voice.messageVersionId]
+            voice.requiresCompatibleVersion && (recorded == null || !VoiceMessageVersionPolicy.isCompatibleVersion(recorded, voice))
+        }.mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
+        if (legacyState == null && legacyVoiceIds.isEmpty()) return
+
         val activeVersionId = MessageAlternativeVersionPolicy.activeVersionId(message)
         val legacyStateVersionId = legacyState?.let { state ->
             versions.firstOrNull { it.content == state.displayContentSnapshot }?.id
@@ -339,14 +552,14 @@ class VoiceMessageRepository(
         }
 
         val changed = _voices.value.map { voice ->
-            if (voice.messageId != message.id || !voice.messageVersionId.isNullOrBlank()) {
+            if (voice.id !in legacyVoiceIds) {
                 voice
             } else {
-                val versionId = VoiceMessageVersionPolicy.inferLegacyVersionId(
-                    message = message,
-                    voice = voice,
-                    legacyState = legacyState
-                )
+                val versionId = if (voice.requiresCompatibleVersion) {
+                    VoiceMessageVersionPolicy.compatibleVersionId(message, voice) ?: return@map voice.copy(anchorId = null)
+                } else {
+                    VoiceMessageVersionPolicy.inferLegacyVersionId(message, voice, legacyState)
+                }
                 val version = versions.firstOrNull { it.id == versionId }
                 val key = VoiceAnchorStateKey(message.id, versionId)
                 var state = anchorsByVersion[key]
@@ -368,6 +581,7 @@ class VoiceMessageRepository(
                 }
                 voice.copy(
                     messageVersionId = versionId,
+                    versionOwnershipConfirmed = false,
                     anchorId = state?.let {
                         VoiceMessageVersionPolicy.anchorIdForVoice(voice, it)
                     },
@@ -377,8 +591,7 @@ class VoiceMessageRepository(
         }
         persistChangedVoicesLocked(_voices.value, changed)
         if (legacyState != null) {
-            storage.deleteEntity<VoiceAnchorState>(ANCHOR_TYPE, anchorStorageId(legacyKey))
-            anchorsByVersion = anchorsByVersion - legacyKey
+            deleteAnchorLocked(legacyKey)
         }
     }
 

@@ -1,5 +1,12 @@
 package com.example.chatbar.data.repository
 
+import com.example.chatbar.domain.moment.MomentImageVersions
+import com.example.chatbar.data.local.entity.GeneratedImageMetadata
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.MomentPost
 import com.example.chatbar.data.local.entity.MomentTask
@@ -19,6 +26,7 @@ class MomentRepository(private val storage: JsonFileStorage) {
     val posts: Flow<List<MomentPost>> = _posts.asStateFlow()
 
     private var initialized = false
+    private val postMutex = Mutex()
 
     suspend fun initialize() {
         if (initialized) return
@@ -44,9 +52,27 @@ class MomentRepository(private val storage: JsonFileStorage) {
             .filterNot { it.isPlaceholder }
             .maxByOrNull { it.generatedAt }
 
-    suspend fun savePost(post: MomentPost) {
-        storage.saveEntity(POST_TYPE, post.id, post, MomentPost.serializer())
-        refreshPosts()
+    suspend fun savePost(post: MomentPost) = postMutex.withLock { savePostLocked(post) }
+
+    private suspend fun savePostLocked(post: MomentPost) {
+        initialize()
+        withContext(NonCancellable) {
+            storage.saveEntity(POST_TYPE, post.id, post, MomentPost.serializer())
+            _posts.value = (_posts.value.filterNot { it.id == post.id } + post).sortedByDescending { it.generatedAt }
+        }
+    }
+
+    suspend fun appendImageVersion(postId: String, expectedPath: String?, path: String, prompt: String,
+        metadata: GeneratedImageMetadata?, imageBrief: String? = null) = postMutex.withLock {
+        val post = getPost(postId) ?: error("原朋友圈不存在")
+        require(!post.isPlaceholder && MomentImageVersions.currentImagePath(post) == MomentImageVersions.imagePathOrNull(expectedPath)) { "原朋友圈图片已变化，请重新操作" }
+        val updated = MomentImageVersions.append(post, path, prompt, metadata)
+        savePostLocked(updated.copy(imageBrief = imageBrief ?: post.imageBrief, updatedAt = System.currentTimeMillis()))
+    }
+
+    suspend fun selectImageVersion(postId: String, versionId: String) = postMutex.withLock {
+        val post = getPost(postId) ?: error("原朋友圈不存在")
+        savePostLocked(MomentImageVersions.select(post, versionId).copy(updatedAt = System.currentTimeMillis()))
     }
 
     suspend fun getPost(id: String): MomentPost? =
@@ -56,22 +82,22 @@ class MomentRepository(private val storage: JsonFileStorage) {
         savePost(post.copy(updatedAt = System.currentTimeMillis()))
     }
 
-    suspend fun toggleLike(postId: String) {
-        val post = getPost(postId) ?: return
-        updatePost(post.copy(userLiked = !post.userLiked))
+    suspend fun toggleLike(postId: String) = postMutex.withLock {
+        val post = getPost(postId) ?: return@withLock
+        savePostLocked(post.copy(userLiked = !post.userLiked, updatedAt = System.currentTimeMillis()))
     }
 
     suspend fun updatePostText(postId: String, text: String): MomentPost? =
         updatePostContent(postId, text)
 
-    suspend fun updatePostContent(postId: String, text: String, sender: MomentSender? = null): MomentPost? {
-        val post = getPost(postId) ?: return null
+    suspend fun updatePostContent(postId: String, text: String, sender: MomentSender? = null): MomentPost? = postMutex.withLock {
+        val post = getPost(postId) ?: return@withLock null
         require(!post.isPlaceholder) { "生成失败占位朋友圈不可编辑" }
         val normalizedText = text.trim()
         require(normalizedText.isNotEmpty()) { "朋友圈文字不能为空" }
         require(sender == null || sender.name.isNotBlank()) { "发布人物名称不能为空" }
         if (normalizedText == post.text && (sender == null || sender == MomentSender(
-                post.senderCharacterId, post.senderName, post.senderAvatar))) return post
+                post.senderCharacterId, post.senderName, post.senderAvatar))) return@withLock post
 
         val updated = post.copy(
             text = normalizedText,
@@ -80,15 +106,15 @@ class MomentRepository(private val storage: JsonFileStorage) {
             senderAvatar = if (sender != null) sender.avatar else post.senderAvatar,
             updatedAt = System.currentTimeMillis()
         )
-        savePost(updated)
-        return updated
+        savePostLocked(updated)
+        return@withLock updated
     }
 
-    suspend fun deletePost(postId: String): MomentPost? {
-        val post = getPost(postId) ?: return null
+    suspend fun deletePost(postId: String): MomentPost? = postMutex.withLock {
+        val post = getPost(postId) ?: return@withLock null
         storage.deleteEntity<MomentPost>(POST_TYPE, postId)
         refreshPosts()
-        return post
+        return@withLock post
     }
 
     suspend fun deletePendingTasksForCharacter(cardId: String): Int =

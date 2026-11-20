@@ -373,6 +373,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val voiceMessageRepository = ChatBarApp.instance.voiceMessageRepository
     private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
     private val fishAudioCoordinator = ChatBarApp.instance.fishAudioGenerationCoordinator
+    private val replyRemovalCoordinator = ChatBarApp.instance.replyRemovalCoordinator
     private val ragMemoryMutationMutex = Mutex()
 
     // UI 状态
@@ -575,6 +576,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val hiddenRegenerationMessageId = AtomicReference<String?>(null)
     private var manualFormatRepairJob: Job? = null
     private var activeFormatRepairJob: Job? = null
+    private val formatRepairCommitMutex = Mutex()
     private var formatRepairStopRequested = false
     private val imageGenerationJobs = ConcurrentHashMap<String, Job>()
     private val imageGenerationPromptCheckpoints =
@@ -760,8 +762,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         voice: GeneratedVoiceMessage,
         orderedVisibleVoices: List<GeneratedVoiceMessage>
     ) {
-        fishAudioCoordinator.playFrom(voice, orderedVisibleVoices)
+        if (voice.sessionId != sessionId || !canStartVoicePlayback()) return
+        fishAudioCoordinator.playFrom(voice, orderedVisibleVoices, ::canStartVoicePlayback)
     }
+
+    private fun canStartVoicePlayback(): Boolean =
+        saveSlotOperationJob?.isActive != true && !_saveSlotOperation.value.busy
 
     fun stopVoicePlayback() {
         fishAudioCoordinator.stopPlayback()
@@ -839,6 +845,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun loadSessionData() {
         viewModelScope.launch {
+            replyRemovalCoordinator.resumePending(sessionId)
             val s = chatRepository.getSession(sessionId)
             _session.value = s
             s?.let(::acceptPersistedNarrativeMode)
@@ -2333,16 +2340,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun repairMessageFormat(messageId: String) {
-        if (_isResponding.value) return
+        if (_isResponding.value || saveSlotOperationJob?.isActive == true) return
         _isResponding.value = true
         val job = viewModelScope.launch {
             try {
+                val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
                 if (message.role != MessageRole.ASSISTANT) return@launch
-                val repaired = performMessageFormatRepair(message, automatic = false)
-                if (repaired.displayContent != message.displayContent) {
-                    refreshMemoryAfterMessageEdit(repaired)
-                }
+                performMessageFormatRepair(message, automatic = false, timelineRevision = timelineRevision)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                _messageActionError.value = error.message ?: "保存格式修复结果失败"
             } finally {
                 _messageFormatRepairState.value = null
                 _isResponding.value = false
@@ -2354,21 +2363,105 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    fun restoreMessageFormatOriginal(messageId: String) {
+    private val _messageActionError = MutableStateFlow<String?>(null)
+    val messageActionError = _messageActionError.asStateFlow()
+    fun clearMessageActionError() { _messageActionError.value = null }
+
+    fun restoreMessageFormatOriginal(messageId: String) = toggleFormatRepair(messageId, redo = false)
+    fun redoMessageFormatRepair(messageId: String) = toggleFormatRepair(messageId, redo = true)
+
+    private fun toggleFormatRepair(messageId: String, redo: Boolean) {
         if (_isResponding.value) return
         viewModelScope.launch {
-            val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
-            val restored = MessageFormatRepairPolicy.restoreOriginal(message) ?: return@launch
-            chatRepository.updateMessage(restored)
-            replaceMessagesFromRepository()
-            refreshMemoryAfterMessageEdit(restored)
+            try {
+                val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+                val changed = (if (redo) MessageFormatRepairPolicy.redoRepair(message)
+                    else MessageFormatRepairPolicy.restoreOriginal(message)) ?: return@launch
+                check(chatRepository.updateMessageIfUnchanged(message, changed)) { "消息已变化，请重新操作" }
+                replaceMessagesFromRepository()
+                refreshMemoryAfterMessageEdit(changed)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _messageActionError.value = error.message ?: "保存失败" }
         }
+    }
+
+    fun deleteMessageAlternative(messageId: String, versionId: String) =
+        deleteMessageAlternative(messageId, versionId, _messages.value.firstOrNull { it.id == messageId })
+
+    fun deleteMessageAlternative(expected: ChatMessage, versionId: String) =
+        deleteMessageAlternative(expected.id, versionId, expected)
+
+    private fun deleteMessageAlternative(messageId: String, versionId: String, expected: ChatMessage?) {
+        if (_isResponding.value) return
+        viewModelScope.launch {
+            try {
+                fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
+                if (withContext(NonCancellable) { replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId) }) {
+                    refreshMessages()
+                    return@launch
+                }
+                val message = chatRepository.getMessage(messageId, sessionId)
+                if (message == null) {
+                    check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) { "消息已变化，请重新操作" }
+                    refreshMessages()
+                    return@launch
+                }
+                check(expected == message) { "消息已变化，请重新操作" }
+                val changed = MessageAlternativeVersionPolicy.remove(message, versionId)
+                if (changed == null) {
+                    deleteMessage(messageId, message)
+                    return@launch
+                }
+                commitReplyAlternativeRemoval(message, versionId, changed)
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _messageActionError.value = error.message ?: "删除备选失败" }
+        }
+    }
+
+    private suspend fun commitReplyAlternativeRemoval(
+        message: ChatMessage,
+        versionId: String,
+        changed: ChatMessage,
+        deleteMemoryForMessage: Boolean = false
+    ) {
+        val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
+        replaceMessagesFromRepository()
+        if (cleanupError != null) _messageActionError.value = cleanupError
+        if (deleteMemoryForMessage) ragManager.deleteMemoryForMessage(message.id)
+        refreshMemoryAfterMessageEdit(changed)
     }
 
     private suspend fun performMessageFormatRepair(
         message: ChatMessage,
-        automatic: Boolean
-    ): ChatMessage {
+        automatic: Boolean,
+        timelineRevision: Long
+    ): ChatMessage? {
+        val inactiveRecovery = MessageFormatRepairPolicy.inactiveRecoveryNotice(message)
+        var attemptError: String? = null
+        suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
+            formatRepairCommitMutex.withLock {
+                if (!chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)) {
+                    _messageFormatRepairEvents.tryEmit("消息已变化，已放弃本次格式修复")
+                    return@withLock null
+                }
+                replaceMessagesFromRepository()
+                if (!automatic && replacement.displayContent != message.displayContent) {
+                    refreshMemoryAfterMessageEdit(replacement)
+                }
+                if (unchanged) _messageFormatRepairEvents.tryEmit("格式无需修复")
+                attemptError?.let { _messageActionError.value = it }
+                replacement
+            }
+
+        fun failure(error: String): ChatMessage {
+            if (inactiveRecovery == null) {
+                return message.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error))
+            }
+            // The existing durable checkpoint belongs to a different reply version.
+            attemptError = error
+            return message
+        }
+
         val appSettings = settingsRepository.getAppSettings()
         val currentSession = chatRepository.getSession(sessionId) ?: return message
         val renderContext = placeholderRenderContext(currentSession)
@@ -2401,11 +2494,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             appSettings
         )
         if (model == null || model.apiKey.isBlank()) {
-            return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效")
+            return commit(failure("格式修复模型及默认对话模型未配置或已失效"))
         }
 
         val originalContent = message.displayContent
-        var result = message
+        var result: ChatMessage? = null
+        var unchanged = false
         var repairedPrefix = ""
         var sawDone = false
         formatRepairStopRequested = false
@@ -2414,69 +2508,56 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             previewContent = originalContent
         )
 
-        coroutineScope {
-            val repairJob = launch {
-                try {
-                    messageFormatRepairService.streamRepair(
-                        originalContent = originalContent,
-                        formatCard = formatCard,
-                        segmentedBubbleFormat = segmentedFormat,
-                        modelConfig = model
-                    ).collect { event ->
-                        when (event) {
-                            is StreamEvent.Delta -> {
-                                repairedPrefix += event.text
-                                _messageFormatRepairState.value = MessageFormatRepairState(
-                                    messageId = message.id,
-                                    previewContent = MessageFormatRepairPolicy.progressiveOverlay(
-                                        original = originalContent,
-                                        repairedPrefix = repairedPrefix
+        try {
+            coroutineScope {
+                val repairJob = launch {
+                    try {
+                        messageFormatRepairService.streamRepair(
+                            originalContent = originalContent,
+                            formatCard = formatCard,
+                            segmentedBubbleFormat = segmentedFormat,
+                            modelConfig = model
+                        ).collect { event ->
+                            when (event) {
+                                is StreamEvent.Delta -> {
+                                    repairedPrefix += event.text
+                                    _messageFormatRepairState.value = MessageFormatRepairState(
+                                        messageId = message.id,
+                                        previewContent = MessageFormatRepairPolicy.progressiveOverlay(
+                                            original = originalContent,
+                                            repairedPrefix = repairedPrefix
+                                        )
                                     )
-                                )
+                                }
+                                is StreamEvent.Error -> throw IllegalStateException(event.message)
+                                StreamEvent.Done -> sawDone = true
+                                is StreamEvent.ReasoningDelta,
+                                is StreamEvent.ContentPreview,
+                                is StreamEvent.Usage -> Unit
                             }
-                            is StreamEvent.Error -> throw IllegalStateException(event.message)
-                            StreamEvent.Done -> sawDone = true
-                            is StreamEvent.ReasoningDelta,
-                            is StreamEvent.ContentPreview,
-                            is StreamEvent.Usage -> Unit
                         }
-                    }
-                    if (!sawDone || repairedPrefix.isBlank()) {
-                        throw IllegalStateException("格式修复模型返回空结果")
-                    }
-                    result = when {
-                        MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
-                            repairedPrefix == originalContent -> {
-                            val unchanged = message.copy(
-                                formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
-                                updatedAt = System.currentTimeMillis()
-                            )
-                            if (unchanged != message) persistFormatRepairMessage(unchanged)
-                            _messageFormatRepairEvents.tryEmit("格式无需修复")
-                            unchanged
+                        if (!sawDone || repairedPrefix.isBlank()) {
+                            throw IllegalStateException("格式修复模型返回空结果")
                         }
-                        else -> {
-                            val notice = MessageFormatRepairPolicy.completedRepairNotice(
-                                original = originalContent,
-                                repaired = repairedPrefix
-                            )
-                            persistFormatRepairMessage(
-                                MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                                    message = message,
-                                    replacement = repairedPrefix,
-                                    notice = notice
-                                )
+                        unchanged = MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
+                            repairedPrefix == originalContent
+                        result = if (unchanged) {
+                            message.copy(formatRepairNotice = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(message))
+                        } else {
+                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                message = message,
+                                replacement = repairedPrefix,
+                                notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repairedPrefix)
                             )
                         }
-                    }
-                } catch (cancelled: CancellationException) {
-                    if (!formatRepairStopRequested) throw cancelled
-                    val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
-                        original = originalContent,
-                        repairedPrefix = repairedPrefix
-                    )
-                    result = persistFormatRepairMessage(
-                        MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                    } catch (cancelled: CancellationException) {
+                        if (!formatRepairStopRequested) throw cancelled
+                        val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
+                            original = originalContent,
+                            repairedPrefix = repairedPrefix
+                        )
+                        result = if (mixedContent == originalContent && inactiveRecovery != null) message
+                        else MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                             message = message,
                             replacement = mixedContent,
                             notice = MessageFormatRepairNotice(
@@ -2485,44 +2566,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 originalContent = originalContent
                             )
                         )
-                    )
-                } catch (error: Exception) {
-                    result = persistFormatRepairFailure(
-                        message = message,
-                        error = error.message ?: "格式修复失败"
-                    )
+                    } catch (error: Exception) {
+                        result = failure(error.message ?: "格式修复失败")
+                    }
+                }
+                activeFormatRepairJob = repairJob
+                try {
+                    repairJob.join()
+                } finally {
+                    if (activeFormatRepairJob == repairJob) activeFormatRepairJob = null
+                    formatRepairStopRequested = false
                 }
             }
-            activeFormatRepairJob = repairJob
-            try {
-                repairJob.join()
-            } finally {
-                if (activeFormatRepairJob == repairJob) activeFormatRepairJob = null
-                formatRepairStopRequested = false
-            }
+            return result?.let { commit(it, unchanged) }
+        } finally {
+            _messageFormatRepairState.value = null
         }
-        _messageFormatRepairState.value = null
-        return result
-    }
-
-    private suspend fun persistFormatRepairFailure(
-        message: ChatMessage,
-        error: String
-    ): ChatMessage = persistFormatRepairMessage(
-        message.copy(
-            formatRepairNotice = MessageFormatRepairNotice(
-                kind = MessageFormatRepairNoticeKind.ERROR,
-                targetContent = message.displayContent,
-                errorMessage = error
-            ),
-            updatedAt = System.currentTimeMillis()
-        )
-    )
-
-    private suspend fun persistFormatRepairMessage(message: ChatMessage): ChatMessage {
-        chatRepository.updateMessage(message)
-        replaceMessagesFromRepository()
-        return message
     }
 
     fun updateDraftInput(text: String) {
@@ -3357,8 +3416,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 if (appSettings.automaticFormatCheckEnabled) {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
-                                        automatic = true
-                                    )
+                                        automatic = true,
+                                        timelineRevision = chatRepository.messageTimelineRevision(sessionId)
+                                    ) ?: run {
+                                        _isResponding.value = false
+                                        return@collect
+                                    }
                                 }
                                 if (!automaticImageHandled &&
                                     chatRepository.getSession(sessionId)?.automaticImageGenerationEnabled == true
@@ -3546,8 +3609,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             reasoningContent = generatedMessage.reasoningContent,
             formatRepairNotice = null
         )
-        chatRepository.updateMessage(updated)
-        return updated
+        return chatRepository.updateMessage(updated)
     }
 
     /**
@@ -3565,41 +3627,70 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         )
     }
 
-    fun deleteMessage(messageId: String) {
+    fun deleteMessage(messageId: String) =
+        deleteMessage(messageId, _messages.value.firstOrNull { it.id == messageId })
+
+    fun deleteMessage(expected: ChatMessage) = deleteMessage(expected.id, expected)
+
+    private fun deleteMessage(messageId: String, expected: ChatMessage?) {
         viewModelScope.launch {
             fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-            val deletedMessage = chatRepository.getMessage(messageId, sessionId)
-            selectNeighborWindowAnchor(messageId)
-
-            deletedMessage
-                ?.images
-                ?.forEach { deleteDisposableChatImage(it) }
-            val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
-            if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
-                fishAudioCoordinator.stopPlayback()
+            val recovered: Boolean
+            var cleanupError: String? = null
+            try {
+                coroutineContext.ensureActive()
+                recovered = withContext(NonCancellable) {
+                    if (replyRemovalCoordinator.retryMessage(sessionId, messageId, versionId = null)) {
+                        true
+                    } else {
+                        if (expected == null) {
+                            check(chatRepository.deleteMessageIfUnchanged(messageId, sessionId, null)) {
+                                "消息已变化，请重新操作"
+                            }
+                        } else {
+                            cleanupError = replyRemovalCoordinator.remove(expected, replacement = null, versionId = null)
+                        }
+                        false
+                    }
+                }
+            } catch (error: Exception) {
+                if (error is CancellationException) throw error
+                _messageActionError.value = error.message ?: if (expected == null) "删除消息失败" else "删除备选失败"
+                return@launch
             }
-            deletedVoices.forEach { voice ->
-                ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
-            }
-            _messages.value = _messages.value.filter { it.id != messageId }
-            chatRepository.deleteMessage(messageId, sessionId)
+            if (!recovered) selectNeighborWindowAnchor(messageId)
             refreshMessages()
+            if (cleanupError != null) _messageActionError.value = cleanupError
+            if (chatRepository.getMessage(messageId, sessionId) != null) return@launch
             enqueueLongTermMemoryAfterMessageDeletion()
 
-            if (deletedMessage == null || ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
+            if (expected == null || ChatMemoryIndexPolicy.contributesToIndex(expected)) {
                 _isDeletingMemory.value = true
                 yield()
                 try {
                     ragMemoryMutationMutex.withLock {
-                        if (deletedMessage == null) {
+                        if (expected == null) {
                             ragManager.deleteMemoryForMessage(messageId)
                         } else {
-                            refreshMemoryAfterMessageDeletion(deletedMessage)
+                            refreshMemoryAfterMessageDeletion(expected)
                         }
                     }
                 } finally {
                     _isDeletingMemory.value = false
                 }
+            }
+        }
+    }
+
+    private suspend fun removeUnreferencedMessageImages(paths: Collection<String>) {
+        if (paths.isEmpty()) return
+        withContext(Dispatchers.IO) {
+            try {
+                chatRepository.deleteUnreferencedChatImages(paths) { deleteDisposableChatImage(it) }
+            } catch (error: CancellationException) {
+                throw error
+            } catch (_: Exception) {
+                _messageActionError.value = "消息已更新，但无法核对图片引用，已保留图片文件"
             }
         }
     }
@@ -3638,41 +3729,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
             if (remaining.isEmpty() && message.content.isBlank()) {
-                selectNeighborWindowAnchor(messageId)
-                chatRepository.deleteMessage(messageId, sessionId)
-                _messages.value = _messages.value.filterNot { it.id == messageId }
-                refreshMessages()
-                enqueueLongTermMemoryAfterMessageDeletion()
-
-                val deletedVoices = voiceMessageRepository.deleteForMessage(messageId)
-                if (deletedVoices.any { it.id == voicePlaybackState.value.currentVoiceId }) {
-                    fishAudioCoordinator.stopPlayback()
-                }
-                deletedVoices.forEach { voice ->
-                    ChatBarApp.instance.fishAudioStorage.deleteIfOwned(voice.audioPath)
-                }
-                withContext(Dispatchers.IO) {
-                    deleteDisposableChatImage(imagePath)
-                }
-                if (ChatMemoryIndexPolicy.contributesToIndex(message)) {
-                    ragMemoryMutationMutex.withLock {
-                        refreshMemoryAfterMessageDeletion(message)
-                    }
-                }
+                deleteMessage(messageId, message)
             } else {
                 val updatedMessage = message.copy(
                     images = remaining,
                     generatedImageMetadata = message.generatedImageMetadata
                         .filter { it.imagePath in remaining }
                 )
-                chatRepository.updateMessage(updatedMessage)
+                if (!chatRepository.updateMessageIfUnchanged(message, updatedMessage)) {
+                    _messageActionError.value = "消息已变化，请重新操作"
+                    return@launch
+                }
                 _messages.value = _messages.value.map { current ->
                     if (current.id == messageId) updatedMessage else current
                 }
                 refreshMessages()
-                withContext(Dispatchers.IO) {
-                    deleteDisposableChatImage(imagePath)
-                }
+                removeUnreferencedMessageImages(listOf(imagePath))
             }
         }
     }
@@ -3694,13 +3766,23 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun editMessageSegment(
-        messageId: String,
+        expected: ChatMessage,
         start: Int,
         endExclusive: Int,
         replacement: String
     ) {
         viewModelScope.launch {
-            val oldMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+            if (_isResponding.value || _saveSlotOperation.value.busy) {
+                _messageActionError.value = "请等待回复或读档完成后再编辑片段"
+                return@launch
+            }
+            val messageId = expected.id
+            if (chatRepository.getMessage(messageId, sessionId) != expected || start !in expected.displayContent.indices ||
+                endExclusive <= start || endExclusive > expected.displayContent.length) {
+                _messageActionError.value = "回复片段已变化，请重新打开片段操作"
+                return@launch
+            }
+            val oldMessage = expected
             val editOutcome = editRoleplayMessageSegment(
                 message = oldMessage,
                 start = start,
@@ -3709,10 +3791,22 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             )
             val updatedMessage = editOutcome.message
             if (updatedMessage == null) {
-                deleteMessage(messageId)
+                deleteMessage(messageId, oldMessage)
                 return@launch
             }
 
+            val oldVersionId = MessageAlternativeVersionPolicy.activeVersionId(oldMessage)
+            if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != oldVersionId) {
+                try {
+                    fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
+                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage, editOutcome.deleteMemoryForMessage)
+                } catch (cancelled: CancellationException) {
+                    throw cancelled
+                } catch (error: Exception) {
+                    _messageActionError.value = error.message ?: "删除备选失败"
+                }
+                return@launch
+            }
             applyMessageEdit(
                 oldMessage = oldMessage,
                 content = updatedMessage.content,
@@ -3740,11 +3834,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             formatRepairNotice = null
         )
 
-        if (deleteRemovedImages) {
-            oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
+        if (!chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage)) {
+            _messageActionError.value = "消息已变化，请重新操作"
+            return
         }
-
-        chatRepository.updateMessage(updatedMessage)
+        if (deleteRemovedImages) {
+            removeUnreferencedMessageImages(oldMessage.images.filterNot(imagePaths::contains))
+        }
         refreshMessages()
 
         if (deleteMemoryWhenTextBlank) {
@@ -3851,23 +3947,24 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     fun switchAssistantAlternative(messageId: String, direction: Int) {
         viewModelScope.launch {
-            val message = _messages.value.find { it.id == messageId }
-                ?: chatRepository.getMessage(messageId, sessionId)
-                ?: return@launch
-            if (message.role != MessageRole.ASSISTANT || message.alternatives.size <= 1) return@launch
-            val isRecent = contextWindowManager
-                .getRecentMessages(_messages.value, effectiveContextWindowSize())
-                .any { it.id == messageId }
-            if (!isRecent) return@launch
-            val nextIndex = (message.currentAlternativeIndex + direction)
-                .coerceIn(0, message.alternatives.lastIndex)
-            if (nextIndex == message.currentAlternativeIndex) return@launch
-            val updated = MessageAlternativeVersionPolicy.select(
-                message = message,
-                alternativeIndex = nextIndex
-            )
-            _messages.value = _messages.value.map { if (it.id == messageId) updated else it }
-            chatRepository.updateMessage(updated)
+            try {
+                val message = _messages.value.find { it.id == messageId }
+                    ?: chatRepository.getMessage(messageId, sessionId)
+                    ?: return@launch
+                if (message.role != MessageRole.ASSISTANT || message.alternatives.size <= 1) return@launch
+                val isRecent = contextWindowManager
+                    .getRecentMessages(_messages.value, effectiveContextWindowSize())
+                    .any { it.id == messageId }
+                if (!isRecent) return@launch
+                val nextIndex = (message.currentAlternativeIndex + direction)
+                    .coerceIn(0, message.alternatives.lastIndex)
+                if (nextIndex == message.currentAlternativeIndex) return@launch
+                val updated = MessageAlternativeVersionPolicy.select(message, nextIndex)
+                val committed = chatRepository.updateMessageIfUnchanged(message, updated)
+                replaceMessagesFromRepository()
+                check(committed) { "消息已变化，请重新操作" }
+            } catch (cancelled: CancellationException) { throw cancelled }
+            catch (error: Exception) { _messageActionError.value = error.message ?: "切换备选失败" }
         }
     }
 
@@ -4117,7 +4214,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
      */
     private suspend fun captureSaveSlot(
         name: String, description: String?, imagePolicy: SaveSlotImagePolicy, includeAudio: Boolean, cancellable: Boolean = true
-    ): Pair<SaveSlot, ChatSession> {
+    ): Pair<SaveSlot, ChatSession> = replyRemovalCoordinator.withSettledSession(sessionId) {
         var packagedSlot: SaveSlot? = null
         var committed = false
         try {
@@ -4184,7 +4281,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             saveSlotRepository.save(packagedSlot)
             committed = true
             refreshSaveSlots()
-            return requireNotNull(packagedSlot) to curSession
+            requireNotNull(packagedSlot) to curSession
         } catch (error: Throwable) {
             if (!committed) packagedSlot?.let(ChatBarApp.instance.saveSlotPackageStorage::delete)
             throw error
@@ -4233,7 +4330,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     fun loadSaveSlot(summary: SaveSlotSummary) {
         if (saveSlotOperationJob?.isActive == true || _saveSlotOperation.value.busy) return
         saveSlotOperationJob = viewModelScope.launch {
-            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            formatRepairCommitMutex.withLock {
+                val dataAccess = com.example.chatbar.domain.backup.LocalDataMaintenance.enter()
                 try {
                   _saveSlotOperation.value = SaveSlotOperationState(
                       busy = true,
@@ -4247,8 +4345,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
                       slot.packageRef != null
                   ) {
-                      loadPackagedSaveSlot(curSession, slot)
-                      _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                      val status = loadPackagedSaveSlot(curSession, slot)
+                      _saveSlotOperation.value = SaveSlotOperationState(status = status)
                       return@launch
                   }
                   val materializedImages = materializeSaveSlotImages(slot)
@@ -4259,16 +4357,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       throw error
                   }
                   val materializedSlot = materializedAudio.slot
-                  val preservedImages = materializedSlot.messages
-                      .flatMap { it.images }
-                      .toSet() + listOfNotNull(materializedSlot.chatBackground)
-                  val preservedAudio = materializedSlot.voiceMessages.mapTo(mutableSetOf()) { it.audioPath }
                   val currentMsgs = chatRepository.getMessages(sessionId)
                   val currentVoices = voiceMessageRepository.listForSession(sessionId)
                   val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
                   longTermMemoryService.ensureMigrated(sessionId)
                   val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
-                  val currentImages = currentMsgs.flatMap { it.images }.toSet() +
+                  val currentImages = currentMsgs.flatMap { it.images + it.generatedImageMetadata.map { metadata -> metadata.imagePath } }.toSet() +
                       listOfNotNull(curSession.chatBackground)
                   val latest = materializedSlot.messages.lastOrNull()
                   val restoredSession = curSession.copy(
@@ -4306,7 +4400,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       lastMessageRole = latest?.role
                   )
                   val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
-                  fishAudioCoordinator.stopPlayback()
+                  fishAudioCoordinator.stopPlaybackForRestore()
                   try {
                       chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
                       voiceMessageRepository.restoreForSession(
@@ -4331,7 +4425,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
                       chatRepository.updateSession(curSession, restoreNarrativeMode = true)
                       runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
-                      preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
                       materializedAudio.createdPaths.forEach {
                           ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
                       }
@@ -4339,13 +4432,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       throw error
                   }
 
-                  currentImages.filterNot { it in preservedImages }.forEach { deleteDisposableChatImage(it) }
-                  currentVoices
-                      .map(GeneratedVoiceMessage::audioPath)
-                      .filterNot { it in preservedAudio }
-                      .forEach { ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it) }
+                  val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
                   loadSessionData()
-                  _saveSlotOperation.value = SaveSlotOperationState(status = "读档完成。")
+                  _saveSlotOperation.value = SaveSlotOperationState(status = status)
                 } catch (error: Throwable) {
                   if (error is CancellationException) {
                       _saveSlotOperation.value = SaveSlotOperationState(status = "已取消读档。")
@@ -4354,14 +4443,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   _saveSlotOperation.value = SaveSlotOperationState(
                       status = "读档失败：${error.message ?: error::class.simpleName}"
                   )
+                } finally {
+                    dataAccess.close()
                 }
             }
         }
     }
 
-    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot) {
+    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot): String {
         val currentImages = linkedSetOf<String>()
-        chatRepository.forEachMessage(sessionId) { message -> currentImages += message.images }
+        chatRepository.forEachMessage(sessionId) { message ->
+            currentImages += message.images
+            message.generatedImageMetadata.mapTo(currentImages) { it.imagePath }
+        }
         curSession.chatBackground?.let(currentImages::add)
         val currentVoices = voiceMessageRepository.listForSession(sessionId)
         val packageStorage = ChatBarApp.instance.saveSlotPackageStorage
@@ -4377,6 +4471,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     fishAudioStorage = ChatBarApp.instance.fishAudioStorage
                 )
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复消息…", true)
+                fishAudioCoordinator.stopPlaybackForRestore()
                 chatRepository.replaceMessagesForSessionStreaming(sessionId) { emit ->
                     reader.streamMessages(sessionId, emit)
                 }
@@ -4431,12 +4526,38 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 throw error
             }
 
-            currentImages.forEach(::deleteDisposableChatImage)
-            currentVoices.map(GeneratedVoiceMessage::audioPath)
-                .filterNot { it in reader.createdAudioPaths }
-                .forEach(ChatBarApp.instance.fishAudioStorage::deleteIfOwned)
         }
+        val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
         loadSessionData()
+        return status
+    }
+
+    private suspend fun finishSaveSlotMediaCleanup(
+        imagePaths: Collection<String>,
+        voices: List<GeneratedVoiceMessage>
+    ): String = withContext(NonCancellable) {
+        _saveSlotOperation.value = SaveSlotOperationState(true, "正在核对旧附件…", false)
+        var complete = true
+        try {
+            chatRepository.deleteUnreferencedChatImages(imagePaths) { path ->
+                check(novelAiImageStorage.deleteChatAttachmentIfOwned(path))
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            complete = false
+        }
+        try {
+            voiceMessageRepository.deleteUnownedReplyAudio(
+                voices.map(GeneratedVoiceMessage::audioPath),
+                ChatBarApp.instance.fishAudioStorage::deleteIfOwned
+            )
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            complete = false
+        }
+        if (complete) "读档完成。" else "读档完成，部分旧附件未清理。"
     }
 
     /**

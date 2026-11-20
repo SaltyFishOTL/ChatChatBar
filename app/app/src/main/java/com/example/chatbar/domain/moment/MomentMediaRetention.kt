@@ -7,7 +7,7 @@ import java.net.URI
 /** Historical posts retain their author snapshots and images after a card edit or deletion. */
 object MomentMediaRetention {
     fun unreferencedPaths(candidates: Iterable<String>, posts: List<MomentPost>, additionalReferences: Iterable<String> = emptyList()): List<String> {
-        val retained = (posts.flatMap { listOfNotNull(it.senderAvatar, it.imagePath) } + additionalReferences)
+        val retained = (posts.flatMap { listOfNotNull(it.senderAvatar, it.imagePath) + it.imageVersions.map { version -> version.imagePath } } + additionalReferences)
             .filter(String::isNotBlank)
             .map(::referenceKey)
             .toSet()

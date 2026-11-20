@@ -28,7 +28,9 @@ data class MessageFormatRepairNotice(
     val kind: MessageFormatRepairNoticeKind,
     val targetContent: String,
     val originalContent: String? = null,
-    val errorMessage: String? = null
+    val errorMessage: String? = null,
+    val restored: Boolean = false,
+    val versionId: String? = null
 )
 
 const val MESSAGE_ORDER_STEP: Long = 1_000_000L
