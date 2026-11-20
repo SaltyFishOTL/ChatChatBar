@@ -187,18 +187,38 @@ class NarrativeHistoryEchoTest {
             "<历史回复 模式=\"推进\">" to "</历史回复>",
             "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
         )) {
-            val lead = "她说‘the visitors’ plan"
-            val prefix = "$lead\n$closing\n仍在这里。"
-            val incoming = "$opening\n$prefix"
-            assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, streaming = true))
-            assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, interrupted = true))
-            assertEquals(incoming, NarrativeHistoryEcho.completedBody(incoming, enabled = true))
-            val completed = "$prefix’然后转身。"
-            assertEquals(completed, NarrativeHistoryEcho.completedBody("$opening\n$completed\n$closing", enabled = true))
+            for (breakLine in listOf("\n", "\r\n", "\r")) {
+                val lead = "她说‘the visitors’ plan"
+                val prefix = "$lead$breakLine$closing$breakLine" + "仍在这里。"
+                val incoming = "$opening$breakLine$prefix"
+                assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, streaming = true))
+                assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, interrupted = true))
+                assertEquals(incoming, NarrativeHistoryEcho.completedBody(incoming, enabled = true))
+                val completed = "$prefix’然后转身。"
+                assertEquals(completed,
+                    NarrativeHistoryEcho.completedBody("$opening$breakLine$completed$breakLine$closing", enabled = true))
 
-            // The same terminal-looking bytes could be the real outer close at this point.
-            val ambiguous = "$opening\n$lead\n$closing"
-            assertEquals(lead, NarrativeHistoryEcho.completedBody(ambiguous, enabled = true, streaming = true))
+                // These bytes alone still look like a real terminal outer close.
+                val ambiguous = "$opening$breakLine$lead$breakLine$closing"
+                assertEquals(lead, NarrativeHistoryEcho.completedBody(ambiguous, enabled = true, streaming = true))
+                val twoLiteralClosers = "$prefix$breakLine$closing"
+                assertEquals(twoLiteralClosers, NarrativeHistoryEcho.completedBody(
+                    "$opening$breakLine$twoLiteralClosers", enabled = true, interrupted = true,
+                ))
+            }
+        }
+    }
+
+    @Test fun separateParagraphDoesNotReinterpretAnExampleAsAnUnclosedCurlyQuote() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val heading = "She titled it ‘Visitors’ before leaving"
+        for (breakLine in listOf("\n", "\r\n", "\r")) for (blank in listOf("", " \t")) {
+            val example = "$opening$breakLine$heading$breakLine$closing$breakLine$blank$breakLine" +
+                "This is a markup example."
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(example, NarrativeHistoryEcho.completedBody(example, true, interrupted, streaming = streaming))
+            }
         }
     }
 

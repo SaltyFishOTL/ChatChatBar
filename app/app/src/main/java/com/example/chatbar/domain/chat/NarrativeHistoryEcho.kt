@@ -81,12 +81,11 @@ object NarrativeHistoryEcho {
                 val position = tag.range.first
                 val linePrefix = end.subSequence(lineStart(end, position), position)
                 val nextTag = familyTags.getOrNull(index + 1)?.range?.first ?: end.length
-                val continuation = end.subSequence(tag.range.last + 1, nextTag)
+                val continuationLines = end.subSequence(tag.range.last + 1, nextTag).lineSequence().iterator()
                 position.takeIf {
                     tag.value in wrapper.closings && linePrefix.isBlank() && !isIndentedCodeLine(end, position) &&
-                        ranges.none { position in it } &&
-                        continuation.takeWhile { it != '\r' && it != '\n' }.isBlank() &&
-                        continuation.any(Char::isLetterOrDigit)
+                        ranges.none { position in it } && continuationLines.next().isBlank() &&
+                        continuationLines.hasNext() && continuationLines.next().any(Char::isLetterOrDigit)
                 }
             } else emptyList()
             val quotes = proseQuoteRanges(end, quoteDelimitersToSkip, includeUnclosed, interiorClosings)
