@@ -33,6 +33,7 @@ import com.example.chatbar.data.local.entity.RagIndexStatus
 import com.example.chatbar.data.local.entity.SpeakerTagRename
 import com.example.chatbar.data.local.entity.SpeakerTagRenameTask
 import com.example.chatbar.data.local.entity.WorldBookEntry
+import com.example.chatbar.data.repository.EditorDraftRepository
 import com.example.chatbar.domain.card.CharacterSpeakerNamePolicy
 import com.example.chatbar.domain.card.CharacterCardCharacterImportResult
 import com.example.chatbar.domain.card.CharacterSectionImportPolicy
