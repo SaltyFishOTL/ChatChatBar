@@ -23,7 +23,7 @@ data class ChatMemoryTurn(
 
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
-    const val CONTENT_VERSION = "8"
+    const val CONTENT_VERSION = "9"
     const val ACTION_CHOICE_SOURCE_IDS = "actionChoiceSourceIds"
 
     private const val LONG_TURN_SPLIT_THRESHOLD = 600

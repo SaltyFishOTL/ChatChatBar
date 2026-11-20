@@ -2363,6 +2363,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             val restored = MessageFormatRepairPolicy.restoreOriginal(message) ?: return@launch
+            longTermMemoryService.preserveActionProjectionBeforeMutation(message, restored)
             chatRepository.updateMessage(restored)
             replaceMessagesFromRepository()
             refreshMemoryAfterMessageEdit(restored)
@@ -2545,6 +2546,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     )
 
     private suspend fun persistFormatRepairMessage(expected: ChatMessage, message: ChatMessage): ChatMessage {
+        longTermMemoryService.preserveActionProjectionBeforeMutation(expected, message)
         val saved = chatRepository.updateMessageIfUnchanged(expected, message)
         replaceMessagesFromRepository()
         if (saved != null) return saved
@@ -3592,6 +3594,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             reasoningContent = generatedMessage.reasoningContent,
             formatRepairNotice = null
         )
+        longTermMemoryService.preserveActionProjectionBeforeMutation(old, updated)
         chatRepository.updateMessage(updated)
         return updated
     }
@@ -3615,6 +3618,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         viewModelScope.launch {
             fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
             val deletedMessage = chatRepository.getMessage(messageId, sessionId)
+            if (deletedMessage != null) {
+                longTermMemoryService.preserveActionProjectionBeforeMutation(deletedMessage)
+            }
             selectNeighborWindowAnchor(messageId)
 
             deletedMessage
@@ -3632,12 +3638,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             refreshMessages()
             enqueueLongTermMemoryAfterMessageDeletion()
 
-            if (deletedMessage == null || ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
+            if (deletedMessage == null || deletedMessage.role == MessageRole.ASSISTANT ||
+                ChatMemoryIndexPolicy.contributesToIndex(deletedMessage)) {
                 _isDeletingMemory.value = true
                 yield()
                 try {
                     ragMemoryMutationMutex.withLock {
                         if (deletedMessage == null) {
+                            ChatBarApp.instance.ragRepository.deleteChatMemoryDependingOnActionReply(sessionId, messageId)
                             ragManager.deleteMemoryForMessage(messageId)
                         } else {
                             refreshMemoryAfterMessageDeletion(deletedMessage)
@@ -3684,6 +3692,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (imagePath !in message.images) return@launch
             val remaining = message.images.filterNot { it == imagePath }
             if (remaining.isEmpty() && message.content.isBlank()) {
+                longTermMemoryService.preserveActionProjectionBeforeMutation(message)
                 selectNeighborWindowAnchor(messageId)
                 chatRepository.deleteMessage(messageId, sessionId)
                 _messages.value = _messages.value.filterNot { it.id == messageId }
@@ -3700,7 +3709,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 withContext(Dispatchers.IO) {
                     deleteDisposableChatImage(imagePath)
                 }
-                if (ChatMemoryIndexPolicy.contributesToIndex(message)) {
+                if (message.role == MessageRole.ASSISTANT || ChatMemoryIndexPolicy.contributesToIndex(message)) {
                     ragMemoryMutationMutex.withLock {
                         refreshMemoryAfterMessageDeletion(message)
                     }
@@ -3786,6 +3795,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             formatRepairNotice = null
         )
 
+        longTermMemoryService.preserveActionProjectionBeforeMutation(oldMessage, updatedMessage)
         if (deleteRemovedImages) {
             oldMessage.images.filterNot(imagePaths::contains).forEach { deleteDisposableChatImage(it) }
         }
@@ -3918,6 +3928,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 message = message,
                 alternativeIndex = nextIndex
             )
+            longTermMemoryService.preserveActionProjectionBeforeMutation(message, updated)
             _messages.value = _messages.value.map { if (it.id == messageId) updated else it }
             ragMemoryMutationMutex.withLock {
                 chatRepository.updateMessage(updated)

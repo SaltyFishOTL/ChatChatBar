@@ -13,6 +13,7 @@
 - Exclude the newest unstable source turn from long-term-memory generation.
 - Treat source-turn grouping as shared boundary logic. Direct context, Episode pending, and RAG may store different data but must agree on turn identity.
 - RAG chunk content, `messageIds`, and anchor include only messages with normalized nonblank text. Generated assistant image-only messages keep their source-turn identity for chat/long-term memory, but never enter RAG or trigger embedding work when deleted.
+- A bare persisted user choice does not identify an assistant version. Omit its derived choice text when the source reply changed after the user message or the stored alternatives disagree on that label. Keep the raw user text.
 - RAG may split one source turn whose normalized index text exceeds 600 characters into multiple 300–400-character target chunks. Every fragment keeps the same source-turn/message identity and differs only by stable chunk index; fragments never become new timeline turns.
 - Allow the global retained-context count to be zero. Zero retains no counted history groups, while the complete previous turn and current open turn remain in the prompt hot zone; every older counted group is outside direct context.
 - Configure exact Episode target globally with legacy field `episodeMaxSourceTurns` in range 1–6, default 2. Capture it once when backfill starts; setting changes affect later runs only.

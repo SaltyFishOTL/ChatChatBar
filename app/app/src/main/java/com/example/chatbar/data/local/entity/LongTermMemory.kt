@@ -1,5 +1,7 @@
 package com.example.chatbar.data.local.entity
 
+import kotlinx.serialization.EncodeDefault
+import kotlinx.serialization.ExperimentalSerializationApi
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlin.uuid.ExperimentalUuidApi
@@ -97,6 +99,7 @@ data class MemorySourceTurnRef(
  * 不参与展示、注入或用户编辑。旧数据缺少content时由[body]兼容读取。
  */
 @Serializable
+@OptIn(ExperimentalSerializationApi::class)
 data class MemoryNode(
     val id: String,
     val sessionId: String,
@@ -122,7 +125,10 @@ data class MemoryNode(
     val sourceTurns: List<MemoryTurnSource> = emptyList(),
     val childCoverage: List<MemoryChildCoverage> = emptyList(),
     val summary: String = "",
-    val closed: Boolean = true
+    val closed: Boolean = true,
+    /** A legacy reference was found to cover assistant menus before projection was available. */
+    @EncodeDefault(EncodeDefault.Mode.NEVER)
+    val actionProjectionWithheld: Boolean = false
 ) {
     val body: String
         get() = content.trim().ifBlank {

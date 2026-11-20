@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.domain.chat.ContextWindowManager
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
 import junit.framework.TestCase.assertTrue
@@ -47,6 +48,27 @@ class ChatMemoryIndexPolicyTest {
         assertEquals("B", user.displayContent)
         val gap = user.copy(sourceTurnId = "turn-9", sourceTurnOrder = 9)
         assertTrue(ChatMemoryIndexPolicy.buildTurns(listOf(menu, gap)).last().confirmedChoices.isEmpty())
+    }
+
+    @Test
+    fun indexDoesNotRebindHistoricalBareChoiceAfterTheMenuChanges() {
+        val format = ActionOptionsFormat("[choices]", "[/choices]", "Choices", ActionOptionLabels.LETTERS)
+        val original = message("menu", MessageRole.ASSISTANT,
+            "[choices]\nChoices\nA. 封好地图\nB. 交出铜钥匙\n[/choices]", sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = format, createdAt = 100, updatedAt = 100)
+        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8").copy(createdAt = 200, updatedAt = 200)
+        fun choiceTurn(menu: ChatMessage) = ChatMemoryIndexPolicy.buildTurns(listOf(menu, user)).last()
+
+        assertEquals(listOf("user:\nB\n交出铜钥匙"), ChatMemoryIndexPolicy.contentsForIndex(choiceTurn(original)))
+        val reordered = "[choices]\nChoices\nA. 交出铜钥匙\nB. 封好地图\n[/choices]"
+        val edited = original.copy(content = reordered, updatedAt = 300)
+        val ambiguous = MessageAlternativeVersionPolicy.append(original, reordered, "second", updatedAt = 150)
+        listOf(edited, edited.copy(updatedAt = 200), ambiguous).forEach { changed ->
+            val rawTurn = choiceTurn(changed)
+            assertTrue(rawTurn.confirmedChoices.isEmpty())
+            assertEquals(listOf("user:\nB"), ChatMemoryIndexPolicy.contentsForIndex(rawTurn))
+            assertFalse(ChatMemoryIndexPolicy.shouldIndex(rawTurn))
+        }
     }
 
     @Test
@@ -261,6 +283,7 @@ class ChatMemoryIndexPolicyTest {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("memory_node", "1")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "8")))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", ChatMemoryIndexPolicy.CONTENT_VERSION)))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }

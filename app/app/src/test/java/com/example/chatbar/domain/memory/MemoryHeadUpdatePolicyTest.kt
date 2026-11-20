@@ -1,5 +1,7 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryTimelineEntry
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -8,6 +10,19 @@ import org.junit.Test
 
 class MemoryHeadUpdatePolicyTest {
     private val stableIds = listOf("source-0", "source-1", "source-2", "source-3")
+
+    @Test
+    fun hashlessHeadCannotBecomeFreshWhenItsAffectedSourceIsEditedAway() {
+        val timeline = stableIds.mapIndexed { order, id ->
+            MemoryTimelineEntry(sourceTurnId = id, sourceOrder = order.toLong(), displayT = order.toLong())
+        }
+        val original = MemoryHead(throughSourceTurnId = "source-2", goals = "旧目标")
+        assertFalse(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, emptySet()))
+        assertFalse(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, setOf("source-3")))
+        val observedStale = MemoryHeadUpdatePolicy.hashlessHeadIsStale(original, timeline, setOf("source-1"))
+        assertTrue(observedStale)
+        assertTrue(MemoryHeadUpdatePolicy.hashlessHeadIsStale(original.copy(stale = observedStale), timeline, emptySet()))
+    }
 
     @Test
     fun baselineExcludesLatestCompleteHotTurn() {

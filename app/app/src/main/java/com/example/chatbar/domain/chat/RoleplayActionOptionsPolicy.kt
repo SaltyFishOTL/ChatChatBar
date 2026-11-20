@@ -195,9 +195,12 @@ object RoleplayActionOptionsPolicy {
         confirmedChoiceLabel(userText)?.let { confirmedChoiceForLabel(reply, it) }
 
     private fun confirmedChoiceForLabel(reply: ChatMessage, label: String): ConfirmedActionChoice? =
-        blocks(reply.displayContent, reply.displayActionOptionsFormat)
-            .singleOrNull()?.options?.singleOrNull { it.label.equals(label, ignoreCase = true) }
-            ?.let { ConfirmedActionChoice(reply.id, it.text) }
+        uniqueChoiceText(reply.displayContent, reply.displayActionOptionsFormat, label)
+            ?.let { ConfirmedActionChoice(reply.id, it) }
+
+    private fun uniqueChoiceText(content: String, format: ActionOptionsFormat?, label: String): String? =
+        blocks(content, format).singleOrNull()?.options
+            ?.singleOrNull { it.label.equals(label, ignoreCase = true) }?.text
 
     /** Stable consecutive turns prove adjacency even when an automatic index loads a sparse window. */
     fun confirmedMemoryChoice(user: ChatMessage, messages: List<ChatMessage>): ConfirmedActionChoice? {
@@ -217,7 +220,16 @@ object RoleplayActionOptionsPolicy {
             }
             .maxWithOrNull(ChatMessage.TimelineComparator)
             ?.takeIf { it.role == MessageRole.ASSISTANT } ?: return null
-        return confirmedChoiceForLabel(reply, label)
+        // A persisted bare label carries no record of the assistant version it originally followed.
+        if (reply.updatedAt > user.createdAt ||
+            (reply.updatedAt == user.createdAt && reply.updatedAt != reply.createdAt)
+        ) return null
+        val choice = confirmedChoiceForLabel(reply, label) ?: return null
+        return choice.takeIf {
+            MessageAlternativeVersionPolicy.versions(reply).all { version ->
+                uniqueChoiceText(version.content, version.actionOptionsFormat, label) == choice.text
+            }
+        }
     }
 
     fun preserveConfirmedUserChoice(sourceText: String, choice: ConfirmedActionChoice?): String =
