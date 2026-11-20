@@ -17,7 +17,7 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
-    private val quotedText = Regex("「[^「」]*」|『[^『』]*』|“[^“”]*”|‘[^‘’]*’")
+    private val proseDelimiters = mapOf('「' to '」', '『' to '』', '“' to '”', '‘' to '’', '"' to '"', '\'' to '\'')
 
     fun appliesToRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): Boolean =
         narrativeMode != null && (formatCard == null || wrappers.none { it.opening in formatCard })
@@ -70,9 +70,10 @@ object NarrativeHistoryEcho {
             val markdown = bareCarriageReturn.replace(end, "\n")
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val fences = MarkdownCodeFences.blocks(markdown) { lazyQuoteLineStarts += it }.map { it.range }
-            val ranges = codeLiteralRanges(markdown, fences) + quotedText.findAll(end).map { it.range }.toList()
+            val ranges = codeLiteralRanges(markdown, fences)
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
-            ReplyLiterals(ranges + asciiQuoteRanges(end, quoteDelimitersToSkip), lazyQuoteLineStarts)
+            val quotes = proseQuoteRanges(end, quoteDelimitersToSkip, includeUnclosed = streaming || interrupted)
+            ReplyLiterals(ranges + quotes, lazyQuoteLineStarts)
         }
         fun isMarkdownQuoteLine(offset: Int): Boolean {
             val lineStart = lineStart(end, offset)
@@ -150,22 +151,38 @@ object NarrativeHistoryEcho {
         }
     }
 
-    private fun asciiQuoteRanges(text: String, delimiterExclusions: List<IntRange>): List<IntRange> = buildList {
+    private fun proseQuoteRanges(
+        text: String, delimiterExclusions: List<IntRange>, includeUnclosed: Boolean,
+    ): List<IntRange> = buildList {
         var open = -1
+        var closing: Char? = null
+        var depth = 0
         for (index in text.indices) {
             val symbol = text[index]
-            if (symbol != '\'' && symbol != '"') continue
+            val matchingClose = proseDelimiters[symbol]
+            if (matchingClose == null && symbol != closing) continue
             if (isEscaped(text, index) || delimiterExclusions.any { index in it }) continue
             val followsWord = text.getOrNull(index - 1)?.isLetterOrDigit() == true
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
-            if (open < 0) open = index
-            else if (text[open] == symbol) {
-                add(open..index)
-                open = -1
+            when {
+                open < 0 && matchingClose != null -> {
+                    open = index
+                    closing = matchingClose
+                    depth = 1
+                }
+                symbol == closing -> {
+                    if (--depth == 0) {
+                        add(open..index)
+                        open = -1
+                        closing = null
+                    }
+                }
+                open >= 0 && symbol == text[open] -> depth++
             }
         }
+        if (includeUnclosed && open >= 0) add(open..text.lastIndex)
     }
 
     private fun isEscaped(text: String, position: Int): Boolean {

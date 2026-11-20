@@ -108,6 +108,17 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun provisionalProseQuotesStayLiteralWhenTheReplyIsStopped() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (beginning in listOf("她说：\"", "她说：“", "她说：「")) {
+            val body = "${beginning}Type $closing to finish."
+            val raw = "$opening\n$body"
+            assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.completedBody(raw, enabled = true, interrupted = true))
+        }
+    }
+
     @Test fun onlyCompletedToolOutputCanJoinSeparateEchoParts() {
         val first = "<历史回复 模式=\"聚焦\">\n甲\n</历史回复>"
         val second = "<历史回复 模式=\"推进\">\n乙\n</历史回复>"
