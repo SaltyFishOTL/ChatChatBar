@@ -1092,9 +1092,10 @@ fun CharacterEditScreen(
                 viewModel.updateOpenModalState(null)
             },
             onSave = {
-                viewModel.updateDocument(doc, editDocName, editDocContent)
-                editDocument = null
-                viewModel.updateOpenModalState(null)
+                viewModel.updateDocument(doc, editDocName, editDocContent) {
+                    editDocument = null
+                    viewModel.updateOpenModalState(null)
+                }
             }
         )
     }
@@ -1345,9 +1346,10 @@ fun CharacterEditScreen(
                 viewModel.updateOpenModalState(null)
             },
             onSave = { name, content ->
-                viewModel.addDocument(name, content)
-                showDocumentDialog = false
-                viewModel.updateOpenModalState(null)
+                viewModel.addDocument(name, content) {
+                    showDocumentDialog = false
+                    viewModel.updateOpenModalState(null)
+                }
             }
         )
     }
@@ -1534,6 +1536,17 @@ fun CharacterEditScreen(
                 CbButton("另存为新卡", { viewModel.saveConflict = false; viewModel.saveCharacterCard(onBack, saveAsNew = true) }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
                 CbButton("取消", { viewModel.saveConflict = false }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Ghost)
             }
+        }
+    }
+    if (viewModel.isDraftCleanupPending && !isSaving) {
+        CbDialog(
+            onDismissRequest = {},
+            title = "角色卡已保存",
+            dismissOnClickOutside = false,
+            dismiss = { CbButton("退出编辑", onBack, variant = ButtonVariant.Ghost) },
+            confirm = { CbButton("重试清理", { viewModel.saveCharacterCard(onBack) }) }
+        ) {
+            CbText("旧草稿的清理未完成，草稿资源已保留。")
         }
     }
     if (isSaving) {

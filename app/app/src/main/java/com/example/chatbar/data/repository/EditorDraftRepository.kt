@@ -71,8 +71,8 @@ class EditorDraftRepository(
         return normalized
     }
 
-    suspend fun delete(id: String) {
-        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, id)
+    suspend fun delete(id: String, requireSuccess: Boolean = false) {
+        storage.deleteEntity<EditorDraft>(ENTITY_TYPE, id, requireSuccess)
         refreshCache()
     }
 
@@ -142,6 +142,9 @@ class EditorDraftRepository(
 
     fun isChanged(base: CharacterCard?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && characterHash(base) != draft.baseHash
+
+    fun sameCharacterContent(left: CharacterCard, right: CharacterCard): Boolean =
+        characterHash(left) == characterHash(right)
 
     fun isChanged(base: FormatCard?, draft: EditorDraft): Boolean =
         base != null && draft.baseHash != null && hash(base, FormatCard.serializer()) != draft.baseHash

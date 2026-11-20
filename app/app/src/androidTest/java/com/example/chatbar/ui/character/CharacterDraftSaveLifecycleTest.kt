@@ -2,6 +2,7 @@ package com.example.chatbar.ui.character
 
 import android.graphics.Bitmap
 import android.net.Uri
+import android.system.Os
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
@@ -202,6 +203,112 @@ class CharacterDraftSaveLifecycleTest {
         }
         assertEquals(updatedSource.creatorNotes, app.characterRepository.getById(original.id)?.creatorNotes)
         assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    @Test fun confirmedDocumentEditSurvivesAnImmediateFormalSaveAttempt() = runBlocking<Unit> {
+        val originalFile = File(app.filesDir, "before-${UUID.randomUUID()}.txt").also {
+            it.writeText("Original document bytes")
+            files += it
+        }
+        val doc = DocumentInfo.create("before.txt", originalFile.path, "txt")
+        val card = card(doc)
+        val vm = editor(card.id)
+        val confirmed = CompletableDeferred<Unit>()
+        var prematureSave = false
+        withContext(Dispatchers.Main) {
+            // The document stage must return to Main to publish its file. Request
+            // Save in the same turn, before the file is registered in the editor.
+            vm.updateDocument(doc, "after.txt", "Confirmed replacement bytes") { confirmed.complete(Unit) }
+            assertTrue(vm.isSaving.value)
+            vm.saveCharacterCard({ prematureSave = true })
+        }
+        withTimeout(15_000) { confirmed.await() }
+        assertFalse(prematureSave)
+        action { vm.saveDraftAndExit(it) }
+        val draft = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        val staged = draft.characterPayload!!.customDocuments.single()
+        assertEquals("after.txt", staged.fileName)
+        assertEquals("Confirmed replacement bytes", File(staged.filePath).readText())
+        action { vm.saveCharacterCard(it) }
+        val saved = app.characterRepository.getById(card.id)!!.customDocuments.single()
+        files += File(saved.filePath)
+        assertNotEquals(staged.filePath, saved.filePath)
+        assertEquals("Confirmed replacement bytes", File(saved.filePath).readText())
+        assertFalse(File(staged.filePath).exists())
+    }
+
+    @Test fun unchangedCardCanRecoverAnEditedPersonDialogAndDiscardItOnDismissal() = runBlocking<Unit> {
+        val card = card()
+        val vm = editor(card.id)
+        val person = CharacterInfo.create("Unconfirmed person")
+        withContext(Dispatchers.Main) {
+            vm.updateOpenModalState(CharacterOpenModalState(CharacterOpenModalKind.CHARACTER, person))
+            assertTrue(vm.hasLocalChanges)
+        }
+        action { vm.saveDraftAndExit(it) }
+        val reopened = editor(card.id)
+        withContext(Dispatchers.Main) {
+            assertNotNull(reopened.restoreDraft)
+            reopened.restoreDraft()
+            assertEquals(person, reopened.restoredOpenModalState?.character)
+            assertTrue(reopened.charactersList.isEmpty())
+            reopened.updateOpenModalState(null)
+        }
+        action { reopened.saveDraftAndExit(it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
+        assertTrue(app.characterRepository.getById(card.id)!!.characters.isEmpty())
+    }
+
+    @Test fun coldOpeningAnIdenticalOldDraftDoesNotOfferToRestoreIt() = runBlocking<Unit> {
+        val original = card()
+        val oldDraft = app.editorDraftRepository.characterDraft(
+            original.id, UUID.randomUUID().toString(), original.copy(ragIndexDone = 4), original,
+            emptyList(), emptyList(), emptyList()
+        )
+        app.editorDraftRepository.save(oldDraft)
+        assertNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val reopened = editor(original.id)
+        withContext(Dispatchers.Main) {
+            assertNull(reopened.restoreDraft)
+            assertFalse(reopened.hasLocalChanges)
+        }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+    }
+
+    @Test fun failedDraftDeletionRetainsItsResourcesAndCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
+        val original = card()
+        val vm = editor(original.id)
+        action { vm.addDocument("protected.txt", "Recoverable draft bytes", it) }
+        action { vm.saveDraftAndExit(it) }
+        val retained = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(retained.characterPayload!!.customDocuments.single().filePath)
+        files += staged
+        val draftFolder = File(app.filesDir, "entities/edit_drafts")
+        val draftFile = File(draftFolder, "${retained.id}.json")
+        assertTrue(draftFile.isFile)
+        val mode = Os.stat(draftFolder.path).st_mode and 0x1ff
+        var navigated = false
+        try {
+            Os.chmod(draftFolder.path, mode and 0x1f7)
+            withContext(Dispatchers.Main) { vm.saveCharacterCard({ navigated = true }) }
+            withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
+            withContext(Dispatchers.Main) {
+                assertTrue(vm.isDraftCleanupPending)
+                assertFalse(navigated)
+            }
+            assertTrue(draftFile.isFile)
+            assertEquals("Recoverable draft bytes", staged.readText())
+            val durable = app.characterRepository.getById(original.id)!!.customDocuments.single()
+            files += File(durable.filePath)
+            assertEquals("Recoverable draft bytes", File(durable.filePath).readText())
+        } finally {
+            Os.chmod(draftFolder.path, mode)
+        }
+        val durablePath = app.characterRepository.getById(original.id)!!.customDocuments.single().filePath
+        action { vm.saveCharacterCard(it) }
+        assertEquals(durablePath, app.characterRepository.getById(original.id)!!.customDocuments.single().filePath)
+        assertFalse(draftFile.exists())
+        assertFalse(staged.exists())
     }
 
     @Test fun derivedDocumentIndexUpdatesDoNotCreateADraftButRealDocumentEditsDo() = runBlocking<Unit> {
