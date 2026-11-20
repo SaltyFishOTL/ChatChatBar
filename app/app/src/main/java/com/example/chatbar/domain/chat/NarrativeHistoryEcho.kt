@@ -189,8 +189,10 @@ object NarrativeHistoryEcho {
 
     private fun hasClosingAfterCurlyPossessive(text: String, position: Int): Boolean {
         if (!text[position - 1].equals('s', ignoreCase = true) ||
-            text.getOrNull(position + 1) != ' ' || text.getOrNull(position + 2)?.isLetter() != true
+            text.getOrNull(position + 1)?.isWhitespace() != true
         ) return false
+        val wordStart = (position + 2 until text.length).firstOrNull { !text[it].isWhitespace() } ?: return false
+        if (!text[wordStart].isLetter()) return false
         val nextClose = text.indexOf('’', position + 1)
         val nextOpen = text.indexOf('‘', position + 1)
         return nextClose >= 0 && (nextOpen < 0 || nextClose < nextOpen)
