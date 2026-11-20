@@ -181,6 +181,40 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun unfinishedCurlyPossessiveKeepsInteriorLiterallyQuotedTag() {
+        for ((opening, closing) in listOf(
+            "<历史回复 模式=\"聚焦\">" to "</历史回复>",
+            "<历史回复 模式=\"推进\">" to "</历史回复>",
+            "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
+        )) {
+            val lead = "她说‘the visitors’ plan"
+            val prefix = "$lead\n$closing\n仍在这里。"
+            val incoming = "$opening\n$prefix"
+            assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, streaming = true))
+            assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, interrupted = true))
+            assertEquals(incoming, NarrativeHistoryEcho.completedBody(incoming, enabled = true))
+            val completed = "$prefix’然后转身。"
+            assertEquals(completed, NarrativeHistoryEcho.completedBody("$opening\n$completed\n$closing", enabled = true))
+
+            // The same terminal-looking bytes could be the real outer close at this point.
+            val ambiguous = "$opening\n$lead\n$closing"
+            assertEquals(lead, NarrativeHistoryEcho.completedBody(ambiguous, enabled = true, streaming = true))
+        }
+    }
+
+    @Test fun finishedPluralQuoteStillAllowsARealOuterClose() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val body = "她重复‘the visitors’ and walked away."
+        val wrapped = "$opening\n$body\n$closing"
+        val standaloneExample = "$wrapped\n她在解释刚才的示例。"
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, true, interrupted, streaming = streaming))
+            assertEquals(standaloneExample,
+                NarrativeHistoryEcho.completedBody(standaloneExample, true, interrupted, streaming = streaming))
+        }
+    }
+
     @Test fun onlyCompletedToolOutputCanJoinSeparateEchoParts() {
         val first = "<历史回复 模式=\"聚焦\">\n甲\n</历史回复>"
         val second = "<历史回复 模式=\"推进\">\n乙\n</历史回复>"
