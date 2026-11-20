@@ -3,6 +3,7 @@ package com.example.chatbar.ui.character
 import android.graphics.Bitmap
 import android.net.Uri
 import android.system.Os
+import android.system.OsConstants
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.ViewModelStore
 import androidx.test.core.app.ApplicationProvider
@@ -290,9 +291,10 @@ class CharacterDraftSaveLifecycleTest {
         val draftFile = File(draftFolder, "${retained.id}.json")
         assertTrue(draftFile.isFile)
         val mode = Os.stat(draftFolder.path).st_mode and 0x1ff
+        val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
         var navigated = false
         try {
-            Os.chmod(draftFolder.path, mode and 0x1f7)
+            Os.chmod(draftFolder.path, mode and writePermissions.inv())
             withContext(Dispatchers.Main) { vm.saveCharacterCard({ navigated = true }) }
             withTimeout(15_000) { while (withContext(Dispatchers.Main) { vm.isSaving.value }) delay(20) }
             withContext(Dispatchers.Main) {
