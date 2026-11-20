@@ -1780,7 +1780,14 @@ class LongTermMemoryService internal constructor(
         } else {
             sourceSnapshot
         }
-        val rebound = MemorySnapshotImportPolicy.rebind(normalizedSnapshot, sessionId)
+        val localLegacyIds = normalizedSnapshot.nodes
+            .filter { it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
+            .map { it.id }
+        val localLegacyNodes = memoryRepository.getNodes(localLegacyIds).associateBy { it.id }
+        val preservedSnapshot = MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+            normalizedSnapshot, sessionId, localLegacyNodes, loaded.state.head
+        )
+        val rebound = MemorySnapshotImportPolicy.rebind(preservedSnapshot, sessionId)
         val importedState = rebound.state ?: error("存档缺少长期记忆状态")
         validateImportedSnapshot(rebound, importedState)
         memoryRepository.saveNodes(rebound.nodes)

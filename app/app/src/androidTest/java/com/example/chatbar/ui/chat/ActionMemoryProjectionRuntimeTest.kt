@@ -15,9 +15,13 @@ import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MemoryHead
 import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
+import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySessionState
+import com.example.chatbar.data.local.entity.MemorySnapshot
 import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.domain.memory.MemorySourceFingerprint
@@ -134,11 +138,56 @@ class ActionMemoryProjectionRuntimeTest {
             assertFalse(prompt.archive.contains(reference.body))
             assertFalse(prompt.headAndTimeline.contains(oldHead.goals))
             assertTrue(requireNotNull(fresh.getNode(reference.id)).actionProjectionWithheld)
+            if (deleteReply) restoreOlderPackage(app, vm, session.id, reference, oldHead)
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
+            app.saveSlotRepository.deleteBySessionId(session.id)
             app.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, session.id)
             app.memoryRepository.deleteForSession(session.id)
             app.chatRepository.deleteSession(session.id)
         }
+    }
+
+    private suspend fun restoreOlderPackage(
+        app: ChatBarApp,
+        vm: ChatViewModel,
+        sessionId: String,
+        reference: MemoryNode,
+        oldHead: MemoryHead
+    ) {
+        val state = requireNotNull(app.memoryRepository.getState(sessionId))
+        val session = requireNotNull(app.chatRepository.getSession(sessionId))
+        val oldSnapshot = MemorySnapshot(
+            state = MemorySessionSnapshot(
+                legacyReferenceNodeIds = listOf(reference.id), head = oldHead, timeline = state.timeline,
+                memoryWasEnabled = false,
+            ),
+            nodes = listOf(reference),
+        )
+        val oldPackage = app.saveSlotPackageStorage.createPackage(
+            baseSlot = SaveSlot.create(sessionId, "合成旧存档").copy(
+                memorySnapshot = oldSnapshot, longTermMemoryEnabled = false,
+                nextSourceTurnOrder = session.nextSourceTurnOrder, nextTimelineTurn = session.nextTimelineTurn,
+            ),
+            imagePolicy = SaveSlotImagePolicy.NONE,
+            includeAudio = false,
+            messageSource = { emit -> app.chatRepository.forEachMessage(sessionId, action = emit) },
+            ragSource = {},
+            voices = emptyList(),
+        )
+        app.saveSlotRepository.save(oldPackage)
+        assertEquals(oldSnapshot, app.saveSlotRepository.getById(oldPackage.id)?.memorySnapshot)
+        val summary = requireNotNull(app.saveSlotRepository.getSummaryById(oldPackage.id))
+        withContext(Dispatchers.Main) { vm.loadSaveSlot(summary) }
+        val result = withTimeout(30_000) { vm.saveSlotOperation.first { !it.busy && it.status != null } }
+        assertEquals("读档完成。", result.status)
+
+        val fresh = MemoryRepository(JsonFileStorage(app))
+        assertEquals(reference.copy(actionProjectionWithheld = true), fresh.getNode(reference.id))
+        assertEquals(oldHead.copy(stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD),
+            requireNotNull(fresh.getState(sessionId)).head)
+        val prompt = app.longTermMemoryService.promptView(sessionId)
+        assertFalse(prompt.archive.contains(reference.body))
+        assertFalse(prompt.headAndTimeline.contains(oldHead.goals))
     }
 }

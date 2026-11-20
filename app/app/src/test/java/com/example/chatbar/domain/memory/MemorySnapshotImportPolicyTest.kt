@@ -1,6 +1,8 @@
 package com.example.chatbar.domain.memory
 
 import com.example.chatbar.data.local.entity.MemoryCoverageUnit
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemorySessionSnapshot
 import com.example.chatbar.data.local.entity.MemorySnapshot
@@ -14,6 +16,41 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class MemorySnapshotImportPolicyTest {
+    @Test
+    fun sameSessionOlderSnapshotCannotReplaceKnownWithholdingForExactPayloads() {
+        val legacy = MemoryNode(
+            id = "legacy", sessionId = "source", tier = MemoryTier.LEGACY_REFERENCE,
+            sourceTurnIds = listOf("turn-2"), content = "旧档案正文",
+        )
+        val head = MemoryHead(throughSourceTurnId = "turn-2", goals = "旧目标", version = 4)
+        val state = MemorySessionSnapshot(legacyReferenceNodeIds = listOf(legacy.id), head = head)
+        val older = MemorySnapshot(state = state, nodes = listOf(legacy))
+        val localNode = legacy.copy(actionProjectionWithheld = true)
+        val localHead = head.copy(
+            stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD,
+            sourceFingerprints = mapOf("turn-2" to "migration-proof"),
+        )
+        fun preserve(snapshot: MemorySnapshot) = MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+            snapshot, "source", mapOf(localNode.id to localNode), localHead,
+        )
+
+        val preserved = preserve(older)
+        assertEquals(localNode, preserved.nodes.single())
+        assertEquals(head.copy(stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD),
+            preserved.state?.head)
+
+        val differentBody = legacy.copy(content = "另一份正文")
+        val differentHead = head.copy(goals = "另一处目标")
+        val changed = older.copy(state = state.copy(head = differentHead), nodes = listOf(differentBody))
+        assertEquals(changed, preserve(changed))
+        val anotherVersion = older.copy(state = state.copy(head = head.copy(version = 5)))
+        assertEquals(anotherVersion.state, preserve(anotherVersion).state)
+        val verified = older.copy(state = state.copy(head = head.copy(actionProjection = MemoryHeadActionProjection.VERIFIED)))
+        assertEquals(verified.state, preserve(verified).state)
+        val foreign = older.copy(nodes = listOf(legacy.copy(sessionId = "foreign")))
+        assertEquals(foreign, preserve(foreign))
+    }
+
     @Test
     fun crossSessionImportRekeysWholeTreeAndRecomputesCoverageHashes() {
         val episode0 = episode("episode-0", "s0")

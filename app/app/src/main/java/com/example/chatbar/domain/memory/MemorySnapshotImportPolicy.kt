@@ -1,12 +1,49 @@
 package com.example.chatbar.domain.memory
 
 import com.example.chatbar.data.local.entity.MemoryCoverageUnit
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
 import com.example.chatbar.data.local.entity.MemorySnapshot
 import com.example.chatbar.data.local.entity.MemoryTier
 
 /** 防止跨会话SaveSlot导入抢占全局不可变节点ID。 */
 object MemorySnapshotImportPolicy {
+    internal fun preserveKnownActionWithholding(
+        snapshot: MemorySnapshot,
+        sessionId: String,
+        localLegacyNodes: Map<String, MemoryNode>,
+        localHead: MemoryHead
+    ): MemorySnapshot {
+        if (snapshot.nodes.any { it.sessionId != sessionId } ||
+            snapshot.legacyCommit?.sessionId?.let { it != sessionId } == true
+        ) return snapshot
+
+        val nodes = snapshot.nodes.map { incoming ->
+            val local = localLegacyNodes[incoming.id]
+            if (incoming.tier == MemoryTier.LEGACY_REFERENCE && !incoming.actionProjectionWithheld &&
+                local?.tier == MemoryTier.LEGACY_REFERENCE && local.sessionId == incoming.sessionId &&
+                local.actionProjectionWithheld && local.body == incoming.body && local.sourceTurnIds == incoming.sourceTurnIds
+            ) {
+                incoming.copy(actionProjectionWithheld = true)
+            } else incoming
+        }
+
+        val state = snapshot.state ?: return snapshot.copy(nodes = nodes)
+        val head = state.head
+        val sameHead = head.throughSourceTurnId != null && head.actionProjection == null &&
+            head.copy(
+                sourceHashes = localHead.sourceHashes,
+                sourceFingerprints = localHead.sourceFingerprints,
+                stale = localHead.stale,
+                actionProjection = localHead.actionProjection
+            ) == localHead
+        val preservedState = if (sameHead && localHead.actionProjection == MemoryHeadActionProjection.WITHHELD) {
+            state.copy(head = head.copy(stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD))
+        } else state
+        return snapshot.copy(state = preservedState, nodes = nodes)
+    }
+
     fun rebind(snapshot: MemorySnapshot, targetSessionId: String): MemorySnapshot {
         val mustClone = snapshot.nodes.any { it.sessionId != targetSessionId } ||
             snapshot.legacyCommit?.sessionId?.let { it != targetSessionId } == true
