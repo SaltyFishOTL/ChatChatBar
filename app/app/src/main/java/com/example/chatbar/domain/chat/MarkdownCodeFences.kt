@@ -38,7 +38,11 @@ object MarkdownCodeFences {
 
     fun blocks(content: String): List<Block> = blocks(content, null)
 
-    internal fun blocks(content: String, onLazyQuoteLine: ((Int) -> Unit)?): List<Block> = buildList {
+    internal fun blocks(
+        content: String,
+        onLazyQuoteLine: ((Int) -> Unit)?,
+        onIndentedCodeLine: ((IntRange) -> Unit)? = null,
+    ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
         var open: Fence? = null
@@ -95,6 +99,9 @@ object MarkdownCodeFences {
             if (match == null) {
                 if (existing == null) {
                     val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")
+                    if (startsIndentedCode && remainder.isNotBlank()) {
+                        onIndentedCodeLine?.invoke(start until start + rawLine.length)
+                    }
                     val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
                         !endsSetextHeading && !heading.containsMatchIn(remainder)

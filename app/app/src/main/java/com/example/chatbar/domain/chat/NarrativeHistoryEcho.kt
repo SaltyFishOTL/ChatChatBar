@@ -69,8 +69,12 @@ object NarrativeHistoryEcho {
         val literals by lazy(LazyThreadSafetyMode.NONE) {
             val markdown = bareCarriageReturn.replace(end, "\n")
             val lazyQuoteLineStarts = mutableSetOf<Int>()
-            val fences = MarkdownCodeFences.blocks(markdown) { lazyQuoteLineStarts += it }.map { it.range }
-            val ranges = codeLiteralRanges(markdown, fences)
+            val codeBlocks = mutableListOf<IntRange>()
+            MarkdownCodeFences.blocks(markdown,
+                onLazyQuoteLine = { lazyQuoteLineStarts += it },
+                onIndentedCodeLine = { codeBlocks += it },
+            ).mapTo(codeBlocks) { it.range }
+            val ranges = codeLiteralRanges(markdown, codeBlocks)
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
             val quotes = proseQuoteRanges(end, quoteDelimitersToSkip, includeUnclosed = streaming || interrupted)
             ReplyLiterals(ranges + quotes, lazyQuoteLineStarts)
@@ -119,9 +123,9 @@ object NarrativeHistoryEcho {
         return body
     }
 
-    private fun codeLiteralRanges(body: String, fences: List<IntRange>): List<IntRange> {
-        if ('`' !in body) return fences
-        val boundaries = (fences + paragraphBreak.findAll(body).map { it.range }.toList())
+    private fun codeLiteralRanges(body: String, codeBlocks: List<IntRange>): List<IntRange> {
+        if ('`' !in body) return codeBlocks
+        val boundaries = (codeBlocks + paragraphBreak.findAll(body).map { it.range }.toList())
             .sortedBy { it.first }
         val inline = buildList {
             var start = 0
@@ -131,7 +135,7 @@ object NarrativeHistoryEcho {
             }
             if (start < body.length) addAll(inlineCodeRanges(body, start, body.length))
         }
-        return fences + inline
+        return codeBlocks + inline
     }
 
     private fun inlineCodeRanges(text: String, start: Int, end: Int): List<IntRange> = buildList {
