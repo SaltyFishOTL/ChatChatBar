@@ -2650,6 +2650,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val generationJob = coroutineContext[Job]
                 var interruptedReplyDraft: ChatMessage? = null
                 var assistantReplyPersisted = false
+                var cleanNarrativeEcho = false
                 val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
                     generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
                 }
@@ -3003,6 +3004,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 worldBookOutlets = wbOutlets
                             )
                         }
+                    cleanNarrativeEcho = NarrativeHistoryEcho.appliesToRequest(requestNarrativeMode, renderedFormatCardContent)
                     // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                     val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
                         contextMsgs.lastOrNull { it.role == MessageRole.USER }
@@ -3263,7 +3265,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                     val ctx = ChatBarApp.instance
                     fun updateStreamingDraft(rawBody: String): String {
-                        val renderedBody = renderSessionText(NarrativeHistoryEcho.replyBody(rawBody, streaming = true))
+                        val renderedBody = renderSessionText(
+                            NarrativeHistoryEcho.replyBody(rawBody, streaming = true, enabled = cleanNarrativeEcho)
+                        )
                         val draft = ChatMessage(
                             id = assistantMsgId,
                             sessionId = sessionId,
@@ -3331,8 +3335,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Done -> {
                                 ChatBarApp.instance.streamingStopRequested.value = false
                                 // 流生成完毕，保存到数据库
+                                val completion = replyCompletion.get()
                                 val replyBody = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
-                                    NarrativeHistoryEcho.replyBody(accumulatedText)
+                                    NarrativeHistoryEcho.completedBody(
+                                        accumulatedText,
+                                        enabled = cleanNarrativeEcho,
+                                        interrupted = completion?.finishReason == "length",
+                                        partLengths = completion?.toolReplyPartLengths.orEmpty(),
+                                    )
                                 )
                                 val assistantMsg = ChatMessage(
                                     id = assistantMsgId,
@@ -3430,7 +3440,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
                         val finalDraft = interruptedReplyDraft?.let { partial ->
-                            partial.copy(content = NarrativeHistoryEcho.replyBody(partial.content))
+                            partial.copy(content = NarrativeHistoryEcho.replyBody(
+                                partial.content, enabled = cleanNarrativeEcho, interrupted = true,
+                            ))
                         }
                         val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)
                         if (draft != null || assistantReplyPersisted) {

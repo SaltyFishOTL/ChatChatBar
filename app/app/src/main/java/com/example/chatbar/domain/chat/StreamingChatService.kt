@@ -282,7 +282,9 @@ class StreamingChatService(
                                 trySend(StreamEvent.Delta(decoded.remainingText))
                             }
                             if (decoded.toolReplyCompleted) {
-                                replyCompletion.updateAndGet { it.copy(toolReplyCompleted = true) }
+                                replyCompletion.updateAndGet {
+                                    it.copy(toolReplyCompleted = true, toolReplyPartLengths = decoded.partLengths)
+                                }
                             } else if (completed && !toolDecoder.hasToolCalls) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")
                             }

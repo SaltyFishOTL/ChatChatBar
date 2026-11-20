@@ -6,6 +6,47 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NarrativeHistoryEchoTest {
+    @Test fun interruptedTrailingMarkerStaysHiddenOnSave() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (length in 1 until closing.length) {
+            val raw = "$opening\n正文\n${closing.take(length)}"
+            assertEquals("正文", NarrativeHistoryEcho.replyBody(raw, streaming = true))
+            assertEquals("正文", NarrativeHistoryEcho.replyBody(raw, interrupted = true))
+        }
+        assertEquals("2 <", NarrativeHistoryEcho.replyBody("$opening\n2 <", interrupted = true))
+    }
+
+    @Test fun declaredOrDisabledReplyFormatKeepsIdenticalText() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val raw = "$opening\n格式卡正文\n</历史回复>"
+        for ((mode, format) in listOf(null to null, ChatNarrativeMode.ADVANCE to raw)) {
+            val enabled = NarrativeHistoryEcho.appliesToRequest(mode, format)
+            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
+            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, streaming = true, enabled = enabled))
+        }
+    }
+
+    @Test fun quotedAndBareCarriageReturnCodeTagsStayInsideTheStory() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val quoted = "她写下「$closing」和\"$closing\"，然后又继续。"
+        val code = "示例：\r```text\r$closing\r```\r正文。"
+        assertEquals(quoted, NarrativeHistoryEcho.replyBody("$opening\n$quoted\n$closing"))
+        assertEquals(code, NarrativeHistoryEcho.replyBody("$opening\r$code\r$closing"))
+    }
+
+    @Test fun onlyCompletedToolOutputCanJoinSeparateEchoParts() {
+        val first = "<历史回复 模式=\"聚焦\">\n甲\n</历史回复>"
+        val second = "<历史回复 模式=\"推进\">\n乙\n</历史回复>"
+        val raw = "$first\n$second"
+        assertEquals("甲\n乙", NarrativeHistoryEcho.completedBody(raw, enabled = true,
+            partLengths = listOf(first.length, second.length)))
+        assertEquals(raw, NarrativeHistoryEcho.completedBody(raw, enabled = true))
+        assertEquals("甲\n普通正文", NarrativeHistoryEcho.completedBody("$first\n普通正文", enabled = true,
+            partLengths = listOf(first.length, "普通正文".length)))
+    }
+
     @Test
     fun stripsTheExactHistoryWrapperForBothModes() {
         for (mode in ChatNarrativeMode.entries) {
