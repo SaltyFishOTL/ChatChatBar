@@ -4386,7 +4386,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       )
                       ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
                       chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
-                      longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
+                      val snapshot = materializedSlot.memorySnapshot
+                      val sourceSessionId = snapshot?.legacyCommit?.sessionId
+                          ?: snapshot?.nodes?.map { it.sessionId }?.distinct()?.singleOrNull()
+                      longTermMemoryService.loadSnapshot(sessionId, snapshot, sourceSessionId)
                   } catch (error: Throwable) {
                       chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
                       voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
@@ -4396,7 +4399,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       )
                       ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
                       chatRepository.updateSession(curSession, restoreNarrativeMode = true)
-                      runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
+                      runCatching {
+                          longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot, sourceSessionId = sessionId)
+                      }
                       preservedImages.filterNot { it in currentImages }.forEach { deleteDisposableChatImage(it) }
                       materializedAudio.createdPaths.forEach {
                           ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
@@ -4436,6 +4441,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             try {
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在校验存档…", true)
                 reader.validate()
+                val sourceSessionId = withContext(Dispatchers.IO) { reader.originalSessionId() }
                 val restoredBackground = reader.materializeBackground()
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在恢复语音…", true)
                 val restoredVoices = reader.restoreVoices(
@@ -4488,7 +4494,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ),
                         restoreNarrativeMode = true
                     )
-                    longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot)
+                    longTermMemoryService.loadSnapshot(sessionId, slot.memorySnapshot, sourceSessionId)
                 }
             } catch (error: Throwable) {
                 if (!messagesCommitted) {

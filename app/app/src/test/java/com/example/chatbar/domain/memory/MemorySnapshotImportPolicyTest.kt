@@ -30,9 +30,10 @@ class MemorySnapshotImportPolicyTest {
             stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD,
             sourceFingerprints = mapOf("turn-2" to "migration-proof"),
         )
-        fun preserve(snapshot: MemorySnapshot) = MemorySnapshotImportPolicy.preserveKnownActionWithholding(
-            snapshot, "source", mapOf(localNode.id to localNode), localHead,
-        )
+        fun preserve(snapshot: MemorySnapshot, owner: String? = "source") =
+            MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+                snapshot, "source", owner, mapOf(localNode.id to localNode), localHead,
+            )
 
         val preserved = preserve(older)
         assertEquals(localNode, preserved.nodes.single())
@@ -49,6 +50,30 @@ class MemorySnapshotImportPolicyTest {
         assertEquals(verified.state, preserve(verified).state)
         val foreign = older.copy(nodes = listOf(legacy.copy(sessionId = "foreign")))
         assertEquals(foreign, preserve(foreign))
+        val headOnly = older.copy(state = state.copy(legacyReferenceNodeIds = emptyList()), nodes = emptyList())
+        assertEquals(headOnly, preserve(headOnly, owner = "foreign"))
+        assertEquals(headOnly, preserve(headOnly, owner = null))
+        assertEquals(MemoryHeadActionProjection.WITHHELD, preserve(headOnly).state?.head?.actionProjection)
+    }
+
+    @Test
+    fun remintedLegacyReferenceKeepsOnlyKnownOriginalPayloadWithholding() {
+        val old = MemoryNode(
+            id = "first-migration", sessionId = "source", tier = MemoryTier.LEGACY_REFERENCE,
+            sourceTurnIds = listOf("turn-4"), coverageUnits = listOf(MemoryCoverageUnit("legacy:source-node", "旧正文")),
+            actionProjectionWithheld = true,
+        )
+        val reminted = old.copy(id = "another-migration", actionProjectionWithheld = false)
+        fun restored(node: MemoryNode, owner: String = "source") = MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+            MemorySnapshot(nodes = listOf(node)), "source", owner, mapOf(old.id to old), MemoryHead(),
+        ).nodes.single()
+
+        assertEquals(reminted.copy(actionProjectionWithheld = true), restored(reminted))
+        assertEquals(reminted, restored(reminted, owner = "other"))
+        val changedRange = reminted.copy(sourceTurnIds = listOf("turn-5"))
+        assertEquals(changedRange, restored(changedRange))
+        val otherOrigin = reminted.copy(coverageUnits = listOf(MemoryCoverageUnit("legacy:different", "旧正文")))
+        assertEquals(otherOrigin, restored(otherOrigin))
     }
 
     @Test

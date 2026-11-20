@@ -26,8 +26,12 @@ import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.domain.memory.MemorySourceFingerprint
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.dropWhile
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
@@ -164,23 +168,25 @@ class ActionMemoryProjectionRuntimeTest {
             ),
             nodes = listOf(reference),
         )
-        val oldPackage = app.saveSlotPackageStorage.createPackage(
-            baseSlot = SaveSlot.create(sessionId, "合成旧存档").copy(
-                memorySnapshot = oldSnapshot, longTermMemoryEnabled = false,
-                nextSourceTurnOrder = session.nextSourceTurnOrder, nextTimelineTurn = session.nextTimelineTurn,
-            ),
-            imagePolicy = SaveSlotImagePolicy.NONE,
-            includeAudio = false,
-            messageSource = { emit -> app.chatRepository.forEachMessage(sessionId, action = emit) },
-            ragSource = {},
-            voices = emptyList(),
-        )
+        suspend fun createLegacyPackage(owner: String, snapshot: MemorySnapshot): SaveSlot =
+            app.saveSlotPackageStorage.createPackage(
+                baseSlot = SaveSlot.create(owner, "合成旧存档").copy(
+                    memorySnapshot = snapshot, longTermMemoryEnabled = false,
+                    nextSourceTurnOrder = session.nextSourceTurnOrder, nextTimelineTurn = session.nextTimelineTurn,
+                ),
+                imagePolicy = SaveSlotImagePolicy.NONE,
+                includeAudio = false,
+                messageSource = { emit ->
+                    app.chatRepository.forEachMessage(sessionId) { emit(it.copy(sessionId = owner)) }
+                },
+                ragSource = {},
+                voices = emptyList(),
+            )
+
+        val oldPackage = createLegacyPackage(sessionId, oldSnapshot)
         app.saveSlotRepository.save(oldPackage)
         assertEquals(oldSnapshot, app.saveSlotRepository.getById(oldPackage.id)?.memorySnapshot)
-        val summary = requireNotNull(app.saveSlotRepository.getSummaryById(oldPackage.id))
-        withContext(Dispatchers.Main) { vm.loadSaveSlot(summary) }
-        val result = withTimeout(30_000) { vm.saveSlotOperation.first { !it.busy && it.status != null } }
-        assertEquals("读档完成。", result.status)
+        loadPackage(app, vm, oldPackage.id)
 
         val fresh = MemoryRepository(JsonFileStorage(app))
         assertEquals(reference.copy(actionProjectionWithheld = true), fresh.getNode(reference.id))
@@ -189,5 +195,37 @@ class ActionMemoryProjectionRuntimeTest {
         val prompt = app.longTermMemoryService.promptView(sessionId)
         assertFalse(prompt.archive.contains(reference.body))
         assertFalse(prompt.headAndTimeline.contains(oldHead.goals))
+
+        val headOnly = MemorySnapshot(
+            state = MemorySessionSnapshot(head = oldHead, timeline = state.timeline, memoryWasEnabled = false),
+        )
+        val localHeadOnly = createLegacyPackage(sessionId, headOnly)
+        app.saveSlotRepository.save(localHeadOnly)
+        loadPackage(app, vm, localHeadOnly.id)
+        assertEquals(MemoryHeadActionProjection.WITHHELD,
+            MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head?.actionProjection)
+
+        val external = createLegacyPackage("foreign-$sessionId", headOnly)
+        try {
+            val bytes = ByteArrayOutputStream()
+            app.saveSlotPackageStorage.export(external, bytes)
+            val imported = vm.importSaveSlotJson(bytes.toByteArray().inputStream())
+            assertEquals(sessionId, imported.sessionId)
+            loadPackage(app, vm, imported.id)
+            assertEquals(oldHead, MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head)
+        } finally {
+            app.saveSlotPackageStorage.delete(external)
+        }
+    }
+
+    private suspend fun loadPackage(app: ChatBarApp, vm: ChatViewModel, slotId: String) {
+        val summary = requireNotNull(app.saveSlotRepository.getSummaryById(slotId))
+        withTimeout(30_000) {
+            val result = async(start = CoroutineStart.UNDISPATCHED) {
+                vm.saveSlotOperation.dropWhile { !it.busy }.first { !it.busy }
+            }
+            withContext(Dispatchers.Main) { vm.loadSaveSlot(summary) }
+            assertEquals("读档完成。", result.await().status)
+        }
     }
 }

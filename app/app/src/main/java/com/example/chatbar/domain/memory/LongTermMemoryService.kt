@@ -1771,7 +1771,11 @@ class LongTermMemoryService internal constructor(
         memoryRepository.snapshot(sessionId)
     }
 
-    suspend fun loadSnapshot(sessionId: String, snapshot: MemorySnapshot?) = stateLock(sessionId) {
+    suspend fun loadSnapshot(
+        sessionId: String,
+        snapshot: MemorySnapshot?,
+        sourceSessionId: String?
+    ) = stateLock(sessionId) {
         val loaded = loadLocked(sessionId)
         val contextWindowSize = currentContextWindowSize()
         val sourceSnapshot = snapshot ?: legacySaveSlotSnapshot(loaded, contextWindowSize)
@@ -1780,13 +1784,18 @@ class LongTermMemoryService internal constructor(
         } else {
             sourceSnapshot
         }
-        val localLegacyIds = normalizedSnapshot.nodes
-            .filter { it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
-            .map { it.id }
-        val localLegacyNodes = memoryRepository.getNodes(localLegacyIds).associateBy { it.id }
-        val preservedSnapshot = MemorySnapshotImportPolicy.preserveKnownActionWithholding(
-            normalizedSnapshot, sessionId, localLegacyNodes, loaded.state.head
-        )
+        val preservedSnapshot = if (sourceSessionId == sessionId) {
+            val localLegacyIds = normalizedSnapshot.nodes
+                .filter { it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
+                .map { it.id }
+            val currentLegacy = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+            val localLegacyNodes = (currentLegacy + memoryRepository.getNodes(localLegacyIds)).associateBy(MemoryNode::id)
+            MemorySnapshotImportPolicy.preserveKnownActionWithholding(
+                normalizedSnapshot, sessionId, sourceSessionId, localLegacyNodes, loaded.state.head
+            )
+        } else {
+            normalizedSnapshot
+        }
         val rebound = MemorySnapshotImportPolicy.rebind(preservedSnapshot, sessionId)
         val importedState = rebound.state ?: error("存档缺少长期记忆状态")
         validateImportedSnapshot(rebound, importedState)
