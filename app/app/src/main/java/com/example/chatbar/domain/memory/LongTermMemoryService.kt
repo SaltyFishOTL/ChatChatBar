@@ -709,7 +709,7 @@ class LongTermMemoryService internal constructor(
                 }
                 val injectableArchiveNodes = if (plan.mode == MemoryHeadUpdateMode.BACKFILL) {
                     effectiveArchiveFrontier(current).nodes +
-                        current.state.legacyReferenceNodeIds.mapNotNull(current.nodes::get)
+                        injectableLegacyReferences(current)
                 } else {
                     emptyList()
                 }
@@ -3028,10 +3028,14 @@ class LongTermMemoryService internal constructor(
         val currentFingerprints = sourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.semantic(sourceId, messages, session)
         }
-        val previousSemanticFingerprints = sourceIds.associateWith { sourceId ->
+        // Older summaries may have seen the menu. An unchanged raw reply does not prove
+        // that its summary used the same projected source as a new request.
+        val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(messages)
+        val legacyCompatibleSourceIds = sourceIds - projectedActionSources
+        val previousSemanticFingerprints = legacyCompatibleSourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.previousSemantic(sourceId, messages, session)
         }
-        val currentLegacyHashes = sourceIds.associateWith { sourceId ->
+        val currentLegacyHashes = legacyCompatibleSourceIds.associateWith { sourceId ->
             MemorySourceFingerprint.legacy(sourceId, messages, session)
         }
         val migratedNodes = mutableListOf<MemoryNode>()
@@ -3102,9 +3106,10 @@ class LongTermMemoryService internal constructor(
         } else {
             state.head.throughSourceTurnId?.let { throughId ->
                 val throughOrder = state.timeline.firstOrNull { it.sourceTurnId == throughId }?.sourceOrder
-                stale.values.flatten().any { sourceId ->
-                    val order = state.timeline.firstOrNull { it.sourceTurnId == sourceId }?.sourceOrder
-                    order != null && throughOrder != null && order <= throughOrder
+                val staleOrUnverifiedSources = stale.values.flatten().toSet() + projectedActionSources
+                state.timeline.any { entry ->
+                    entry.sourceTurnId in staleOrUnverifiedSources &&
+                        throughOrder != null && entry.sourceOrder <= throughOrder
                 }
             } ?: false
         }
@@ -3141,9 +3146,16 @@ class LongTermMemoryService internal constructor(
         val frontier = effectiveArchiveFrontier(loaded)
         return MemoryArchiveInjectionPolicy.render(
             activeNodes = frontier.nodes,
-            legacyReferenceNodes = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get),
+            legacyReferenceNodes = injectableLegacyReferences(loaded),
             timeline = loaded.state.timeline
         )
+    }
+
+    private fun injectableLegacyReferences(loaded: LoadedMemory): List<MemoryNode> {
+        val references = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+        if (references.none { it.sourceTurnIds.isNotEmpty() }) return references
+        val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(loaded.messages)
+        return references.filterNot { reference -> reference.sourceTurnIds.any(projectedActionSources::contains) }
     }
 
     private fun effectiveArchiveFrontier(loaded: LoadedMemory): MemorySafeFrontier {
@@ -3193,7 +3205,7 @@ class LongTermMemoryService internal constructor(
         val state = loaded.state
         val safeFrontier = effectiveArchiveFrontier(loaded)
         val active = safeFrontier.nodes
-        val legacyReferences = state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
+        val legacyReferences = injectableLegacyReferences(loaded)
         val archive = MemoryArchiveInjectionPolicy.render(
             activeNodes = active,
             legacyReferenceNodes = legacyReferences,
@@ -3973,6 +3985,7 @@ class LongTermMemoryService internal constructor(
             }
             .toMap()
         val timeline = sourceTimeline(loaded.messages)
+        val projectedActionSources = MemorySourceFingerprint.sourceIdsWithProjectedActions(loaded.messages)
 
         fun legacyReference(old: MemoryNode?, reason: String, oldId: String): MemoryNode {
             val mappedIds = old?.sourceTurns
@@ -4045,7 +4058,10 @@ class LongTermMemoryService internal constructor(
                     }
                     val hashes = old.sourceTurns.zip(sourceIds).associate { (source, sourceId) ->
                         sourceId to source.sourceHash.ifBlank {
-                            MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
+                            // A legacy coverage body has not been generated with this projection.
+                            // Keep missing evidence missing for these turns so source repair can rebuild it.
+                            if (sourceId in projectedActionSources) ""
+                            else MemorySourceFingerprint.semantic(sourceId, loaded.messages, loaded.session)
                         }
                     }
                     old.copy(

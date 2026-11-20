@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import com.example.chatbar.domain.chat.stripRoleplayStatusSegments
 
 data class ChatMemoryTurn(
@@ -20,7 +21,7 @@ data class ChatMemoryTurn(
 
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
-    const val CONTENT_VERSION = "7"
+    const val CONTENT_VERSION = "8"
 
     private const val LONG_TURN_SPLIT_THRESHOLD = 600
     private const val SPLIT_SEARCH_START = 300
@@ -64,7 +65,7 @@ object ChatMemoryIndexPolicy {
 
     fun contributesToIndex(message: ChatMessage): Boolean = when (message.role) {
         MessageRole.USER -> message.displayContent.isNotBlank()
-        MessageRole.ASSISTANT -> cleanAssistantContent(message.displayContent).isNotBlank()
+        MessageRole.ASSISTANT -> cleanAssistantContent(message).isNotBlank()
         MessageRole.SYSTEM -> false
     }
 
@@ -78,7 +79,7 @@ object ChatMemoryIndexPolicy {
     fun contentForIndex(turn: ChatMemoryTurn): String = turn.messages.mapNotNull { message ->
         val content = when (message.role) {
             MessageRole.USER -> message.displayContent.trim()
-            MessageRole.ASSISTANT -> cleanAssistantContent(message.displayContent)
+            MessageRole.ASSISTANT -> cleanAssistantContent(message)
             MessageRole.SYSTEM -> ""
         }
         content.takeIf(String::isNotBlank)?.let { text ->
@@ -92,7 +93,7 @@ object ChatMemoryIndexPolicy {
     fun shouldIndex(turn: ChatMemoryTurn): Boolean = turn.messages.any { message ->
         when (message.role) {
             MessageRole.USER -> hasInformation(message.displayContent)
-            MessageRole.ASSISTANT -> hasInformation(cleanAssistantContent(message.displayContent))
+            MessageRole.ASSISTANT -> hasInformation(cleanAssistantContent(message))
             MessageRole.SYSTEM -> false
         }
     }
@@ -106,8 +107,10 @@ object ChatMemoryIndexPolicy {
         else -> false
     }
 
-    private fun cleanAssistantContent(content: String): String =
-        stripRoleplayStatusSegments(content).trim()
+    private fun cleanAssistantContent(message: ChatMessage): String =
+        stripRoleplayStatusSegments(RoleplayActionOptionsPolicy.withoutExplicitOptions(
+            message.displayContent, message.displayActionOptionsFormat,
+        )).trim()
 
     private fun hasInformation(rawContent: String): Boolean {
         val compact = rawContent

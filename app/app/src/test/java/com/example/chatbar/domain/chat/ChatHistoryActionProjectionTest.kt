@@ -47,13 +47,32 @@ class ChatHistoryActionProjectionTest {
             val earlier = projection.sourceForHistory(assistant, stripStatus = true)
             assertTrue("2. 问守卫" in earlier)
             assertFalse("实际位置" in earlier)
-            assertEquals(original, projection.forRetrieval(assistant).displayContent)
+            val retrievedText = projection.forRetrieval(assistant).displayContent
+            assertFalse("检查站台" in retrievedText)
+            assertFalse("等下一班" in retrievedText)
+            assertFalse("2. 问守卫" in retrievedText)
+            assertEquals(reference.startsWith("Please select"), "问守卫" in retrievedText)
+            assertEquals(reference, projection.forRetrieval(user).displayContent)
         }
         val independent = message("user", MessageRole.USER, "我们安静地给窗台边的花草浇水。", 2)
         val projection = known(listOf(assistant, independent), setOf(assistant.id, independent.id))
         assertFalse("2. 问守卫" in projection.sourceForHistory(assistant, stripStatus = true))
         assertFalse("2. 问守卫" in projection.forRetrieval(assistant).displayContent)
         assertEquals(original, assistant.displayContent)
+    }
+
+    @Test fun `retrieval sends only one explicit adjacent letter selection`() {
+        val format = ActionOptionsFormat("<actions>", "</actions>", "Actions", ActionOptionLabels.LETTERS)
+        val assistant = message("assistant", MessageRole.ASSISTANT,
+            "站台亮了。\n<actions>\nActions\nA) 检查站台\nB) 问守卫\n</actions>", 1).copy(
+            actionOptionsFormat = format,
+        )
+        val user = message("user", MessageRole.USER, "A", 2)
+        val prepared = known(listOf(assistant, user), setOf(assistant.id, user.id))
+        assertTrue("B) 问守卫" in prepared.sourceForHistory(assistant, stripStatus = false))
+        assertEquals("站台亮了。\n检查站台", prepared.forRetrieval(assistant).displayContent)
+        val sparse = known(listOf(assistant, user), setOf(user.id))
+        assertEquals("站台亮了。", sparse.forRetrieval(assistant).displayContent.trim())
     }
 
     @Test fun `earlier history retains fenced examples while removing actual statuses`() {

@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.rag
 
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MessageRole
@@ -11,6 +12,22 @@ import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
 class ChatMemoryIndexPolicyTest {
+    @Test
+    fun indexTextKeepsUserChoiceAndOmitsUnselectedAssistantOptions() {
+        val user = message("u", MessageRole.USER, "我选去码头。", sourceTurnId = "turn-7")
+        val assistant = message(
+            "a", MessageRole.ASSISTANT,
+            "窗外天亮了。\n\n[choices]\nChoices\n1. 去码头\n2. 打开秘密仓库\n[/choices]",
+            sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = ActionOptionsFormat(
+            opening = "[choices]", closing = "[/choices]", heading = "Choices",
+        ))
+        val turn = ChatMemoryIndexPolicy.buildIndexableTurns(listOf(user, assistant), emptySet()).single()
+
+        assertEquals(listOf("user:\n我选去码头。\n\nassistant:\n窗外天亮了。"), ChatMemoryIndexPolicy.contentsForIndex(turn))
+        assertTrue(assistant.displayContent.contains("打开秘密仓库"))
+    }
+
     @Test
     fun buildTurns_groupsEveryReplyInSameSourceTurn() {
         val messages = listOf(
@@ -222,7 +239,8 @@ class ChatMemoryIndexPolicyTest {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("message_pair", "4")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("memory_node", "1")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
-        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", ChatMemoryIndexPolicy.CONTENT_VERSION)))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }
 

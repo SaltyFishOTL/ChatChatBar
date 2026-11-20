@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
@@ -54,6 +55,20 @@ class MemorySourceFingerprintTest {
             fingerprint(base),
             MemorySourceFingerprint.previousSemantic("s0", base, session)
         )
+    }
+
+    @Test fun `summary source proof omits menus and identifies only affected turns for compatibility`() {
+        val user = base[0].copy(content = "用户原文\n[choices]\nChoices\n1. 走向码头\n2. 走向旅店\n[/choices]")
+        val assistant = base[1].copy(
+            content = "桥上起雾。\n[choices]\nChoices\n1. 走向码头\n2. 走向旅店\n[/choices]",
+            actionOptionsFormat = ActionOptionsFormat(opening = "[choices]", closing = "[/choices]", heading = "Choices"),
+        )
+        val projected = listOf(user, assistant)
+        val plain = base[1].copy(sourceTurnId = "different")
+        assertEquals(user.content, MemorySourceFingerprint.modelFacingBody(user))
+        assertEquals("桥上起雾。\n", MemorySourceFingerprint.modelFacingBody(assistant))
+        assertEquals(fingerprint(projected), fingerprint(listOf(user, assistant.copy(content = "桥上起雾。\n"))))
+        assertEquals(setOf("s0"), MemorySourceFingerprint.sourceIdsWithProjectedActions(projected + plain))
     }
 
     private fun fingerprint(messages: List<ChatMessage>) =

@@ -3,6 +3,7 @@ package com.example.chatbar.domain.memory
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 
 /** Stable source evidence: exactly the source semantics shown to memory models. */
 object MemorySourceFingerprint {
@@ -72,9 +73,20 @@ object MemorySourceFingerprint {
         })
     }
 
-    fun modelFacingBody(message: ChatMessage): String = message.displayContent.ifBlank {
+    fun modelFacingBody(message: ChatMessage): String = projectSourceBody(message).ifBlank {
         if (message.images.isNotEmpty()) "[图片]" else "（空）"
     }
+
+    internal fun sourceIdsWithProjectedActions(messages: List<ChatMessage>): Set<String> =
+        messages.asSequence()
+            .filter { projectSourceBody(it) != it.displayContent }
+            .mapNotNull { it.sourceTurnId }
+            .toSet()
+
+    private fun projectSourceBody(message: ChatMessage): String =
+        if (message.role == MessageRole.ASSISTANT) {
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent, message.displayActionOptionsFormat)
+        } else message.displayContent
 
     private fun field(value: Any?): String {
         val text = value?.toString().orEmpty()
