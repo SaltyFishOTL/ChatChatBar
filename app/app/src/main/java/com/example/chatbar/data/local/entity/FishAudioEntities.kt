@@ -42,7 +42,9 @@ data class GeneratedVoiceMessage(
     val createdAt: Long,
     val updatedAt: Long,
     /** 只有生成时记录的版本才可用于随备选删除语音。 */
-    val versionOwnershipConfirmed: Boolean = false
+    val versionOwnershipConfirmed: Boolean = false,
+    /** 被删备选的旧录音只可在找到相容版本后重新显示。 */
+    val requiresCompatibleVersion: Boolean = false
 ) {
     val effectiveSynthesisText: String
         get() = synthesisText ?: sourceText

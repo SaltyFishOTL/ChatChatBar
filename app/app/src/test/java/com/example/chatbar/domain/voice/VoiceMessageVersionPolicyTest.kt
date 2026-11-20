@@ -113,6 +113,16 @@ class VoiceMessageVersionPolicyTest {
         )
     }
 
+    @Test
+    fun `compatible fallback requires matching dialogue speaker and exactly one version`() {
+        val a = "<n=\"甲\"/>[相同]()"
+        val b = "<n=\"乙\"/>[相同]()"
+        val recorded = voice("legacy", "removed", "相同", null)
+        assertEquals("v1", VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(a, b)), recorded))
+        assertNull(VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(a, a)), recorded))
+        assertNull(VoiceMessageVersionPolicy.compatibleVersionId(message(1, listOf(b, b)), recorded))
+    }
+
     private fun message(
         currentIndex: Int,
         alternatives: List<String> = listOf(

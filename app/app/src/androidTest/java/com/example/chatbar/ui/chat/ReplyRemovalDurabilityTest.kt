@@ -40,6 +40,10 @@ class ReplyRemovalDurabilityTest {
     @Test fun ambiguousLegacyVoiceSurvivesDirectAlternativeRemoval() = verifyAmbiguousLegacyVoice()
     @Test fun ambiguousLegacyVoiceSurvivesRemovalAfterDisplayMigration() = verifyAmbiguousLegacyVoice(openFirst = true)
     @Test fun oldPersistedDisplayAssignmentCannotAuthorizeVoiceDeletion() = verifyAmbiguousLegacyVoice(assigned = true)
+    @Test fun retiredAssignedVoiceDoesNotPlayOnDifferentTextAfterColdRestore() =
+        verifyRetiredVoiceStaysHidden(assigned = true)
+    @Test fun unassignedVoiceDoesNotPlayOnDifferentTextAfterColdRestore() =
+        verifyRetiredVoiceStaysHidden(assigned = false)
     @Test fun failedAlternativeBodyWriteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = true)
     @Test fun failedWholeMessageBodyDeleteAllowsOneConfirmedRetry() = verifyUncommittedRetry(versionOnly = false)
     @Test fun legacyArchiveStillOwnsAudioAndImageAfterMessageRemoval() = withFixture { fixture ->
@@ -116,6 +120,46 @@ class ReplyRemovalDurabilityTest {
         assertFalse(survivingVoice.versionOwnershipConfirmed)
         assertEquals("synthetic audio", File(survivingVoice.audioPath).readText())
         assertEquals("synthetic image", File(survivingReply.images.single()).readText())
+    }
+
+    private fun verifyRetiredVoiceStaysHidden(assigned: Boolean) = withFixture { fixture ->
+        val session = fixture.createSession()
+        val reply = fixture.addReply(session, versionOnly = true)
+        val removed = MessageAlternativeVersionPolicy.activeVersion(reply)
+        val retiredId = removed.id.takeIf { assigned }
+        val legacy = fixture.addVoice(reply).copy(
+            id = "unconfirmed-before-upgrade", messageVersionId = retiredId, versionOwnershipConfirmed = false
+        )
+        fixture.voices.save(legacy)
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, removed.id))
+        assertNotEquals(legacy.sourceText, survivor.displayContent)
+        assertNull(fixture.removals.remove(reply, survivor, removed.id))
+
+        val cold = Fixture(fixture.context, fixture.app)
+        val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
+        assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
+        assertTrue(cold.voices.listForCurrentVersion(reply).isEmpty())
+        assertTrue(cold.voices.placementsForMessage(reply).isEmpty())
+        val archivedVoice = cold.voices.listForSession(session.id).single()
+        assertEquals(retiredId, archivedVoice.messageVersionId)
+        assertTrue(archivedVoice.requiresCompatibleVersion)
+        assertEquals("synthetic audio", File(archivedVoice.audioPath).readText())
+
+        val archive = SaveSlot.create(session.id, "Retired voice", messages = listOf(persisted))
+            .copy(voiceMessages = listOf(archivedVoice))
+        val encoded = cold.storage.json.encodeToString(SaveSlot.serializer(), archive)
+        val reopened = cold.storage.json.decodeFromString(SaveSlot.serializer(), encoded)
+        // These are the two voice restore entry points used by inline and packaged save slots.
+        for (legacySlot in listOf(true, false)) {
+            if (legacySlot) cold.voices.restoreForSession(session.id, reopened.voiceMessages, reopened.messages)
+            else cold.voices.restoreForSession(session.id, reopened.voiceMessages)
+            val restored = Fixture(fixture.context, fixture.app)
+            assertTrue(restored.voices.listForCurrentVersion(persisted).isEmpty())
+            val retained = restored.voices.listForSession(session.id).single()
+            assertEquals(retiredId, retained.messageVersionId)
+            assertTrue(retained.requiresCompatibleVersion)
+            assertEquals("synthetic audio", File(retained.audioPath).readText())
+        }
     }
 
     private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->

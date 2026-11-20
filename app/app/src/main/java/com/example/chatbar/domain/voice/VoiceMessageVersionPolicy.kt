@@ -74,6 +74,11 @@ object VoiceMessageVersionPolicy {
         }
     }
 
+    internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
+        MessageAlternativeVersionPolicy.versions(message).singleOrNull { version ->
+            versionContainsVoice(version, voice, requireMatchingSpeaker = true)
+        }?.id
+
     fun anchorIdForVoice(
         voice: GeneratedVoiceMessage,
         state: VoiceAnchorState
@@ -99,7 +104,8 @@ object VoiceMessageVersionPolicy {
 
     private fun versionContainsVoice(
         version: MessageVersionSnapshot,
-        voice: GeneratedVoiceMessage
+        voice: GeneratedVoiceMessage,
+        requireMatchingSpeaker: Boolean = false
     ): Boolean {
         if (voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) {
             return (
@@ -113,6 +119,7 @@ object VoiceMessageVersionPolicy {
             includeNarration = true
         ).any { segment ->
             segment.kind.name == voice.sourceSegmentKind &&
+                (!requireMatchingSpeaker || normalize(segment.speakerName.orEmpty()) == normalize(voice.sourceSpeakerName)) &&
                 normalize(segment.spokenText) == normalize(voice.sourceText)
         }
     }
