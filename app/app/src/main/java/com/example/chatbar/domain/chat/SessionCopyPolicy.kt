@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.VectorChunk
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import java.util.UUID
 
 /** Copy identities without changing source-turn evidence or equal-time message ordering. */
@@ -26,7 +27,7 @@ class SessionCopyPolicy(targetSessionId: String, messageIds: Set<String>) {
     fun chunk(chunk: VectorChunk): VectorChunk = chunk.copy(
         messageId = chunk.messageId?.let(::messageId),
         metadata = chunk.metadata.mapValues { (key, value) ->
-            if (key == "messageIds") {
+            if (key == "messageIds" || key == ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS) {
                 value.split(',').filter(String::isNotBlank).joinToString(",", transform = ::messageId)
             } else value
         }

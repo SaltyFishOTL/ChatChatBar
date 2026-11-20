@@ -9,6 +9,7 @@ import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
 import java.util.zip.ZipOutputStream
 import kotlinx.serialization.encodeToString
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import org.junit.Assert.*
 import org.junit.Rule
 import org.junit.Test
@@ -16,6 +17,20 @@ import org.junit.rules.TemporaryFolder
 
 class BackupMergeEngineTest {
     @get:Rule val temporary = TemporaryFolder()
+
+    @Test
+    fun actionChoiceSourceIdsRemapInsideStandaloneAndLegacySaveSlotChunks() {
+        val identity = BackupMergeIdentity(copy = true)
+        identity.bind("chat_messages", "menu-A", "copied-A")
+        identity.bind("chat_messages", "menu-B", "copied-B")
+        val key = ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS
+        val standalone = BackupMergeRecord(temporary.newFile(), "entities/vector_chunks/chunk.json", "vector_chunks", emptyMap())
+        val slot = BackupMergeRecord(temporary.newFile(), "entities/save_slots/slot.json", "save_slots", emptyMap())
+        assertEquals("copied-A,copied-B", identity.string(standalone, "menu-A,menu-B", listOf("metadata", key)))
+        assertEquals("copied-A,copied-B", identity.string(slot, "menu-A,menu-B", listOf("vectorChunks", "metadata", key)))
+        assertEquals("menu-A,menu-B", identity.string(slot, "menu-A,menu-B", listOf("notes", key)))
+    }
+
     private fun write(root: File, name: String, text: String) = File(root, name).also { it.parentFile!!.mkdirs(); it.writeText(text) }
     private fun asset(root: File, name: String, value: Byte) = File(root, name).also {
         it.parentFile!!.mkdirs(); it.writeBytes(ByteArray(65536) { value })

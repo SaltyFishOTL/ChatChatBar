@@ -102,6 +102,8 @@ class ChatMemoryIdentityTest {
         )
         assertEquals(emptySet<String>(), chatMemoryChunkIdsToPrune(listOf(chosen), setOf("user", "menu")))
         assertEquals(setOf("kept-choice"), chatMemoryChunkIdsToPrune(listOf(chosen), setOf("user")))
+        val manual = chosen.copy(metadata = chosen.metadata + ("indexMode" to "manual"))
+        assertEquals(emptySet<String>(), chatMemoryChunkIdsToPrune(listOf(manual), setOf("user")))
         assertEquals(emptySet<String>(), automaticChatMemoryChunkIdsToReplace(
             chunks = listOf(chosen), sourceTurnId = "menu-turn", messageIds = setOf("menu"),
             keepChunkIds = emptySet(),

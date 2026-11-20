@@ -261,8 +261,10 @@ internal fun automaticChatMemoryChunkIdsToReplace(
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
     sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId
 
-private fun VectorChunk.actionChoiceSourceIds(): List<String> =
-    metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS]?.split(",").orEmpty().filter(String::isNotBlank)
+private fun VectorChunk.actionChoiceSourceIds(): List<String> {
+    if (metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE) return emptyList()
+    return metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS]?.split(",").orEmpty().filter(String::isNotBlank)
+}
 
 private fun VectorChunk.metadataMessageIds(): Set<String> {
     return metadata["messageIds"]

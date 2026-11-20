@@ -3919,7 +3919,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 alternativeIndex = nextIndex
             )
             _messages.value = _messages.value.map { if (it.id == messageId) updated else it }
-            chatRepository.updateMessage(updated)
+            ragMemoryMutationMutex.withLock {
+                chatRepository.updateMessage(updated)
+                ChatBarApp.instance.ragRepository.deleteChatMemoryDependingOnActionReply(sessionId, messageId)
+            }
         }
     }
 
