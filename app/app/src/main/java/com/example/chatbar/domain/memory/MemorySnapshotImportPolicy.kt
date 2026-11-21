@@ -49,8 +49,14 @@ object MemorySnapshotImportPolicy {
         return snapshot.copy(state = preservedState, nodes = nodes)
     }
 
+    internal fun legacyOriginForNodeId(nodeId: String): String = "$LEGACY_ORIGIN_PREFIX$nodeId"
+
     internal fun legacyOrigin(node: MemoryNode): String? =
-        node.coverageUnits.singleOrNull()?.sourceId?.takeIf { it.startsWith("legacy:") && it.length > "legacy:".length }
+        node.coverageUnits.singleOrNull()?.sourceId?.takeIf {
+            it.startsWith(LEGACY_ORIGIN_PREFIX) && it.length > LEGACY_ORIGIN_PREFIX.length
+        }
+
+    private const val LEGACY_ORIGIN_PREFIX = "legacy:"
 
     fun rebind(snapshot: MemorySnapshot, targetSessionId: String): MemorySnapshot {
         val mustClone = snapshot.nodes.any { it.sessionId != targetSessionId } ||

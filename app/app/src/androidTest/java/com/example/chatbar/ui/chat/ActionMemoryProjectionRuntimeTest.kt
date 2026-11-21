@@ -24,6 +24,7 @@ import com.example.chatbar.data.local.entity.MemoryTurnSource
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
+import com.example.chatbar.data.local.entity.SourceTurnTombstone
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.SaveSlotRepository
@@ -47,6 +48,7 @@ import kotlinx.coroutines.withTimeout
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -69,6 +71,23 @@ class ActionMemoryProjectionRuntimeTest {
 
     @Test
     fun sameSessionV3RestorePreservesWithholdingFromAnInactiveLegacyOrigin() = runBlocking {
+        verifyInactiveLegacyRestore()
+    }
+
+    @Test
+    fun sameSessionV3RestoreCapturesLegacyWithholdingBeforeTombstonePruning() = runBlocking {
+        verifyInactiveLegacyRestore(projectTombstone = true)
+    }
+
+    @Test
+    fun sameSessionV8RestoreMatchesAnInactiveLegacyOriginWithAnotherNodeId() = runBlocking {
+        verifyInactiveLegacyRestore(projectTombstone = true, replayPackage = true)
+    }
+
+    private suspend fun verifyInactiveLegacyRestore(
+        projectTombstone: Boolean = false,
+        replayPackage: Boolean = false,
+    ) {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         awaitPhase("starting the app") { app.dependenciesReady.first { it } }
         val card = CharacterCard.create("synthetic-v3-memory")
@@ -96,20 +115,38 @@ class ActionMemoryProjectionRuntimeTest {
                 schemaVersion = 3, nodes = listOf(legacy),
                 legacyCommit = MemoryCommit("synthetic-v3-commit", session.id, legacyReferenceNodeIds = listOf(legacy.id)),
             )
+            val unrelated = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "备用灯在哪里？"))
+            app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, "抽屉里还有一盏。"))
+            val unrelatedSourceId = requireNotNull(unrelated.sourceTurnId)
             val messages = app.chatRepository.getMessages(session.id)
             val cleanMessages = messages.map {
                 if (it.id == menu.id) it.copy(content = "星图放在木桌上。", actionOptionsFormat = null) else it
             }
+            val tombstones = if (projectTombstone) {
+                listOf(SourceTurnTombstone(unrelatedSourceId, requireNotNull(unrelated.sourceTurnOrder)))
+            } else emptyList()
+            val finalMessages = if (projectTombstone) {
+                cleanMessages.filterNot { it.sourceTurnId == unrelatedSourceId }
+            } else cleanMessages
             val liveSession = requireNotNull(app.chatRepository.getSession(session.id))
             val vm = createChatViewModel(store, session.id)
             awaitPhase("loading the menu") { vm.messages.first { entries -> entries.any { it.id == menu.id } } }
 
-            suspend fun restore(label: String, snapshot: MemorySnapshot, transcript: List<ChatMessage>) {
-                val slot = SaveSlot.create(session.id, label, messages = transcript).copy(
+            fun archiveSlot(label: String, snapshot: MemorySnapshot, deletedTurns: List<SourceTurnTombstone>) =
+                SaveSlot.create(session.id, label).copy(
                     schemaVersion = if (snapshot.legacyCommit != null) 3 else 7,
                     memorySnapshot = snapshot, longTermMemoryEnabled = false,
                     nextSourceTurnOrder = liveSession.nextSourceTurnOrder, nextTimelineTurn = liveSession.nextTimelineTurn,
+                    sourceTurnTombstones = deletedTurns,
                 )
+
+            suspend fun restore(
+                label: String,
+                snapshot: MemorySnapshot,
+                transcript: List<ChatMessage>,
+                deletedTurns: List<SourceTurnTombstone> = emptyList(),
+            ) {
+                val slot = archiveSlot(label, snapshot, deletedTurns).copy(messages = transcript)
                 val imported = importInlineFile(app, vm, session.id) { SaveSlotJsonTransfer.write(slot, it) }
                 loadArchive(app, vm, imported.id, label)
             }
@@ -119,6 +156,20 @@ class ActionMemoryProjectionRuntimeTest {
                 val state = requireNotNull(cold.getState(session.id))
                 return requireNotNull(cold.getNode(state.legacyReferenceNodeIds.single()))
             }
+
+            val previousPackage = if (replayPackage) {
+                restore("v3 archive before withholding", legacySnapshot, cleanMessages)
+                assertFalse(currentReference().actionProjectionWithheld)
+                val unmarkedSnapshot = requireNotNull(app.memoryRepository.snapshot(session.id))
+                app.saveSlotPackageStorage.createPackage(
+                    baseSlot = archiveSlot("v8 archive of the first conversion", unmarkedSnapshot, tombstones),
+                    imagePolicy = SaveSlotImagePolicy.NONE,
+                    includeAudio = false,
+                    messageSource = { emit -> finalMessages.forEach { emit(it) } },
+                    ragSource = {},
+                    voices = emptyList(),
+                ).also { app.saveSlotRepository.save(it) }
+            } else null
 
             restore("v3 archive with the menu", legacySnapshot, messages)
             val withheld = currentReference()
@@ -141,9 +192,19 @@ class ActionMemoryProjectionRuntimeTest {
             assertFalse(unmatched.actionProjectionWithheld)
             assertTrue(app.longTermMemoryService.promptView(session.id).archive.contains(legacy.body))
 
-            restore("same origin and source range without the old menu", legacySnapshot, cleanMessages)
+            if (previousPackage != null) {
+                loadArchive(app, vm, previousPackage.id, "v8 archive from another conversion")
+            } else {
+                restore("same origin and source range without the old menu", legacySnapshot, finalMessages, tombstones)
+            }
+            assertEquals(tombstones, requireNotNull(app.chatRepository.getSession(session.id)).sourceTurnTombstones)
+            if (projectTombstone) assertNull(coldMemory().getNode(withheld.id))
+            else assertEquals(withheld, coldMemory().getNode(withheld.id))
             val restored = currentReference()
             assertNotEquals(withheld.id, restored.id)
+            if (previousPackage != null) {
+                assertEquals(previousPackage.memorySnapshot?.nodes?.single()?.id, restored.id)
+            }
             assertEquals(withheld.body, restored.body)
             assertEquals(withheld.sourceTurnIds, restored.sourceTurnIds)
             assertTrue(restored.actionProjectionWithheld)

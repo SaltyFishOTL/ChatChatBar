@@ -1776,6 +1776,7 @@ class LongTermMemoryService internal constructor(
         snapshot: MemorySnapshot?,
         sourceSessionId: String?
     ) = stateLock(sessionId) {
+        val storedLegacy = storedLegacyWithholdingBeforeRestore(sessionId, snapshot, sourceSessionId)
         val loaded = loadLocked(sessionId)
         val contextWindowSize = currentContextWindowSize()
         val sourceSnapshot = snapshot ?: legacySaveSlotSnapshot(loaded, contextWindowSize)
@@ -1785,19 +1786,8 @@ class LongTermMemoryService internal constructor(
             sourceSnapshot
         }
         val preservedSnapshot = if (sourceSessionId == sessionId) {
-            val incomingLegacy = normalizedSnapshot.nodes.filter {
-                it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld
-            }
             val currentLegacy = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
-            val sameIds = memoryRepository.getNodes(incomingLegacy.map(MemoryNode::id))
-            // Legacy commits recreate reference IDs, so matching inactive local nodes need an origin lookup.
-            val recreatedLocalLegacy = sourceSnapshot.state == null &&
-                sourceSnapshot.legacyCommit?.sessionId == sessionId && sourceSnapshot.nodes.all { it.sessionId == sessionId }
-            val storedByOrigin = if (recreatedLocalLegacy) {
-                val origins = incomingLegacy.mapNotNull(MemorySnapshotImportPolicy::legacyOrigin).toSet()
-                memoryRepository.getWithheldLegacyNodesByOrigin(sessionId, origins)
-            } else emptyList()
-            val localLegacyNodes = (currentLegacy + sameIds + storedByOrigin).associateBy(MemoryNode::id)
+            val localLegacyNodes = (storedLegacy + currentLegacy).associateBy(MemoryNode::id)
             MemorySnapshotImportPolicy.preserveKnownActionWithholding(
                 normalizedSnapshot, sessionId, sourceSessionId, localLegacyNodes, loaded.state.head
             )
@@ -1870,6 +1860,41 @@ class LongTermMemoryService internal constructor(
         val refreshed = refreshSourceStaleness(state, nodes, loaded.messages, loaded.session)
         memoryRepository.saveState(refreshed)
         compileAndCacheLocked(loaded.copy(state = refreshed, nodes = nodes))
+    }
+
+    private suspend fun storedLegacyWithholdingBeforeRestore(
+        sessionId: String,
+        snapshot: MemorySnapshot?,
+        sourceSessionId: String?
+    ): List<MemoryNode> {
+        if (snapshot == null || sourceSessionId != sessionId ||
+            snapshot.nodes.any { it.sessionId != sessionId } ||
+            snapshot.legacyCommit?.sessionId?.let { it != sessionId } == true
+        ) return emptyList()
+
+        val legacyCommit = snapshot.legacyCommit.takeIf { snapshot.state == null }
+        val directNodes = if (legacyCommit == null) {
+            snapshot.nodes.filter { it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
+        } else emptyList()
+        val origins = if (legacyCommit != null) {
+            // A v3 conversion gives legacy references fresh IDs, including missing nodes referenced by the graph.
+            buildSet {
+                addAll(legacyCommit.activeNodeIds)
+                addAll(legacyCommit.legacyReferenceNodeIds)
+                snapshot.nodes.forEach { node ->
+                    add(node.id)
+                    addAll(node.childIds)
+                }
+            }.filter(String::isNotEmpty).mapTo(mutableSetOf(), MemorySnapshotImportPolicy::legacyOriginForNodeId)
+        } else directNodes.mapNotNull(MemorySnapshotImportPolicy::legacyOrigin).toSet()
+        if (directNodes.isEmpty() && origins.isEmpty()) return emptyList()
+
+        // Replay pending writes before capturing evidence that incoming deletion tombstones may prune.
+        memoryRepository.getState(sessionId)
+        val matchingIds = memoryRepository.getNodes(directNodes.map(MemoryNode::id)).filter {
+            it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && it.actionProjectionWithheld
+        }
+        return matchingIds + memoryRepository.getWithheldLegacyNodesByOrigin(sessionId, origins)
     }
 
     /**
@@ -2605,7 +2630,7 @@ class LongTermMemoryService internal constructor(
             tier = MemoryTier.LEGACY_REFERENCE,
             coverageUnits = listOf(
                 MemoryCoverageUnit(
-                    sourceId = "legacy:${old.id}",
+                    sourceId = MemorySnapshotImportPolicy.legacyOriginForNodeId(old.id),
                     text = "时间未知，不代表当前进展：${old.body.ifBlank { "旧节点无法读取正文" }}"
                 )
             ),
@@ -4065,7 +4090,7 @@ class LongTermMemoryService internal constructor(
                 sourceTurnIds = mappedIds,
                 coverageUnits = listOf(
                     MemoryCoverageUnit(
-                        sourceId = "legacy:$oldId",
+                        sourceId = MemorySnapshotImportPolicy.legacyOriginForNodeId(oldId),
                         text = if (mappedIds.isEmpty()) {
                             "时间未知，不代表当前进展：$raw"
                         } else {
