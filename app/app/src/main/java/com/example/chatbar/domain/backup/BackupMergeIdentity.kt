@@ -82,6 +82,14 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
             else -> null // Source-turn, alternative-version and voice-anchor IDs remain session scoped.
         }
     }
+    fun preservedInlineMemoryOwnerPaths(record: BackupMergeRecord): Set<List<String>> {
+        if (copy || record.type != "save_slots" || record.text("packageRef.fileName") != null) return emptySet()
+        val owners = inlineMemoryOwnerPaths.flatMap { record.values[it.joinToString(".")].orEmpty() }.toSet()
+        if (owners.size <= 1 || owners.map { value("chat_sessions", it) }.toSet().size != 1) return emptySet()
+        // A merge can coalesce distinct owners. Keep their disagreement visible to legacy restore.
+        return inlineMemoryOwnerPaths
+    }
+
     fun string(record: BackupMergeRecord, text: String, fields: List<String>): String {
         val type = fieldSpace(record, fields) ?: return text
         if (fields == listOf("metadata", "messageIds") || fields.lastOrNull() == ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS) {
@@ -95,6 +103,11 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
         else -> text
     }
     companion object {
+        private val inlineMemoryOwnerPaths = setOf(
+            listOf("memorySnapshot", "nodes", "sessionId"),
+            listOf("memorySnapshot", "commit", "sessionId"),
+        )
+
         val fields = setOf("id", "sessionId", "characterCardId", "importedCharacterCardId", "cardId", "disabledPersonIds", "automaticallyPausedPersonIds", "characterId", "senderCharacterId", "messageId", "messageIds",
             "generatedFromMessageId", "anchorMessageId", "longTermMemoryUpdatedThroughMessageId", "modelId", "imageModelId", "defaultModelId",
             "defaultImageModelId", "visionModelId", "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId", "defaultEmbeddingId",

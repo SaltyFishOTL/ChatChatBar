@@ -455,6 +455,50 @@ class BackupMergeEngineTest {
         assertNull(SaveSlotJsonTransfer.sourceSessionIdForRestore(slots.getValue("unknown")))
     }
 
+    @Test fun inlineArchiveUpdateKeepsMixedMemoryOwnersWhenSessionIdsConverge() {
+        val local = temporary.newFolder()
+        card(local, "card")
+        session(local, "destination", "card", "同名会话")
+        val source = temporary.newFolder()
+        card(source, "card")
+        session(source, "source", "card", "同名会话")
+        session(source, "destination", "card", "未选会话")
+        val sourceNode = MemoryNode("source-reference", "source", MemoryTier.LEGACY_REFERENCE, content = "原会话正文")
+        val foreignNode = MemoryNode("foreign-reference", "destination", MemoryTier.LEGACY_REFERENCE, content = "其他会话正文")
+
+        fun archiveSlot(name: String, nodes: List<MemoryNode>): SaveSlot {
+            val slot = SaveSlot(
+                schemaVersion = 7, id = "slot-$name", sessionId = "source", name = name, createdAt = 12,
+                memorySnapshot = MemorySnapshot(
+                    schemaVersion = 3, nodes = nodes,
+                    legacyCommit = MemoryCommit("$name-commit", "source", legacyReferenceNodeIds = nodes.map(MemoryNode::id)),
+                ),
+            )
+            write(source, "entities/save_slots/${slot.id}.json", backupJson.encodeToString(slot))
+            return slot
+        }
+
+        val mixed = archiveSlot("mixed", listOf(sourceNode, foreignNode))
+        archiveSlot("owned", listOf(sourceNode.copy(id = "owned-reference")))
+        val selection = AppBackupSelection(characterIds = setOf("card"), sessions = mapOf("source" to BackupSessionChoice()))
+        val input = incoming(source, local, selection)
+        assertEquals(listOf("source"), records<ChatSession>(File(input.first, "files"), "chat_sessions").map(ChatSession::id))
+
+        val (staged, preview) = merge(local, input, AppBackupRestoreMode.UPDATE_EXISTING)
+        assertEquals(1, preview.counts.getValue("chat_sessions").updated)
+        val slots = records<SaveSlot>(staged, "save_slots").associateBy(SaveSlot::name)
+        val restoredMixed = slots.getValue("mixed")
+        assertEquals("destination", restoredMixed.sessionId)
+        assertEquals(mixed.memorySnapshot, restoredMixed.memorySnapshot)
+        assertNull(SaveSlotJsonTransfer.sourceSessionIdForRestore(restoredMixed))
+
+        val restoredOwned = slots.getValue("owned")
+        assertEquals("destination", restoredOwned.sessionId)
+        assertEquals("destination", restoredOwned.memorySnapshot?.legacyCommit?.sessionId)
+        assertEquals("destination", restoredOwned.memorySnapshot?.nodes?.single()?.sessionId)
+        assertEquals("destination", SaveSlotJsonTransfer.sourceSessionIdForRestore(restoredOwned))
+    }
+
     @Test fun v8ArchiveCopyRewritesNestedIdentitiesAndCopiesMediaBytesWithoutReencoding() {
         val local = temporary.newFolder()
         card(local, "card"); session(local, "session", "card")
