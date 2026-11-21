@@ -24,11 +24,11 @@ object MemorySnapshotImportPolicy {
             it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && it.actionProjectionWithheld
         }
         val localById = withheldLocals.associateBy(MemoryNode::id)
-        val localByLegacyOrigin = withheldLocals.groupBy { it.legacyOrigin() }
+        val localByLegacyOrigin = withheldLocals.groupBy(::legacyOrigin)
         val nodes = snapshot.nodes.map { incoming ->
             if (incoming.tier != MemoryTier.LEGACY_REFERENCE || incoming.actionProjectionWithheld) return@map incoming
             val known = listOfNotNull(localById[incoming.id]) +
-                incoming.legacyOrigin()?.let(localByLegacyOrigin::get).orEmpty()
+                legacyOrigin(incoming)?.let(localByLegacyOrigin::get).orEmpty()
             if (known.any { it.body == incoming.body && it.sourceTurnIds == incoming.sourceTurnIds }) {
                 incoming.copy(actionProjectionWithheld = true)
             } else incoming
@@ -49,8 +49,8 @@ object MemorySnapshotImportPolicy {
         return snapshot.copy(state = preservedState, nodes = nodes)
     }
 
-    private fun MemoryNode.legacyOrigin(): String? =
-        coverageUnits.singleOrNull()?.sourceId?.takeIf { it.startsWith("legacy:") && it.length > "legacy:".length }
+    internal fun legacyOrigin(node: MemoryNode): String? =
+        node.coverageUnits.singleOrNull()?.sourceId?.takeIf { it.startsWith("legacy:") && it.length > "legacy:".length }
 
     fun rebind(snapshot: MemorySnapshot, targetSessionId: String): MemorySnapshot {
         val mustClone = snapshot.nodes.any { it.sessionId != targetSessionId } ||

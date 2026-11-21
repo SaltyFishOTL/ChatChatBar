@@ -1785,11 +1785,19 @@ class LongTermMemoryService internal constructor(
             sourceSnapshot
         }
         val preservedSnapshot = if (sourceSessionId == sessionId) {
-            val localLegacyIds = normalizedSnapshot.nodes
-                .filter { it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld }
-                .map { it.id }
+            val incomingLegacy = normalizedSnapshot.nodes.filter {
+                it.sessionId == sessionId && it.tier == MemoryTier.LEGACY_REFERENCE && !it.actionProjectionWithheld
+            }
             val currentLegacy = loaded.state.legacyReferenceNodeIds.mapNotNull(loaded.nodes::get)
-            val localLegacyNodes = (currentLegacy + memoryRepository.getNodes(localLegacyIds)).associateBy(MemoryNode::id)
+            val sameIds = memoryRepository.getNodes(incomingLegacy.map(MemoryNode::id))
+            // Legacy commits recreate reference IDs, so matching inactive local nodes need an origin lookup.
+            val recreatedLocalLegacy = sourceSnapshot.state == null &&
+                sourceSnapshot.legacyCommit?.sessionId == sessionId && sourceSnapshot.nodes.all { it.sessionId == sessionId }
+            val storedByOrigin = if (recreatedLocalLegacy) {
+                val origins = incomingLegacy.mapNotNull(MemorySnapshotImportPolicy::legacyOrigin).toSet()
+                memoryRepository.getWithheldLegacyNodesByOrigin(sessionId, origins)
+            } else emptyList()
+            val localLegacyNodes = (currentLegacy + sameIds + storedByOrigin).associateBy(MemoryNode::id)
             MemorySnapshotImportPolicy.preserveKnownActionWithholding(
                 normalizedSnapshot, sessionId, sourceSessionId, localLegacyNodes, loaded.state.head
             )
