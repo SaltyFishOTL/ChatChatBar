@@ -30,6 +30,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 - Keep manifest lists empty for v8; `SaveSlotPackageRef` owns counts and package metadata. Old schema 1–7 remains inline JSON and decode-compatible.
 - Summary listing must parse only lightweight top-level fields. Do not deserialize old Base64 media to show the SaveSlot list or export an unchanged legacy archive.
 - Detect import format from stream bytes, not filename or MIME type. Export v8 as `.cbsave`; retain legacy JSON export.
+- Use consistent owner IDs from the decoded legacy memory graph for same-session HEAD withholding. Older inline import and re-export can replace the archive header with the destination ID. If the graph has no owner or owners disagree, restore the snapshot without inheriting the destination's withholding. Validated v8 packages use the original manifest owner.
 - Validate manifest version, duplicate/blank IDs, declared counts, and every media reference before replacing target-session data.
 
 ## Bounded-Memory Invariants

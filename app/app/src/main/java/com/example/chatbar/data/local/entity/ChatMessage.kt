@@ -88,7 +88,9 @@ data class ChatMessage(
     /** source turn绝对顺序；不等同于可重排的显示T。 */
     val sourceTurnOrder: Long? = null,
     /** v2草稿兼容字段；v4仅作为旧sourceTurnOrder迁移来源。 */
-    val timelineTurn: Long? = null
+    val timelineTurn: Long? = null,
+    val actionOptionsFormat: ActionOptionsFormat? = null,
+    val alternativeActionOptionsFormats: List<ActionOptionsFormat?> = emptyList()
 ) {
     /** 获取当前显示的内容（考虑替代回复） */
     val displayContent: String
@@ -97,6 +99,11 @@ data class ChatMessage(
         } else {
             content
         }
+
+    val displayActionOptionsFormat: ActionOptionsFormat?
+        get() = if (currentAlternativeIndex in alternatives.indices) {
+            alternativeActionOptionsFormats.getOrNull(currentAlternativeIndex)
+        } else actionOptionsFormat
 
     companion object {
         val TimelineComparator: Comparator<ChatMessage> =

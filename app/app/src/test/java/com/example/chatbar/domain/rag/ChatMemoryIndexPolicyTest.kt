@@ -1,16 +1,76 @@
 package com.example.chatbar.domain.rag
 
+import com.example.chatbar.data.local.entity.ActionOptionLabels
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.domain.chat.ContextWindowManager
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import junit.framework.TestCase.assertEquals
 import junit.framework.TestCase.assertFalse
 import junit.framework.TestCase.assertTrue
 import org.junit.Test
 
 class ChatMemoryIndexPolicyTest {
+    @Test
+    fun indexTextKeepsUserChoiceAndOmitsUnselectedAssistantOptions() {
+        val user = message("u", MessageRole.USER, "我选去码头。", sourceTurnId = "turn-7")
+        val assistant = message(
+            "a", MessageRole.ASSISTANT,
+            "窗外天亮了。\n\n[choices]\nChoices\n1. 去码头\n2. 打开秘密仓库\n[/choices]",
+            sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = ActionOptionsFormat(
+            opening = "[choices]", closing = "[/choices]", heading = "Choices",
+        ))
+        val turn = ChatMemoryIndexPolicy.buildIndexableTurns(listOf(user, assistant), emptySet()).single()
+
+        assertEquals(listOf("user:\n我选去码头。\n\nassistant:\n窗外天亮了。"), ChatMemoryIndexPolicy.contentsForIndex(turn))
+        assertTrue(assistant.displayContent.contains("打开秘密仓库"))
+    }
+
+    @Test
+    fun indexCarriesOnlyTheConfirmedPreviousTurnChoice() {
+        val menu = message("menu", MessageRole.ASSISTANT,
+            "星图展开了。\n[choices]\nChoices\nA. 封好地图\nB. 把铜钥匙交给天文学家\n[/choices]",
+            sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = ActionOptionsFormat(
+            "[choices]", "[/choices]", "Choices", ActionOptionLabels.LETTERS,
+        ), createdAt = 100, updatedAt = 100)
+        val image = message("image", MessageRole.ASSISTANT, "", listOf("test.png"), "turn-7")
+            .copy(generatedFromMessageId = menu.id)
+        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8").copy(createdAt = 200, updatedAt = 200)
+        val turn = ChatMemoryIndexPolicy.buildIndexableTurns(listOf(menu, image, user), emptySet()).last()
+        assertEquals("turn-8", turn.sourceTurnId)
+        assertEquals(menu.id, turn.confirmedChoices[user.id]?.replyId)
+        assertEquals(listOf("user:\nB\n把铜钥匙交给天文学家"), ChatMemoryIndexPolicy.contentsForIndex(turn))
+        assertEquals("B", user.displayContent)
+        val gap = user.copy(sourceTurnId = "turn-9", sourceTurnOrder = 9)
+        assertTrue(ChatMemoryIndexPolicy.buildTurns(listOf(menu, gap)).last().confirmedChoices.isEmpty())
+    }
+
+    @Test
+    fun indexDoesNotRebindHistoricalBareChoiceAfterTheMenuChanges() {
+        val format = ActionOptionsFormat("[choices]", "[/choices]", "Choices", ActionOptionLabels.LETTERS)
+        val original = message("menu", MessageRole.ASSISTANT,
+            "[choices]\nChoices\nA. 封好地图\nB. 交出铜钥匙\n[/choices]", sourceTurnId = "turn-7",
+        ).copy(actionOptionsFormat = format, createdAt = 100, updatedAt = 100)
+        val user = message("u", MessageRole.USER, "B", sourceTurnId = "turn-8").copy(createdAt = 200, updatedAt = 200)
+        fun choiceTurn(menu: ChatMessage) = ChatMemoryIndexPolicy.buildTurns(listOf(menu, user)).last()
+
+        assertEquals(listOf("user:\nB\n交出铜钥匙"), ChatMemoryIndexPolicy.contentsForIndex(choiceTurn(original)))
+        val reordered = "[choices]\nChoices\nA. 交出铜钥匙\nB. 封好地图\n[/choices]"
+        val edited = original.copy(content = reordered, updatedAt = 300)
+        val ambiguous = MessageAlternativeVersionPolicy.append(original, reordered, "second", updatedAt = 150)
+        listOf(edited, edited.copy(updatedAt = 200), ambiguous).forEach { changed ->
+            val rawTurn = choiceTurn(changed)
+            assertTrue(rawTurn.confirmedChoices.isEmpty())
+            assertEquals(listOf("user:\nB"), ChatMemoryIndexPolicy.contentsForIndex(rawTurn))
+            assertFalse(ChatMemoryIndexPolicy.shouldIndex(rawTurn))
+        }
+    }
+
     @Test
     fun buildTurns_groupsEveryReplyInSameSourceTurn() {
         val messages = listOf(
@@ -222,7 +282,9 @@ class ChatMemoryIndexPolicyTest {
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("message_pair", "4")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("memory_node", "1")))
         assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "6")))
-        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "7")))
+        assertTrue(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", "8")))
+        assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("timeline_turn", ChatMemoryIndexPolicy.CONTENT_VERSION)))
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }
 

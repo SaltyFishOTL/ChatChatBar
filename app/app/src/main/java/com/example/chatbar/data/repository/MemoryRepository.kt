@@ -35,6 +35,15 @@ class MemoryRepository(private val storage: JsonFileStorage) {
     suspend fun getNodesForSession(sessionId: String): List<MemoryNode> =
         storage.query(NODE_TYPE, MemoryNode.serializer()) { it.sessionId == sessionId }
 
+    internal suspend fun getWithheldLegacyNodesByOrigin(sessionId: String, origins: Set<String>): List<MemoryNode> {
+        if (origins.isEmpty()) return emptyList()
+        return storage.queryUncached(NODE_TYPE, MemoryNode.serializer()) { node ->
+            node.sessionId == sessionId && node.tier == MemoryTier.LEGACY_REFERENCE &&
+                node.actionProjectionWithheld && node.coverageUnits.singleOrNull()?.sourceId?.let(origins::contains) == true &&
+                node.body.isNotBlank()
+        }
+    }
+
     suspend fun saveNodes(nodes: List<MemoryNode>) {
         if (nodes.isEmpty()) return
         storage.saveAll(NODE_TYPE, nodes.associateBy { it.id }, MemoryNode.serializer())

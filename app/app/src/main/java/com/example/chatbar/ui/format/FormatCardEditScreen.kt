@@ -26,6 +26,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.chatbar.data.local.entity.ActionOptionLabels
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.FormatCardUserToolType
 import com.example.chatbar.ui.kit.ButtonVariant
@@ -43,6 +45,7 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.CbTopBar
 import com.example.chatbar.ui.kit.ChatBarTheme
 import com.example.chatbar.ui.kit.FullscreenTextEditor
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -149,6 +152,7 @@ fun FormatCardEditScreen(
                 )
             }
 
+            ActionOptionsFormatEditor(viewModel.actionOptionsFormat, viewModel::updateActionOptionsFormat)
             CbDivider()
 
             Row(
@@ -329,6 +333,79 @@ fun FormatCardEditScreen(
                     showToolPicker = false
                 }
             )
+        }
+    }
+}
+
+@Composable
+private fun ActionOptionsFormatEditor(
+    format: ActionOptionsFormat?,
+    onChange: (ActionOptionsFormat?) -> Unit
+) {
+    var sample by remember { mutableStateOf("") }
+    val error = format?.let(RoleplayActionOptionsPolicy::validationError)
+    CbText("行动选项", color = ChatBarTheme.colors.primary, style = ChatBarTheme.typography.heading)
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        CbText("自定义识别规则")
+        CbSwitch(
+            checked = format != null,
+            onCheckedChange = { onChange(if (it) RoleplayActionOptionsPolicy.defaultFormat else null) }
+        )
+    }
+    if (format == null) {
+        CbText(
+            "用独立成行的 --- 包住【行动选项】标题和 1.、2. 等连续编号。也支持原来的长横线。",
+            style = ChatBarTheme.typography.caption
+        )
+        CbText(
+            "旧卡的行动代码围栏也可识别，围栏名称或区内首行须明确写出行动标题。",
+            style = ChatBarTheme.typography.caption
+        )
+    } else {
+        CbText(
+            "开头和结尾各占一行。使用横线或无名称的代码围栏时须填写标题。",
+            style = ChatBarTheme.typography.caption
+        )
+        CbField(label = "区块开头", error = error) {
+            CbInput(format.opening, { onChange(format.copy(opening = it)) }, placeholder = "例如 <cyoa>")
+        }
+        CbField(label = "区块结尾") {
+            CbInput(format.closing, { onChange(format.copy(closing = it)) }, placeholder = "例如 </cyoa>")
+        }
+        CbField(label = "区块标题（标记明确时可留空）") {
+            CbInput(format.heading, { onChange(format.copy(heading = it)) })
+        }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            ActionOptionLabels.entries.forEach { labels ->
+                CbButton(
+                    text = if (labels == ActionOptionLabels.NUMBERS) "数字 1、2" else "字母 A、B",
+                    onClick = { onChange(format.copy(labels = labels)) },
+                    variant = if (format.labels == labels) ButtonVariant.Default else ButtonVariant.Outline
+                )
+            }
+        }
+    }
+    CbField(label = "粘贴回复预览") {
+        CbInput(
+            sample,
+            { sample = it },
+            placeholder = if (format == null) "---\n【行动选项】\n1. 去图书馆\n2. 回旅店\n---" else "",
+            singleLine = false,
+            minLines = 3
+        )
+    }
+    if (sample.isNotBlank()) {
+        val options = remember(sample, format) { RoleplayActionOptionsPolicy.blocks(sample, format).flatMap { it.options } }
+        if (options.isEmpty()) {
+            CbText("未识别到完整选项区", style = ChatBarTheme.typography.caption)
+        } else {
+            options.forEach { option ->
+                CbText("${option.label} · ${option.text}", style = ChatBarTheme.typography.caption)
+            }
         }
     }
 }

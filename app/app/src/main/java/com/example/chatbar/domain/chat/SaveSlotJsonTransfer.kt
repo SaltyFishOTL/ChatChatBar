@@ -23,4 +23,14 @@ object SaveSlotJsonTransfer {
     @OptIn(ExperimentalSerializationApi::class)
     fun read(input: InputStream): SaveSlot =
         json.decodeFromStream(SaveSlot.serializer(), input)
+
+    /** Older inline import and export can write the destination ID into the archive header. */
+    internal fun sourceSessionIdForRestore(slot: SaveSlot): String? {
+        val snapshot = slot.memorySnapshot ?: return null
+        val graphOwners = buildSet {
+            snapshot.legacyCommit?.sessionId?.let(::add)
+            snapshot.nodes.forEach { add(it.sessionId) }
+        }
+        return graphOwners.singleOrNull()?.takeIf(String::isNotBlank)
+    }
 }

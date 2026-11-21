@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.backup
 
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import java.util.UUID
 
 /** Typed namespaces avoid confusing equal IDs belonging to different stores. */
@@ -49,6 +50,10 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
             }
             "characterId", "senderCharacterId" -> "characters"
             "messageId", "messageIds", "generatedFromMessageId", "anchorMessageId", "longTermMemoryUpdatedThroughMessageId" -> "chat_messages"
+            ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS -> "chat_messages".takeIf {
+                fields.getOrNull(fields.lastIndex - 1) == "metadata" &&
+                    (record.type == "vector_chunks" || "vectorChunks" in fields)
+            }
             "modelId", "imageModelId", "defaultModelId", "defaultImageModelId", "visionModelId", "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId" -> "model_configs"
             "defaultEmbeddingId" -> "embedding_configs"
             "formatCardId", "defaultFormatCardId" -> "format_cards"
@@ -77,9 +82,19 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
             else -> null // Source-turn, alternative-version and voice-anchor IDs remain session scoped.
         }
     }
+    fun preservedInlineMemoryOwnerPaths(record: BackupMergeRecord): Set<List<String>> {
+        if (copy || record.type != "save_slots" || record.text("packageRef.fileName") != null) return emptySet()
+        val owners = inlineMemoryOwnerPaths.flatMap { record.values[it.joinToString(".")].orEmpty() }.toSet()
+        if (owners.size <= 1 || owners.map { value("chat_sessions", it) }.toSet().size != 1) return emptySet()
+        // A merge can coalesce distinct owners. Keep their disagreement visible to legacy restore.
+        return inlineMemoryOwnerPaths
+    }
+
     fun string(record: BackupMergeRecord, text: String, fields: List<String>): String {
         val type = fieldSpace(record, fields) ?: return text
-        if (fields == listOf("metadata", "messageIds")) return text.split(',').joinToString(",") { value(type, it) }
+        if (fields == listOf("metadata", "messageIds") || fields.lastOrNull() == ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS) {
+            return text.split(',').joinToString(",") { value(type, it) }
+        }
         return value(type, text)
     }
     fun key(text: String, fields: List<String>): String = when (fields.lastOrNull()) {
@@ -88,6 +103,11 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
         else -> text
     }
     companion object {
+        private val inlineMemoryOwnerPaths = setOf(
+            listOf("memorySnapshot", "nodes", "sessionId"),
+            listOf("memorySnapshot", "commit", "sessionId"),
+        )
+
         val fields = setOf("id", "sessionId", "characterCardId", "importedCharacterCardId", "cardId", "disabledPersonIds", "automaticallyPausedPersonIds", "characterId", "senderCharacterId", "messageId", "messageIds",
             "generatedFromMessageId", "anchorMessageId", "longTermMemoryUpdatedThroughMessageId", "modelId", "imageModelId", "defaultModelId",
             "defaultImageModelId", "visionModelId", "formatRepairModelId", "voiceTagModelId", "aiDesignModelId", "designModelId", "defaultEmbeddingId",
@@ -96,6 +116,6 @@ internal class BackupMergeIdentity(private val copy: Boolean) {
             "legacyReferenceNodeIds", "pendingRootNodeIds", "addedNodeIds", "removedNodeIds", "snapshotNodeIds", "consumedNodeIds", "resultNodeId",
             "episodeNodeIds", "arcNodeIds", "eraNodeIds", "activeEpisodeNodeIds", "activeArcNodeIds", "activeEraNodeIds", "deleteNodeIds", "currentRevisionId",
             "parentRevisionId", "sourceRevisionId", "targetRevisionId", "deleteRevisionIds", "transactionId", "deleteTransactionIds", "memoryHeadCommitId",
-            "parentCommitId", "sourceId")
+            "parentCommitId", "sourceId", ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS)
     }
 }

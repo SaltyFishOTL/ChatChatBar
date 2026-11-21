@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.memory
 
+import com.example.chatbar.data.local.entity.ActionOptionsFormat
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
@@ -54,6 +55,40 @@ class MemorySourceFingerprintTest {
             fingerprint(base),
             MemorySourceFingerprint.previousSemantic("s0", base, session)
         )
+    }
+
+    @Test fun `summary source proof omits menus and identifies only affected turns for compatibility`() {
+        val user = base[0].copy(content = "用户原文\n[choices]\nChoices\n1. 走向码头\n2. 走向旅店\n[/choices]")
+        val assistant = base[1].copy(
+            content = "桥上起雾。\n[choices]\nChoices\n1. 走向码头\n2. 走向旅店\n[/choices]",
+            actionOptionsFormat = ActionOptionsFormat(opening = "[choices]", closing = "[/choices]", heading = "Choices"),
+        )
+        val projected = listOf(user, assistant)
+        val plain = base[1].copy(sourceTurnId = "different")
+        assertEquals(user.content, MemorySourceFingerprint.modelFacingBody(user))
+        assertEquals("桥上起雾。\n", MemorySourceFingerprint.modelFacingBody(assistant))
+        assertEquals(fingerprint(projected), fingerprint(listOf(user, assistant.copy(content = "桥上起雾。\n"))))
+        assertEquals(setOf("s0"), MemorySourceFingerprint.sourceIdsWithProjectedActions(projected + plain))
+    }
+
+    @Test fun `source proof changes when a confirmed prior menu choice changes`() {
+        val menu = base[1].copy(
+            id = "menu",
+            content = "地图展开。\n[choices]\nChoices\n1. 关闭地图\n2. 交出钥匙\n[/choices]",
+            actionOptionsFormat = ActionOptionsFormat("[choices]", "[/choices]", "Choices"),
+        )
+        val user = base[0].copy(createdAt = 3, updatedAt = 3, orderKey = 3, content = "2", sourceTurnId = "s1", sourceTurnOrder = 1)
+        val original = listOf(menu, user)
+        val amended = listOf(menu.copy(content = menu.content.replace("交出钥匙", "交出地图")), user)
+        assertEquals("2", user.displayContent)
+        assertEquals(setOf("s0", "s1"), MemorySourceFingerprint.sourceIdsWithProjectedActions(original))
+        assertNotEquals(MemorySourceFingerprint.semantic("s1", original, session),
+            MemorySourceFingerprint.semantic("s1", amended, session))
+
+        val afterSourceEdit = listOf(amended.first().copy(updatedAt = 4), user)
+        assertEquals(setOf("s0"), MemorySourceFingerprint.sourceIdsWithProjectedActions(afterSourceEdit))
+        assertEquals(MemorySourceFingerprint.semantic("s1", listOf(user), session),
+            MemorySourceFingerprint.semantic("s1", afterSourceEdit, session))
     }
 
     private fun fingerprint(messages: List<ChatMessage>) =

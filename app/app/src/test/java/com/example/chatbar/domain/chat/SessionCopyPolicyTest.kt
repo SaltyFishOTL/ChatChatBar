@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.MemoryUpdateStatus
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.domain.memory.MemorySourceFingerprint
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
@@ -51,11 +52,16 @@ class SessionCopyPolicyTest {
         val original = VectorChunk(
             id = "chunk", sourceType = ChunkSourceType.CHAT_MEMORY, sourceId = "target",
             messageId = "b", content = "索引正文", embedding = listOf(0.1f, 0.2f), createdAt = 1,
-            metadata = mapOf("messageIds" to "a,b", "sourceTurnId" to "turn", "embeddingKey" to "model")
+            metadata = mapOf(
+                "messageIds" to "a,b", "sourceTurnId" to "turn", "embeddingKey" to "model",
+                ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS to "a,b",
+            )
         )
         val copied = policy.chunk(original)
         assertEquals(policy.messageId("b"), copied.messageId)
         assertEquals("${policy.messageId("a")},${policy.messageId("b")}", copied.metadata["messageIds"])
+        assertEquals("${policy.messageId("a")},${policy.messageId("b")}",
+            copied.metadata[ChatMemoryIndexPolicy.ACTION_CHOICE_SOURCE_IDS])
         assertEquals("turn", copied.metadata["sourceTurnId"])
         assertEquals(original.embedding, copied.embedding)
         assertEquals(original.content, copied.content)

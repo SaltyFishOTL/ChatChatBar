@@ -3,6 +3,8 @@ package com.example.chatbar.domain.memory
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.ConfirmedActionChoice
+import com.example.chatbar.domain.chat.RoleplayActionOptionsPolicy
 
 /** Stable source evidence: exactly the source semantics shown to memory models. */
 object MemorySourceFingerprint {
@@ -22,7 +24,7 @@ object MemorySourceFingerprint {
             append(field(sourceTurnId))
             sourceMessages.forEach { message ->
                 append(field(message.role.name))
-                append(field(modelFacingBody(message)))
+                append(field(modelFacingBody(message, RoleplayActionOptionsPolicy.confirmedMemoryChoice(message, messages))))
             }
         })
     }
@@ -72,9 +74,21 @@ object MemorySourceFingerprint {
         })
     }
 
-    fun modelFacingBody(message: ChatMessage): String = message.displayContent.ifBlank {
-        if (message.images.isNotEmpty()) "[图片]" else "（空）"
-    }
+    fun modelFacingBody(message: ChatMessage, choice: ConfirmedActionChoice? = null): String =
+        projectSourceBody(message, choice).ifBlank {
+            if (message.images.isNotEmpty()) "[图片]" else "（空）"
+        }
+
+    internal fun sourceIdsWithProjectedActions(messages: List<ChatMessage>): Set<String> =
+        messages.asSequence()
+            .filter { projectSourceBody(it, RoleplayActionOptionsPolicy.confirmedMemoryChoice(it, messages)) != it.displayContent }
+            .mapNotNull { it.sourceTurnId }
+            .toSet()
+
+    private fun projectSourceBody(message: ChatMessage, choice: ConfirmedActionChoice?): String =
+        if (message.role == MessageRole.ASSISTANT) {
+            RoleplayActionOptionsPolicy.withoutExplicitOptions(message.displayContent, message.displayActionOptionsFormat)
+        } else RoleplayActionOptionsPolicy.preserveConfirmedUserChoice(message.displayContent, choice)
 
     private fun field(value: Any?): String {
         val text = value?.toString().orEmpty()
