@@ -2,6 +2,12 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.MemoryCommit
+import com.example.chatbar.data.local.entity.MemoryHead
+import com.example.chatbar.data.local.entity.MemoryNode
+import com.example.chatbar.data.local.entity.MemorySessionSnapshot
+import com.example.chatbar.data.local.entity.MemorySnapshot
+import com.example.chatbar.data.local.entity.MemoryTier
 import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImageResource
 import com.example.chatbar.data.local.entity.SaveSlotAudioResource
@@ -12,6 +18,7 @@ import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -46,6 +53,39 @@ class SaveSlotSerializationTest {
         assertEquals(null, slot.audiobookModeEnabled)
         assertEquals(null, slot.voiceLanguage)
         assertEquals(300, slot.replyLength)
+    }
+
+    @Test
+    fun forwardedHeadOnlyInlineArchiveCannotEstablishMemoryOwnershipFromItsHeader() {
+        val slot = SaveSlot.create("destination", "旧内联存档").copy(
+            memorySnapshot = MemorySnapshot(state = MemorySessionSnapshot(head = MemoryHead(goals = "旧目标"))),
+        )
+        val exported = ByteArrayOutputStream().also { SaveSlotJsonTransfer.write(slot, it) }
+        val decoded = SaveSlotJsonTransfer.read(exported.toByteArray().inputStream())
+
+        assertEquals("destination", decoded.sessionId)
+        assertNull(SaveSlotJsonTransfer.sourceSessionIdForRestore(decoded))
+    }
+
+    @Test
+    fun reboundInlineExportStillRetainsIndependentLegacyGraphOwnership() {
+        val reference = MemoryNode("node", "original", MemoryTier.LEGACY_REFERENCE)
+        val commit = MemoryCommit("old-commit", "original", legacyReferenceNodeIds = listOf(reference.id))
+        val graph = MemorySnapshot(schemaVersion = 3, nodes = listOf(reference), legacyCommit = commit)
+        val storedElsewhere = SaveSlot.create("other", "旧版记忆图").copy(schemaVersion = 3, memorySnapshot = graph)
+        val exported = ByteArrayOutputStream().also { SaveSlotJsonTransfer.write(storedElsewhere, it) }
+        val decoded = SaveSlotJsonTransfer.read(exported.toByteArray().inputStream())
+
+        assertEquals("original", SaveSlotJsonTransfer.sourceSessionIdForRestore(decoded))
+        assertEquals("original", SaveSlotJsonTransfer.sourceSessionIdForRestore(decoded.copy(
+            memorySnapshot = graph.copy(nodes = emptyList()),
+        )))
+        assertEquals("original", SaveSlotJsonTransfer.sourceSessionIdForRestore(decoded.copy(
+            memorySnapshot = graph.copy(legacyCommit = null),
+        )))
+        assertNull(SaveSlotJsonTransfer.sourceSessionIdForRestore(decoded.copy(
+            memorySnapshot = graph.copy(nodes = listOf(reference.copy(sessionId = "other"))),
+        )))
     }
 
     @Test

@@ -12,6 +12,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.ChunkSourceType
+import com.example.chatbar.data.local.entity.MemoryCommit
 import com.example.chatbar.data.local.entity.MemoryHead
 import com.example.chatbar.data.local.entity.MemoryHeadActionProjection
 import com.example.chatbar.data.local.entity.MemoryNode
@@ -24,9 +25,13 @@ import com.example.chatbar.data.local.entity.SaveSlot
 import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.MemoryRepository
+import com.example.chatbar.data.repository.SaveSlotRepository
+import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.memory.MemorySourceFingerprint
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import java.io.ByteArrayOutputStream
+import java.io.File
+import java.io.OutputStream
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
@@ -99,7 +104,7 @@ class ActionMemoryProjectionRuntimeTest {
                     ),
                 )
             } else {
-                MemoryHead(throughSourceTurnId = sourceId, goals = "合成旧HEAD里的选项目标")
+                MemoryHead(throughSourceTurnId = sourceId, goals = "合成旧HEAD里的选项目标", version = 1)
             }
             app.memoryRepository.saveNodes(listOf(reference))
             app.memoryRepository.saveState(MemorySessionState(
@@ -153,6 +158,7 @@ class ActionMemoryProjectionRuntimeTest {
             assertFalse(prompt.headAndTimeline.contains(oldHead.goals))
             assertTrue(requireNotNull(fresh.getNode(reference.id)).actionProjectionWithheld)
             if (deleteReply) restoreOlderPackage(app, vm, session.id, reference, oldHead)
+            else restoreOlderInlineHead(app, vm, session.id, oldHead)
         } finally {
             withContext(Dispatchers.Main) { store.clear() }
             app.saveSlotRepository.deleteBySessionId(session.id)
@@ -196,7 +202,7 @@ class ActionMemoryProjectionRuntimeTest {
         val oldPackage = createLegacyPackage(sessionId, oldSnapshot)
         app.saveSlotRepository.save(oldPackage)
         assertEquals(oldSnapshot, app.saveSlotRepository.getById(oldPackage.id)?.memorySnapshot)
-        loadPackage(app, vm, oldPackage.id, "same-session archive and HEAD")
+        loadArchive(app, vm, oldPackage.id, "same-session archive and HEAD")
 
         val fresh = MemoryRepository(JsonFileStorage(app))
         assertEquals(reference.copy(actionProjectionWithheld = true), fresh.getNode(reference.id))
@@ -211,7 +217,7 @@ class ActionMemoryProjectionRuntimeTest {
         )
         val localHeadOnly = createLegacyPackage(sessionId, headOnly)
         app.saveSlotRepository.save(localHeadOnly)
-        loadPackage(app, vm, localHeadOnly.id, "same-session HEAD only")
+        loadArchive(app, vm, localHeadOnly.id, "same-session HEAD only")
         assertEquals(MemoryHeadActionProjection.WITHHELD,
             MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head?.actionProjection)
 
@@ -221,14 +227,72 @@ class ActionMemoryProjectionRuntimeTest {
             app.saveSlotPackageStorage.export(external, bytes)
             val imported = vm.importSaveSlotJson(bytes.toByteArray().inputStream())
             assertEquals(sessionId, imported.sessionId)
-            loadPackage(app, vm, imported.id, "imported foreign HEAD only")
+            loadArchive(app, vm, imported.id, "imported foreign HEAD only")
             assertEquals(oldHead, MemoryRepository(JsonFileStorage(app)).getState(sessionId)?.head)
         } finally {
             app.saveSlotPackageStorage.delete(external)
         }
     }
 
-    private suspend fun loadPackage(app: ChatBarApp, vm: ChatViewModel, slotId: String, description: String) {
+    private suspend fun restoreOlderInlineHead(
+        app: ChatBarApp,
+        vm: ChatViewModel,
+        sessionId: String,
+        oldHead: MemoryHead
+    ) {
+        val coldMemory = { MemoryRepository(JsonFileStorage(app)) }
+        val state = requireNotNull(coldMemory().getState(sessionId))
+        val session = requireNotNull(app.chatRepository.getSession(sessionId))
+        val messages = app.chatRepository.getMessages(sessionId)
+        val snapshot = MemorySnapshot(
+            state = MemorySessionSnapshot(head = oldHead, timeline = state.timeline, memoryWasEnabled = false),
+        )
+        fun legacySnapshot(owner: String) = MemorySnapshot(
+            schemaVersion = 3, legacyCommit = MemoryCommit("commit-$owner", owner, head = oldHead),
+        )
+        fun archive(owner: String, memory: MemorySnapshot = snapshot) = SaveSlot.create(
+            owner, "合成旧内联存档", messages = messages.map { it.copy(sessionId = owner) },
+        ).copy(
+            memorySnapshot = memory, longTermMemoryEnabled = false,
+            nextSourceTurnOrder = session.nextSourceTurnOrder, nextTimelineTurn = session.nextTimelineTurn,
+        )
+
+        suspend fun importFile(write: suspend (OutputStream) -> Unit): SaveSlot {
+            val file = File.createTempFile("synthetic-inline-memory-", ".json", app.cacheDir)
+            try {
+                file.outputStream().buffered().use { write(it) }
+                val imported = file.inputStream().buffered().use { vm.importSaveSlotJson(it) }
+                assertEquals(sessionId, imported.sessionId)
+                val coldSlots = SaveSlotRepository(JsonFileStorage(app), app.saveSlotPackageStorage)
+                return requireNotNull(coldSlots.getById(imported.id))
+            } finally {
+                file.delete()
+            }
+        }
+
+        val same = importFile { SaveSlotJsonTransfer.write(archive(sessionId, legacySnapshot(sessionId)), it) }
+        assertEquals(sessionId, same.memorySnapshot?.legacyCommit?.sessionId)
+        loadArchive(app, vm, same.id, "same-session inline legacy commit")
+        val preserved = requireNotNull(coldMemory().getState(sessionId))
+        assertEquals(oldHead.copy(stale = true, actionProjection = MemoryHeadActionProjection.WITHHELD), preserved.head)
+        assertFalse(app.longTermMemoryService.promptView(sessionId).headAndTimeline.contains(oldHead.goals))
+
+        val foreignOwner = "foreign-$sessionId"
+        val foreign = importFile { SaveSlotJsonTransfer.write(archive(foreignOwner, legacySnapshot(foreignOwner)), it) }
+        val rebound = importFile { vm.exportSaveSlotJson(foreign.id, it) }
+        assertEquals(foreignOwner, rebound.memorySnapshot?.legacyCommit?.sessionId)
+        // Older builds stored and re-exported the destination IDs without independent HEAD ownership.
+        val oldForward = archive(foreignOwner).copy(sessionId = sessionId, messages = messages)
+        val unknown = importFile { SaveSlotJsonTransfer.write(oldForward, it) }
+        assertEquals(snapshot, unknown.memorySnapshot)
+        for ((description, imported) in listOf("foreign commit re-exported" to rebound, "old forwarded HEAD" to unknown)) {
+            app.memoryRepository.saveState(preserved)
+            loadArchive(app, vm, imported.id, description)
+            assertEquals(description, oldHead, requireNotNull(coldMemory().getState(sessionId)).head)
+        }
+    }
+
+    private suspend fun loadArchive(app: ChatBarApp, vm: ChatViewModel, slotId: String, description: String) {
         val summary = requireNotNull(app.saveSlotRepository.getSummaryById(slotId))
         awaitPhase("restoring $description") {
             val result = async(start = CoroutineStart.UNDISPATCHED) {

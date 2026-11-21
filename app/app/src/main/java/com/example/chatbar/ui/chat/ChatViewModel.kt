@@ -4386,10 +4386,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                       )
                       ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
                       chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
-                      val snapshot = materializedSlot.memorySnapshot
-                      val sourceSessionId = snapshot?.legacyCommit?.sessionId
-                          ?: snapshot?.nodes?.map { it.sessionId }?.distinct()?.singleOrNull()
-                      longTermMemoryService.loadSnapshot(sessionId, snapshot, sourceSessionId)
+                      longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot,
+                          sourceSessionId = SaveSlotJsonTransfer.sourceSessionIdForRestore(materializedSlot))
                   } catch (error: Throwable) {
                       chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
                       voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)

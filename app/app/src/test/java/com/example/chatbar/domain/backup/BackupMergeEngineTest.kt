@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.backup
 
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.memory.MemoryContinuityPolicy
 import com.example.chatbar.domain.memory.MemoryHashes
@@ -412,6 +413,46 @@ class BackupMergeEngineTest {
         assertEquals(2, records<NovelAiGenerationHistoryEntry>(duplicates, "novelai_generation_history").size)
         assertEquals(0, duplicated.counts["novelai_generation_history"]!!.updated)
         assertEquals(old, records<NovelAiGenerationHistoryEntry>(duplicates, "novelai_generation_history").single { it.id == "local-id" })
+    }
+
+    @Test fun inlineArchiveCopyKeepsNestedSameSessionForeignAndUnknownOwnersDistinct() {
+        val local = temporary.newFolder()
+        card(local, "card"); session(local, "source", "card", "当前会话")
+        val source = temporary.newFolder()
+        card(source, "card")
+        session(source, "source", "card", "当前会话")
+        session(source, "foreign", "card", "其他来源")
+        fun graph(owner: String): MemorySnapshot {
+            val reference = MemoryNode("$owner-reference", owner, MemoryTier.LEGACY_REFERENCE)
+            return MemorySnapshot(
+                schemaVersion = 3, nodes = listOf(reference),
+                legacyCommit = MemoryCommit("$owner-commit", owner, legacyReferenceNodeIds = listOf(reference.id)),
+            )
+        }
+        val unknown = MemorySnapshot(state = MemorySessionSnapshot(head = MemoryHead(goals = "旧目标")))
+        for ((name, snapshot) in mapOf("same" to graph("source"), "foreign" to graph("foreign"), "unknown" to unknown)) {
+            val slot = SaveSlot(
+                schemaVersion = 7, id = "slot-$name", sessionId = "source", name = name, createdAt = 12,
+                memorySnapshot = snapshot,
+            )
+            write(source, "entities/save_slots/slot-$name.json", backupJson.encodeToString(slot))
+        }
+
+        val (staged, _) = merge(local, incoming(source, local), AppBackupRestoreMode.ADD_COPIES)
+        val slots = records<SaveSlot>(staged, "save_slots").associateBy { it.name }
+        val importedSession = slots.getValue("same").sessionId
+        val foreignSession = records<ChatSession>(staged, "chat_sessions").single { it.title == "其他来源" }.id
+        assertNotEquals("source", importedSession)
+        assertNotEquals(importedSession, foreignSession)
+        assertTrue(slots.values.all { it.sessionId == importedSession })
+
+        for ((name, owner) in mapOf("same" to importedSession, "foreign" to foreignSession)) {
+            val slot = slots.getValue(name)
+            assertEquals(owner, slot.memorySnapshot?.legacyCommit?.sessionId)
+            assertEquals(owner, slot.memorySnapshot?.nodes?.single()?.sessionId)
+            assertEquals(owner, SaveSlotJsonTransfer.sourceSessionIdForRestore(slot))
+        }
+        assertNull(SaveSlotJsonTransfer.sourceSessionIdForRestore(slots.getValue("unknown")))
     }
 
     @Test fun v8ArchiveCopyRewritesNestedIdentitiesAndCopiesMediaBytesWithoutReencoding() {
