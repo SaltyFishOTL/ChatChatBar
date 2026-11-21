@@ -145,6 +145,31 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `final tool delta carries part lengths before done`() = runBlocking {
+        val first = "<历史回复 模式=\"聚焦\">场景一。</历史回复>"
+        val second = "<历史回复 模式=\"推进\">场景二。</历史回复>"
+        val eventsBody = sse(listOf(
+            chunk(buildJsonObject { put("content", first) }.toString(), "game_content"),
+            chunk(buildJsonObject { put("content", second) }.toString(), "game_content", index = 1),
+            chunk(reason = "tool_calls"),
+            "[DONE]",
+        ))
+        TaskResponseServer(eventsBody, "text/event-stream").use { server ->
+            val events = withTimeout(5_000) {
+                service().streamChat("multipart-echo", messages, model(server)).toList()
+            }
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            val finalDelta = deltas.last()
+            assertEquals(listOf(first.length, second.length), finalDelta.toolReplyPartLengths)
+            assertTrue(events.indexOf(finalDelta) < events.indexOf(StreamEvent.Done))
+            val raw = deltas.joinToString("") { it.text }
+            assertEquals("场景一。\n场景二。", NarrativeHistoryEcho.completedBody(
+                raw, enabled = true, partLengths = finalDelta.toolReplyPartLengths, streaming = true,
+            ))
+        }
+    }
+
+    @Test
     fun `non streaming auxiliary response extracts JSON task payload from tool arguments`() = runBlocking {
         val expected = """{"result":"正确值"}"""
         val response = buildJsonObject {
@@ -220,14 +245,19 @@ class ExperimentalToolTransportTest {
 
     private fun sse(chunks: List<String>) = chunks.joinToString("") { "data: $it\n\n" }
 
-    private fun chunk(arguments: String? = null, name: String? = null, reason: String? = null): String = buildJsonObject {
+    private fun chunk(
+        arguments: String? = null,
+        name: String? = null,
+        reason: String? = null,
+        index: Int = 0,
+    ): String = buildJsonObject {
         put("choices", buildJsonArray {
             add(buildJsonObject {
                 reason?.let { put("finish_reason", it) }
                 put("delta", buildJsonObject {
                     if (arguments != null || name != null) put("tool_calls", buildJsonArray {
                         add(buildJsonObject {
-                            put("index", 0)
+                            put("index", index)
                             put("function", buildJsonObject {
                                 name?.let { put("name", it) }
                                 arguments?.let { put("arguments", it) }

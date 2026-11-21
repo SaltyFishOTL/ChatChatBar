@@ -9,7 +9,11 @@ import kotlinx.serialization.json.intOrNull
 
 /** Per-request decoder; tool argument fragments must never be rendered as raw JSON. */
 internal class ExperimentalToolReplyDecoder {
-    data class Completion(val remainingText: String, val toolReplyCompleted: Boolean)
+    data class Completion(
+        val remainingText: String,
+        val toolReplyCompleted: Boolean,
+        val partLengths: List<Int> = emptyList(),
+    )
 
     private class Call {
         val name = StringBuilder()
@@ -53,15 +57,17 @@ internal class ExperimentalToolReplyDecoder {
             return Completion(ordinaryText.toString(), false)
         }
         if (!validate) return Completion("", false)
-        val fullText = calls.values.joinToString("\n") { call ->
+        val parts = calls.values.map { call ->
             require(call.name.toString() == ExperimentalToolChatPolicy.OUTPUT_TOOL) {
                 "实验模式收到非正文工具调用：${call.name}，预期 game_content"
             }
             decodeArguments(call.arguments.toString())
         }
+        val fullText = parts.joinToString("\n")
         require(fullText.startsWith(emitted.toString())) { "实验模式工具参数与已接收正文不一致" }
         require(fullText.isNotBlank()) { "实验模式工具回复正文为空" }
-        return Completion(fullText.substring(emitted.length), true)
+        val partLengths = if (parts.size > 1) parts.map(String::length) else emptyList()
+        return Completion(fullText.substring(emitted.length), true, partLengths)
     }
 
     companion object {

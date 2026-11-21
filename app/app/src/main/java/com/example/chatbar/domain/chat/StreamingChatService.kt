@@ -68,8 +68,8 @@ private const val PARAM_REASONING_EFFORT = "reasoning_effort"
  * SSE 流事件
  */
 sealed class StreamEvent {
-    /** 增量文本片段 */
-    data class Delta(val text: String) : StreamEvent()
+    /** Validated tool-part lengths accompany the delta that completes the joined body. */
+    data class Delta(val text: String, val toolReplyPartLengths: List<Int> = emptyList()) : StreamEvent()
 
     /** Main-chat preview snapshot; canonical Delta output may replace it after tool selection. */
     data class ContentPreview(val text: String) : StreamEvent()
@@ -279,10 +279,12 @@ class StreamingChatService(
                             )
                             if (decoded.remainingText.isNotEmpty()) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
-                                trySend(StreamEvent.Delta(decoded.remainingText))
+                                trySend(StreamEvent.Delta(decoded.remainingText, decoded.partLengths))
                             }
                             if (decoded.toolReplyCompleted) {
-                                replyCompletion.updateAndGet { it.copy(toolReplyCompleted = true) }
+                                replyCompletion.updateAndGet {
+                                    it.copy(toolReplyCompleted = true, toolReplyPartLengths = decoded.partLengths)
+                                }
                             } else if (completed && !toolDecoder.hasToolCalls) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")
                             }

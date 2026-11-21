@@ -18,6 +18,7 @@ import com.example.chatbar.domain.card.NamePolicy
 import com.example.chatbar.domain.chat.ChatApiMessage
 import com.example.chatbar.domain.chat.ChatContextGroupPolicy
 import com.example.chatbar.domain.chat.ChatHistoryPromptPolicy
+import com.example.chatbar.domain.chat.NarrativeHistoryEcho
 import com.example.chatbar.domain.chat.ChatHistoryPromptZone
 import com.example.chatbar.domain.chat.ChatMessageOrderSnapshot
 import com.example.chatbar.domain.chat.ChatRequestMemoryPolicy
@@ -2648,7 +2649,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 startStreamingForegroundWork()
                 val generationJob = coroutineContext[Job]
                 var interruptedReplyDraft: ChatMessage? = null
+                var receivedToolReplyPartLengths = emptyList<Int>()
                 var assistantReplyPersisted = false
+                var cleanNarrativeEcho = false
                 val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
                     generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
                 }
@@ -3002,6 +3005,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 worldBookOutlets = wbOutlets
                             )
                         }
+                    cleanNarrativeEcho = NarrativeHistoryEcho.appliesToRequest(requestNarrativeMode, renderedFormatCardContent)
                     // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                     val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
                         contextMsgs.lastOrNull { it.role == MessageRole.USER }
@@ -3261,12 +3265,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                     val ctx = ChatBarApp.instance
-                    fun updateStreamingDraft(body: String) {
+                    fun updateStreamingDraft(rawBody: String): String {
+                        val renderedBody = renderSessionText(
+                            NarrativeHistoryEcho.completedBody(
+                                rawBody, enabled = cleanNarrativeEcho, partLengths = receivedToolReplyPartLengths,
+                                streaming = true,
+                            )
+                        )
                         val draft = ChatMessage(
                             id = assistantMsgId,
                             sessionId = sessionId,
                             role = MessageRole.ASSISTANT,
-                            content = body,
+                            content = rawBody,
                             narrativeMode = requestNarrativeMode,
                             reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                             createdAt = streamCreatedAt,
@@ -3275,9 +3285,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         )
                         interruptedReplyDraft = draft
                         _streamingMessage.value = draft.copy(
-                            content = renderSessionText(body),
+                            content = renderedBody,
                             reasoningContent = draft.reasoningContent?.let(renderSessionText)
                         )
+                        return renderedBody
                     }
                     _streamingMessage.value = ChatMessage(
                         id = assistantMsgId,
@@ -3313,15 +3324,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             }
                             is StreamEvent.ContentPreview -> {
                                 ordinaryPreview = event.text.takeIf(String::isNotEmpty)
-                                updateStreamingDraft(ordinaryPreview ?: accumulatedText)
-                                StreamingNotificationManager.update(ctx, renderSessionText(event.text), sessionId)
+                                val body = updateStreamingDraft(ordinaryPreview ?: accumulatedText)
+                                StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Delta -> {
                                 ordinaryPreview = null
                                 accumulatedText += event.text
-                                val renderedAccumulatedText = renderSessionText(accumulatedText)
-                                updateStreamingDraft(accumulatedText)
-                                StreamingNotificationManager.update(ctx, renderedAccumulatedText, sessionId)
+                                receivedToolReplyPartLengths = event.toolReplyPartLengths
+                                val body = updateStreamingDraft(accumulatedText)
+                                StreamingNotificationManager.update(ctx, body, sessionId)
                             }
                             is StreamEvent.Error -> {
                                 throw Exception(event.message)
@@ -3329,12 +3340,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Done -> {
                                 ChatBarApp.instance.streamingStopRequested.value = false
                                 // 流生成完毕，保存到数据库
-                                ChatHistoryPromptPolicy.requirePersistableAssistantBody(accumulatedText)
+                                val completion = replyCompletion.get()
+                                val replyBody = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
+                                    NarrativeHistoryEcho.completedBody(
+                                        accumulatedText,
+                                        enabled = cleanNarrativeEcho,
+                                        interrupted = completion?.finishReason == "length",
+                                        partLengths = completion?.toolReplyPartLengths.orEmpty(),
+                                    )
+                                )
                                 val assistantMsg = ChatMessage(
                                     id = assistantMsgId,
                                     sessionId = sessionId,
                                     role = MessageRole.ASSISTANT,
-                                    content = accumulatedText,
+                                    content = replyBody,
                                     narrativeMode = requestNarrativeMode,
                                     reasoningContent = accumulatedReasoning.takeIf { it.isNotEmpty() },
                                     createdAt = streamCreatedAt,
@@ -3365,7 +3384,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 ) {
                                     automaticImageHandled = true
                                     var skipReason = AutomaticChatImagePolicy.skipReason(
-                                        replyCompletion.get(), accumulatedText
+                                        replyCompletion.get(), replyBody
                                     ) ?: AutomaticChatImagePolicy.skipReason(
                                         replyCompletion.get(), persistedAssistantMessage.displayContent
                                     )
@@ -3425,7 +3444,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (e is BackgroundGenerationProtectionCancellationException) {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
-                        val draft = InterruptedReplyPolicy.persistableDraft(interruptedReplyDraft)
+                        val finalDraft = interruptedReplyDraft?.let { partial ->
+                            partial.copy(content = NarrativeHistoryEcho.completedBody(
+                                partial.content, enabled = cleanNarrativeEcho, interrupted = true,
+                                partLengths = receivedToolReplyPartLengths,
+                            ))
+                        }
+                        val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)
                         if (draft != null || assistantReplyPersisted) {
                             withContext(NonCancellable) {
                                 try {
