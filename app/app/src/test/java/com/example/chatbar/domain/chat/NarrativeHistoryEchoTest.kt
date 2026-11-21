@@ -187,8 +187,8 @@ class NarrativeHistoryEchoTest {
             "<历史回复 模式=\"推进\">" to "</历史回复>",
             "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
         )) {
-            for (breakLine in listOf("\n", "\r\n", "\r")) {
-                val lead = "她说‘the visitors’ plan"
+            for (breakLine in listOf("\n", "\r\n", "\r")) for (speech in listOf("她说", "她說：")) {
+                val lead = "${speech}‘the visitors’ plan"
                 val prefix = "$lead$breakLine$closing$breakLine" + "仍在这里。"
                 val incoming = "$opening$breakLine$prefix"
                 assertEquals(prefix, NarrativeHistoryEcho.completedBody(incoming, enabled = true, streaming = true))
@@ -224,14 +224,18 @@ class NarrativeHistoryEchoTest {
 
     @Test fun finishedPluralQuoteStillAllowsARealOuterClose() {
         val closedQuotes = listOf(
-            "She titled it ‘Visitors’ before leaving",
-            "She repeated ‘the visitors’ aloud",
-            "She repeated ‘the visitors’ yesterday",
-            "她重复‘the visitors’ and walked away.",
+            "She titled it ‘Visitors’ before leaving" to "This is a markup example.",
+            "She repeated ‘the visitors’ aloud" to "This is a markup example.",
+            "She repeated ‘the visitors’ yesterday" to "This is a markup example.",
+            "她重复‘the visitors’ and walked away." to "这是一段标签示例。",
+            "I checked whether ‘the visitors’ arrived" to "This first pair is a markup example.",
+            "I checked whether ‘the visitors’ arrived" to "这是一段标签示例。",
+            "她说‘the visitors’ arrived" to "This first pair is a markup example.",
+            "我确认‘the visitors’ arrived" to "这是一段标签示例。",
         )
-        for (mode in ChatNarrativeMode.entries) for (body in closedQuotes) {
+        for (mode in ChatNarrativeMode.entries) for ((body, commentary) in closedQuotes) {
             val wrapped = PromptTemplates.narrativeModeHistoryReply(body, mode)
-            val standaloneExample = "$wrapped\nThis is a markup example."
+            val standaloneExample = "$wrapped\n$commentary"
             for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
                 assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, true, interrupted, streaming = streaming))
                 assertEquals(standaloneExample,

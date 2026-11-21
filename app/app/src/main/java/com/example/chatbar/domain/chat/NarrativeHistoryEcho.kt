@@ -20,6 +20,8 @@ object NarrativeHistoryEcho {
     private val proseDelimiters = mapOf('「' to '」', '『' to '』', '“' to '”', '‘' to '’', '"' to '"', '\'' to '\'')
     private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
+    private val chineseSpeechLead = Regex("[说說][ \\t]*[:：]?[ \\t]*$")
+    private val hanIdeograph = Regex("[\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF]")
     private val ordinaryProseFollowers = setOf(
         "after", "again", "all", "already", "aloud", "and", "as", "away", "before", "but",
         "elsewhere", "for", "here", "in", "instead", "later", "now", "or", "outside", "so",
@@ -93,7 +95,7 @@ object NarrativeHistoryEcho {
                 position.takeIf {
                     tag.value in wrapper.closings && linePrefix.isBlank() && !isIndentedCodeLine(end, position) &&
                         ranges.none { position in it } && continuationLines.next().isBlank() &&
-                        continuationLines.hasNext() && continuationLines.next().any(Char::isLetterOrDigit)
+                        continuationLines.hasNext() && hanIdeograph.containsMatchIn(continuationLines.next())
                 }
             } else emptyList()
             val quotes = proseQuoteRanges(end, quoteDelimitersToSkip, includeUnclosed, interiorClosings)
@@ -225,7 +227,8 @@ object NarrativeHistoryEcho {
         val nextOpen = text.indexOf('‘', position + 1)
         if (nextClose >= 0) return nextOpen < 0 || nextClose < nextOpen
         if (nextOpen >= 0) return false
-        // A lowercase plural noun phrase and its next word can support an unfinished possessive.
+        // Require a speech cue before widening a quote with an ambiguous English closing mark.
+        if (!chineseSpeechLead.containsMatchIn(text.subSequence(lineStart(text, quoteStart), quoteStart))) return false
         if (!unfinishedPluralPossessor.matches(text.subSequence(quoteStart + 1, position))) return false
         val tagLine = interiorClosings.firstOrNull { it > wordStart }?.let { lineStart(text, it) } ?: return false
         if (tagLine <= wordStart || lineStart(text, wordStart) != lineStart(text, position)) return false
