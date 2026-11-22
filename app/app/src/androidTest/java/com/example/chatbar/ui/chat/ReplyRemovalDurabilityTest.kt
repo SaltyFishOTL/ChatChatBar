@@ -25,8 +25,12 @@ import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import java.util.UUID
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.junit.Assert.*
@@ -219,7 +223,9 @@ class ReplyRemovalDurabilityTest {
             requiresCompatibleVersion = true, anchorId = "original-anchor")
         fixture.voices.save(voice)
         assertEquals(listOf(voice.id), fixture.voices.listForCurrentVersion(original).map { it.id })
-        assertEquals(voice.id, fixture.voices.currentVoiceForPlayback(voice)?.id)
+        fixture.voices.withCurrentPlaybackQueue(listOf(voice), fixture.chats) { playable ->
+            assertEquals(voice.id, playable.single().id)
+        }
         val changed = MessageAlternativeVersionPolicy.editCurrentContent(original, "Edited incompatible reply")
         assertNotNull(fixture.chats.updateMessageIfUnchanged(original, changed))
         val persisted = requireNotNull(fixture.chats.getMessage(original.id, session.id))
@@ -235,7 +241,9 @@ class ReplyRemovalDurabilityTest {
             assertTrue(archived.requiresCompatibleVersion)
             assertTrue(cold.voices.listForCurrentVersion(persisted).isEmpty())
             assertTrue(cold.voices.placementsForMessage(original).isEmpty())
-            assertNull(cold.voices.currentVoiceForPlayback(voice))
+            cold.voices.withCurrentPlaybackQueue(listOf(voice), cold.chats) { playable ->
+                assertTrue(playable.isEmpty())
+            }
             assertEquals("synthetic audio", File(archived.audioPath).readText())
         }
     }
@@ -273,12 +281,67 @@ class ReplyRemovalDurabilityTest {
         val last = recording("current-last", selected)
         fixture.voices.save(first)
         fixture.voices.save(last)
-        fixture.voices.withCurrentAutoPlayQueue(listOf(first, legacy, capturedAlternative, removed, last), fixture.chats) { queue ->
+        fixture.voices.withCurrentPlaybackQueue(listOf(first, legacy, capturedAlternative, removed, last), fixture.chats) { queue ->
             assertEquals(listOf(first.id, last.id), queue.map { it.id })
             assertTrue(queue.all { File(it.audioPath).isFile })
         }
         assertTrue(File(legacy.audioPath).isFile)
         assertTrue(File(capturedAlternative.audioPath).isFile)
+    }
+
+    @Test fun removingQueuedAndCurrentRepliesKeepsTheSurvivingRecording() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val audio = File(fixture.context.filesDir, "audio/generated/${session.id}/shared.wav")
+        check(audio.parentFile!!.mkdirs())
+        val sampleBytes = 30 * 8_000 * 2
+        audio.writeBytes(ByteBuffer.allocate(44 + sampleBytes).order(ByteOrder.LITTLE_ENDIAN)
+            .put("RIFF".toByteArray()).putInt(36 + sampleBytes).put("WAVEfmt ".toByteArray())
+            .putInt(16).putShort(1).putShort(1).putInt(8_000).putInt(16_000).putShort(2).putShort(16)
+            .put("data".toByteArray()).putInt(sampleBytes).array())
+        suspend fun recording(label: String, alternative: Boolean = false): Pair<ChatMessage, GeneratedVoiceMessage> {
+            val first = ChatMessage.create(session.id, MessageRole.ASSISTANT, "$label original")
+            val message = fixture.chats.addMessage(if (alternative) {
+                MessageAlternativeVersionPolicy.append(first, "$label current", "$label-version")
+            } else first)
+            val voice = GeneratedVoiceMessage.create(
+                sessionId = session.id, messageId = message.id,
+                messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(message),
+                anchorId = null, sourceOrder = 0, sourceSegmentKind = VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND,
+                sourceSpeakerName = "", sourceText = message.displayContent, taggedText = message.displayContent,
+                characterId = "synthetic-card", characterName = "Synthetic",
+                voice = FishAudioVoiceBinding("synthetic-reference", "Synthetic"),
+                fishModelId = "synthetic-model", audioPath = audio.path,
+                durationMs = 30_000, byteLength = audio.length()
+            )
+            fixture.voices.save(voice)
+            return message to voice
+        }
+
+        val (first, firstVoice) = recording("first")
+        val (middle, middleVoice) = recording("middle", alternative = true)
+        val (_, lastVoice) = recording("last")
+        val playback = fixture.app.voicePlaybackController
+        try {
+            val captured = listOf(firstVoice, middleVoice, lastVoice)
+            fixture.voices.withCurrentPlaybackQueue(captured, fixture.chats) { playable ->
+                withContext(Dispatchers.Main) { playback.playSequence(playable) }
+            }
+            assertEquals(captured.map { it.id }, playback.state.value.queueVoiceIds)
+
+            val version = MessageAlternativeVersionPolicy.activeVersionId(middle)
+            val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(middle, version))
+            assertNull(fixture.removals.remove(middle, survivor, version))
+            assertEquals(listOf(firstVoice.id, lastVoice.id), playback.state.value.queueVoiceIds)
+            assertEquals(firstVoice.id, playback.state.value.currentVoiceId)
+            assertTrue(audio.isFile)
+
+            assertNull(fixture.removals.remove(first, replacement = null, versionId = null))
+            assertEquals(listOf(lastVoice.id), playback.state.value.queueVoiceIds)
+            assertEquals(listOf(lastVoice.id), fixture.voices.listForSession(session.id).map { it.id })
+            assertTrue(audio.isFile)
+        } finally {
+            withContext(Dispatchers.Main) { playback.stop() }
+        }
     }
 
     private fun verifyUncommittedRetry(versionOnly: Boolean) = withFixture { fixture ->

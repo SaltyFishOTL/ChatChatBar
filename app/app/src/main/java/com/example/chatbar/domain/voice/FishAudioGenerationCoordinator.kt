@@ -385,20 +385,20 @@ class FishAudioGenerationCoordinator(
         return scope.launch {
             autoPlayMutex.withLock {
                 if (request != playbackRequest.get()) return@withLock
-                val playable = try {
-                    val following = voiceRepository.currentVoicesForPlayback(sequence.drop(1))
-                    val selected = voiceRepository.currentVoiceForPlayback(voice) ?: return@withLock
-                    listOf(selected) + following
+                try {
+                    voiceRepository.withCurrentPlaybackQueue(sequence, chatRepository) { playable ->
+                        if (playable.firstOrNull()?.id != voice.id) return@withCurrentPlaybackQueue
+                        withContext(Dispatchers.Main.immediate) {
+                            if (request == playbackRequest.get() && mayStart()) {
+                                clearAutoPlayLocked()
+                                playback.playSequence(playable)
+                            }
+                        }
+                    }
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (_: Exception) {
                     return@withLock
-                }
-                withContext(Dispatchers.Main.immediate) {
-                    if (request == playbackRequest.get() && mayStart()) {
-                        clearAutoPlayLocked()
-                        playback.playSequence(playable)
-                    }
                 }
             }
         }
@@ -968,8 +968,8 @@ class FishAudioGenerationCoordinator(
             if (foregroundSessionId != next.sessionId || foregroundGeneration.get() != next.foregroundGeneration) continue
             // A later completed batch can wait behind unfinished earlier audio while its reply changes.
             try {
-                voiceRepository.withCurrentAutoPlayQueue(voices, chatRepository) { playable ->
-                    if (playable.isEmpty()) return@withCurrentAutoPlayQueue
+                voiceRepository.withCurrentPlaybackQueue(voices, chatRepository) { playable ->
+                    if (playable.isEmpty()) return@withCurrentPlaybackQueue
                     withContext(Dispatchers.Main.immediate) {
                         if (request == playbackRequest.get() && foregroundSessionId == next.sessionId &&
                             foregroundGeneration.get() == next.foregroundGeneration) {

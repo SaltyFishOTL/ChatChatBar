@@ -47,7 +47,7 @@ internal class ReplyRemovalCoordinator(
         require((replacement == null) == (versionId == null))
         LocalDataMaintenance.access {
             var removal: ReplyRemoval? = null
-            check(voices.prepareReplyRemoval(expected, versionId) { collectAudioPaths ->
+            check(voices.prepareReplyRemoval(expected, versionId, playback::removeQueuedVoices) { collectAudioPaths ->
                 chat.commitReplyRemoval(expected, replacement) {
                     val pending = ReplyRemoval(
                         id = UUID.randomUUID().toString(), sessionId = expected.sessionId, messageId = expected.id,
@@ -317,7 +317,7 @@ internal class ReplyRemovalCoordinator(
                     cleanup()
                 }
             },
-            { ids -> if (playback.state.value.currentVoiceId in ids) playback.stop() },
+            playback::removeQueuedVoices,
             audio::deleteIfOwned
         )
         if (!committed) voices.deleteUnownedReplyAudio(removal.audioPaths, audio::deleteIfOwned)

@@ -89,16 +89,7 @@ class VoiceMessageRepository(
         }
     }
 
-    internal suspend fun currentVoiceForPlayback(captured: GeneratedVoiceMessage): GeneratedVoiceMessage? =
-        currentVoicesForPlayback(listOf(captured)).singleOrNull()
-
-    internal suspend fun currentVoicesForPlayback(captured: List<GeneratedVoiceMessage>): List<GeneratedVoiceMessage> =
-        mutex.withLock {
-            ensureInitializedLocked()
-            captured.mapNotNull { currentVoiceForPlaybackLocked(it) }
-        }
-
-    internal suspend fun withCurrentAutoPlayQueue(
+    internal suspend fun withCurrentPlaybackQueue(
         captured: List<GeneratedVoiceMessage>,
         chats: ChatRepository,
         enqueue: suspend (List<GeneratedVoiceMessage>) -> Unit,
@@ -106,21 +97,19 @@ class VoiceMessageRepository(
         ensureInitializedLocked()
         // Use the same voice-to-message lock order as reply removal for validation and handoff.
         chats.withStableMessageTimeline {
-            enqueue(captured.mapNotNull { currentVoiceForPlaybackLocked(it, requireActiveVersion = true) })
+            enqueue(captured.mapNotNull { currentVoiceForPlaybackLocked(it, chats) })
         }
     }
 
     private suspend fun currentVoiceForPlaybackLocked(
         captured: GeneratedVoiceMessage,
-        requireActiveVersion: Boolean = false,
+        chats: ChatRepository,
     ): GeneratedVoiceMessage? {
         val current = _voices.value.firstOrNull { it.id == captured.id } ?: return null
         if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
             current.audioPath != captured.audioPath) return null
         val requiresCompatibility = current.requiresCompatibleVersion || captured.requiresCompatibleVersion
-        if (!requireActiveVersion && !requiresCompatibility) return current
-
-        val message = loadCurrentMessage?.invoke(current.messageId, current.sessionId) ?: return null
+        val message = chats.getMessage(current.messageId, current.sessionId) ?: return null
         val version = MessageAlternativeVersionPolicy.activeVersion(message)
         return current.takeIf {
             it.messageVersionId == version.id &&
@@ -296,6 +285,7 @@ class VoiceMessageRepository(
     internal suspend fun prepareReplyRemoval(
         message: ChatMessage,
         versionId: String?,
+        removeFromPlayback: suspend (Set<String>) -> Unit,
         commit: suspend (suspend () -> List<String>) -> Boolean
     ): Boolean = mutex.withLock {
         ensureInitializedLocked()
@@ -305,7 +295,10 @@ class VoiceMessageRepository(
             targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
                 .map(GeneratedVoiceMessage::audioPath).distinct()
         }
-        if (committed && versionId != null) restrictUnconfirmedReplyVoices(targeted)
+        if (committed) {
+            removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
+            if (versionId != null) restrictUnconfirmedReplyVoices(targeted)
+        }
         committed
     }
 
@@ -313,7 +306,7 @@ class VoiceMessageRepository(
     internal suspend fun finishReplyRemoval(
         removal: ReplyRemoval,
         whileOwnerRemoved: suspend (suspend () -> Unit) -> Boolean,
-        stopPlayback: (Set<String>) -> Unit,
+        removeFromPlayback: suspend (Set<String>) -> Unit,
         deleteAudio: (String) -> Boolean
     ): Boolean = mutex.withLock {
         ensureInitializedLocked()
@@ -323,6 +316,7 @@ class VoiceMessageRepository(
             val removed = targeted.filter {
                 removal.versionId == null || it.messageVersionId == removal.versionId && it.versionOwnershipConfirmed
             }
+            removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
             val anchorKeys = mutableSetOf<VoiceAnchorStateKey>()
             storage.forEachUncached(ANCHOR_TYPE, VoiceAnchorState.serializer(), requireCompleteRead = true) { state ->
                 if (state.messageId == removal.messageId &&
@@ -331,7 +325,6 @@ class VoiceMessageRepository(
                     anchorKeys += VoiceAnchorStateKey(state.messageId, state.messageVersionId)
                 }
             }
-            stopPlayback(removed.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
             deleteVoiceRecordsLocked(removed)
             if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted)
             anchorKeys.forEach { deleteAnchorLocked(it) }
