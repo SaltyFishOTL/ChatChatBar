@@ -242,6 +242,16 @@ class ReplyRagPublicationRuntimeTest {
             assertTrue(recalledText().contains(SURVIVOR))
             assertTrue(recalledText().contains(manual.content))
             assertFalse(recalledText().contains(REPAIRED))
+
+            val candidates = app.replyRemovalCoordinator.getChunksForRetrieval(null, session.id)
+            val currentEmbeddingKey = requireNotNull(live.metadata["embeddingKey"])
+            val compatible = rankChunksByMultiRoute(candidates, live.embedding, SURVIVOR, currentEmbeddingKey, 20)
+                .single { it.chunk.content == live.content }
+            val differentModel = rankChunksByMultiRoute(candidates, live.embedding, SURVIVOR, "other-model", 20)
+                .single { it.chunk.content == live.content }
+            assertNotNull(compatible.vectorRank)
+            assertNull(differentModel.vectorRank)
+            assertTrue(differentModel.lexicalScore > 0f)
         } finally {
             corrupt.delete()
             archived?.let { app.saveSlotRepository.delete(it.id) }

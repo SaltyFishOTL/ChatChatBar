@@ -31,6 +31,7 @@
 - Keep HEAD after RAG and treat larger T as later narrative state.
 - Never prepend derived `[Txx]` markers to roleplay chat messages. Keep display T as internal memory metadata; preserve ordinary message order for model chronology. After assistant status exclusion, omit blank assistant text and unsupported assistant image records; a supported user image may be sent without synthetic text.
 - Keep RAG data independent: do not index or query long-term-memory nodes and do not limit RAG by memory-node T ranges.
+- Use only matching embedding keys and dimensions for vector ranking. Keep valid archived or legacy chat-memory text eligible for lexical ranking while vectors from another or unknown model await rebuild.
 - Treat document and chat-memory recall counts independently. A zero count disables that source before repository retrieval and ranking; if both counts are zero, skip the complete RAG retrieval path.
 
 ## Gap and Backfill

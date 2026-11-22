@@ -63,6 +63,7 @@ import com.example.chatbar.domain.rag.RagSourcePlan
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
 import com.example.chatbar.domain.rag.ChatMemoryProjection
 import com.example.chatbar.domain.rag.ChatMemoryTurn
+import com.example.chatbar.domain.rag.VectorSearchEngine
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
@@ -2945,6 +2946,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         chunks = docChunks,
                                         queryEmbedding = queryEmbedding,
                                         ragQuery = ragQuery,
+                                        embeddingKey = currentEmbeddingKey,
                                         routeLimit = routeCandidateLimit(appSettings.docRagTopK, docChunks.size)
                                     )
                                 } else {
@@ -2956,6 +2958,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                         chunks = searchableMemChunks,
                                         queryEmbedding = queryEmbedding,
                                         ragQuery = ragQuery,
+                                        embeddingKey = currentEmbeddingKey,
                                         routeLimit = routeCandidateLimit(appSettings.memoryRagTopK, searchableMemChunks.size)
                                     )
                                 } else {
@@ -2969,7 +2972,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                                 val topDocCandidates = rankedDocChunks.take(routeCandidateLimit(appSettings.docRagTopK, rankedDocChunks.size))
                                 val eligibleDocCandidates = topDocCandidates.filter {
-                                    it.vectorScore >= appSettings.docRagSimilarityThreshold ||
+                                    it.vectorScore?.let { score -> score >= appSettings.docRagSimilarityThreshold } == true ||
                                         it.lexicalScore >= DOCUMENT_LEXICAL_ACCEPT_THRESHOLD
                                 }
                                 val topDocChunks = eligibleDocCandidates.withSourceDiversity(appSettings.docRagTopK)
@@ -2980,7 +2983,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     )
                                 }
                                 val eligibleMemChunks = rankedMemChunks.filter {
-                                    it.vectorScore >= appSettings.memoryRagSimilarityThreshold ||
+                                    it.vectorScore?.let { score -> score >= appSettings.memoryRagSimilarityThreshold } == true ||
                                         it.lexicalScore >= MEMORY_LEXICAL_ACCEPT_THRESHOLD
                                 }
                                 val currentRecallIds = replyRemovalCoordinator.selectCurrentRecallIds(
@@ -2996,7 +2999,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                                     ?: chunk.metadata["fileName"]
                                                     ?: chunk.id
                                                 val contentSource = chunk.contentSourceLabel() ?: "no-content-source"
-                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | meta=$metaSource | content=$contentSource"
+                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${rank.vectorScore?.let { "%.4f".format(it) } ?: "-"}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | meta=$metaSource | content=$contentSource"
                                             }
                                     )
                                     val topSources = rankedDocChunks.take(20)
@@ -3014,7 +3017,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     ragDebugLogs.add(
                                         "Chat memory multi-route top scores: " +
                                             rankedMemChunks.take(10).joinToString("\n") { rank ->
-                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${"%.4f".format(rank.vectorScore)}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | messageIds=${rank.chunk.messageIds()}"
+                                                "rrf=${"%.4f".format(rank.rrfScore)} combined=${"%.4f".format(rank.combinedScore)} vector=${rank.vectorScore?.let { "%.4f".format(it) } ?: "-"}@${rank.vectorRank ?: "-"} lexical=${"%.4f".format(rank.lexicalScore)}@${rank.lexicalRank ?: "-"} | messageIds=${rank.chunk.messageIds()}"
                                             }
                                     )
                                 }
@@ -3983,6 +3986,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (chatRepository.getMessageTurnCount(sessionId) <= contextWindowSize) return
         val activeMessages = contextWindowManager.getRecentMessages(allMessages, contextWindowSize)
         val activeIds = activeMessages.map { it.id }.toSet()
+        val embeddingKey = ragManager.embeddingKey(embeddingConfig)
         val currentAutomaticChunks = ChatBarApp.instance.ragRepository
             .getAllChunksForSession(sessionId)
             .filterNot(ChatMemoryIndexPolicy::needsAutomaticRebuild)
@@ -4012,6 +4016,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         val existing = currentAutomaticChunks[chunkId]
                         existing == null ||
                             existing.messageIds() != turn.messageIds ||
+                            existing.metadata["embeddingKey"] != embeddingKey ||
                             existing.metadata["sourceHash"] != ragManager.hashContent(content)
                     }
             }
@@ -4962,9 +4967,9 @@ private const val MEMORY_LEXICAL_ACCEPT_THRESHOLD = 0.18f
 private const val RRF_K = 60f
 private const val MULTIMODAL_PROMPT_TOKEN_RESERVE = 1024
 
-private data class DocumentRank(
+internal data class DocumentRank(
     val chunk: VectorChunk,
-    val vectorScore: Float,
+    val vectorScore: Float?,
     val lexicalScore: Float,
     val combinedScore: Float,
     val vectorRank: Int? = null,
@@ -4977,16 +4982,21 @@ private fun routeCandidateLimit(topK: Int, totalSize: Int): Int {
     return maxOf(topK * 6, 30).coerceAtMost(totalSize)
 }
 
-private fun rankChunksByMultiRoute(
+internal fun rankChunksByMultiRoute(
     chunks: List<VectorChunk>,
     queryEmbedding: List<Float>,
     ragQuery: String,
+    embeddingKey: String,
     routeLimit: Int
 ): List<DocumentRank> {
     if (chunks.isEmpty() || routeLimit <= 0) return emptyList()
 
-    val vectorScores = chunks.associateWith { chunk ->
-        ChatBarApp.instance.vectorSearchEngine.cosineSimilarity(queryEmbedding, chunk.embedding)
+    val vectorSearchEngine = VectorSearchEngine()
+    val vectorScores = chunks.filter { chunk ->
+        chunk.metadata["embeddingKey"] == embeddingKey &&
+            queryEmbedding.isNotEmpty() && chunk.embedding.size == queryEmbedding.size
+    }.associateWith { chunk ->
+        vectorSearchEngine.cosineSimilarity(queryEmbedding, chunk.embedding)
     }
     val lexicalScores = chunks.associateWith { chunk -> chunk.lexicalScore(ragQuery) }
 
@@ -5009,13 +5019,13 @@ private fun rankChunksByMultiRoute(
         val chunk = chunksById[id] ?: return@mapNotNull null
         val vectorRank = vectorRanks[id]
         val lexicalRank = lexicalRanks[id]
-        val vectorScore = vectorScores[chunk] ?: 0f
+        val vectorScore = vectorScores[chunk]
         val lexicalScore = lexicalScores[chunk] ?: 0f
         DocumentRank(
             chunk = chunk,
             vectorScore = vectorScore,
             lexicalScore = lexicalScore,
-            combinedScore = vectorScore + lexicalScore,
+            combinedScore = (vectorScore ?: 0f) + lexicalScore,
             vectorRank = vectorRank,
             lexicalRank = lexicalRank,
             rrfScore = vectorRank.rrfScore() + lexicalRank.rrfScore()
