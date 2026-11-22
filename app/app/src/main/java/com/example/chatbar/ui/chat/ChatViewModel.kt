@@ -2427,13 +2427,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun commitReplyAlternativeRemoval(
         message: ChatMessage,
         versionId: String,
-        changed: ChatMessage,
-        deleteMemoryForMessage: Boolean = false
+        changed: ChatMessage
     ) = ragMemoryMutationMutex.withLock {
         val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
         replaceMessagesFromRepository()
         if (cleanupError != null) _messageActionError.value = cleanupError
-        if (deleteMemoryForMessage) ragManager.deleteMemoryForMessage(message.id)
         refreshMemoryAfterMessageEdit(changed)
     }
 
@@ -3807,7 +3805,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             if (MessageAlternativeVersionPolicy.activeVersionId(updatedMessage) != oldVersionId) {
                 try {
                     fishAudioCoordinator.cancelAndJoinForMessage(sessionId, messageId)
-                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage, editOutcome.deleteMemoryForMessage)
+                    commitReplyAlternativeRemoval(oldMessage, oldVersionId, updatedMessage)
                 } catch (cancelled: CancellationException) {
                     throw cancelled
                 } catch (error: Exception) {
@@ -3879,7 +3877,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val turn = ChatMemoryIndexPolicy.buildTurns(renderedMessages)
             .firstOrNull { messageId in it.messageIds }
         if (turn == null) {
-            ragManager.deleteMemoryForMessage(messageId)
+            repository.deleteSupersededAutomaticChatMemory(
+                sessionId = sessionId,
+                sourceTurnId = updatedMessage.sourceTurnId,
+                messageIds = setOf(messageId),
+                keepChunkIds = emptySet()
+            )
             return
         }
         val activeIds = contextWindowManager

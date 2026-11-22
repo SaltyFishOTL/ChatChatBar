@@ -52,6 +52,83 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
     @Test fun lastVersionDeletionFinishesVoiceCleanupAfterEditorCancellation() = verify(last = true, cancelAfterCommit = true)
 
+    @Test fun deletingIndexedAlternativeToStatusOnlyPreservesManualAndOtherSessionMemory() =
+        verifyAlternativeRemovalMemoryScope(clearLastTextWithImage = false)
+
+    @Test fun clearingIndexedLastTextWithImagePreservesManualAndOtherSessionMemory() =
+        verifyAlternativeRemovalMemoryScope(clearLastTextWithImage = true)
+
+    private fun verifyAlternativeRemovalMemoryScope(clearLastTextWithImage: Boolean) = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val card = CharacterCard.create("Synthetic scoped reply memory")
+        val session = ChatSession.create(card.id, "Synthetic scoped reply memory").copy(
+            longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
+        )
+        val otherSession = ChatSession.create(card.id, "Synthetic same-ID reply").copy(longTermMemoryEnabled = false)
+        val store = ViewModelStore()
+        val image = if (clearLastTextWithImage) {
+            File.createTempFile("rag-scope-", ".png", app.cacheDir).also { it.writeText("synthetic image") }
+        } else null
+        val survivor = if (clearLastTextWithImage) "" else "```status\nSynthetic status\n```"
+        val indexedText = "Synthetic indexed body"
+        val memory = app.ragRepository
+        try {
+            app.characterRepository.save(card)
+            app.chatRepository.createSession(session)
+            app.chatRepository.createSession(otherSession)
+            val initial = ChatMessage.create(session.id, MessageRole.ASSISTANT,
+                if (clearLastTextWithImage) indexedText else survivor).copy(images = listOfNotNull(image?.path))
+            val reply = app.chatRepository.addMessage(if (clearLastTextWithImage) initial else
+                MessageAlternativeVersionPolicy.append(initial, indexedText, "indexed-version"))
+            app.chatRepository.addMessage(reply.copy(sessionId = otherSession.id, images = emptyList()))
+            val indexMetadata = mapOf(
+                "indexMode" to ChatMemoryIndexPolicy.INDEX_MODE,
+                "contentVersion" to ChatMemoryIndexPolicy.CONTENT_VERSION,
+                "sourceTurnId" to requireNotNull(reply.sourceTurnId)
+            )
+            val auto = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, indexedText,
+                listOf(1f), reply.id, indexMetadata)
+            val manual = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, "Explicit manual memory",
+                listOf(1f), reply.id, mapOf("indexMode" to "manual"))
+            val other = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, otherSession.id, "Other session indexed memory",
+                listOf(1f), reply.id, indexMetadata)
+            val barrier = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, "Synthetic synchronization chunk",
+                listOf(1f), metadata = mapOf("indexMode" to "manual"))
+            memory.saveChunks(listOf(auto, manual, other, barrier))
+            val vm = withContext(Dispatchers.Main) {
+                ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
+            withContext(Dispatchers.Main) {
+                if (clearLastTextWithImage) vm.editMessageSegment(reply, 0, reply.displayContent.length, "")
+                else vm.deleteMessageAlternative(reply, "indexed-version")
+            }
+            val persisted = withTimeout(15_000) {
+                vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == survivor } }
+                    .single { it.id == reply.id }
+            }
+            assertFalse(ChatMemoryIndexPolicy.contributesToIndex(persisted))
+            // Explicitly deleting a separate chunk waits for the ViewModel's in-flight RAG mutation.
+            assertTrue(withContext(Dispatchers.Main) { vm.deleteRagMemoryChunk(barrier.id) })
+            assertNull(memory.getChunkById(auto.id))
+            assertEquals(manual, memory.getChunkById(manual.id))
+            assertEquals(other, memory.getChunkById(other.id))
+            assertEquals(listOfNotNull(image?.path), persisted.images)
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
+            app.replyRemovalCoordinator.resumePending(session.id)
+            for (id in listOf(session.id, otherSession.id)) {
+                memory.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, id)
+                app.voiceMessageRepository.deleteForSession(id)
+                app.chatRepository.deleteMessagesForSession(id)
+                app.chatRepository.deleteSessionRecord(id)
+            }
+            app.characterRepository.delete(card.id)
+            image?.delete()
+        }
+    }
+
     @Test fun canceledAlternativeDeletionInvalidatesIndexedTextOnColdReopen() = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         val card = CharacterCard.create("Synthetic old indexed reply")

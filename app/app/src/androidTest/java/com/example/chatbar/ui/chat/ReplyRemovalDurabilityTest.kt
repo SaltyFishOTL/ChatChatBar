@@ -7,17 +7,21 @@ import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.JsonFileStorage
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.GeneratedImageMetadata
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.VectorChunk
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.BackupDataRegistry
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.deletion.ReplyRemovalCoordinator
 import com.example.chatbar.domain.image.NovelAiImageStorage
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
@@ -31,6 +35,52 @@ import org.junit.Test
 class ReplyRemovalDurabilityTest {
     @Test fun failedVoiceRecordDeleteKeepsAudioUntilColdRetry() = verifyFailure("generated_voice_messages", versionOnly = true)
     @Test fun failedAnchorDeleteKeepsAudioUntilColdRetry() = verifyFailure("voice_anchor_states", versionOnly = true)
+
+    @Test fun pendingAudioCleanupPreservesRebuiltMemoryAcrossReopenAndRetry() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val reply = fixture.addReply(session, versionOnly = true)
+        val voice = fixture.addVoice(reply)
+        val target = MessageAlternativeVersionPolicy.activeVersionId(reply)
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, target))
+        val rag = RagRepository(fixture.storage)
+        val metadata = mapOf(
+            "indexMode" to ChatMemoryIndexPolicy.INDEX_MODE,
+            "contentVersion" to ChatMemoryIndexPolicy.CONTENT_VERSION,
+            "sourceTurnId" to requireNotNull(reply.sourceTurnId)
+        )
+        val stale = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, reply.displayContent,
+            listOf(1f), reply.id, metadata)
+        rag.saveChunks(listOf(stale))
+        val audioFile = File(voice.audioPath)
+        val pendingDirectory = File(fixture.context.filesDir, "entities/pending_reply_removals")
+        val rebuilt = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, replacement.displayContent,
+            listOf(1f), reply.id, metadata)
+        assertTrue(audioFile.delete())
+        assertTrue(audioFile.mkdir())
+        val obstruction = File(audioFile, "synthetic-child").also { it.writeText("blocks directory deletion") }
+        try {
+            assertNotNull(fixture.removals.remove(reply, replacement, target))
+            assertEquals(replacement.displayContent, fixture.chats.getMessage(reply.id, session.id)?.displayContent)
+            assertNull("The invalidation must already be complete while cleanup is pending", rag.getChunkById(stale.id))
+            assertTrue(obstruction.isFile)
+            assertEquals(1, pendingDirectory.listFiles().orEmpty().size)
+            rag.saveChunks(listOf(rebuilt))
+
+            val cold = Fixture(fixture.context, fixture.app)
+            assertEquals(listOf(rebuilt), cold.removals.getChunksForRetrieval(null, session.id))
+            cold.removals.resumePending(session.id)
+            assertTrue(obstruction.isFile)
+            assertEquals(listOf(rebuilt), cold.removals.getChunksForRetrieval(null, session.id))
+        } finally {
+            assertTrue(obstruction.delete())
+        }
+        val recovered = Fixture(fixture.context, fixture.app)
+        recovered.removals.resumePending(session.id)
+        assertFalse(audioFile.exists())
+        assertTrue(pendingDirectory.listFiles().orEmpty().isEmpty())
+        assertEquals(listOf(rebuilt), recovered.removals.getChunksForRetrieval(null, session.id))
+    }
+
     @Test fun missingMessageAfterIndexWriteFailureFinishesAllMediaOnColdRetry() = verifyFailure("chat_message_indexes")
     @Test fun missingMessageAfterSessionWriteFailureRepairsPreviewAndTurnOnColdRetry() = verifyFailure("chat_sessions")
     @Test fun recoveredSameIdMessageRetainsRestoredAttachments() = verifyFailure("chat_message_indexes", restoreOwner = true)
