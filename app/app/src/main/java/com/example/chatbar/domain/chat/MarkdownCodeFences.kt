@@ -46,6 +46,7 @@ object MarkdownCodeFences {
         onLazyQuoteLine: ((Int) -> Unit)?,
         onIndentedCodeLine: ((IntRange) -> Unit)? = null,
         onContainerLine: ((Int) -> Unit)? = null,
+        onListItemLine: ((Int) -> Unit)? = null,
     ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
@@ -98,6 +99,8 @@ object MarkdownCodeFences {
             }
 
             if (containers.isNotEmpty()) onContainerLine?.invoke(start)
+            // Record explicit membership before a dedented line can lazily resume a paragraph.
+            if (onListItemLine != null && containers.any { it.indent != null }) onListItemLine(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
             val match = fenceLine.matchEntire(remainder)
             val existing = open

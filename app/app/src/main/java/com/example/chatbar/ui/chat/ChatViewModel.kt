@@ -2651,7 +2651,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 var interruptedReplyDraft: ChatMessage? = null
                 var receivedToolReplyPartLengths = emptyList<Int>()
                 var assistantReplyPersisted = false
-                var cleanNarrativeEcho = false
+                var narrativeEcho = NarrativeHistoryEcho.forRequest(null, null)
                 val protectionLossHandle = AiBackgroundWorkManager.observeProtectionLoss { reason ->
                     generationJob?.cancel(BackgroundGenerationProtectionCancellationException(reason))
                 }
@@ -3005,7 +3005,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 worldBookOutlets = wbOutlets
                             )
                         }
-                    cleanNarrativeEcho = NarrativeHistoryEcho.appliesToRequest(requestNarrativeMode, renderedFormatCardContent)
+                    narrativeEcho = NarrativeHistoryEcho.forRequest(requestNarrativeMode, renderedFormatCardContent)
                     // 当前输入不属于历史；完整上一轮作为末尾热区，其余消息留在稳定缓存之后。
                     val regenTargetUserMsg = resumedUserMessage ?: if (alternativeTargetMessageId != null) {
                         contextMsgs.lastOrNull { it.role == MessageRole.USER }
@@ -3267,8 +3267,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val ctx = ChatBarApp.instance
                     fun updateStreamingDraft(rawBody: String): String {
                         val renderedBody = renderSessionText(
-                            NarrativeHistoryEcho.completedBody(
-                                rawBody, enabled = cleanNarrativeEcho, partLengths = receivedToolReplyPartLengths,
+                            narrativeEcho.completedBody(
+                                rawBody, partLengths = receivedToolReplyPartLengths,
                                 streaming = true,
                             )
                         )
@@ -3342,9 +3342,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 // 流生成完毕，保存到数据库
                                 val completion = replyCompletion.get()
                                 val replyBody = ChatHistoryPromptPolicy.requirePersistableAssistantBody(
-                                    NarrativeHistoryEcho.completedBody(
+                                    narrativeEcho.completedBody(
                                         accumulatedText,
-                                        enabled = cleanNarrativeEcho,
                                         interrupted = completion?.finishReason == "length",
                                         partLengths = completion?.toolReplyPartLengths.orEmpty(),
                                     )
@@ -3445,8 +3444,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
                         val finalDraft = interruptedReplyDraft?.let { partial ->
-                            partial.copy(content = NarrativeHistoryEcho.completedBody(
-                                partial.content, enabled = cleanNarrativeEcho, interrupted = true,
+                            partial.copy(content = narrativeEcho.completedBody(
+                                partial.content, interrupted = true,
                                 partLengths = receivedToolReplyPartLengths,
                             ))
                         }

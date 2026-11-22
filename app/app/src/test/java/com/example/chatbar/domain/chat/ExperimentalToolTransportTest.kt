@@ -270,8 +270,31 @@ class ExperimentalToolTransportTest {
         )
     }
 
+    @Test
+    fun `main stream ignores a bare format example followed by same line prose`() = runBlocking {
+        val raw = "<历史回复 模式=\"推进\">她推门。</历史回复>"
+        val card = "$raw 只是历史标记示例，请勿使用。"
+        assertNarrativeReplyStates(raw, expected = "她推门。", formatCard = card)
+    }
+
+    @Test
+    fun `main stream reserves only the declared format opener`() = runBlocking {
+        val card = "本轮输出模板：<历史回复 模式=\"推进\">{正文}</历史回复>"
+        val declared = "<历史回复 模式=\"推进\">推进正文。</历史回复>"
+        assertNarrativeReplyStates(declared, expected = declared, formatCard = card)
+        assertNarrativeReplyStates("<历史回复 模式=\"聚焦\">聚焦正文。</历史回复>", expected = "聚焦正文。", formatCard = card)
+        assertNarrativeReplyStates("<聚焦模式=\"沉浸\">旧版正文。</聚焦模式>", expected = "旧版正文。", formatCard = card)
+    }
+
+    @Test
+    fun `main stream keeps a literal closing tag in an ordered list item`() = runBlocking {
+        val body = "1. Explain this closing tag:\n   </历史回复>\n   It is a literal example inside this list item."
+        val raw = "<历史回复 模式=\"聚焦\">\n$body\n</历史回复>"
+        assertNarrativeReplyStates(raw, expected = body)
+    }
+
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
-        val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, formatCard)
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         val delta = buildJsonObject {
             put("choices", buildJsonArray {
                 add(buildJsonObject { put("delta", buildJsonObject { put("content", raw) }) })
@@ -294,9 +317,9 @@ class ExperimentalToolTransportTest {
             assertEquals(StreamEvent.Done, events.last())
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
             assertEquals(raw, completed)
-            assertEquals("Preview", expected, NarrativeHistoryEcho.completedBody(preview, enabled, streaming = true))
-            assertEquals("Stop", expected, NarrativeHistoryEcho.completedBody(preview, enabled, interrupted = true))
-            assertEquals("Done", expected, NarrativeHistoryEcho.completedBody(completed, enabled))
+            assertEquals("Preview", expected, cleanup.completedBody(preview, streaming = true))
+            assertEquals("Stop", expected, cleanup.completedBody(preview, interrupted = true))
+            assertEquals("Done", expected, cleanup.completedBody(completed))
         }
     }
 

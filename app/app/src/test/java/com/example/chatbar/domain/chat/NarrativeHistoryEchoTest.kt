@@ -308,9 +308,9 @@ class NarrativeHistoryEchoTest {
         val opening = "<历史回复 模式=\"推进\">"
         val raw = "$opening\n格式卡正文\n</历史回复>"
         for ((mode, format) in listOf(null to null, ChatNarrativeMode.ADVANCE to raw)) {
-            val enabled = NarrativeHistoryEcho.appliesToRequest(mode, format)
-            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
-            assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, streaming = true, enabled = enabled))
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, format)
+            assertEquals(raw, cleanup.completedBody(raw))
+            assertEquals(raw, cleanup.completedBody(raw, streaming = true))
         }
     }
 
@@ -357,12 +357,12 @@ class NarrativeHistoryEchoTest {
             "> 示例原文：\n$raw",
         )
         for (format in mentions) {
-            val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, format)
-            assertEquals("普通正文", NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
+            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            assertEquals("普通正文", cleanup.completedBody(raw))
         }
         val declaration = "请按以下格式输出：\n$raw"
-        val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, declaration)
-        assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, declaration)
+        assertEquals(raw, cleanup.completedBody(raw))
     }
 
     @Test fun sameLineFormatCardLabelsDeclareOnlyAnExplicitOutputTemplate() {
@@ -374,8 +374,8 @@ class NarrativeHistoryEchoTest {
             pair,
             "请按以下格式输出：\n$pair",
         )) {
-            assertEquals(declaration, false,
-                NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, declaration))
+            assertEquals(declaration, pair,
+                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, declaration).completedBody(pair))
         }
 
         for (mention in listOf(
@@ -388,20 +388,89 @@ class NarrativeHistoryEchoTest {
             "~~~~text\n本轮输出模板：$pair\n~~~~",
             "<!-- 本轮输出模板：$pair -->",
         )) {
-            assertEquals(mention, true,
-                NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, mention))
+            assertEquals(mention, "{正文}",
+                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, mention).completedBody(pair))
         }
     }
 
     @Test fun labelledFormatTemplateRequiresTheVisibleBalancedClose() {
         val inner = "<历史回复 模式=\"聚焦\">{正文}</历史回复>"
         val template = "本轮输出模板：<历史回复 模式=\"推进\">$inner</历史回复>"
-        fun cleansEcho(card: String) = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, card)
+        val raw = template.substringAfter('：')
+        fun clean(card: String) = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, card).completedBody(raw)
 
-        assertEquals(false, cleansEcho("$template <!-- 备注 -->"))
-        assertEquals(true, cleansEcho("$template（此处说明）"))
-        assertEquals(true, cleansEcho(template.removeSuffix("</历史回复>")))
-        assertEquals(true, cleansEcho(template.removeSuffix("</历史回复>") + "<!-- </历史回复> -->"))
+        assertEquals(raw, clean("$template <!-- 备注 -->"))
+        assertEquals(inner, clean("$template（此处说明）"))
+        assertEquals(inner, clean(template.removeSuffix("</历史回复>")))
+        assertEquals(inner, clean(template.removeSuffix("</历史回复>") + "<!-- </历史回复> -->"))
+        val multiline = "本轮输出模板：<历史回复 模式=\"推进\">\n$inner\n</历史回复>"
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, multiline)
+        assertEquals("{正文}", cleanup.completedBody(inner))
+    }
+
+    @Test fun bareDeclarationRequiresALineWithNoVisibleSuffix() {
+        val raw = "<历史回复 模式=\"推进\">正文</历史回复>"
+        for (format in listOf(raw, "$raw \t", "$raw <!-- 注释 -->", "$raw <!-- 注\n释 -->", "$raw\n附加说明")) {
+            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            assertEquals(format, raw, cleanup.completedBody(raw))
+        }
+        val mentions = listOf("$raw 只是历史标记示例，请勿使用。", "$raw <!-- 注释 --> 仅示例。")
+        for (format in mentions) {
+            val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, format)
+            assertEquals(format, "正文", cleanup.completedBody(raw))
+        }
+    }
+
+    @Test fun declaredOpenersStayLiteralUntilAnotherOpenerIsIdentified() {
+        val advance = "<历史回复 模式=\"推进\">"
+        val focus = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val declared = "$advance 格式正文 $close"
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, "本轮输出模板：$advance{正文}$close")
+        val shared = "<历史回复 模式=\""
+        for (partial in listOf(shared, "${advance.dropLast(1)}")) {
+            assertEquals(partial, cleanup.completedBody(partial, streaming = true))
+            assertEquals(partial, cleanup.completedBody(partial, interrupted = true))
+        }
+        assertEquals("", cleanup.completedBody(focus.dropLast(1), streaming = true))
+        val legacy = "<聚焦模式=\"沉浸\">甲</聚焦模式>"
+        val focusBody = "${focus}乙$close"
+        val independentParts = listOf(declared, legacy, focusBody)
+        val joinedTemplate = listOf(advance, focusBody, close)
+        for ((streaming, interrupted) in listOf(false to false, true to false, false to true)) {
+            assertEquals(joinedTemplate.joinToString("\n"), cleanup.completedBody(
+                joinedTemplate.joinToString("\n"),
+                streaming = streaming,
+                interrupted = interrupted,
+                partLengths = joinedTemplate.map(String::length),
+            ))
+            assertEquals("$declared\n甲\n乙", cleanup.completedBody(
+                independentParts.joinToString("\n"),
+                streaming = streaming,
+                interrupted = interrupted,
+                partLengths = independentParts.map(String::length),
+            ))
+        }
+    }
+
+    @Test fun listMembershipProtectsLiteralTagsAndEndsAtAnUnindentedClose() {
+        val open = "<历史回复 模式=\"推进\">"
+        val close = "</历史回复>"
+        for ((marker, indent) in listOf("1." to "   ", "1)" to "   ", "-" to "  ")) {
+            for (lineBreak in listOf("\n", "\r\n", "\r")) {
+                val story = listOf("$marker 请解释结束标签：", "$indent$close", "${indent}这是列表中的例子。")
+                    .joinToString(lineBreak)
+                for ((streaming, interrupted) in listOf(false to false, true to false, false to true)) {
+                    assertEquals(story, NarrativeHistoryEcho.completedBody(
+                        "$open$lineBreak$story$lineBreak$close", true, interrupted, streaming = streaming,
+                    ))
+                }
+                val partial = "$marker 示例：$lineBreak$indent</历史回"
+                assertEquals(partial, NarrativeHistoryEcho.replyBody("$open$lineBreak$partial", streaming = true))
+            }
+        }
+        val prose = "1. 列表正文。\n续写普通段落。"
+        assertEquals(prose, NarrativeHistoryEcho.replyBody("$open\n$prose\n$close"))
     }
 
     @Test fun laterWordApostropheDoesNotHideTheEndOfAPossessiveQuote() {
