@@ -2464,7 +2464,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
 
         val appSettings = settingsRepository.getAppSettings()
-        val currentSession = chatRepository.getSession(sessionId) ?: return message
+        val currentSession = chatRepository.getSession(sessionId) ?: return null
         val renderContext = placeholderRenderContext(currentSession)
         val formatCardId = currentSession.formatCardId ?: appSettings.defaultFormatCardId
         val formatCard = formatCardId
@@ -2487,7 +2487,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
         if (formatCard == null && segmentedFormat == null) {
             if (!automatic) _messageFormatRepairEvents.tryEmit("当前无可检查规则")
-            return message
+            return message.takeIf { chatRepository.isCurrentMessageSnapshot(it, timelineRevision) }
         }
 
         val model = modelResolver.resolveFormatRepairModel(
@@ -3401,6 +3401,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     updatedAt = System.currentTimeMillis(),
                                     orderKey = streamOrderKey
                                 )
+                                val replyTimelineRevision = chatRepository.messageTimelineRevision(sessionId)
                                 var persistedAssistantMessage = withContext(NonCancellable) {
                                     persistGeneratedAssistantMessage(
                                         generatedMessage = assistantMsg,
@@ -3418,7 +3419,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
                                         automatic = true,
-                                        timelineRevision = chatRepository.messageTimelineRevision(sessionId)
+                                        timelineRevision = replyTimelineRevision
                                     ) ?: run {
                                         _isResponding.value = false
                                         return@collect

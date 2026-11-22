@@ -51,6 +51,24 @@ class ChatRepositoryTest {
         assertEquals("new reply", retained.content)
     }
 
+    @Test fun `clearing chat invalidates an in-flight update even when an identical row is re-added`() = runTest {
+        val chats = repository("timeline-clear")
+        val session = chats.createSession(ChatSession.create("card", "synthetic"))
+        val message = ChatMessage("row", session.id, MessageRole.SYSTEM, "greeting", createdAt = 1, updatedAt = 1)
+        val original = chats.addMessage(message)
+        val revision = chats.messageTimelineRevision(session.id)
+
+        assertEquals(1, chats.deleteMessagesForSession(session.id))
+        assertEquals(original, chats.addMessage(message))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+
+        val replacement = original.copy(content = "late result")
+        assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+        val currentRevision = chats.messageTimelineRevision(session.id)
+        assertEquals(replacement.content, chats.updateMessageIfUnchanged(original, replacement, currentRevision)?.content)
+    }
+
     @Test fun `restore invalidates an in-flight message update even when the restored row is identical`() = runTest {
         for (streaming in listOf(false, true)) {
             val chats = repository("timeline-restore-$streaming")
@@ -67,10 +85,13 @@ class ChatRepositoryTest {
             val replacement = original.copy(
                 content = "late result", updatedAt = -1, orderKey = original.orderKey + MESSAGE_ORDER_STEP
             )
+            assertFalse(chats.isCurrentMessageSnapshot(original, revision))
             assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
             assertEquals(original, chats.getRecentMessages(session.id, 1).single())
+            val currentRevision = chats.messageTimelineRevision(session.id)
+            assertTrue(chats.isCurrentMessageSnapshot(original, currentRevision))
             val committed = requireNotNull(
-                chats.updateMessageIfUnchanged(original, replacement, chats.messageTimelineRevision(session.id))
+                chats.updateMessageIfUnchanged(original, replacement, currentRevision)
             )
             assertEquals(replacement.content, committed.displayContent)
             assertEquals(original.orderKey, committed.orderKey)
