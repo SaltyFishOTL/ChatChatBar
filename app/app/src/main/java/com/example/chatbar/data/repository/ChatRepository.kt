@@ -778,20 +778,27 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     /** A stale action cannot erase an edited or restored message. */
-    suspend fun deleteMessageIfUnchanged(expected: ChatMessage): Boolean =
-        deleteMessageIfUnchanged(expected.id, expected.sessionId, expected)
+    suspend fun deleteMessageIfUnchanged(expected: ChatMessage, expectedTimelineRevision: Long? = null): Boolean =
+        deleteMessageIfUnchanged(expected.id, expected.sessionId, expected, expectedTimelineRevision)
 
-    suspend fun deleteMessageIfUnchanged(messageId: String, sessionId: String, expected: ChatMessage?): Boolean =
-        messageAppendMutex.withDataAccess {
-            val unchanged = if (expected == null) {
-                storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
-            } else {
-                getMessage(messageId, sessionId) == expected
-            }
-            if (!unchanged) return@withDataAccess false
-            deleteMessageLocked(messageId, sessionId, repairMissingEntryOnly = expected == null)
-            true
+    suspend fun deleteMessageIfUnchanged(
+        messageId: String,
+        sessionId: String,
+        expected: ChatMessage?,
+        expectedTimelineRevision: Long? = null,
+    ): Boolean = messageAppendMutex.withDataAccess {
+        if (expectedTimelineRevision != null &&
+            expectedTimelineRevision != (messageTimelineRevisions[sessionId] ?: 0L)
+        ) return@withDataAccess false
+        val unchanged = if (expected == null) {
+            storage.isEntityFileMissing(MESSAGE_TYPE, messageStorageId(sessionId, messageId))
+        } else {
+            getMessage(messageId, sessionId) == expected
         }
+        if (!unchanged) return@withDataAccess false
+        deleteMessageLocked(messageId, sessionId, repairMissingEntryOnly = expected == null)
+        true
+    }
 
     internal suspend fun commitReplyRemoval(
         expected: ChatMessage,

@@ -53,7 +53,13 @@ class FormatRepairRetryRuntimeTest {
     @Test fun regenerateResponseKeepsRedoOnThePreviousVersion() = verifyRegeneratedRedo(repairNewVersion = false)
     @Test fun automaticRepairOfRegeneratedResponseKeepsRedoOnThePreviousVersion() = verifyRegeneratedRedo(repairNewVersion = true)
 
-    private fun verifyRegeneratedRedo(repairNewVersion: Boolean) = runBlocking<Unit> {
+    @Test fun lateRegenerationDoesNotWriteIntoRestoredRedoVersion() =
+        verifyRegeneratedRedo(repairNewVersion = false, restoreDuringRegeneration = true)
+
+    private fun verifyRegeneratedRedo(
+        repairNewVersion: Boolean,
+        restoreDuringRegeneration: Boolean = false,
+    ) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
@@ -76,7 +82,7 @@ class FormatRepairRetryRuntimeTest {
             app.modelRepository.saveModel(model)
             app.characterRepository.save(card)
             app.chatRepository.createSession(session)
-            app.chatRepository.addMessage(user)
+            val persistedUser = app.chatRepository.addMessage(user)
             val reply = app.chatRepository.addMessage(original)
             app.settingsRepository.saveAppSettings(settings.copy(
                 allowCleartextModelApi = true, assistantSegmentedBubblesEnabled = true,
@@ -96,6 +102,11 @@ class FormatRepairRetryRuntimeTest {
             val undone = withTimeout(30_000) {
                 vm.messages.first { rows -> rows.any { it.id == reply.id && it.formatRepairNotice?.restored == true } }
                     .single { it.id == reply.id }
+            }
+
+            if (restoreDuringRegeneration) {
+                verifyRestoreDuringRegeneration(app, vm, server, persistedUser, undone, generatedText, repairedText)
+                return@runBlocking
             }
 
             server.enqueue(repairResponse(generatedText))
@@ -282,6 +293,52 @@ class FormatRepairRetryRuntimeTest {
             app.characterRepository.delete(card.id)
             app.modelRepository.deleteModel(model.id)
             server.shutdown()
+        }
+    }
+
+    private suspend fun verifyRestoreDuringRegeneration(
+        app: ChatBarApp,
+        vm: ChatViewModel,
+        server: MockWebServer,
+        user: ChatMessage,
+        reply: ChatMessage,
+        lateText: String,
+        repairedText: String,
+    ) {
+        assertNotNull(server.takeRequest(5, TimeUnit.SECONDS)) // Consume the original repair request.
+        val releaseResponse = CountDownLatch(1)
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse =
+                if (releaseResponse.await(30, TimeUnit.SECONDS)) repairResponse(lateText)
+                else MockResponse().setResponseCode(504)
+        }
+        val slot = SaveSlot.create(reply.sessionId, "Synthetic restore during regeneration", messages = listOf(user, reply))
+            .copy(longTermMemoryEnabled = false)
+        try {
+            app.saveSlotRepository.save(slot)
+            withContext(Dispatchers.Main) { vm.regenerateResponse(reply.id) }
+            assertEquals("/v1/chat/completions", server.takeRequest(15, TimeUnit.SECONDS)?.path)
+            withContext(Dispatchers.Main) { vm.loadSaveSlot(slot.toSummary()) }
+            withTimeout(20_000) { vm.saveSlotOperation.first { it.status == "读档完成。" } }
+            val cold = ChatRepository(JsonFileStorage(app))
+            val restored = requireNotNull(cold.getMessage(reply.id, reply.sessionId))
+            assertTrue(restored.formatRepairNotice?.restored == true)
+
+            releaseResponse.countDown()
+            withTimeout(20_000) { vm.isResponding.first { !it } }
+            withTimeout(20_000) { vm.messages.first { rows -> rows.any { it == restored } } }
+            assertEquals(restored, cold.getMessage(reply.id, reply.sessionId))
+            assertEquals(listOf(user.id, reply.id), cold.getMessages(reply.sessionId).map(ChatMessage::id))
+
+            withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id, restored) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == repairedText } } }
+            val redone = requireNotNull(cold.getMessage(reply.id, reply.sessionId))
+            assertEquals(restored.alternativeVersionIds, redone.alternativeVersionIds)
+            assertEquals(repairedText, redone.displayContent)
+            assertEquals(2, server.requestCount)
+        } finally {
+            releaseResponse.countDown()
+            app.saveSlotRepository.delete(slot.id)
         }
     }
 

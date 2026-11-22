@@ -54,7 +54,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 
 ## UI and Lifecycle
 
-- ChatScreen hides/disables regeneration in whole-message/segment menus during archive work. ChatViewModel checks admission before changing response state and again after message reads. Once regeneration reserves response state, sendMessageInternal must enter its normal completion cleanup even if an archive starts meanwhile. SessionCharacterRebindTest covers busy-archive admission without hiding the original reply.
+- ChatScreen hides/disables regeneration in whole-message/segment menus during archive work. ChatViewModel checks admission before and after reading the target. Completed and stopped regeneration can append only to the original message snapshot in the original timeline revision. A later restore cannot receive the old completion, even when it restores an identical row. Keep normal response cleanup after that stale-result rejection.
 - Session settings retain a dedicated 存档 tab. Before loading, the settings host resolves pending parameter drafts through save/discard/continue, then rebases on restored session values; switching tool tabs alone keeps parameter drafts.
 
 - Default new SaveSlot to no images. Offer compressed and original policies explicitly; audio inclusion is independent.

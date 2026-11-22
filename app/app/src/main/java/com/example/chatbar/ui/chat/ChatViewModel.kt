@@ -2643,18 +2643,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private fun snapshotNarrativeMode(): ChatNarrativeMode? =
         _narrativeMode.value.takeUnless { settingsRepository.currentAppSettings.disableNarrativeModes }
 
+    private data class RegenerationTarget(val message: ChatMessage, val timelineRevision: Long)
+
     private fun sendMessageInternal(
         content: String,
         requestNarrativeMode: ChatNarrativeMode?,
         imagePaths: List<String> = emptyList(),
         persistUserMessage: Boolean,
         resumeLatestUser: Boolean = false,
-        alternativeTargetMessageId: String? = null,
+        regenerationTarget: RegenerationTarget? = null,
         respondingAlreadyStarted: Boolean = false
     ) {
         // Regeneration has already reserved response state; it must reach its completion cleanup.
         if (!respondingAlreadyStarted && (_saveSlotOperation.value.busy || _isResponding.value)) return
 
+        val alternativeTargetMessageId = regenerationTarget?.message?.id
         _activeResponseNarrativeMode.value = requestNarrativeMode
 
         val job = ChatBarApp.instance.applicationScope.launch(start = CoroutineStart.LAZY) {
@@ -3336,10 +3339,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     var ordinaryPreview: String? = null
                     val assistantMsgId = alternativeTargetMessageId ?: java.util.UUID.randomUUID().toString()
                     val streamStartedAt = System.currentTimeMillis()
-                    val regenerationTarget = alternativeTargetMessageId
-                        ?.let { chatRepository.getMessage(it, sessionId) }
-                    val streamCreatedAt = regenerationTarget?.createdAt ?: streamStartedAt
-                    val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
+                    val streamCreatedAt = regenerationTarget?.message?.createdAt ?: streamStartedAt
+                    val streamOrderKey = regenerationTarget?.message?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                     val ctx = ChatBarApp.instance
                     fun updateStreamingDraft(body: String) {
@@ -3422,12 +3423,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     updatedAt = System.currentTimeMillis(),
                                     orderKey = streamOrderKey
                                 )
-                                val replyTimelineRevision = chatRepository.messageTimelineRevision(sessionId)
+                                val replyTimelineRevision = regenerationTarget?.timelineRevision
+                                    ?: chatRepository.messageTimelineRevision(sessionId)
                                 var persistedAssistantMessage = withContext(NonCancellable) {
                                     persistGeneratedAssistantMessage(
                                         generatedMessage = assistantMsg,
-                                        alternativeTargetMessageId = alternativeTargetMessageId
-                                    ).also { assistantReplyPersisted = true }
+                                        regenerationTarget = regenerationTarget
+                                    )?.also { assistantReplyPersisted = true }
+                                } ?: run {
+                                    _isResponding.value = false
+                                    return@collect
                                 }
 
                                 alternativeTargetMessageId?.let { targetId ->
@@ -3516,8 +3521,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     if (!assistantReplyPersisted && draft != null) {
                                         persistGeneratedAssistantMessage(
                                             generatedMessage = draft.copy(updatedAt = System.currentTimeMillis()),
-                                            alternativeTargetMessageId = alternativeTargetMessageId
-                                        )
+                                            regenerationTarget = regenerationTarget
+                                        ) ?: return@withContext
                                         assistantReplyPersisted = true
                                     }
                                     alternativeTargetMessageId?.let { targetId ->
@@ -3613,21 +3618,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun persistGeneratedAssistantMessage(
         generatedMessage: ChatMessage,
-        alternativeTargetMessageId: String?
-    ): ChatMessage {
-        if (alternativeTargetMessageId == null) {
+        regenerationTarget: RegenerationTarget?
+    ): ChatMessage? {
+        if (regenerationTarget == null) {
             return chatRepository.addMessage(generatedMessage)
         }
 
-        val old = chatRepository.getMessage(alternativeTargetMessageId, generatedMessage.sessionId)
-            ?: return chatRepository.addMessage(generatedMessage)
+        val old = regenerationTarget.message
         val updated = MessageAlternativeVersionPolicy.append(
             message = old,
             content = generatedMessage.content,
             newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
             narrativeMode = generatedMessage.narrativeMode
         ).copy(reasoningContent = generatedMessage.reasoningContent)
-        return chatRepository.updateMessage(updated)
+        return chatRepository.updateMessageIfUnchanged(old, updated, regenerationTarget.timelineRevision)
     }
 
     /**
@@ -4092,6 +4096,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val requestNarrativeMode = snapshotNarrativeMode()
 
         viewModelScope.launch {
+            val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
             val currentMessages = _messages.value
             val selectedMessage = chatRepository.getMessage(messageId, sessionId) ?: return@launch
             val nearbyMessages = chatRepository.getInitialMessagePage(sessionId, messageId).messages
@@ -4107,6 +4112,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 else -> return@launch
             }
 
+            if (!chatRepository.isCurrentMessageSnapshot(targetMessage, timelineRevision)) return@launch
             // Repository reads above can suspend while a save-slot operation starts.
             if (_isResponding.value || _isArchived.value || _saveSlotOperation.value.busy) return@launch
             _isResponding.value = true
@@ -4125,8 +4131,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 return@launch
             }
 
-            retryErrorMessageId?.let { errorMessageId ->
-                chatRepository.deleteMessage(errorMessageId, sessionId)
+            if (retryErrorMessageId != null &&
+                !chatRepository.deleteMessageIfUnchanged(selectedMessage, timelineRevision)
+            ) {
+                hiddenRegenerationMessageId.compareAndSet(targetMessage.id, null)
+                _isResponding.value = false
+                replaceMessagesFromRepository()
+                return@launch
             }
 
             sendMessageInternal(
@@ -4134,7 +4145,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 requestNarrativeMode = requestNarrativeMode,
                 imagePaths = emptyList(),
                 persistUserMessage = false,
-                alternativeTargetMessageId = targetMessage.id,
+                regenerationTarget = RegenerationTarget(targetMessage, timelineRevision),
                 respondingAlreadyStarted = true
             )
         }
