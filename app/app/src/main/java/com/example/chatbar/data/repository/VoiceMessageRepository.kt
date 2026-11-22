@@ -13,12 +13,15 @@ import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceAnchorReconciliation
 import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
+import com.example.chatbar.domain.voice.VoicePlaybackQueuePolicy
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 
 data class VoiceSegmentAnchor(
     val segment: CurrentVoiceSegment,
@@ -100,7 +103,7 @@ class VoiceMessageRepository(
     ): GeneratedVoiceMessage? {
         val current = _voices.value.firstOrNull { it.id == captured.id } ?: return null
         if (current.sessionId != captured.sessionId || current.messageId != captured.messageId ||
-            current.audioPath != captured.audioPath) return null
+            current.messageVersionId != captured.messageVersionId || current.audioPath != captured.audioPath) return null
         val requiresCompatibility = current.requiresCompatibleVersion || captured.requiresCompatibleVersion
         val message = chats.getMessage(current.messageId, current.sessionId) ?: return null
         val version = MessageAlternativeVersionPolicy.activeVersion(message)
@@ -139,6 +142,7 @@ class VoiceMessageRepository(
         message: ChatMessage,
         messageVersionId: String,
         content: String,
+        requireSameContent: Boolean = false,
         loadCurrentMessage: (suspend () -> ChatMessage?)? = null
     ): List<VoiceSegmentAnchor> = mutex.withLock {
         ensureInitializedLocked()
@@ -153,9 +157,10 @@ class VoiceMessageRepository(
             }
             owner
         }
-        migrateLegacyVoiceVersionsLocked(current)
         val currentContent = if (loader == null) content else
             MessageAlternativeVersionPolicy.versions(current).first { it.id == messageVersionId }.content
+        check(!requireSameContent || currentContent == content) { "消息已变化，请重新操作" }
+        migrateLegacyVoiceVersionsLocked(current)
         ensureVersionAnchorsLocked(current, messageVersionId, currentContent)
     }
 
@@ -230,6 +235,7 @@ class VoiceMessageRepository(
     suspend fun saveForExistingVersion(
         voice: GeneratedVoiceMessage,
         replacing: GeneratedVoiceMessage? = null,
+        removeFromPlayback: suspend (Set<String>) -> Unit = {},
         loadMessage: suspend () -> ChatMessage?
     ) = mutex.withLock {
         ensureInitializedLocked()
@@ -245,8 +251,27 @@ class VoiceMessageRepository(
         check(MessageAlternativeVersionPolicy.versions(message).any { it.id == voice.messageVersionId }) {
             "回复备选已删除"
         }
-        storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
-        _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
+        withContext(NonCancellable) {
+            storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
+            _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
+            if (replacing != null && voice.audioPath != replacing.audioPath) removeFromPlayback(setOf(voice.id))
+        }
+    }
+
+    internal suspend fun switchDisplayedVersion(
+        expected: ChatMessage,
+        replacement: ChatMessage,
+        chats: ChatRepository,
+        removeFromPlayback: suspend (Set<String>) -> Unit
+    ): ChatMessage? = mutex.withLock {
+        ensureInitializedLocked()
+        withContext(NonCancellable) {
+            val committed = chats.updateMessageIfUnchanged(expected, replacement) ?: return@withContext null
+            val oldIds = _voices.value.filter { VoicePlaybackQueuePolicy.ownsDisplayedVersion(expected, it) }
+                .mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
+            removeFromPlayback(oldIds)
+            committed
+        }
     }
 
     /** Keep version deletion and voice operations serialized. */
@@ -409,10 +434,13 @@ class VoiceMessageRepository(
         return scoped
     }
 
-    suspend fun delete(id: String): GeneratedVoiceMessage? = mutex.withLock {
+    suspend fun delete(id: String, removeFromPlayback: suspend (Set<String>) -> Unit = {}): GeneratedVoiceMessage? = mutex.withLock {
         ensureInitializedLocked()
         val existing = _voices.value.firstOrNull { it.id == id } ?: return@withLock null
-        deleteVoiceRecordsLocked(listOf(existing))
+        withContext(NonCancellable) {
+            deleteVoiceRecordsLocked(listOf(existing))
+            removeFromPlayback(setOf(id))
+        }
         existing
     }
 

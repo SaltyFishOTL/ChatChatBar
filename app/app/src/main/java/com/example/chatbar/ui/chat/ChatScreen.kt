@@ -156,7 +156,7 @@ import kotlinx.coroutines.launch
 private val ChatContentMaxWidth = 840.dp
 
 private data class PendingVoiceGeneration(
-    val messageId: String,
+    val message: ChatMessage,
     val segmentIndex: Int? = null
 )
 
@@ -295,7 +295,7 @@ fun ChatScreen(
     var peopleError by remember(sessionId) { mutableStateOf<String?>(null) }
     var clearConfirm by remember { mutableStateOf(false) }
     var fullComposer by remember { mutableStateOf(false) }
-    var actionMessageId by remember { mutableStateOf<String?>(null) }
+    var actionMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var actionSegment by remember(sessionId) { mutableStateOf<MessageSegmentTarget?>(null) }
     var pendingVoiceGeneration by remember(sessionId) {
         mutableStateOf<PendingVoiceGeneration?>(null)
@@ -344,19 +344,19 @@ fun ChatScreen(
     var imageContentHintDraft by remember(sessionId) { mutableStateOf("") }
     var imagePromptPreferenceDraft by remember(sessionId) { mutableStateOf("") }
 
-    fun requestVoiceForSegment(messageId: String, segmentIndex: Int) {
-        if (viewModel.voiceCharacterSelectionRequiredForSegment(messageId, segmentIndex)) {
-            pendingVoiceGeneration = PendingVoiceGeneration(messageId, segmentIndex)
+    fun requestVoiceForSegment(message: ChatMessage, segmentIndex: Int) {
+        if (viewModel.voiceCharacterSelectionRequiredForSegment(message, segmentIndex)) {
+            pendingVoiceGeneration = PendingVoiceGeneration(message, segmentIndex)
         } else {
-            viewModel.generateVoiceForSegment(messageId, segmentIndex)
+            viewModel.generateVoiceForSegment(message, segmentIndex)
         }
     }
 
-    fun requestVoiceForMessage(messageId: String) {
-        if (viewModel.voiceCharacterSelectionRequiredForMessage(messageId)) {
-            pendingVoiceGeneration = PendingVoiceGeneration(messageId)
+    fun requestVoiceForMessage(message: ChatMessage) {
+        if (viewModel.voiceCharacterSelectionRequiredForMessage(message)) {
+            pendingVoiceGeneration = PendingVoiceGeneration(message)
         } else {
-            viewModel.generateVoiceForMessage(messageId)
+            viewModel.generateVoiceForMessage(message)
         }
     }
 
@@ -1236,7 +1236,7 @@ fun ChatScreen(
                         onVoiceLongPress = if (screenshotSelectionMode) null else ({ voice ->
                             voiceActionTarget = voice
                         }),
-                        onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessageId = message.id },
+                        onLongPress = { if (!isResponding && !screenshotSelectionMode) actionMessage = message },
                         onSegmentLongPress = if (!isResponding && repairState == null && !screenshotSelectionMode) ({ segment ->
                             actionSegment = MessageSegmentTarget(message, segment)
                         }) else null,
@@ -1877,16 +1877,16 @@ fun ChatScreen(
             (segment.kind == RoleplaySegmentKind.DIALOGUE ||
                 segment.kind == RoleplaySegmentKind.THOUGHT ||
                 (audiobookModeEnabled && segment.kind == RoleplaySegmentKind.NARRATION)) &&
-            viewModel.hasVoiceTargetForSegment(segment.messageId, segment.segmentIndex)
+            viewModel.hasVoiceTargetForSegment(selection.message, segment.segmentIndex)
         if (showVoiceActions) {
             segmentActions += SegmentMenuAction("语音", "为本段生成语音", AppIcons.Volume,
                 enabled = voiceGenerationAvailabilityError == null, onClick = {
-                    requestVoiceForSegment(segment.messageId, segment.segmentIndex)
+                    requestVoiceForSegment(selection.message, segment.segmentIndex)
                     actionSegment = null
                 })
             messageActions += SegmentMenuAction("语音", "为整条生成语音", AppIcons.Volume,
-                enabled = voiceGenerationAvailabilityError == null && viewModel.hasVoiceTargetForMessage(segment.messageId), onClick = {
-                    requestVoiceForMessage(segment.messageId)
+                enabled = voiceGenerationAvailabilityError == null && viewModel.hasVoiceTargetForMessage(selection.message), onClick = {
+                    requestVoiceForMessage(selection.message)
                     actionSegment = null
                 })
         }
@@ -1914,18 +1914,18 @@ fun ChatScreen(
             }
         }
     }
-    actionMessageId?.let { id ->
-        val target = messages.find { it.id == id }
+    actionMessage?.let { displayed ->
+        val target = messages.find { it.id == displayed.id }
         val canRegenerate = regenerationTargetAssistantMessageId(messages, target?.id) != null && !isResponding && !saveSlotOperation.busy
         CbDialog(
-            onDismissRequest = { actionMessageId = null },
+            onDismissRequest = { actionMessage = null },
             title = "消息操作",
-            dismiss = { CbButton("关闭", { actionMessageId = null }, variant = ButtonVariant.Ghost) }
+            dismiss = { CbButton("关闭", { actionMessage = null }, variant = ButtonVariant.Ghost) }
         ) {
             Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState())) {
                 CbButton("编辑", {
                     target?.let { editingMessage = it; editingText = TextFieldValue(it.displayContent); editingImages.clear(); editingImages.addAll(it.images) }
-                    actionMessageId = null
+                    actionMessage = null
                 }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Secondary)
                 target?.takeIf { it.isSelectableForChatScreenshot(assistantSegmentedBubblesEnabled) }?.let {
                     Spacer(Modifier.size(8.dp))
@@ -1933,11 +1933,11 @@ fun ChatScreen(
                         roleplayScreenshotBlockIds(it, assistantSegmentedBubblesEnabled)
                             .firstOrNull()
                             ?.let(::enterScreenshotSelection)
-                        actionMessageId = null
+                        actionMessage = null
                     }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
                 }
                 if (target?.role == MessageRole.ASSISTANT) {
-                    if (fishAudioConfigured && viewModel.hasVoiceTargetForMessage(target.id)) {
+                    if (fishAudioConfigured && viewModel.hasVoiceTargetForMessage(displayed)) {
                         Spacer(Modifier.size(8.dp))
                         CbButton(
                             if (audiobookModeEnabled && !assistantSegmentedBubblesEnabled) {
@@ -1946,8 +1946,8 @@ fun ChatScreen(
                                 "为整条生成语音"
                             },
                             {
-                                actionMessageId = null
-                                requestVoiceForMessage(target.id)
+                                actionMessage = null
+                                requestVoiceForMessage(displayed)
                             },
                             modifier = Modifier.fillMaxWidth(),
                             variant = ButtonVariant.Outline,
@@ -1963,7 +1963,7 @@ fun ChatScreen(
                     }
                     Spacer(Modifier.size(8.dp))
                     CbButton(if (MessageFormatRepairPolicy.applicableNotice(target) != null) "重新修复格式（AI）" else "AI 修复格式", {
-                        actionMessageId = null
+                        actionMessage = null
                         viewModel.repairMessageFormat(target.id)
                     }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
                 }
@@ -1973,13 +1973,13 @@ fun ChatScreen(
                         if (it.role == MessageRole.ASSISTANT)
                             deleteAlternativeTarget = it to MessageAlternativeVersionPolicy.activeVersionId(it)
                         else deleteMessageTarget = it
-                        actionMessageId = null
+                        actionMessage = null
                     }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Destructive)
                 }
                 if (canRegenerate) {
                     Spacer(Modifier.size(8.dp))
                     CbButton("重新生成", {
-                        actionMessageId = null
+                        actionMessage = null
                         target?.id?.let(viewModel::regenerateResponse)
                     }, modifier = Modifier.fillMaxWidth(), variant = ButtonVariant.Outline)
                 }
@@ -2013,12 +2013,12 @@ fun ChatScreen(
                         selectedCharacter?.let { character ->
                             request.segmentIndex?.let { segmentIndex ->
                                 viewModel.generateVoiceForSegment(
-                                    request.messageId,
+                                    request.message,
                                     segmentIndex,
                                     character.id
                                 )
                             } ?: viewModel.generateVoiceForMessage(
-                                request.messageId,
+                                request.message,
                                 character.id
                             )
                         }

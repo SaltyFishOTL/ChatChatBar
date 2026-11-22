@@ -94,6 +94,7 @@ All abbreviated source paths are under `app/app/src/main/java/com/example/chatba
 - Preserve autoplay order by session timeline and visual voice order. Later messages must not steal playback when earlier batches are pending.
 - Discard autoplay intent when the originating ChatScreen is no longer resumed. Do not replay it on return.
 - Manual and automatic playback both validate captured rows against the current active version and hand off to the player while holding the voice and message locks. Reply deletion removes only affected recording IDs from the player queue before unlinking files. Busy readback refuses new playback. Both SaveSlot restore paths stop and drain playback before replacing messages. Stop active playback when the originating ChatScreen leaves composition. App pause or stop alone only drops autoplay eligibility.
+- A generation menu, including deferred narrator selection, carries its displayed reply snapshot and checks its active version and text before resolving generation. Switching alternatives removes only recordings queued for the outgoing version. Explicit recording deletion and regeneration evict the affected recording before unlinking its old audio.
 - Serialize every ExoPlayer call onto its application/main thread. Never call `stop`, media-item APIs, `prepare`, or `play` from the app IO scope.
 - Manual voice taps stop current playback and automatic queues, then restart the selected voice and continue through later visible voices in the same message.
 

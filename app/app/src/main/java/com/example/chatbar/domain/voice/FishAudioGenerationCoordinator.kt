@@ -146,12 +146,11 @@ class FishAudioGenerationCoordinator(
     }
 
     fun generateSingle(
-        sessionId: String,
-        messageId: String,
+        requestedMessage: ChatMessage,
         segmentIndex: Int,
         narratorCharacterId: String? = null
-    ): String = launchBatch(sessionId, messageId) { batchId, screenGeneration ->
-        val context = loadContext(sessionId, messageId)
+    ): String = launchBatch(requestedMessage.sessionId, requestedMessage.id) { batchId, screenGeneration ->
+        val context = loadContext(requestedMessage.sessionId, requestedMessage.id, requestedMessage)
         val target = resolveTargets(context, narratorCharacterId)
             .firstOrNull { it.segment.segmentIndex == segmentIndex }
             ?: error("该段没有可唯一匹配的角色音色")
@@ -165,11 +164,10 @@ class FishAudioGenerationCoordinator(
     }
 
     fun generateWhole(
-        sessionId: String,
-        messageId: String,
+        requestedMessage: ChatMessage,
         narratorCharacterId: String? = null
-    ): String = launchBatch(sessionId, messageId) { batchId, screenGeneration ->
-        val context = loadContext(sessionId, messageId)
+    ): String = launchBatch(requestedMessage.sessionId, requestedMessage.id) { batchId, screenGeneration ->
+        val context = loadContext(requestedMessage.sessionId, requestedMessage.id, requestedMessage)
         registerAutoPlay(batchId, context, screenGeneration)
         val existing = voiceRepository.listForCurrentVersion(context.message)
         val voicedAnchors = existing.mapNotNull(GeneratedVoiceMessage::anchorId).toSet()
@@ -280,7 +278,7 @@ class FishAudioGenerationCoordinator(
                     updatedAt = System.currentTimeMillis()
                 )
                 try {
-                    voiceRepository.saveForExistingVersion(replacement, replacing = existing) {
+                    voiceRepository.saveForExistingVersion(replacement, replacing = existing, removeFromPlayback = playback::removeQueuedVoices) {
                         chatRepository.getMessage(replacement.messageId, replacement.sessionId)
                     }
                 } catch (error: Throwable) {
@@ -420,10 +418,21 @@ class FishAudioGenerationCoordinator(
         }
     }
 
+    internal suspend fun switchDisplayedVersion(expected: ChatMessage, replacement: ChatMessage): ChatMessage? =
+        autoPlayMutex.withLock {
+            val committed = voiceRepository.switchDisplayedVersion(expected, replacement, chatRepository, playback::removeQueuedVoices)
+                ?: return@withLock null
+            pendingAutoPlay.entries.removeAll { (_, pending) ->
+                pending.voices?.any { VoicePlaybackQueuePolicy.ownsDisplayedVersion(expected, it) } == true
+            }
+            drainAutoPlayLocked()
+            committed
+        }
+
     fun deleteVoice(voiceId: String) {
         scope.launch {
-            voiceRepository.delete(voiceId)?.let { storage.deleteIfOwned(it.audioPath) }
-            if (playback.state.value.currentVoiceId == voiceId) playback.stop()
+            voiceRepository.delete(voiceId, removeFromPlayback = playback::removeQueuedVoices)
+                ?.let { storage.deleteIfOwned(it.audioPath) }
         }
     }
 
@@ -832,10 +841,13 @@ class FishAudioGenerationCoordinator(
         finishAutoPlay(batchId, voices)
     }
 
-    private suspend fun loadContext(sessionId: String, messageId: String): GenerationContext {
+    private suspend fun loadContext(sessionId: String, messageId: String, requestedMessage: ChatMessage? = null): GenerationContext {
         val session = chatRepository.getSession(sessionId) ?: error("会话不存在")
         val message = chatRepository.getMessage(messageId, sessionId) ?: error("消息不存在")
         require(message.role == MessageRole.ASSISTANT) { "只支持助手消息生成语音" }
+        check(requestedMessage == null || VoiceGenerationPolicy.matchesDisplayedReply(requestedMessage, message)) {
+            "消息已变化，请重新操作"
+        }
         val card = characterRepository.getById(session.characterCardId) ?: error("角色卡不存在")
         val settings = settingsRepository.getAppSettings()
         val previousUser = chatRepository.getMessages(sessionId)
@@ -893,7 +905,12 @@ class FishAudioGenerationCoordinator(
         }
 
         val segmentByIndex = segments.associateBy(CurrentVoiceSegment::segmentIndex)
-        val anchors = voiceRepository.ensureAnchors(context.message)
+        val anchors = voiceRepository.ensureAnchorsForVersion(
+            context.message,
+            MessageAlternativeVersionPolicy.activeVersionId(context.message),
+            context.message.displayContent,
+            requireSameContent = true
+        )
         return anchors.mapNotNull { anchored ->
             val segment = segmentByIndex[anchored.segment.segmentIndex]
                 ?: return@mapNotNull null

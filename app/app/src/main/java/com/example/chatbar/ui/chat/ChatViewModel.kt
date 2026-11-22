@@ -671,15 +671,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         fishAudioCoordinator.setForegroundSession(sessionId.takeIf { isForeground })
     }
 
-    fun canGenerateVoiceForSegment(messageId: String, segmentIndex: Int): Boolean {
-        if (!fishAudioCredentials.isConfigured() || _voiceGenerationAvailabilityError.value != null) {
-            return false
-        }
-        return hasVoiceTargetForSegment(messageId, segmentIndex)
-    }
-
-    fun hasVoiceTargetForSegment(messageId: String, segmentIndex: Int): Boolean {
-        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+    fun hasVoiceTargetForSegment(message: ChatMessage, segmentIndex: Int): Boolean {
         if (message.role != MessageRole.ASSISTANT) return false
         val segment = currentVoiceGenerationSegments(message)
             .firstOrNull { it.segmentIndex == segmentIndex }
@@ -688,15 +680,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         return VoiceGenerationPolicy.hasResolvableTarget(card, segment)
     }
 
-    fun canGenerateVoiceForMessage(messageId: String): Boolean {
-        if (!fishAudioCredentials.isConfigured() || _voiceGenerationAvailabilityError.value != null) {
-            return false
-        }
-        return hasVoiceTargetForMessage(messageId)
-    }
-
-    fun hasVoiceTargetForMessage(messageId: String): Boolean {
-        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+    fun hasVoiceTargetForMessage(message: ChatMessage): Boolean {
         if (message.role != MessageRole.ASSISTANT) return false
         val card = _characterCard.value ?: return false
         return currentVoiceGenerationSegments(message)
@@ -704,10 +688,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun voiceCharacterSelectionRequiredForSegment(
-        messageId: String,
+        message: ChatMessage,
         segmentIndex: Int
     ): Boolean {
-        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
         val segment = currentVoiceGenerationSegments(message)
             .firstOrNull { it.segmentIndex == segmentIndex }
             ?: return false
@@ -715,8 +698,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         return VoiceGenerationPolicy.requiresNarratorSelection(card, listOf(segment))
     }
 
-    fun voiceCharacterSelectionRequiredForMessage(messageId: String): Boolean {
-        val message = _messages.value.firstOrNull { it.id == messageId } ?: return false
+    fun voiceCharacterSelectionRequiredForMessage(message: ChatMessage): Boolean {
         val card = _characterCard.value ?: return false
         return VoiceGenerationPolicy.requiresNarratorSelection(
             card,
@@ -725,28 +707,26 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     }
 
     fun generateVoiceForSegment(
-        messageId: String,
+        message: ChatMessage,
         segmentIndex: Int,
         narratorCharacterId: String? = null
     ) {
-        if (canGenerateVoiceForSegment(messageId, segmentIndex)) {
-            fishAudioCoordinator.generateSingle(
-                sessionId,
-                messageId,
-                segmentIndex,
-                narratorCharacterId
-            )
+        if (canRequestVoice(message) && hasVoiceTargetForSegment(message, segmentIndex)) {
+            fishAudioCoordinator.generateSingle(message, segmentIndex, narratorCharacterId)
         }
     }
 
     fun generateVoiceForMessage(
-        messageId: String,
+        message: ChatMessage,
         narratorCharacterId: String? = null
     ) {
-        if (canGenerateVoiceForMessage(messageId)) {
-            fishAudioCoordinator.generateWhole(sessionId, messageId, narratorCharacterId)
+        if (canRequestVoice(message) && hasVoiceTargetForMessage(message)) {
+            fishAudioCoordinator.generateWhole(message, narratorCharacterId)
         }
     }
+
+    private fun canRequestVoice(message: ChatMessage): Boolean =
+        message.sessionId == sessionId && fishAudioCredentials.isConfigured() && _voiceGenerationAvailabilityError.value == null
 
     private fun currentVoiceGenerationSegments(message: ChatMessage) =
         VoiceGenerationPolicy.generationSegments(
@@ -3955,7 +3935,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     .coerceIn(0, message.alternatives.lastIndex)
                 if (nextIndex == message.currentAlternativeIndex) return@launch
                 val updated = MessageAlternativeVersionPolicy.select(message, nextIndex)
-                val committed = chatRepository.updateMessageIfUnchanged(message, updated)
+                val committed = fishAudioCoordinator.switchDisplayedVersion(message, updated)
                 replaceMessagesFromRepository()
                 check(committed != null) { "消息已变化，请重新操作" }
             } catch (cancelled: CancellationException) { throw cancelled }

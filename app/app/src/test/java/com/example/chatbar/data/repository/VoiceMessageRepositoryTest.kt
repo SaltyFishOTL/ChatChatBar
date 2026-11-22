@@ -103,6 +103,44 @@ class VoiceMessageRepositoryTest {
         assertFalse(cold.listForSession(target.sessionId).any())
     }
 
+    @Test
+    fun `switch replacement and deletion evict only stale recording IDs and reject stale handoffs`() = runBlocking {
+        val storage = JsonFileStorage(TestContext(temp.newFolder()))
+        val chats = ChatRepository(storage)
+        val voices = VoiceMessageRepository(storage, chats::getMessage)
+        val initial = ChatMessage.create("test-session", MessageRole.ASSISTANT, "Same displayed text")
+        val alternatives = MessageAlternativeVersionPolicy.append(initial, initial.content, "other-version")
+        val shown = chats.addMessage(MessageAlternativeVersionPolicy.select(alternatives, 0))
+        val other = MessageAlternativeVersionPolicy.select(shown, 1)
+        val first = recording(shown, "first", initial.content, null)
+        val second = recording(other, "second", initial.content, null)
+        val independent = first.copy(id = "independent", sessionId = "different-session")
+        for (voice in listOf(first, second, independent)) voices.save(voice)
+        val removals = mutableListOf<Set<String>>()
+        val evict: suspend (Set<String>) -> Unit = { removals += it }
+
+        assertNull(voices.switchDisplayedVersion(shown.copy(content = "stale"), other, chats, evict))
+        assertTrue(removals.isEmpty())
+        val committed = requireNotNull(voices.switchDisplayedVersion(shown, other, chats, evict))
+        assertEquals(listOf(setOf(first.id)), removals)
+        voices.withCurrentPlaybackQueue(listOf(first, second), chats) { assertEquals(listOf(second), it) }
+        val stale = runCatching {
+            voices.ensureAnchorsForVersion(other, requireNotNull(second.messageVersionId), "Changed text", requireSameContent = true)
+        }
+        assertTrue(stale.exceptionOrNull() is IllegalStateException)
+
+        val replacement = second.copy(audioPath = "replacement.mp3")
+        voices.saveForExistingVersion(replacement, replacing = second, removeFromPlayback = evict) { committed }
+        assertEquals(listOf(setOf(first.id), setOf(second.id)), removals)
+        voices.withCurrentPlaybackQueue(listOf(second), chats) { assertTrue(it.isEmpty()) }
+        voices.withCurrentPlaybackQueue(listOf(replacement), chats) { assertEquals(listOf(replacement), it) }
+
+        assertEquals(first, voices.delete(first.id, evict))
+        assertEquals(listOf(setOf(first.id), setOf(second.id), setOf(first.id)), removals)
+        assertEquals(independent, voices.get(independent.id))
+        assertEquals(replacement, VoiceMessageRepository(storage).get(second.id))
+    }
+
     private fun recording(message: ChatMessage, id: String, text: String, anchor: String?) = GeneratedVoiceMessage.create(
         sessionId = message.sessionId, messageId = message.id,
         messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(message),
