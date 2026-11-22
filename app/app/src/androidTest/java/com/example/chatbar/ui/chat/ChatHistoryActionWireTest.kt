@@ -13,13 +13,18 @@ import com.example.chatbar.ui.kit.CbText
 import com.example.chatbar.ui.kit.ChatBarTheme
 import java.io.File
 import java.util.UUID
+import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import kotlinx.serialization.json.*
+import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
+import okhttp3.mockwebserver.RecordedRequest
 import org.junit.Assert.*
 import org.junit.Assume.assumeTrue
 import org.junit.Before
@@ -199,15 +204,125 @@ class ChatHistoryActionWireTest {
         }
     }
 
+    @Test fun lateAutomaticFormatRepairDoesNotChangeAnIdenticalRestoredReplyOrEnqueueAnImage() = runBlocking {
+        val app = ChatBarApp.instance
+        assertFalse("Use an isolated test app without a NovelAI credential", app.novelAiCredentialStore.isConfigured())
+        val settings = app.settingsRepository.getAppSettings()
+        val rawReply = "SYNTHETIC_ORIGINAL_REPLY"
+        val ruleMarker = "SYNTHETIC_FORMAT_RULE"
+        val releaseRepair = CountDownLatch(1)
+        val server = MockWebServer()
+        server.dispatcher = object : Dispatcher() {
+            override fun dispatch(request: RecordedRequest): MockResponse = when (request.path) {
+                "/v1/chat/completions" -> streamReply(rawReply)
+                "/repair/v1/chat/completions" -> if (releaseRepair.await(90, TimeUnit.SECONDS)) {
+                    streamReply("**$rawReply**")
+                } else MockResponse().setResponseCode(504)
+                else -> MockResponse().setResponseCode(404)
+            }
+        }
+        server.start()
+        val model = ModelConfig.create("Synthetic chat", server.url("/v1").toString(), "synthetic-key", "synthetic-chat")
+        val repairModel = ModelConfig.create("Synthetic repair", server.url("/repair/v1").toString(), "synthetic-key", "synthetic-repair")
+        val card = CharacterCard.create("Synthetic format repair character")
+        val format = FormatCard.create("Synthetic repair rule", ruleMarker)
+        val session = ChatSession.create(card.id, "Synthetic late format repair").copy(
+            modelId = model.id, formatCardId = format.id, longTermMemoryEnabled = false,
+            automaticImageGenerationEnabled = true, audiobookModeEnabled = false,
+        )
+        val store = ViewModelStore()
+        try {
+            app.modelRepository.saveModel(model)
+            app.modelRepository.saveModel(repairModel)
+            app.characterRepository.save(card)
+            app.formatCardRepository.save(format)
+            app.chatRepository.createSession(session)
+            app.settingsRepository.saveAppSettings(settings.copy(
+                allowCleartextModelApi = true, defaultEmbeddingId = null, momentsEnabled = false,
+                automaticFormatCheckEnabled = true, formatRepairModelId = repairModel.id,
+            ))
+            lateinit var vm: ChatViewModel
+            rule.runOnIdle { vm = ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java] }
+            rule.waitUntil(20_000) { vm.session.value?.id == session.id && vm.isModelUsable.value }
+            rule.runOnIdle { assertTrue(vm.sendMessage(independent)) }
+            val initial = requireNotNull(server.takeRequest(25, TimeUnit.SECONDS)) { "Chat request did not arrive" }
+            assertEquals("/v1/chat/completions", initial.path)
+            val repair = requireNotNull(server.takeRequest(25, TimeUnit.SECONDS)) { "Format repair request did not arrive" }
+            assertEquals("/repair/v1/chat/completions", repair.path)
+            val repairWire = Json.parseToJsonElement(repair.body.readUtf8()).jsonObject
+            assertEquals("synthetic-repair", repairWire.getValue("model").jsonPrimitive.content)
+            val repairInput = repairWire.getValue("messages").jsonArray.last().jsonObject
+                .getValue("content").jsonPrimitive.content
+            assertTrue(repairInput.contains(rawReply))
+            assertTrue(repairInput.contains(ruleMarker))
+
+            val original = app.chatRepository.getMessages(session.id).single { it.role == MessageRole.ASSISTANT }
+            assertEquals(rawReply, original.displayContent)
+            assertTrue(vm.isResponding.value)
+            assertEquals("存档已创建。", finishSaveSlotOperation(vm) {
+                vm.createSaveSlot("Held reply", description = null, includeAudio = false)
+            }.status)
+            val slot = app.saveSlotRepository.getBySessionId(session.id).single()
+            assertEquals("读档完成。", finishSaveSlotOperation(vm) { vm.loadSaveSlot(slot) }.status)
+            val cold = ChatRepository(JsonFileStorage(app))
+            assertEquals(original, cold.getMessage(original.id, session.id))
+            assertTrue(requireNotNull(cold.getSession(session.id)).automaticImageGenerationEnabled)
+            assertTrue(vm.isResponding.value)
+
+            withTimeout(25_000) {
+                val outcome = async(start = CoroutineStart.UNDISPATCHED) { vm.messageFormatRepairEvents.first() }
+                releaseRepair.countDown()
+                rule.waitUntil(20_000) { !vm.isResponding.value }
+                assertEquals(original, cold.getMessage(original.id, session.id))
+                assertTrue("The superseded generation must not enqueue an image", vm.imageGenerations.value.isEmpty())
+                assertEquals(2, server.requestCount)
+                assertEquals("回复已变化，已保留当前版本", outcome.await())
+            }
+        } finally {
+            releaseRepair.countDown()
+            try {
+                rule.runOnIdle { store.clear() }
+                app.settingsRepository.saveAppSettings(settings)
+                app.saveSlotRepository.deleteBySessionId(session.id)
+                app.chatRepository.deleteSession(session.id)
+                app.memoryRepository.deleteForSession(session.id)
+                app.formatCardRepository.delete(format.id)
+                app.characterRepository.delete(card.id)
+                app.modelRepository.deleteModel(repairModel.id)
+                app.modelRepository.deleteModel(model.id)
+            } finally {
+                server.shutdown()
+            }
+        }
+    }
+
+    private suspend fun finishSaveSlotOperation(vm: ChatViewModel, action: () -> Unit): SaveSlotOperationState =
+        withTimeout(30_000) {
+            val previous = vm.saveSlotOperation.value
+            val finished = async(start = CoroutineStart.UNDISPATCHED) {
+                vm.saveSlotOperation.first { !it.busy && it != previous }
+            }
+            rule.runOnIdle(action)
+            finished.await()
+        }
+
+    private fun streamReply(content: String): MockResponse {
+        val event = buildJsonObject {
+            put("choices", buildJsonArray { add(buildJsonObject {
+                put("delta", buildJsonObject { put("content", content) })
+                put("finish_reason", "stop")
+            }) })
+        }
+        return MockResponse().setHeader("Content-Type", "text/event-stream")
+            .setBody("data: $event\n\ndata: [DONE]\n\n")
+    }
+
     private fun verify(label: String, messages: List<ChatMessage>, input: String = "", regenerate: Boolean = false,
         exclude: Boolean = true, withCurrentImage: Boolean = false, assertions: (String, List<String>) -> Unit) {
         val app = ChatBarApp.instance
         val settings = runBlocking { app.settingsRepository.getAppSettings() }
         val server = MockWebServer()
-        val event = buildJsonObject { put("choices", buildJsonArray { add(buildJsonObject {
-            put("delta", buildJsonObject { put("content", "Synthetic generated response") }); put("finish_reason", "stop")
-        }) }) }.toString()
-        server.enqueue(MockResponse().setHeader("Content-Type", "text/event-stream").setBody("data: $event\n\ndata: [DONE]\n\n"))
+        server.enqueue(streamReply("Synthetic generated response"))
         server.start()
         val model = ModelConfig.create("Synthetic action model", server.url("/v1").toString(), "synthetic-action-key", "synthetic-model", isMultimodal = withCurrentImage)
         val image = if (withCurrentImage) File(app.filesDir, "action-input-${UUID.randomUUID()}.png").also {
