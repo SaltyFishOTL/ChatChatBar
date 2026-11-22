@@ -498,7 +498,10 @@ internal class BackupMergeEngine(
                     record.type == "chat_message_indexes" && fields == listOf("fileFingerprint") -> "0"
                     else -> null
                 } }, extraRootFields = added, extraRootStreams = retained
-            ) { path, _ -> resource(path) }
+            ) { path, fields ->
+                // Inline archive IDs address bytes in this JSON, rather than files in the device directory.
+                if (!sequence && record.hasInlineMediaReference(path, fields)) path else resource(path)
+            }
             if (sequence) stream.copySequence() else stream.copy()
         }
     }

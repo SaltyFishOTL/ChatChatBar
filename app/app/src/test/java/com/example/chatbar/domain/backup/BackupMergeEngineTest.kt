@@ -1,6 +1,7 @@
 package com.example.chatbar.domain.backup
 
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.domain.chat.SaveSlotJsonTransfer
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.memory.MemoryContinuityPolicy
 import com.example.chatbar.domain.memory.MemoryHashes
@@ -54,6 +55,53 @@ class BackupMergeEngineTest {
     }
     private inline fun <reified T> records(root: File, type: String): List<T> = File(root, "entities/$type").listFiles()
         .orEmpty().filter { it.extension == "json" }.map { backupJson.decodeFromString<T>(it.readText()) }
+
+    @Test fun legacyInlineSaveSlotsRetainMatchingMediaKeysAcrossWholeAppRestores() {
+        for (version in 5..7) {
+            val local = temporary.newFolder()
+            val source = temporary.newFolder()
+            card(local, "card")
+            session(local, "session", "card")
+            card(source, "card")
+            session(source, "session", "card")
+            val imageKey = "legacy-cover-$version"
+            val audioKey = java.util.UUID.randomUUID().toString()
+            val message = ChatMessage.create("session", MessageRole.ASSISTANT, "Synthetic reply")
+                .copy(images = listOf(imageKey))
+            val voice = GeneratedVoiceMessage.create(
+                sessionId = message.sessionId, messageId = message.id, anchorId = null,
+                sourceOrder = 0, sourceSegmentKind = "WHOLE_MESSAGE", sourceSpeakerName = "",
+                sourceText = message.content, taggedText = message.content, characterId = "speaker",
+                characterName = "Synthetic", voice = FishAudioVoiceBinding("test-voice", "Synthetic"),
+                fishModelId = "synthetic", audioPath = audioKey, durationMs = 1000, byteLength = 5,
+            )
+            val slot = SaveSlot.create("session", "Legacy $version", messages = listOf(message)).copy(
+                schemaVersion = version,
+                chatBackground = imageKey,
+                imageResources = mapOf(imageKey to SaveSlotImageResource("image.png", "aW1hZ2U=")),
+                voiceMessages = listOf(voice),
+                audioResources = mapOf(audioKey to SaveSlotAudioResource("clip.mp3", "YXVkaW8=")),
+            )
+            val original = File(source, "entities/save_slots/${slot.id}.json").apply {
+                parentFile!!.mkdirs()
+                outputStream().use { SaveSlotJsonTransfer.write(slot, it) }
+            }
+            val before = original.readBytes()
+            val archive = incoming(source, local)
+            for (mode in AppBackupRestoreMode.entries) {
+                val (staged, _) = merge(local, archive, mode)
+                val restored = records<SaveSlot>(staged, "save_slots").single()
+                assertEquals(version, restored.schemaVersion)
+                assertEquals(imageKey, restored.chatBackground)
+                assertEquals(listOf(imageKey), restored.messages.single().images)
+                assertEquals(slot.imageResources, restored.imageResources)
+                assertEquals(audioKey, restored.voiceMessages.single().audioPath)
+                assertEquals(slot.audioResources, restored.audioResources)
+                assertEquals(restored.sessionId, restored.voiceMessages.single().sessionId)
+            }
+            assertArrayEquals(before, original.readBytes())
+        }
+    }
 
     @Test fun uniqueNamesUpdateWithinMappedCardAndKeepUnrelatedSessionsAndLocalSourceIntact() {
         val local = temporary.newFolder()
