@@ -2417,7 +2417,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
         if (formatCard == null && segmentedFormat == null) {
             if (!automatic) _messageFormatRepairEvents.tryEmit("当前无可检查规则")
-            return message.takeIf { isCurrentFormatRepairTarget(it, timelineRevision) }
+            return message.takeIf { chatRepository.isCurrentMessageSnapshot(it, timelineRevision) }
         }
 
         val model = modelResolver.resolveFormatRepairModel(
@@ -2557,7 +2557,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         message: ChatMessage,
         timelineRevision: Long
     ): ChatMessage? {
-        val saved = if (isCurrentFormatRepairTarget(expected, timelineRevision)) {
+        val saved = if (chatRepository.isCurrentMessageSnapshot(expected, timelineRevision)) {
             longTermMemoryService.preserveActionProjectionBeforeMutation(expected, message)
             chatRepository.updateMessageIfUnchanged(expected, message, timelineRevision)
         } else null
@@ -2566,10 +2566,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _messageFormatRepairEvents.tryEmit("回复已变化，已保留当前版本")
         return null
     }
-
-    private suspend fun isCurrentFormatRepairTarget(message: ChatMessage, timelineRevision: Long): Boolean =
-        chatRepository.messageTimelineRevision(message.sessionId) == timelineRevision &&
-            chatRepository.getMessage(message.id, message.sessionId) == message
 
     fun updateDraftInput(text: String) {
         if (_draftInput.value == text) return
@@ -3405,6 +3401,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     updatedAt = System.currentTimeMillis(),
                                     orderKey = streamOrderKey
                                 )
+                                val replyTimelineRevision = chatRepository.messageTimelineRevision(sessionId)
                                 var persistedAssistantMessage = withContext(NonCancellable) {
                                     persistGeneratedAssistantMessage(
                                         generatedMessage = assistantMsg,
@@ -3422,7 +3419,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
                                         automatic = true,
-                                        timelineRevision = chatRepository.messageTimelineRevision(sessionId)
+                                        timelineRevision = replyTimelineRevision
                                     ) ?: run {
                                         _isResponding.value = false
                                         return@collect
