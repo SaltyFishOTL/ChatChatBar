@@ -298,7 +298,8 @@ class ChatBarApp : Application() {
         fishAudioTagService = FishAudioTagService(streamingChatService)
         voicePlaybackController = VoicePlaybackController(this)
         replyRemovalCoordinator = com.example.chatbar.domain.deletion.ReplyRemovalCoordinator(
-            jsonFileStorage, chatRepository, voiceMessageRepository, fishAudioStorage, novelAiImageStorage, voicePlaybackController
+            jsonFileStorage, chatRepository, voiceMessageRepository, fishAudioStorage, novelAiImageStorage,
+            voicePlaybackController, ragRepository
         )
         qqVoiceTransferCoordinator = QqVoiceTransferCoordinator()
         qqVoiceGestureGateway = QqVoiceGestureGatewayRegistry()

@@ -7,6 +7,10 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import com.example.chatbar.domain.image.NovelAiImageStorage
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.RagRepository
+import com.example.chatbar.domain.rag.isAutomaticReplyMemory
+import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoicePlaybackController
 import java.io.File
@@ -25,7 +29,8 @@ internal class ReplyRemovalCoordinator(
     private val voices: VoiceMessageRepository,
     private val audio: FishAudioStorage,
     private val images: NovelAiImageStorage,
-    private val playback: VoicePlaybackController
+    private val playback: VoicePlaybackController,
+    private val rag: RagRepository = RagRepository(storage)
 ) {
     private val mutex = Mutex()
 
@@ -42,7 +47,10 @@ internal class ReplyRemovalCoordinator(
                         images = if (replacement == null) {
                             (expected.images + expected.generatedImageMetadata.map { it.imagePath }).distinct()
                         } else emptyList(),
-                        audioPaths = collectAudioPaths()
+                        audioPaths = collectAudioPaths(),
+                        invalidateAutomaticMemory = replacement != null &&
+                            expected.displayContent != replacement.displayContent &&
+                            ChatMemoryIndexPolicy.contributesToIndex(expected)
                     )
                     storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
                     removal = pending
@@ -102,6 +110,24 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
+    /** The same journal that makes invalidation retryable also keeps pending stale chunks out of recall. */
+    suspend fun getChunksForRetrieval(characterId: String?, sessionId: String?) = mutex.withLock {
+        val chunks = rag.getChunksForRetrieval(characterId, sessionId)
+        if (sessionId == null) return@withLock chunks
+        val invalidations = try {
+            pending().filter { it.sessionId == sessionId && it.invalidateAutomaticMemory }
+        } catch (error: CancellationException) {
+            throw error
+        } catch (_: Exception) {
+            return@withLock chunks.filterNot {
+                it.isChatMemoryForSession(sessionId) && ChatMemoryIndexPolicy.isAutomaticChunk(it)
+            }
+        }
+        chunks.filterNot { chunk ->
+            invalidations.any { chunk.isAutomaticReplyMemory(sessionId, it.sourceTurnId, it.messageId) }
+        }
+    }
+
     private suspend fun pending(): List<ReplyRemoval> {
         val removals = mutableListOf<ReplyRemoval>()
         storage.forEachUncached(STORE, ReplyRemoval.serializer(), requireCompleteRead = true) { removals += it }
@@ -110,7 +136,14 @@ internal class ReplyRemovalCoordinator(
 
     private suspend fun finish(removal: ReplyRemoval) = withContext(Dispatchers.IO) {
         val committed = voices.finishReplyRemoval(
-            removal, { cleanup -> chat.finishReplyRemoval(removal, cleanup) },
+            removal, { cleanup ->
+                chat.finishReplyRemoval(removal) {
+                    if (removal.invalidateAutomaticMemory) {
+                        rag.invalidateReplyMemory(removal.sessionId, removal.sourceTurnId, removal.messageId)
+                    }
+                    cleanup()
+                }
+            },
             { ids -> if (playback.state.value.currentVoiceId in ids) playback.stop() },
             audio::deleteIfOwned
         )

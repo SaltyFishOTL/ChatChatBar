@@ -575,20 +575,25 @@ class JsonFileStorage(private val context: Context) {
     suspend fun <T : Any> deleteWhereUncached(
         entityType: String,
         serializer: KSerializer<T>,
+        requireSuccessfulDelete: Boolean = false,
         predicate: (T) -> Boolean
     ): Int = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
-            entityDir(entityType)
-                .listFiles { file -> file.extension == "json" }
+            val files = entityDir(entityType).listFiles { file -> file.extension == "json" }
+            check(!requireSuccessfulDelete || files != null) { "无法读取 $entityType 文件目录" }
+            files
                 .orEmpty()
                 .count { file ->
-                    val matches = runCatching {
-                        file.inputStream().buffered().use { input ->
+                    val matches = try {
+                        openSerializedInput(file).use { input ->
                             @OptIn(ExperimentalSerializationApi::class)
                             predicate(json.decodeFromStream(serializer, input))
                         }
-                    }.getOrDefault(false)
-                    matches && file.delete()
+                    } catch (error: Exception) {
+                        if (requireSuccessfulDelete || error is kotlinx.coroutines.CancellationException) throw error
+                        false
+                    }
+                    matches && if (requireSuccessfulDelete) Files.deleteIfExists(file.toPath()) else file.delete()
                 }
         }
     }

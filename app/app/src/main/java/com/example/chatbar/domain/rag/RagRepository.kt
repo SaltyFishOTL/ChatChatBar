@@ -146,6 +146,12 @@ class RagRepository(private val storage: JsonFileStorage) {
         return idsToDelete.size
     }
 
+    internal suspend fun invalidateReplyMemory(sessionId: String, sourceTurnId: String?, messageId: String) {
+        storage.deleteWhereUncached(ENTITY_TYPE, VectorChunk.serializer(), requireSuccessfulDelete = true) { chunk ->
+            chunk.isAutomaticReplyMemory(sessionId, sourceTurnId, messageId)
+        }
+    }
+
     /** 完整重建成功后只保留本次生成的自动块；所有手动块永久保留。 */
     suspend fun deleteObsoleteAutomaticChatMemory(
         sessionId: String,
@@ -254,6 +260,11 @@ internal fun automaticChatMemoryChunkIdsToReplace(
 
 internal fun VectorChunk.isChatMemoryForSession(sessionId: String): Boolean =
     sourceType == ChunkSourceType.CHAT_MEMORY && sourceId == sessionId
+
+internal fun VectorChunk.isAutomaticReplyMemory(sessionId: String, sourceTurnId: String?, messageId: String): Boolean =
+    isChatMemoryForSession(sessionId) && ChatMemoryIndexPolicy.isAutomaticChunk(this) &&
+        (sourceTurnId != null && metadata["sourceTurnId"] == sourceTurnId ||
+            messageId == this.messageId || messageId in metadataMessageIds())
 
 private fun VectorChunk.metadataMessageIds(): Set<String> {
     return metadata["messageIds"]

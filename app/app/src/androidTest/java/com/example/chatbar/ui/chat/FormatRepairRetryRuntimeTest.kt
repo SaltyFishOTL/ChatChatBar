@@ -32,6 +32,91 @@ class FormatRepairRetryRuntimeTest {
 
     @Test fun undoThenFailedAiRetryStillAllowsLocalRedo() = verifyRetry(true, keepRedo = true)
     @Test fun inactiveRedoSurvivesSiblingFailureAndNoOp() = verifyRetry(true, keepRedo = true, repairSibling = true)
+
+    @Test fun regenerateResponseKeepsRedoOnThePreviousVersion() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        withTimeout(30_000) { app.dependenciesReady.first { it } }
+        withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
+        val settings = app.settingsRepository.getAppSettings()
+        val store = ViewModelStore()
+        val server = MockWebServer().apply { start() }
+        val model = ModelConfig.create("Synthetic regeneration model", server.url("/v1").toString(),
+            "synthetic-regeneration-key", "synthetic-model")
+        val card = CharacterCard.create("Synthetic regeneration card")
+        val session = ChatSession.create(card.id, "Synthetic regeneration").copy(
+            modelId = model.id, longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
+        )
+        val user = ChatMessage.create(session.id, MessageRole.USER, "Synthetic user request")
+        val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Original candidate A")
+        val repairedText = "Repaired candidate A"
+        val generatedText = "Generated candidate B"
+        try {
+            app.modelRepository.saveModel(model)
+            app.characterRepository.save(card)
+            app.chatRepository.createSession(session)
+            app.chatRepository.addMessage(user)
+            val reply = app.chatRepository.addMessage(original)
+            app.settingsRepository.saveAppSettings(settings.copy(
+                allowCleartextModelApi = true, assistantSegmentedBubblesEnabled = true,
+                formatRepairModelId = model.id, automaticFormatCheckEnabled = false,
+                experimentalApiModeEnabled = false, docRagTopK = 0, memoryRagTopK = 0
+            ))
+            val vm = withContext(Dispatchers.Main) {
+                ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(30_000) { vm.messages.first { messages -> messages.any { it.id == reply.id } } }
+
+            server.enqueue(repairResponse(repairedText))
+            withContext(Dispatchers.Main) { vm.repairMessageFormat(reply.id) }
+            withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == repairedText } } }
+            withTimeout(30_000) { vm.isResponding.first { !it } }
+            withContext(Dispatchers.Main) { vm.restoreMessageFormatOriginal(reply.id) }
+            val undone = withTimeout(30_000) {
+                vm.messages.first { rows -> rows.any { it.id == reply.id && it.formatRepairNotice?.restored == true } }
+                    .single { it.id == reply.id }
+            }
+
+            server.enqueue(repairResponse(generatedText))
+            withContext(Dispatchers.Main) { vm.regenerateResponse(reply.id) }
+            withTimeout(30_000) {
+                vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == generatedText } }
+            }
+            withTimeout(30_000) { vm.isResponding.first { !it } }
+
+            val cold = ChatRepository(JsonFileStorage(app))
+            val generated = requireNotNull(cold.getMessage(reply.id, session.id))
+            assertEquals(listOf(original.displayContent, generatedText), generated.alternatives)
+            assertEquals("Regeneration must preserve A's durable redo checkpoint",
+                undone.formatRepairNotice, generated.formatRepairNotice)
+            assertNull(MessageFormatRepairPolicy.applicableNotice(generated))
+            assertEquals(user.content, cold.getMessage(user.id, session.id)?.content)
+            repeat(2) {
+                val request = requireNotNull(server.takeRequest(5, TimeUnit.SECONDS))
+                assertEquals("/v1/chat/completions", request.path)
+                assertEquals("Bearer synthetic-regeneration-key", request.getHeader("Authorization"))
+            }
+
+            withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, -1) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == original.displayContent } } }
+            withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id) }
+            withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == repairedText } } }
+            val redone = requireNotNull(cold.getMessage(reply.id, session.id))
+            assertEquals(listOf(repairedText, generatedText), redone.alternatives)
+            assertEquals(generated.alternativeVersionIds, redone.alternativeVersionIds)
+            assertEquals("Repair and regeneration are the only model requests", 2, server.requestCount)
+        } finally {
+            withContext(Dispatchers.Main) { store.clear() }
+            app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
+            app.settingsRepository.saveAppSettings(settings)
+            app.voiceMessageRepository.deleteForSession(session.id)
+            app.chatRepository.deleteMessagesForSession(session.id)
+            app.chatRepository.deleteSessionRecord(session.id)
+            app.characterRepository.delete(card.id)
+            app.modelRepository.deleteModel(model.id)
+            server.shutdown()
+        }
+    }
+
     @Test fun lateRepairSuccessCannotResurrectMessageAfterRestore() =
         verifyRetry(lateResponse = repairResponse("synthetic late repair"))
     @Test fun lateUnchangedResultCannotResurrectMessageAfterRestore() =

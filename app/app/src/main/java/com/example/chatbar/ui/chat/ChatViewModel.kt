@@ -2423,7 +2423,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         versionId: String,
         changed: ChatMessage,
         deleteMemoryForMessage: Boolean = false
-    ) {
+    ) = ragMemoryMutationMutex.withLock {
         val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
         replaceMessagesFromRepository()
         if (cleanupError != null) _messageActionError.value = cleanupError
@@ -2847,7 +2847,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                         ragDebugLogs.add("开始 RAG 检索。来源: documents=${ragSourcePlan.includeDocuments}, memory=${ragSourcePlan.includeMemory}; Embedding配置: [${embeddingConfig.displayName}], 目标模型: ${embeddingConfig.modelName}")
                         try {
-                            val retrievalChunks = ChatBarApp.instance.ragRepository.getChunksForRetrieval(
+                            val retrievalChunks = replyRemovalCoordinator.getChunksForRetrieval(
                                 characterId = charCard.id.takeIf { ragSourcePlan.includeDocuments },
                                 sessionId = sessionId.takeIf { ragSourcePlan.includeMemory }
                             )
@@ -3605,10 +3605,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             content = generatedMessage.content,
             newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
             narrativeMode = generatedMessage.narrativeMode
-        ).copy(
-            reasoningContent = generatedMessage.reasoningContent,
-            formatRepairNotice = null
-        )
+        ).copy(reasoningContent = generatedMessage.reasoningContent)
         return chatRepository.updateMessage(updated)
     }
 

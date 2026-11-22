@@ -12,6 +12,9 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.*
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
+import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.RagRepository
+import com.example.chatbar.domain.rag.VectorSearchEngine
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
 import java.util.UUID
@@ -48,6 +51,90 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
     @Test fun survivingVoiceKeepsSharedAudioAndMessageImage() = verify(sharedAudio = true)
     @Test fun deletingLastVersionStillDeletesItsVoiceAndMessage() = verify(last = true)
     @Test fun lastVersionDeletionFinishesVoiceCleanupAfterEditorCancellation() = verify(last = true, cancelAfterCommit = true)
+
+    @Test fun canceledAlternativeDeletionInvalidatesIndexedTextOnColdReopen() = runBlocking<Unit> {
+        val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
+        val card = CharacterCard.create("Synthetic old indexed reply")
+        val session = ChatSession.create(card.id, "Synthetic old indexed reply").copy(
+            longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
+        )
+        val store = ViewModelStore()
+        val reopenStore = ViewModelStore()
+        val vectorDirectory = File(app.filesDir, "entities/vector_chunks")
+        var restoreWriteAccess = false
+        try {
+            app.characterRepository.save(card)
+            app.chatRepository.createSession(session)
+            val user = app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.USER, "Indexed user turn"))
+            val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Surviving alternative")
+            val reply = app.chatRepository.addMessage(
+                MessageAlternativeVersionPolicy.append(original, "Deleted indexed alternative", "indexed-version")
+            )
+            val turnId = requireNotNull(reply.sourceTurnId)
+            val query = listOf(1f, 0f)
+            fun indexedChunk(anchor: String?, metadata: Map<String, String>) = VectorChunk.create(
+                ChunkSourceType.CHAT_MEMORY, session.id, reply.displayContent, query,
+                messageId = anchor, metadata = metadata + mapOf(
+                    "indexMode" to ChatMemoryIndexPolicy.INDEX_MODE,
+                    "contentVersion" to ChatMemoryIndexPolicy.CONTENT_VERSION
+                )
+            )
+            val direct = indexedChunk(reply.id, emptyMap())
+            val byTurn = indexedChunk(null, mapOf("sourceTurnId" to turnId))
+            val byMembers = indexedChunk(user.id, mapOf("messageIds" to "${user.id},${reply.id}"))
+            val unaffected = indexedChunk(null, mapOf("sourceTurnId" to "another-turn")).copy(content = "Unrelated indexed text")
+            val manual = VectorChunk.create(ChunkSourceType.CHAT_MEMORY, session.id, "Manual memory", query, reply.id)
+            app.ragRepository.saveChunks(listOf(direct, byTurn, byMembers, unaffected, manual))
+            val vm = withContext(Dispatchers.Main) {
+                ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(30_000) { vm.messages.first { rows -> rows.any { it.id == reply.id } } }
+            assertEquals(reply.displayContent, app.chatRepository.getSession(session.id)?.lastMessagePreview)
+
+            check(vectorDirectory.setWritable(false))
+            restoreWriteAccess = true
+            val canceledAfterCommit = CompletableDeferred<Unit>()
+            val watcher = launch(Dispatchers.Unconfined, start = CoroutineStart.UNDISPATCHED) {
+                app.chatRepository.sessions.first { sessions ->
+                    sessions.any { it.id == session.id && it.lastMessagePreview == original.displayContent }
+                }
+                vm.viewModelScope.cancel()
+                canceledAfterCommit.complete(Unit)
+            }
+            try {
+                withContext(Dispatchers.Main) { vm.deleteMessageAlternative(reply, "indexed-version") }
+                withTimeout(15_000) { canceledAfterCommit.await() }
+                LocalDataMaintenance.acquire().close()
+            } finally {
+                watcher.cancel()
+            }
+            assertEquals(original.displayContent, ChatRepository(JsonFileStorage(app)).getMessage(reply.id, session.id)?.displayContent)
+            assertNotNull("Injected write failure should keep the old vector on disk", app.ragRepository.getChunkById(direct.id))
+            check(vectorDirectory.setWritable(true))
+            restoreWriteAccess = false
+
+            val reopened = withContext(Dispatchers.Main) {
+                ViewModelProvider(reopenStore, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+            }
+            withTimeout(30_000) { reopened.messages.first { rows -> rows.any { it.id == reply.id } } }
+            val coldRag = RagRepository(JsonFileStorage(app))
+            val recalled = VectorSearchEngine().search(query, coldRag.getChunksForRetrieval(null, session.id))
+            assertEquals("Cold retrieval must exclude every chunk for the deleted alternative",
+                setOf(unaffected.id, manual.id), recalled.mapTo(mutableSetOf()) { it.id })
+            assertEquals(original.displayContent, reopened.messages.value.single { it.id == reply.id }.displayContent)
+        } finally {
+            if (restoreWriteAccess) check(vectorDirectory.setWritable(true))
+            withContext(Dispatchers.Main) { store.clear(); reopenStore.clear() }
+            app.longTermMemoryAutoMaintenanceCoordinator.cancelAndJoinForSession(session.id)
+            app.replyRemovalCoordinator.resumePending(session.id)
+            app.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, session.id)
+            app.voiceMessageRepository.deleteForSession(session.id)
+            app.chatRepository.deleteMessagesForSession(session.id)
+            app.chatRepository.deleteSessionRecord(session.id)
+            app.characterRepository.delete(card.id)
+        }
+    }
+
     @Test fun deletingLastVersionKeepsAudioReferencedByIndependentMessage() = verify(last = true, sharedAudio = true)
     @Test fun deletingLastVersionReportsCleanupFailureWithoutCrashing() = verify(last = true, cleanupFailure = true)
     @Test fun deletingOneVersionReportsCleanupFailureAfterRefreshingMessage() = verify(cleanupFailure = true)
