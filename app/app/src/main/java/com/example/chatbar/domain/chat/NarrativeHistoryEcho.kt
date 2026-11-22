@@ -7,6 +7,7 @@ object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
+        val codeRanges: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val markdown: String,
         val commentRanges: List<IntRange>,
@@ -197,6 +198,25 @@ object NarrativeHistoryEcho {
     internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
         if (commentOpening !in text) emptyList() else classifyLiterals(text, interpretProseQuotes = false).commentRanges
 
+    internal fun literalCommentCodeRanges(text: String): List<IntRange> {
+        if (commentOpening !in text) return emptyList()
+        val code = classifyLiterals(text, interpretProseQuotes = false).codeRanges
+        if (code.none { range ->
+            val opening = text.indexOf(commentOpening, range.first)
+            opening in range && opening + commentOpening.lastIndex <= range.last
+        }) return emptyList()
+        return buildList {
+            for (range in code.sortedBy { it.first }) {
+                val previous = lastOrNull()
+                if (previous != null && (previous.last + 1 until range.first).all { text[it].isWhitespace() }) {
+                    this[lastIndex] = previous.first..maxOf(previous.last, range.last)
+                } else {
+                    add(range)
+                }
+            }
+        }
+    }
+
     private fun classifyLiterals(
         end: String,
         familyTags: List<MatchResult> = emptyList(),
@@ -216,7 +236,8 @@ object NarrativeHistoryEcho {
                 onLazyQuoteLine = { lazyQuoteLineStarts += it },
                 onIndentedCodeLine = { codeBlocks += it },
             ).mapTo(codeBlocks) { it.range }
-            val ranges = codeLiteralRanges(source, codeBlocks) + comments
+            val codeRanges = codeLiteralRanges(source, codeBlocks)
+            val ranges = codeRanges + comments
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                 val position = tag.range.first
@@ -233,7 +254,7 @@ object NarrativeHistoryEcho {
                 end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment,
                 interpretProseQuotes,
             )
-            return ReplyLiterals(ranges + quotes, lazyQuoteLineStarts, source, comments)
+            return ReplyLiterals(ranges + quotes, codeRanges, lazyQuoteLineStarts, source, comments)
         }
 
         val capture = { range: IntRange -> nextComment = range }

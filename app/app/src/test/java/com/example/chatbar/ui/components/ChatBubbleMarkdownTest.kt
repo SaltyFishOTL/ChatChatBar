@@ -38,6 +38,27 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_doesNotTurnBracketsInALiteralCodeCommentIntoDialogue() {
+        val markers = "[sample] 『sample』 <n=\"Code\"/>"
+        val inline = "请键入 `<!-- $markers -->` 后继续。"
+        val indented = "    <!--\n    $markers\n    -->"
+        val fenced = "~~~xml\n<!--\n$markers\n-->\n~~~"
+        for (body in listOf(inline, indented, fenced)) {
+            val segment = parseRoleplayTextSegments(body).single()
+            assertEquals(RoleplaySegmentKind.NARRATION, segment.kind)
+            assertEquals(body, sanitizeRoleplayMarkdown(segment.displayText, forColoring = true))
+            val legacyInput = stripRoleplaySpeakerMarkers(body)
+            val legacy = (parseRoleplayContent(legacyInput).single() as RoleplayContentSegment.Markdown).text
+            assertEquals(body, sanitizeRoleplayMarkdown(legacy, forColoring = true))
+        }
+
+        val mixed = parseRoleplayTextSegments("$inline [对白]")
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.DIALOGUE), mixed.map { it.kind })
+        assertEquals("$inline ", mixed.first().displayText)
+        assertNull(mixed.last().speakerName)
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

@@ -87,6 +87,7 @@ import com.example.chatbar.domain.chat.roleplayTextBlockId
 import com.example.chatbar.domain.chat.roleplayVoiceBlockId
 import com.example.chatbar.domain.chat.stripRoleplayHiddenComments
 import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
+import com.example.chatbar.domain.chat.transformRoleplayProse
 import com.example.chatbar.domain.voice.VoicePlaybackState
 import com.example.chatbar.ui.kit.CbIcon
 import com.example.chatbar.ui.kit.CbIconButton
@@ -1735,17 +1736,18 @@ internal fun parseRoleplayContent(content: String): List<RoleplayContentSegment>
 }
 
 internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = false): String {
-    val withoutHiddenComments = stripRoleplayHiddenComments(stripRoleplaySpeakerMarkers(content))
-    val withLineBreaks = singleNewlinePattern.replace(withoutHiddenComments, "  \n")
-    if (forColoring) {
-        return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
+    val withoutHiddenComments = stripRoleplayHiddenComments(content)
+    return transformRoleplayProse(withoutHiddenComments) { prose ->
+        val withLineBreaks = singleNewlinePattern.replace(stripRoleplaySpeakerMarkers(prose), "  \n")
+        roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
             val text = match.groupValues[1]
             val annotation = match.groupValues[2]
-            if (annotation.isEmpty()) "\u200B$text\u200B" else "[$text]($annotation)"
+            when {
+                !forColoring -> "[$text]"
+                annotation.isEmpty() -> "\u200B$text\u200B"
+                else -> "[$text]($annotation)"
+            }
         }
-    }
-    return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
-        "[${match.groupValues[1]}]"
     }
 }
 
