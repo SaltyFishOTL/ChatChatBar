@@ -32,6 +32,56 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun lineLeadingHtmlCommentsKeepAnAdjacentOuterCloseVisibleToTheParser() {
+        val wrappers = listOf(
+            "<历史回复 模式=\"聚焦\">" to "</历史回复>",
+            "<历史回复 模式=\"推进\">" to "</历史回复>",
+            "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
+        )
+        for ((opening, closing) in wrappers) {
+            val bodies = listOf(
+                "<!-- note -->正文",
+                "<!-- $closing -->正文",
+                "<!-- note --><!-- $closing -->正文",
+                "<!--\n    $closing -->正文",
+                "<!--\n> $closing -->正文",
+            )
+            for (body in bodies) {
+                val wrapped = "$opening\n$body$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = streaming, interrupted = interrupted))
+                }
+                assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), streaming = true))
+                assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), interrupted = true))
+            }
+        }
+    }
+
+    @Test
+    fun leadingHtmlCommentDoesNotHideTheStartOfAMultilineCodeSpan() {
+        val opening = "<聚焦模式=\"沉浸\">"
+        val closing = "</聚焦模式>"
+        val body = "<!-- note -->`标签示例\n$closing\n结束`\n正文"
+        val wrapped = "$opening\n$body\n$closing"
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, interrupted = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped))
+    }
+
+    @Test
+    fun commentOnlyLinesDoNotTurnFollowingIndentedCodeIntoProse() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (note in listOf("<!-- note -->", "<!-- one --><!-- two -->", "<!--\n    note -->")) {
+            val body = "$note\n    val marker = \""
+            val wrapped = "$opening\n$body\n$closing"
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, interrupted = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped))
+        }
+    }
+
+    @Test
     fun provisionalCommentKeepsLiteralClosingWhileItsOwnEndIsIncomplete() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

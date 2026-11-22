@@ -5,7 +5,11 @@ import com.example.chatbar.data.local.entity.ChatNarrativeMode
 /** Removes request-only history wrappers when the model echoes them around its new reply. */
 object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
-    private data class ReplyLiterals(val ranges: List<IntRange>, val lazyQuoteLineStarts: Set<Int>)
+    private data class ReplyLiterals(
+        val ranges: List<IntRange>,
+        val lazyQuoteLineStarts: Set<Int>,
+        val markdown: String,
+    )
 
     private val wrappers = ChatNarrativeMode.entries.map { mode ->
         Wrapper("历史回复", "<历史回复 模式=\"${mode.shortLabel}\">", listOf("</历史回复>"))
@@ -95,41 +99,36 @@ object NarrativeHistoryEcho {
                 val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
                 val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                     val position = tag.range.first
-                    val linePrefix = end.subSequence(lineStart(end, position), position)
+                    val linePrefix = source.subSequence(lineStart(source, position), position)
                     val nextTag = familyTags.getOrNull(index + 1)?.range?.first ?: end.length
                     val continuationLines = end.subSequence(tag.range.last + 1, nextTag).lineSequence().iterator()
                     position.takeIf {
-                        tag.value in wrapper.closings && linePrefix.isBlank() && !isIndentedCodeLine(end, position) &&
+                        tag.value in wrapper.closings && linePrefix.isBlank() && !isIndentedCodeLine(source, position) &&
                             ranges.none { position in it } && continuationLines.next().isBlank() &&
                             continuationLines.hasNext() && hanIdeograph.containsMatchIn(continuationLines.next())
                     }
                 } else emptyList()
-                val quotes = proseQuoteRanges(end, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment)
-                return ReplyLiterals(ranges + quotes, lazyQuoteLineStarts)
+                val quotes = proseQuoteRanges(end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment)
+                return ReplyLiterals(ranges + quotes, lazyQuoteLineStarts, source)
             }
 
             val capture = { range: IntRange -> nextComment = range }
             var result = inspect(markdown, capture.takeIf { "<!--" in markdown })
-            if (nextComment != null) {
-                val masked = markdown.toCharArray()
-                while (true) {
-                    val range = nextComment ?: break
-                    comments += range
-                    // Keep offsets and rescan after masking. A comment can itself contain a fence opener.
-                    for (offset in range) {
-                        if (masked[offset] != '\r' && masked[offset] != '\n') masked[offset] = ' '
-                    }
-                    nextComment = null
-                    result = inspect(String(masked), capture)
-                }
+            while (true) {
+                val range = nextComment ?: break
+                comments += range
+                nextComment = null
+                // A comment can itself contain a fence opener, so rescan the masked Markdown.
+                result = inspect(maskHtmlComments(markdown, comments), capture)
             }
             result
         }
         fun isMarkdownQuoteLine(offset: Int): Boolean {
-            val lineStart = lineStart(end, offset)
+            val markdown = literals.markdown
+            val lineStart = lineStart(markdown, offset)
             // A standalone closing marker also ends the wrapper directly after a quoted paragraph.
-            return MarkdownCodeFences.hasQuoteContainerPrefix(end, lineStart) ||
-                (end.subSequence(lineStart, offset).isNotBlank() && lineStart in literals.lazyQuoteLineStarts)
+            return MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart) ||
+                (markdown.subSequence(lineStart, offset).isNotBlank() && lineStart in literals.lazyQuoteLineStarts)
         }
         var innerDepth = 0
         var unmatchedClosing = false
@@ -138,7 +137,7 @@ object NarrativeHistoryEcho {
             val quote = end.getOrNull(position - 1)
             val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
             if (asciiQuoted || isEscaped(end, position) || isMarkdownQuoteLine(position) || literals.ranges.any { position in it } ||
-                isIndentedCodeLine(end, position)
+                isIndentedCodeLine(literals.markdown, position)
             ) continue
 
             if (match.value.startsWith("</")) {
@@ -163,7 +162,7 @@ object NarrativeHistoryEcho {
             if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !isMarkdownQuoteLine(lastTag) &&
-                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(end, lastTag)
+                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(literals.markdown, lastTag)
             ) return end.substring(0, lastTag).trimEnd()
         }
         return body
@@ -203,6 +202,7 @@ object NarrativeHistoryEcho {
 
     private fun proseQuoteRanges(
         text: String,
+        markdown: String,
         delimiterExclusions: List<IntRange>,
         includeUnclosed: Boolean,
         interiorClosings: List<Int>,
@@ -215,7 +215,7 @@ object NarrativeHistoryEcho {
         for (index in text.indices) {
             if (canOpenComment && open < 0 && text.startsWith("<!--", index) &&
                 !isEscaped(text, index) && delimiterExclusions.none { index in it } &&
-                !MarkdownCodeFences.hasQuoteContainerPrefix(text, lineStart(text, index))
+                !MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
             ) {
                 val end = closedCommentEnd(text, index)
                 if (end != null || includeUnclosed) {
@@ -275,6 +275,32 @@ object NarrativeHistoryEcho {
         if (tagLine <= wordStart || lineStart(text, wordStart) != lineStart(text, position)) return false
         val possessed = text.substring(wordStart, tagLine).trimEnd()
         return unfinishedPossessedWord.matches(possessed) && possessed !in ordinaryProseFollowers && !possessed.endsWith("ly")
+    }
+
+    private fun maskHtmlComments(source: String, comments: List<IntRange>): String {
+        val masked = source.toCharArray()
+        val leadingComments = mutableMapOf<Int, IntRange>()
+        for (comment in comments) {
+            var start = lineStart(source, comment.first)
+            while (start <= comment.last) {
+                val end = source.indexOf('\n', start).takeIf { it >= 0 } ?: source.length
+                val first = maxOf(start, comment.first)
+                val limit = minOf(end, comment.last + 1)
+                if (first < limit && (start until first).all { source[it] == ' ' || source[it] == '\t' }) {
+                    leadingComments.putIfAbsent(start, first until end)
+                }
+                for (offset in first until limit) {
+                    if (masked[offset] != '\r') masked[offset] = ' '
+                }
+                start = end + 1
+            }
+        }
+        for (line in leadingComments.values) {
+            // Preserve the original indentation of visible content on mixed lines. Comment-only
+            // lines stay blank so they cannot turn the following indented code into a paragraph.
+            if (line.any { !masked[it].isWhitespace() }) masked[line.first] = '\uFFFC'
+        }
+        return String(masked)
     }
 
     private fun closedCommentEnd(text: String, start: Int): Int? {
