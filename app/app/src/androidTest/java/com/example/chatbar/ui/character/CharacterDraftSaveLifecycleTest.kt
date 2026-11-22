@@ -84,6 +84,82 @@ class CharacterDraftSaveLifecycleTest {
         assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, card.id))
     }
 
+    @Test fun formalSaveAfterViewingOriginalRemovesTheIgnoredDraftAndItsAssets() = runBlocking<Unit> {
+        verifyFormalSaveAfterViewingOriginal(newerDraftWritten = false)
+    }
+
+    @Test fun formalSaveAfterViewingOriginalPreservesANewerDraftAndItsAssets() = runBlocking<Unit> {
+        verifyFormalSaveAfterViewingOriginal(newerDraftWritten = true)
+    }
+
+    private suspend fun verifyFormalSaveAfterViewingOriginal(newerDraftWritten: Boolean) {
+        val original = card()
+        val active = editor(original.id)
+        action { active.addDocument("ignored.txt", "Draft-only document", it) }
+        editAndSaveDraft(active, "ignored name")
+        val ignored = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(ignored.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        try {
+            val viewer = editor(original.id)
+            withContext(Dispatchers.Main) {
+                assertEquals(ignored, viewer.restoreDraft)
+                viewer.keepOriginal()
+                assertNull(viewer.restoreDraft)
+                assertEquals(original.name, viewer.name)
+                assertTrue(viewer.documentsList.isEmpty())
+                assertFalse(viewer.hasLocalChanges)
+            }
+            assertEquals("Viewing the original must leave the draft available until Save",
+                ignored, coldDrafts().getById(ignored.id))
+
+            val newer = if (newerDraftWritten) {
+                val competingEditor = editor(original.id)
+                withContext(Dispatchers.Main) { competingEditor.restoreDraft() }
+                editAndSaveDraft(competingEditor, "new competing draft")
+                requireNotNull(coldDrafts().getById(ignored.id)).also {
+                    assertEquals("new competing draft", it.characterPayload?.name)
+                    assertNotEquals(ignored, it)
+                }
+            } else null
+
+            action { viewer.saveCharacterCard(it) }
+            val saved = requireNotNull(app.characterRepository.getById(original.id))
+            assertEquals(original.name, saved.name)
+            assertTrue(saved.customDocuments.isEmpty())
+            assertEquals(newer, coldDrafts().getById(ignored.id))
+            val reopened = editor(original.id)
+            withContext(Dispatchers.Main) { assertEquals(newer, reopened.restoreDraft) }
+            if (newer != null) {
+                assertEquals(staged.path, newer.characterPayload!!.customDocuments.single().filePath)
+                assertEquals("Draft-only document", staged.readText())
+            } else {
+                assertFalse("The consumed draft's staged file must be reclaimed", staged.exists())
+            }
+        } finally {
+            app.editorDraftAssetService.deleteDraft(ignored.draftSessionId)
+        }
+    }
+
+    @Test fun autosaveAfterViewingOriginalCannotOverwriteANewerDraft() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "old ignored draft")
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) { viewer.keepOriginal() }
+        val competingEditor = editor(original.id)
+        withContext(Dispatchers.Main) { competingEditor.restoreDraft() }
+        editAndSaveDraft(competingEditor, "new competing draft")
+        val newer = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        var exited = false
+        withContext(Dispatchers.Main) {
+            viewer.name = "edit from original"
+            viewer.saveDraftAndExit { exited = true }
+        }
+        withTimeout(15_000) { while (withContext(Dispatchers.Main) { viewer.isSaving.value }) delay(20) }
+        withContext(Dispatchers.Main) { assertFalse(exited) }
+        assertEquals("new competing draft", newer.characterPayload?.name)
+        assertEquals(newer, coldDrafts().getById(newer.id))
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
     @Test fun retainedEditorCanCreateAndRestoreAGenuineDraftAfterFormalSave() = runBlocking<Unit> {
         val card = card()
         val vm = editor(card.id)

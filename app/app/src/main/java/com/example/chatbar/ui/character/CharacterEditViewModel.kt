@@ -282,6 +282,7 @@ class CharacterEditViewModel(
     private var appearanceImageGenerationToken = 0
     private var baseCard: CharacterCard? = null
     private var loadedDraft: EditorDraft? = null
+    private var ignoredDraft: EditorDraft? = null
     private var draftJob: Job? = null
     private val draftWriteMutex = Mutex()
     private var draftExitInProgress = false
@@ -562,6 +563,7 @@ class CharacterEditViewModel(
     fun restoreDraft() {
         restoreDraft?.let { draft ->
             loadedDraft = draft
+            ignoredDraft = null
             draft.characterPayload?.let(::applyCard)
             restoreOpenModal(draft.openModalState)
             pendingDeletedAssets.clear()
@@ -576,6 +578,7 @@ class CharacterEditViewModel(
     }
 
     fun keepOriginal() {
+        restoreDraft?.let { ignoredDraft = it }
         restoreDraft = null
         restoreConflict = false
     }
@@ -608,6 +611,7 @@ class CharacterEditViewModel(
                     // Reset once the selected record is gone, even if its resource cleanup fails.
                     discarded = true
                     loadedDraft = null
+                    ignoredDraft = null
                     baseCard = savedCard
                     _indexingStatus.value = null
                     applyCard(savedCard)
@@ -762,7 +766,8 @@ class CharacterEditViewModel(
             baseCard = effectiveCard
             hasLocalChanges = false
             hasUnsavedDraftChanges = false
-            val cleanup = CommittedDraftCleanup(oldCard, effectiveCard, loadedDraft)
+            val consumedDraft = loadedDraft ?: ignoredDraft?.takeIf { it.targetId == effectiveCard.id }
+            val cleanup = CommittedDraftCleanup(oldCard, effectiveCard, consumedDraft)
             val cleaned = completeCommittedDraftCleanup(cleanup)
             finishCharacterSave()
             startBackgroundIndex(effectiveCard)
@@ -783,6 +788,7 @@ class CharacterEditViewModel(
                 cleanupAfterCharacterSave(cleanup.oldCard, cleanup.savedCard)
             }
             loadedDraft = null
+            ignoredDraft = null
             draftSavedAt = null
             restoreDraft = null
             restoreConflict = false
@@ -957,8 +963,8 @@ class CharacterEditViewModel(
             listOfNotNull(openModalState?.character?.appearanceImage)).distinct()
             .filter { draftAssetService.isDraftAsset(it) }
         val targetId = if (sourceDeleted) null else characterId
-        val owner = loadedDraft
-        val previous = owner?.takeIf { it.targetId == targetId }
+        val owner = loadedDraft ?: ignoredDraft
+        val previous = loadedDraft?.takeIf { it.targetId == targetId }
         val draft = draftRepository.characterDraft(
             targetId = targetId,
             draftSessionId = draftSessionId,
@@ -978,6 +984,7 @@ class CharacterEditViewModel(
         } else {
             checkNotNull(draftRepository.saveIfUnchanged(update, owner)) { "草稿已更新或清除，请重新打开角色卡" }
         }
+        ignoredDraft = null
         draftSavedAt = loadedDraft?.updatedAt
         reclaimRemovedDraftDocuments()
         hasUnsavedDraftChanges = false
