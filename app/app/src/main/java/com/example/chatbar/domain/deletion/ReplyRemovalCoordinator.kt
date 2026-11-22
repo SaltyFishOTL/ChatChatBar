@@ -9,9 +9,9 @@ import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.ChatRagSourceRevision
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.backup.LocalDataMaintenance
-import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.image.NovelAiImageStorage
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.ChatMemoryProjection
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.rag.currentReplySourceProof
 import com.example.chatbar.domain.rag.isAutomaticReplyMemory
@@ -142,6 +142,27 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
+    /** Recheck selected automatic hits after the retrieval planner and query embedding suspend. */
+    internal suspend fun selectCurrentRecallIds(
+        sessionId: String,
+        candidates: List<VectorChunk>,
+        limit: Int,
+        renderMessage: (ChatMessage) -> ChatMessage
+    ): Set<String> = mutex.withLock {
+        chat.withStableMessageTimeline {
+            val sources = ReplyMemorySources(sessionId)
+            buildSet {
+                for (chunk in candidates) {
+                    if (size >= limit) break
+                    if (!ChatMemoryIndexPolicy.isAutomaticChunk(chunk) ||
+                        sources.matchesCurrentContents(chunk, renderMessage) && rag.getChunkById(chunk.id) == chunk) {
+                        add(chunk.id)
+                    }
+                }
+            }
+        }
+    }
+
     internal suspend fun withCurrentRagSources(
         sessionId: String, revision: ChatRagSourceRevision, update: suspend () -> Unit
     ): Boolean = mutex.withLock { chat.withCurrentRagSources(sessionId, revision, publish = update) }
@@ -158,7 +179,7 @@ internal class ReplyRemovalCoordinator(
         messageIds: Set<String>,
         chunks: List<VectorChunk>,
         sourceMessages: List<ChatMessage>? = null,
-        keepCurrentContents: Map<String, String> = emptyMap()
+        keepCurrent: ChatMemoryProjection? = null
     ): Boolean = mutex.withLock {
         chat.withCurrentRagSources(sessionId, revision, sourceTurnId, sourceMessages) {
             if (chunks.isNotEmpty()) {
@@ -167,7 +188,7 @@ internal class ReplyRemovalCoordinator(
                 rag.saveChunks(chunks.map { proof.authorize(it, invalidations) })
             }
             rag.deleteSupersededAutomaticChatMemory(
-                sessionId, sourceTurnId, messageIds, chunks.mapTo(mutableSetOf()) { it.id }, keepCurrentContents
+                sessionId, sourceTurnId, messageIds, chunks.mapTo(mutableSetOf()) { it.id }, keepCurrent
             )
         }
     }
@@ -175,12 +196,21 @@ internal class ReplyRemovalCoordinator(
     /** Read the pending journal before replacing messages or archived vectors. */
     internal suspend fun <T> withRestoredReplyMemory(
         sessionId: String,
-        restore: suspend (prepareChunk: suspend (VectorChunk) -> VectorChunk) -> T
+        renderMessage: (ChatMessage) -> ChatMessage,
+        restore: suspend (prepareChunk: suspend (VectorChunk) -> VectorChunk?) -> T
     ): T = mutex.withLock {
         val invalidations = pendingMemoryInvalidations(sessionId)
-        val proof = ReplyMemorySources(sessionId)
+        val sources = ReplyMemorySources(sessionId)
         restore { chunk ->
-            proof.authorize(chunk.copy(sourceType = ChunkSourceType.CHAT_MEMORY, sourceId = sessionId), invalidations)
+            val normalized = chunk.copy(sourceType = ChunkSourceType.CHAT_MEMORY, sourceId = sessionId)
+            val affected = invalidations.filter { it.affects(normalized) }
+            when {
+                affected.isEmpty() -> normalized.withCurrentReplyRemovals(emptyList(), null)
+                sources.matchesCurrentContents(normalized, renderMessage) -> sources.authorize(normalized, affected)
+                ChatMemoryIndexPolicy.needsAutomaticRebuild(normalized) ->
+                    normalized.withCurrentReplyRemovals(emptyList(), null)
+                else -> null
+            }
         }
     }
 
@@ -195,6 +225,7 @@ internal class ReplyRemovalCoordinator(
     /** A repair, further deletion or restore can change ownership again before an earlier retry. */
     private inner class ReplyMemorySources(private val sessionId: String) {
         private val proofs = mutableMapOf<ReplyMemorySource, String?>()
+        private val projections = mutableMapOf<ReplyMemorySource, ChatMemoryProjection?>()
 
         suspend fun authorize(chunk: VectorChunk, invalidations: List<ReplyRemoval>): VectorChunk {
             val ids = invalidations.filter { it.affects(chunk) }.map(ReplyRemoval::id)
@@ -206,18 +237,38 @@ internal class ReplyRemovalCoordinator(
             return invalidations.all { chunk.isCurrentForReplyRemoval(it.id) } && proofFor(chunk) == marked
         }
 
+        suspend fun matchesCurrentContents(chunk: VectorChunk, renderMessage: (ChatMessage) -> ChatMessage): Boolean {
+            if (ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk)) return false
+            val source = sourceOf(chunk)
+            if (source !in projections) {
+                projections[source] = ChatMemoryIndexPolicy.buildTurns(read(source).map(renderMessage))
+                    .singleOrNull()?.let(::ChatMemoryProjection)
+            }
+            return projections[source]?.matches(chunk) == true
+        }
+
         private suspend fun proofFor(chunk: VectorChunk): String? {
+            val source = sourceOf(chunk)
+            if (source !in proofs) {
+                proofs[source] = read(source).filter(ChatMemoryIndexPolicy::contributesToIndex)
+                    .takeIf { it.isNotEmpty() }?.let(::replyMemorySourceProof)
+            }
+            return proofs[source]
+        }
+
+        private fun sourceOf(chunk: VectorChunk): ReplyMemorySource {
             val sourceTurnId = chunk.metadata["sourceTurnId"]?.takeIf(String::isNotBlank)
             val ids = if (sourceTurnId == null) chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) else emptySet()
-            val source = ReplyMemorySource(sourceTurnId, ids)
-            if (source in proofs) return proofs[source]
-            val messages = if (sourceTurnId != null) {
-                chat.getMessagesForSourceTurn(sessionId, sourceTurnId)
-            } else {
-                ids.mapNotNull { chat.getMessage(it, sessionId) }.sortedWith(ChatMessage.TimelineComparator)
-                    .takeIf { it.size == ids.size }.orEmpty()
-            }
-            return messages.takeIf { it.isNotEmpty() }?.let(::replyMemorySourceProof).also { proofs[source] = it }
+            return ReplyMemorySource(sourceTurnId, ids)
+        }
+
+        private suspend fun read(source: ReplyMemorySource): List<ChatMessage> {
+            source.sourceTurnId?.let { return chat.getMessagesForSourceTurn(sessionId, it) }
+            val messages = source.messageIds.mapNotNull { chat.getMessage(it, sessionId) }
+            if (messages.size != source.messageIds.size) return emptyList()
+            val assignedTurn = messages.map(ChatMessage::sourceTurnId).distinct().singleOrNull()
+            return assignedTurn?.let { chat.getMessagesForSourceTurn(sessionId, it) }
+                ?: messages.sortedWith(ChatMessage.TimelineComparator)
         }
     }
 
@@ -231,7 +282,6 @@ internal class ReplyRemovalCoordinator(
         messages.forEach { message ->
             add(message.id)
             add(message.role.name)
-            add(MessageAlternativeVersionPolicy.activeVersionId(message))
             add(message.displayContent)
         }
         return digest.digest().joinToString("") { "%02x".format(it) }

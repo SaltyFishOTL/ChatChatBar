@@ -121,16 +121,16 @@ class RagRepository(private val storage: JsonFileStorage) {
     }
 
     /** 新T块保存成功后清理同来源旧自动块；手动块和长期记忆旧块不受影响。 */
-    suspend fun deleteSupersededAutomaticChatMemory(
+    internal suspend fun deleteSupersededAutomaticChatMemory(
         sessionId: String,
         sourceTurnId: String?,
         messageIds: Set<String>,
         keepChunkIds: Set<String>,
-        keepCurrentContents: Map<String, String> = emptyMap()
+        keepCurrent: ChatMemoryProjection? = null
     ): Int {
         val chunks = getAllChunksForSession(sessionId)
         val currentIds = chunks.filter { chunk ->
-            keepCurrentContents[chunk.id] == chunk.content && !ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk)
+            keepCurrent?.matches(chunk) == true
         }.map { it.id }
         val idsToDelete = automaticChatMemoryChunkIdsToReplace(
             chunks = chunks,

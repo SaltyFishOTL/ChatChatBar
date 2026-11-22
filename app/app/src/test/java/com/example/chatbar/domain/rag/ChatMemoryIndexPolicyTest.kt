@@ -226,6 +226,26 @@ class ChatMemoryIndexPolicyTest {
         assertFalse(ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk("manual", "1")))
     }
 
+    @Test
+    fun projectionAcceptsCurrentRestoredChunksAndRejectsRetiredContent() {
+        val reply = message("reply", MessageRole.ASSISTANT, "The surviving answer", sourceTurnId = "turn-1")
+        val turn = ChatMemoryIndexPolicy.buildTurns(listOf(reply)).single()
+        val projection = ChatMemoryProjection(turn)
+        val active = chunk(ChatMemoryIndexPolicy.INDEX_MODE, ChatMemoryIndexPolicy.CONTENT_VERSION)
+        val restored = active.copy(
+            id = "remapped-archive-id",
+            messageId = reply.id,
+            content = ChatMemoryIndexPolicy.contentForIndex(turn),
+            metadata = active.metadata + mapOf("sourceTurnId" to "turn-1", "chunkIndex" to "0")
+        )
+
+        assertTrue(projection.matches(restored))
+        assertTrue(projection.matches(restored.copy(metadata = restored.metadata - "sourceTurnId")))
+        assertFalse(projection.matches(restored.copy(content = "assistant:\nThe retired answer")))
+        assertFalse(projection.matches(restored.copy(metadata = restored.metadata + ("messageIds" to "foreign"))))
+        assertFalse(projection.matches(restored.copy(metadata = restored.metadata + ("chunkIndex" to "1"))))
+    }
+
     private fun chunk(indexMode: String, version: String) = VectorChunk(
         id = "$indexMode-$version",
         sourceType = ChunkSourceType.CHAT_MEMORY,

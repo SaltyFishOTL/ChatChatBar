@@ -59,6 +59,7 @@ Do not move behavior between these owners without tracing every caller and test.
 
 ## RAG Rendering
 
+- After ranking, recheck automatic chat-memory candidates against the live rendered turn and stored chunk before adding them to the request. A format edit can persist before asynchronous re-embedding finishes.
 - Partition cards by ChunkSourceType, not display labels.
 - Render non-CHAT_MEMORY cards before CHAT_MEMORY cards.
 - Inject RAG_CHAT_MEMORY_USAGE_NOTE once, immediately before the first memory card.

@@ -155,6 +155,26 @@ class ReplyRagPublicationRuntimeTest {
         }
     }
 
+    @Test fun persistedFormatToggleDoesNotRecallOldIndexBeforeRebuild() = withFixture {
+        assertTrue(rebuild())
+        val coordinator = app.replyRemovalCoordinator
+        val cached = coordinator.getChunksForRetrieval(null, session.id)
+        assertTrue(cached.any { it.content.contains(REPAIRED) })
+        val current = requireNotNull(app.chatRepository.getMessage(reply.id, session.id))
+        val undone = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(current))
+        assertNotNull(app.chatRepository.updateMessageIfUnchanged(current, undone))
+
+        val disk = RagRepository(JsonFileStorage(app)).getAllChunksForSession(session.id)
+        assertTrue(disk.any { it.content.contains(REPAIRED) })
+        assertTrue(coordinator.selectCurrentRecallIds(session.id, cached, 10) { it }.isEmpty())
+
+        assertTrue(rebuild())
+        val rebuilt = coordinator.getChunksForRetrieval(null, session.id)
+        val admitted = coordinator.selectCurrentRecallIds(session.id, rebuilt, 10) { it }
+        assertTrue(rebuilt.any { it.id in admitted && it.content.contains(ORIGINAL) })
+        assertFalse(rebuilt.any { it.id in admitted && it.content.contains(REPAIRED) })
+    }
+
     private fun withFixture(block: suspend Fixture.() -> Unit) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) {

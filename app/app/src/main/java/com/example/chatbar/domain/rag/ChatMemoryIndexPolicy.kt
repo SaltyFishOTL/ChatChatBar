@@ -18,6 +18,22 @@ data class ChatMemoryTurn(
         ?: messages.last()
 }
 
+internal class ChatMemoryProjection(turn: ChatMemoryTurn) {
+    private val messageIds = turn.messageIds
+    private val sourceTurnId = turn.sourceTurnId
+    private val contents = ChatMemoryIndexPolicy.contentsForIndex(turn)
+
+    fun matches(chunk: VectorChunk): Boolean {
+        if (chunk.metadata["indexMode"] != ChatMemoryIndexPolicy.INDEX_MODE ||
+            ChatMemoryIndexPolicy.needsAutomaticRebuild(chunk) ||
+            chunk.metadata["sourceTurnId"]?.takeIf(String::isNotBlank)?.let { it != sourceTurnId } == true ||
+            chunk.metadataMessageIds() + listOfNotNull(chunk.messageId) != messageIds) return false
+
+        val index = chunk.metadata["chunkIndex"] ?: return chunk.content in contents
+        return index.toIntOrNull()?.let(contents::getOrNull) == chunk.content
+    }
+}
+
 object ChatMemoryIndexPolicy {
     const val INDEX_MODE = "timeline_turn"
     const val CONTENT_VERSION = "7"

@@ -61,6 +61,7 @@ import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.ChatMemoryProjection
 import com.example.chatbar.domain.rag.ChatMemoryTurn
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
@@ -2975,10 +2976,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                             topDocCandidates.take(5).joinToString(", ") { "%.4f".format(it.combinedScore) }
                                     )
                                 }
-                                val topMemChunks = rankedMemChunks.filter {
+                                val eligibleMemChunks = rankedMemChunks.filter {
                                     it.vectorScore >= appSettings.memoryRagSimilarityThreshold ||
                                         it.lexicalScore >= MEMORY_LEXICAL_ACCEPT_THRESHOLD
-                                }.take(appSettings.memoryRagTopK)
+                                }
+                                val currentRecallIds = replyRemovalCoordinator.selectCurrentRecallIds(
+                                    sessionId, eligibleMemChunks.map { it.chunk }, appSettings.memoryRagTopK
+                                ) { PlaceholderRenderer.renderMessage(it, activePlayerNameOrNull, charCard.effectiveBotName) }
+                                val topMemChunks = eligibleMemChunks.filter { it.chunk.id in currentRecallIds }
                                 if (rankedDocChunks.isNotEmpty()) {
                                     ragDebugLogs.add(
                                         "Document multi-route top scores: " +
@@ -3893,11 +3898,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         replyRemovalCoordinator.publishReplyMemory(
             sessionId, revision, live.sourceTurnId, turn?.messageIds.orEmpty() + messageId, emptyList(),
             sourceMessages = sourceMessages,
-            keepCurrentContents = indexableTurn?.let { current ->
-                ChatMemoryIndexPolicy.contentsForIndex(current).mapIndexed { index, content ->
-                    chatMemoryChunkId(sessionId, current.identityKey, index) to content
-                }.toMap()
-            }.orEmpty()
+            keepCurrent = turn?.let(::ChatMemoryProjection)
         )
     }
 
@@ -4338,7 +4339,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                   fishAudioCoordinator.cancelAndJoinForSession(sessionId)
                   val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
-                  val status = replyRemovalCoordinator.withRestoredReplyMemory(sessionId) { prepareChunk ->
+                  val restoredRenderContext = placeholderRenderContext(curSession.copy(playerName = slot.playerName))
+                  val status = replyRemovalCoordinator.withRestoredReplyMemory(
+                      sessionId, { it.renderWith(restoredRenderContext) }
+                  ) { prepareChunk ->
                       if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
                           slot.packageRef != null
                       ) {
@@ -4402,13 +4406,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                               materializedSlot.voiceMessages,
                               materializedSlot.messages
                           )
-                          ChatBarApp.instance.ragRepository.deleteChunksBySource(
-                              ChunkSourceType.CHAT_MEMORY,
-                              sessionId
-                          )
-                           ChatBarApp.instance.ragRepository.saveChunks(
-                               materializedSlot.vectorChunks.map { prepareChunk(it) }
-                           )
+                          chatRepository.withStableMessageTimeline {
+                              ChatBarApp.instance.ragRepository.deleteChunksBySource(ChunkSourceType.CHAT_MEMORY, sessionId)
+                              ChatBarApp.instance.ragRepository.saveChunks(materializedSlot.vectorChunks.mapNotNull { prepareChunk(it) })
+                          }
                           chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
                           longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
                       } catch (error: Throwable) {
@@ -4450,7 +4451,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private suspend fun loadPackagedSaveSlot(
         curSession: ChatSession,
         slot: SaveSlot,
-        prepareChunk: suspend (VectorChunk) -> VectorChunk
+        prepareChunk: suspend (VectorChunk) -> VectorChunk?
     ): String {
         val currentImages = linkedSetOf<String>()
         chatRepository.forEachMessage(sessionId) { message ->
@@ -4480,8 +4481,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在提交会话状态…", false)
                 withContext(NonCancellable) {
                     voiceMessageRepository.restoreForSession(sessionId, restoredVoices)
-                    ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
-                        reader.streamRag(sessionId) { emit(prepareChunk(it)) }
+                    chatRepository.withStableMessageTimeline {
+                        ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
+                            reader.streamRag(sessionId) { chunk -> prepareChunk(chunk)?.let { emit(it) } }
+                        }
                     }
                     val messageState = chatRepository.getSession(sessionId) ?: curSession
                     chatRepository.updateSession(
