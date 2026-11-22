@@ -2374,12 +2374,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         if (_isResponding.value) return
         viewModelScope.launch {
             try {
+                val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
                 val changed = (if (redo) MessageFormatRepairPolicy.redoRepair(message)
                     else MessageFormatRepairPolicy.restoreOriginal(message)) ?: return@launch
-                check(chatRepository.updateMessageIfUnchanged(message, changed) != null) { "消息已变化，请重新操作" }
+                val persisted = checkNotNull(chatRepository.updateMessageIfUnchanged(message, changed, timelineRevision)) {
+                    "消息已变化，请重新操作"
+                }
                 replaceMessagesFromRepository()
-                refreshMemoryAfterMessageEdit(changed)
+                refreshMemoryAfterMessageEdit(persisted)
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { _messageActionError.value = error.message ?: "保存失败" }
         }
