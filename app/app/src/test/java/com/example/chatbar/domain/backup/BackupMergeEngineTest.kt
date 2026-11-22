@@ -174,7 +174,8 @@ class BackupMergeEngineTest {
         assertEquals(copiedMessage.id, copiedAnchor.messageId)
         assertEquals(copied.id, copiedAnchor.sessionId)
         assertEquals(copiedVoice.anchorId, copiedAnchor.anchors.single().id)
-        assertTrue(File(staged, "entities/voice_anchor_states/${copiedMessage.id}.json").isFile)
+        val copiedAnchorKey = com.example.chatbar.domain.voice.VoiceAnchorStateKey(copiedAnchor)
+        assertTrue(File(staged, "entities/voice_anchor_states/${copiedAnchorKey.storageId}.json").isFile)
     }
 
     @Test fun partialSettingsAndUnselectedCredentialsRemainLocalInBothIncrementalModes() {

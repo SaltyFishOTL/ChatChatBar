@@ -40,11 +40,14 @@ class VoiceMessageVersionPolicyTest {
     fun `anchor reconciliation changes only matching message version`() {
         val voices = listOf(
             voice(id = "voice-1", versionId = "v1", sourceText = "第一句", anchorId = "a1"),
-            voice(id = "voice-2", versionId = "v2", sourceText = "第二句", anchorId = "a2")
+            voice(id = "voice-2", versionId = "v2", sourceText = "第二句", anchorId = "a2"),
+            voice(id = "other-voice", versionId = "v2", sourceText = "第二句", anchorId = "a2")
+                .copy(sessionId = "other-session")
         )
 
         val updated = VoiceMessageVersionPolicy.applyAnchorReplacements(
             voices = voices,
+            sessionId = "session-1",
             messageId = "message-1",
             messageVersionId = "v2",
             replacements = mapOf("a2" to null),
@@ -55,6 +58,7 @@ class VoiceMessageVersionPolicyTest {
         assertNull(updated[1].anchorId)
         assertEquals(1, updated[0].updatedAt)
         assertEquals(20, updated[1].updatedAt)
+        assertEquals(voices[2], updated[2])
     }
 
     @Test

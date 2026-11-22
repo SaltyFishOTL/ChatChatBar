@@ -41,7 +41,7 @@ internal class SessionCopyService(
                     val source = chatRepository.getSession(sourceId) ?: error("会话已不存在")
                     val ids = chatRepository.getMessageIds(sourceId)
                     val voices = voiceRepository.listForSession(sourceId)
-                    val anchors = voiceRepository.snapshotAnchorsForMessages(ids)
+                    val anchors = voiceRepository.snapshotAnchorsForMessages(sourceId, ids)
                     val draft = chatRepository.getSessionDraft(sourceId)
                     val targetId = UUID.randomUUID().toString()
                     val policy = SessionCopyPolicy(targetId, ids)

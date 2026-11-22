@@ -440,7 +440,7 @@ class ReplyRemovalDurabilityTest {
                 assertEquals(!replaceImage, File(message.images.single()).isFile)
             } else {
                 assertNull(cold.voices.get(voice.id))
-                assertFalse(cold.voices.snapshotAnchorsForMessages(setOf(message.id)).any { it.messageVersionId == target })
+                assertFalse(cold.voices.snapshotAnchorsForMessages(session.id, setOf(message.id)).any { it.messageVersionId == target })
                 assertFalse(File(voice.audioPath).exists())
                 assertEquals(versionOnly, File(message.images.single()).isFile)
                 if (!versionOnly) {

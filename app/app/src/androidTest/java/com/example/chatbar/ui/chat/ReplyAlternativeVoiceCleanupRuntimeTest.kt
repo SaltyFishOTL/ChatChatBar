@@ -370,7 +370,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             val rejected = runCatching { voices.deleteForVersion(message, removedId) { false } }
             assertTrue(rejected.exceptionOrNull() is IllegalStateException)
             assertEquals(voice, voices.get(voice.id))
-            assertTrue(voices.snapshotAnchorsForMessages(setOf(message.id)).isEmpty())
+            assertTrue(voices.snapshotAnchorsForMessages(message.sessionId, setOf(message.id)).isEmpty())
             val afterCas = CompletableDeferred<Unit>()
             val finishCommit = CompletableDeferred<Unit>()
             val attempt = CompletableDeferred<Unit>()
@@ -398,7 +398,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             assertTrue(withTimeout(15_000) { ui.await() }.isEmpty())
             val cold = VoiceMessageRepository(JsonFileStorage(context))
             assertTrue(cold.listForSession(message.sessionId).isEmpty())
-            assertFalse(cold.snapshotAnchorsForMessages(setOf(message.id)).any { it.messageVersionId == removedId })
+            assertFalse(cold.snapshotAnchorsForMessages(message.sessionId, setOf(message.id)).any { it.messageVersionId == removedId })
         } finally { root.deleteRecursively() }
     } }
 
@@ -509,7 +509,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
             }
             val cold = VoiceMessageRepository(JsonFileStorage(app))
             val coldVoices = cold.listForSession(session.id)
-            val coldAnchors = cold.snapshotAnchorsForMessages(setOf(reply.id, other.id))
+            val coldAnchors = cold.snapshotAnchorsForMessages(session.id, setOf(reply.id, other.id))
             if (missing) {
                 assertEquals(setOfNotNull(removedVoice.id, survivor?.id, independent.id), coldVoices.map { it.id }.toSet())
                 assertTrue(deletedAudio.exists())
@@ -558,13 +558,13 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                     app.chatRepository.getMessage(reply.id, session.id)
                 } } catch (_: IllegalStateException) { rejected = true }
                 assertTrue("Late anchor resolution must be rejected", rejected)
-                assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(setOf(reply.id))
+                assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(session.id, setOf(reply.id))
                     .any { it.messageVersionId == deletedVersion.id })
             }
             if (staleUi) {
                 assertTrue(app.voiceMessageRepository.placementsForMessage(reply).isEmpty())
                 assertTrue(app.voiceMessageRepository.listForCurrentVersion(reply).isEmpty())
-                assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(setOf(reply.id))
+                assertFalse(VoiceMessageRepository(JsonFileStorage(app)).snapshotAnchorsForMessages(session.id, setOf(reply.id))
                     .any { it.messageVersionId == deletedVersion.id })
             }
             val plan = BackupExportCatalog.read(app.filesDir) {}.plan(AppBackupSelection(

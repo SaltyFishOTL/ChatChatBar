@@ -202,7 +202,13 @@ class JsonFileStorage(private val context: Context) {
     suspend fun <T : Any> loadAll(
         entityType: String,
         serializer: KSerializer<T>
-    ): List<T> = mutexFor(entityType).withStorageAccess {
+    ): List<T> = loadAllById(entityType, serializer).values.toList()
+
+    @OptIn(ExperimentalSerializationApi::class)
+    internal suspend fun <T : Any> loadAllById(
+        entityType: String,
+        serializer: KSerializer<T>
+    ): Map<String, T> = mutexFor(entityType).withStorageAccess {
         withContext(Dispatchers.IO) {
             val dir = entityDir(entityType)
             val entities = mutableMapOf<String, T>()
@@ -219,7 +225,7 @@ class JsonFileStorage(private val context: Context) {
             val flow = getCacheFlow<T>(entityType)
             flow.value = entities
 
-            entities.values.toList()
+            entities
         }
     }
 

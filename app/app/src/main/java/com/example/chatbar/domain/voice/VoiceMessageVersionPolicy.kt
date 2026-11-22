@@ -20,6 +20,7 @@ object VoiceMessageVersionPolicy {
 
     fun applyAnchorReplacements(
         voices: List<GeneratedVoiceMessage>,
+        sessionId: String,
         messageId: String,
         messageVersionId: String,
         replacements: Map<String, String?>,
@@ -27,6 +28,7 @@ object VoiceMessageVersionPolicy {
     ): List<GeneratedVoiceMessage> = voices.map { voice ->
         val anchorId = voice.anchorId
         if (
+            voice.sessionId != sessionId ||
             voice.messageId != messageId ||
             voice.messageVersionId != messageVersionId ||
             anchorId == null ||
@@ -100,6 +102,23 @@ object VoiceMessageVersionPolicy {
         return (sameSpeaker.ifEmpty { sameText }.ifEmpty { sameKind })
             .minByOrNull { abs(it.sourceOrder - voice.sourceOrder) }
             ?.id
+    }
+
+    internal fun archivedAnchorIdForVoice(
+        voice: GeneratedVoiceMessage,
+        state: VoiceAnchorState
+    ): String? {
+        val archivedAnchorId = voice.anchorId ?: return null
+        if (voice.sessionId != state.sessionId || voice.messageId != state.messageId ||
+            voice.messageVersionId != state.messageVersionId ||
+            voice.sourceSegmentKind == VoiceGenerationPolicy.WHOLE_MESSAGE_SOURCE_KIND) return null
+        fun matchesSource(anchor: VoiceAnchor): Boolean = with(anchor) {
+            segmentKind == voice.sourceSegmentKind &&
+                normalize(speakerName.orEmpty()) == normalize(voice.sourceSpeakerName) &&
+                normalize(sourceText) == normalize(voice.sourceText)
+        }
+        state.anchors.firstOrNull { it.id == archivedAnchorId }?.let { return it.takeIf(::matchesSource)?.id }
+        return state.anchors.singleOrNull(::matchesSource)?.id
     }
 
     private fun versionContainsVoice(

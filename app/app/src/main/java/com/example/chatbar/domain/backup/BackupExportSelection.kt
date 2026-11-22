@@ -207,6 +207,7 @@ class BackupExportCatalog internal constructor(
             (if (chats.isNotEmpty() || selection.studioSettings || selection.moments) sourceSettings?.strings("defaultModelId").orEmpty() +
                 sourceSettings?.strings("defaultImageModelId").orEmpty() else emptySet())
         val documentIds = cards.flatMap { it.strings("customDocuments.id") }.toSet()
+        val messageOwners = records.filter { it.type == "chat_messages" }.groupBy { it.id }
         val selectedRecords = records.filter { record ->
             when (record.type) {
                 "app_settings" -> settingsFields.isNotEmpty() || selection.sessions.isNotEmpty() || selection.moments
@@ -219,7 +220,7 @@ class BackupExportCatalog internal constructor(
                 "format_cards" -> "resources" in selection.globalOptions || record.id in formatIds
                 "world_books" -> "resources" in selection.globalOptions || record.id in worldIds
                 "generated_voice_messages", "voice_anchor_states" -> selection.sessions[record.string("sessionId")?.takeIf { it.isNotBlank() }
-                    ?: records.firstOrNull { it.type == "chat_messages" && it.id == record.string("messageId") }?.string("sessionId")]?.voice == true
+                    ?: messageOwners[record.string("messageId")]?.singleOrNull()?.string("sessionId")]?.voice == true
                 "save_slots" -> selection.sessions[record.string("sessionId")]?.archives == true
                 "vector_chunks" -> record.string("sourceId") in selection.sessions || record.string("sourceId") in selection.characterIds ||
                     record.string("sourceId") in documentIds

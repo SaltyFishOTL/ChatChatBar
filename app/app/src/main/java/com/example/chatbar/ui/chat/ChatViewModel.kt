@@ -4499,7 +4499,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 messagesCommitted = true
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在提交会话状态…", false)
                 withContext(NonCancellable) {
-                    voiceMessageRepository.restoreForSession(sessionId, restoredVoices)
+                    voiceMessageRepository.restorePackagedForSession(sessionId, restoredVoices)
                     chatRepository.withStableMessageTimeline {
                         ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
                             reader.streamRag(sessionId) { chunk -> prepareChunk(chunk)?.let { emit(it) } }

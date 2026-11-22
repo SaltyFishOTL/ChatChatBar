@@ -2,6 +2,7 @@ package com.example.chatbar.domain.backup
 
 import com.example.chatbar.data.local.entity.AppSettings
 import com.example.chatbar.data.local.entity.withCurrentWebSearchDefaults
+import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import java.io.File
 import java.io.InputStream
 import java.io.OutputStream
@@ -164,9 +165,9 @@ internal class BackupMergeEngine(
         val importedPaths = imported.associateBy { it.relative }
         val replacedSessions = targets.filterKeys { key -> importedPaths[key]?.type == "chat_sessions" }
             .values.mapNotNull { it.id }.toSet()
-        val currentMessages = current.filter { it.type == "chat_messages" }.associateBy { it.id }
+        val currentMessages = current.filter { it.type == "chat_messages" }.groupBy { it.id }
         fun owner(record: BackupMergeRecord): String? = record.sessionId?.takeIf(String::isNotBlank)
-            ?: if (record.type == "voice_anchor_states") currentMessages[record.text("messageId")]?.sessionId else null
+            ?: if (record.type == "voice_anchor_states") currentMessages[record.text("messageId")]?.singleOrNull()?.sessionId else null
         val sourceSessions = imported.filter { it.type == "chat_sessions" }.associateBy { identity.value("chat_sessions", requireNotNull(it.id)) }
         val incomingFamilies = imported.mapNotNull { record -> record.sessionId?.let { record.type to it } }.toSet()
         fun includeFamily(type: String, session: String): Boolean {
@@ -446,9 +447,9 @@ internal class BackupMergeEngine(
         if (record.type == "chat_messages") return "entities/chat_messages/${identity.value("chat_sessions", requireNotNull(record.sessionId))}_${identity.value(record.type, requireNotNull(record.id))}.json"
         if (record.type == "voice_anchor_states") {
             val message = identity.value("chat_messages", requireNotNull(record.text("messageId")))
-            val version = record.text("messageVersionId")
-            val id = if (version == null) message else UUID.nameUUIDFromBytes("$message\u0000$version".toByteArray(Charsets.UTF_8)).toString()
-            return "entities/${record.type}/$id.json"
+            val session = record.sessionId?.takeIf(String::isNotBlank)?.let { identity.value("chat_sessions", it) }.orEmpty()
+            val key = VoiceAnchorStateKey(session, message, record.text("messageVersionId"))
+            return "entities/${record.type}/${key.storageId}.json"
         }
         if (record.singleton && record.type !in setOf("retrieval_model_config", "embedding_model_config")) return record.relative
         val id = record.id?.let { identity.value(record.type, it) } ?: record.sessionId?.let { identity.value("chat_sessions", it) }
