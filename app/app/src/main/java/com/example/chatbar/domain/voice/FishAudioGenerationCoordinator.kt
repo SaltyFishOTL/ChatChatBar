@@ -285,7 +285,7 @@ class FishAudioGenerationCoordinator(
                     storage.deleteIfOwned(audio.path)
                     throw error
                 }
-                storage.deleteIfOwned(existing.audioPath)
+                prunePreviousAudio(existing.audioPath)
                 removeBatch(batchId)
                 finishAutoPlay(batchId, listOf(replacement))
             } catch (cancelled: CancellationException) {
@@ -437,7 +437,18 @@ class FishAudioGenerationCoordinator(
     fun deleteVoice(voiceId: String) {
         scope.launch {
             voiceRepository.delete(voiceId, removeFromPlayback = playback::removeQueuedVoices)
-                ?.let { storage.deleteIfOwned(it.audioPath) }
+                ?.let { prunePreviousAudio(it.audioPath) }
+        }
+    }
+
+    private suspend fun prunePreviousAudio(path: String) {
+        try {
+            voiceRepository.pruneUnreferencedAudio(listOf(path)) { storage.deleteIfOwned(it) }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // A committed recording change stays available if reference scanning fails.
+            android.util.Log.w("FishAudio", "Unable to check references for recording cleanup")
         }
     }
 

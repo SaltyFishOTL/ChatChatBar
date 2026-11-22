@@ -26,7 +26,7 @@ Whole-app .cbbackup is independent; use chatbar-app-backup. Per-session archive 
 
 ## Package Contract
 
-- Schema 8 uses a ZIP `.cbsave`: `manifest.json`, line-delimited `messages.jsonl`, `rag.jsonl`, optional `voices.jsonl`, and media beneath `media/images/` or `media/audio/`.
+- Schema 8 uses a ZIP `.cbsave`: `manifest.json`, line-delimited `messages.jsonl`, `rag.jsonl`, optional `voices.jsonl` and `voice_anchors.jsonl`, and media beneath `media/images/` or `media/audio/`. Voice anchors carry the exact written reply layout and are keyed by the archived session, message, and stable version. Importing into another session changes the outer owner and rebinds archived layout during restore. `.cbbackup` merge remaps both message and voice-anchor owners inside the package.
 - Keep manifest lists empty for v8; `SaveSlotPackageRef` owns counts and package metadata. Old schema 1–7 remains inline JSON and decode-compatible.
 - Summary listing must parse only lightweight top-level fields. Do not deserialize old Base64 media to show the SaveSlot list or export an unchanged legacy archive.
 - Detect import format from stream bytes, not filename or MIME type. Export v8 as `.cbsave`; retain legacy JSON export.

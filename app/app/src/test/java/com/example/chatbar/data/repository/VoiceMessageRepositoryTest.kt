@@ -6,11 +6,18 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.FishAudioVoiceBinding
 import com.example.chatbar.data.local.entity.GeneratedVoiceMessage
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.data.local.entity.SaveSlot
+import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.local.entity.VoiceAnchorState
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
+import com.example.chatbar.domain.chat.SaveSlotPackageStorage
+import com.example.chatbar.domain.voice.FishAudioStoredAudio
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import java.io.File
+import java.util.zip.ZipEntry
+import java.util.zip.ZipFile
+import java.util.zip.ZipOutputStream
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -72,6 +79,102 @@ class VoiceMessageRepositoryTest {
     }
 
     @Test
+    fun `v8 export import restore preserves two identical recorded segments with their own bytes`() = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val storage = JsonFileStorage(context)
+        val chats = ChatRepository(storage)
+        val voices = VoiceMessageRepository(storage, chats::getMessage)
+        val packages = SaveSlotPackageStorage(context)
+        val reply = chats.addMessage(MessageAlternativeVersionPolicy.append(
+            ChatMessage.create("source", MessageRole.ASSISTANT, "Earlier reply"),
+            "<n=\"甲\"/>[Repeated line]()\n<n=\"甲\"/>[Repeated line]()", "saved-version"
+        ))
+        val version = MessageAlternativeVersionPolicy.activeVersion(reply)
+        val repeated = voices.ensureAnchors(reply).filter { it.segment.spokenText == "Repeated line" }
+        assertEquals(2, repeated.size)
+        val clips = repeated.mapIndexed { index, segment ->
+            val audio = File(context.filesDir, "original-$index.mp3").apply { writeText("clip $index") }
+            recording(reply, "clip-$index", segment.segment.spokenText, segment.anchor.id)
+                .copy(sourceOrder = segment.anchor.sourceOrder, audioPath = audio.path, byteLength = audio.length())
+        }
+        clips.forEach { voices.save(it) }
+        val anchors = voices.snapshotAnchorsForMessages(reply.sessionId, setOf(reply.id))
+        suspend fun archive(name: String, anchorStates: List<VoiceAnchorState>, includeAudio: Boolean = true): SaveSlot =
+            packages.createPackage(
+                SaveSlot.create(reply.sessionId, name), SaveSlotImagePolicy.NONE, includeAudio,
+                messageSource = { emit -> chats.forEachMessage(reply.sessionId, action = emit) },
+                ragSource = {}, voices = clips, voiceAnchors = anchorStates
+            )
+
+        val modern = archive("layout", anchors)
+        val oldV8 = archive("legacy v8", emptyList())
+        val withoutAudio = archive("without audio", anchors, includeAudio = false)
+        fun hasAnchorEntry(slot: SaveSlot): Boolean = ZipFile(File(context.filesDir,
+            "save_slot_packages/${requireNotNull(slot.packageRef).fileName}")).use {
+                it.getEntry("voice_anchors.jsonl") != null
+            }
+        assertTrue(hasAnchorEntry(modern))
+        assertFalse(hasAnchorEntry(oldV8))
+        assertFalse(hasAnchorEntry(withoutAudio))
+        val corrupt = temp.newFile("duplicate-anchors.cbsave")
+        val modernFile = File(context.filesDir, "save_slot_packages/${requireNotNull(modern.packageRef).fileName}")
+        ZipFile(modernFile).use { original ->
+            ZipOutputStream(corrupt.outputStream()).use { output ->
+                for (entry in original.entries()) {
+                    output.putNextEntry(ZipEntry(entry.name))
+                    original.getInputStream(entry).use { it.copyTo(output) }
+                    if (entry.name == "voice_anchors.jsonl") original.getInputStream(entry).use { it.copyTo(output) }
+                    output.closeEntry()
+                }
+            }
+        }
+        val rejected = corrupt.inputStream().use { input ->
+            runCatching { packages.importPackage(input, "unselected-target") { it } }.exceptionOrNull()
+        }
+        assertTrue(rejected is IllegalArgumentException && rejected.message.orEmpty().contains("重复语音锚点"))
+
+        val remaining = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, version.id))
+        val removed = voices.deleteForVersion(reply, version.id) {
+            chats.updateMessageIfUnchanged(reply, remaining) != null
+        }
+        assertEquals(clips.toSet(), removed.toSet())
+        assertTrue(voices.snapshotAnchorsForMessages(reply.sessionId, setOf(reply.id)).isEmpty())
+
+        suspend fun restore(packageSlot: SaveSlot, target: String): List<VoiceMessagePlacement> {
+            val exported = File(context.filesDir, "$target-export.cbsave")
+            exported.outputStream().use { packages.export(packageSlot, it) }
+            val imported = exported.inputStream().use { packages.importPackage(it, target) { it }.slot }
+            packages.openReader(imported).use { reader ->
+                reader.validate()
+                val restoredVoices = reader.restoreVoices(target) { sessionId, resourceId, input ->
+                    val path = File(context.filesDir, "$sessionId-$resourceId.mp3")
+                    path.outputStream().use { input.copyTo(it) }
+                    FishAudioStoredAudio(path.path, 1_000, path.length())
+                }
+                chats.replaceMessagesForSessionStreaming(target) { emit -> reader.streamMessages(target, emit) }
+                voices.restorePackagedForSession(target, restoredVoices) { emit -> reader.streamVoiceAnchors(target, emit) }
+            }
+            val coldChats = ChatRepository(JsonFileStorage(context))
+            val cold = VoiceMessageRepository(JsonFileStorage(context), coldChats::getMessage)
+            val message = requireNotNull(coldChats.getMessage(reply.id, target))
+            assertEquals(version.id, MessageAlternativeVersionPolicy.activeVersionId(message))
+            return cold.placementsForMessage(message)
+        }
+
+        for (target in listOf(reply.sessionId, "copied-session")) {
+            val restored = restore(modern, target)
+            assertEquals(repeated.map { it.segment.segmentIndex }, restored.map { it.segmentIndex })
+            assertEquals(repeated.map { it.anchor.id }, restored.map { it.voice.anchorId })
+            assertEquals(listOf("clip 0", "clip 1"), restored.map { File(it.voice.audioPath).readText() })
+            assertTrue(restored.all { it.voice.sessionId == target && it.voice.versionOwnershipConfirmed })
+            assertTrue(restored.none { it.voice.id in clips.map(GeneratedVoiceMessage::id) })
+        }
+        val older = restore(oldV8, "old-v8-session")
+        assertEquals(listOf("clip 0", "clip 1"), older.map { File(it.voice.audioPath).readText() })
+        assertTrue(older.all { it.segmentIndex == null && it.voice.anchorId == null })
+    }
+
+    @Test
     fun `same imported message and version IDs keep session anchors independent after edit and cleanup`() = runBlocking {
         val context = TestContext(temp.newFolder())
         val storage = JsonFileStorage(context)
@@ -122,7 +225,8 @@ class VoiceMessageRepositoryTest {
         assertNull(voices.switchDisplayedVersion(shown.copy(content = "stale"), other, chats, evict))
         assertTrue(removals.isEmpty())
         val oldRevision = chats.messageTimelineRevision(shown.sessionId)
-        chats.addMessage(ChatMessage.create(shown.sessionId, MessageRole.USER, "A new turn"))
+        chats.replaceMessagesForSession(shown.sessionId, listOf(shown))
+        assertEquals(shown, chats.getMessage(shown.id, shown.sessionId))
         assertNull(voices.switchDisplayedVersion(shown, other, chats, evict, oldRevision))
         assertTrue(removals.isEmpty())
         val revision = chats.messageTimelineRevision(shown.sessionId)
@@ -144,6 +248,31 @@ class VoiceMessageRepositoryTest {
         assertEquals(listOf(setOf(first.id), setOf(second.id), setOf(first.id)), removals)
         assertEquals(independent, voices.get(independent.id))
         assertEquals(replacement, VoiceMessageRepository(storage).get(second.id))
+    }
+
+    @Test
+    fun `replacing or deleting one recording preserves bytes shared by another owner`() = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val voices = VoiceMessageRepository(JsonFileStorage(context))
+        val reply = ChatMessage.create("session", MessageRole.ASSISTANT, "Recorded reply")
+        val audio = File(context.filesDir, "audio/generated/session/shared.mp3").apply {
+            parentFile!!.mkdirs()
+            writeText("shared bytes")
+        }
+        val first = recording(reply, "first", reply.content, null).copy(audioPath = audio.path)
+        val second = recording(reply, "second", reply.content, null).copy(audioPath = audio.path)
+        voices.save(first)
+        voices.save(second)
+        val replacement = first.copy(audioPath = File(context.filesDir, "replacement.mp3").path)
+
+        voices.saveForExistingVersion(replacement, replacing = first) { reply }
+        voices.pruneUnreferencedAudio(listOf(first.audioPath)) { File(it).delete() }
+        assertEquals("shared bytes", audio.readText())
+        assertEquals(second, voices.get(second.id))
+        voices.delete(second.id)
+        voices.pruneUnreferencedAudio(listOf(second.audioPath)) { File(it).delete() }
+        assertFalse(audio.exists())
+        assertEquals(replacement, voices.get(first.id))
     }
 
     private fun recording(message: ChatMessage, id: String, text: String, anchor: String?) = GeneratedVoiceMessage.create(

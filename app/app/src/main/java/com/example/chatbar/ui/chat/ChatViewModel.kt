@@ -4270,6 +4270,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
                 },
                 voices = voices,
+                voiceAnchors = if (voices.isEmpty()) emptyList() else voiceMessageRepository.snapshotAnchorsForMessages(
+                    sessionId, voices.mapTo(mutableSetOf()) { it.messageId }
+                ),
                 onProgress = { status ->
                     _saveSlotOperation.value = SaveSlotOperationState(true, status, cancellable)
                 }
@@ -4479,7 +4482,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 messagesCommitted = true
                 _saveSlotOperation.value = SaveSlotOperationState(true, "正在提交会话状态…", false)
                 withContext(NonCancellable) {
-                    voiceMessageRepository.restorePackagedForSession(sessionId, restoredVoices)
+                    voiceMessageRepository.restorePackagedForSession(sessionId, restoredVoices) { emit ->
+                        reader.streamVoiceAnchors(sessionId, emit)
+                    }
                     chatRepository.withStableMessageTimeline {
                         ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
                             reader.streamRag(sessionId) { chunk -> prepareChunk(chunk)?.let { emit(it) } }

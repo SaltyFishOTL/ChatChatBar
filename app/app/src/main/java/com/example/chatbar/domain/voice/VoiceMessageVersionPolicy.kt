@@ -106,7 +106,8 @@ object VoiceMessageVersionPolicy {
 
     internal fun archivedAnchorIdForVoice(
         voice: GeneratedVoiceMessage,
-        state: VoiceAnchorState
+        state: VoiceAnchorState,
+        exactArchivedLayout: Boolean = false
     ): String? {
         val archivedAnchorId = voice.anchorId ?: return null
         if (voice.sessionId != state.sessionId || voice.messageId != state.messageId ||
@@ -117,7 +118,9 @@ object VoiceMessageVersionPolicy {
                 normalize(speakerName.orEmpty()) == normalize(voice.sourceSpeakerName) &&
                 normalize(sourceText) == normalize(voice.sourceText)
         }
-        state.anchors.firstOrNull { it.id == archivedAnchorId }?.let { return it.takeIf(::matchesSource)?.id }
+        val savedAnchor = state.anchors.firstOrNull { it.id == archivedAnchorId }
+        if (exactArchivedLayout) return savedAnchor?.id
+        savedAnchor?.let { return it.takeIf(::matchesSource)?.id }
         return state.anchors.singleOrNull(::matchesSource)?.id
     }
 

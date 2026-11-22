@@ -346,10 +346,14 @@ class VoiceMessageRepository(
     }
 
     internal suspend fun deleteUnownedReplyAudio(paths: List<String>, deleteAudio: (String) -> Boolean) {
-        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
-        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots")) { path ->
+        pruneUnreferencedAudio(paths) { path ->
             check(deleteAudio(path)) { "回复已删除，语音文件清理失败，将在重试时继续" }
         }
+    }
+
+    internal suspend fun pruneUnreferencedAudio(paths: List<String>, deleteAudio: (String) -> Unit) {
+        val candidates = paths.mapNotNullTo(linkedSetOf(), storage::canonicalMediaPath)
+        storage.deleteUnreferencedRegisteredMedia(candidates, setOf(VOICE_TYPE, "save_slots"), deleteAudio)
     }
 
     private suspend fun persistedReplyVoices(
@@ -484,24 +488,43 @@ class VoiceMessageRepository(
         replaceSessionVoicesLocked(sessionId, restored)
     }
 
-    /** v8 carries recording metadata and audio, but no separate anchor-state rows. */
-    suspend fun restorePackagedForSession(sessionId: String, voices: List<GeneratedVoiceMessage>) = mutex.withLock {
+    /** Modern v8 layouts carry exact anchor IDs; older packages use conservative placement recovery. */
+    suspend fun restorePackagedForSession(
+        sessionId: String,
+        voices: List<GeneratedVoiceMessage>,
+        streamAnchors: suspend (suspend (VoiceAnchorState) -> Unit) -> Unit = {}
+    ) = mutex.withLock {
         ensureInitializedLocked()
+        val archivedLayouts = mutableSetOf<VoiceAnchorStateKey>()
+        streamAnchors anchor@{ state ->
+            val key = VoiceAnchorStateKey(state)
+            check(key.sessionId == sessionId) { "恢复的语音锚点归属无效" }
+            val message = loadCurrentMessage?.invoke(state.messageId, sessionId)
+            val version = message?.let(MessageAlternativeVersionPolicy::versions)?.firstOrNull { it.id == state.messageVersionId }
+            check(version != null && version.content == state.displayContentSnapshot) { "恢复的语音锚点与回复内容不一致" }
+            // A later parser can change segmentation while the archived reply and recording remain valid.
+            if (!VoiceAnchorPolicy.hasExactLayout(state, version.content)) return@anchor
+            check(archivedLayouts.add(key)) { "恢复的语音锚点重复" }
+            if (anchorsByVersion[key] != state) saveAnchorLocked(key, state)
+        }
         val restored = voices.groupBy(GeneratedVoiceMessage::messageId).flatMap { (messageId, recordings) ->
             val message = loadCurrentMessage?.invoke(messageId, sessionId)
             val versions = message?.let(MessageAlternativeVersionPolicy::versions).orEmpty().associateBy { it.id }
             recordings.groupBy(GeneratedVoiceMessage::messageVersionId).flatMap { (versionId, versionVoices) ->
                 val version = versions[versionId]
-                val state = if (message != null && version != null && versionVoices.any { it.anchorId != null }) {
+                val key = VoiceAnchorStateKey(sessionId, messageId, versionId)
+                val exactArchivedLayout = key in archivedLayouts
+                val state = if (exactArchivedLayout) anchorsByVersion.getValue(key)
+                else if (message != null && version != null && versionVoices.any { it.anchorId != null }) {
                     ensureVersionAnchorsLocked(message, version.id, version.content)
-                    anchorsByVersion[VoiceAnchorStateKey(sessionId, messageId, version.id)]
+                    anchorsByVersion[key]
                 } else null
                 versionVoices.map { archived ->
                     val voice = archived.copy(sessionId = sessionId)
-                    val ownerKnown = voice.versionOwnershipConfirmed || message != null &&
+                    val ownerKnown = exactArchivedLayout || voice.versionOwnershipConfirmed || message != null &&
                         VoiceMessageVersionPolicy.compatibleVersionId(message, voice) == versionId
                     voice.copy(anchorId = state?.takeIf { ownerKnown }
-                        ?.let { VoiceMessageVersionPolicy.archivedAnchorIdForVoice(voice, it) })
+                        ?.let { VoiceMessageVersionPolicy.archivedAnchorIdForVoice(voice, it, exactArchivedLayout) })
                 }
             }
         }

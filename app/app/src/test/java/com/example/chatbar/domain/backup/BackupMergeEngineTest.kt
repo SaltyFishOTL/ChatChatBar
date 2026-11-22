@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.domain.image.*
 import com.example.chatbar.domain.memory.MemoryContinuityPolicy
 import com.example.chatbar.domain.memory.MemoryHashes
+import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipFile
@@ -508,16 +509,27 @@ class BackupMergeEngineTest {
         card(source, "card"); session(source, "session", "card")
         message(source, "message", "session", "正文")
         val slot = SaveSlot(schemaVersion = 8, id = "slot", sessionId = "session", name = "存档", createdAt = 12,
-            packageRef = SaveSlotPackageRef("slot.cbsave", messageCount = 1, imageCount = 1))
+            packageRef = SaveSlotPackageRef("slot.cbsave", messageCount = 1, imageCount = 1, audioCount = 1))
+        val archivedMessage = ChatMessage(id = "message", sessionId = "session", role = MessageRole.ASSISTANT,
+            content = "<n=\"人物\"/>[正文]()", currentAlternativeVersionId = "stable-version",
+            images = listOf("chatbar-save-slot-image:original"), createdAt = 1, updatedAt = 2)
+        val savedAnchors = VoiceAnchorPolicy.initialState(archivedMessage.id, archivedMessage.content,
+            archivedMessage.currentAlternativeVersionId, archivedMessage.sessionId, includeNarration = true)
+        val clip = GeneratedVoiceMessage.create(archivedMessage.sessionId, archivedMessage.id, "stable-version",
+            savedAnchors.anchors.single().id, 0, "DIALOGUE", "人物", "正文", taggedText = "正文",
+            characterId = "speaker", characterName = "人物", voice = FishAudioVoiceBinding("synthetic", "Synthetic"),
+            fishModelId = "synthetic", audioPath = "chatbar-save-slot-audio:voice", durationMs = 1_000, byteLength = 5)
         val bytes = ByteArray(65536) { (it % 251).toByte() }
         val packageFile = File(source, "save_slot_packages/slot.cbsave").also { it.parentFile!!.mkdirs() }
         ZipOutputStream(packageFile.outputStream()).use { out ->
             fun put(name: String, data: ByteArray) { out.putNextEntry(ZipEntry(name)); out.write(data); out.closeEntry() }
             put("manifest.json", backupJson.encodeToString(slot).toByteArray())
-            put("messages.jsonl", (backupJson.encodeToString(ChatMessage(id = "message", sessionId = "session", role = MessageRole.USER,
-                content = "正文", images = listOf("chatbar-save-slot-image:original"), createdAt = 1, updatedAt = 2)) + "\n").toByteArray())
+            put("messages.jsonl", (backupJson.encodeToString(archivedMessage) + "\n").toByteArray())
             put("rag.jsonl", byteArrayOf())
+            put("voices.jsonl", (backupJson.encodeToString(clip) + "\n").toByteArray())
+            put("voice_anchors.jsonl", (backupJson.encodeToString(savedAnchors) + "\n").toByteArray())
             put("media/images/original.png", bytes)
+            put("media/audio/voice.mp3", "audio".toByteArray())
         }
         write(source, "entities/save_slots/slot.json", backupJson.encodeToString(slot.copy(packageRef = slot.packageRef!!.copy(byteLength = packageFile.length()))))
         val (staged, _) = merge(local, incoming(source, local), AppBackupRestoreMode.ADD_COPIES)
@@ -532,6 +544,18 @@ class BackupMergeEngineTest {
             assertEquals(copied.sessionId, message.sessionId)
             assertNotEquals("message", message.id)
             assertEquals(listOf("chatbar-save-slot-image:original"), message.images)
+            val anchors = zip.getInputStream(zip.getEntry("voice_anchors.jsonl")).bufferedReader().use {
+                backupJson.decodeFromString<VoiceAnchorState>(it.readLine())
+            }
+            val copiedVoice = zip.getInputStream(zip.getEntry("voices.jsonl")).bufferedReader().use {
+                backupJson.decodeFromString<GeneratedVoiceMessage>(it.readLine())
+            }
+            assertEquals(savedAnchors.copy(sessionId = message.sessionId, messageId = message.id), anchors)
+            assertEquals(anchors.sessionId, copiedVoice.sessionId)
+            assertEquals(anchors.messageId, copiedVoice.messageId)
+            assertEquals(anchors.messageVersionId, copiedVoice.messageVersionId)
+            assertEquals(anchors.anchors.single().id, copiedVoice.anchorId)
+            assertArrayEquals("audio".toByteArray(), zip.getInputStream(zip.getEntry("media/audio/voice.mp3")).readBytes())
             val manifest = zip.getInputStream(zip.getEntry("manifest.json")).bufferedReader().use { backupJson.decodeFromString<SaveSlot>(it.readText()) }
             assertEquals(copied.id, manifest.id)
             assertEquals(copied.sessionId, manifest.sessionId)

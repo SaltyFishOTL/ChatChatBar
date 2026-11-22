@@ -564,7 +564,12 @@ internal class BackupMergeEngine(
                     out.putNextEntry(ZipEntry(entry.name))
                     zip.getInputStream(entry).use { input ->
                         val type = when (entry.name) {
-                            "manifest.json" -> "save_slots"; "messages.jsonl" -> "chat_messages"; "rag.jsonl" -> "vector_chunks"; "voices.jsonl" -> "generated_voice_messages"; else -> null
+                            "manifest.json" -> "save_slots"
+                            "messages.jsonl" -> "chat_messages"
+                            "rag.jsonl" -> "vector_chunks"
+                            "voices.jsonl" -> "generated_voice_messages"
+                            "voice_anchors.jsonl" -> "voice_anchor_states"
+                            else -> null
                         }
                         if (type == null) transfer(input, out) else {
                             val record = slot.copy(type = type, file = source,
