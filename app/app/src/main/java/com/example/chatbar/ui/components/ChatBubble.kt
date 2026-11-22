@@ -85,6 +85,7 @@ import com.example.chatbar.domain.chat.roleplayImageBlockId
 import com.example.chatbar.domain.chat.roleplayLegacyTextBlockId
 import com.example.chatbar.domain.chat.roleplayTextBlockId
 import com.example.chatbar.domain.chat.roleplayVoiceBlockId
+import com.example.chatbar.domain.chat.stripRoleplayHiddenComments
 import com.example.chatbar.domain.chat.stripRoleplaySpeakerMarkers
 import com.example.chatbar.domain.voice.VoicePlaybackState
 import com.example.chatbar.ui.kit.CbIcon
@@ -202,8 +203,6 @@ internal sealed interface RoleplayContentSegment {
 
 private val timeFormatter = SimpleDateFormat("HH:mm", Locale.getDefault())
 private val singleNewlinePattern = Regex("(?<!\n)\n(?!\n)")
-private const val hiddenCommentOpen = "<!--"
-private const val hiddenCommentClose = "-->"
 private const val COLOR_MARKER = '\u200B'
 
 @OptIn(ExperimentalFoundationApi::class)
@@ -1748,67 +1747,6 @@ internal fun sanitizeRoleplayMarkdown(content: String, forColoring: Boolean = fa
     return roleplayDialogueMarkerPattern.replace(withLineBreaks) { match ->
         "[${match.groupValues[1]}]"
     }
-}
-
-private fun stripRoleplayHiddenComments(content: String): String {
-    val result = StringBuilder(content.length)
-    var cursor = 0
-    while (cursor < content.length) {
-        val open = content.indexOf(hiddenCommentOpen, cursor)
-        if (open < 0) {
-            result.append(content, cursor, content.length)
-            break
-        }
-
-        var depth = 1
-        var search = open + hiddenCommentOpen.length
-        var closedAt = -1
-
-        while (search < content.length) {
-            val nextOpen = content.indexOf(hiddenCommentOpen, search)
-            val nextClose = content.indexOf(hiddenCommentClose, search)
-            if (nextClose < 0) break
-
-            if (nextOpen >= 0 && nextOpen < nextClose) {
-                depth++
-                search = nextOpen + hiddenCommentOpen.length
-            } else {
-                depth--
-                search = nextClose + hiddenCommentClose.length
-                if (depth == 0) {
-                    closedAt = search
-                    break
-                }
-            }
-        }
-
-        if (closedAt < 0) {
-            result.append(content, cursor, open)
-            result.append(content, open, content.length)
-            break
-        }
-
-        val lineStart = content.lastIndexOf('\n', open - 1).let { if (it < 0) 0 else it + 1 }
-        val openerStartsLine = content.substring(lineStart, open).all(::isHorizontalWhitespace)
-        var afterCloseLineEnd = closedAt
-        while (afterCloseLineEnd < content.length && isHorizontalWhitespace(content[afterCloseLineEnd])) {
-            afterCloseLineEnd++
-        }
-        val closesLine = afterCloseLineEnd >= content.length || content[afterCloseLineEnd] == '\n'
-        val standaloneBlock = openerStartsLine && closesLine
-
-        result.append(content, cursor, if (standaloneBlock) lineStart else open)
-        cursor = if (standaloneBlock && afterCloseLineEnd < content.length) {
-            afterCloseLineEnd + 1
-        } else {
-            closedAt
-        }
-    }
-    return result.toString()
-}
-
-private fun isHorizontalWhitespace(char: Char): Boolean {
-    return char == ' ' || char == '\t' || char == '\r'
 }
 
 private fun applyAccentColorToMarkedRanges(textView: TextView, accentColor: Int) {

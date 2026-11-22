@@ -188,44 +188,30 @@ fun editRoleplayMessageSegment(
     )
 }
 
+internal fun stripRoleplayHiddenComments(content: String): String {
+    if ("<!--" !in content) return content
+    return buildString(content.length) {
+        forEachVisibleRoleplayRange(content) { start, end -> append(content, start, end) }
+    }
+}
+
 private fun visibleRoleplayText(content: String): VisibleRoleplayText {
     val result = StringBuilder(content.length)
     val indexes = mutableListOf<Int>()
+    forEachVisibleRoleplayRange(content) { start, end ->
+        for (index in start until end) {
+            result.append(content[index])
+            indexes += index
+        }
+    }
+    return VisibleRoleplayText(result.toString(), indexes.toIntArray())
+}
+
+private inline fun forEachVisibleRoleplayRange(content: String, appendRange: (Int, Int) -> Unit) {
     var cursor = 0
-    while (cursor < content.length) {
-        val open = content.indexOf(HIDDEN_COMMENT_OPEN, cursor)
-        if (open < 0) {
-            appendVisibleRange(content, cursor, content.length, result, indexes)
-            break
-        }
-
-        var depth = 1
-        var search = open + HIDDEN_COMMENT_OPEN.length
-        var closedAt = -1
-
-        while (search < content.length) {
-            val nextOpen = content.indexOf(HIDDEN_COMMENT_OPEN, search)
-            val nextClose = content.indexOf(HIDDEN_COMMENT_CLOSE, search)
-            if (nextClose < 0) break
-
-            if (nextOpen >= 0 && nextOpen < nextClose) {
-                depth++
-                search = nextOpen + HIDDEN_COMMENT_OPEN.length
-            } else {
-                depth--
-                search = nextClose + HIDDEN_COMMENT_CLOSE.length
-                if (depth == 0) {
-                    closedAt = search
-                    break
-                }
-            }
-        }
-
-        if (closedAt < 0) {
-            appendVisibleRange(content, cursor, content.length, result, indexes)
-            break
-        }
-
+    for (comment in NarrativeHistoryEcho.hiddenHtmlCommentRanges(content)) {
+        val open = comment.first
+        val closedAt = comment.last + 1
         val lineStart = content.lastIndexOf('\n', open - 1).let { if (it < 0) 0 else it + 1 }
         val openerStartsLine = content.substring(lineStart, open).all(::isHorizontalWhitespace)
         var afterCloseLineEnd = closedAt
@@ -235,27 +221,14 @@ private fun visibleRoleplayText(content: String): VisibleRoleplayText {
         val closesLine = afterCloseLineEnd >= content.length || content[afterCloseLineEnd] == '\n'
         val standaloneBlock = openerStartsLine && closesLine
 
-        appendVisibleRange(content, cursor, if (standaloneBlock) lineStart else open, result, indexes)
+        appendRange(cursor, if (standaloneBlock) lineStart else open)
         cursor = if (standaloneBlock && afterCloseLineEnd < content.length) {
             afterCloseLineEnd + 1
         } else {
             closedAt
         }
     }
-    return VisibleRoleplayText(result.toString(), indexes.toIntArray())
-}
-
-private fun appendVisibleRange(
-    content: String,
-    start: Int,
-    endExclusive: Int,
-    result: StringBuilder,
-    indexes: MutableList<Int>
-) {
-    for (index in start until endExclusive) {
-        result.append(content[index])
-        indexes += index
-    }
+    appendRange(cursor, content.length)
 }
 
 private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayTextSegment> {
@@ -796,8 +769,6 @@ private fun minLongWrapperDashCount(char: Char): Int =
 
 private const val LONG_WRAPPER_MIN_ASCII_DASHES = 6
 private const val LONG_WRAPPER_MIN_WIDE_DASHES = 4
-private const val HIDDEN_COMMENT_OPEN = "<!--"
-private const val HIDDEN_COMMENT_CLOSE = "-->"
 private val roleplaySpeakerMarkerPattern = Regex(
     pattern = "[<＜]\\s*[nｎ]\\s*[=＝]\\s*[\"“”＂]([^\\r\\n\"“”＂]*?)[\"“”＂]\\s*[/／]?\\s*[>＞]",
     option = RegexOption.IGNORE_CASE

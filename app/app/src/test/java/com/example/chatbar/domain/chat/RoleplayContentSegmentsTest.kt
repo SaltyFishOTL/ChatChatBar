@@ -5,6 +5,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class RoleplayContentSegmentsTest {
+
+    @Test
+    fun literalCommentCodeKeepsItsTextAndRawRange() {
+        val literal = "`<!-- </历史回复> -->`"
+        val visible = "请键入 $literal 作为示例。"
+        val raw = "$visible<!-- 旁注 -->"
+        val segment = parseRoleplayTextSegments(raw).single()
+        assertEquals(visible, segment.displayText)
+        assertEquals(visible, raw.substring(segment.start, segment.endExclusive))
+    }
+
     @Test
     fun `speaker markers are stripped from unsplit assistant content`() {
         val content = "<n=\"林雾\"/>旁白\n<n=“另一人”>[对白]()\n＜ｎ＝＂第三人＂／＞结尾"

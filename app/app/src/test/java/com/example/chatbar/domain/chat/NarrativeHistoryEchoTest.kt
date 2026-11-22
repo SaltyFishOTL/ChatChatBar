@@ -8,6 +8,58 @@ import org.junit.Test
 class NarrativeHistoryEchoTest {
 
     @Test
+    fun carriesGenuineCommentsOutsideTheOuterWrapperInEveryReplyState() {
+        val wrappers = listOf(
+            "<历史回复 模式=\"聚焦\">" to "</历史回复>",
+            "<历史回复 模式=\"推进\">" to "</历史回复>",
+            "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
+            "<聚焦模式=\"沉浸\">" to "</聚焦模式=\"沉浸\">",
+        )
+        val note = "<!-- 旁注 -->"
+        val prose = "她推门。"
+        for ((open, close) in wrappers) {
+            val examples = listOf(
+                "$note\n$open\n$prose\n$close" to "$note\n$prose",
+                "$open\n$prose\n$close\n$note" to "$prose\n$note",
+                "$note\n$open\n$prose\n$close$note" to "$note\n$prose\n$note",
+                "$open\n$prose$close $note" to "$prose $note",
+            )
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                for ((raw, expected) in examples) {
+                    assertEquals(expected, NarrativeHistoryEcho.replyBody(raw, streaming, interrupted = interrupted))
+                    val literalExample = "$raw\n以上只是示例。"
+                    assertEquals(literalExample, NarrativeHistoryEcho.replyBody(literalExample, streaming, interrupted = interrupted))
+                }
+            }
+        }
+    }
+
+    @Test
+    fun aSplitTrailingCommentOpenerDoesNotRestoreTheWrapperInPreview() {
+        val open = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val prose = "她推门。"
+        for (tail in listOf("<", "<!", "<!-", "<!--")) {
+            val raw = "$open\n$prose\n$close\n$tail"
+            assertEquals("$prose\n$tail", NarrativeHistoryEcho.replyBody(raw, streaming = true))
+        }
+        val visibleTail = "$open\n$prose\n$close\n<!标签示例"
+        assertEquals(visibleTail, NarrativeHistoryEcho.replyBody(visibleTail, streaming = true))
+        assertEquals("$open\n$prose\n$close\n<!", NarrativeHistoryEcho.replyBody("$open\n$prose\n$close\n<!"))
+    }
+
+    @Test
+    fun genuineBlockquoteCommentsDoNotStartProseQuotes() {
+        val open = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val body = "> <!-- 旁注 \" -->\n\n她推门。"
+        val raw = "$open\n$body\n$close"
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(body, NarrativeHistoryEcho.replyBody(raw, streaming, interrupted = interrupted))
+        }
+    }
+
+    @Test
     fun pairedHistoryWrappersIgnoreClosedHtmlCommentsInEveryReplyState() {
         val closing = "</历史回复>"
         for (mode in ChatNarrativeMode.entries) {

@@ -18,6 +18,15 @@ import org.junit.Test
 
 class ChatBubbleMarkdownTest {
     @Test
+    fun roleplayMarkdown_keepsLiteralCommentSyntaxInCodeAndHidesOnlyTheRealNote() {
+        val literal = "`<!-- </历史回复> -->`"
+        val body = "请键入 $literal 作为示例。"
+        val withHiddenNote = "$body<!-- 旁注 -->"
+        assertEquals(body, sanitizeRoleplayMarkdown(withHiddenNote))
+        assertEquals(body, (parseRoleplayContent(withHiddenNote).single() as RoleplayContentSegment.Markdown).text)
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

@@ -172,6 +172,38 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream removes one narrative wrapper spanning validated tool calls`() = runBlocking {
+        val first = "<!-- 起始旁注 -->\n<历史回复 模式=\"聚焦\">\n甲"
+        val second = "乙\n</历史回复>\n<!-- 末尾旁注 -->"
+        val expected = "<!-- 起始旁注 -->\n甲\n乙\n<!-- 末尾旁注 -->"
+        val sseBody = sse(listOf(
+            chunk(buildJsonObject { put("content", first) }.toString(), "game_content"),
+            chunk(buildJsonObject { put("content", second) }.toString(), "game_content", index = 1),
+            chunk(reason = "tool_calls"),
+            "[DONE]",
+        ))
+        TaskResponseServer(sseBody, "text/event-stream").use { server ->
+            var completion: ChatReplyCompletion? = null
+            val events = withTimeout(5_000) {
+                service().streamChat(
+                    "cross-call-echo", messages, model(server),
+                    onReplyCompletion = { completion = it },
+                ).toList()
+            }
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            val raw = deltas.joinToString("") { it.text }
+            val lengths = deltas.last().toolReplyPartLengths
+            assertEquals("$first\n$second", raw)
+            assertEquals(listOf(first.length, second.length), lengths)
+            assertEquals(lengths, completion?.toolReplyPartLengths)
+            assertEquals(StreamEvent.Done, events.last())
+            assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, partLengths = lengths, streaming = true))
+            assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, interrupted = true, partLengths = lengths))
+            assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, partLengths = lengths))
+        }
+    }
+
+    @Test
     fun `non streaming auxiliary response extracts JSON task payload from tool arguments`() = runBlocking {
         val expected = """{"result":"正确值"}"""
         val response = buildJsonObject {
