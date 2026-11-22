@@ -8,6 +8,7 @@ import com.example.chatbar.data.local.entity.EditorDraft
 import com.example.chatbar.data.local.entity.EditorDraftType
 import com.example.chatbar.domain.backup.LocalDataMaintenance
 import java.io.File
+import java.nio.file.Files
 import java.nio.file.Path
 import java.util.UUID
 import kotlinx.coroutines.Dispatchers
@@ -81,6 +82,7 @@ class EditorDraftAssetService(private val context: Context) {
         remainingDrafts: List<EditorDraft>,
         sessions: List<String> = emptyList(),
         files: Set<String> = emptySet(),
+        requireFileDeletion: Boolean = false,
     ): Set<String> = withContext(Dispatchers.IO) {
         LocalDataMaintenance.access {
             val root = draftRoot().canonicalFile.toPath()
@@ -103,7 +105,13 @@ class EditorDraftAssetService(private val context: Context) {
             val removed = files.filterTo(mutableSetOf()) { file ->
                 val path = File(file).canonicalFile.toPath()
                 val directory = namespace(path) ?: return@filterTo false
-                directory !in protectedDirectories && path.toFile().let { it.delete() || !it.exists() }
+                if (directory in protectedDirectories) return@filterTo false
+                if (requireFileDeletion) {
+                    Files.deleteIfExists(path)
+                    true
+                } else {
+                    path.toFile().let { it.delete() || !it.exists() }
+                }
             }
             for (directory in sessions.distinct().map(::sessionDirectory)) {
                 if (directory !in protectedDirectories) {

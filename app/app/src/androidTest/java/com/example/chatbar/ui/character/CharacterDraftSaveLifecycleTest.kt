@@ -155,6 +155,14 @@ class CharacterDraftSaveLifecycleTest {
         assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
     }
     @Test fun formalSaveAfterViewingOriginalReclaimsAssetsFromAnEarlierDraftSession() = runBlocking<Unit> {
+        verifyCarriedAssetCleanup(blockFirstDeletion = false)
+    }
+
+    @Test fun failedCarriedAssetDeletionCanRetryWithoutWritingTheCardAgain() = runBlocking<Unit> {
+        verifyCarriedAssetCleanup(blockFirstDeletion = true)
+    }
+
+    private suspend fun verifyCarriedAssetCleanup(blockFirstDeletion: Boolean) {
         val original = card()
         val initialEditor = editor(original.id)
         action { initialEditor.addDocument("carried.txt", "Document carried across draft sessions", it) }
@@ -175,7 +183,31 @@ class CharacterDraftSaveLifecycleTest {
 
             val viewer = editor(original.id)
             withContext(Dispatchers.Main) { viewer.keepOriginal() }
+            val committedBeforeRetry = if (blockFirstDeletion) {
+                val folder = requireNotNull(staged.parentFile)
+                val mode = Os.stat(folder.path).st_mode and 0x1ff
+                val writePermissions = OsConstants.S_IWUSR or OsConstants.S_IWGRP or OsConstants.S_IWOTH
+                var navigated = false
+                try {
+                    Os.chmod(folder.path, mode and writePermissions.inv())
+                    withContext(Dispatchers.Main) { viewer.saveCharacterCard({ navigated = true }) }
+                    withTimeout(15_000) {
+                        while (withContext(Dispatchers.Main) { viewer.isSaving.value }) delay(20)
+                    }
+                    withContext(Dispatchers.Main) {
+                        assertFalse(navigated)
+                        assertTrue(viewer.isDraftCleanupPending)
+                    }
+                    assertNull(coldDrafts().getById(first.id))
+                    assertEquals("Document carried across draft sessions", staged.readText())
+                    requireNotNull(app.characterRepository.getById(original.id))
+                } finally {
+                    Os.chmod(folder.path, mode)
+                }
+            } else null
+
             action { viewer.saveCharacterCard(it) }
+            committedBeforeRetry?.let { assertEquals(it, app.characterRepository.getById(original.id)) }
             assertNull(coldDrafts().getById(first.id))
             assertFalse("Formal save must reclaim the consumed snapshot's earlier staged file", staged.exists())
             assertTrue(app.characterRepository.getById(original.id)?.customDocuments.orEmpty().isEmpty())

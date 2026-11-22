@@ -783,7 +783,7 @@ class CharacterEditViewModel(
 
     private suspend fun completeCommittedDraftCleanup(cleanup: CommittedDraftCleanup): Boolean {
         return try {
-            deleteCharacterDraftAndAssets(cleanup.consumedDraft) {
+            deleteCharacterDraftAndAssets(cleanup.consumedDraft, requireFileDeletion = true) {
                 // Consumed drafts no longer retain images removed by this save; other drafts still do.
                 cleanupAfterCharacterSave(cleanup.oldCard, cleanup.savedCard)
             }
@@ -807,7 +807,11 @@ class CharacterEditViewModel(
         }
     }
 
-    private suspend fun deleteCharacterDraftAndAssets(draft: EditorDraft?, afterDeletingDraft: suspend () -> Unit) {
+    private suspend fun deleteCharacterDraftAndAssets(
+        draft: EditorDraft?,
+        requireFileDeletion: Boolean = false,
+        afterDeletingDraft: suspend () -> Unit,
+    ) {
         draft?.let { draftRepository.deleteIfUnchanged(it) }
         afterDeletingDraft()
         draftRepository.withDraftsForAssetCleanup { remaining ->
@@ -816,6 +820,7 @@ class CharacterEditViewModel(
                 sessions = listOfNotNull(draft?.draftSessionId, draftSessionId),
                 files = (draft?.draftAssetPaths.orEmpty() +
                     draft?.characterPayload?.let(draftAssetService::ownedAssetPaths).orEmpty()).toSet(),
+                requireFileDeletion = requireFileDeletion,
             )
         }
     }
