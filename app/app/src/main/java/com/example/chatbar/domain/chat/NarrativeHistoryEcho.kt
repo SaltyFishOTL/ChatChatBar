@@ -9,6 +9,7 @@ object NarrativeHistoryEcho {
         val ranges: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val markdown: String,
+        val commentRanges: List<IntRange>,
     )
 
     private val wrappers = ChatNarrativeMode.entries.map { mode ->
@@ -109,7 +110,7 @@ object NarrativeHistoryEcho {
                     }
                 } else emptyList()
                 val quotes = proseQuoteRanges(end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment)
-                return ReplyLiterals(ranges + quotes, lazyQuoteLineStarts, source)
+                return ReplyLiterals(ranges + quotes, lazyQuoteLineStarts, source, comments)
             }
 
             val capture = { range: IntRange -> nextComment = range }
@@ -128,7 +129,9 @@ object NarrativeHistoryEcho {
             val lineStart = lineStart(markdown, offset)
             // A standalone closing marker also ends the wrapper directly after a quoted paragraph.
             return MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart) ||
-                (markdown.subSequence(lineStart, offset).isNotBlank() && lineStart in literals.lazyQuoteLineStarts)
+                (lineStart in literals.lazyQuoteLineStarts && (lineStart until offset).any { index ->
+                    !markdown[index].isWhitespace() && literals.commentRanges.none { index in it }
+                })
         }
         var innerDepth = 0
         var unmatchedClosing = false

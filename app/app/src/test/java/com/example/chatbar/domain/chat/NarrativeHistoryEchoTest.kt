@@ -69,6 +69,32 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun aStandaloneCloseAfterACommentDoesNotBecomeAQuoteContinuation() {
+        val opening = "<聚焦模式=\"沉浸\">"
+        val closing = "</聚焦模式>"
+        for (note in listOf("<!-- note -->", "<!-- $closing -->", "<!-- note --><!-- $closing -->")) {
+            val body = "> 引文\n$note"
+            val wrapped = "$opening\n$body$closing"
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, interrupted = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), interrupted = true))
+        }
+    }
+
+    @Test
+    fun aRealObjectReplacementCharacterContinuesTheQuoteAfterAComment() {
+        val opening = "<聚焦模式=\"沉浸\">"
+        val closing = "</聚焦模式>"
+        val body = "> 引文\n<!-- note -->\uFFFC$closing"
+        val wrapped = "$opening\n$body\n$closing"
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, interrupted = true))
+    }
+
+    @Test
     fun commentOnlyLinesDoNotTurnFollowingIndentedCodeIntoProse() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"
