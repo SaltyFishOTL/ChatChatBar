@@ -149,6 +149,57 @@ class CharacterDraftSaveLifecycleTest {
         withContext(Dispatchers.Main) { competingEditor.restoreDraft() }
         editAndSaveDraft(competingEditor, "new competing draft")
         val newer = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertDraftExitRejected(viewer)
+        assertEquals("new competing draft", newer.characterPayload?.name)
+        assertEquals(newer, coldDrafts().getById(newer.id))
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+    @Test fun formalSaveAfterViewingOriginalReclaimsAssetsFromAnEarlierDraftSession() = runBlocking<Unit> {
+        val original = card()
+        val initialEditor = editor(original.id)
+        action { initialEditor.addDocument("carried.txt", "Document carried across draft sessions", it) }
+        action { initialEditor.saveDraftAndExit(it) }
+        val first = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        val staged = File(first.characterPayload!!.customDocuments.single().filePath).also(files::add)
+        try {
+            val resaver = editor(original.id)
+            withContext(Dispatchers.Main) {
+                assertEquals(first, resaver.restoreDraft)
+                resaver.restoreDraft()
+            }
+            action { resaver.saveDraftAndExit(it) }
+            val carried = requireNotNull(coldDrafts().getById(first.id))
+            assertNotEquals(first.draftSessionId, carried.draftSessionId)
+            assertEquals(staged.path, carried.characterPayload!!.customDocuments.single().filePath)
+            assertEquals("Document carried across draft sessions", staged.readText())
+
+            val viewer = editor(original.id)
+            withContext(Dispatchers.Main) { viewer.keepOriginal() }
+            action { viewer.saveCharacterCard(it) }
+            assertNull(coldDrafts().getById(first.id))
+            assertFalse("Formal save must reclaim the consumed snapshot's earlier staged file", staged.exists())
+            assertTrue(app.characterRepository.getById(original.id)?.customDocuments.orEmpty().isEmpty())
+        } finally {
+            app.editorDraftAssetService.deleteDraft(first.draftSessionId)
+        }
+    }
+
+    @Test fun retainedEditorAfterFormalSaveCannotCreateOverANewerDraft() = runBlocking<Unit> {
+        val original = card()
+        editAndSaveDraft(editor(original.id), "draft to consume")
+        val viewer = editor(original.id)
+        withContext(Dispatchers.Main) { viewer.keepOriginal() }
+        action { viewer.saveCharacterCard(it) }
+        assertNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+
+        editAndSaveDraft(editor(original.id), "draft created after formal save")
+        val newer = requireNotNull(coldDrafts().getForTarget(EditorDraftType.CHARACTER_CARD, original.id))
+        assertDraftExitRejected(viewer)
+        assertEquals(newer, coldDrafts().getById(newer.id))
+        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
+    }
+
+    private suspend fun assertDraftExitRejected(viewer: CharacterEditViewModel) {
         var exited = false
         withContext(Dispatchers.Main) {
             viewer.name = "edit from original"
@@ -156,9 +207,6 @@ class CharacterDraftSaveLifecycleTest {
         }
         withTimeout(15_000) { while (withContext(Dispatchers.Main) { viewer.isSaving.value }) delay(20) }
         withContext(Dispatchers.Main) { assertFalse(exited) }
-        assertEquals("new competing draft", newer.characterPayload?.name)
-        assertEquals(newer, coldDrafts().getById(newer.id))
-        assertEquals(original.name, app.characterRepository.getById(original.id)?.name)
     }
     @Test fun retainedEditorCanCreateAndRestoreAGenuineDraftAfterFormalSave() = runBlocking<Unit> {
         val card = card()

@@ -71,11 +71,13 @@ class EditorDraftRepository(
         write(draft)
     }
 
-    suspend fun saveIfUnchanged(draft: EditorDraft, expected: EditorDraft): EditorDraft? = mutationMutex.withLock {
+    /** A null expected snapshot requires the destination draft to be absent. */
+    suspend fun saveIfUnchanged(draft: EditorDraft, expected: EditorDraft?): EditorDraft? = mutationMutex.withLock {
         LocalDataMaintenance.access {
-            if (readStrict(expected.id) != expected) return@access null
             val destination = draftId(draft.entityType, draft.targetId)
-            if (destination != expected.id && readStrict(destination) != null) return@access null
+            val expectedId = expected?.id ?: destination
+            if (readStrict(expectedId) != expected) return@access null
+            if (destination != expectedId && readStrict(destination) != null) return@access null
             write(draft)
         }
     }

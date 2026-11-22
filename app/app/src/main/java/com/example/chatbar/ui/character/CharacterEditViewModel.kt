@@ -814,6 +814,8 @@ class CharacterEditViewModel(
             draftAssetService.deleteUnreferencedDraftAssets(
                 remaining,
                 sessions = listOfNotNull(draft?.draftSessionId, draftSessionId),
+                files = (draft?.draftAssetPaths.orEmpty() +
+                    draft?.characterPayload?.let(draftAssetService::ownedAssetPaths).orEmpty()).toSet(),
             )
         }
     }
@@ -979,10 +981,8 @@ class CharacterEditViewModel(
         )
         // Loading a draft does not acknowledge changes made to its source card.
         val update = previous?.let { draft.copy(baseHash = it.baseHash, baseUpdatedAt = it.baseUpdatedAt) } ?: draft
-        loadedDraft = if (owner == null) {
-            draftRepository.save(update)
-        } else {
-            checkNotNull(draftRepository.saveIfUnchanged(update, owner)) { "草稿已更新或清除，请重新打开角色卡" }
+        loadedDraft = checkNotNull(draftRepository.saveIfUnchanged(update, owner)) {
+            "草稿已更新或清除，请重新打开角色卡"
         }
         ignoredDraft = null
         draftSavedAt = loadedDraft?.updatedAt
