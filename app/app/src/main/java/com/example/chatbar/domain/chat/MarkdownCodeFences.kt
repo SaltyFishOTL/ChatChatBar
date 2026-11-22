@@ -25,11 +25,28 @@ object MarkdownCodeFences {
         }
     }
 
+    internal fun hasQuoteContainerPrefix(text: String, start: Int): Boolean {
+        var offset = start
+        while (true) {
+            if (quotePrefix.matchAt(text, offset) != null) return true
+            val list = listPrefix.matchAt(text, offset) ?: return false
+            offset = list.range.last + 1
+        }
+    }
+
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
-    fun blocks(content: String): List<Block> = findBlocks(content) {}
+    fun blocks(content: String): List<Block> = blocks(content, null)
 
-    internal fun findBlocks(content: String, onContainerLine: (Int) -> Unit): List<Block> = buildList {
+    internal fun findBlocks(content: String, onContainerLine: (Int) -> Unit): List<Block> =
+        blocks(content, onLazyQuoteLine = null, onContainerLine = onContainerLine)
+
+    internal fun blocks(
+        content: String,
+        onLazyQuoteLine: ((Int) -> Unit)?,
+        onIndentedCodeLine: ((IntRange) -> Unit)? = null,
+        onContainerLine: ((Int) -> Unit)? = null,
+    ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
         var open: Fence? = null
@@ -80,18 +97,26 @@ object MarkdownCodeFences {
                 }
             }
 
-            if (containers.isNotEmpty()) onContainerLine(start)
+            if (containers.isNotEmpty()) onContainerLine?.invoke(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
             val match = fenceLine.matchEntire(remainder)
             val existing = open
             if (match == null) {
                 if (existing == null) {
                     val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")
+                    if (startsIndentedCode && remainder.isNotBlank()) {
+                        onIndentedCodeLine?.invoke(start until start + rawLine.length)
+                    }
                     val endsSetextHeading = paragraph && setextUnderline.matches(remainder)
                     paragraph = !startsIndentedCode && remainder.isNotBlank() && !thematicBreak.matches(remainder) &&
                         !endsSetextHeading && !heading.containsMatchIn(remainder)
                     // A lazy paragraph line keeps its quote or list context for subsequent lines.
-                    if (paragraph) containers.addAll(dedentedParagraph)
+                    if (paragraph) {
+                        if (onLazyQuoteLine != null && dedentedParagraph.any { it.indent == null }) {
+                            onLazyQuoteLine(start)
+                        }
+                        containers.addAll(dedentedParagraph)
+                    }
                 }
                 continue
             }
