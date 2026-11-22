@@ -1297,8 +1297,8 @@ fun ChatScreen(
                     MessageFormatRepairNoticeRow(
                         message = message,
                         checking = repairState != null,
-                        onRestore = { viewModel.restoreMessageFormatOriginal(message.id) },
-                        onRedo = { viewModel.redoMessageFormatRepair(message.id) }
+                        onRestore = { viewModel.restoreMessageFormatOriginal(message.id, message) },
+                        onRedo = { viewModel.redoMessageFormatRepair(message.id, message) }
                     )
                     imageGenerationsByAnchor[message.id].orEmpty().forEach { generation ->
                         key(generation.taskId) {

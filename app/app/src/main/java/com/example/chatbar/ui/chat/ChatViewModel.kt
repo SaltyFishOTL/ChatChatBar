@@ -2367,15 +2367,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     val messageActionError = _messageActionError.asStateFlow()
     fun clearMessageActionError() { _messageActionError.value = null }
 
-    fun restoreMessageFormatOriginal(messageId: String) = toggleFormatRepair(messageId, redo = false)
-    fun redoMessageFormatRepair(messageId: String) = toggleFormatRepair(messageId, redo = true)
+    fun restoreMessageFormatOriginal(messageId: String, shown: ChatMessage? = null) =
+        toggleFormatRepair(messageId, shown, redo = false)
+    fun redoMessageFormatRepair(messageId: String, shown: ChatMessage? = null) =
+        toggleFormatRepair(messageId, shown, redo = true)
 
-    private fun toggleFormatRepair(messageId: String, redo: Boolean) {
+    private fun toggleFormatRepair(messageId: String, shown: ChatMessage?, redo: Boolean) {
         if (_isResponding.value) return
         viewModelScope.launch {
             try {
                 val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
+                check(shown == null || message == shown) { "消息已变化，请重新操作" }
                 val changed = (if (redo) MessageFormatRepairPolicy.redoRepair(message)
                     else MessageFormatRepairPolicy.restoreOriginal(message)) ?: return@launch
                 val persisted = checkNotNull(chatRepository.updateMessageIfUnchanged(message, changed, timelineRevision)) {

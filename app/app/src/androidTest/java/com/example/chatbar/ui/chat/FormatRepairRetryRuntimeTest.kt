@@ -118,6 +118,20 @@ class FormatRepairRetryRuntimeTest {
                 withContext(Dispatchers.Main) { vm.restoreMessageFormatOriginal(reply.id) }
                 withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == generatedText } } }
                 assertEquals(listOf(repairedText, generatedText), cold.getMessage(reply.id, session.id)?.alternatives)
+
+                withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, -1) }
+                withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == repairedText } } }
+                withContext(Dispatchers.Main) { vm.restoreMessageFormatOriginal(reply.id) }
+                val shownA = withTimeout(15_000) {
+                    vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == original.displayContent } }
+                        .single { it.id == reply.id }
+                }
+                withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, 1) }
+                withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.displayContent == generatedText } } }
+                val undoneB = cold.getMessage(reply.id, session.id)
+                withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id, shownA) }
+                withTimeout(15_000) { vm.messageActionError.first { it == "消息已变化，请重新操作" } }
+                assertEquals(undoneB, cold.getMessage(reply.id, session.id))
             }
             assertEquals("Local undo/redo must not send a model request", modelRequests, server.requestCount)
         } finally {
