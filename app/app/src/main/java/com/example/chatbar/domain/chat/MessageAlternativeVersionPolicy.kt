@@ -2,7 +2,6 @@ package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
-import com.example.chatbar.data.local.entity.MessageFormatRepairNotice
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
@@ -70,16 +69,6 @@ object MessageAlternativeVersionPolicy {
 
     fun activeVersionId(message: ChatMessage): String = activeVersion(message).id
 
-    private fun MessageFormatRepairNotice.checkpointContent(): String? =
-        if (restored) originalContent else targetContent
-
-    private fun linkedRepairNotice(message: ChatMessage, versions: List<MessageVersionSnapshot>): MessageFormatRepairNotice? {
-        val notice = message.formatRepairNotice ?: return null
-        if (notice.versionId != null) return notice
-        val owner = versions.singleOrNull { it.content == notice.checkpointContent() } ?: return null
-        return notice.copy(versionId = owner.id)
-    }
-
     fun normalize(message: ChatMessage): ChatMessage {
         val active = activeVersion(message)
         return message.copy(
@@ -117,7 +106,7 @@ object MessageAlternativeVersionPolicy {
                 narrativeMode = narrativeMode
             )
         ).takeLast(maxVersions)
-        return message.copy(
+        val appended = message.copy(
             content = content,
             alternatives = retained.map(MessageVersionSnapshot::content),
             alternativeVersionIds = retained.map(MessageVersionSnapshot::id),
@@ -125,11 +114,9 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = newVersionId,
             narrativeMode = narrativeMode,
             alternativeNarrativeModes = retained.map(MessageVersionSnapshot::narrativeMode),
-            formatRepairNotice = linkedRepairNotice(message, existing)?.takeIf { notice ->
-                retained.any { it.id == notice.versionId }
-            },
             updatedAt = updatedAt
         )
+        return MessageFormatRepairPolicy.retainVersionNotices(message, appended)
     }
 
     /** Removes one stable version; shared message media and surviving version identities are unchanged. */
@@ -143,7 +130,7 @@ object MessageAlternativeVersionPolicy {
         val selectedIndex = retained.indexOfFirst { it.id == activeId }.takeIf { it >= 0 }
             ?: removedIndex.coerceAtMost(retained.lastIndex)
         val selected = retained[selectedIndex]
-        return message.copy(
+        val removed = message.copy(
             content = selected.content,
             alternatives = retained.map { it.content },
             alternativeVersionIds = retained.map { it.id },
@@ -151,9 +138,9 @@ object MessageAlternativeVersionPolicy {
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = retained.map { it.narrativeMode },
-            formatRepairNotice = linkedRepairNotice(message, all)?.takeUnless { it.versionId == versionId },
             updatedAt = updatedAt
         )
+        return MessageFormatRepairPolicy.retainVersionNotices(message, removed)
     }
 
     fun select(
@@ -165,16 +152,16 @@ object MessageAlternativeVersionPolicy {
         require(message.alternatives.isNotEmpty()) { "消息没有替代版本" }
         require(alternativeIndex in versions.indices) { "消息版本索引越界" }
         val selected = versions[alternativeIndex]
-        return message.copy(
+        val reselection = message.copy(
             content = selected.content,
             alternativeVersionIds = versions.map(MessageVersionSnapshot::id),
             currentAlternativeIndex = alternativeIndex,
             currentAlternativeVersionId = selected.id,
             narrativeMode = selected.narrativeMode,
             alternativeNarrativeModes = versions.map(MessageVersionSnapshot::narrativeMode),
-            formatRepairNotice = linkedRepairNotice(message, versions),
             updatedAt = updatedAt
         )
+        return MessageFormatRepairPolicy.retainVersionNotices(message, reselection)
     }
 
     fun editCurrentContent(
@@ -182,14 +169,14 @@ object MessageAlternativeVersionPolicy {
         content: String,
         updatedAt: Long = System.currentTimeMillis()
     ): ChatMessage {
-        return normalize(message).copy(
+        val edited = normalize(message).copy(
             content = content,
             alternatives = message.alternatives.mapIndexed { index, previous ->
                 if (index == message.currentAlternativeIndex) content else previous
             },
-            formatRepairNotice = linkedRepairNotice(message, versions(message)),
             updatedAt = updatedAt
         )
+        return MessageFormatRepairPolicy.retainVersionNotices(message, edited)
     }
 
     private fun alignedVersionIds(message: ChatMessage): List<String> = identity(

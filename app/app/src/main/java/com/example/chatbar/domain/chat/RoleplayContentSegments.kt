@@ -193,6 +193,7 @@ fun editRoleplayMessageSegment(
                 currentAlternativeVersionId = MessageAlternativeVersionPolicy.newVersionId(message),
                 alternativeNarrativeModes = emptyList(),
                 formatRepairNotice = null,
+                otherFormatRepairNotices = emptyList(),
                 updatedAt = updatedAt
             ),
             deleteMemoryForMessage = retained == null

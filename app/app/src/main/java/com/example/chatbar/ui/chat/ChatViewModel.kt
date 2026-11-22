@@ -2440,6 +2440,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         timelineRevision: Long
     ): ChatMessage? {
         val inactiveRecovery = MessageFormatRepairPolicy.inactiveRecoveryNotice(message)
+            ?.takeIf { MessageFormatRepairPolicy.applicableNotice(message) == null }
         var attemptError: String? = null
         suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
             formatRepairCommitMutex.withLock {
@@ -2459,7 +2460,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
         fun failure(error: String): ChatMessage {
             if (inactiveRecovery == null) {
-                return message.copy(formatRepairNotice = MessageFormatRepairPolicy.failedAttemptNotice(message, error))
+                return MessageFormatRepairPolicy.updateCurrentNotice(
+                    message, MessageFormatRepairPolicy.failedAttemptNotice(message, error)
+                )
             }
             // The existing durable checkpoint belongs to a different reply version.
             attemptError = error
@@ -2546,7 +2549,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         unchanged = MessageFormatRepairPolicy.isUnchangedResult(repairedPrefix) ||
                             repairedPrefix == originalContent
                         result = if (unchanged) {
-                            message.copy(formatRepairNotice = MessageFormatRepairPolicy.retainedNoticeAfterUnchangedSuccess(message))
+                            MessageFormatRepairPolicy.afterUnchangedRepair(message)
                         } else {
                             MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                 message = message,
@@ -3826,15 +3829,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         deleteRemovedImages: Boolean,
         deleteMemoryWhenTextBlank: Boolean = false
     ) {
-        val updatedMessage = MessageAlternativeVersionPolicy.editCurrentContent(
+        val edited = MessageAlternativeVersionPolicy.editCurrentContent(
             message = oldMessage,
             content = content
         ).copy(
             images = imagePaths,
             generatedImageMetadata = oldMessage.generatedImageMetadata
-                .filter { it.imagePath in imagePaths },
-            formatRepairNotice = null
+                .filter { it.imagePath in imagePaths }
         )
+        val updatedMessage = MessageFormatRepairPolicy.updateCurrentNotice(edited, null)
 
         if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage) == null) {
             _messageActionError.value = "消息已变化，请重新操作"
