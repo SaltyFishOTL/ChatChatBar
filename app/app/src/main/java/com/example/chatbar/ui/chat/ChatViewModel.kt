@@ -2374,6 +2374,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         message: ChatMessage,
         automatic: Boolean
     ): ChatMessage {
+        val timelineRevision = chatRepository.messageTimelineRevision(message.sessionId)
+        suspend fun persistRepair(replacement: ChatMessage): ChatMessage =
+            persistFormatRepairMessage(message, replacement, timelineRevision)
         val appSettings = settingsRepository.getAppSettings()
         val currentSession = chatRepository.getSession(sessionId) ?: return message
         val renderContext = placeholderRenderContext(currentSession)
@@ -2418,7 +2421,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             appSettings
         )
         if (model == null || model.apiKey.isBlank()) {
-            return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效")
+            return persistFormatRepairFailure(message, "格式修复模型及默认对话模型未配置或已失效", timelineRevision)
         }
 
         var result = message
@@ -2471,7 +2474,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
                             )
-                            val displayed = if (unchanged != message) persistFormatRepairMessage(message, unchanged)
+                            val displayed = if (unchanged != message) persistRepair(unchanged)
                             else message
                             _messageFormatRepairEvents.tryEmit("格式无需修复")
                             displayed
@@ -2481,8 +2484,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 original = originalContent,
                                 repaired = candidate
                             )
-                            persistFormatRepairMessage(
-                                message,
+                            persistRepair(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
                                     replacement = candidate,
@@ -2498,8 +2500,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         repairedPrefix = repairedPrefix
                     ).takeIf { actionItems(it) == actionItems(originalContent) } ?: originalContent
                     result = withContext(NonCancellable) {
-                        persistFormatRepairMessage(
-                            message,
+                        persistRepair(
                             MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                 message = message,
                                 replacement = mixedContent,
@@ -2514,7 +2515,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 } catch (error: Exception) {
                     result = persistFormatRepairFailure(
                         message = message,
-                        error = error.message ?: "格式修复失败"
+                        error = error.message ?: "格式修复失败",
+                        timelineRevision = timelineRevision
                     )
                 }
             }
@@ -2532,7 +2534,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
     private suspend fun persistFormatRepairFailure(
         message: ChatMessage,
-        error: String
+        error: String,
+        timelineRevision: Long
     ): ChatMessage = persistFormatRepairMessage(
         message,
         message.copy(
@@ -2542,12 +2545,21 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 errorMessage = error
             ),
             updatedAt = System.currentTimeMillis()
-        )
+        ),
+        timelineRevision
     )
 
-    private suspend fun persistFormatRepairMessage(expected: ChatMessage, message: ChatMessage): ChatMessage {
-        longTermMemoryService.preserveActionProjectionBeforeMutation(expected, message)
-        val saved = chatRepository.updateMessageIfUnchanged(expected, message)
+    private suspend fun persistFormatRepairMessage(
+        expected: ChatMessage,
+        message: ChatMessage,
+        timelineRevision: Long
+    ): ChatMessage {
+        val stillCurrent = chatRepository.messageTimelineRevision(expected.sessionId) == timelineRevision &&
+            chatRepository.getMessage(expected.id, expected.sessionId) == expected
+        val saved = if (stillCurrent) {
+            longTermMemoryService.preserveActionProjectionBeforeMutation(expected, message)
+            chatRepository.updateMessageIfUnchanged(expected, message, timelineRevision)
+        } else null
         replaceMessagesFromRepository()
         if (saved != null) return saved
         _messageFormatRepairEvents.tryEmit("回复已变化，已保留当前版本")
