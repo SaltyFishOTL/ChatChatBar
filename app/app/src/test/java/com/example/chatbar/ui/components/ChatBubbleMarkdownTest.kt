@@ -27,6 +27,17 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_preservesTheBoundaryBetweenHiddenNoteAndIndentedLiteral() {
+        val literal = "    <!-- literal -->"
+        val body = "正文\n<!-- genuine -->\n$literal"
+        val expected = "正文\n\n$literal"
+        val segmented = parseRoleplayTextSegments(body).single().displayText
+        val legacy = (parseRoleplayContent(body).single() as RoleplayContentSegment.Markdown).text
+        assertEquals(expected, sanitizeRoleplayMarkdown(segmented, forColoring = true))
+        assertEquals(expected, sanitizeRoleplayMarkdown(legacy, forColoring = true))
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

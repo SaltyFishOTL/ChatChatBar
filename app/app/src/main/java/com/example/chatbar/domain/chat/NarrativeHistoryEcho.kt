@@ -55,13 +55,23 @@ object NarrativeHistoryEcho {
                 if (length < 0 || end !in offset..text.length ||
                     (end < text.length && text[end] != '\n')
                 ) return clean(text)
-                text.substring(offset, end).also { offset = end + 1 }
+                (offset until end).also { offset = end + 1 }
             }
             // A model can spread one wrapper across several valid game_content calls.
             // A complete match on the joined body takes precedence over per-call cleanup.
             val wholeReply = cleanReply(text, streaming, interrupted, requirePair = true)
             if (wholeReply != text) return wholeReply
-            return parts.joinToString("\n", transform = ::clean)
+            // Independent wrappers are still eligible, except where the joined Markdown makes a tag literal.
+            val joinedLiterals by lazy(LazyThreadSafetyMode.NONE) {
+                val tags = wrapperFamilyTokens.values.flatMap { it.findAll(text).toList() }.sortedBy { it.range.first }
+                classifyLiterals(text, tags, wrappers.flatMap { it.closings }, includeUnclosed = streaming || interrupted).ranges
+            }
+            return parts.joinToString("\n") { part ->
+                cleanReply(text.substring(part.first, part.last + 1), streaming, interrupted, isJoinedLiteral = { index ->
+                    val joinedIndex = part.first + index
+                    joinedLiterals.any { joinedIndex in it }
+                })
+            }
         }
         return clean(text)
     }
@@ -74,7 +84,11 @@ object NarrativeHistoryEcho {
     ): String = if (enabled) cleanReply(text, streaming, interrupted) else text
 
     private fun cleanReply(
-        text: String, streaming: Boolean, interrupted: Boolean, requirePair: Boolean = false,
+        text: String,
+        streaming: Boolean,
+        interrupted: Boolean,
+        requirePair: Boolean = false,
+        isJoinedLiteral: ((Int) -> Boolean)? = null,
     ): String {
         val first = text.indexOfFirst { !it.isWhitespace() }
         if (first < 0) return text
@@ -90,12 +104,14 @@ object NarrativeHistoryEcho {
         if (wrapper == null) {
             val identifiable = start.startsWith("<历史回复 模式=") || start.startsWith("<聚焦模式=")
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
-                wrappers.any { it.opening.startsWith(start) }
+                wrappers.any { it.opening.startsWith(start) } && isJoinedLiteral?.invoke(openingStart) != true
             ) return leadingComments
             return text
         }
+        if (isJoinedLiteral?.invoke(openingStart) == true) return text
 
         val body = start.removePrefix(wrapper.opening).trimStart('\r', '\n')
+        val bodyStart = text.length - body.length
         val end = body.trimEnd()
         val familyTags = wrapperFamilyTokens.getValue(wrapper.name).findAll(end).toList()
         val literals by lazy(LazyThreadSafetyMode.NONE) {
@@ -117,7 +133,7 @@ object NarrativeHistoryEcho {
             val quote = end.getOrNull(position - 1)
             val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
             if (asciiQuoted || isEscaped(end, position) || isMarkdownQuoteLine(position) || literals.ranges.any { position in it } ||
-                isIndentedCodeLine(literals.markdown, position)
+                isIndentedCodeLine(literals.markdown, position) || isJoinedLiteral?.invoke(bodyStart + position) == true
             ) continue
 
             if (match.value.startsWith("</")) {
@@ -129,7 +145,7 @@ object NarrativeHistoryEcho {
                         return leadingComments + end.substring(0, position).trimEnd()
                     }
                     // A complete leading pair followed by visible prose is an example.
-                    if (!onlyCommentsAfter(end, afterClosing, literals.commentRanges, streaming)) return text
+                    if (!onlyCommentsAfter(end, afterClosing, literals.commentRanges, streaming || interrupted)) return text
                     val tail = body.substring(afterClosing)
                     val markerLineStart = lineStart(body, position)
                     val markerStartsLine = body.subSequence(markerLineStart, position).isBlank()
@@ -157,14 +173,15 @@ object NarrativeHistoryEcho {
             if ((streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !isMarkdownQuoteLine(lastTag) &&
-                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(literals.markdown, lastTag)
+                literals.ranges.none { lastTag in it } && !isIndentedCodeLine(literals.markdown, lastTag) &&
+                isJoinedLiteral?.invoke(bodyStart + lastTag) != true
             ) return leadingComments + end.substring(0, lastTag).trimEnd()
         }
         return leadingComments + body
     }
 
     private fun onlyCommentsAfter(
-        text: String, start: Int, comments: List<IntRange>, streaming: Boolean,
+        text: String, start: Int, comments: List<IntRange>, provisional: Boolean,
     ): Boolean {
         var next = start
         for (comment in comments) {
@@ -173,8 +190,7 @@ object NarrativeHistoryEcho {
             next = comment.last + 1
         }
         val remainder = text.substring(next).trimStart()
-        // A split comment opener should not briefly restore the already hidden wrapper in a preview.
-        return remainder.isEmpty() || streaming && commentOpening.startsWith(remainder)
+        return remainder.isEmpty() || provisional && commentOpening.startsWith(remainder)
     }
 
     /** Closed comments hidden in the bubble. Code and escaped comment openers are literal. */
@@ -278,17 +294,17 @@ object NarrativeHistoryEcho {
         var depth = 0
         var canOpenComment = onComment != null
         for (index in text.indices) {
-            if (canOpenComment && open < 0 && text.startsWith(commentOpening, index) &&
+            if (canOpenComment && text.startsWith(commentOpening, index) &&
                 !isEscaped(text, index) && delimiterExclusions.none { index in it }
             ) {
                 val end = closedCommentEnd(text, index)
                 val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
-                if (end != null || includeUnclosed && !inQuote) {
+                if (end != null || includeUnclosed && open < 0 && !inQuote) {
                     onComment?.invoke(index until (end ?: text.length))
                     break
                 }
                 // The body renderer treats the rest of a completed, unclosed comment as ordinary text.
-                if (!inQuote) canOpenComment = false
+                if (open < 0 && !inQuote) canOpenComment = false
             }
             if (!interpretProseQuotes) continue
             val symbol = text[index]

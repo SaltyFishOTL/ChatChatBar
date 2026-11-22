@@ -204,6 +204,38 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `multipart main stream keeps wrapper syntax inside cross call code comments and quotes`() = runBlocking {
+        val literal = "<历史回复 模式=\"聚焦\">\n字面示例\n</历史回复>"
+        for ((before, after) in listOf(
+            "~~~xml" to "~~~",
+            "<!--\n内部说明" to "-->\n可见正文",
+            "她说：“这段是示例：" to "这段也是引文的一部分。”",
+        )) {
+            val parts = listOf(before, literal, after)
+            val expected = parts.joinToString("\n")
+            val sseBody = sse(parts.mapIndexed { index, part ->
+                chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
+            } + listOf(chunk(reason = "tool_calls"), "[DONE]"))
+            TaskResponseServer(sseBody, "text/event-stream").use { server ->
+                var completion: ChatReplyCompletion? = null
+                val events = withTimeout(5_000) {
+                    service().streamChat("cross-call-literals", messages, model(server),
+                        onReplyCompletion = { completion = it }).toList()
+                }
+                val deltas = events.filterIsInstance<StreamEvent.Delta>()
+                val raw = deltas.joinToString("") { it.text }
+                val lengths = deltas.last().toolReplyPartLengths
+                assertEquals(expected, raw)
+                assertEquals(parts.map(String::length), lengths)
+                assertEquals(lengths, completion?.toolReplyPartLengths)
+                assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, partLengths = lengths, streaming = true))
+                assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, interrupted = true, partLengths = lengths))
+                assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, partLengths = lengths))
+            }
+        }
+    }
+
+    @Test
     fun `non streaming auxiliary response extracts JSON task payload from tool arguments`() = runBlocking {
         val expected = """{"result":"正确值"}"""
         val response = buildJsonObject {

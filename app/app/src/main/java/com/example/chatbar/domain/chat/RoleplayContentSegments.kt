@@ -43,6 +43,7 @@ private data class RoleplaySpeakerPrefix(
 
 internal val roleplayDialogueMarkerPattern =
     Regex("(?<![!！])[\\[［]([^\\]］]+)[\\]］](?:[(（]([^\\)）]*)[)）])?")
+private val markdownCodeIndent = Regex(" {4}| {0,3}\t")
 
 fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
     val visible = visibleRoleplayText(content)
@@ -222,10 +223,11 @@ private inline fun forEachVisibleRoleplayRange(content: String, appendRange: (In
         val standaloneBlock = openerStartsLine && closesLine
 
         appendRange(cursor, if (standaloneBlock) lineStart else open)
-        cursor = if (standaloneBlock && afterCloseLineEnd < content.length) {
-            afterCloseLineEnd + 1
-        } else {
-            closedAt
+        cursor = when {
+            !standaloneBlock || afterCloseLineEnd == content.length -> closedAt
+            // A preceding paragraph would absorb this indented block if the separator vanished.
+            markdownCodeIndent.matchAt(content, afterCloseLineEnd + 1) != null -> afterCloseLineEnd
+            else -> afterCloseLineEnd + 1
         }
     }
     appendRange(cursor, content.length)

@@ -35,17 +35,27 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
-    fun aSplitTrailingCommentOpenerDoesNotRestoreTheWrapperInPreview() {
+    fun aSplitTrailingCommentOpenerDoesNotRestoreTheWrapperInPreviewOrStop() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"
         val prose = "她推门。"
         for (tail in listOf("<", "<!", "<!-", "<!--")) {
             val raw = "$open\n$prose\n$close\n$tail"
             assertEquals("$prose\n$tail", NarrativeHistoryEcho.replyBody(raw, streaming = true))
+            assertEquals("$prose\n$tail", NarrativeHistoryEcho.replyBody(raw, interrupted = true))
         }
         val visibleTail = "$open\n$prose\n$close\n<!标签示例"
         assertEquals(visibleTail, NarrativeHistoryEcho.replyBody(visibleTail, streaming = true))
         assertEquals("$open\n$prose\n$close\n<!", NarrativeHistoryEcho.replyBody("$open\n$prose\n$close\n<!"))
+    }
+
+    @Test
+    fun closedCommentInsideProseQuotesCannotEndTheQuoteOrTheWrapper() {
+        val body = "“他说 <!-- 注释内有右引号 ” 和 </历史回复> --> 继续引用。”"
+        val raw = "<历史回复 模式=\"聚焦\">\n$body\n</历史回复>"
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw, interrupted = true))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw))
     }
 
     @Test
