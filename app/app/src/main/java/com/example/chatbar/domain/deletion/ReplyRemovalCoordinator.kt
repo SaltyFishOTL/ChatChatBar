@@ -111,7 +111,7 @@ internal class ReplyRemovalCoordinator(
         }
     }
 
-    /** A new save slot must not capture voice records from a half-completed reply removal. */
+    /** Archives and session copies capture only after pending reply cleanup is settled. */
     suspend fun <T> withSettledSession(sessionId: String, capture: suspend () -> T): T = mutex.withLock {
         LocalDataMaintenance.access {
             pending().filter { it.sessionId == sessionId }.forEach { finish(it) }

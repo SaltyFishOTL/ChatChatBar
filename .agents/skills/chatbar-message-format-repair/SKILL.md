@@ -39,7 +39,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Candidate switching uses repository expected-snapshot writes and reloads persisted state. Terminal model success, unchanged, stop and failure results also check the expected message and its timeline revision under the message write lock. Legacy and streaming save-slot replacement invalidate earlier repair requests even when a restored row matches byte for byte.
 - Replace only the current displayed candidate. Preserve other alternatives, images, reasoning, timestamps/order identity, and source-turn identity unless the owning operation explicitly changes them.
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
-- Keep streamed overlay in UI memory. Persist only terminal content or an explicit stopped result.
+- Keep streamed overlay in UI memory and bind it to the selected message version that started repair. Persist only terminal content or an explicit stopped result.
 - Whenever repair changes content, persist an APPLIED or recoverable terminal notice containing the exact pre-repair text.
 - Show a notice only for the matching stable version and expected display text (originalContent when restored, targetContent otherwise). A legacy notice without a version ID applies only if its checkpoint matches one version. Drop ambiguous notices when versions change.
 - Restore only the current candidate from notice.originalContent; persist restored=true while retaining the exact repaired targetContent and versionId. Redo switches to that target locally without a model request. Another version or a manual edit must not accept a stale recovery pair.

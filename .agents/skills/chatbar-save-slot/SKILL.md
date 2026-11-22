@@ -18,7 +18,7 @@ Keep archive size independent from peak app memory. Treat SaveSlot as a cross-st
 - Voice file restore: `domain/voice/FishAudioStorage.kt`; use `chatbar-fish-audio-voice` when voice ownership changes.
 - Image metadata/display behavior: use `chatbar-image-generation-runtime`.
 - Long-term-memory snapshot semantics: use `chatbar-long-term-memory`.
-- Home duplication: `domain/chat/SessionCopyService.kt` uses a temporary original-media/audio package without adding a SaveSlot. It copies `ChatSession` settings directly, remaps message/image-anchor/RAG references through `SessionCopyPolicy`, preserves session-scoped source-turn/version identities, restores independent memory nodes and voice anchors, and removes the temporary package. Only current memory is copied; SaveSlot lists and memory revision history are not duplicated.
+- Home duplication: `domain/chat/SessionCopyService.kt` settles pending reply cleanup before reading voices and RAG, then uses a temporary original-media/audio package without adding a SaveSlot. It copies `ChatSession` settings directly, remaps message/image-anchor/RAG references through `SessionCopyPolicy`, preserves session-scoped source-turn/version identities, restores independent memory nodes and voice anchors, and removes the temporary package. Only current memory is copied; SaveSlot lists and memory revision history are not duplicated.
 
 All abbreviated source paths are under `app/app/src/main/java/com/example/chatbar/`.
 

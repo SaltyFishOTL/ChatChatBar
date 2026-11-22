@@ -7,6 +7,7 @@ import com.example.chatbar.data.local.entity.SaveSlotImagePolicy
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.data.repository.MemoryRepository
 import com.example.chatbar.data.repository.VoiceMessageRepository
+import com.example.chatbar.domain.deletion.ReplyRemovalCoordinator
 import com.example.chatbar.domain.memory.LongTermMemoryService
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.voice.FishAudioStorage
@@ -18,20 +19,21 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 
 /** Uses a temporary streaming package; settings are copied directly so new fields survive. */
-class SessionCopyService(
+internal class SessionCopyService(
     private val chatRepository: ChatRepository,
     private val memoryRepository: MemoryRepository,
     private val memoryService: LongTermMemoryService,
     private val ragRepository: RagRepository,
     private val voiceRepository: VoiceMessageRepository,
     private val audioStorage: FishAudioStorage,
-    private val packages: SaveSlotPackageStorage
+    private val packages: SaveSlotPackageStorage,
+    private val replyRemovals: ReplyRemovalCoordinator
 ) {
     private val mutex = Mutex()
 
     suspend fun copySession(sourceId: String, onProgress: (String) -> Unit = {}): ChatSession =
         mutex.withLock {
-            com.example.chatbar.domain.backup.LocalDataMaintenance.access {
+            replyRemovals.withSettledSession(sourceId) {
                 withContext(Dispatchers.IO) {
                     onProgress("正在读取会话与记忆…")
                     // Also upgrades old source-turn/fingerprint records before IDs and paths change.

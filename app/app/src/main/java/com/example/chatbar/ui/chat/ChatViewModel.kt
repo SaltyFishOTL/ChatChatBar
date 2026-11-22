@@ -305,8 +305,12 @@ private const val MEMORY_HISTORY_PAGE_SIZE = 20
 
 data class MessageFormatRepairState(
     val messageId: String,
+    val messageVersionId: String,
     val previewContent: String
-)
+) {
+    internal fun appliesTo(message: ChatMessage): Boolean =
+        messageId == message.id && messageVersionId == MessageAlternativeVersionPolicy.activeVersionId(message)
+}
 
 data class SaveSlotOperationState(
     val busy: Boolean = false,
@@ -2517,10 +2521,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         var repairedPrefix = ""
         var sawDone = false
         formatRepairStopRequested = false
-        _messageFormatRepairState.value = MessageFormatRepairState(
+        val initialPreview = MessageFormatRepairState(
             messageId = message.id,
+            messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(message),
             previewContent = originalContent
         )
+        _messageFormatRepairState.value = initialPreview
 
         try {
             coroutineScope {
@@ -2535,8 +2541,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             when (event) {
                                 is StreamEvent.Delta -> {
                                     repairedPrefix += event.text
-                                    _messageFormatRepairState.value = MessageFormatRepairState(
-                                        messageId = message.id,
+                                    _messageFormatRepairState.value = initialPreview.copy(
                                         previewContent = MessageFormatRepairPolicy.progressiveOverlay(
                                             original = originalContent,
                                             repairedPrefix = repairedPrefix

@@ -1190,7 +1190,7 @@ fun ChatScreen(
                         )
                         return@itemsIndexed
                     }
-                    val repairState = messageFormatRepairState?.takeIf { it.messageId == message.id }
+                    val repairState = messageFormatRepairState?.takeIf { it.appliesTo(message) }
                     val displayedMessage = repairState?.let {
                         MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                             message = message,
