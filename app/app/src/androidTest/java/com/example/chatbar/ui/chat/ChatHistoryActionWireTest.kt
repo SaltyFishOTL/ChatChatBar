@@ -251,10 +251,12 @@ class ChatHistoryActionWireTest {
             assertEquals("/repair/v1/chat/completions", repair.path)
             val repairWire = Json.parseToJsonElement(repair.body.readUtf8()).jsonObject
             assertEquals("synthetic-repair", repairWire.getValue("model").jsonPrimitive.content)
-            val repairInput = repairWire.getValue("messages").jsonArray.last().jsonObject
-                .getValue("content").jsonPrimitive.content
-            assertTrue(repairInput.contains(rawReply))
-            assertTrue(repairInput.contains(ruleMarker))
+            assertTrue("The assembled user payload must include the reply and the repair rule", repairWire
+                .getValue("messages").jsonArray.map { it.jsonObject }.any { message ->
+                    val content = message.getValue("content").jsonPrimitive.content
+                    message.getValue("role").jsonPrimitive.content == "user" &&
+                        rawReply in content && ruleMarker in content
+                })
 
             val original = app.chatRepository.getMessages(session.id).single { it.role == MessageRole.ASSISTANT }
             assertEquals(rawReply, original.displayContent)
