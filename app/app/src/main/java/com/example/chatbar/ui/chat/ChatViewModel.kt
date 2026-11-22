@@ -10,6 +10,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.example.chatbar.ChatBarApp
 import com.example.chatbar.data.local.entity.*
+import com.example.chatbar.data.repository.ChatRagSourceRevision
 import com.example.chatbar.domain.card.CharacterCardImageTarget
 import com.example.chatbar.domain.card.CharacterCardImagePolicy
 import com.example.chatbar.domain.card.CharacterCardImageUpdater
@@ -60,6 +61,7 @@ import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
 import com.example.chatbar.domain.rag.ChatMemoryIndexPolicy
+import com.example.chatbar.domain.rag.ChatMemoryTurn
 import com.example.chatbar.domain.rag.chatMemoryChunkId
 import com.example.chatbar.domain.rag.isChatMemoryForSession
 import com.example.chatbar.domain.worldbook.WorldBookEngine
@@ -374,7 +376,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
     private val fishAudioCredentials = ChatBarApp.instance.fishAudioCredentialStore
     private val fishAudioCoordinator = ChatBarApp.instance.fishAudioGenerationCoordinator
     private val replyRemovalCoordinator = ChatBarApp.instance.replyRemovalCoordinator
-    private val ragMemoryMutationMutex = Mutex()
 
     // UI 状态
     private val _session = MutableStateFlow<ChatSession?>(null)
@@ -1212,13 +1213,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _ragMemoryBusy.value = true
         _ragMemoryStatus.value = if (chunkId == null) "正在创建 RAG 块…" else "正在更新 RAG 块…"
         return try {
-            ragMemoryMutationMutex.withLock {
-                val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
-                    ?: error("当前配置层级没有可用向量模型")
-                val embedding = ChatBarApp.instance.embeddingService.getEmbedding(
-                    normalizedContent,
-                    embeddingConfig
-                )
+            val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+                ?: error("当前配置层级没有可用向量模型")
+            val embedding = ChatBarApp.instance.embeddingService.getEmbedding(normalizedContent, embeddingConfig)
+            replyRemovalCoordinator.withStoredReplyMemory {
                 val existing = chunkId?.let { ChatBarApp.instance.ragRepository.getChunkById(it) }
                 if (chunkId != null && existing?.isChatMemoryForSession(sessionId) != true) {
                     error("目标 RAG 块不存在或不属于当前会话")
@@ -1268,7 +1266,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _ragMemoryBusy.value = true
         _ragMemoryStatus.value = "正在删除 RAG 块…"
         return try {
-            ragMemoryMutationMutex.withLock {
+            replyRemovalCoordinator.withStoredReplyMemory {
                 val existing = ChatBarApp.instance.ragRepository.getChunkById(chunkId)
                 if (existing?.isChatMemoryForSession(sessionId) != true) {
                     error("目标 RAG 块不存在或不属于当前会话")
@@ -1291,33 +1289,39 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         _ragMemoryBusy.value = true
         _ragMemoryStatus.value = "正在读取已滑出上下文的原始T轮次…"
         return try {
-            ragMemoryMutationMutex.withLock {
-                val repository = ChatBarApp.instance.ragRepository
-                val allMessages = chatRepository.getMessages(sessionId)
+            val repository = ChatBarApp.instance.ragRepository
+            val revision = chatRepository.ragSourceRevision(sessionId)
+            val allMessages = chatRepository.getMessages(sessionId)
+            check(replyRemovalCoordinator.withCurrentRagSources(sessionId, revision) {
                 repository.pruneChatMemory(
                     sessionId = sessionId,
                     liveMessageIds = allMessages.mapTo(mutableSetOf()) { it.id }
                 )
-                val activeIds = contextWindowManager
-                    .getRecentMessages(allMessages, effectiveContextWindowSize())
-                    .mapTo(mutableSetOf()) { it.id }
-                val renderContext = placeholderRenderContext()
-                val renderedMessages = allMessages.renderWith(renderContext)
-                val turnsToRebuild = ChatMemoryIndexPolicy.buildIndexableTurns(
-                    messages = renderedMessages,
-                    activeMessageIds = activeIds
-                )
+            }) { "聊天记录已变化，请重新重建 RAG 索引" }
+            val activeIds = contextWindowManager
+                .getRecentMessages(allMessages, effectiveContextWindowSize())
+                .mapTo(mutableSetOf()) { it.id }
+            val renderContext = placeholderRenderContext()
+            val renderedMessages = allMessages.renderWith(renderContext)
+            val sourceMessages = allMessages.groupBy(ChatMessage::sourceTurnId)
+            val turnsToRebuild = ChatMemoryIndexPolicy.buildIndexableTurns(
+                messages = renderedMessages,
+                activeMessageIds = activeIds
+            )
 
-                if (turnsToRebuild.isNotEmpty()) {
-                    val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
-                        ?: error("当前配置层级没有可用向量模型")
-                    AiBackgroundWorkManager.run(sessionId) {
-                        turnsToRebuild.forEachIndexed { index, turn ->
-                            _ragMemoryStatus.value = "正在重建RAG索引 ${index + 1}/${turnsToRebuild.size}…"
-                            ragManager.indexTimelineTurnMemory(turn, sessionId, embeddingConfig)
+            if (turnsToRebuild.isNotEmpty()) {
+                val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+                    ?: error("当前配置层级没有可用向量模型")
+                AiBackgroundWorkManager.run(sessionId) {
+                    turnsToRebuild.forEachIndexed { index, turn ->
+                        _ragMemoryStatus.value = "正在重建RAG索引 ${index + 1}/${turnsToRebuild.size}…"
+                        check(indexTimelineTurnMemory(turn, embeddingConfig, revision, sourceMessages[turn.sourceTurnId])) {
+                            "聊天记录已变化，请重新重建 RAG 索引"
                         }
                     }
                 }
+            }
+            check(replyRemovalCoordinator.withCurrentRagSources(sessionId, revision) {
                 repository.deleteObsoleteAutomaticChatMemory(
                     sessionId = sessionId,
                     keepChunkIds = turnsToRebuild.flatMapTo(mutableSetOf()) { turn ->
@@ -1326,14 +1330,16 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                     }
                 )
-                loadRagMemoryChunks()
-                _ragMemoryStatus.value = if (turnsToRebuild.isEmpty()) {
-                    "当前没有已滑出上下文、需要建立索引的T轮次。"
-                } else {
-                    "RAG索引已按完整T轮次边界重建，超长轮次已自动分片。"
-                }
+            }) { "聊天记录已变化，请重新重建 RAG 索引" }
+            loadRagMemoryChunks()
+            _ragMemoryStatus.value = if (turnsToRebuild.isEmpty()) {
+                "当前没有已滑出上下文、需要建立索引的T轮次。"
+            } else {
+                "RAG索引已按完整T轮次边界重建，超长轮次已自动分片。"
             }
             true
+        } catch (error: CancellationException) {
+            throw error
         } catch (e: Exception) {
             _ragMemoryStatus.value = "重建失败：${e.message}"
             runCatching { loadRagMemoryChunks() }
@@ -2373,7 +2379,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         toggleFormatRepair(messageId, shown, redo = true)
 
     private fun toggleFormatRepair(messageId: String, shown: ChatMessage?, redo: Boolean) {
-        if (_isResponding.value) return
+        if (_isResponding.value || _saveSlotOperation.value.busy) return
         viewModelScope.launch {
             try {
                 val timelineRevision = chatRepository.messageTimelineRevision(sessionId)
@@ -2428,7 +2434,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         message: ChatMessage,
         versionId: String,
         changed: ChatMessage
-    ) = ragMemoryMutationMutex.withLock {
+    ) {
         val cleanupError = withContext(NonCancellable) { replyRemovalCoordinator.remove(message, changed, versionId) }
         replaceMessagesFromRepository()
         if (cleanupError != null) _messageActionError.value = cleanupError
@@ -2564,16 +2570,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             original = originalContent,
                             repairedPrefix = repairedPrefix
                         )
-                        result = if (mixedContent == originalContent && inactiveRecovery != null) message
-                        else MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                            message = message,
-                            replacement = mixedContent,
-                            notice = MessageFormatRepairNotice(
-                                kind = MessageFormatRepairNoticeKind.STOPPED,
-                                targetContent = mixedContent,
-                                originalContent = originalContent
-                            )
-                        )
+                        result = MessageFormatRepairPolicy.afterStoppedRepair(message, mixedContent)
                     } catch (error: Exception) {
                         result = failure(error.message ?: "格式修复失败")
                     }
@@ -2784,7 +2781,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     recentTurnCount = effectiveContextWindowSize + 6,
                     includeSourceTurnIds = boundaryView?.pendingSourceTurnIds.orEmpty()
                 ).filterNot { it.id == alternativeTargetMessageId }
-                ragMemoryMutationMutex.withLock {
+                val pruneRevision = chatRepository.ragSourceRevision(sessionId)
+                replyRemovalCoordinator.withCurrentRagSources(sessionId, pruneRevision) {
                     ChatBarApp.instance.ragRepository.pruneChatMemory(
                         sessionId = sessionId,
                         liveMessageIds = chatRepository.getMessageIds(sessionId)
@@ -3480,12 +3478,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                 // 对话存入 RAG 记忆库（后台异步）
                                 if (embeddingConfig != null) {
                                     try {
-                                        ragMemoryMutationMutex.withLock {
-                                            indexMessagesLeavingContextWindow(
-                                                contextWindowSize = effectiveContextWindowSize,
-                                                embeddingConfig = embeddingConfig
-                                            )
-                                        }
+                                        indexMessagesLeavingContextWindow(
+                                            contextWindowSize = effectiveContextWindowSize,
+                                            embeddingConfig = embeddingConfig
+                                        )
                                     } catch (_: Exception) {}
                                 }
                             }
@@ -3674,12 +3670,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 _isDeletingMemory.value = true
                 yield()
                 try {
-                    ragMemoryMutationMutex.withLock {
-                        if (expected == null) {
-                            ragManager.deleteMemoryForMessage(messageId)
-                        } else {
-                            refreshMemoryAfterMessageDeletion(expected)
-                        }
+                    if (expected == null) {
+                        clearRemovedReplyMemory(messageId, sourceTurnId = null)
+                    } else {
+                        refreshMemoryAfterMessageDeletion(expected)
                     }
                 } finally {
                     _isDeletingMemory.value = false
@@ -3817,8 +3811,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 oldMessage = oldMessage,
                 content = updatedMessage.content,
                 imagePaths = updatedMessage.images,
-                deleteRemovedImages = false,
-                deleteMemoryWhenTextBlank = editOutcome.deleteMemoryForMessage
+                deleteRemovedImages = false
             )
         }
     }
@@ -3827,8 +3820,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         oldMessage: ChatMessage,
         content: String,
         imagePaths: List<String>,
-        deleteRemovedImages: Boolean,
-        deleteMemoryWhenTextBlank: Boolean = false
+        deleteRemovedImages: Boolean
     ) {
         val edited = MessageAlternativeVersionPolicy.editCurrentContent(
             message = oldMessage,
@@ -3849,16 +3841,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
         refreshMessages()
 
-        if (deleteMemoryWhenTextBlank) {
-            ragManager.deleteMemoryForMessage(oldMessage.id)
-        }
-
         refreshMemoryAfterMessageEdit(updatedMessage)
     }
 
     private suspend fun refreshMemoryAfterMessageEdit(updatedMessage: ChatMessage) {
         val messageId = updatedMessage.id
-        val repository = ChatBarApp.instance.ragRepository
+        val revision = chatRepository.ragSourceRevision(sessionId)
         val contextSize = effectiveContextWindowSize()
         val recentAndTurn = chatRepository.getContextCandidateMessages(
             sessionId = sessionId,
@@ -3872,57 +3860,40 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 .distinctBy(ChatMessage::id)
                 .sortedWith(ChatMessage.TimelineComparator)
         }
+        val live = allMessages.firstOrNull { it.id == updatedMessage.id } ?: return
+        val sourceMessages = live.sourceTurnId?.let { id -> allMessages.filter { it.sourceTurnId == id } }
         val renderContext = placeholderRenderContext()
         val renderedMessages = allMessages.renderWith(renderContext)
         val turn = ChatMemoryIndexPolicy.buildTurns(renderedMessages)
-            .firstOrNull { messageId in it.messageIds }
-        if (turn == null) {
-            repository.deleteSupersededAutomaticChatMemory(
-                sessionId = sessionId,
-                sourceTurnId = updatedMessage.sourceTurnId,
-                messageIds = setOf(messageId),
-                keepChunkIds = emptySet()
-            )
-            return
-        }
+            .firstOrNull { messageId in it.messageIds || live.sourceTurnId != null && live.sourceTurnId == it.sourceTurnId }
         val activeIds = contextWindowManager
             .getRecentMessages(allMessages, contextSize)
             .mapTo(mutableSetOf()) { it.id }
-        if (turn.messageIds.any { it in activeIds }) {
-            repository.deleteSupersededAutomaticChatMemory(
-                sessionId = sessionId,
-                sourceTurnId = turn.sourceTurnId,
-                messageIds = turn.messageIds,
-                keepChunkIds = emptySet()
-            )
-            return
-        }
-        val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
-        if (embeddingConfig != null) {
-            try {
-                AiBackgroundWorkManager.run(sessionId) {
-                    ragManager.indexTimelineTurnMemory(
-                        turn,
-                        sessionId,
-                        embeddingConfig
-                    )
+        val indexableTurn = turn?.takeIf { it.messageIds.none { id -> id in activeIds } }
+        if (indexableTurn != null) {
+            val embeddingConfig = modelResolver.embeddingModel(settingsRepository.getAppSettings())
+            if (embeddingConfig != null) {
+                try {
+                    AiBackgroundWorkManager.run(sessionId) {
+                        indexTimelineTurnMemory(indexableTurn, embeddingConfig, revision, sourceMessages)
+                    }
+                    return
+                } catch (error: CancellationException) {
+                    throw error
+                } catch (_: Exception) {
+                    // A failed embedding must not leave the old reply text searchable.
                 }
-            } catch (_: Exception) {
-                repository.deleteSupersededAutomaticChatMemory(
-                    sessionId = sessionId,
-                    sourceTurnId = turn.sourceTurnId,
-                    messageIds = turn.messageIds,
-                    keepChunkIds = emptySet()
-                )
             }
-        } else {
-            repository.deleteSupersededAutomaticChatMemory(
-                sessionId = sessionId,
-                sourceTurnId = turn.sourceTurnId,
-                messageIds = turn.messageIds,
-                keepChunkIds = emptySet()
-            )
         }
+        replyRemovalCoordinator.publishReplyMemory(
+            sessionId, revision, live.sourceTurnId, turn?.messageIds.orEmpty() + messageId, emptyList(),
+            sourceMessages = sourceMessages,
+            keepCurrentContents = indexableTurn?.let { current ->
+                ChatMemoryIndexPolicy.contentsForIndex(current).mapIndexed { index, content ->
+                    chatMemoryChunkId(sessionId, current.identityKey, index) to content
+                }.toMap()
+            }.orEmpty()
+        )
     }
 
     private suspend fun refreshMemoryAfterMessageDeletion(deletedMessage: ChatMessage) {
@@ -3935,16 +3906,13 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             refreshMemoryAfterMessageEdit(remainingTurnMessage)
             return
         }
-        val sourceTurnId = deletedMessage.sourceTurnId
-        if (sourceTurnId == null) {
-            ragManager.deleteMemoryForMessage(deletedMessage.id)
-        } else {
-            ChatBarApp.instance.ragRepository.deleteSupersededAutomaticChatMemory(
-                sessionId = sessionId,
-                sourceTurnId = sourceTurnId,
-                messageIds = setOf(deletedMessage.id),
-                keepChunkIds = emptySet()
-            )
+        clearRemovedReplyMemory(deletedMessage.id, deletedMessage.sourceTurnId)
+    }
+
+    private suspend fun clearRemovedReplyMemory(messageId: String, sourceTurnId: String?) {
+        val revision = chatRepository.ragSourceRevision(sessionId)
+        if (chatRepository.getMessage(messageId, sessionId) == null) {
+            replyRemovalCoordinator.publishReplyMemory(sessionId, revision, sourceTurnId, setOf(messageId), emptyList())
         }
     }
 
@@ -3992,14 +3960,17 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         contextWindowSize: Int,
         embeddingConfig: EmbeddingConfig
     ) {
+        val revision = chatRepository.ragSourceRevision(sessionId)
         val allMessages = chatRepository.getContextCandidateMessages(
             sessionId,
             recentTurnCount = contextWindowSize + 8
         )
-        ChatBarApp.instance.ragRepository.pruneChatMemory(
-            sessionId = sessionId,
-            liveMessageIds = chatRepository.getMessageIds(sessionId)
-        )
+        if (!replyRemovalCoordinator.withCurrentRagSources(sessionId, revision) {
+                ChatBarApp.instance.ragRepository.pruneChatMemory(
+                    sessionId = sessionId,
+                    liveMessageIds = chatRepository.getMessageIds(sessionId)
+                )
+            }) return
         if (chatRepository.getMessageTurnCount(sessionId) <= contextWindowSize) return
         val activeMessages = contextWindowManager.getRecentMessages(allMessages, contextWindowSize)
         val activeIds = activeMessages.map { it.id }.toSet()
@@ -4009,6 +3980,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             .filter { it.metadata["indexMode"] == ChatMemoryIndexPolicy.INDEX_MODE }
             .associateBy { it.id }
         val renderContext = placeholderRenderContext()
+        val sourceMessages = allMessages.groupBy(ChatMessage::sourceTurnId)
         val turnsToIndex = ChatMemoryIndexPolicy.buildIndexableTurns(
             messages = allMessages.renderWith(renderContext),
             activeMessageIds = activeIds
@@ -4036,12 +4008,20 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
             .takeLast(2)
         for (turn in turnsToIndex) {
-            ragManager.indexTimelineTurnMemory(
-                turn = turn,
-                sessionId = sessionId,
-                embeddingConfig = embeddingConfig
-            )
+            if (!indexTimelineTurnMemory(turn, embeddingConfig, revision, sourceMessages[turn.sourceTurnId])) return
         }
+    }
+
+    private suspend fun indexTimelineTurnMemory(
+        turn: ChatMemoryTurn,
+        embeddingConfig: EmbeddingConfig,
+        revision: ChatRagSourceRevision,
+        sourceMessages: List<ChatMessage>?
+    ): Boolean {
+        val chunks = ragManager.embedTimelineTurnMemory(turn, sessionId, embeddingConfig)
+        return replyRemovalCoordinator.publishReplyMemory(
+            sessionId, revision, turn.sourceTurnId, turn.messageIds, chunks, sourceMessages
+        )
     }
 
     fun clearHistoryAndMemory() {
@@ -4353,97 +4333,98 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                   val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
                   fishAudioCoordinator.cancelAndJoinForSession(sessionId)
                   val slot = saveSlotRepository.getById(summary.id) ?: error("存档不存在")
-                  if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
-                      slot.packageRef != null
-                  ) {
-                      val status = loadPackagedSaveSlot(curSession, slot)
-                      _saveSlotOperation.value = SaveSlotOperationState(status = status)
-                      return@launch
-                  }
-                  val materializedImages = materializeSaveSlotImages(slot)
-                  val materializedAudio = try {
-                      materializeSaveSlotAudio(materializedImages.slot)
-                  } catch (error: Throwable) {
-                      materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
-                      throw error
-                  }
-                  val materializedSlot = materializedAudio.slot
-                  val currentMsgs = chatRepository.getMessages(sessionId)
-                  val currentVoices = voiceMessageRepository.listForSession(sessionId)
-                  val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
-                  longTermMemoryService.ensureMigrated(sessionId)
-                  val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
-                  val currentImages = currentMsgs.flatMap { it.images + it.generatedImageMetadata.map { metadata -> metadata.imagePath } }.toSet() +
-                      listOfNotNull(curSession.chatBackground)
-                  val latest = materializedSlot.messages.lastOrNull()
-                  val restoredSession = curSession.copy(
-                      playerSetting = materializedSlot.playerSetting,
-                      playerName = materializedSlot.playerName,
-                      supplementarySetting = materializedSlot.supplementarySetting,
-                      modelId = materializedSlot.modelId,
-                      imageModelId = materializedSlot.imageModelId,
-                      novelAiImageModel = materializedSlot.novelAiImageModel,
-                      novelAiNaturalLanguageMode = materializedSlot.novelAiNaturalLanguageMode,
-                      automaticImageGenerationEnabled = materializedSlot.automaticImageGenerationEnabled,
-                      formatCardId = materializedSlot.formatCardId,
-                      replyLength = materializedSlot.replyLength,
-                      replyLanguage = materializedSlot.replyLanguage,
-                      roleplayStyle = materializedSlot.roleplayStyle,
-                      narrativeMode = materializedSlot.narrativeMode,
-                      chatBackground = materializedSlot.chatBackground,
-                      characterParticipation = materializedSlot.characterParticipation,
-                      autoPauseAbsentPeople = materializedSlot.autoPauseAbsentPeople,
-                      audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
-                      voiceLanguage = materializedSlot.voiceLanguage,
-                      longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
-                      longTermMemory = materializedSlot.longTermMemory,
-                      longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,
-                      nextSourceTurnOrder = materializedSlot.nextSourceTurnOrder,
-                      sourceTurnTombstones = materializedSlot.sourceTurnTombstones,
-                      nextTimelineTurn = materializedSlot.nextTimelineTurn,
-                      timelineTombstones = materializedSlot.timelineTombstones,
-                      memoryLimitChars = materializedSlot.memoryLimitChars,
-                      contextWindowSize = materializedSlot.contextWindowSize ?: curSession.contextWindowSize,
-                      extraWorldBookIds = materializedSlot.extraWorldBookIds,
-                      timedWorldInfo = materializedSlot.timedWorldInfo,
-                      lastMessagePreview = latest?.saveSlotPreviewText(),
-                      lastMessageTime = latest?.createdAt,
-                      lastMessageRole = latest?.role
-                  )
-                  val updatedChunks = materializedSlot.vectorChunks.map { it.copy(sourceId = sessionId) }
-                  fishAudioCoordinator.stopPlaybackForRestore()
-                  try {
-                      chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
-                      voiceMessageRepository.restoreForSession(
-                          sessionId,
-                          materializedSlot.voiceMessages,
-                          materializedSlot.messages
-                      )
-                      ChatBarApp.instance.ragRepository.deleteChunksBySource(
-                          ChunkSourceType.CHAT_MEMORY,
-                          sessionId
-                      )
-                      ChatBarApp.instance.ragRepository.saveChunks(updatedChunks)
-                      chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
-                      longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
-                  } catch (error: Throwable) {
-                      chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
-                      voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
-                      ChatBarApp.instance.ragRepository.deleteChunksBySource(
-                          ChunkSourceType.CHAT_MEMORY,
-                          sessionId
-                      )
-                      ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
-                      chatRepository.updateSession(curSession, restoreNarrativeMode = true)
-                      runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
-                      materializedAudio.createdPaths.forEach {
-                          ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
+                  val status = replyRemovalCoordinator.withRestoredReplyMemory(sessionId) { prepareChunk ->
+                      if (slot.schemaVersion >= com.example.chatbar.domain.chat.SaveSlotPackageStorage.SCHEMA_VERSION &&
+                          slot.packageRef != null
+                      ) {
+                           return@withRestoredReplyMemory loadPackagedSaveSlot(curSession, slot, prepareChunk)
                       }
-                      materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
-                      throw error
-                  }
+                      val materializedImages = materializeSaveSlotImages(slot)
+                      val materializedAudio = try {
+                          materializeSaveSlotAudio(materializedImages.slot)
+                      } catch (error: Throwable) {
+                          materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
+                          throw error
+                      }
+                      val materializedSlot = materializedAudio.slot
+                      val currentMsgs = chatRepository.getMessages(sessionId)
+                      val currentVoices = voiceMessageRepository.listForSession(sessionId)
+                      val currentChunks = ChatBarApp.instance.ragRepository.getAllChunksForSession(sessionId)
+                      longTermMemoryService.ensureMigrated(sessionId)
+                      val currentMemorySnapshot = longTermMemoryService.snapshot(sessionId)
+                      val currentImages = currentMsgs.flatMap { it.images + it.generatedImageMetadata.map { metadata -> metadata.imagePath } }.toSet() +
+                          listOfNotNull(curSession.chatBackground)
+                      val latest = materializedSlot.messages.lastOrNull()
+                      val restoredSession = curSession.copy(
+                          playerSetting = materializedSlot.playerSetting,
+                          playerName = materializedSlot.playerName,
+                          supplementarySetting = materializedSlot.supplementarySetting,
+                          modelId = materializedSlot.modelId,
+                          imageModelId = materializedSlot.imageModelId,
+                          novelAiImageModel = materializedSlot.novelAiImageModel,
+                          novelAiNaturalLanguageMode = materializedSlot.novelAiNaturalLanguageMode,
+                          automaticImageGenerationEnabled = materializedSlot.automaticImageGenerationEnabled,
+                          formatCardId = materializedSlot.formatCardId,
+                          replyLength = materializedSlot.replyLength,
+                          replyLanguage = materializedSlot.replyLanguage,
+                          roleplayStyle = materializedSlot.roleplayStyle,
+                          narrativeMode = materializedSlot.narrativeMode,
+                          chatBackground = materializedSlot.chatBackground,
+                          characterParticipation = materializedSlot.characterParticipation,
+                          autoPauseAbsentPeople = materializedSlot.autoPauseAbsentPeople,
+                          audiobookModeEnabled = materializedSlot.audiobookModeEnabled,
+                          voiceLanguage = materializedSlot.voiceLanguage,
+                          longTermMemoryEnabled = materializedSlot.longTermMemoryEnabled,
+                          longTermMemory = materializedSlot.longTermMemory,
+                          longTermMemoryUpdatedThroughMessageId = materializedSlot.longTermMemoryUpdatedThroughMessageId,
+                          nextSourceTurnOrder = materializedSlot.nextSourceTurnOrder,
+                          sourceTurnTombstones = materializedSlot.sourceTurnTombstones,
+                          nextTimelineTurn = materializedSlot.nextTimelineTurn,
+                          timelineTombstones = materializedSlot.timelineTombstones,
+                          memoryLimitChars = materializedSlot.memoryLimitChars,
+                          contextWindowSize = materializedSlot.contextWindowSize ?: curSession.contextWindowSize,
+                          extraWorldBookIds = materializedSlot.extraWorldBookIds,
+                          timedWorldInfo = materializedSlot.timedWorldInfo,
+                          lastMessagePreview = latest?.saveSlotPreviewText(),
+                          lastMessageTime = latest?.createdAt,
+                          lastMessageRole = latest?.role
+                      )
+                      fishAudioCoordinator.stopPlaybackForRestore()
+                      try {
+                          chatRepository.replaceMessagesForSession(sessionId, materializedSlot.messages)
+                          voiceMessageRepository.restoreForSession(
+                              sessionId,
+                              materializedSlot.voiceMessages,
+                              materializedSlot.messages
+                          )
+                          ChatBarApp.instance.ragRepository.deleteChunksBySource(
+                              ChunkSourceType.CHAT_MEMORY,
+                              sessionId
+                          )
+                           ChatBarApp.instance.ragRepository.saveChunks(
+                               materializedSlot.vectorChunks.map { prepareChunk(it) }
+                           )
+                          chatRepository.updateSession(restoredSession, restoreNarrativeMode = true)
+                          longTermMemoryService.loadSnapshot(sessionId, materializedSlot.memorySnapshot)
+                      } catch (error: Throwable) {
+                          chatRepository.replaceMessagesForSession(sessionId, currentMsgs)
+                          voiceMessageRepository.restoreForSession(sessionId, currentVoices, currentMsgs)
+                          ChatBarApp.instance.ragRepository.deleteChunksBySource(
+                              ChunkSourceType.CHAT_MEMORY,
+                              sessionId
+                          )
+                          ChatBarApp.instance.ragRepository.saveChunks(currentChunks)
+                          chatRepository.updateSession(curSession, restoreNarrativeMode = true)
+                          runCatching { longTermMemoryService.loadSnapshot(sessionId, currentMemorySnapshot) }
+                          materializedAudio.createdPaths.forEach {
+                              ChatBarApp.instance.fishAudioStorage.deleteIfOwned(it)
+                          }
+                          materializedImages.createdPaths.forEach { deleteDisposableChatImage(it) }
+                          throw error
+                      }
 
-                  val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
+                       finishSaveSlotMediaCleanup(currentImages, currentVoices)
+                  }
                   loadSessionData()
                   _saveSlotOperation.value = SaveSlotOperationState(status = status)
                 } catch (error: Throwable) {
@@ -4461,7 +4442,11 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
     }
 
-    private suspend fun loadPackagedSaveSlot(curSession: ChatSession, slot: SaveSlot): String {
+    private suspend fun loadPackagedSaveSlot(
+        curSession: ChatSession,
+        slot: SaveSlot,
+        prepareChunk: suspend (VectorChunk) -> VectorChunk
+    ): String {
         val currentImages = linkedSetOf<String>()
         chatRepository.forEachMessage(sessionId) { message ->
             currentImages += message.images
@@ -4491,7 +4476,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 withContext(NonCancellable) {
                     voiceMessageRepository.restoreForSession(sessionId, restoredVoices)
                     ChatBarApp.instance.ragRepository.replaceChunksForSessionStreaming(sessionId) { emit ->
-                        reader.streamRag(sessionId, emit)
+                        reader.streamRag(sessionId) { emit(prepareChunk(it)) }
                     }
                     val messageState = chatRepository.getSession(sessionId) ?: curSession
                     chatRepository.updateSession(
@@ -4538,9 +4523,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             }
 
         }
-        val status = finishSaveSlotMediaCleanup(currentImages, currentVoices)
-        loadSessionData()
-        return status
+        return finishSaveSlotMediaCleanup(currentImages, currentVoices)
     }
 
     private suspend fun finishSaveSlotMediaCleanup(

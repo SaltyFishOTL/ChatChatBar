@@ -98,6 +98,7 @@ class ChatMemoryIdentityTest {
             sourceId = "session-1",
             content = "用户手动维护的记忆",
             embedding = listOf(1f),
+            messageId = "removed-historical-anchor",
             metadata = mapOf("indexMode" to "manual"),
             createdAt = 10
         )

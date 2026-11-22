@@ -105,7 +105,7 @@ class VoiceMessageRepository(
     ) = mutex.withLock {
         ensureInitializedLocked()
         // Use the same voice-to-message lock order as reply removal for validation and handoff.
-        chats.withStableMessagesForPlayback {
+        chats.withStableMessageTimeline {
             enqueue(captured.mapNotNull { currentVoiceForPlaybackLocked(it, requireActiveVersion = true) })
         }
     }

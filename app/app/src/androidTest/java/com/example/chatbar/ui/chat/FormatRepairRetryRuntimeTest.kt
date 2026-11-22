@@ -22,6 +22,7 @@ import okhttp3.mockwebserver.Dispatcher
 import okhttp3.mockwebserver.MockResponse
 import okhttp3.mockwebserver.MockWebServer
 import okhttp3.mockwebserver.RecordedRequest
+import okhttp3.mockwebserver.SocketPolicy
 import org.junit.Assert.*
 import org.junit.Test
 
@@ -31,6 +32,8 @@ class FormatRepairRetryRuntimeTest {
     @Test fun originalTextSuccessClearsPreviousFailure() = verifyRetry(false)
 
     @Test fun undoThenFailedAiRetryStillAllowsLocalRedo() = verifyRetry(true, keepRedo = true)
+    @Test fun undoThenStopBeforeTheFirstRepairDeltaStillAllowsLocalRedo() =
+        verifyRetry(keepRedo = true, stopBeforeOutput = true)
     @Test fun inactiveRedoSurvivesSiblingFailureAndNoOp() = verifyRetry(true, keepRedo = true, repairSibling = true)
 
     @Test fun regenerateResponseKeepsRedoOnThePreviousVersion() = verifyRegeneratedRedo(repairNewVersion = false)
@@ -155,7 +158,7 @@ class FormatRepairRetryRuntimeTest {
         verifyRetry(lateResponse = failureResponse())
 
     private fun verifyRetry(marker: Boolean = false, keepRedo: Boolean = false, lateResponse: MockResponse? = null,
-        repairSibling: Boolean = false) = runBlocking<Unit> {
+        repairSibling: Boolean = false, stopBeforeOutput: Boolean = false) = runBlocking<Unit> {
         val app = ApplicationProvider.getApplicationContext<ChatBarApp>()
         withTimeout(30_000) { app.dependenciesReady.first { it } }
         withTimeout(30_000) { app.settingsRepository.isInitialized.first { it } }
@@ -199,12 +202,13 @@ class FormatRepairRetryRuntimeTest {
                 withContext(Dispatchers.Main) { vm.switchAssistantAlternative(reply.id, -1) }
                 withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.currentAlternativeIndex == 0 } } }
             }
-            server.enqueue(failureResponse())
+            server.enqueue(if (stopBeforeOutput) MockResponse().setSocketPolicy(SocketPolicy.NO_RESPONSE) else failureResponse())
             suspend fun repair() {
                 withContext(Dispatchers.Main) { vm.repairMessageFormat(reply.id) }
                 val request = requireNotNull(server.takeRequest(15, TimeUnit.SECONDS)) { "loopback request missing" }
                 assertEquals("/v1/chat/completions", request.path)
                 assertEquals("Bearer synthetic-retry-key", request.getHeader("Authorization"))
+                if (stopBeforeOutput) withContext(Dispatchers.Main) { vm.cancelResponseGeneration() }
                 withTimeout(30_000) { vm.isResponding.first { !it } }
             }
             repair()
@@ -212,7 +216,7 @@ class FormatRepairRetryRuntimeTest {
             val failed = requireNotNull(cold.getMessage(reply.id, session.id))
             if (keepRedo) {
                 val notice = requireNotNull(failed.formatRepairNotice)
-                assertNotNull("Failed AI retry must retain the cached redo pair", notice.originalContent)
+                assertNotNull("An interrupted AI retry must retain the cached redo pair", notice.originalContent)
                 assertTrue(notice.restored)
                 assertEquals("cached repaired result", notice.targetContent)
                 if (repairSibling) {
@@ -227,7 +231,7 @@ class FormatRepairRetryRuntimeTest {
                     withTimeout(15_000) { vm.messages.first { rows -> rows.any { it.id == reply.id && it.currentAlternativeIndex == 1 } } }
                 } else {
                     assertEquals(baseReply.displayContent, failed.displayContent)
-                    assertNotNull(notice.errorMessage)
+                    if (stopBeforeOutput) assertNull(notice.errorMessage) else assertNotNull(notice.errorMessage)
                 }
                 withContext(Dispatchers.Main) { vm.redoMessageFormatRepair(reply.id) }
                 withTimeout(15_000) { vm.messages.first { messages -> messages.any {

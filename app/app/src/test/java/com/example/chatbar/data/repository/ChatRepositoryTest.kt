@@ -9,6 +9,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.launch
 import com.example.chatbar.data.local.entity.MESSAGE_ORDER_STEP
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import java.io.File
 import kotlinx.coroutines.test.runTest
 import org.junit.Assert.assertEquals
@@ -98,6 +99,35 @@ class ChatRepositoryTest {
             assertTrue(committed.updatedAt > replacement.updatedAt)
             assertEquals(committed, chats.getMessage(original.id, session.id))
         }
+    }
+
+    @Test fun `RAG publication compares stable turn version after unrelated writes and same text switches`() = runTest {
+        val chats = repository("rag-turn")
+        val session = chats.createSession(ChatSession.create("card", "synthetic"))
+        val user = chats.addMessage(ChatMessage.create(session.id, MessageRole.USER, "old prompt"))
+        val initial = ChatMessage.create(session.id, MessageRole.ASSISTANT, "identical reply text")
+        val reply = chats.addMessage(MessageAlternativeVersionPolicy.append(
+            initial, initial.content, "different-version"
+        ))
+        val sourceTurnId = requireNotNull(reply.sourceTurnId)
+        val snapshot = listOf(user, reply)
+        val revision = chats.ragSourceRevision(session.id)
+        chats.addMessage(ChatMessage.create(session.id, MessageRole.USER, "unrelated next turn"))
+        assertTrue(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) { })
+        assertFalse(chats.withCurrentRagSources(session.id, revision) { error("must reject full sweep") })
+
+        val switched = MessageAlternativeVersionPolicy.select(reply, 0)
+        chats.updateMessage(switched)
+        assertEquals(reply.displayContent, switched.displayContent)
+        assertFalse(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) {
+            error("equal text from a different version must not authorize publication")
+        })
+
+        chats.updateMessage(reply)
+        chats.replaceMessagesForSession(session.id, chats.getMessages(session.id))
+        assertFalse(chats.withCurrentRagSources(session.id, revision, sourceTurnId, snapshot) {
+            error("restoring the same snapshot must not reactivate an older request")
+        })
     }
 
     @Test

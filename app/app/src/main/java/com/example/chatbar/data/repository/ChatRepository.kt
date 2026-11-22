@@ -33,6 +33,8 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 
+internal data class ChatRagSourceRevision(val timeline: Long, val sources: Long)
+
 /**
  * 聊天仓库 - 管理会话和消息
  */
@@ -56,6 +58,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     private var initialized = false
     private val messageAppendMutex = Mutex()
     private val messageTimelineRevisions = mutableMapOf<String, Long>()
+    private val ragSourceRevisions = mutableMapOf<String, Long>()
     private val messageIndexMutex = Mutex()
     private val messageIndexes = ConcurrentHashMap<String, ChatMessageIndex>()
     private val scrollPositionMutex = Mutex()
@@ -581,8 +584,13 @@ class ChatRepository(private val storage: JsonFileStorage) {
         inserted
     }
 
-    private suspend fun saveMessageRecord(message: ChatMessage, updateIndex: Boolean = true) {
+    private suspend fun saveMessageRecord(
+        message: ChatMessage,
+        updateIndex: Boolean = true,
+        ragSourceChanged: Boolean = true
+    ) {
         val index = if (updateIndex) loadMessageIndex(message.sessionId) else null
+        if (ragSourceChanged) invalidateRagSources(message.sessionId)
         storage.saveEntityUncached(
             MESSAGE_TYPE,
             messageStorageId(message.sessionId, message.id),
@@ -604,14 +612,37 @@ class ChatRepository(private val storage: JsonFileStorage) {
     internal suspend fun messageTimelineRevision(sessionId: String): Long =
         messageAppendMutex.withDataAccess { messageTimelineRevisions[sessionId] ?: 0L }
 
+    internal suspend fun ragSourceRevision(sessionId: String): ChatRagSourceRevision =
+        messageAppendMutex.withDataAccess {
+            ChatRagSourceRevision(messageTimelineRevisions[sessionId] ?: 0L, ragSourceRevisions[sessionId] ?: 0L)
+        }
+
+    internal suspend fun withCurrentRagSources(
+        sessionId: String,
+        revision: ChatRagSourceRevision,
+        sourceTurnId: String? = null,
+        sourceMessages: List<ChatMessage>? = null,
+        publish: suspend () -> Unit
+    ): Boolean = messageAppendMutex.withDataAccess {
+        if (revision.timeline != (messageTimelineRevisions[sessionId] ?: 0L)) return@withDataAccess false
+        if (revision.sources != (ragSourceRevisions[sessionId] ?: 0L)) {
+            if (sourceTurnId == null || sourceMessages == null) return@withDataAccess false
+            val current = getMessagesForSourceTurn(sessionId, sourceTurnId)
+            if (current.size != sourceMessages.size ||
+                current.indices.any { !hasSameRagSource(current[it], sourceMessages[it]) }) return@withDataAccess false
+        }
+        publish()
+        true
+    }
+
     internal suspend fun isCurrentMessageSnapshot(expected: ChatMessage, expectedTimelineRevision: Long): Boolean =
         messageAppendMutex.withDataAccess {
             expectedTimelineRevision == (messageTimelineRevisions[expected.sessionId] ?: 0L) &&
                 getMessage(expected.id, expected.sessionId) == expected
         }
 
-    internal suspend fun withStableMessagesForPlayback(admit: suspend () -> Unit) =
-        messageAppendMutex.withDataAccess { admit() }
+    internal suspend fun <T> withStableMessageTimeline(read: suspend () -> T): T =
+        messageAppendMutex.withDataAccess { read() }
 
     suspend fun updateMessageIfUnchanged(
         expected: ChatMessage,
@@ -632,7 +663,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             updatedAt = System.currentTimeMillis(),
             orderKey = persisted?.orderKey ?: message.orderKey
         )
-        saveMessageRecord(updated)
+        saveMessageRecord(updated, ragSourceChanged = persisted == null || !hasSameRagSource(updated, persisted))
 
         val latest = latestMessage(updated.sessionId)
         if (latest?.id == updated.id) {
@@ -648,6 +679,12 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
         return updated
     }
+
+    private fun hasSameRagSource(first: ChatMessage, second: ChatMessage): Boolean =
+        first.id == second.id && first.role == second.role && first.displayContent == second.displayContent &&
+            first.sourceTurnId == second.sourceTurnId && first.sourceTurnOrder == second.sourceTurnOrder &&
+            first.timelineTurn == second.timelineTurn && first.createdAt == second.createdAt &&
+            MessageAlternativeVersionPolicy.activeVersionId(first) == MessageAlternativeVersionPolicy.activeVersionId(second)
 
     private suspend fun latestMessage(sessionId: String): ChatMessage? {
         val latest = loadMessageIndex(sessionId).entries.lastOrNull() ?: return null
@@ -765,6 +802,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         require(replacement == null || replacement.id == expected.id && replacement.sessionId == expected.sessionId)
         prepare()
         if (replacement == null) {
+            invalidateRagSources(expected.sessionId)
             storage.deleteEntityUncached(
                 MESSAGE_TYPE, messageStorageId(expected.sessionId, expected.id), requireSuccessfulDelete = true
             )
@@ -830,6 +868,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
         val removed = getMessage(messageId, sessionId)
         val index = loadMessageIndex(sessionId)
         if (removed == null && index.entries.none { it.messageId == messageId }) return
+        invalidateRagSources(sessionId)
         if (!repairMissingEntryOnly) {
             try {
                 storage.deleteEntityUncached(MESSAGE_TYPE, messageStorageId(sessionId, messageId), requireSuccessfulDelete = true)
@@ -980,6 +1019,11 @@ class ChatRepository(private val storage: JsonFileStorage) {
 
     private fun invalidateMessageTimeline(sessionId: String) {
         messageTimelineRevisions[sessionId] = (messageTimelineRevisions[sessionId] ?: 0L) + 1L
+        invalidateRagSources(sessionId)
+    }
+
+    private fun invalidateRagSources(sessionId: String) {
+        ragSourceRevisions[sessionId] = (ragSourceRevisions[sessionId] ?: 0L) + 1L
     }
 
     /** 旧消息首次使用时补稳定source turn；不改消息ID、时间、orderKey。 */
@@ -1130,35 +1174,38 @@ class ChatRepository(private val storage: JsonFileStorage) {
         initialize()
         var updatedCount = 0
         _sessions.value.filter { it.characterCardId == characterCardId }.forEach { session ->
-            val messages = getMessages(session.id)
-            var sessionChanged = false
-            val updatedMessages = messages.map { message ->
-                val content = renameRoleplaySpeakerMarkers(message.content, renames)
-                val alternatives = message.alternatives.map { alternative ->
-                    renameRoleplaySpeakerMarkers(alternative, renames)
-                }
-                if (content == message.content && alternatives == message.alternatives) {
-                    message
-                } else {
-                    updatedCount++
-                    sessionChanged = true
-                    message.copy(
-                        content = content,
-                        alternatives = alternatives,
-                        updatedAt = System.currentTimeMillis()
-                    ).also { saveMessageRecord(it) }
-                }
+            updatedCount += messageAppendMutex.withDataAccess { rewriteSpeakerTagsInSession(session, renames) }
+        }
+        return updatedCount
+    }
+
+    private suspend fun rewriteSpeakerTagsInSession(session: ChatSession, renames: List<SpeakerTagRename>): Int {
+        var updatedCount = 0
+        val updatedMessages = getMessages(session.id).map { message ->
+            val content = renameRoleplaySpeakerMarkers(message.content, renames)
+            val alternatives = message.alternatives.map { alternative ->
+                renameRoleplaySpeakerMarkers(alternative, renames)
             }
-            if (sessionChanged) {
-                val latest = updatedMessages.lastOrNull()
-                updateSession(
-                    session.copy(
-                        lastMessagePreview = latest?.previewText(),
-                        lastMessageTime = latest?.createdAt,
-                        lastMessageRole = latest?.role
-                    )
+            if (content == message.content && alternatives == message.alternatives) {
+                message
+            } else {
+                updatedCount++
+                message.copy(
+                    content = content,
+                    alternatives = alternatives,
+                    updatedAt = System.currentTimeMillis()
+                ).also { saveMessageRecord(it) }
+            }
+        }
+        if (updatedCount != 0) {
+            val latest = updatedMessages.lastOrNull()
+            updateSession(
+                session.copy(
+                    lastMessagePreview = latest?.previewText(),
+                    lastMessageTime = latest?.createdAt,
+                    lastMessageRole = latest?.role
                 )
-            }
+            )
         }
         return updatedCount
     }

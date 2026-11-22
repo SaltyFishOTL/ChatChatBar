@@ -70,6 +70,19 @@ object MessageFormatRepairPolicy {
     internal fun afterUnchangedRepair(message: ChatMessage): ChatMessage =
         updateCurrentNotice(message, applicableNotice(message)?.takeIf { it.originalContent != null }?.withoutAttemptError())
 
+    internal fun afterStoppedRepair(message: ChatMessage, partialContent: String): ChatMessage {
+        if (partialContent == message.displayContent) return message
+        return replaceCurrentDisplayContent(
+            message = message,
+            replacement = partialContent,
+            notice = MessageFormatRepairNotice(
+                kind = MessageFormatRepairNoticeKind.STOPPED,
+                originalContent = message.displayContent,
+                targetContent = partialContent
+            )
+        )
+    }
+
     private fun updateNotice(
         previous: ChatMessage,
         updated: ChatMessage,

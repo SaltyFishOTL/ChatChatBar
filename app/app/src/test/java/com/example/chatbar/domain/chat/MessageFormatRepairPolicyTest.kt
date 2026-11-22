@@ -248,6 +248,21 @@ class MessageFormatRepairPolicyTest {
         assertEquals(restored.currentAlternativeVersionId, redone.currentAlternativeVersionId)
     }
 
+    @Test fun stopWithoutChangedTextPreservesTheSelectedVersionsRecoveryPair() {
+        val applied = MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+            message(), "repaired",
+            MessageFormatRepairPolicy.completedRepairNotice(message().displayContent, "repaired")
+        )
+        val restored = requireNotNull(MessageFormatRepairPolicy.restoreOriginal(applied))
+        assertEquals(applied, MessageFormatRepairPolicy.afterStoppedRepair(applied, applied.displayContent))
+        val stopped = MessageFormatRepairPolicy.afterStoppedRepair(restored, restored.displayContent)
+        assertEquals(restored, stopped)
+        assertEquals("repaired", MessageFormatRepairPolicy.redoRepair(stopped)?.displayContent)
+        val partial = MessageFormatRepairPolicy.afterStoppedRepair(restored, "a real partial change")
+        assertEquals(MessageFormatRepairNoticeKind.STOPPED, MessageFormatRepairPolicy.applicableNotice(partial)?.kind)
+        assertEquals(restored.displayContent, MessageFormatRepairPolicy.restoreOriginal(partial)?.displayContent)
+    }
+
     @Test fun failedRetryKeepsAppliedUndoPairAndRestoreClearsAttemptError() {
         val repaired = MessageFormatRepairPolicy.replaceCurrentDisplayContent(message(), "cached repaired",
             MessageFormatRepairPolicy.completedRepairNotice(message().content, "cached repaired"))
