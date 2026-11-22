@@ -3611,7 +3611,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             newVersionId = MessageAlternativeVersionPolicy.newVersionId(old),
             narrativeMode = generatedMessage.narrativeMode
         ).copy(reasoningContent = generatedMessage.reasoningContent)
-        return chatRepository.updateMessageIfUnchanged(old, updated, regenerationTarget.timelineRevision)
+        return fishAudioCoordinator.switchDisplayedVersion(old, updated, regenerationTarget.timelineRevision)
     }
 
     /**

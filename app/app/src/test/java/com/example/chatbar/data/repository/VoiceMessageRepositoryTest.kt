@@ -121,7 +121,12 @@ class VoiceMessageRepositoryTest {
 
         assertNull(voices.switchDisplayedVersion(shown.copy(content = "stale"), other, chats, evict))
         assertTrue(removals.isEmpty())
-        val committed = requireNotNull(voices.switchDisplayedVersion(shown, other, chats, evict))
+        val oldRevision = chats.messageTimelineRevision(shown.sessionId)
+        chats.addMessage(ChatMessage.create(shown.sessionId, MessageRole.USER, "A new turn"))
+        assertNull(voices.switchDisplayedVersion(shown, other, chats, evict, oldRevision))
+        assertTrue(removals.isEmpty())
+        val revision = chats.messageTimelineRevision(shown.sessionId)
+        val committed = requireNotNull(voices.switchDisplayedVersion(shown, other, chats, evict, revision))
         assertEquals(listOf(setOf(first.id)), removals)
         voices.withCurrentPlaybackQueue(listOf(first, second), chats) { assertEquals(listOf(second), it) }
         val stale = runCatching {

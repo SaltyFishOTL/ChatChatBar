@@ -262,11 +262,13 @@ class VoiceMessageRepository(
         expected: ChatMessage,
         replacement: ChatMessage,
         chats: ChatRepository,
-        removeFromPlayback: suspend (Set<String>) -> Unit
+        removeFromPlayback: suspend (Set<String>) -> Unit,
+        expectedTimelineRevision: Long? = null
     ): ChatMessage? = mutex.withLock {
         ensureInitializedLocked()
         withContext(NonCancellable) {
-            val committed = chats.updateMessageIfUnchanged(expected, replacement) ?: return@withContext null
+            val committed = chats.updateMessageIfUnchanged(expected, replacement, expectedTimelineRevision)
+                ?: return@withContext null
             val oldIds = _voices.value.filter { VoicePlaybackQueuePolicy.ownsDisplayedVersion(expected, it) }
                 .mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
             removeFromPlayback(oldIds)

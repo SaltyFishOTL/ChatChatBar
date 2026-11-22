@@ -418,10 +418,15 @@ class FishAudioGenerationCoordinator(
         }
     }
 
-    internal suspend fun switchDisplayedVersion(expected: ChatMessage, replacement: ChatMessage): ChatMessage? =
+    internal suspend fun switchDisplayedVersion(
+        expected: ChatMessage,
+        replacement: ChatMessage,
+        expectedTimelineRevision: Long? = null
+    ): ChatMessage? =
         autoPlayMutex.withLock {
-            val committed = voiceRepository.switchDisplayedVersion(expected, replacement, chatRepository, playback::removeQueuedVoices)
-                ?: return@withLock null
+            val committed = voiceRepository.switchDisplayedVersion(
+                expected, replacement, chatRepository, playback::removeQueuedVoices, expectedTimelineRevision
+            ) ?: return@withLock null
             pendingAutoPlay.entries.removeAll { (_, pending) ->
                 pending.voices?.any { VoicePlaybackQueuePolicy.ownsDisplayedVersion(expected, it) } == true
             }
