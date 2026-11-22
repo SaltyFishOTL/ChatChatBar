@@ -72,6 +72,28 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsBacktickFencesInsideTildeCodeLiteral() {
+        val marker = "\u0060\u0060\u0060"
+        val body = "开场\n~~~~text\n${marker}xml\n</历史回复>\n$marker\n~~~~\n落幕"
+        val segmented = parseRoleplayTextSegments(body).single()
+        assertEquals(RoleplaySegmentKind.NARRATION, segmented.kind)
+        assertEquals(body, segmented.displayText)
+        val legacy = parseRoleplayContent(body).single() as RoleplayContentSegment.Markdown
+        assertEquals(body, legacy.text)
+        assertEquals(body, stripRoleplayStatusSegments(body))
+
+        val status = "$marker\n实际状态\n$marker"
+        val withStatus = "$body\n$status"
+        val segmentedWithStatus = parseRoleplayTextSegments(withStatus)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS),
+            segmentedWithStatus.map { it.kind })
+        assertEquals("实际状态", segmentedWithStatus.last().displayText)
+        val legacyWithStatus = parseRoleplayContent(withStatus)
+        assertEquals("实际状态", (legacyWithStatus.last() as RoleplayContentSegment.Status).text)
+        assertEquals(body, stripRoleplayStatusSegments(withStatus))
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

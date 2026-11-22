@@ -24,6 +24,7 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
+    private val formatTemplateLabel = Regex(" {0,3}(?:(?:本轮)?输出(?:模板|格式)|请按以下格式输出)[ \\t]*[:：][ \\t]*")
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
     private val proseDelimiters = mapOf(
@@ -56,13 +57,19 @@ object NarrativeHistoryEcho {
                 !literals.isMarkdownQuoteLine(start, includeStandaloneLazyTags = true)
         }
         val markup = tokens.filter(::isMarkup)
-        // A bare template can declare the output shape. A tag mentioned in prose or code cannot.
         return candidates.any { wrapper ->
-            val opening = markup.firstOrNull {
-                it.value == wrapper.opening &&
-                    formatCard.subSequence(lineStart(formatCard, it.range.first), it.range.first).isBlank()
-            } ?: return@any false
-            markup.any { it.range.first > opening.range.last && it.value in wrapper.closings }
+            markup.any declaration@{ opening ->
+                if (opening.value != wrapper.opening) return@declaration false
+                val start = opening.range.first
+                val prefix = formatCard.subSequence(lineStart(formatCard, start), start)
+                val bare = prefix.isBlank()
+                if (!bare && !formatTemplateLabel.matches(prefix)) return@declaration false
+                val closing = markup.firstOrNull {
+                    it.range.first > opening.range.last && it.value in wrapper.closings
+                } ?: return@declaration false
+                // A labelled declaration must end its line, apart from whitespace and comments.
+                bare || literals.markdown.substring(closing.range.last + 1).lineSequence().first().isBlank()
+            }
         }
     }
 
@@ -309,9 +316,12 @@ object NarrativeHistoryEcho {
         return result
     }
 
-    internal fun inlineCodeRanges(body: String): List<IntRange> {
+    internal fun literalBacktickRanges(body: String): List<IntRange> {
         val markdown = bareCarriageReturn.replace(body, "\n")
-        return inlineCodeRangesOutsideBlocks(markdown, MarkdownCodeFences.blocks(markdown).map { it.range })
+        val blocks = MarkdownCodeFences.blocks(markdown)
+        val inlineCode = inlineCodeRangesOutsideBlocks(markdown, blocks.map { it.range })
+        val tildeCode = blocks.filter { it.marker == '~' }.map { it.range }
+        return (inlineCode + tildeCode).sortedBy { it.first }
     }
 
     private fun inlineCodeRangesOutsideBlocks(body: String, codeBlocks: List<IntRange>): List<IntRange> {
@@ -358,6 +368,9 @@ object NarrativeHistoryEcho {
         var closing: Char? = null
         var depth = 0
         var canOpenComment = onComment != null
+        fun isProseDelimiter(index: Int): Boolean =
+            !isEscaped(text, index) && delimiterExclusions.none { index in it }
+
         for (index in text.indices) {
             if (canOpenComment && text.startsWith(commentOpening, index) &&
                 !isEscaped(text, index) && delimiterExclusions.none { index in it }
@@ -375,13 +388,13 @@ object NarrativeHistoryEcho {
             val symbol = text[index]
             val matchingClose = proseDelimiters[symbol]
             if (matchingClose == null && symbol != closing) continue
-            if (isEscaped(text, index) || delimiterExclusions.any { index in it }) continue
+            if (!isProseDelimiter(index)) continue
             val followsWord = text.getOrNull(index - 1)?.isLetterOrDigit() == true
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
             if (symbol == '’' && followsWord && (precedesWord ||
-                    isCurlyPossessive(text, open, index, interiorClosings))
+                    isCurlyPossessive(text, open, index, interiorClosings, ::isProseDelimiter))
             ) continue
             if (symbol == '"' && open < 0 && text.getOrNull(index - 1)?.isDigit() == true && !precedesWord) continue
             when {
@@ -404,17 +417,21 @@ object NarrativeHistoryEcho {
     }
 
     private fun isCurlyPossessive(
-        text: String, quoteStart: Int, position: Int, interiorClosings: List<Int>,
+        text: String,
+        quoteStart: Int,
+        position: Int,
+        interiorClosings: List<Int>,
+        isProseDelimiter: (Int) -> Boolean,
     ): Boolean {
         if (!text[position - 1].equals('s', ignoreCase = true) ||
             text.getOrNull(position + 1)?.isWhitespace() != true
         ) return false
         val wordStart = (position + 2 until text.length).firstOrNull { !text[it].isWhitespace() } ?: return false
         if (!text[wordStart].isLetter()) return false
-        val nextClose = text.indexOf('’', position + 1)
-        val nextOpen = text.indexOf('‘', position + 1)
-        if (nextClose >= 0) return nextOpen < 0 || nextClose < nextOpen
-        if (nextOpen >= 0) return false
+        val nextQuote = (position + 1 until text.length).firstOrNull { index ->
+            (text[index] == '’' || text[index] == '‘') && isProseDelimiter(index)
+        }
+        if (nextQuote != null) return text[nextQuote] == '’'
         // Require a speech cue before widening a quote with an ambiguous English closing mark.
         if (!chineseSpeechLead.containsMatchIn(text.subSequence(lineStart(text, quoteStart), quoteStart))) return false
         if (!unfinishedPluralPossessor.matches(text.subSequence(quoteStart + 1, position))) return false

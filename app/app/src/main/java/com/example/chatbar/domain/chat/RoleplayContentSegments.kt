@@ -250,10 +250,10 @@ private inline fun forEachVisibleRoleplayRange(content: String, appendRange: (In
 
 private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayTextSegment> {
     val marker = "```"
-    val inlineCode = if (marker in visible.text) NarrativeHistoryEcho.inlineCodeRanges(visible.text) else emptyList()
+    val literalCode = if (marker in visible.text) NarrativeHistoryEcho.literalBacktickRanges(visible.text) else emptyList()
     fun findMarker(start: Int): Int {
         var markerStart = visible.text.indexOf(marker, start)
-        for (span in inlineCode) {
+        for (span in literalCode) {
             if (markerStart < span.first) break
             if (markerStart in span) markerStart = visible.text.indexOf(marker, span.last + 1)
         }

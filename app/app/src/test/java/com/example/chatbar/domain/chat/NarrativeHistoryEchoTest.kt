@@ -365,6 +365,34 @@ class NarrativeHistoryEchoTest {
         assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
     }
 
+    @Test fun sameLineFormatCardLabelsDeclareOnlyAnExplicitOutputTemplate() {
+        val pair = "<历史回复 模式=\"推进\">{正文}</历史回复>"
+        for (declaration in listOf(
+            "本轮输出模板：$pair",
+            "输出格式 : $pair",
+            "请按以下格式输出：$pair <!-- 内部注释 -->",
+            pair,
+            "请按以下格式输出：\n$pair",
+        )) {
+            assertEquals(declaration, false,
+                NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, declaration))
+        }
+
+        for (mention in listOf(
+            "下面只是格式示例：$pair",
+            "本轮输出模板：$pair（仅为示例，请勿输出）",
+            "她说：“本轮输出模板：$pair”",
+            "输出模板：'$pair'",
+            "> 本轮输出模板：$pair",
+            "    本轮输出模板：$pair",
+            "~~~~text\n本轮输出模板：$pair\n~~~~",
+            "<!-- 本轮输出模板：$pair -->",
+        )) {
+            assertEquals(mention, true,
+                NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, mention))
+        }
+    }
+
     @Test fun asciiProseQuotesKeepLiteralClosingTags() {
         for ((opening, closing) in listOf(
             "<聚焦模式=\"沉浸\">" to "</聚焦模式>",

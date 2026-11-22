@@ -1,5 +1,6 @@
 package com.example.chatbar.domain.chat
 
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
@@ -233,6 +234,56 @@ class ExperimentalToolTransportTest {
                 assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, interrupted = true, partLengths = lengths))
                 assertEquals(expected, NarrativeHistoryEcho.completedBody(raw, true, partLengths = lengths))
             }
+        }
+    }
+
+    @Test
+    fun `main stream respects a same line format card template in preview stop and done`() = runBlocking {
+        val raw = "<历史回复 模式=\"推进\">她推门。</历史回复>"
+        assertNarrativeReplyStates(
+            raw,
+            formatCard = "本轮输出模板：<历史回复 模式=\"推进\">{正文}</历史回复>",
+            expected = raw,
+        )
+    }
+
+    @Test
+    fun `main stream ignores a trailing comment apostrophe when matching the outer close`() = runBlocking {
+        val body = "她说‘Yes’ and left."
+        val note = "<!-- customers’ notes -->"
+        assertNarrativeReplyStates(
+            "<历史回复 模式=\"推进\">\n$body\n</历史回复>\n$note",
+            expected = "$body\n$note",
+        )
+    }
+
+    private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
+        val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, formatCard)
+        val delta = buildJsonObject {
+            put("choices", buildJsonArray {
+                add(buildJsonObject { put("delta", buildJsonObject { put("content", raw) }) })
+            })
+        }
+        GatedExperimentalResponse(
+            sse(listOf(delta.toString())),
+            sse(listOf("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", "[DONE]")),
+        ).use { server ->
+            val events = withTimeout(5_000) {
+                service().streamChat("narrative-reply-states", messages, model(server.baseUrl)).onEach { event ->
+                    if (event is StreamEvent.ContentPreview) {
+                        assertFalse(server.tailSent)
+                        server.releaseTail()
+                    }
+                }.toList()
+            }
+            val preview = events.filterIsInstance<StreamEvent.ContentPreview>().single().text
+            assertEquals(raw, preview)
+            assertEquals(StreamEvent.Done, events.last())
+            val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+            assertEquals(raw, completed)
+            assertEquals("Preview", expected, NarrativeHistoryEcho.completedBody(preview, enabled, streaming = true))
+            assertEquals("Stop", expected, NarrativeHistoryEcho.completedBody(preview, enabled, interrupted = true))
+            assertEquals("Done", expected, NarrativeHistoryEcho.completedBody(completed, enabled))
         }
     }
 
