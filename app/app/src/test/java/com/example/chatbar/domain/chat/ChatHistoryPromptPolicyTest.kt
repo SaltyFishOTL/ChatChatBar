@@ -1,7 +1,10 @@
 package com.example.chatbar.domain.chat
 
 import com.example.chatbar.data.local.entity.ChatMessage
+import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.MessageRole
+import com.example.chatbar.domain.prompt.PromptTemplates
+import kotlinx.serialization.json.JsonPrimitive
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
@@ -10,6 +13,52 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class ChatHistoryPromptPolicyTest {
+    @Test
+    fun standaloneLegacyFocusHistoryIsProjectedOnlyOnce() {
+        val open = "<聚焦模式=\"沉浸\">"
+        val story = "她把书合上。"
+        val bare = "$open\n$story\n</聚焦模式>"
+        for (closing in listOf("</聚焦模式>", "</聚焦模式=\"沉浸\">")) {
+            for (lineBreak in listOf("\n", "\r\n", "\r")) {
+                val legacy = listOf(open, story, closing).joinToString(lineBreak)
+                val assistant = message(MessageRole.ASSISTANT, legacy)
+                val text = ChatHistoryPromptPolicy.renderedHistoryText(assistant, legacy)
+                assertEquals(JsonPrimitive(legacy), ChatApiMessage.text("assistant", text).content)
+                assertEquals(legacy, assistant.displayContent)
+            }
+        }
+
+        val differentMode = message(MessageRole.ASSISTANT, bare).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
+        assertEquals(PromptTemplates.narrativeModeHistoryReply(bare, ChatNarrativeMode.ADVANCE),
+            ChatHistoryPromptPolicy.renderedHistoryText(differentMode, bare))
+        assertEquals(bare, ChatHistoryPromptPolicy.renderedHistoryText(message(MessageRole.USER, bare), bare))
+        assertEquals(PromptTemplates.narrativeModeHistoryReply(bare, ChatNarrativeMode.FOCUS),
+            ChatHistoryPromptPolicy.renderedHistoryText(message(MessageRole.ASSISTANT, "未包裹原文"), bare))
+
+        val insufficient = listOf(
+            "$open$story</聚焦模式>",
+            "$open\n$story\n</聚焦模式>\n这里只是示例。",
+            "```xml\n$bare\n```",
+            PromptTemplates.narrativeModeHistoryReply(bare, ChatNarrativeMode.FOCUS),
+        )
+        for (raw in insufficient) {
+            assertEquals(PromptTemplates.narrativeModeHistoryReply(raw, ChatNarrativeMode.FOCUS),
+                ChatHistoryPromptPolicy.renderedHistoryText(message(MessageRole.ASSISTANT, raw), raw))
+        }
+    }
+
+    @Test
+    fun declaredLegacyFormatRemainsLiteralInsideTheRequestWrapper() {
+        val body = "<聚焦模式=\"沉浸\">\n她把书合上。\n</聚焦模式>"
+        val assistant = message(MessageRole.ASSISTANT, body)
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, "输出格式：<!-- 注记 -->$body")
+        assertEquals(body, cleanup.completedBody(body))
+        assertEquals(PromptTemplates.narrativeModeHistoryReply(body, ChatNarrativeMode.FOCUS),
+            ChatHistoryPromptPolicy.renderedHistoryText(
+                assistant, body, legacyHistoryWrapperDeclaredAsOutput = cleanup.declaresLegacyHistoryWrapper,
+            ))
+    }
+
     @Test
     fun statusExclusionAppliesOnlyToEarlierAssistantHistory() {
         val formattedContent = """

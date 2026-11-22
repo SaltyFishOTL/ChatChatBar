@@ -293,6 +293,29 @@ class ExperimentalToolTransportTest {
         assertNarrativeReplyStates(raw, expected = body)
     }
 
+    @Test
+    fun `main stream keeps a standalone lazy quote tag before the terminal outer close`() = runBlocking {
+        val close = "</历史回复>"
+        val body = "> 下面这行是要展示的闭合标记。\n$close\n\n讲完代码后，他们走向码头。"
+        assertNarrativeReplyStates("<历史回复 模式=\"聚焦\">\n$body\n$close", expected = body)
+    }
+
+    @Test
+    fun `main stream reserves an explicit format after an inline editor comment`() = runBlocking {
+        val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
+        val card = "输出格式：<!-- 编辑注记 -->$raw"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = card)
+    }
+
+    @Test
+    fun `main stream reserves only an explicitly affirmed format with same line prose`() = runBlocking {
+        val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
+        val affirmation = "（标签是固定输出的一部分）"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = "输出格式：$raw$affirmation")
+        assertNarrativeReplyStates(raw, expected = "正文", formatCard = "$raw$affirmation")
+        assertNarrativeReplyStates(raw, expected = "正文", formatCard = "输出格式：$raw（仅为示例，请勿输出）")
+    }
+
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         val delta = buildJsonObject {

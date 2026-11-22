@@ -9,12 +9,12 @@ object MarkdownCodeFences {
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
 
-    data class Block(val range: IntRange, val topLevel: Boolean, val marker: Char)
+    data class Block(val range: IntRange, val topLevel: Boolean, val marker: Char, val info: String)
 
     // A null indent identifies a block quote. A list item continues at its content indent.
     private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
-    private data class Fence(val start: Int, val marker: String, val topLevel: Boolean) {
-        fun to(endExclusive: Int) = Block(start until endExclusive, topLevel, marker[0])
+    private data class Fence(val start: Int, val marker: String, val topLevel: Boolean, val info: String) {
+        fun to(endExclusive: Int) = Block(start until endExclusive, topLevel, marker[0], info)
     }
 
     internal fun afterQuotePrefixes(text: String, start: Int): Int {
@@ -128,7 +128,7 @@ object MarkdownCodeFences {
             val rest = match.groupValues[2]
             if (existing == null) {
                 if (marker[0] == '~' || '`' !in rest) {
-                    open = Fence(start, marker, topLevel = containers.isEmpty())
+                    open = Fence(start, marker, topLevel = containers.isEmpty(), info = rest.trim())
                     paragraph = false
                 }
             } else if (marker[0] == existing.marker[0] &&

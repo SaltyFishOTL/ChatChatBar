@@ -293,6 +293,23 @@ class NarrativeHistoryEchoTest {
         assertEquals("$quote\n\n正文。", NarrativeHistoryEcho.replyBody("$opening\n$quote\n\n正文。$closing"))
     }
 
+    @Test fun lazyQuoteClosingExampleRemainsLiteralInAJoinedToolReply() {
+        val open = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val quote = "> 下面是要展示的标签。\n$close\n"
+        val story = "讲完后，她收好书。"
+        val parts = listOf("$open\n$quote", "$story\n$close\n<!-- 编辑备注 -->")
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(
+                "$quote\n$story\n<!-- 编辑备注 -->",
+                NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null).completedBody(
+                    parts.joinToString("\n"), streaming = streaming, interrupted = interrupted,
+                    partLengths = parts.map(String::length),
+                ),
+            )
+        }
+    }
+
     @Test fun interruptedTrailingMarkerStaysHiddenOnSave() {
         val opening = "<历史回复 模式=\"聚焦\">"
         val closing = "</历史回复>"

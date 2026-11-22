@@ -14,14 +14,20 @@ object ChatHistoryPromptPolicy {
     fun renderedHistoryText(
         message: ChatMessage,
         renderedBody: String,
-        narrativeModesEnabled: Boolean = true
+        narrativeModesEnabled: Boolean = true,
+        legacyHistoryWrapperDeclaredAsOutput: Boolean = false
     ): String {
         val mode = MessageAlternativeVersionPolicy.activeVersion(message).narrativeMode
-        return if (narrativeModesEnabled && mode != null &&
-            message.role == MessageRole.ASSISTANT && renderedBody.isNotBlank()
-        ) {
-            PromptTemplates.narrativeModeHistoryReply(renderedBody, mode)
-        } else renderedBody
+        if (!narrativeModesEnabled || mode == null ||
+            message.role != MessageRole.ASSISTANT || renderedBody.isBlank()
+        ) return renderedBody
+        // Retain the exact legacy projection without inserting a second structural wrapper.
+        if (mode == ChatNarrativeMode.FOCUS && !legacyHistoryWrapperDeclaredAsOutput &&
+            NarrativeHistoryEcho.isStandaloneLegacyHistoryWrapper(renderedBody) &&
+            (message.displayContent == renderedBody ||
+                NarrativeHistoryEcho.isStandaloneLegacyHistoryWrapper(message.displayContent))
+        ) return renderedBody
+        return PromptTemplates.narrativeModeHistoryReply(renderedBody, mode)
     }
 
     fun previousNarrativeMode(

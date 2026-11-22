@@ -94,6 +94,34 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsTypedBacktickCodeAndRecognizesRealStatus() {
+        val marker = "```"
+        val literal = "<n=\"Mina\">[sample] 『literal』"
+        for (language in listOf("kotlin", "xml", "XML extra-info")) {
+            val code = "$marker$language\n<!-- literal -->\n$literal  \n$marker"
+            val segment = parseRoleplayTextSegments(code).single()
+            assertEquals(RoleplaySegmentKind.NARRATION, segment.kind)
+            assertEquals(code, segment.rawText)
+            assertEquals(code, sanitizeRoleplayMarkdown(segment.displayText, forColoring = true))
+
+            val legacyInput = stripRoleplaySpeakerMarkers(code)
+            val legacy = parseRoleplayContent(legacyInput).single() as RoleplayContentSegment.Markdown
+            assertEquals(code, sanitizeRoleplayMarkdown(legacy.text, forColoring = true))
+
+            for (header in listOf("", "text", "status", "text（状态）")) {
+                val withStatus = "$code\n$marker$header\n实际状态\n$marker"
+                val segments = parseRoleplayTextSegments(withStatus)
+                assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS),
+                    segments.map { it.kind })
+                assertEquals("实际状态", segments.last().displayText)
+                val legacyStatus = parseRoleplayContent(stripRoleplaySpeakerMarkers(withStatus)).last()
+                assertEquals("实际状态", (legacyStatus as RoleplayContentSegment.Status).text)
+                assertEquals(code, stripRoleplayStatusSegments(withStatus))
+            }
+        }
+    }
+
+    @Test
     fun roleplayMarkdown_keepsDashFenceExamplesInsideTildeCode() {
         val code = "~~~text\n---\n<历史回复 模式=\"聚焦\">示例</历史回复>\n---\n~~~"
         val segments = parseRoleplayTextSegments(code)

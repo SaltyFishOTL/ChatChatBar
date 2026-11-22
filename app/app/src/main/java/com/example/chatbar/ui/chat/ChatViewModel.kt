@@ -3104,7 +3104,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             hasSupportedImage = hasSupportedImage
                         ) ?: return
                         val text = ChatHistoryPromptPolicy.renderedHistoryText(
-                            msg, payloadText, narrativeModesEnabled = requestNarrativeMode != null
+                            msg, payloadText,
+                            narrativeModesEnabled = requestNarrativeMode != null,
+                            legacyHistoryWrapperDeclaredAsOutput = narrativeEcho.declaresLegacyHistoryWrapper,
                         )
                         if (hasSupportedImage) {
                             try {
