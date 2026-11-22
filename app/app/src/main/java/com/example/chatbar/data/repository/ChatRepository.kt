@@ -770,7 +770,12 @@ class ChatRepository(private val storage: JsonFileStorage) {
         }
     }
 
-    suspend fun deleteMessagesForSession(sessionId: String): Int {
+    suspend fun deleteMessagesForSession(sessionId: String): Int = messageAppendMutex.withDataAccess {
+        invalidateMessageTimeline(sessionId)
+        deleteMessagesForSessionLocked(sessionId)
+    }
+
+    private suspend fun deleteMessagesForSessionLocked(sessionId: String): Int {
         val deleted = storage.deleteByIdPrefixUncached(MESSAGE_TYPE, "${sessionId}_")
         storage.deleteEntityUncached(MESSAGE_INDEX_TYPE, sessionId)
         messageIndexes.remove(sessionId)
@@ -785,7 +790,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
             messageStorageId(sessionId, normalized.id) to normalized
         }
         invalidateMessageTimeline(sessionId)
-        deleteMessagesForSession(sessionId)
+        deleteMessagesForSessionLocked(sessionId)
         deleteScrollPosition(sessionId)
         storage.saveAllUncached(MESSAGE_TYPE, entities, ChatMessage.serializer())
         messageIndexMutex.withDataAccess {

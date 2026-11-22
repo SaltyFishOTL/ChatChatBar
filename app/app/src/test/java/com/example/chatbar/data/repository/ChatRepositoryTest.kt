@@ -23,6 +23,24 @@ class ChatRepositoryTest {
     @get:Rule
     val temp = TemporaryFolder()
 
+    @Test fun `clearing chat invalidates an in-flight update even when an identical row is re-added`() = runTest {
+        val chats = repository("timeline-clear")
+        val session = chats.createSession(ChatSession.create("card", "synthetic"))
+        val message = ChatMessage("row", session.id, MessageRole.SYSTEM, "greeting", createdAt = 1, updatedAt = 1)
+        val original = chats.addMessage(message)
+        val revision = chats.messageTimelineRevision(session.id)
+
+        assertEquals(1, chats.deleteMessagesForSession(session.id))
+        assertEquals(original, chats.addMessage(message))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+
+        val replacement = original.copy(content = "late result")
+        assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
+        assertEquals(original, chats.getMessage(original.id, session.id))
+        val currentRevision = chats.messageTimelineRevision(session.id)
+        assertEquals(replacement.content, chats.updateMessageIfUnchanged(original, replacement, currentRevision)?.content)
+    }
+
     @Test fun `restore invalidates an in-flight message update even when the restored row is identical`() = runTest {
         for (streaming in listOf(false, true)) {
             val chats = repository("timeline-restore-$streaming")
