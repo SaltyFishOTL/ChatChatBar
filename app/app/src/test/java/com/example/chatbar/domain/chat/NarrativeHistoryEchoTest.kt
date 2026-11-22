@@ -393,6 +393,27 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun labelledFormatTemplateRequiresTheVisibleBalancedClose() {
+        val inner = "<历史回复 模式=\"聚焦\">{正文}</历史回复>"
+        val template = "本轮输出模板：<历史回复 模式=\"推进\">$inner</历史回复>"
+        fun cleansEcho(card: String) = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, card)
+
+        assertEquals(false, cleansEcho("$template <!-- 备注 -->"))
+        assertEquals(true, cleansEcho("$template（此处说明）"))
+        assertEquals(true, cleansEcho(template.removeSuffix("</历史回复>")))
+        assertEquals(true, cleansEcho(template.removeSuffix("</历史回复>") + "<!-- </历史回复> -->"))
+    }
+
+    @Test fun laterWordApostropheDoesNotHideTheEndOfAPossessiveQuote() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val body = "‘James’ book says they’re using\n$closing\nas an example’."
+        val raw = "$opening\n$body\n$closing"
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, true, streaming = true))
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, true, interrupted = true))
+        assertEquals(body, NarrativeHistoryEcho.completedBody(raw, true))
+    }
+
     @Test fun asciiProseQuotesKeepLiteralClosingTags() {
         for ((opening, closing) in listOf(
             "<聚焦模式=\"沉浸\">" to "</聚焦模式>",

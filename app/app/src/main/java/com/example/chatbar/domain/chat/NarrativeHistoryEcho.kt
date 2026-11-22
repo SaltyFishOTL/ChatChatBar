@@ -5,10 +5,11 @@ import com.example.chatbar.data.local.entity.ChatNarrativeMode
 /** Removes request-only history wrappers when the model echoes them around its new reply. */
 object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
+    private data class WrapperBoundary(val closing: MatchResult?, val canEndWithPartialClose: Boolean)
     private data class CleanedReply(val body: String, val removedOuterPair: Boolean = false)
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
-        val codeRanges: List<IntRange>,
+        val roleplayLiteralCode: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val markdown: String,
         val commentRanges: List<IntRange>,
@@ -51,22 +52,20 @@ object NarrativeHistoryEcho {
             wrapperFamilyTokens.getValue(name).findAll(formatCard).toList()
         }.sortedBy { it.range.first }
         val literals = classifyLiterals(formatCard, tokens)
-        fun isMarkup(token: MatchResult): Boolean {
-            val start = token.range.first
-            return !isEscaped(formatCard, start) && literals.ranges.none { start in it } &&
-                !literals.isMarkdownQuoteLine(start, includeStandaloneLazyTags = true)
+        val markup = tokens.filter {
+            literals.isVisibleWrapperTag(formatCard, it, includeStandaloneLazyTags = true)
         }
-        val markup = tokens.filter(::isMarkup)
         return candidates.any { wrapper ->
-            markup.any declaration@{ opening ->
+            val family = wrapperFamilyTokens.getValue(wrapper.name)
+            val tags = markup.filter { family.matches(it.value) }
+            tags.withIndex().any declaration@{ (index, opening) ->
                 if (opening.value != wrapper.opening) return@declaration false
                 val start = opening.range.first
                 val prefix = formatCard.subSequence(lineStart(formatCard, start), start)
                 val bare = prefix.isBlank()
                 if (!bare && !formatTemplateLabel.matches(prefix)) return@declaration false
-                val closing = markup.firstOrNull {
-                    it.range.first > opening.range.last && it.value in wrapper.closings
-                } ?: return@declaration false
+                val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing
+                    ?: return@declaration false
                 // A labelled declaration must end its line, apart from whitespace and comments.
                 bare || literals.markdown.substring(closing.range.last + 1).lineSequence().first().isBlank()
             }
@@ -162,49 +161,35 @@ object NarrativeHistoryEcho {
         val literals by lazy(LazyThreadSafetyMode.NONE) {
             classifyLiterals(end, familyTags, wrapper.closings, includeUnclosed = streaming || interrupted)
         }
-        var innerDepth = 0
-        var unmatchedClosing = false
-        for (match in familyTags) {
-            val position = match.range.first
-            val quote = end.getOrNull(position - 1)
-            val asciiQuoted = (quote == '"' || quote == '\'') && end.getOrNull(match.range.last + 1) == quote
-            if (asciiQuoted || isEscaped(end, position) || literals.isMarkdownQuoteLine(position) || literals.ranges.any { position in it } ||
-                isIndentedCodeLine(literals.markdown, position) || isJoinedLiteral?.invoke(bodyStart + position, false) == true
-            ) continue
-
-            if (match.value.startsWith("</")) {
-                if (innerDepth > 0) {
-                    innerDepth--
-                } else if (!unmatchedClosing && match.value in wrapper.closings) {
-                    val afterClosing = match.range.last + 1
-                    if (afterClosing == end.length) {
-                        return CleanedReply(leadingComments + end.substring(0, position).trimEnd(), removedOuterPair = true)
-                    }
-                    // A complete leading pair followed by visible prose is an example.
-                    if (!onlyCommentsAfter(end, afterClosing, literals.commentRanges, streaming || interrupted)) {
-                        return CleanedReply(text)
-                    }
-                    val tail = body.substring(afterClosing)
-                    val markerLineStart = lineStart(body, position)
-                    val markerStartsLine = body.subSequence(markerLineStart, position).isBlank()
-                    val commentSharesLine = tail.lineSequence().first().isNotBlank()
-                    val before = if (markerStartsLine && commentSharesLine) {
-                        body.substring(0, markerLineStart)
-                    } else {
-                        body.substring(0, position).trimEnd()
-                    }
-                    return CleanedReply(leadingComments + before + tail, removedOuterPair = true)
-                } else {
-                    unmatchedClosing = true
-                }
-            } else if (!match.value.dropLast(1).trimEnd().endsWith('/')) {
-                innerDepth++
+        val boundary = wrapperBoundary(wrapper, familyTags.asSequence().filter { tag ->
+            literals.isVisibleWrapperTag(end, tag) && isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
+        })
+        val closing = boundary.closing
+        if (closing != null) {
+            val position = closing.range.first
+            val afterClosing = closing.range.last + 1
+            if (afterClosing == end.length) {
+                return CleanedReply(leadingComments + end.substring(0, position).trimEnd(), removedOuterPair = true)
             }
+            // A complete leading pair followed by visible prose is an example.
+            if (!onlyCommentsAfter(end, afterClosing, literals.commentRanges, streaming || interrupted)) {
+                return CleanedReply(text)
+            }
+            val tail = body.substring(afterClosing)
+            val markerLineStart = lineStart(body, position)
+            val markerStartsLine = body.subSequence(markerLineStart, position).isBlank()
+            val commentSharesLine = tail.lineSequence().first().isNotBlank()
+            val before = if (markerStartsLine && commentSharesLine) {
+                body.substring(0, markerLineStart)
+            } else {
+                body.substring(0, position).trimEnd()
+            }
+            return CleanedReply(leadingComments + before + tail, removedOuterPair = true)
         }
 
         if (requirePair) return CleanedReply(text)
         val lastTag = end.lastIndexOf('<')
-        if (lastTag >= 0 && innerDepth == 0 && !unmatchedClosing) {
+        if (lastTag >= 0 && boundary.canEndWithPartialClose) {
             val suffix = end.substring(lastTag)
             val identifiable = suffix.startsWith("</历史回复") || suffix.startsWith("</聚焦模式")
             val aloneOnLine = end.substring(0, lastTag).substringAfterLast('\n').substringAfterLast('\r').isBlank()
@@ -216,6 +201,34 @@ object NarrativeHistoryEcho {
             ) return CleanedReply(leadingComments + end.substring(0, lastTag).trimEnd())
         }
         return CleanedReply(leadingComments + body)
+    }
+
+    private fun wrapperBoundary(wrapper: Wrapper, tags: Sequence<MatchResult>): WrapperBoundary {
+        var innerDepth = 0
+        for (tag in tags) {
+            if (tag.value.startsWith("</")) {
+                if (innerDepth > 0) {
+                    innerDepth--
+                } else {
+                    return WrapperBoundary(tag.takeIf { it.value in wrapper.closings }, canEndWithPartialClose = false)
+                }
+            } else if (!tag.value.dropLast(1).trimEnd().endsWith('/')) {
+                innerDepth++
+            }
+        }
+        return WrapperBoundary(closing = null, canEndWithPartialClose = innerDepth == 0)
+    }
+
+    private fun ReplyLiterals.isVisibleWrapperTag(
+        text: String,
+        tag: MatchResult,
+        includeStandaloneLazyTags: Boolean = false,
+    ): Boolean {
+        val position = tag.range.first
+        val quote = text.getOrNull(position - 1)
+        val asciiQuoted = (quote == '"' || quote == '\'') && text.getOrNull(tag.range.last + 1) == quote
+        return !asciiQuoted && !isEscaped(text, position) && ranges.none { position in it } &&
+            !isMarkdownQuoteLine(position, includeStandaloneLazyTags) && !isIndentedCodeLine(markdown, position)
     }
 
     private fun ReplyLiterals.isMarkdownQuoteLine(offset: Int, includeStandaloneLazyTags: Boolean = false): Boolean {
@@ -245,13 +258,10 @@ object NarrativeHistoryEcho {
     internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
         if (commentOpening !in text) emptyList() else classifyLiterals(text, interpretProseQuotes = false).commentRanges
 
-    internal fun literalCommentCodeRanges(text: String): List<IntRange> {
-        if (commentOpening !in text) return emptyList()
-        val code = classifyLiterals(text, interpretProseQuotes = false).codeRanges
-        if (code.none { range ->
-            val opening = text.indexOf(commentOpening, range.first)
-            opening in range && opening + commentOpening.lastIndex <= range.last
-        }) return emptyList()
+    /** Backtick status fences stay eligible for roleplay parsing. Markdown code is literal. */
+    internal fun roleplayLiteralCodeRanges(text: String): List<IntRange> {
+        if ('`' !in text && '~' !in text && '\t' !in text && "    " !in text) return emptyList()
+        val code = classifyLiterals(text, interpretProseQuotes = false).roleplayLiteralCode
         return buildList {
             for (range in code.sortedBy { it.first }) {
                 val previous = lastOrNull()
@@ -277,14 +287,16 @@ object NarrativeHistoryEcho {
 
         fun inspect(source: String, onComment: ((IntRange) -> Unit)?): ReplyLiterals {
             val lazyQuoteLineStarts = mutableSetOf<Int>()
-            val codeBlocks = mutableListOf<IntRange>()
-            MarkdownCodeFences.blocks(
+            val indentedCode = mutableListOf<IntRange>()
+            val fences = MarkdownCodeFences.blocks(
                 source,
                 onLazyQuoteLine = { lazyQuoteLineStarts += it },
-                onIndentedCodeLine = { codeBlocks += it },
-            ).mapTo(codeBlocks) { it.range }
-            val codeRanges = codeBlocks + inlineCodeRangesOutsideBlocks(source, codeBlocks)
-            val ranges = codeRanges + comments
+                onIndentedCodeLine = { indentedCode += it },
+            )
+            val codeBlocks = indentedCode + fences.map { it.range }
+            val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks)
+            val roleplayLiteralCode = indentedCode + inlineCode + fences.filter { it.marker == '~' }.map { it.range }
+            val ranges = codeBlocks + inlineCode + comments
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                 val position = tag.range.first
@@ -301,7 +313,7 @@ object NarrativeHistoryEcho {
                 end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment,
                 interpretProseQuotes,
             )
-            return ReplyLiterals(ranges + quotes, codeRanges, lazyQuoteLineStarts, source, comments)
+            return ReplyLiterals(ranges + quotes, roleplayLiteralCode, lazyQuoteLineStarts, source, comments)
         }
 
         val capture = { range: IntRange -> nextComment = range }
@@ -314,14 +326,6 @@ object NarrativeHistoryEcho {
             result = inspect(maskHtmlComments(markdown, comments), capture)
         }
         return result
-    }
-
-    internal fun literalBacktickRanges(body: String): List<IntRange> {
-        val markdown = bareCarriageReturn.replace(body, "\n")
-        val blocks = MarkdownCodeFences.blocks(markdown)
-        val inlineCode = inlineCodeRangesOutsideBlocks(markdown, blocks.map { it.range })
-        val tildeCode = blocks.filter { it.marker == '~' }.map { it.range }
-        return (inlineCode + tildeCode).sortedBy { it.first }
     }
 
     private fun inlineCodeRangesOutsideBlocks(body: String, codeBlocks: List<IntRange>): List<IntRange> {
@@ -393,7 +397,7 @@ object NarrativeHistoryEcho {
             val precedesWord = text.getOrNull(index + 1)?.isLetterOrDigit() == true
             // Apostrophes in contractions and possessives do not start a prose quote.
             if (symbol == '\'' && followsWord && (precedesWord || open < 0)) continue
-            if (symbol == '’' && followsWord && (precedesWord ||
+            if (symbol == '’' && followsWord && (isWordApostrophe(text, index) ||
                     isCurlyPossessive(text, open, index, interiorClosings, ::isProseDelimiter))
             ) continue
             if (symbol == '"' && open < 0 && text.getOrNull(index - 1)?.isDigit() == true && !precedesWord) continue
@@ -429,7 +433,8 @@ object NarrativeHistoryEcho {
         val wordStart = (position + 2 until text.length).firstOrNull { !text[it].isWhitespace() } ?: return false
         if (!text[wordStart].isLetter()) return false
         val nextQuote = (position + 1 until text.length).firstOrNull { index ->
-            (text[index] == '’' || text[index] == '‘') && isProseDelimiter(index)
+            (text[index] == '‘' || text[index] == '’' && !isWordApostrophe(text, index)) &&
+                isProseDelimiter(index)
         }
         if (nextQuote != null) return text[nextQuote] == '’'
         // Require a speech cue before widening a quote with an ambiguous English closing mark.
@@ -440,6 +445,10 @@ object NarrativeHistoryEcho {
         val possessed = text.substring(wordStart, tagLine).trimEnd()
         return unfinishedPossessedWord.matches(possessed) && possessed !in ordinaryProseFollowers && !possessed.endsWith("ly")
     }
+
+    private fun isWordApostrophe(text: String, position: Int): Boolean =
+        text.getOrNull(position - 1)?.isLetterOrDigit() == true &&
+            text.getOrNull(position + 1)?.isLetterOrDigit() == true
 
     private fun maskHtmlComments(source: String, comments: List<IntRange>): String {
         val masked = source.toCharArray()

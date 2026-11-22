@@ -94,6 +94,56 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsDashFenceExamplesInsideTildeCode() {
+        val code = "~~~text\n---\n<历史回复 模式=\"聚焦\">示例</历史回复>\n---\n~~~"
+        val segments = parseRoleplayTextSegments(code)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION), segments.map { it.kind })
+        assertEquals(code, segments.single().rawText)
+        assertEquals(code, (parseRoleplayContent(code).single() as RoleplayContentSegment.Markdown).text)
+        assertEquals(code, stripRoleplayStatusSegments(code))
+
+        val realStatus = "\n---\n实际状态\n---"
+        val withStatus = code + realStatus
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS),
+            parseRoleplayTextSegments(withStatus).map { it.kind })
+        assertEquals("实际状态", (parseRoleplayContent(withStatus).last() as RoleplayContentSegment.Status).text)
+        assertEquals(code, stripRoleplayStatusSegments(withStatus))
+    }
+
+    @Test
+    fun roleplayMarkdown_keepsLiteralMarkersWithoutCommentSyntax() {
+        val markers = "[sample] 『sample』 <n=\"Code\"/>"
+        for (code in listOf("`$markers`", "    $markers", "~~~text\n$markers\n~~~")) {
+            val segments = parseRoleplayTextSegments(code)
+            assertEquals(listOf(RoleplaySegmentKind.NARRATION), segments.map { it.kind })
+            val segment = segments.single()
+            assertEquals(code, segment.rawText)
+            val legacy = parseRoleplayContent(stripRoleplaySpeakerMarkers(code)).single() as RoleplayContentSegment.Markdown
+            assertEquals(code, legacy.text)
+            assertEquals(code, sanitizeRoleplayMarkdown(segment.displayText, forColoring = true))
+            assertEquals(code, sanitizeRoleplayMarkdown(legacy.text, forColoring = true))
+        }
+
+        val prefix = "示例 `$markers` "
+        val withDialogue = "$prefix<n=\"Alice\"/>[真实对白]()"
+        val segments = parseRoleplayTextSegments(withDialogue)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.DIALOGUE), segments.map { it.kind })
+        assertEquals(prefix, segments.first().rawText)
+        assertEquals("Alice", segments.last().speakerName)
+    }
+
+    @Test
+    fun roleplayMarkdown_keepsLongDashExamplesAndWhitespaceWhenStatusIsRemoved() {
+        val code = "~~~text\n------\n[sample]\n------\n\n\n  indented  \n~~~"
+        val marker = "\u0060\u0060\u0060"
+        val withStatus = "$code\n${marker}text\n实际状态\n$marker"
+        val segments = parseRoleplayTextSegments(withStatus)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS), segments.map { it.kind })
+        assertEquals("$code\n", segments.first().rawText)
+        assertEquals(code, stripRoleplayStatusSegments(withStatus))
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

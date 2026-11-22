@@ -248,6 +248,19 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream closes a quoted title before a later contraction`() = runBlocking {
+        val body = "She titled it ‘Visitors’ because they’re leaving."
+        assertNarrativeReplyStates("<历史回复 模式=\"聚焦\">\n$body\n</历史回复>", expected = body)
+    }
+
+    @Test
+    fun `main stream respects a balanced nested format card template`() = runBlocking {
+        val formatCard = "本轮输出模板：<历史回复 模式=\"推进\"><历史回复 模式=\"聚焦\">{正文}</历史回复></历史回复>"
+        val raw = "<历史回复 模式=\"推进\"><历史回复 模式=\"聚焦\">她推门。</历史回复></历史回复>"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = formatCard)
+    }
+
+    @Test
     fun `main stream ignores a trailing comment apostrophe when matching the outer close`() = runBlocking {
         val body = "她说‘Yes’ and left."
         val note = "<!-- customers’ notes -->"

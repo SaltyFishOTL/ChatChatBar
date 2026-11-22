@@ -26,10 +26,25 @@ data class RoleplaySegmentEditOutcome(
     val deleteMemoryForMessage: Boolean
 )
 
-private data class VisibleRoleplayText(
+private class VisibleRoleplayText(
     val text: String,
     val rawIndexes: IntArray
-)
+) {
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(text)
+    val dashFenceText = if (literalCode.isEmpty()) text else {
+        val masked = text.toCharArray()
+        // Delimiter matching needs the original line boundaries and character offsets.
+        for (range in literalCode) {
+            for (index in range) {
+                if (!masked[index].isWhitespace()) masked[index] = '\uFFFC'
+            }
+        }
+        String(masked)
+    }
+    val longDashRanges by lazy(LazyThreadSafetyMode.NONE) {
+        findLongDashWrappedRanges(dashFenceText, 0, dashFenceText.length)
+    }
+}
 
 private data class VisibleRange(
     val start: Int,
@@ -45,10 +60,11 @@ internal val roleplayDialogueMarkerPattern =
     Regex("(?<![!！])[\\[［]([^\\]］]+)[\\]］](?:[(（]([^\\)）]*)[)）])?")
 private val markdownCodeIndent = Regex(" {4}| {0,3}\t")
 
-fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
-    val visible = visibleRoleplayText(content)
+fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> =
+    parseRoleplayTextSegments(content, visibleRoleplayText(content))
+
+private fun parseRoleplayTextSegments(content: String, visible: VisibleRoleplayText): List<RoleplayTextSegment> {
     if (visible.text.isBlank()) return emptyList()
-    val literalCode = NarrativeHistoryEcho.literalCommentCodeRanges(visible.text)
     val segments = splitCodeFenceSegments(visible)
         .flatMap { segment ->
             if (segment.kind == RoleplaySegmentKind.STATUS) {
@@ -65,21 +81,21 @@ fun parseRoleplayTextSegments(content: String): List<RoleplayTextSegment> {
             }
         }
         .flatMap { segment ->
-            if (segment.kind == RoleplaySegmentKind.STATUS || isLongDashWrappedText(segment.rawText)) {
+            if (segment.kind == RoleplaySegmentKind.STATUS || isLongDashWrappedSegment(segment, visible)) {
                 listOf(segment)
             } else {
-                splitRoleplayMarkers(segment, visible, literalCode)
+                splitRoleplayMarkers(segment, visible, visible.literalCode)
             }
         }
         .filter { it.rawText.isNotBlank() || it.displayText.isNotBlank() }
-    return attachRoleplaySpeakerPrefixes(content, segments, visible, literalCode)
+    return attachRoleplaySpeakerPrefixes(content, segments, visible, visible.literalCode)
 }
 
 fun stripRoleplaySpeakerMarkers(content: String): String =
     transformRoleplayProse(content) { roleplaySpeakerMarkerPattern.replace(it, "") }
 
 internal inline fun transformRoleplayProse(content: String, transform: (String) -> String): String {
-    val literalCode = NarrativeHistoryEcho.literalCommentCodeRanges(content)
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(content)
     if (literalCode.isEmpty()) return transform(content)
     return buildString(content.length) {
         var cursor = 0
@@ -101,7 +117,7 @@ fun stripRoleplayStatusSegments(content: String): String {
         .fold(content) { text, range ->
             text.removeRange(range.start, range.endExclusive)
         }
-        .let(::cleanupAfterRoleplaySegmentDeletion)
+        .let(::cleanupAfterRoleplayStatusDeletion)
 }
 
 fun renameRoleplaySpeakerMarkers(
@@ -173,10 +189,27 @@ fun replaceRoleplaySegmentContent(
 }
 
 fun cleanupAfterRoleplaySegmentDeletion(content: String): String =
+    collapseRoleplayWhitespace(content).trim()
+
+private fun collapseRoleplayWhitespace(content: String): String =
     content
         .replace(Regex("[ \t]+\n"), "\n")
         .replace(Regex("\n{3,}"), "\n\n")
-        .trim()
+
+private fun cleanupAfterRoleplayStatusDeletion(content: String): String {
+    val literalCode = NarrativeHistoryEcho.roleplayLiteralCodeRanges(content)
+    if (literalCode.isEmpty()) return cleanupAfterRoleplaySegmentDeletion(content)
+    return buildString(content.length) {
+        var cursor = 0
+        for (range in literalCode) {
+            val prose = collapseRoleplayWhitespace(content.substring(cursor, range.first))
+            append(if (cursor == 0) prose.trimStart() else prose)
+            append(content, range.first, range.last + 1)
+            cursor = range.last + 1
+        }
+        append(collapseRoleplayWhitespace(content.substring(cursor)).trimEnd())
+    }
+}
 
 fun editRoleplayMessageSegment(
     message: ChatMessage,
@@ -250,10 +283,9 @@ private inline fun forEachVisibleRoleplayRange(content: String, appendRange: (In
 
 private fun splitCodeFenceSegments(visible: VisibleRoleplayText): List<RoleplayTextSegment> {
     val marker = "```"
-    val literalCode = if (marker in visible.text) NarrativeHistoryEcho.literalBacktickRanges(visible.text) else emptyList()
     fun findMarker(start: Int): Int {
         var markerStart = visible.text.indexOf(marker, start)
-        for (span in literalCode) {
+        for (span in visible.literalCode) {
             if (markerStart < span.first) break
             if (markerStart in span) markerStart = visible.text.indexOf(marker, span.last + 1)
         }
@@ -287,12 +319,12 @@ private fun splitDashFenceSegments(
     segment: RoleplayTextSegment,
     visible: VisibleRoleplayText
 ): List<RoleplayTextSegment> {
-    val text = visible.text.substring(segmentVisibleStart(segment, visible), segmentVisibleEnd(segment, visible))
+    val offset = segmentVisibleStart(segment, visible)
+    val text = visible.dashFenceText.substring(offset, segmentVisibleEnd(segment, visible))
     val matches = dashFencePattern.findAll(text).toList()
     if (matches.size < 2) return listOf(segment)
 
     val segments = mutableListOf<RoleplayTextSegment>()
-    val offset = segmentVisibleStart(segment, visible)
     var cursor = 0
     var index = 0
     while (index < matches.size) {
@@ -345,8 +377,7 @@ private fun splitLongDashNarrationSegments(
     val end = segmentVisibleEnd(segment, visible)
     // 先按完整消息识别包裹区，再投影到当前片段。否则删除包裹区前一个片段后，
     // 上游分段边界变化可能让相同横线块失去保护，内部 Markdown 链接被拆成对白。
-    val ranges = findLongDashWrappedRanges(visible.text, 0, visible.text.length)
-        .filter { range -> range.start >= start && range.endExclusive <= end }
+    val ranges = visible.longDashRanges.filter { range -> range.start >= start && range.endExclusive <= end }
     if (ranges.isEmpty()) return listOf(segment)
 
     val segments = mutableListOf<RoleplayTextSegment>()
@@ -363,12 +394,12 @@ private fun splitLongDashNarrationSegments(
 private fun excludedRoleplayRawRanges(content: String): List<VisibleRange> {
     if (content.isBlank()) return emptyList()
     val visible = visibleRoleplayText(content)
-    val ranges = parseRoleplayTextSegments(content)
+    val ranges = parseRoleplayTextSegments(content, visible)
         .asSequence()
         .filter { segment -> segment.kind == RoleplaySegmentKind.STATUS }
         .map { segment -> VisibleRange(segment.start, segment.endExclusive) }
         .toMutableList()
-    findLongDashWrappedRanges(visible.text, 0, visible.text.length).forEach { range ->
+    visible.longDashRanges.forEach { range ->
         val rawStart = visible.rawIndexes.getOrNull(range.start) ?: return@forEach
         val rawEnd = (visible.rawIndexes.getOrNull(range.endExclusive - 1) ?: return@forEach) + 1
         ranges += VisibleRange(rawStart, rawEnd)
@@ -512,8 +543,11 @@ private fun hasLongDashWrappedBody(text: String, start: Int, end: Int): Boolean 
     return text.substring(start, end).any { !it.isWhitespace() && !isLongWrapperDash(it) }
 }
 
-private fun isLongDashWrappedText(text: String): Boolean {
-    val trimmed = text.trim()
+private fun isLongDashWrappedSegment(segment: RoleplayTextSegment, visible: VisibleRoleplayText): Boolean {
+    val trimmed = visible.dashFenceText.substring(
+        segmentVisibleStart(segment, visible),
+        segmentVisibleEnd(segment, visible)
+    ).trim()
     val range = findLongDashWrappedRanges(trimmed, 0, trimmed.length).singleOrNull() ?: return false
     return range.start == 0 && range.endExclusive == trimmed.length
 }
@@ -690,7 +724,7 @@ private fun attachRoleplaySpeakerPrefixes(
     segments.forEach { segment ->
         if (segment.kind != RoleplaySegmentKind.DIALOGUE && segment.kind != RoleplaySegmentKind.THOUGHT) {
             result += segment
-            if (segment.kind == RoleplaySegmentKind.NARRATION && !isLongDashWrappedText(segment.rawText)) {
+            if (segment.kind == RoleplaySegmentKind.NARRATION && !isLongDashWrappedSegment(segment, visible)) {
                 findLastRoleplaySpeakerPrefix(
                     content = content,
                     start = segment.start,
