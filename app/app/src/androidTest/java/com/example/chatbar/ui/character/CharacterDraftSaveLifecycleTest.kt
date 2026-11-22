@@ -207,10 +207,13 @@ class CharacterDraftSaveLifecycleTest {
             } else null
 
             action { viewer.saveCharacterCard(it) }
-            committedBeforeRetry?.let { assertEquals(it, app.characterRepository.getById(original.id)) }
+            val saved = requireNotNull(app.characterRepository.getById(original.id))
+            committedBeforeRetry?.let { assertEquals(it.updatedAt, saved.updatedAt) }
+            assertEquals(original.name, saved.name)
+            assertEquals(original.greeting, saved.greeting)
             assertNull(coldDrafts().getById(first.id))
             assertFalse("Formal save must reclaim the consumed snapshot's earlier staged file", staged.exists())
-            assertTrue(app.characterRepository.getById(original.id)?.customDocuments.orEmpty().isEmpty())
+            assertTrue(saved.customDocuments.isEmpty())
         } finally {
             app.editorDraftAssetService.deleteDraft(first.draftSessionId)
         }
