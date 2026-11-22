@@ -59,6 +59,19 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsTripleBacktickInlineCodeAndFollowingProse() {
+        for (literal in listOf("```<!-- </历史回复> -->```", "```</历史回复>```")) {
+            val body = "她展示了 $literal，随后继续。\n第二行。"
+            val segmented = parseRoleplayTextSegments(body).single()
+            assertEquals(RoleplaySegmentKind.NARRATION, segmented.kind)
+            assertEquals(body, segmented.displayText)
+            val legacy = parseRoleplayContent(body).single()
+            assertEquals(body, (legacy as RoleplayContentSegment.Markdown).text)
+            assertTrue(sanitizeRoleplayMarkdown(segmented.displayText).contains(literal))
+        }
+    }
+
+    @Test
     fun roleplayMarkdown_stripsHiddenComments() {
         val result = sanitizeRoleplayMarkdown("before <!-- hidden --> after")
 

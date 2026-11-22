@@ -210,6 +210,7 @@ class ExperimentalToolTransportTest {
             "~~~xml" to "~~~",
             "<!--\n内部说明" to "-->\n可见正文",
             "她说：“这段是示例：" to "这段也是引文的一部分。”",
+            "> 示例原文如下：" to "这一行也属于同一个引文。",
         )) {
             val parts = listOf(before, literal, after)
             val expected = parts.joinToString("\n")

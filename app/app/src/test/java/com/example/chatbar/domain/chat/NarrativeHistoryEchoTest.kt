@@ -334,6 +334,37 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun halfWidthRoleplayQuotesKeepLiteralClosingTags() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val body = "她在纸条上写了 ｢$closing｣。\n然后划掉了那行。"
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true))
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true, streaming = true))
+            assertEquals(body, NarrativeHistoryEcho.completedBody(wrapped, enabled = true, interrupted = true))
+        }
+    }
+
+    @Test fun formatCardMentionsDoNotOptOutOfEchoCleanup() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val raw = "$opening\n普通正文\n$closing"
+        val mentions = listOf(
+            "不要输出 `$opening`，那是历史标记。",
+            "不要输出 $opening，那是历史标记。",
+            "```xml\n$raw\n```",
+            "<!--\n$raw\n-->",
+            "> 示例原文：\n$raw",
+        )
+        for (format in mentions) {
+            val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, format)
+            assertEquals("普通正文", NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
+        }
+        val declaration = "请按以下格式输出：\n$raw"
+        val enabled = NarrativeHistoryEcho.appliesToRequest(ChatNarrativeMode.ADVANCE, declaration)
+        assertEquals(raw, NarrativeHistoryEcho.replyBody(raw, enabled = enabled))
+    }
+
     @Test fun asciiProseQuotesKeepLiteralClosingTags() {
         for ((opening, closing) in listOf(
             "<聚焦模式=\"沉浸\">" to "</聚焦模式>",
