@@ -10,6 +10,7 @@ import com.example.chatbar.data.local.entity.*
 import com.example.chatbar.data.repository.VoiceMessageRepository
 import com.example.chatbar.domain.chat.MessageAlternativeVersionPolicy
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
+import com.example.chatbar.domain.chat.SaveSlotPackageStorage
 import com.example.chatbar.domain.rag.RagRepository
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
 import java.io.File
@@ -173,6 +174,78 @@ class ReplyRagPublicationRuntimeTest {
         val admitted = coordinator.selectCurrentRecallIds(session.id, rebuilt, 10) { it }
         assertTrue(rebuilt.any { it.id in admitted && it.content.contains(ORIGINAL) })
         assertFalse(rebuilt.any { it.id in admitted && it.content.contains(REPAIRED) })
+    }
+
+    @Test fun pendingRemovalCannotBeCopiedIntoAnotherSession() = withFixture {
+        assertTrue(rebuild())
+        val corrupt = File(app.filesDir, "entities/vector_chunks/${UUID.randomUUID()}.json").apply { writeText("{") }
+        try {
+            withTimeout(20_000) { launchAction { deleteMessageAlternative(reply, VERSION) }.join() }
+            val blocked = runCatching { app.sessionCopyService.copySession(session.id) }
+            blocked.getOrNull()?.let { app.deletionCoordinator.deleteSession(it.id) }
+            assertTrue("Copy must not rekey data while its cleanup still fails", blocked.isFailure)
+
+            check(corrupt.delete())
+            val copied = app.sessionCopyService.copySession(session.id)
+            try {
+                val chunks = RagRepository(JsonFileStorage(app)).getAllChunksForSession(copied.id)
+                assertTrue(chunks.any { it.content.contains(SURVIVOR) })
+                assertFalse(chunks.any { it.content.contains(REPAIRED) })
+            } finally {
+                app.deletionCoordinator.deleteSession(copied.id)
+            }
+        } finally {
+            corrupt.delete()
+        }
+    }
+
+    @Test fun restoreCannotAuthorizeRetiredVectorFromPackagedArchive() = verifyArchiveSourceProof(packaged = true)
+    @Test fun restoreCannotAuthorizeRetiredVectorFromLegacyArchive() = verifyArchiveSourceProof(packaged = false)
+
+    private fun verifyArchiveSourceProof(packaged: Boolean) = withFixture {
+        assertTrue(rebuild())
+        val retired = app.ragRepository.getAllChunksForSession(session.id).single { it.messageId == reply.id }
+        val corrupt = File(app.filesDir, "entities/vector_chunks/${UUID.randomUUID()}.json").apply { writeText("{") }
+        var archived: SaveSlot? = null
+        try {
+            withTimeout(20_000) { launchAction { deleteMessageAlternative(reply, VERSION) }.join() }
+            val live = app.ragRepository.getAllChunksForSession(session.id).single { it.messageId == reply.id }
+            val manual = live.copy(
+                id = UUID.randomUUID().toString(), content = "Handwritten memory",
+                metadata = mapOf("indexMode" to "manual"), messageId = null
+            )
+            val vectors = listOf(live, retired.copy(id = UUID.randomUUID().toString()), manual)
+            val messages = app.chatRepository.getMessages(session.id)
+            val inline = SaveSlot.create(session.id, "Synthetic archived source proof", messages = messages).copy(
+                longTermMemoryEnabled = false, vectorChunks = vectors
+            )
+            val slot = if (packaged) app.saveSlotPackageStorage.createPackage(
+                baseSlot = inline.copy(schemaVersion = SaveSlotPackageStorage.SCHEMA_VERSION),
+                imagePolicy = SaveSlotImagePolicy.NONE,
+                includeAudio = false,
+                messageSource = { emit -> messages.forEach { emit(it) } },
+                ragSource = { emit -> vectors.forEach { emit(it) } },
+                voices = emptyList()
+            ) else inline
+            archived = slot
+            app.saveSlotRepository.save(slot)
+            withContext(Dispatchers.Main) { vm.loadSaveSlot(slot.toSummary()) }
+            val result = withTimeout(20_000) { vm.saveSlotOperation.first { !it.busy && !it.status.isNullOrBlank() } }
+            assertEquals("读档完成。", result.status)
+
+            val restored = RagRepository(JsonFileStorage(app)).getAllChunksForSession(session.id)
+            assertTrue(restored.any { it.content == live.content })
+            assertTrue(restored.any { it.content == manual.content })
+            assertFalse(restored.any { it.content == retired.content })
+            check(corrupt.delete())
+            app.replyRemovalCoordinator.resumePending(session.id)
+            assertTrue(recalledText().contains(SURVIVOR))
+            assertTrue(recalledText().contains(manual.content))
+            assertFalse(recalledText().contains(REPAIRED))
+        } finally {
+            corrupt.delete()
+            archived?.let { app.saveSlotRepository.delete(it.id) }
+        }
     }
 
     private fun withFixture(block: suspend Fixture.() -> Unit) = runBlocking<Unit> {

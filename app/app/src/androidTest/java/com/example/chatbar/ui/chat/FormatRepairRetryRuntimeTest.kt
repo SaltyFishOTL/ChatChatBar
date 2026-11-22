@@ -28,6 +28,20 @@ import org.junit.Test
 
 /** Actual VM/service HTTP retry and cold JSON read; all traffic is synthetic loopback. */
 class FormatRepairRetryRuntimeTest {
+    @Test fun previewBelongsToTheSelectedVersionAndItsSourceText() {
+        val original = ChatMessage.create("preview-test", MessageRole.ASSISTANT, "Candidate A")
+        val selected = MessageAlternativeVersionPolicy.append(original, "Candidate B", "version-b")
+        val preview = MessageFormatRepairState(selected.id, "version-b", selected.displayContent, "B preview")
+        val switched = MessageAlternativeVersionPolicy.select(selected, 0)
+        val restored = MessageAlternativeVersionPolicy.editCurrentContent(selected, "Earlier candidate B body")
+        val sameTextOtherVersion = MessageAlternativeVersionPolicy.append(selected, selected.displayContent, "version-c")
+
+        assertTrue(preview.appliesTo(selected))
+        assertFalse(preview.appliesTo(switched))
+        assertFalse(preview.appliesTo(restored))
+        assertFalse(preview.appliesTo(sameTextOtherVersion))
+    }
+
     @Test fun unchangedMarkerSuccessClearsPreviousFailure() = verifyRetry(true)
     @Test fun originalTextSuccessClearsPreviousFailure() = verifyRetry(false)
 

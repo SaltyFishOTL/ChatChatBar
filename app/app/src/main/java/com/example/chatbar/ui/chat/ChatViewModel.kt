@@ -307,10 +307,12 @@ private const val MEMORY_HISTORY_PAGE_SIZE = 20
 data class MessageFormatRepairState(
     val messageId: String,
     val messageVersionId: String,
+    val sourceContent: String,
     val previewContent: String
 ) {
     internal fun appliesTo(message: ChatMessage): Boolean =
-        messageId == message.id && messageVersionId == MessageAlternativeVersionPolicy.activeVersionId(message)
+        messageId == message.id && messageVersionId == MessageAlternativeVersionPolicy.activeVersionId(message) &&
+            sourceContent == message.displayContent
 }
 
 data class SaveSlotOperationState(
@@ -2525,6 +2527,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val initialPreview = MessageFormatRepairState(
             messageId = message.id,
             messageVersionId = MessageAlternativeVersionPolicy.activeVersionId(message),
+            sourceContent = originalContent,
             previewContent = originalContent
         )
         _messageFormatRepairState.value = initialPreview
