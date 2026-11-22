@@ -38,10 +38,14 @@ object MarkdownCodeFences {
 
     fun blocks(content: String): List<Block> = blocks(content, null)
 
+    internal fun findBlocks(content: String, onContainerLine: (Int) -> Unit): List<Block> =
+        blocks(content, onLazyQuoteLine = null, onContainerLine = onContainerLine)
+
     internal fun blocks(
         content: String,
         onLazyQuoteLine: ((Int) -> Unit)?,
         onIndentedCodeLine: ((IntRange) -> Unit)? = null,
+        onContainerLine: ((Int) -> Unit)? = null,
     ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
@@ -93,6 +97,7 @@ object MarkdownCodeFences {
                 }
             }
 
+            if (containers.isNotEmpty()) onContainerLine?.invoke(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
             val match = fenceLine.matchEntire(remainder)
             val existing = open
