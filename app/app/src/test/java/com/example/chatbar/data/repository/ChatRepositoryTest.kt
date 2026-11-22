@@ -64,11 +64,18 @@ class ChatRepositoryTest {
                 chats.replaceMessagesForSession(session.id, listOf(original))
             }
             assertEquals(original, chats.getMessage(original.id, session.id))
-            val replacement = original.copy(content = "late result")
-            assertFalse(chats.updateMessageIfUnchanged(original, replacement, revision))
+            val replacement = original.copy(
+                content = "late result", updatedAt = -1, orderKey = original.orderKey + MESSAGE_ORDER_STEP
+            )
+            assertNull(chats.updateMessageIfUnchanged(original, replacement, revision))
             assertEquals(original, chats.getRecentMessages(session.id, 1).single())
-            assertTrue(chats.updateMessageIfUnchanged(original, replacement, chats.messageTimelineRevision(session.id)))
-            assertEquals(replacement.content, chats.getMessage(original.id, session.id)?.displayContent)
+            val committed = requireNotNull(
+                chats.updateMessageIfUnchanged(original, replacement, chats.messageTimelineRevision(session.id))
+            )
+            assertEquals(replacement.content, committed.displayContent)
+            assertEquals(original.orderKey, committed.orderKey)
+            assertTrue(committed.updatedAt > replacement.updatedAt)
+            assertEquals(committed, chats.getMessage(original.id, session.id))
         }
     }
 

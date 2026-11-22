@@ -598,7 +598,7 @@ class ChatRepository(private val storage: JsonFileStorage) {
     }
 
     suspend fun updateMessage(message: ChatMessage) = messageAppendMutex.withDataAccess {
-        updateMessageLocked(message)
+        updateMessageLocked(message, getMessage(message.id, message.sessionId))
     }
 
     internal suspend fun messageTimelineRevision(sessionId: String): Long =
@@ -611,18 +611,17 @@ class ChatRepository(private val storage: JsonFileStorage) {
         expected: ChatMessage,
         replacement: ChatMessage,
         expectedTimelineRevision: Long? = null
-    ): Boolean = messageAppendMutex.withDataAccess {
+    ): ChatMessage? = messageAppendMutex.withDataAccess {
         require(expected.id == replacement.id && expected.sessionId == replacement.sessionId)
         if (expectedTimelineRevision != null &&
             expectedTimelineRevision != (messageTimelineRevisions[expected.sessionId] ?: 0L)
-        ) return@withDataAccess false
-        if (getMessage(expected.id, expected.sessionId) != expected) return@withDataAccess false
-        updateMessageLocked(replacement)
-        true
+        ) return@withDataAccess null
+        val current = getMessage(expected.id, expected.sessionId)
+        if (current != expected) return@withDataAccess null
+        updateMessageLocked(replacement, current)
     }
 
-    private suspend fun updateMessageLocked(message: ChatMessage): ChatMessage {
-        val persisted = getMessage(message.id, message.sessionId)
+    private suspend fun updateMessageLocked(message: ChatMessage, persisted: ChatMessage?): ChatMessage {
         val updated = message.copy(
             updatedAt = System.currentTimeMillis(),
             orderKey = persisted?.orderKey ?: message.orderKey

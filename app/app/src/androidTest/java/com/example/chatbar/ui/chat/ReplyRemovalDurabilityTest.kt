@@ -171,7 +171,7 @@ class ReplyRemovalDurabilityTest {
         assertEquals(listOf(voice.id), fixture.voices.listForCurrentVersion(original).map { it.id })
         assertEquals(voice.id, fixture.voices.currentVoiceForPlayback(voice)?.id)
         val changed = MessageAlternativeVersionPolicy.editCurrentContent(original, "Edited incompatible reply")
-        assertTrue(fixture.chats.updateMessageIfUnchanged(original, changed))
+        assertNotNull(fixture.chats.updateMessageIfUnchanged(original, changed))
         val persisted = requireNotNull(fixture.chats.getMessage(original.id, session.id))
         assertEquals(voice.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(persisted))
 
@@ -210,13 +210,13 @@ class ReplyRemovalDurabilityTest {
             )
         }
         val alternate = MessageAlternativeVersionPolicy.append(edited, "Another reply", "other-version")
-        assertTrue(fixture.chats.updateMessageIfUnchanged(original, alternate))
+        assertNotNull(fixture.chats.updateMessageIfUnchanged(original, alternate))
         val capturedAlternative = recording("other-recording", alternate)
         fixture.voices.save(capturedAlternative)
         val current = requireNotNull(fixture.chats.getMessage(original.id, session.id))
         val selected = MessageAlternativeVersionPolicy.select(current, 0)
         assertEquals(legacy.messageVersionId, MessageAlternativeVersionPolicy.activeVersionId(selected))
-        assertTrue(fixture.chats.updateMessageIfUnchanged(current, selected))
+        assertNotNull(fixture.chats.updateMessageIfUnchanged(current, selected))
         fixture.voices.delete(removed.id)
 
         val first = recording("current-first", selected)

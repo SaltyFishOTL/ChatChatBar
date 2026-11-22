@@ -95,7 +95,7 @@ class ReplyDeletionRuntimeTest {
         else MessageFormatRepairPolicy.replaceCurrentDisplayContent(
             confirmation, "New", MessageFormatRepairPolicy.completedRepairNotice(confirmation.displayContent, "New")
         )
-        assertTrue(app.chatRepository.updateMessageIfUnchanged(confirmation, replacement))
+        assertNotNull(app.chatRepository.updateMessageIfUnchanged(confirmation, replacement))
         val saved = requireNotNull(app.chatRepository.getMessage(reply.id, session.id))
 
         withContext(Dispatchers.Main) {

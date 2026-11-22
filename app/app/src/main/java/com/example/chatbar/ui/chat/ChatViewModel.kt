@@ -2377,7 +2377,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val message = chatRepository.getMessage(messageId, sessionId) ?: return@launch
                 val changed = (if (redo) MessageFormatRepairPolicy.redoRepair(message)
                     else MessageFormatRepairPolicy.restoreOriginal(message)) ?: return@launch
-                check(chatRepository.updateMessageIfUnchanged(message, changed)) { "消息已变化，请重新操作" }
+                check(chatRepository.updateMessageIfUnchanged(message, changed) != null) { "消息已变化，请重新操作" }
                 replaceMessagesFromRepository()
                 refreshMemoryAfterMessageEdit(changed)
             } catch (cancelled: CancellationException) { throw cancelled }
@@ -2440,17 +2440,18 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         var attemptError: String? = null
         suspend fun commit(replacement: ChatMessage, unchanged: Boolean = false): ChatMessage? =
             formatRepairCommitMutex.withLock {
-                if (!chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)) {
+                val persisted = chatRepository.updateMessageIfUnchanged(message, replacement, timelineRevision)
+                if (persisted == null) {
                     _messageFormatRepairEvents.tryEmit("消息已变化，已放弃本次格式修复")
                     return@withLock null
                 }
                 replaceMessagesFromRepository()
-                if (!automatic && replacement.displayContent != message.displayContent) {
-                    refreshMemoryAfterMessageEdit(replacement)
+                if (!automatic && persisted.displayContent != message.displayContent) {
+                    refreshMemoryAfterMessageEdit(persisted)
                 }
                 if (unchanged) _messageFormatRepairEvents.tryEmit("格式无需修复")
                 attemptError?.let { _messageActionError.value = it }
-                replacement
+                persisted
             }
 
         fun failure(error: String): ChatMessage {
@@ -3733,7 +3734,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     generatedImageMetadata = message.generatedImageMetadata
                         .filter { it.imagePath in remaining }
                 )
-                if (!chatRepository.updateMessageIfUnchanged(message, updatedMessage)) {
+                if (chatRepository.updateMessageIfUnchanged(message, updatedMessage) == null) {
                     _messageActionError.value = "消息已变化，请重新操作"
                     return@launch
                 }
@@ -3831,7 +3832,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             formatRepairNotice = null
         )
 
-        if (!chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage)) {
+        if (chatRepository.updateMessageIfUnchanged(oldMessage, updatedMessage) == null) {
             _messageActionError.value = "消息已变化，请重新操作"
             return
         }
@@ -3959,7 +3960,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 val updated = MessageAlternativeVersionPolicy.select(message, nextIndex)
                 val committed = chatRepository.updateMessageIfUnchanged(message, updated)
                 replaceMessagesFromRepository()
-                check(committed) { "消息已变化，请重新操作" }
+                check(committed != null) { "消息已变化，请重新操作" }
             } catch (cancelled: CancellationException) { throw cancelled }
             catch (error: Exception) { _messageActionError.value = error.message ?: "切换备选失败" }
         }

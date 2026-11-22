@@ -303,7 +303,7 @@ class ReplyAlternativeVoiceCleanupRuntimeTest {
                         requireNotNull(MessageAlternativeVersionPolicy.remove(persistedMessage, removedId)))
                     afterCas.complete(Unit)
                     finishCommit.await()
-                    committed
+                    committed != null
                 }
             }
             withTimeout(15_000) { afterCas.await() }
