@@ -146,8 +146,10 @@ class ExperimentalToolTransportTest {
 
     @Test
     fun `final tool delta carries part lengths before done`() = runBlocking {
-        val first = "<历史回复 模式=\"聚焦\">场景一。</历史回复>"
-        val second = "<历史回复 模式=\"推进\">场景二。</历史回复>"
+        val firstBody = "场景一。\n<!-- </历史回复> -->\n继续。"
+        val secondBody = "场景二。<!-- <历史回复 模式=\"聚焦\"> -->"
+        val first = "<历史回复 模式=\"聚焦\">$firstBody</历史回复>"
+        val second = "<历史回复 模式=\"推进\">$secondBody</历史回复>"
         val eventsBody = sse(listOf(
             chunk(buildJsonObject { put("content", first) }.toString(), "game_content"),
             chunk(buildJsonObject { put("content", second) }.toString(), "game_content", index = 1),
@@ -163,7 +165,7 @@ class ExperimentalToolTransportTest {
             assertEquals(listOf(first.length, second.length), finalDelta.toolReplyPartLengths)
             assertTrue(events.indexOf(finalDelta) < events.indexOf(StreamEvent.Done))
             val raw = deltas.joinToString("") { it.text }
-            assertEquals("场景一。\n场景二。", NarrativeHistoryEcho.completedBody(
+            assertEquals("$firstBody\n$secondBody", NarrativeHistoryEcho.completedBody(
                 raw, enabled = true, partLengths = finalDelta.toolReplyPartLengths, streaming = true,
             ))
         }

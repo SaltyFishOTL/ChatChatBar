@@ -6,6 +6,64 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NarrativeHistoryEchoTest {
+
+    @Test
+    fun pairedHistoryWrappersIgnoreClosedHtmlCommentsInEveryReplyState() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val bodies = listOf(
+                "他打开门。\n<!-- $closing -->\n他走了进去。",
+                "他打开门。 <!-- \" $opening $closing -->\n他走了进去。",
+                "他打开门。\r<!--\r```text\r$closing\r-->\r他走了进去。",
+                "他打开门。\n<!-- <!-- $closing --> $closing -->\n他走了进去。",
+                "他打开门。\n<!--\n```\n-->\n<!-- $closing -->\n他走了进去。",
+                "他打开门。\n<!--\n```\n-->\n```\n<!-- $closing\n```\n他走了进去。",
+            )
+            for (body in bodies) {
+                val wrapped = "$opening\n$body\n$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = streaming, interrupted = interrupted))
+                }
+                assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), streaming = true))
+                assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped.dropLast(1), interrupted = true))
+            }
+        }
+    }
+
+    @Test
+    fun provisionalCommentKeepsLiteralClosingWhileItsOwnEndIsIncomplete() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        for (tail in listOf(closing, closing.take(5), "$closing --")) {
+            val body = "正文。\n<!-- $tail"
+            for ((streaming, interrupted) in listOf(true to false, false to true)) {
+                assertEquals(body, NarrativeHistoryEcho.replyBody(
+                    "$opening\n$body", streaming = streaming, interrupted = interrupted,
+                ))
+            }
+        }
+    }
+
+    @Test
+    fun quotedEscapedAndCodeCommentOpenersDoNotHideTheOuterClose() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val literalOpeners = listOf(
+            "她写下「<!--」后离开。", "正文 `<!--`。", "\\<!-- 是示例。",
+            "> <!--", "```text\n<!--\n```", "正文。\n\n    <!--",
+        )
+        for (body in literalOpeners) {
+            val wrapped = "$opening\n$body\n$closing"
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(body, NarrativeHistoryEcho.replyBody(wrapped, streaming = streaming, interrupted = interrupted))
+            }
+        }
+        val example = "$opening\n<!-- $closing -->\n正文。\n$closing\n这个示例仍需保留。"
+        assertEquals(example, NarrativeHistoryEcho.replyBody(example))
+        assertEquals("普通 <!-- $closing --> 正文。", NarrativeHistoryEcho.replyBody("普通 <!-- $closing --> 正文。"))
+    }
+
     @Test
     fun indentedCodeQuotesCannotHideMultipartOuterClosings() {
         val echoes = listOf(
