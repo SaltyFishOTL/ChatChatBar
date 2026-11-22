@@ -140,6 +140,10 @@ internal class ReplyRemovalCoordinator(
                 chat.finishReplyRemoval(removal) {
                     if (removal.invalidateAutomaticMemory) {
                         rag.invalidateReplyMemory(removal.sessionId, removal.sourceTurnId, removal.messageId)
+                        // Media retries must leave memory rebuilt from the surviving reply intact.
+                        storage.saveEntityUncached(
+                            STORE, removal.id, removal.copy(invalidateAutomaticMemory = false), ReplyRemoval.serializer()
+                        )
                     }
                     cleanup()
                 }
