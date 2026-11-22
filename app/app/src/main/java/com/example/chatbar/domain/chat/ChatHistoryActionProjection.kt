@@ -175,12 +175,14 @@ class ChatHistoryActionProjection private constructor(
         // Check code points directly so Android's ICU and the desktop JVM use the same rule.
         private fun hasMenuLetterWithHanContinuation(text: String, labels: Set<Char>): Boolean {
             val lead = text.indexOfFirst { !it.isWhitespace() && it !in "「『（(“‘\"'" }
+            val confirmationLead = if (lead >= 0) leadingConfirmation.matchAt(text, lead)?.range?.last?.plus(1) else null
             for (index in text.indices) {
                 val letter = text[index].uppercaseChar()
                 if (letter !in 'A'..'T' || labels.none { it.equals(letter, ignoreCase = true) }) continue
-                // Other bare labels select when they lead the reply. Embedded names
-                // such as B站 keep their ordinary narrative meaning.
-                if (letter != 'A' && index != lead) continue
+                val afterConfirmation = index == confirmationLead
+                // A leading confirmation can introduce a bare menu letter, while B站 is still a name.
+                if (letter != 'A' && index != lead && !afterConfirmation) continue
+                if (afterConfirmation && letter == 'B' && text.getOrNull(index + 1) == '站') continue
                 if (index > 0) {
                     val previous = Character.codePointBefore(text, index)
                     if (previous == '_'.code || Character.isDigit(previous) ||
@@ -213,6 +215,7 @@ class ChatHistoryActionProjection private constructor(
         }
 
         private val numeric = Regex("\\p{N}")
+        private val leadingConfirmation = Regex("(?:那(?:么)?(?:我(?:们)?)?就|我(?:们)?就)[ \\t　]*")
         // Avoid treating the English article, pronoun and parts of contractions as labels.
         private fun standaloneLetter(characters: String) =
             Regex("(?<![\\p{L}\\p{N}_])(?<!\\p{L}['’])[$characters](?![\\p{L}\\p{N}_]|['’]\\p{L})")

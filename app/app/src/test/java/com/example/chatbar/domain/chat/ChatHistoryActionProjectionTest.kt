@@ -264,6 +264,26 @@ class ChatHistoryActionProjectionTest {
         assertEquals("旁白\n", numberedProjection.project(numbered, numbered.displayContent))
     }
 
+    @Test fun `leading Chinese confirmation preserves a matching menu but not a site name`() {
+        val letters = "旁白\n<choices>\nA) 查地图\nB) 保持安静\n</choices>"
+        val assistant = message("a", MessageRole.ASSISTANT, letters, 1)
+            .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
+        val inputs = listOf(
+            "那就B保持安静并贴着墙走。" to true,
+            "那我就b　保持安静并贴着墙走。" to true,
+            "「那么我们就B保持安静并贴着墙走。」" to true,
+            "那就B站大厅门口见面吧。" to false,
+            "我看着B站屏幕上跳出一条新闻。" to false,
+            "那就C悄悄绕过附近的围墙。" to false,
+        )
+        for ((text, keepsMenu) in inputs) {
+            val user = message("u", MessageRole.USER, text, 2)
+            val projection = known(listOf(assistant, user), setOf(assistant.id, user.id))
+            assertEquals(text, if (keepsMenu) letters else "旁白\n", projection.project(assistant, letters))
+            assertEquals(text, projection.project(user, text))
+        }
+    }
+
     @Test fun `trusted regeneration without a current user may still have older users in its candidate universe`() {
         val old = message("u", MessageRole.USER, "我推开木门，走到窗边观察街上的雨。", 1)
         val a = message("a", MessageRole.ASSISTANT, options, 2)

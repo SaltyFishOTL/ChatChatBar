@@ -102,6 +102,24 @@ class ChatHistoryActionWireTest {
         }
     }
 
+    @Test fun leadingChineseConfirmationKeepsOnlyMatchingMenuInActualRequest() {
+        val menu = row(MessageRole.ASSISTANT, "山路边有一块路牌。\n<choices>\nA) Read the map\nB) KEEP_QUIET_BY_WALL\n</choices>")
+            .copy(actionOptionsFormat = ActionOptionsFormat("<choices>", "</choices>", "", ActionOptionLabels.LETTERS))
+        val inputs = listOf(
+            "那就B保持安静并贴着墙走" to true,
+            "那就B站大厅门口见面吧。" to false,
+            "那就C悄悄绕过附近的围墙。" to false,
+        )
+        for ((index, fixture) in inputs.withIndex()) {
+            val (input, keepsMenu) = fixture
+            verify("leading-chinese-confirmation-$index", listOf(menu), input) { wire, contents ->
+                assertEquals(input, keepsMenu, wire.contains("KEEP_QUIET_BY_WALL"))
+                assertTrue(wire.contains("山路边有一块路牌。"))
+                assertTrue(contents.contains(input))
+            }
+        }
+    }
+
     @Test fun listCodeUnderAnEmptyMarkerStaysInTheActualRequest() {
         val literal = row(MessageRole.ASSISTANT, "- \n  ```action options\n  1. LIST_CODE_A\n  2. LIST_CODE_B\n  ```")
         val topLevel = row(MessageRole.ASSISTANT, "场景保留。\n```action options\n1. TOP_LEVEL_A\n2. TOP_LEVEL_B\n```")
