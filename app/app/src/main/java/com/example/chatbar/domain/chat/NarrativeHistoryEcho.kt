@@ -1160,7 +1160,7 @@ object NarrativeHistoryEcho {
                         joinedLiterals.isMarkdownContainerLine(
                             joinedIndex,
                             includeStandaloneLazyTags = opening && !followsClosedWrapper,
-                        )
+                        ) || !opening && joinedLiterals.isCaptionedLazyClosing(joinedIndex)
                 }
                 fun cleanSection(section: String, sectionStart: Int, requireSectionPair: Boolean): CleanedReply =
                     cleanReply(
@@ -1403,7 +1403,7 @@ object NarrativeHistoryEcho {
         }
         val rawVisibleTags = familyTags.filter { tag ->
             literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true) &&
-                (tag.value !in wrapper.closings || !literals.isCaptionedLazyListClosing(tag.range.first)) &&
+                (tag.value !in wrapper.closings || !literals.isCaptionedLazyClosing(tag.range.first)) &&
                 !literals.isRequestedClosingLine(tag.range.first, tag.value, literalOutput.closings) &&
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
@@ -1567,7 +1567,7 @@ object NarrativeHistoryEcho {
                 (streaming || identifiable || interrupted && (suffix.length > 1 || aloneOnLine)) &&
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
-                !literals.isCaptionedLazyListClosing(lastTag) &&
+                !literals.isCaptionedLazyClosing(lastTag) &&
                 !literals.isRequestedClosingLine(lastTag, suffix, literalOutput.closings) &&
                 !(afterOpening.firstOrNull().isHistoryLineBreak() && lineStart(body, lastTag) == 0 &&
                     literals.isStandaloneTagLine(lastTag, suffix) &&
@@ -1650,7 +1650,7 @@ object NarrativeHistoryEcho {
                     val skippedClosingFor = mutableSetOf<Int>()
                     for (tag in visible) {
                         if (tag.value.startsWith("</")) {
-                            if (literals.isCaptionedLazyListClosing(tag.range.first) ||
+                            if (literals.isCaptionedLazyClosing(tag.range.first) ||
                                 literals.isRequestedClosingLine(tag.range.first, tag.value, literalOutput.closings) ||
                                 lineStart(literals.markdown, tag.range.first) in ignoredClosings
                             ) continue
@@ -1713,11 +1713,19 @@ object NarrativeHistoryEcho {
     private fun ReplyLiterals.isLazyListItemLine(offset: Int): Boolean =
         lineStart(markdown, offset) in lazyListItemLineStarts
 
-    private fun ReplyLiterals.isCaptionedLazyListClosing(offset: Int): Boolean {
+    private fun ReplyLiterals.isCaptionedLazyClosing(offset: Int): Boolean {
         val start = lineStart(markdown, offset)
-        if (start !in lazyListItemLineStarts || markdown.subSequence(start, offset).isNotBlank()) return false
+        val lazyList = start in lazyListItemLineStarts
+        val lazyQuote = start in lazyQuoteLineStarts
+        if ((!lazyList && !lazyQuote) || markdown.subSequence(start, offset).isNotBlank()) return false
         val lead = previousVisibleLine(markdown, start) ?: return false
-        return literalClosingTagLead.containsMatchIn(markdown.substring(lead))
+        if (!literalClosingTagLead.containsMatchIn(markdown.substring(lead))) return false
+        if (lazyList) return true
+        // A caption inside the quoted paragraph identifies this one standalone literal tag.
+        // The following standalone tag can still close the transport envelope.
+        if (markdown.substring(lead.last + 1, start) !in setOf("\n", "\r\n")) return false
+        val tagLine = markdown.substring(offset, lineEnd(markdown, offset)).trimEnd()
+        return tagLine.isNotEmpty() && wrapperClosings.any { it.startsWith(tagLine) }
     }
 
     private fun ReplyLiterals.isRequestedClosingLine(offset: Int, token: String, requested: Set<String>): Boolean {

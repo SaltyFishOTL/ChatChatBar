@@ -55,7 +55,7 @@ class NarrativeHistoryWireTest {
         val experimental: Boolean get() = this != ORDINARY
     }
 
-    private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE, CAPTIONED_CLOSE }
+    private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -110,6 +110,13 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.CAPTIONED_CLOSE)
     }
 
+    @Test fun captionedLazyQuoteSurvivesActualStopAndAnImmediatelyFollowingOuterClose() = runBlocking {
+        for (transport in Transport.entries) {
+            verifyReply(transport, stop = true, literal = LiteralCase.LAZY_QUOTE_CLOSE)
+            verifyReply(transport, stop = false, literal = LiteralCase.LAZY_QUOTE_CLOSE)
+        }
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
@@ -135,6 +142,7 @@ class NarrativeHistoryWireTest {
         val exactInlineCopy = "$opener\n例子$closing"
         val listExample = "- A literal closing-tag example:\n$closing"
         val captionedExample = "The closing tag example:\n$closing"
+        val lazyQuoteExample = "> Closing tag example:\n$closing"
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
         val authorsTemplate = !stop && continuation == null && literal == null
         val input = when {
@@ -148,6 +156,7 @@ class NarrativeHistoryWireTest {
             LiteralCase.OPENING -> "$opener\nThis is the opening tag."
             LiteralCase.INLINE_CLOSE -> exactInlineCopy
             LiteralCase.CAPTIONED_CLOSE -> if (stop) "$opener\n$captionedExample" else "$opener\n$captionedExample\n$closing"
+            LiteralCase.LAZY_QUOTE_CLOSE -> if (stop) "$opener\n$lazyQuoteExample" else "$opener\n$lazyQuoteExample\n$closing"
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
             null -> framedReply
         }
@@ -161,6 +170,7 @@ class NarrativeHistoryWireTest {
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
             literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
+            literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
             authorsTemplate || literal != null -> reply
             else -> prose
         }

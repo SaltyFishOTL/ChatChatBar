@@ -643,6 +643,42 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `normal SSE preserves a captioned lazy quote at length and at a true close`(): Unit = runBlocking {
+        assertCaptionedLazyQuote(experimental = false, toolCall = false)
+    }
+
+    @Test
+    fun `experimental text preserves a captioned lazy quote at length and at a true close`(): Unit = runBlocking {
+        assertCaptionedLazyQuote(experimental = true, toolCall = false)
+    }
+
+    @Test
+    fun `experimental tool preserves a captioned lazy quote at length and at a true close`(): Unit = runBlocking {
+        assertCaptionedLazyQuote(experimental = true, toolCall = true)
+    }
+
+    private suspend fun assertCaptionedLazyQuote(experimental: Boolean, toolCall: Boolean) {
+        val open = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val caption = "> Closing tag example:"
+        val body = "$caption\n$close"
+        assertNarrativeReplyDeltas(
+            listOf("$open\n$caption\n", close.dropLast(1), close.takeLast(1)),
+            listOf("$caption\n", "$caption\n${close.dropLast(1)}", body), body,
+            experimental = experimental, toolCall = toolCall, finishReason = "length",
+        )
+        assertNarrativeReplyDeltas(
+            listOf("$open\n$body", "\n$close"), listOf(body, body), body,
+            experimental = experimental, toolCall = toolCall,
+        )
+        val ordinaryQuote = "> Spoken dialogue."
+        assertNarrativeReplyDeltas(
+            listOf("$open\n$ordinaryQuote\n$close"), listOf(ordinaryQuote), ordinaryQuote,
+            experimental = experimental, toolCall = toolCall,
+        )
+    }
+
+    @Test
     fun `main stream reserves an explicit format after an inline editor comment`() = runBlocking {
         val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
         val card = "输出格式：<!-- 编辑注记 -->$raw"
@@ -2818,6 +2854,7 @@ class ExperimentalToolTransportTest {
         fixtureHistory: Boolean = true,
         previousUserText: String? = null,
         strongPrompt: String? = null,
+        finishReason: String = if (toolCall) "tool_calls" else "stop",
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
@@ -2869,12 +2906,16 @@ class ExperimentalToolTransportTest {
         }
         GatedExperimentalResponse(
             sse(deltas),
-            sse(listOf(chunk(reason = if (toolCall) "tool_calls" else "stop"), "[DONE]")),
+            sse(listOf(chunk(reason = finishReason), "[DONE]")),
         ).use { server ->
             val previews = mutableListOf<String>()
+            var completion: ChatReplyCompletion? = null
             val chatService = StreamingChatService(experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true })
             val events = withTimeout(5_000) {
-                chatService.streamChat("narrative-reply-states", requestMessages, model(server.baseUrl)).onEach { event ->
+                chatService.streamChat(
+                    "narrative-reply-states", requestMessages, model(server.baseUrl),
+                    onReplyCompletion = { completion = it },
+                ).onEach { event ->
                     val preview = when {
                         event is StreamEvent.ContentPreview -> event.text
                         (!experimental || toolCall) && event is StreamEvent.Delta ->
@@ -2907,13 +2948,14 @@ class ExperimentalToolTransportTest {
             }
             assertEquals(acknowledgement, context.last().jsonObject.getValue("content").jsonPrimitive.content)
             assertEquals(StreamEvent.Done, events.last())
+            assertEquals(finishReason, completion?.finishReason)
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
             assertEquals(rawPreviews.last(), completed)
             for ((index, preview) in previews.withIndex()) {
                 assertEquals("Preview delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, streaming = true))
                 assertEquals("Stop delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, interrupted = true))
             }
-            assertEquals("Done", expectedCompleted, cleanup.completedBody(completed))
+            assertEquals("Done", expectedCompleted, cleanup.completedBody(completed, interrupted = finishReason == "length"))
         }
     }
 

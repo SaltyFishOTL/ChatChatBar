@@ -789,6 +789,41 @@ class NarrativeHistoryEchoTest {
         assertEquals("$quote\n\n正文。", NarrativeHistoryEcho.replyBody("$opening\n$quote\n\n正文。$closing"))
     }
 
+    @Test fun captionedLazyQuoteCloseStaysLiteralWithoutAnOuterClose() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null)
+        for (caption in listOf("> Closing tag example:", "- > 结束标签示例：", "> Quoted documentation.\nClosing tag example:")) {
+            val body = "$caption\n$closing"
+            val live = cleanup.streamingPreview()
+            var previousLength = 0
+            for (length in 0..closing.length) {
+                val expected = "$caption\n${closing.take(length)}"
+                val raw = "$opening\n$expected"
+                assertEquals(expected, live.appendedBody(raw, previousLength))
+                assertEquals(expected, cleanup.completedBody(raw, interrupted = true))
+                previousLength = raw.length
+            }
+            assertEquals(body, cleanup.completedBody("$opening\n$body"))
+        }
+    }
+
+    @Test fun actualOuterCloseImmediatelyAfterCaptionedLazyQuoteStillClosesTheWrapper() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val body = "> Closing tag example:\n$closing"
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null)
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            val raw = "$opening\n$body\n$closing"
+            assertEquals(body, cleanup.completedBody(raw, streaming = streaming, interrupted = interrupted))
+            assertEquals(body, cleanup.completedBody(
+                raw, streaming = streaming, interrupted = interrupted,
+                partLengths = listOf("$opening\n$body".length, closing.length),
+            ))
+        }
+        assertEquals(body, cleanup.completedBody("$opening\n$body\n${closing.dropLast(1)}", interrupted = true))
+    }
+
     @Test fun lazyQuoteClosingExampleRemainsLiteralInAJoinedToolReply() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"
