@@ -84,12 +84,22 @@ class NarrativeHistoryWireTest {
         )
     }
 
+    @Test fun currentUserLiteralOpenerSurvivesStreamingStopAndCompletion() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, requestLiteralOpener = true)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, requestLiteralOpener = true)
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
     }
 
-    private suspend fun verifyReply(transport: Transport, stop: Boolean, continuation: String? = null) {
+    private suspend fun verifyReply(
+        transport: Transport,
+        stop: Boolean,
+        continuation: String? = null,
+        requestLiteralOpener: Boolean = false,
+    ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
         val card = CharacterCard.create("Synthetic narrative wire")
@@ -98,10 +108,15 @@ class NarrativeHistoryWireTest {
         val prior = "Previous synthetic scene."
         val prose = "She opens the door and walks into the courtyard."
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
-        val authorsTemplate = !stop && continuation == null
-        val input = if (!authorsTemplate) "Continue the scene." else
-            "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
-        val reply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+        val framedReply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+        val opener = framedReply.substringBefore('\n')
+        val authorsTemplate = !stop && continuation == null && !requestLiteralOpener
+        val input = when {
+            requestLiteralOpener -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
+            authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
+            else -> "Continue the scene."
+        }
+        val reply = if (requestLiteralOpener) "$opener\nThis is the opening tag." else framedReply
         val secondScene = "A bird flies past the entrance."
         val parts = if (continuation == null) listOf(reply) else listOf(
             reply.substringBeforeLast('\n'),
@@ -110,7 +125,7 @@ class NarrativeHistoryWireTest {
         )
         val expected = when {
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
-            authorsTemplate -> reply
+            authorsTemplate || requestLiteralOpener -> reply
             else -> prose
         }
         val modelName = "Synthetic narrative wire ${transport.name}"
