@@ -55,7 +55,7 @@ class NarrativeHistoryWireTest {
         val experimental: Boolean get() = this != ORDINARY
     }
 
-    private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE }
+    private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE, CAPTIONED_CLOSE }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -101,6 +101,15 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.LAZY_LIST_CLOSE)
     }
 
+    @Test fun requestedCaptionedCloserSurvivesNormalAndExperimentalStopAndDone() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.CAPTIONED_CLOSE)
+        verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.CAPTIONED_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = true, literal = LiteralCase.CAPTIONED_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, literal = LiteralCase.CAPTIONED_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.CAPTIONED_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.CAPTIONED_CLOSE)
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
@@ -125,17 +134,20 @@ class NarrativeHistoryWireTest {
         val closing = framedReply.substringAfterLast('\n')
         val exactInlineCopy = "$opener\n例子$closing"
         val listExample = "- A literal closing-tag example:\n$closing"
+        val captionedExample = "The closing tag example:\n$closing"
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
         val authorsTemplate = !stop && continuation == null && literal == null
         val input = when {
             literal == LiteralCase.OPENING -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             literal == LiteralCase.INLINE_CLOSE -> "请逐字照抄以下文本并保留首尾标签：\n$exactInlineCopy"
+            literal == LiteralCase.CAPTIONED_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
         val reply = when (literal) {
             LiteralCase.OPENING -> "$opener\nThis is the opening tag."
             LiteralCase.INLINE_CLOSE -> exactInlineCopy
+            LiteralCase.CAPTIONED_CLOSE -> if (stop) "$opener\n$captionedExample" else "$opener\n$captionedExample\n$closing"
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
             null -> framedReply
         }
@@ -148,6 +160,7 @@ class NarrativeHistoryWireTest {
         val expected = when {
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
+            literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
             authorsTemplate || literal != null -> reply
             else -> prose
         }

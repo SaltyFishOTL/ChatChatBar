@@ -8,6 +8,48 @@ import org.junit.Test
 class NarrativeHistoryEchoTest {
 
     @Test
+    fun aRequestedCaptionedClosingTagStaysLiteralInsideARealOuterWrapper() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val request = "Please show the literal closing tag only on its own line:\n$closing"
+        val caption = "The closing tag example:"
+        val requestedBody = "$caption\n$closing"
+        val framed = "$opening\n$requestedBody"
+        fun cleanup(currentUser: String) = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, null).apply {
+            recordHistoryProjection("Earlier story.", "$opening\nEarlier story.\n$closing")
+            recordNarrativePrompt("", request)
+            recordCurrentLiteralTags(currentUser)
+        }
+
+        val authored = cleanup(request)
+        assertEquals(requestedBody, authored.completedBody(framed, streaming = true))
+        assertEquals(requestedBody, authored.completedBody(framed, interrupted = true))
+        val partial = closing.dropLast(2)
+        assertEquals("$caption\n$partial", authored.completedBody("$opening\n$caption\n$partial", interrupted = true))
+        val complete = "$framed\n$closing"
+        assertEquals(requestedBody, authored.completedBody(complete))
+        assertEquals(requestedBody, authored.completedBody(complete,
+            partLengths = listOf(opening.length, requestedBody.length, closing.length)))
+        assertEquals("The lamp is lit.", authored.completedBody("$opening\nThe lamp is lit.\n$closing"))
+
+        for (source in listOf("Continue the scene.", "```xml\n$request\n```", "Do not output these history tags:\n$request")) {
+            assertEquals(caption, cleanup(source).completedBody(framed, interrupted = true))
+        }
+    }
+
+    @Test
+    fun balancedBackticksInsideIsolatedCommentsDoNotChangeTheSurroundingLiterals() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val notes = List(96) { "<!-- `sample $it with $closing` -->" }
+        val code = "```text\n<!-- `this comment is inside a literal fence` -->\n```"
+        val body = (listOf("The lamp shines.") + notes + code + "She puts the letter away.").joinToString("\n\n")
+        val raw = "$opening\n$body\n$closing"
+        assertEquals(notes, NarrativeHistoryEcho.hiddenHtmlCommentRanges(raw).map(raw::substring))
+        assertEquals(body, NarrativeHistoryEcho.replyBody(raw))
+    }
+
+    @Test
     fun classifiesManyCommentsAndRescansWhenAHiddenFenceCouldChangeCodeBoundaries() {
         val notes = List(64) { "<!-- note $it contains </历史回复> -->" }
         val plain = notes.joinToString("\n", prefix = "Story starts.\n", postfix = "\nStory ends.")
@@ -54,7 +96,7 @@ class NarrativeHistoryEchoTest {
         for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
             fun NarrativeHistoryEcho.RequestCleanup.clean(text: String, lengths: List<Int> = emptyList()) =
                 completedBody(text, interrupted, lengths, streaming)
-            val authored = cleanup().apply { recordCurrentLiteralOpenings(request) }
+            val authored = cleanup().apply { recordCurrentLiteralTags(request) }
             assertEquals(literalReply, authored.clean(literalReply))
             assertEquals(ordinaryExample, authored.clean(transport))
             assertEquals(
@@ -69,7 +111,7 @@ class NarrativeHistoryEchoTest {
                 "Do not output these history tags:\n$request",
             )
             for (source in unrelated) {
-                val incidental = cleanup().apply { recordCurrentLiteralOpenings(source) }
+                val incidental = cleanup().apply { recordCurrentLiteralTags(source) }
                 assertEquals(ordinaryExample, incidental.clean(literalReply))
             }
         }

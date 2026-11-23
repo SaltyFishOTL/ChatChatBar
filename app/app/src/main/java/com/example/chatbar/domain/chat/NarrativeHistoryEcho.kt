@@ -23,6 +23,7 @@ object NarrativeHistoryEcho {
         val templateOpenings: Set<String> = emptySet(),
         val counterexampleClosingStarts: Set<Int> = emptySet(),
         val standaloneOpenings: Set<String> = emptySet(),
+        val standaloneClosings: Set<String> = emptySet(),
     )
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
@@ -102,6 +103,13 @@ object NarrativeHistoryEcho {
             "(?:,?[ \\t]+then[ \\t]+explain[ \\t]+it)?|" +
             "请(?:只|仅)在单独一行(?:原样|逐字)(?:显示|输出)(?:以下)?(?:开始|起始|开头)标签" +
             "(?:[，,]?[ \\t]*(?:然后|再)解释(?:它|该标签))?)[：:][ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val standaloneClosingInstruction = Regex(
+        " {0,3}(?:(?:please[ \\t]+)?(?:show|print|output)[ \\t]+(?:the[ \\t]+)?" +
+            "literal[ \\t]+closing[ \\t]+tag[ \\t]+(?:only[ \\t]+)?on[ \\t]+its[ \\t]+own[ \\t]+line" +
+            "(?:,?[ \\t]+then[ \\t]+explain[ \\t]+it)?|" +
+            "请(?:只|仅)在单独一行(?:原样|逐字)(?:显示|输出)(?:以下)?(?:结束|闭合)标签)[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
     private const val omitTemplateFence =
@@ -236,6 +244,7 @@ object NarrativeHistoryEcho {
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
         private var authoredStandaloneOpenings = emptySet<String>()
+        private var authoredStandaloneClosings = emptySet<String>()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
             prompt.lineSequence().forEachIndexed { index, line ->
@@ -252,9 +261,11 @@ object NarrativeHistoryEcho {
             authoredTemplateOpenings += output.templateOpenings
         }
 
-        fun recordCurrentLiteralOpenings(source: String) {
+        fun recordCurrentLiteralTags(source: String) {
             if (!enabled || source.isBlank()) return
-            authoredStandaloneOpenings = (authoredSources[source] ?: declaredUserOutput(source)).standaloneOpenings
+            val output = authoredSources[source] ?: declaredUserOutput(source)
+            authoredStandaloneOpenings = output.standaloneOpenings
+            authoredStandaloneClosings = output.standaloneClosings
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
@@ -334,6 +345,7 @@ object NarrativeHistoryEcho {
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings,
                 authoredPairs = authoredPairs,
                 authoredStandaloneOpenings = authoredStandaloneOpenings,
+                authoredStandaloneClosings = authoredStandaloneClosings,
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->
                     val exposed = withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading).content(inner)
@@ -409,6 +421,7 @@ object NarrativeHistoryEcho {
         val templateOpenings = mutableSetOf<String>()
         val counterexampleClosingStarts = mutableSetOf<Int>()
         val standaloneOpenings = mutableSetOf<String>()
+        val standaloneClosings = mutableSetOf<String>()
         val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(text) }
         fun startsLine(offset: Int): Boolean {
             val start = lineStart(text, offset)
@@ -427,9 +440,15 @@ object NarrativeHistoryEcho {
                     val lead = previousVisibleLine(literals.markdown, line)
                     if (tag.value in wrapperClosings) {
                         val after = tag.range.last + 1
-                        if (literals.isUnprotected(start) && text.substring(after).lineSequence().first().isBlank() &&
-                            literals.prohibitsWrapper(lead, after)
-                        ) counterexampleClosingStarts += start
+                        if (literals.isUnprotected(start) && text.subSequence(after, text.length).lineSequence().first().isBlank()) {
+                            val explicitRequest = lead != null && literals.matchesVisibleLine(lead, standaloneClosingInstruction) &&
+                                literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n")
+                            val beforeLead = lead?.takeIf { explicitRequest }?.let { previousVisibleLine(literals.markdown, it.first) }
+                            if (literals.prohibitsWrapper(lead, after) ||
+                                beforeLead?.let { literals.prohibitsWrapper(it, after) } == true
+                            ) counterexampleClosingStarts += start
+                            else if (explicitRequest) standaloneClosings += tag.value
+                        }
                         continue
                     }
                     val wrapper = wrappers.firstOrNull { it.opening == tag.value } ?: continue
@@ -496,7 +515,7 @@ object NarrativeHistoryEcho {
             val closing = requireNotNull(sample.groups[3])
             val wrapper = wrappers.first { it.opening == opening.value }
             if (closing.value !in wrapper.closings ||
-                listOf(opening, slot, closing).any { part -> literals.ranges.any { part.range.first in it } }
+                listOf(opening, slot, closing).any { part -> literals.ranges.containsOffset(part.range.first) }
             ) continue
             val start = sample.range.first
             val end = sample.range.last + 1
@@ -512,7 +531,7 @@ object NarrativeHistoryEcho {
             if (literals.prohibitsWrapper(previous, end)) counterexampleClosingStarts += closing.range.first
             else templateOpenings += wrapper.opening
         }
-        return UserOutput(pairs, templateOpenings, counterexampleClosingStarts, standaloneOpenings)
+        return UserOutput(pairs, templateOpenings, counterexampleClosingStarts, standaloneOpenings, standaloneClosings)
     }
 
     private fun userTemplateSlotFromInstruction(line: String): String? {
@@ -735,7 +754,7 @@ object NarrativeHistoryEcho {
                 val before = previousVisibleLine(literals.markdown, prefixStart)
                 val standaloneLabel = before?.takeIf { line ->
                     formatTemplateLabel.matches(literals.markdown.substring(line)) &&
-                        literals.ranges.none { line.first in it } &&
+                        !literals.ranges.containsOffset(line.first) &&
                         !literals.isMarkdownContainerLine(line.first, includeStandaloneLazyTags = true) &&
                         (prefixStart until start).all { offset ->
                             formatCard[offset].isWhitespace() || literals.commentRanges.any { offset in it }
@@ -770,7 +789,7 @@ object NarrativeHistoryEcho {
                 val closingLine = fence.closingLineStart ?: continue
                 if (!fence.topLevel) continue
                 val label = previousVisibleLine(literals.markdown, fence.range.first) ?: continue
-                if (literals.ranges.any { label.first in it } ||
+                if (literals.ranges.containsOffset(label.first) ||
                     literals.isMarkdownContainerLine(label.first, includeStandaloneLazyTags = true)
                 ) continue
                 val before = previousVisibleLine(literals.markdown, label.first)
@@ -884,7 +903,7 @@ object NarrativeHistoryEcho {
             matchesVisibleLine(nextNonblankLine(markdown, after), formatCounterexampleTail)
 
     private fun ReplyLiterals.isUnprotected(position: Int): Boolean =
-        ranges.none { position in it } && !isMarkdownContainerLine(position, includeStandaloneLazyTags = true)
+        !ranges.containsOffset(position) && !isMarkdownContainerLine(position, includeStandaloneLazyTags = true)
 
     private fun Wrapper.hasExactlyOnePair(text: String): Boolean =
         text.startsWith(opening) && closings.any(text::endsWith) &&
@@ -971,6 +990,7 @@ object NarrativeHistoryEcho {
         allowedOpenings: Set<String>? = null,
         authoredPairs: Set<String> = emptySet(),
         authoredStandaloneOpenings: Set<String> = emptySet(),
+        authoredStandaloneClosings: Set<String> = emptySet(),
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
@@ -982,6 +1002,7 @@ object NarrativeHistoryEcho {
             projectedInnerOpenings = projectedInnerOpenings,
             allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, trailerHeadings = trailerHeadings,
             authoredStandaloneOpenings = authoredStandaloneOpenings,
+            authoredStandaloneClosings = authoredStandaloneClosings,
             cleanExposedBody = cleanExposedBody,
         ).body
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
@@ -1001,6 +1022,7 @@ object NarrativeHistoryEcho {
                 projectedDuplicateOpenings = projectedDuplicateOpenings, projectedInnerOpenings = projectedInnerOpenings,
                 allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, trailerHeadings = trailerHeadings,
                 authoredStandaloneOpenings = authoredStandaloneOpenings,
+                authoredStandaloneClosings = authoredStandaloneClosings,
                 cleanExposedBody = cleanExposedBody,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
@@ -1013,7 +1035,7 @@ object NarrativeHistoryEcho {
                 classifyLiterals(text, tags, wrappers.flatMap { it.closings }, includeUnclosed = streaming || interrupted)
             }
             val toolCloses by lazy(LazyThreadSafetyMode.NONE) {
-                toolClosesByOpening(text, joinedTags, joinedLiterals)
+                toolClosesByOpening(text, joinedTags, joinedLiterals, authoredStandaloneClosings)
             }
             fun explainsPreviousExample(index: Int): Boolean =
                 parts.getOrNull(index)?.let { part ->
@@ -1032,7 +1054,7 @@ object NarrativeHistoryEcho {
                 val part = text.substring(start, parts[last].last + 1)
                 fun isJoinedLiteral(index: Int, opening: Boolean): Boolean {
                     val joinedIndex = start + index
-                    return joinedLiterals.ranges.any { joinedIndex in it } ||
+                    return joinedLiterals.ranges.containsOffset(joinedIndex) ||
                         joinedLiterals.isMarkdownContainerLine(
                             joinedIndex,
                             includeStandaloneLazyTags = opening && !followsClosedWrapper,
@@ -1045,6 +1067,7 @@ object NarrativeHistoryEcho {
                     allowedOpenings = allowedOpenings,
                     authoredPairs = authoredPairs, trailerHeadings = trailerHeadings, cleanExposedBody = cleanExposedBody,
                     authoredStandaloneOpenings = authoredStandaloneOpenings,
+                    authoredStandaloneClosings = authoredStandaloneClosings,
                     isJoinedLiteral = ::isJoinedLiteral,
                 )
                 if (first == last && !requirePair && cleaned.body == part) {
@@ -1142,6 +1165,7 @@ object NarrativeHistoryEcho {
         allowedOpenings: Set<String>? = null,
         authoredPairs: Set<String> = emptySet(),
         authoredStandaloneOpenings: Set<String> = emptySet(),
+        authoredStandaloneClosings: Set<String> = emptySet(),
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
     ): CleanedReply {
@@ -1189,6 +1213,7 @@ object NarrativeHistoryEcho {
         val visibleTags = familyTags.filter { tag ->
             literals.isVisibleWrapperTag(end, tag, allowIndentedParagraphTag = true) &&
                 (tag.value !in wrapper.closings || !literals.isCaptionedLazyListClosing(tag.range.first)) &&
+                !literals.isRequestedClosingLine(tag.range.first, tag.value, authoredStandaloneClosings) &&
                 isJoinedLiteral?.invoke(bodyStart + tag.range.first, false) != true
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
@@ -1270,6 +1295,7 @@ object NarrativeHistoryEcho {
                 isJoinedLiteral = isJoinedLiteral?.let { joined -> { index, opening -> joined(bodyStart + index, opening) } },
                 allowedOpenings = setOf(witnessedInner.opening), authoredPairs = authoredPairs,
                 authoredStandaloneOpenings = authoredStandaloneOpenings,
+                authoredStandaloneClosings = authoredStandaloneClosings,
                 trailerHeadings = trailerHeadings,
                 cleanExposedBody = cleanExposedBody,
             )
@@ -1327,7 +1353,8 @@ object NarrativeHistoryEcho {
                 wrapper.closings.any { suffix.length < it.length && it.startsWith(suffix) } &&
                 !isEscaped(end, lastTag) && !literals.isMarkdownContainerLine(lastTag) &&
                 !literals.isCaptionedLazyListClosing(lastTag) &&
-                literals.ranges.none { lastTag in it } && !literals.hasCodeIndentAt(lastTag) &&
+                !literals.isRequestedClosingLine(lastTag, suffix, authoredStandaloneClosings) &&
+                !literals.ranges.containsOffset(lastTag) && !literals.hasCodeIndentAt(lastTag) &&
                 isJoinedLiteral?.invoke(bodyStart + lastTag, false) != true
             ) {
                 val before = bodyBeforeClose(lastTag)
@@ -1381,6 +1408,7 @@ object NarrativeHistoryEcho {
 
     private fun toolClosesByOpening(
         text: String, families: Map<String, List<MatchResult>>, literals: ReplyLiterals,
+        authoredStandaloneClosings: Set<String>,
     ): Map<Int, Set<IntRange>> {
         val matches = mutableMapOf<Int, MutableSet<IntRange>>()
         val optionalContinuationLines = listOf(
@@ -1393,6 +1421,7 @@ object NarrativeHistoryEcho {
                 for (tag in visible) {
                     if (tag.value.startsWith("</")) {
                         if (literals.isCaptionedLazyListClosing(tag.range.first) ||
+                            literals.isRequestedClosingLine(tag.range.first, tag.value, authoredStandaloneClosings) ||
                             lineStart(literals.markdown, tag.range.first) in ignoredClosings
                         ) continue
                         val open = openings.removeLastOrNull() ?: continue
@@ -1427,7 +1456,7 @@ object NarrativeHistoryEcho {
         val position = tag.range.first
         val quote = text.getOrNull(position - 1)
         val asciiQuoted = (quote == '"' || quote == '\'') && text.getOrNull(tag.range.last + 1) == quote
-        return !asciiQuoted && !isEscaped(text, position) && ranges.none { position in it } &&
+        return !asciiQuoted && !isEscaped(text, position) && !ranges.containsOffset(position) &&
             !isMarkdownContainerLine(position, includeStandaloneLazyTags) && !hasCodeIndentAt(position, allowIndentedParagraphTag)
     }
 
@@ -1451,6 +1480,16 @@ object NarrativeHistoryEcho {
         return literalClosingTagLead.containsMatchIn(markdown.substring(lead))
     }
 
+    private fun ReplyLiterals.isRequestedClosingLine(offset: Int, token: String, requested: Set<String>): Boolean {
+        if (requested.none { it.startsWith(token) } || !hasMarkerPadding(markdown, offset)) return false
+        val end = offset + token.length
+        if (!markdown.subSequence(end, markdown.length).lineSequence().first().isBlank()) return false
+        val start = lineStart(markdown, offset)
+        val caption = previousVisibleLine(markdown, start) ?: return false
+        return markdown.substring(caption.last + 1, start) in setOf("\n", "\r\n") &&
+            visibleLine(caption)?.let(literalClosingTagLead::containsMatchIn) == true
+    }
+
     private fun ReplyLiterals.isMarkdownContainerLine(offset: Int, includeStandaloneLazyTags: Boolean = false): Boolean {
         val start = lineStart(markdown, offset)
         if (start in listItemLineStarts || MarkdownCodeFences.hasQuoteContainerPrefix(markdown, start)) return true
@@ -1471,7 +1510,7 @@ object NarrativeHistoryEcho {
         }.map { it.range }
         val options = (roleplayAnnotatedActionRanges(markdown).asSequence() +
             roleplayListedActionRanges(markdown)).filter { range ->
-            ranges.none { range.first in it || range.last in it } &&
+            !ranges.containsOffset(range.first) && !ranges.containsOffset(range.last) &&
                 !isMarkdownContainerLine(range.first) && !isMarkdownContainerLine(range.last)
         }.toList()
         return (commentRanges + status + options).sortedBy { it.first }
@@ -1598,11 +1637,11 @@ object NarrativeHistoryEcho {
                     fence.info.isNotEmpty() && statusKind == null
             }
             val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range } + cdata
-            val ranges = codeBlocks + inlineCode + comments + cdata
+            val ranges = (codeBlocks + inlineCode + comments + cdata).indexedRanges()
             val dialogue = if (interpretProseQuotes && ('[' in end || '［' in end)) {
                 roleplaySpokenDialogueRanges(end, ranges, includeUnclosed) { isEscaped(end, it) }
             } else emptyList()
-            val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
+            val quoteDelimitersToSkip = (ranges + familyTags.map { it.range }).indexedRanges()
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                 val position = tag.range.first
                 val linePrefix = source.subSequence(lineStart(source, position), position)
@@ -1611,7 +1650,7 @@ object NarrativeHistoryEcho {
                 position.takeIf {
                     tag.value in closings && linePrefix.isBlank() &&
                         !hasCodeIndent(source, position, indentedParagraphLineStarts) &&
-                        ranges.none { position in it } && continuationLines.next().isBlank() &&
+                        !ranges.containsOffset(position) && continuationLines.next().isBlank() &&
                         continuationLines.hasNext() && hanIdeograph.containsMatchIn(continuationLines.next())
                 }
             } else emptyList()
@@ -1625,7 +1664,7 @@ object NarrativeHistoryEcho {
                 interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
-                ranges + quotes + dialogue, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, lazyListItemLineStarts,
+                (ranges + quotes + dialogue).indexedRanges(), roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, lazyListItemLineStarts,
                 indentedParagraphLineStarts, source, comments, fences,
             )
         }
@@ -1649,10 +1688,14 @@ object NarrativeHistoryEcho {
         lazyQuotes: Set<Int>,
     ): Boolean {
         val range = markup.range
-        if (range.any { text[it] == '`' }) return false
+        val containsBackticks = range.any { text[it] == '`' }
+        val multiline = range.any { text[it] == '\n' }
+        // Backtick runs can only pair inside their paragraph. A standalone, isolated
+        // one-line comment cannot affect a different paragraph when its runs are masked.
+        if (containsBackticks && multiline) return false
         val start = lineStart(text, range.first)
         val prefix = text.subSequence(start, range.first)
-        if (range.any { text[it] == '\n' }) {
+        if (multiline || containsBackticks) {
             if (!markup.isComment || !prefix.isBlank() || start in containers || start in lazyQuotes) return false
             val end = text.indexOf('\n', range.last + 1).let { if (it < 0) text.length else it }
             if (!text.subSequence(range.last + 1, end).isBlank()) return false
@@ -1670,6 +1713,21 @@ object NarrativeHistoryEcho {
         val next = text.getOrNull(after + 1)
         return next == null || next == '\n' || next.isLetter() ||
             text.startsWith(commentOpening, after + 1) || text.startsWith(cdataOpening, after + 1)
+    }
+
+    private fun List<IntRange>.indexedRanges(): List<IntRange> = buildList {
+        for (range in this@indexedRanges.sortedBy { it.first }) {
+            if (range.isEmpty()) continue
+            val previous = lastOrNull()
+            if (previous != null && range.first <= previous.last) {
+                this[lastIndex] = previous.first..maxOf(previous.last, range.last)
+            } else add(range)
+        }
+    }
+
+    private fun List<IntRange>.containsOffset(offset: Int): Boolean {
+        val index = binarySearchBy(offset, selector = IntRange::first)
+        return index >= 0 || -index - 2 >= 0 && offset <= this[-index - 2].last
     }
 
     private fun inlineCodeRangesOutsideBlocks(
@@ -1730,12 +1788,12 @@ object NarrativeHistoryEcho {
         var canOpenComment = onMarkup != null
         var markupEnd = 0
         fun isProseDelimiter(index: Int): Boolean =
-            !isEscaped(text, index) && delimiterExclusions.none { index in it } && dialogue.none { index in it }
+            !isEscaped(text, index) && !delimiterExclusions.containsOffset(index) && dialogue.none { index in it }
 
         for (index in text.indices) {
             if (index < markupEnd) continue
             if (canOpenComment && markdown.startsWith(commentOpening, index) &&
-                !isEscaped(text, index) && delimiterExclusions.none { index in it }
+                !isEscaped(text, index) && !delimiterExclusions.containsOffset(index)
             ) {
                 val end = closedCommentEnd(text, index)
                 val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
