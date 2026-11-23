@@ -1504,7 +1504,6 @@ class ExperimentalToolTransportTest {
             NarrativeHistoryEcho.forFormatRepair("输出模板：$sample", original),
             NarrativeHistoryEcho.forFormatRepair("$card\n\n输出模板：$sample", original),
             NarrativeHistoryEcho.forFormatRepair(card, sample),
-            NarrativeHistoryEcho.forFormatRepair(card, original, "逐字输出 $sample"),
         )) {
             assertEquals(wrapped, safe.completedBody(wrapped))
         }
@@ -3497,11 +3496,8 @@ class ExperimentalToolTransportTest {
             val proven = "The following is a counterexample:\n$sample\n\nStart with the character name."
             val denied = "Do not output the following history tags:\n$close"
             val deniedPair = "Do not output the following history tags:\n$sample"
-            val explicit = "Please show the literal closing tag only on its own line:\n$close"
-            val unknown = "The issue concerns this marker:\n$close"
-            val bodyCases = listOf(denied to repaired, deniedPair to repaired, explicit to raw, unknown to raw, null to repaired)
-            for ((user, expected) in bodyCases) for (experimental in listOf(false, true)) {
-                assertActualRepairBody(raw, expected, proven, original, user, experimental)
+            for (user in listOf(denied, deniedPair, null)) for (experimental in listOf(false, true)) {
+                assertActualRepairBody(raw, repaired, proven, original, user, experimental)
             }
             assertActualRepairBody(raw, raw, "Start with the character name.", original, denied, experimental = false)
         }
@@ -3563,6 +3559,7 @@ class ExperimentalToolTransportTest {
         user: String?,
         experimental: Boolean,
     ) {
+        val prepared = MessageFormatRepairService.PreparedRequest(original, card, null)
         val delta = if (experimental) chunk(buildJsonObject { put("content", raw) }.toString(), "game_content")
             else ordinaryDelta(raw)
         val tail = sse(listOf(chunk(reason = if (experimental) "tool_calls" else "stop"), "[DONE]"))
@@ -3571,7 +3568,7 @@ class ExperimentalToolTransportTest {
                 experimentalApiModeEnabled = { experimental }, allowCleartextHttp = { true },
             ))
             var reader: (() -> List<String>)? = null
-            val stream = service.streamRepair(original, card, null, model(server.baseUrl)) { reader = it }
+            val stream = service.streamRepair(prepared, model(server.baseUrl)) { reader = it }
             val body = withTimeout(5_000) {
                 if (stop) (stream.first { it is StreamEvent.Delta } as StreamEvent.Delta).text
                 else {
@@ -3586,13 +3583,122 @@ class ExperimentalToolTransportTest {
                 val complete = checkNotNull(reader).invoke().ifEmpty { listOf(body) }
                 assertEquals(listOf(raw), complete)
             }
-            assertTrue(card.lineSequence().first() in server.requestBody)
-            assertTrue(original in server.requestBody)
-            val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original, user)
+            val request = Json.parseToJsonElement(server.requestBody).jsonObject
+            val sent = if (experimental) {
+                val encoded = request.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
+                    .single { it.getValue("name").jsonPrimitive.content == "context" }
+                    .getValue("description").jsonPrimitive.content
+                Json.parseToJsonElement(encoded + "\"}]").jsonArray
+            } else request.getValue("messages").jsonArray
+            val wireUser = sent.asSequence().map { it.jsonObject }
+                .filter { it.getValue("role").jsonPrimitive.content == "user" }
+                .map { it.getValue("content").jsonPrimitive.content }
+                .single { "{待修复消息}\n" in it }
+            assertEquals(PromptTemplates.messageFormatRepairUserPrompt(card, null, original), wireUser)
+            user?.let { assertFalse(it.lineSequence().first() in wireUser) }
+            val cleanup = prepared.historyCleanup()
             assertEquals("Repair Preview and ${if (stop) "actual Stop" else "Done"}", listOf(expected, expected), listOf(
                 cleanup.streamingPreview().appendedBody(body, 0),
                 cleanup.completedBody(body, interrupted = stop),
             ))
+        }
+    }
+
+    @Test
+    fun `rendered player override and global persona can explicitly declare the response template`() = runBlocking {
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier story.").copy(narrativeMode = mode)
+            val prose = "The keeper opened the gate."
+            val reply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+            val template = PromptTemplates.narrativeModeHistoryReply("[Story]", mode)
+            val author = "The player is {{user}}.\n\n" +
+                "Use exactly this XML template, replace [Story] with new prose and keep both tags verbatim:\n$template"
+            for (experimental in listOf(false, true)) {
+                for ((override, global) in listOf(author to "Unused global persona.", " " to author)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(reply), reply, previousAssistant = prior, experimental = experimental,
+                        currentUserText = "Continue.", playerOverride = override, globalPersona = global,
+                    )
+                }
+                for (setting in listOf("Earlier turn quoted here:\n$template", "```text\n$author\n```")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(prose), prose, previousAssistant = prior, experimental = experimental,
+                        currentUserText = "Continue.", playerOverride = setting, globalPersona = author,
+                    )
+                }
+                val forbidden = "Do not output the following history tags:\n$template"
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(prose), prose, previousAssistant = prior, experimental = experimental,
+                    currentUserText = forbidden, playerOverride = author, globalPersona = "Unused global persona.",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply, previousAssistant = prior, experimental = experimental,
+                    currentUserText = "Continue.", playerOverride = author, supplementaryInstructions = forbidden,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a witnessed frame does not resurrect a standalone identifiable partial marker on Done`() = runBlocking {
+        val prose = "The keeper opened the gate."
+        val partial = "</历史回"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier story.").copy(narrativeMode = mode)
+            val frame = PromptTemplates.narrativeModeHistoryReply(prose, mode)
+            val opening = frame.substringBefore('\n')
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf("$opening\n$prose", "\n$partial"), listOf(prose, prose), prose, previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                val literal = "She typed `$partial` into the console."
+                val wrapped = PromptTemplates.narrativeModeHistoryReply(literal, mode)
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped), listOf(literal), literal, previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                for (unwitnessed in listOf("$prose\n$partial", "$opening\n$prose\n$partial")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(unwitnessed), listOf(unwitnessed), unwitnessed, fixtureHistory = false,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `repair uses the normalized rendered card actually sent over the wire`() = runBlocking {
+        val original = "  The keeper turned the brass key. \n"
+        val repaired = "The keeper opened the gate."
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("An earlier story from {{char}}.", mode)
+            val card = PlaceholderRenderer.render("Do not output these history tags in your reply:\n$sample", null, "Keeper")
+            val raw = PromptTemplates.narrativeModeHistoryReply(repaired, mode)
+            for (experimental in listOf(false, true)) {
+                assertActualRepairBody(raw, repaired, "    $card  \n", original, null, experimental)
+                assertActualRepairBody(raw, repaired, card, original, null, experimental)
+                assertActualRepairBody(raw, raw, "    Output template:\n$sample  \n", original, null, experimental)
+                assertActualRepairBody(raw, raw, card, sample, null, experimental)
+            }
+        }
+    }
+
+    @Test
+    fun `unused generation user text does not reserve repair reply tags`() = runBlocking {
+        val original = "The keeper turned the brass key."
+        val repaired = "The keeper opened the gate."
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("An earlier story.", mode)
+            val card = "Do not output these history tags in your reply:\n$sample"
+            val irrelevant = "A player once used this example.\n" + PromptTemplates.narrativeModeHistoryReply("An unused literal.", mode)
+            val raw = PromptTemplates.narrativeModeHistoryReply(repaired, mode)
+            for (experimental in listOf(false, true)) {
+                assertActualRepairBody(raw, repaired, card, original, irrelevant, experimental)
+                // When these same bytes are the original assistant body, they really are in the repair request.
+                assertActualRepairBody(raw, raw, card, irrelevant, null, experimental)
+            }
         }
     }
 
@@ -3846,26 +3952,31 @@ class ExperimentalToolTransportTest {
         characterPostHistoryInstructions: String? = null,
         characterCoreInstructions: String? = null,
         supplementaryInstructions: String? = null,
+        playerOverride: String? = null,
+        globalPersona: String? = null,
         finishReason: String = if (toolCall) "tool_calls" else "stop",
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
-        val layers = if (characterCoreInstructions != null || characterPostHistoryInstructions != null || supplementaryInstructions != null) {
+        val playerSetting = playerOverride?.takeIf(String::isNotBlank) ?: globalPersona
+        val hasStableLayers = characterCoreInstructions != null || supplementaryInstructions != null || playerSetting != null
+        val layers = if (hasStableLayers || characterPostHistoryInstructions != null) {
             PromptAssembler().assembleCachePromptLayers(
                 CharacterCard.create("Gatekeeper").copy(
                     systemPrompt = characterCoreInstructions.orEmpty(),
                     postHistoryInstructions = characterPostHistoryInstructions.orEmpty(),
                 ),
-                supplementarySetting = supplementaryInstructions,
+                supplementarySetting = supplementaryInstructions, playerSetting = playerSetting, playerName = "Keeper",
             )
         } else null
-        val corePrefix = if (layers != null && (characterCoreInstructions != null || supplementaryInstructions != null)) {
+        val corePrefix = if (layers != null && hasStableLayers) {
             cleanup.recordDispatchedCharacterCore(layers.coreSystemPrompt, !characterCoreInstructions.isNullOrBlank())
             cleanup.recordDispatchedSupplementarySettings(layers.supplementarySystemPrompt)
+            cleanup.recordDispatchedPlayerSettings(layers.playerSystemPrompt)
             buildCcbStablePrefixMessages(
                 layers.coreSystemPrompt, layers.stableContextSystemPrompt,
                 positionedRequirementsSystemPrompt = "", formatPromptPosition = FormatPromptPosition.END,
-                supplementarySystemPrompt = layers.supplementarySystemPrompt,
+                supplementarySystemPrompt = layers.supplementarySystemPrompt, playerSystemPrompt = layers.playerSystemPrompt,
             )
         } else emptyList()
         cleanup.recordNarrativePrompt(narrativePrompt.orEmpty(), currentUserText)
@@ -3990,6 +4101,19 @@ class ExperimentalToolTransportTest {
                 val userIndex = context.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content == currentUserText }
                 assertTrue("The evaluated supplementary setting must precede the current USER on the wire",
                     settingIndex >= 0 && userIndex > settingIndex)
+            }
+            if (playerSetting != null) {
+                val player = requireNotNull(layers).playerSystemPrompt
+                assertTrue(playerSetting.replace("{{user}}", "Keeper").trim() in player)
+                val playerIndex = context.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content == player }
+                val userIndex = context.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content == currentUserText }
+                assertTrue("The evaluated player setting must precede the current USER", playerIndex >= 0 && userIndex > playerIndex)
+                if (supplementaryInstructions != null) {
+                    val settingsIndex = context.indexOfFirst {
+                        it.jsonObject.getValue("content").jsonPrimitive.content == layers.supplementarySystemPrompt
+                    }
+                    assertTrue("The player setting must follow supplementary settings", settingsIndex >= 0 && playerIndex > settingsIndex)
+                }
             }
             val sourceTexts = listOfNotNull(narrativePrompt, narrativeTail, currentUserText, previousUserText, cardRequirements, strongSuffix, postUserPrompt) +
                 historyMessages.map { it.content.jsonPrimitive.content }
@@ -4456,8 +4580,6 @@ class ExperimentalToolTransportTest {
                         assertEquals(expected, cleanup.completedBody(received, streaming = true))
                         assertEquals(expected, cleanup.completedBody(received, interrupted = true))
                         assertEquals(expected, cleanup.completedBody(received))
-                        val fromCurrentUser = NarrativeHistoryEcho.forFormatRepair(card, "她关上门。", original)
-                        assertEquals(expected, fromCurrentUser.completedBody(received))
                     }
                 }
             }

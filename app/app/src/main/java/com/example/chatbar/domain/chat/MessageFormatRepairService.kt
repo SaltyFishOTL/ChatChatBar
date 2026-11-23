@@ -4,18 +4,37 @@ import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.AiTaskStage
-import com.example.chatbar.domain.prompt.aiTaskRunContext
-import com.example.chatbar.domain.prompt.rethrowIfAiTaskTerminalFailure
 import com.example.chatbar.domain.prompt.PromptTemplates
 import kotlinx.coroutines.flow.Flow
 
 class MessageFormatRepairService(
     private val streamingChatService: StreamingChatService
 ) {
+    internal class PreparedRequest(
+        val originalContent: String,
+        renderedFormatCard: String?,
+        val segmentedBubbleFormat: String?,
+    ) {
+        val formatCard = renderedFormatCard?.trim()?.takeIf(String::isNotEmpty)
+
+        fun historyCleanup(): NarrativeHistoryEcho.RequestCleanup =
+            NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent)
+    }
+
     fun streamRepair(
         originalContent: String,
         formatCard: String?,
         segmentedBubbleFormat: String?,
+        modelConfig: ModelConfig,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
+    ): Flow<StreamEvent> = streamRepair(
+        PreparedRequest(originalContent, formatCard, segmentedBubbleFormat),
+        modelConfig,
+        onToolReplyPrefixReader,
+    )
+
+    internal fun streamRepair(
+        request: PreparedRequest,
         modelConfig: ModelConfig,
         onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
     ): Flow<StreamEvent> = streamingChatService.streamText(
@@ -28,9 +47,9 @@ class MessageFormatRepairService(
             ChatApiMessage.text(
                 role = "user",
                 content = PromptTemplates.messageFormatRepairUserPrompt(
-                    formatCard = formatCard,
-                    segmentedBubbleFormat = segmentedBubbleFormat,
-                    message = originalContent
+                    formatCard = request.formatCard,
+                    segmentedBubbleFormat = request.segmentedBubbleFormat,
+                    message = request.originalContent
                 )
             )
         ),

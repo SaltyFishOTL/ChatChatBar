@@ -2407,7 +2407,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         }
 
         val originalContent = message.displayContent
-        val repairEcho = NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, userText)
+        val repairRequest = MessageFormatRepairService.PreparedRequest(originalContent, formatCard, segmentedFormat)
+        val repairEcho = repairRequest.historyCleanup()
         val repairDeltaPreview = repairEcho.streamingPreview()
         val repairOrdinaryPreview = repairEcho.streamingPreview()
         var result = message
@@ -2436,9 +2437,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 try {
                     val stoppedBeforeDone = try {
                         messageFormatRepairService.streamRepair(
-                            originalContent = originalContent,
-                            formatCard = formatCard,
-                            segmentedBubbleFormat = segmentedFormat,
+                            request = repairRequest,
                             modelConfig = model,
                             onToolReplyPrefixReader = interruptedRepairToolReader::set,
                         ).collect { event ->
@@ -3159,6 +3158,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
                     )
                     narrativeEcho.recordDispatchedSupplementarySettings(promptLayers.supplementarySystemPrompt)
+                    narrativeEcho.recordDispatchedPlayerSettings(promptLayers.playerSystemPrompt)
 
                     suspend fun addContextMessage(
                         msg: ChatMessage,
@@ -3259,7 +3259,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
 
                     // 3. 本次用户输入；随后加入可选强提示 System 和 CCB assistant 开写尾缀。
                     narrativeEcho.recordNarrativePrompt(promptLayers.narrativeModeSystemPrompt, null)
-                    if (currentUserApiMessage != null && currentUserContent != null) {
+                    if (currentUserApiMessage != null) {
                         val strongPromptSystemSuffix = FormatCardUserToolPolicy.strongPromptSystemSuffix(
                             activeFormatCard?.userTools.orEmpty()
                         )
@@ -3432,7 +3432,6 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                                     persistedAssistantMessage = performMessageFormatRepair(
                                         message = persistedAssistantMessage,
                                         automatic = true,
-                                        userText = currentUserContent
                                     )
                                 }
                                 if (!automaticImageHandled &&

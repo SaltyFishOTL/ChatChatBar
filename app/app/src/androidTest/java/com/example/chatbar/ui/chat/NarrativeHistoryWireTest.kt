@@ -67,12 +67,12 @@ class NarrativeHistoryWireTest {
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE, ORDINARY_CAPTIONED_CLOSE, CHARACTER_POST_HISTORY,
         CHARACTER_TAIL_OPEN, CHARACTER_TAIL_CLOSE, CHARACTER_CORE, USER_COMPACT_TEMPLATE, STRONG_SUFFIX_DENIAL,
         DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION, BRACE_SLOT_TEMPLATE, QUOTED_POSSESSIVE,
-        SUPPLEMENTARY_TEMPLATE, UNSENT_GREETING_CARD, PARAGRAPH_QUOTE, GERMAN_QUOTE,
+        SUPPLEMENTARY_TEMPLATE, UNSENT_GREETING_CARD, PARAGRAPH_QUOTE, GERMAN_QUOTE, PLAYER_TEMPLATE, PARTIAL_OUTER_CLOSE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
         FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL, VISIBLE_INPUT_BLOCKQUOTE, AUTHORED_CLOSE_EXTRA,
-        EXPLICIT_STANDALONE_PROHIBITION, QUOTED_POSSESSIVE, PARAGRAPH_QUOTE, GERMAN_QUOTE,
+        EXPLICIT_STANDALONE_PROHIBITION, QUOTED_POSSESSIVE, PARAGRAPH_QUOTE, GERMAN_QUOTE, INDENTED_REPAIR_CARD,
     }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
@@ -275,6 +275,24 @@ class NarrativeHistoryWireTest {
         verifyAutomaticRepairDenial(stop = false)
     }
 
+    @Test fun playerOverrideAndGlobalPersonaPreserveDeclaredReplyTags() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.PLAYER_TEMPLATE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.PLAYER_TEMPLATE, useGlobalPersona = true)
+    }
+
+    @Test fun partialTransportCloseStaysHiddenInActualStopAndDone() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.PARTIAL_OUTER_CLOSE)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.PARTIAL_OUTER_CLOSE)
+    }
+
+    @Test fun autoAndManualRepairUseOnlyTheNormalizedSentInput() = runBlocking {
+        verifyAutomaticRepairDenial(stop = true, unusedExample = true)
+        verifyAutomaticRepairDenial(stop = false, unusedExample = true)
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.INDENTED_REPAIR_CARD)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.INDENTED_REPAIR_CARD,
+            repairMode = ChatNarrativeMode.ADVANCE)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -317,8 +335,9 @@ class NarrativeHistoryWireTest {
         stopAfterCompleteToolCalls: Boolean = false,
         legacyFirst: Boolean? = null,
         toolIndexes: List<Int>? = null,
+        useGlobalPersona: Boolean = false,
     ) = runReplyFixture(buildReplyFixture(
-        transport, stop, continuation, literal, stopAfterCompleteToolCalls, legacyFirst, toolIndexes,
+        transport, stop, continuation, literal, stopAfterCompleteToolCalls, legacyFirst, toolIndexes, useGlobalPersona,
     ))
 
     private data class ReplyFixture(
@@ -337,6 +356,8 @@ class NarrativeHistoryWireTest {
         val renderedTail: String,
         val supplementaryTemplate: String?,
         val renderedSupplementary: String?,
+        val playerTemplate: String?,
+        val useGlobalPersona: Boolean,
         val selectedFormatCard: FormatCard?,
         val input: String,
         val expected: String,
@@ -356,6 +377,7 @@ class NarrativeHistoryWireTest {
         stopAfterCompleteToolCalls: Boolean,
         legacyFirst: Boolean?,
         toolIndexes: List<Int>?,
+        useGlobalPersona: Boolean,
     ): ReplyFixture {
         val cardName = "Synthetic narrative wire"
         val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
@@ -390,6 +412,10 @@ class NarrativeHistoryWireTest {
             LiteralCase.CHARACTER_TAIL_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
             else -> ""
         }
+        val playerTemplate = if (literal == LiteralCase.PLAYER_TEMPLATE) {
+            "The player is {{user}}.\n\nUse this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
+                historicalTemplate
+        } else null
         val customCore = "Required output template (keep both tags verbatim):\n$historicalTemplate"
             .takeIf { literal == LiteralCase.CHARACTER_CORE }.orEmpty()
         val card = CharacterCard.create(cardName).copy(systemPrompt = customCore, postHistoryInstructions = customTail)
@@ -479,7 +505,8 @@ class NarrativeHistoryWireTest {
                 else PromptTemplates.narrativeModeHistoryReply(ordinaryCaptionedBody, mode)
             LiteralCase.CHARACTER_POST_HISTORY, LiteralCase.CHARACTER_CORE, LiteralCase.USER_COMPACT_TEMPLATE,
             LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT, LiteralCase.BRACE_SLOT_TEMPLATE,
-            LiteralCase.SUPPLEMENTARY_TEMPLATE, LiteralCase.UNSENT_GREETING_CARD -> framedReply
+            LiteralCase.SUPPLEMENTARY_TEMPLATE, LiteralCase.UNSENT_GREETING_CARD, LiteralCase.PLAYER_TEMPLATE -> framedReply
+            LiteralCase.PARTIAL_OUTER_CLOSE -> "$opener\n$prose\n</历史回"
             LiteralCase.PARAGRAPH_QUOTE -> PromptTemplates.narrativeModeHistoryReply(paragraphQuote(closing), mode)
             LiteralCase.GERMAN_QUOTE -> PromptTemplates.narrativeModeHistoryReply(germanQuote(closing), mode)
             LiteralCase.QUOTED_POSSESSIVE -> if (stop) "$opener\n$possessiveBody"
@@ -518,7 +545,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.ADJACENT_AUTHORED -> "$prose\n$adjacentAuthored"
             literal == LiteralCase.CARD_ORPHAN_NO_HISTORY -> prose
             literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ||
-                literal == LiteralCase.STRONG_SUFFIX_DENIAL || literal == LiteralCase.DOCUMENTARY_FORMAT -> prose
+                literal == LiteralCase.STRONG_SUFFIX_DENIAL || literal == LiteralCase.DOCUMENTARY_FORMAT ||
+                literal == LiteralCase.PARTIAL_OUTER_CLOSE -> prose
             literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> bodyWithClosingLiteral
             legacyFirst == true -> "$legacyScene\n$prose"
             legacyFirst == false -> "$prose\n$legacyScene"
@@ -543,6 +571,7 @@ class NarrativeHistoryWireTest {
             rebuildInitial = rebuildInitial, customCore = customCore, renderedTail = customTail.replace("{{char}}", cardName),
             supplementaryTemplate = supplementaryTemplate,
             renderedSupplementary = supplementaryTemplate?.replace("{{char}}", cardName),
+            playerTemplate = playerTemplate, useGlobalPersona = useGlobalPersona,
             selectedFormatCard = selectedFormatCard, input = input, expected = expected, preview = preview,
             toolIndexes = toolIndexes, reasoningWitness = reasoningWitness,
             finishReason = "length".takeIf { literal == LiteralCase.PADDED_OPENER }, disconnectedText = disconnectedText,
@@ -553,6 +582,7 @@ class NarrativeHistoryWireTest {
     private suspend fun runReplyFixture(fixture: ReplyFixture) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
+        val originalPlayer = if (fixture.playerTemplate != null) app.settingsRepository.getPlayerSetting() else null
         val store = ViewModelStore()
         HeldNarrativeReplyServer(
             fixture.parts, tool = fixture.transport == Transport.EXPERIMENTAL_TOOL,
@@ -565,6 +595,8 @@ class NarrativeHistoryWireTest {
                 modelId = model.id, narrativeMode = fixture.mode, longTermMemoryEnabled = false,
                 automaticImageGenerationEnabled = false, audiobookModeEnabled = false,
                 formatCardId = fixture.selectedFormatCard?.id, supplementarySetting = fixture.supplementaryTemplate,
+                playerName = "Fixture keeper".takeIf { fixture.playerTemplate != null },
+                playerSetting = fixture.playerTemplate.takeUnless { fixture.useGlobalPersona },
             )
             val greeting = ChatMessage.create(session.id, MessageRole.ASSISTANT, fixture.prior).takeIf { fixture.rebuildInitial }
             var editor: ChatViewModel? = null
@@ -580,6 +612,10 @@ class NarrativeHistoryWireTest {
                 }
                 if (fixture.includePrior) {
                     app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, fixture.prior).copy(narrativeMode = fixture.mode))
+                }
+                if (originalPlayer != null) {
+                    val persona = if (fixture.useGlobalPersona) checkNotNull(fixture.playerTemplate) else "Unused global persona."
+                    app.settingsRepository.savePlayerSetting(originalPlayer.copy(globalPersona = persona))
                 }
                 app.settingsRepository.saveAppSettings(settings.copy(
                     allowCleartextModelApi = true, defaultEmbeddingId = null, defaultFormatCardId = null,
@@ -629,6 +665,7 @@ class NarrativeHistoryWireTest {
                         app.deletionCoordinator.deleteSession(session.id)
                     } finally {
                         app.settingsRepository.saveAppSettings(settings)
+                        originalPlayer?.let { app.settingsRepository.savePlayerSetting(it) }
                         fixture.selectedFormatCard?.let { app.formatCardRepository.delete(it.id) }
                         app.characterRepository.delete(fixture.card.id)
                         app.modelRepository.deleteModel(model.id)
@@ -669,6 +706,13 @@ class NarrativeHistoryWireTest {
             val sentUser = messages.indexOfFirst { it.hasMessage("user", fixture.input) }
             assertTrue("The evaluated supplementary setting must precede the sent user", setting >= 0 && sentUser > setting)
         }
+        fixture.playerTemplate?.let { raw ->
+            val rendered = raw.replace("{{user}}", "Fixture keeper")
+            val setting = messages.indexOfFirst { it.jsonObject.getValue("content").jsonPrimitive.content.contains(rendered) }
+            val sentUser = messages.indexOfFirst { it.hasMessage("user", fixture.input) }
+            assertTrue("The evaluated player setting must precede the sent user", setting >= 0 && sentUser > setting)
+            assertFalse(messages.any { "Unused global persona." in it.jsonObject.getValue("content").jsonPrimitive.content })
+        }
         if (fixture.checksStrongDenial) {
             val user = messages.indexOfFirst { it.hasMessage("user", fixture.input) }
             val role = if (fixture.transport.experimental) "system" else "assistant"
@@ -703,7 +747,7 @@ class NarrativeHistoryWireTest {
         assertEquals(listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.drop(priorBodies.size).map(ChatMessage::role))
     }
 
-    private suspend fun verifyAutomaticRepairDenial(stop: Boolean) {
+    private suspend fun verifyAutomaticRepairDenial(stop: Boolean, unusedExample: Boolean = false) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
         val store = ViewModelStore()
@@ -712,9 +756,10 @@ class NarrativeHistoryWireTest {
         val repaired = "Mira: Mira enters."
         val raw = PromptTemplates.narrativeModeHistoryReply(repaired, mode)
         val close = raw.substringAfterLast('\n')
-        val denied = "Do not output the following history tags:\n$close"
         val sample = PromptTemplates.narrativeModeHistoryReply("An earlier turn.", mode)
-        val format = FormatCard.create("Automatic repair denial", "The following is a counterexample:\n$sample")
+        val userText = if (unusedExample) "A player once used this unrelated example.\n$sample"
+            else "Do not output the following history tags:\n$close"
+        val format = FormatCard.create("Automatic repair rule", "    The following is a counterexample:\n$sample  \n")
         val card = CharacterCard.create("Synthetic automatic format repair")
         HeldNarrativeReplyServer(listOf(original), tool = false, reasoningWitness = null).use { generation ->
             HeldNarrativeReplyServer(listOf(raw), tool = false, reasoningWitness = null).use { repair ->
@@ -740,21 +785,21 @@ class NarrativeHistoryWireTest {
                         ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
                     }.also { editor = it }
                     rule.waitUntil(20_000) { vm.isModelUsable.value }
-                    rule.runOnIdle { assertTrue(vm.sendMessage(denied)) }
+                    rule.runOnIdle { assertTrue(vm.sendMessage(userText)) }
                     val generationRequest = withTimeout(20_000) { generation.requestBody.await() }
-                    assertTrue(sentMessages(generationRequest, Transport.ORDINARY).any { it.hasMessage("user", denied) })
+                    assertTrue(sentMessages(generationRequest, Transport.ORDINARY).any { it.hasMessage("user", userText) })
                     generation.release()
                     val repairRequest = withTimeout(20_000) { repair.requestBody.await() }
                     assertTrue("Actual repair receives its card and the generated draft",
-                        format.content.lineSequence().first() in repairRequest && original in repairRequest)
-                    assertFalse("Current user text is preservation context, not a second repair turn", denied.lineSequence().first() in repairRequest)
+                        format.content.trim().lineSequence().first() in repairRequest && original in repairRequest)
+                    assertFalse("Current user text is preservation context, not a second repair turn", userText.lineSequence().first() in repairRequest)
                     rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == repaired }
                     assertFalse(repair.terminalSent.get())
                     if (stop) rule.runOnIdle { vm.cancelResponseGeneration() } else repair.release()
                     rule.waitUntil(20_000) { !vm.isResponding.value }
                     assertEquals(!stop, repair.terminalSent.get())
                     val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id)
-                    assertEquals(listOf(denied, repaired), saved.map(ChatMessage::displayContent))
+                    assertEquals(listOf(userText, repaired), saved.map(ChatMessage::displayContent))
                     val expectedNotice = if (stop) MessageFormatRepairNoticeKind.STOPPED else MessageFormatRepairNoticeKind.APPLIED
                     assertEquals(expectedNotice, saved.last().formatRepairNotice?.kind)
                 } finally {
@@ -820,7 +865,7 @@ class NarrativeHistoryWireTest {
             RepairOrphan.SPLIT_CAPTION -> listOf(first, second)
             RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode))
             RepairOrphan.VISIBLE_INPUT_BLOCKQUOTE -> listOf(PromptTemplates.narrativeModeHistoryReply("$first\n", repairMode))
-            RepairOrphan.PARAGRAPH_QUOTE, RepairOrphan.GERMAN_QUOTE ->
+            RepairOrphan.PARAGRAPH_QUOTE, RepairOrphan.GERMAN_QUOTE, RepairOrphan.INDENTED_REPAIR_CARD ->
                 listOf(PromptTemplates.narrativeModeHistoryReply(first, repairMode))
             RepairOrphan.QUOTED_POSSESSIVE -> {
                 val framed = PromptTemplates.narrativeModeHistoryReply(first, repairMode)
@@ -835,6 +880,7 @@ class NarrativeHistoryWireTest {
             val instructions = when (orphan) {
                 RepairOrphan.SPLIT_CAPTION -> "Decode written entities in literal examples.\n\nThe following is a counterexample:\n$sample"
                 RepairOrphan.EXPLICIT_STANDALONE_PROHIBITION -> "Do not output the following history tags:\n$close"
+                RepairOrphan.INDENTED_REPAIR_CARD -> "    以下是禁止输出的反例：\n$sample  \n"
                 else -> "以下是禁止输出的反例：\n$sample"
             }
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
@@ -878,7 +924,7 @@ class NarrativeHistoryWireTest {
                 })
                 formatCard?.let { format ->
                     assertTrue(messages.any { entry ->
-                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
+                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content.trim()) == true
                     })
                 }
                 if (toolIndexes == null || 0 in toolIndexes) {
