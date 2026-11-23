@@ -539,7 +539,15 @@ object NarrativeHistoryEcho {
                             !literals.prohibitsWrapper(previousVisibleLine(literals.markdown, lead.first), after)
                         ) standaloneOpenings += wrapper.opening
                     }
-                    val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing ?: continue
+                    val visibleLead = literals.visibleLine(lead)
+                    val requestedMultilineCopy = atLineStart && lead != null &&
+                        visibleLead?.let(inlineExactCopyInstruction::matches) == true &&
+                        literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n") &&
+                        text.getOrNull(tag.range.last + 1).isHistoryLineBreak() && literals.isUnprotected(start)
+                    val followingTags = tags.asSequence().drop(index + 1)
+                    val closing = wrapperBoundary(wrapper, if (requestedMultilineCopy) {
+                        followingTags.filter { literals.isVisibleWrapperTag(text, it) }
+                    } else followingTags).closing ?: continue
                     val end = closing.range.last + 1
                     val closingLineEnd = text.indexOfAny(charArrayOf('\r', '\n'), end).takeIf { it >= 0 } ?: text.length
                     if ((end until closingLineEnd).any { !text[it].isHorizontalPadding() }) continue
@@ -553,9 +561,10 @@ object NarrativeHistoryEcho {
                         } else add(copy)
                         continue
                     }
-                    val visibleLead = literals.visibleLine(lead)
                     val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
-                    val prohibitionLead = if (labeled && lead != null) previousVisibleLine(literals.markdown, lead.first) else lead
+                    val prohibitionLead = if ((labeled || requestedMultilineCopy) && lead != null) {
+                        previousVisibleLine(literals.markdown, lead.first)
+                    } else lead
                     val visiblePair = literals.isUnprotected(start) && literals.isUnprotected(closing.range.first)
                     val singleLine = lineStart(text, closing.range.first) == line
                     if (!atLineStart && (!singleLine || !visiblePair)) continue
@@ -566,10 +575,7 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
-                    val explicitMultilineCopy = atLineStart && visiblePair && !singleLine && lead != null &&
-                        visibleLead?.let(inlineExactCopyInstruction::matches) == true &&
-                        literals.markdown.substring(lead.last + 1, line) in setOf("\n", "\r\n") &&
-                        text.getOrNull(tag.range.last + 1).isHistoryLineBreak()
+                    val explicitMultilineCopy = requestedMultilineCopy && visiblePair && !singleLine
                     if (singleLine || standalonePair || explicitMultilineCopy) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue
                     val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
@@ -1506,12 +1512,20 @@ object NarrativeHistoryEcho {
         val closing = boundary.closing
         val exactAuthoredPair = closing != null && literalOutput.pairs.isNotEmpty() &&
             text.substring(openingStart, bodyStart + closing.range.last + 1) in literalOutput.pairs
-        val pendingAuthoredPair = closing == null && (streaming || interrupted) &&
-            body.isNotBlank() && literalOutput.pairs.any { it.startsWith(start.trimEnd()) }
+        val pendingAuthoredPair = !exactAuthoredPair && (streaming || interrupted) &&
+            body.isNotBlank() && literalOutput.pairs.isNotEmpty() && start.trimEnd().let { prefix ->
+                // The matching authored sample may already prove that a live apparent close is
+                // inside a literal whose ending delimiter has yet to arrive.
+                val apparentClose = closing?.let { bodyStart + it.range.first - openingStart }
+                literalOutput.pairs.any { pair ->
+                    pair.startsWith(prefix) &&
+                        (apparentClose == null || classifyLiterals(pair).ranges.containsOffset(apparentClose))
+                }
+            }
         if (exactAuthoredPair || pendingAuthoredPair) {
             return CleanedReply(
-                text, matchedOuterPair = closing?.let(::endsReply) == true,
-                pendingToolOpening = openingStart.takeIf { closing == null },
+                text, matchedOuterPair = exactAuthoredPair && endsReply(closing),
+                pendingToolOpening = openingStart.takeIf { pendingAuthoredPair },
             )
         }
         val declared = wrapper.opening in formatOutput.declaredOpenings &&

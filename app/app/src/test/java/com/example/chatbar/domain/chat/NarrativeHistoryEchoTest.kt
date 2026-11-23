@@ -28,6 +28,39 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun verbatimMultilineCopyIgnoresAnInlineCodeCloserWhenItPairsAuthoredTags() {
+        val closing = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val beforeLiteral = "$opening\nThe closing-tag token is `"
+            val afterLiteral = beforeLiteral + closing
+            val requested = "$afterLiteral`.\n$closing"
+            val request = "Copy this text verbatim:\n$requested"
+            val cleanup = requestWithNarrativeHistory(mode, null).apply {
+                recordNarrativePrompt("", request)
+                recordCurrentLiteralTags(request)
+            }
+            val framed = "$opening\n$requested\n$closing"
+            val differentBody = "The literal marker is `$closing`."
+            val different = "$opening\n$differentBody\n$closing"
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(requested, cleanup.completedBody(requested, interrupted, streaming = streaming))
+                assertEquals(requested, cleanup.completedBody(framed, interrupted, streaming = streaming))
+                assertEquals(differentBody, cleanup.completedBody(different, interrupted, streaming = streaming))
+            }
+            for (prefix in listOf(beforeLiteral, afterLiteral, requested.dropLast(1))) {
+                assertEquals(prefix, cleanup.completedBody(prefix, streaming = true))
+                assertEquals(prefix, cleanup.completedBody(prefix, interrupted = true))
+            }
+            val forbidden = NarrativeHistoryEcho.forRequest(mode, null).apply {
+                recordHistoryProjection("Prior story.", "$opening\nPrior story.\n$closing")
+                recordCurrentLiteralTags("Do not output the following history tags:\n$request")
+            }
+            assertEquals(requested.substringAfter('\n').substringBeforeLast('\n'), forbidden.completedBody(requested))
+        }
+    }
+
+    @Test
     fun exactCopyOfACompleteMarkdownQuoteRetainsOnlyTheRequestedPair() {
         val instruction = "Please copy the following XML verbatim:"
         for (mode in ChatNarrativeMode.entries) {

@@ -2265,6 +2265,34 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a verbatim multiline reply keeps outer authored tags around an inline code closer over real SSE`(): Unit = runBlocking {
+        val closing = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val prefix = "$opening\nThe closing-tag token is `"
+            val requested = "$prefix$closing`.\n$closing"
+            val request = "Copy this text verbatim:\n$requested"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier story.").copy(narrativeMode = mode)
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(prefix, closing, "`.\n${closing.dropLast(1)}", ">"),
+                    listOf(prefix, prefix + closing, requested.dropLast(1), requested), requested,
+                    previousAssistant = prior, currentUserText = request, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf("$opening\n$requested\n$closing"), listOf(requested), requested,
+                    previousAssistant = prior, currentUserText = request, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            val different = "The literal marker is `$closing`."
+            assertNarrativeReplyStates(
+                "$opening\n$different\n$closing", different, previousAssistant = prior,
+                currentUserText = request, experimental = false,
+            )
+        }
+    }
+
+    @Test
     fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
         val closing = "</历史回复>"
