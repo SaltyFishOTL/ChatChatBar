@@ -263,7 +263,7 @@ object NarrativeHistoryEcho {
         }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
-                hasOnlyReplySuffix(end, tag.range.last + 1, suffixRanges, streaming || interrupted)
+                hasOnlyReplySuffix(body, tag.range.last + 1, suffixRanges, streaming || interrupted)
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
             tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
@@ -367,7 +367,15 @@ object NarrativeHistoryEcho {
             next = range.last + 1
         }
         val remainder = text.substring(next).trimStart()
-        return remainder.isEmpty() || provisional && commentOpening.startsWith(remainder)
+        if (remainder.isEmpty()) return true
+        if (!provisional) return false
+        if (commentOpening.startsWith(remainder.trimEnd())) return true
+
+        // A status opener can arrive a token at a time. A newline already committed to ordinary code stays literal.
+        if (!MarkdownCodeFences.legacyStatusOpening.startsWith(remainder)) return false
+        val position = text.length - remainder.length
+        val indent = text.subSequence(lineStart(text, position), position)
+        return indent.length <= 3 && indent.all { it == ' ' }
     }
 
     internal fun isStandaloneLegacyHistoryWrapper(text: String): Boolean {

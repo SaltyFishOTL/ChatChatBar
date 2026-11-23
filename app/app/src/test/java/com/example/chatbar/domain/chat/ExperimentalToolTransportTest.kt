@@ -432,33 +432,91 @@ class ExperimentalToolTransportTest {
         assertNarrativeReplyStates(raw, expected = "她推开门。", formatCard = card)
     }
 
-    private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
+    @Test
+    fun `main stream never redraws the history wrapper as annotated status grows`() = runBlocking {
+        val story = "她推开门。"
+        val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        for (footer in listOf("```", "$label```")) {
+            val suffixDeltas = listOf("\n\n`", "``text", label.take(4), "${label.drop(4)}\n地点：门外", "\n$footer")
+            val expected = suffixDeltas.runningFold(story, String::plus)
+            assertNarrativeReplyDeltas(listOf(wrapped) + suffixDeltas, expected, expected.last())
+        }
+    }
+
+    @Test
+    fun `main stream accepts annotated status that reaches EOF after a history pair`() = runBlocking {
+        val story = "她推开门。"
+        val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
+        val partial = "\n\n```text（三个点"
+        val status = "\n\n```text（三个点为状态包裹格式，必须完整输出）\n地点：门外"
+        assertNarrativeReplyStates(wrapped + status, expected = story + status)
+        assertNarrativeReplyDeltas(listOf(wrapped, partial), listOf(story, story + partial), wrapped + partial)
+        assertNarrativeReplyStates(status.trimStart() + "\n$wrapped", expected = status.trimStart() + "\n$wrapped")
+    }
+
+    @Test
+    fun `main stream accepts ordinary closers only for annotated status outside the wrapper`() = runBlocking {
+        val story = "她推开门。"
+        val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
+        val status = "```text（三个点为状态包裹格式，必须完整输出）\n地点：门外\n```"
+        assertNarrativeReplyStates("$status\n\n$wrapped", expected = "$status\n\n$story")
+        assertNarrativeReplyStates("$wrapped\n\n$status", expected = "$story\n\n$status")
+        assertNarrativeReplyStates("$status\n\n$wrapped\n\n$status", expected = "$status\n\n$story\n\n$status")
+    }
+
+    @Test
+    fun `main stream still treats text and typed code as ordinary trailing content`() = runBlocking {
+        val story = "她推开门。"
+        val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
+        for (header in listOf("text", "kotlin", "status")) {
+            val codeStart = "\n\n```$header\n"
+            val codeBody = "示例内容\n```"
+            val full = wrapped + codeStart + codeBody
+            assertNarrativeReplyDeltas(listOf(wrapped, codeStart, codeBody), listOf(story, wrapped + codeStart, full), full)
+        }
+    }
+
+    private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) =
+        assertNarrativeReplyDeltas(listOf(raw), listOf(expected), expected, formatCard)
+
+    private suspend fun assertNarrativeReplyDeltas(
+        deltaTexts: List<String>,
+        expectedPreviews: List<String>,
+        expectedCompleted: String,
+        formatCard: String? = null,
+    ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
-        val delta = buildJsonObject {
-            put("choices", buildJsonArray {
-                add(buildJsonObject { put("delta", buildJsonObject { put("content", raw) }) })
-            })
+        val rawPreviews = deltaTexts.runningFold("", String::plus).drop(1)
+        val deltas = deltaTexts.map { delta ->
+            buildJsonObject {
+                put("choices", buildJsonArray {
+                    add(buildJsonObject { put("delta", buildJsonObject { put("content", delta) }) })
+                })
+            }.toString()
         }
         GatedExperimentalResponse(
-            sse(listOf(delta.toString())),
+            sse(deltas),
             sse(listOf("""{"choices":[{"delta":{},"finish_reason":"stop"}]}""", "[DONE]")),
         ).use { server ->
             val events = withTimeout(5_000) {
                 service().streamChat("narrative-reply-states", messages, model(server.baseUrl)).onEach { event ->
-                    if (event is StreamEvent.ContentPreview) {
+                    if (event is StreamEvent.ContentPreview && event.text == rawPreviews.last()) {
                         assertFalse(server.tailSent)
                         server.releaseTail()
                     }
                 }.toList()
             }
-            val preview = events.filterIsInstance<StreamEvent.ContentPreview>().single().text
-            assertEquals(raw, preview)
+            val previews = events.filterIsInstance<StreamEvent.ContentPreview>().map { it.text }
+            assertEquals(rawPreviews, previews)
             assertEquals(StreamEvent.Done, events.last())
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
-            assertEquals(raw, completed)
-            assertEquals("Preview", expected, cleanup.completedBody(preview, streaming = true))
-            assertEquals("Stop", expected, cleanup.completedBody(preview, interrupted = true))
-            assertEquals("Done", expected, cleanup.completedBody(completed))
+            assertEquals(rawPreviews.last(), completed)
+            for ((index, preview) in previews.withIndex()) {
+                assertEquals("Preview delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, streaming = true))
+                assertEquals("Stop delta ${index + 1}", expectedPreviews[index], cleanup.completedBody(preview, interrupted = true))
+            }
+            assertEquals("Done", expectedCompleted, cleanup.completedBody(completed))
         }
     }
 

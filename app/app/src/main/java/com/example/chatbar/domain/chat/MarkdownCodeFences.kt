@@ -9,6 +9,8 @@ object MarkdownCodeFences {
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
     internal const val legacyStatusLabel = "（三个点为状态包裹格式，必须完整输出）"
+    private const val legacyStatusInfo = "text$legacyStatusLabel"
+    internal const val legacyStatusOpening = "```$legacyStatusInfo"
     private val legacyStatusClose = Regex(" {0,3}$legacyStatusLabel``` *")
 
     data class Block(
@@ -23,7 +25,9 @@ object MarkdownCodeFences {
     // A null indent identifies a block quote. A list item continues at its content indent.
     private data class Container(val indent: Int? = null, val awaitingContent: Boolean = false)
     private data class Fence(val start: Int, val marker: String, val topLevel: Boolean, val info: String) {
-        fun to(endExclusive: Int, closingLineStart: Int? = null, legacyStatus: Boolean = false) =
+        val legacyStatus = marker == "```" && info == legacyStatusInfo
+
+        fun to(endExclusive: Int, closingLineStart: Int? = null) =
             Block(start until endExclusive, topLevel, marker[0], info, closingLineStart, legacyStatus)
     }
 
@@ -114,10 +118,8 @@ object MarkdownCodeFences {
             val remainder = line.substring(cursor).removeSuffix("\r")
             val existing = open
             // The built-in legacy status template puts its closing backticks after the label.
-            if (existing?.marker == "```" && existing.info == "text$legacyStatusLabel" &&
-                legacyStatusClose.matches(remainder)
-            ) {
-                add(existing.to(start + rawLine.length, closingLineStart = start, legacyStatus = true))
+            if (existing?.legacyStatus == true && legacyStatusClose.matches(remainder)) {
+                add(existing.to(start + rawLine.length, closingLineStart = start))
                 open = null
                 continue
             }
