@@ -242,6 +242,7 @@ object NarrativeHistoryEcho {
         private val formatCard: String? = null,
         private val repairOpenings: Set<String>? = null,
         private val repairLiteralSources: List<String> = emptyList(),
+        private val repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
     ) {
         private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
@@ -258,10 +259,16 @@ object NarrativeHistoryEcho {
             prompt.lineSequence().forEachIndexed { index, line ->
                 if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
             }
-            userText?.let(::recordAuthoredOutput)
+            userText?.let(::rememberAuthoredOutput)
         }
 
+        /** Effective strong suffix sent this turn, after the current user's text. */
         fun recordAuthoredOutput(source: String) {
+            rememberAuthoredOutput(source)
+            recordCurrentLiteralTags(source)
+        }
+
+        private fun rememberAuthoredOutput(source: String) {
             if (!enabled || source.isBlank() || source in authoredSources) return
             val output = declaredUserOutput(source)
             authoredSources[source] = output
@@ -271,8 +278,12 @@ object NarrativeHistoryEcho {
 
         fun recordCurrentLiteralTags(source: String) {
             if (!enabled || source.isBlank()) return
-            currentLiteralOutput = (authoredSources[source] ?: declaredUserOutput(source)).literal
-            authoredPairs += currentLiteralOutput.pairs
+            val literal = (authoredSources[source] ?: declaredUserOutput(source)).literal
+            currentLiteralOutput = currentLiteralOutput.copy(
+                openings = currentLiteralOutput.openings + literal.openings,
+                closings = currentLiteralOutput.closings + literal.closings,
+            )
+            authoredPairs += literal.pairs
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
@@ -394,12 +405,14 @@ object NarrativeHistoryEcho {
             val provisional = streaming || interrupted
             if (repairOpenings != null) {
                 val isAuthored: (String) -> Boolean = { token -> repairLiteralSources.any { token in it } }
-                val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
+                val repairClosings = wrappers.filter { it.opening in repairOpenings && it.opening !in repairProtectedClosings }
+                    .flatMap { it.closings }
                     .filterNot(isAuthored)
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
                     withoutOrphanClosing(part, repairClosings, provisional, formatOutput, isAuthored, isJoinedLiteral)
                 val cleaned = cleanCompletedBody(
                     text, formatOutput, interrupted, partLengths, streaming, allowedOpenings = repairOpenings,
+                    repairProtectedClosings = repairProtectedClosings,
                     cleanPartOrphan = ::withoutRepairOrphan,
                 )
                 return if (cleaned != text) cleaned else withoutRepairOrphan(text)
@@ -696,10 +709,12 @@ object NarrativeHistoryEcho {
         val candidates = wrappers.filter {
             it.opening in output.counterexampleOpenings && it.opening !in output.declaredOpenings
         }
-        val delimiterTokens = candidates.flatMapTo(mutableSetOf()) { listOf(it.opening) + it.closings }
+        val candidateFamilies = candidates.mapTo(mutableSetOf(), Wrapper::name)
+        val sameFamily = wrappers.filter { it.name in candidateFamilies }
+        val delimiterTokens = sameFamily.flatMapTo(mutableSetOf()) { listOf(it.opening) + it.closings }
         // Delimiters inside a literal are independent of a newly emitted outer pair.
         // Keep the stricter source check for orphan closers, where there is no matching opener.
-        val visibleDelimiters = sources.flatMapTo(mutableSetOf()) { source ->
+        val visibleDelimiters = sources.flatMap { source ->
             if (delimiterTokens.none { it in source }) return@flatMapTo emptyList()
             val tags = wrapperFamilyTokens.values.flatMap { it.findAll(source).toList() }
             val literals = classifyLiterals(source, tags)
@@ -708,12 +723,18 @@ object NarrativeHistoryEcho {
             }
                 .map { it.value }
         }
+        val authoredOpeningFamilies = sameFamily.filter { it.opening in visibleDelimiters }.mapTo(mutableSetOf(), Wrapper::name)
         val openings = candidates.filter { wrapper ->
-            wrapper.opening !in visibleDelimiters && wrapper.closings.none { it in visibleDelimiters }
-        }.mapTo(mutableSetOf(), Wrapper::opening)
+            val visibleClosingCount = visibleDelimiters.count { it in wrapper.closings }
+            wrapper.opening !in visibleDelimiters &&
+                (visibleClosingCount == 0 || visibleClosingCount == 1 && wrapper.name !in authoredOpeningFamilies)
+        }
+        val protected = openings.associate { wrapper ->
+            wrapper.opening to wrapper.closings.filterTo(mutableSetOf()) { it in visibleDelimiters }
+        }.filterValues { it.isNotEmpty() }
         return RequestCleanup(
-            enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings,
-            repairLiteralSources = sources,
+            enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings.mapTo(mutableSetOf(), Wrapper::opening),
+            repairLiteralSources = sources, repairProtectedClosings = protected,
         )
     }
 
@@ -1131,6 +1152,7 @@ object NarrativeHistoryEcho {
         projectedInnerOpenings: Map<String, Set<String>> = emptyMap(),
         projectedPaddedFrames: Set<String> = emptySet(),
         allowedOpenings: Set<String>? = null,
+        repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         literalOutput: LiteralOutput = LiteralOutput(),
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
@@ -1142,7 +1164,8 @@ object NarrativeHistoryEcho {
             projectedDuplicateOpenings = projectedDuplicateOpenings,
             projectedInnerOpenings = projectedInnerOpenings,
             projectedPaddedFrames = projectedPaddedFrames,
-            allowedOpenings = allowedOpenings, literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+            allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
+            literalOutput = literalOutput, trailerHeadings = trailerHeadings,
             cleanExposedBody = cleanExposedBody,
         )
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
@@ -1161,7 +1184,8 @@ object NarrativeHistoryEcho {
                 text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
                 projectedDuplicateOpenings = projectedDuplicateOpenings, projectedInnerOpenings = projectedInnerOpenings,
                 projectedPaddedFrames = projectedPaddedFrames,
-                allowedOpenings = allowedOpenings, literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+                allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
+                literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                 cleanExposedBody = cleanExposedBody,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
@@ -1209,6 +1233,7 @@ object NarrativeHistoryEcho {
                         projectedInnerOpenings = projectedInnerOpenings,
                         projectedPaddedFrames = projectedPaddedFrames,
                         allowedOpenings = allowedOpenings,
+                        repairProtectedClosings = repairProtectedClosings,
                         literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                         cleanExposedBody = cleanExposedBody,
                         isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening, afterClosedSection) },
@@ -1413,6 +1438,7 @@ object NarrativeHistoryEcho {
         projectedPaddedFrames: Set<String> = emptySet(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
         allowedOpenings: Set<String>? = null,
+        repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         literalOutput: LiteralOutput = LiteralOutput(),
         trailerHeadings: List<String> = emptyList(),
         cleanExposedBody: (String) -> String = { it },
@@ -1444,7 +1470,8 @@ object NarrativeHistoryEcho {
         if (wrapper == null) {
             val identifiable = start.startsWith(modernOpeningPrefix) || start.startsWith("<聚焦模式=")
             if (!requirePair && (streaming || identifiable || interrupted && start.length > 1) &&
-                candidates.any { it.opening.startsWith(start) } && formatOutput.declaredOpenings.none { it.startsWith(start) } &&
+                candidates.any { it.opening !in repairProtectedClosings && it.opening.startsWith(start) } &&
+                formatOutput.declaredOpenings.none { it.startsWith(start) } &&
                 literalOutput.openings.none { it.startsWith(start) } &&
                 isJoinedLiteral?.invoke(openingStart, true) != true
             ) return CleanedReply(leadingContent)
@@ -1456,6 +1483,7 @@ object NarrativeHistoryEcho {
         val bodyStart = text.length - body.length
         val end = body.trimEnd()
         val familyTags = wrapperFamilyTokens.getValue(wrapper.name).findAll(end).toList()
+        val protectedRepairTokens = repairProtectedClosings[wrapper.opening].orEmpty()
         val literals by lazy(LazyThreadSafetyMode.NONE) {
             classifyLiterals(end, familyTags, wrapper.closings, includeUnclosed = streaming || interrupted)
         }
@@ -1571,6 +1599,7 @@ object NarrativeHistoryEcho {
                 inner, streaming, interrupted, requirePair = requireInnerPair, formatOutput = formatOutput,
                 isJoinedLiteral = isJoinedLiteral?.let { joined -> { index, opening -> joined(bodyStart + index, opening) } },
                 allowedOpenings = setOf(witnessedInner.opening), literalOutput = literalOutput,
+                repairProtectedClosings = repairProtectedClosings,
                 trailerHeadings = trailerHeadings,
                 cleanExposedBody = cleanExposedBody,
             )
@@ -1591,6 +1620,12 @@ object NarrativeHistoryEcho {
                 )
             }
             if (declared) return CleanedReply(text, matchedOuterPair = true)
+            // A visible input delimiter reserves its role. Only remove an independently matched
+            // outer repair pair when the same token demonstrably survives inside a body literal.
+            if (protectedRepairTokens.any { token ->
+                    familyTags.none { it.value == token && it.range.last < position && literals.ranges.containsOffset(it.range.first) }
+                }
+            ) return CleanedReply(text)
             if (afterClosing == end.length) {
                 // The exact sent projection identifies its two framing LF bytes. Its original
                 // body padding, including line breaks or Markdown hard-break spaces, is content.
@@ -1624,7 +1659,7 @@ object NarrativeHistoryEcho {
             )
         }
 
-        if (declared || requirePair) return CleanedReply(text, pendingToolOpening = openingStart)
+        if (declared || requirePair || protectedRepairTokens.isNotEmpty()) return CleanedReply(text, pendingToolOpening = openingStart)
         val sameLineContent = end.isNotEmpty() && !afterOpening.firstOrNull().isHistoryLineBreak()
         val lastTag = end.lastIndexOf('<')
         if (lastTag >= 0 && boundary.canEndWithPartialClose) {

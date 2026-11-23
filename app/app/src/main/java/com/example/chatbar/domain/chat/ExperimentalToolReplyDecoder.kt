@@ -57,7 +57,8 @@ internal class ExperimentalToolReplyDecoder {
             return Completion(ordinaryText.toString(), false)
         }
         if (!validate && !retainCompletePrefix) return Completion("", false)
-        val parts = if (!validate) completeCallPrefix() else calls.values.map { call ->
+        val parts = if (!validate) completeCallPrefix() else calls.entries.mapIndexed { expected, (index, call) ->
+            require(index == expected) { "实验模式工具调用索引不连续：预期 $expected，收到 $index" }
             require(call.name.toString() == ExperimentalToolChatPolicy.OUTPUT_TOOL) {
                 "实验模式收到非正文工具调用：${call.name}，预期 game_content"
             }

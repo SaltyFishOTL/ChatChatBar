@@ -12,6 +12,7 @@ import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChatSession
 import com.example.chatbar.data.local.entity.FormatCard
+import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
@@ -59,11 +60,11 @@ class NarrativeHistoryWireTest {
 
     private enum class LiteralCase {
         OPENING, INLINE_CLOSE, INLINE_CODE_CLOSE, SAME_LINE_INLINE_CODE_CLOSE, ADJACENT_AUTHORED,
-        SAME_LINE_DIRECTIVE_MULTILINE, TOOL_SPLIT_CAPTION, CARD_ORPHAN_NO_HISTORY,
+        SAME_LINE_DIRECTIVE_MULTILINE, TOOL_SPLIT_CAPTION, CARD_ORPHAN_NO_HISTORY, STRONG_SUFFIX_OPEN,
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
-    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION }
+    private enum class RepairOrphan { FIRST, SECOND_AFTER_FULL_FRAME, SPLIT_CAPTION, VISIBLE_INPUT_LITERAL }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -135,6 +136,23 @@ class NarrativeHistoryWireTest {
         verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.SPLIT_CAPTION)
     }
 
+    @Test fun inTurnStrongSuffixProtectsItsLiteralOpenerThroughColdSave() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.STRONG_SUFFIX_OPEN)
+        verifyReply(Transport.ORDINARY, stop = false, literal = LiteralCase.STRONG_SUFFIX_OPEN)
+    }
+
+    @Test fun repairPreservesOriginalMarkerAsLiteralInsideTheFreshOuterPair() = runBlocking {
+        verifyRepair(Transport.ORDINARY, stop = true, orphan = RepairOrphan.VISIBLE_INPUT_LITERAL)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, orphan = RepairOrphan.VISIBLE_INPUT_LITERAL)
+    }
+
+    @Test fun disconnectedTerminalToolIndexesNeverPersistASuccessfulChatOrRepair() = runBlocking {
+        for (indexes in listOf(listOf(0, 2), listOf(2))) {
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, toolIndexes = indexes)
+            verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false, toolIndexes = indexes)
+        }
+    }
+
     @Test fun lazyListClosingExampleSurvivesStopAndGenuineOuterClosing() = runBlocking {
         verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.LAZY_LIST_CLOSE)
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.LAZY_LIST_CLOSE)
@@ -197,6 +215,7 @@ class NarrativeHistoryWireTest {
         literal: LiteralCase? = null,
         stopAfterCompleteToolCalls: Boolean = false,
         legacyFirst: Boolean? = null,
+        toolIndexes: List<Int>? = null,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -216,16 +235,24 @@ class NarrativeHistoryWireTest {
         val adjacentAuthored = "$opener\n须保留。\n$closing"
         val multilineCopy = "$opener\nKeep this exactly.\n$closing"
         val splitCaption = "The literal closing tag is:"
-        val selectedFormatCard = if (includePrior) null else {
-            val sample = PromptTemplates.narrativeModeHistoryReply("wrong", mode)
-            FormatCard.create("Synthetic prohibited history sample",
-                "The following is a counterexample:\n$sample\nDo not output these history tags in your reply.")
+        val selectedFormatCard = when (literal) {
+            LiteralCase.CARD_ORPHAN_NO_HISTORY -> {
+                val sample = PromptTemplates.narrativeModeHistoryReply("wrong", mode)
+                FormatCard.create("Synthetic prohibited history sample",
+                    "The following is a counterexample:\n$sample\nDo not output these history tags in your reply.")
+            }
+            LiteralCase.STRONG_SUFFIX_OPEN -> FormatCard.create("Synthetic strong suffix", "Continue in ordinary prose.").copy(
+                userTools = listOf(FormatCardUserToolConfig.strongPromptSuffix().copy(
+                    text = "Show the literal opening tag only on its own line, then explain it:\n$opener",
+                )),
+            )
+            else -> null
         }
         val listExample = "- A literal closing-tag example:\n$closing"
         val captionedExample = "The closing tag example:\n$closing"
         val lazyQuoteExample = "> Closing tag example:\n$closing"
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
-        val authorsTemplate = !stop && continuation == null && literal == null && legacyFirst == null
+        val authorsTemplate = !stop && continuation == null && literal == null && legacyFirst == null && toolIndexes == null
         val input = when {
             literal == LiteralCase.OPENING -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             literal == LiteralCase.INLINE_CLOSE -> "请逐字照抄以下文本并保留首尾标签：\n$exactInlineCopy"
@@ -244,6 +271,7 @@ class NarrativeHistoryWireTest {
         val legacyReply = "$legacyOpen\n$legacyScene\n$legacyClose"
         val reply = when (literal) {
             LiteralCase.OPENING -> "$opener\nThis is the opening tag."
+            LiteralCase.STRONG_SUFFIX_OPEN -> "$opener\nThis is the opening tag."
             LiteralCase.INLINE_CLOSE -> exactInlineCopy
             LiteralCase.INLINE_CODE_CLOSE -> exactCopyWithInlineCode
             LiteralCase.SAME_LINE_INLINE_CODE_CLOSE -> sameLineCopyWithInlineCode
@@ -261,7 +289,9 @@ class NarrativeHistoryWireTest {
             }
         }
         val secondScene = "A bird flies past the entrance."
+        val disconnectedText = "This disconnected tool part must never be saved."
         val parts = when {
+            toolIndexes != null -> toolIndexes.map { if (it == 0) prose else disconnectedText }
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> listOf(splitCaption, closing)
             stopAfterCompleteToolCalls -> listOf("$opener\n$prose", "$secondScene\n$closing")
             continuation != null -> listOf(
@@ -286,7 +316,8 @@ class NarrativeHistoryWireTest {
         val reasoningWitness = "Provider has sent both synthetic calls.".takeIf {
             stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION
         }
-        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness).use { server ->
+        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness,
+            toolIndexes = toolIndexes).use { server ->
             val model = ModelConfig.create(modelName, server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, modelName).copy(
                 modelId = model.id, narrativeMode = mode, longTermMemoryEnabled = false,
@@ -326,18 +357,24 @@ class NarrativeHistoryWireTest {
                     assertTrue(messages.any { entry ->
                         (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
                     })
+                    for (configuredTool in format.userTools) assertTrue(messages.any { entry ->
+                        (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(configuredTool.text) == true
+                    })
                 }
                 assertTrue(messages.any { it.hasMessage("user", input) })
                 // Experimental live preview initially carries the first tool call only.
                 val preview = when {
+                    toolIndexes != null -> prose
                     literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
                     continuation != null || stopAfterCompleteToolCalls -> prose
                     else -> expected
                 }
-                rule.waitUntil(20_000) {
-                    val draft = vm.streamingMessage.value
-                    draft != null && draft.displayContent == preview &&
-                        (reasoningWitness == null || draft.reasoningContent == reasoningWitness)
+                if (toolIndexes == null || 0 in toolIndexes) {
+                    rule.waitUntil(20_000) {
+                        val draft = vm.streamingMessage.value
+                        draft != null && draft.displayContent == preview &&
+                            (reasoningWitness == null || draft.reasoningContent == reasoningWitness)
+                    }
                 }
                 assertFalse("The provider's terminal event must remain held during preview", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
@@ -347,7 +384,12 @@ class NarrativeHistoryWireTest {
                 assertEquals(!stop, server.terminalSent.get())
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id)
                 assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
-                assertEquals(listOf(input, expected), saved.drop(priorBodies.size).map(ChatMessage::displayContent))
+                val newMessages = saved.drop(priorBodies.size).map(ChatMessage::displayContent)
+                if (toolIndexes == null) assertEquals(listOf(input, expected), newMessages) else {
+                    assertEquals(input, newMessages.first())
+                    assertTrue(newMessages.last().startsWith("错误:"))
+                    assertFalse(newMessages.last().contains(disconnectedText))
+                }
                 assertEquals(List(priorBodies.size) { MessageRole.ASSISTANT } + listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.map(ChatMessage::role))
             } finally {
                 try {
@@ -375,6 +417,7 @@ class NarrativeHistoryWireTest {
     private suspend fun verifyRepair(
         transport: Transport, stop: Boolean, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
         orphan: RepairOrphan? = null,
+        toolIndexes: List<Int>? = null,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -382,14 +425,23 @@ class NarrativeHistoryWireTest {
         val store = ViewModelStore()
         val close = "</历史回复>"
         val splitCaption = orphan == RepairOrphan.SPLIT_CAPTION
-        val original = if (splitCaption) "End tag: &lt;/历史回复&gt;." else "旧。"
-        val first = if (splitCaption) "The literal closing tag is:" else "A repaired first line."
+        val original = when (orphan) {
+            RepairOrphan.SPLIT_CAPTION -> "End tag: &lt;/历史回复&gt;."
+            RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n$close\n她关上门。"
+            else -> "旧。"
+        }
+        val first = when (orphan) {
+            RepairOrphan.SPLIT_CAPTION -> "The literal closing tag is:"
+            RepairOrphan.VISIBLE_INPUT_LITERAL -> "结束标签示例：\n`$close`\n她关上门。"
+            else -> "A repaired first line."
+        }
         val second = if (splitCaption) close else "A repaired second line."
         val tool = transport == Transport.EXPERIMENTAL_TOOL
-        val parts = when (orphan) {
+        val parts = if (toolIndexes != null) toolIndexes.map { if (it == 0) first else second } else when (orphan) {
             RepairOrphan.FIRST -> listOf("$first\n$close", second)
             RepairOrphan.SECOND_AFTER_FULL_FRAME -> listOf(PromptTemplates.narrativeModeHistoryReply(first, ChatNarrativeMode.FOCUS), "$second\n$close")
             RepairOrphan.SPLIT_CAPTION -> listOf(first, second)
+            RepairOrphan.VISIBLE_INPUT_LITERAL -> listOf(PromptTemplates.narrativeModeHistoryReply(first, ChatNarrativeMode.FOCUS))
             null -> if (tool) listOf(first, second) else listOf(first)
         }
         val formatCard = orphan?.let {
@@ -398,8 +450,12 @@ class NarrativeHistoryWireTest {
                 else "以下是禁止输出的反例：\n$sample"
             FormatCard.create("Synthetic prohibited history wrapper", instructions)
         }
-        val expected = if (tool && secondCall == RepairSecondCall.COMPLETE) "$first\n$second" else first
-        HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall).use { server ->
+        val expected = when {
+            toolIndexes != null -> original
+            tool && parts.size > 1 && secondCall == RepairSecondCall.COMPLETE -> "$first\n$second"
+            else -> first
+        }
+        HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall, toolIndexes = toolIndexes).use { server ->
             val model = ModelConfig.create("Synthetic repair ${transport.name}", server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, model.displayName).copy(
                 modelId = model.id, longTermMemoryEnabled = false, formatCardId = formatCard?.id,
@@ -434,7 +490,9 @@ class NarrativeHistoryWireTest {
                         (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(format.content) == true
                     })
                 }
-                rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == first }
+                if (toolIndexes == null || 0 in toolIndexes) {
+                    rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == first }
+                }
                 assertFalse("The provider terminal must be held while both calls are already received", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
                 if (stop) rule.runOnIdle { vm.cancelResponseGeneration() } else server.release()
@@ -443,8 +501,13 @@ class NarrativeHistoryWireTest {
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id).single()
                 assertEquals(message.id, saved.id)
                 assertEquals(expected, saved.displayContent)
-                assertEquals(if (stop) MessageFormatRepairNoticeKind.STOPPED else MessageFormatRepairNoticeKind.APPLIED, saved.formatRepairNotice?.kind)
-                assertEquals(original, saved.formatRepairNotice?.originalContent)
+                val expectedNotice = when {
+                    toolIndexes != null -> MessageFormatRepairNoticeKind.ERROR
+                    stop -> MessageFormatRepairNoticeKind.STOPPED
+                    else -> MessageFormatRepairNoticeKind.APPLIED
+                }
+                assertEquals(expectedNotice, saved.formatRepairNotice?.kind)
+                if (toolIndexes == null) assertEquals(original, saved.formatRepairNotice?.originalContent)
                 assertEquals(expected, saved.formatRepairNotice?.targetContent)
             } finally {
                 try {
@@ -485,6 +548,7 @@ class NarrativeHistoryWireTest {
 
     private class HeldNarrativeReplyServer(
         parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
+        toolIndexes: List<Int>? = null,
     ) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
@@ -501,7 +565,7 @@ class NarrativeHistoryWireTest {
                         .substringAfter(':').trim().toInt()
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
-                    val first = "data: ${delta(parts, tool, reasoningWitness, secondCall)}\n\n".toByteArray(Charsets.UTF_8)
+                    val first = "data: ${delta(parts, tool, reasoningWitness, secondCall, toolIndexes)}\n\n".toByteArray(Charsets.UTF_8)
                     val reason = if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
@@ -529,14 +593,15 @@ class NarrativeHistoryWireTest {
             worker.join(1_000)
         }
 
-        private fun delta(parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall): String {
+        private fun delta(parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall, toolIndexes: List<Int>?): String {
             val frame = if (tool) {
                 buildJsonObject {
                     reasoningWitness?.let { put("reasoning_content", it) }
                     put("tool_calls", buildJsonArray {
                         parts.forEachIndexed { index, part ->
                             add(buildJsonObject {
-                                put("index", if (index == 1 && secondCall == RepairSecondCall.GAP) 2 else index)
+                                val callIndex = toolIndexes?.get(index) ?: if (index == 1 && secondCall == RepairSecondCall.GAP) 2 else index
+                                put("index", callIndex)
                                 put("id", "fixture-$index")
                                 put("type", "function")
                                 put("function", buildJsonObject {

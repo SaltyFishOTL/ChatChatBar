@@ -2391,6 +2391,40 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `current strong suffix reserves standalone literal tags without promoting historic examples`(): Unit = runBlocking {
+        val close = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val open = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier scene.").copy(narrativeMode = mode)
+            val openerInstruction = "Show the literal opening tag only on its own line, then explain it:\n$open"
+            val explanation = "This is the opening tag."
+            val requested = "$open\n$explanation"
+            val closeInstruction = "Show the literal closing tag on its own line:\n$close"
+            val caption = "Closing tag example:\n$close"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(open, "\n$explanation"), listOf(open, requested), requested,
+                    previousAssistant = prior, currentUserText = "Please explain.", strongPrompt = openerInstruction,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf("$open\n$caption\n$close"), listOf(caption), caption,
+                    previousAssistant = prior, currentUserText = "Please explain.", strongPrompt = closeInstruction,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf("$open\nA new scene.\n$close"), listOf("A new scene."), "A new scene.",
+                    previousAssistant = prior, strongPrompt = openerInstruction, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            for ((oldInstruction, suffix) in listOf(openerInstruction to null, null to "Reference opener only:\n$open")) {
+                assertNarrativeReplyDeltas(listOf(requested), listOf(explanation), explanation,
+                    previousAssistant = prior, previousUserText = oldInstruction, strongPrompt = suffix, experimental = false)
+            }
+        }
+    }
+
+    @Test
     fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
         val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
         val closing = "</历史回复>"
@@ -3457,6 +3491,80 @@ class ExperimentalToolTransportTest {
             assertEquals(listOf(caption, close), parts)
             assertEquals(literal, ordinary.completedBody(parts.joinToString("\n"), interrupted = true, partLengths = parts.map(String::length)))
         }
+    }
+
+    @Test
+    fun `repair cleans a fresh balanced pair only when visible input markers survive as proven literals`() = runBlocking {
+        val close = "</历史回复>"
+        for (mode in listOf(ChatNarrativeMode.FOCUS, ChatNarrativeMode.ADVANCE)) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("旧示例", mode)
+            val card = "以下是禁止输出的反例：\n$sample"
+            val original = "结束标签示例：\n$close\n她关上门。"
+            val body = "结束标签示例：\n`$close`\n她关上门。"
+            val raw = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val unchangedTokens = PromptTemplates.narrativeModeHistoryReply(original, mode)
+            val withoutLiteral = PromptTemplates.narrativeModeHistoryReply("她关上门。", mode)
+            for ((input, expected) in listOf(raw to body, unchangedTokens to unchangedTokens, withoutLiteral to withoutLiteral)) {
+                for (tool in listOf(false, true)) {
+                    val first = if (tool) chunk(buildJsonObject { put("content", input) }.toString(), "game_content") else ordinaryDelta(input)
+                    val response = sse(listOf(first, chunk(reason = if (tool) "tool_calls" else "stop"), "[DONE]"))
+                    TaskResponseServer(response, "text/event-stream").use { server ->
+                        val transport = StreamingChatService(experimentalApiModeEnabled = { tool }, allowCleartextHttp = { true })
+                        val events = withTimeout(5_000) {
+                            MessageFormatRepairService(transport).streamRepair(original, card, null, model(server)).toList()
+                        }
+                        assertEquals(StreamEvent.Done, events.last())
+                        val received = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
+                        assertEquals(input, received)
+                        val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+                        assertEquals(expected, cleanup.completedBody(received, streaming = true))
+                        assertEquals(expected, cleanup.completedBody(received, interrupted = true))
+                        assertEquals(expected, cleanup.completedBody(received))
+                        val fromCurrentUser = NarrativeHistoryEcho.forFormatRepair(card, "她关上门。", original)
+                        assertEquals(expected, fromCurrentUser.completedBody(received))
+                    }
+                }
+            }
+            val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+            val partial = raw.substringBeforeLast('\n') + "\n</历史回"
+            assertEquals(partial, cleanup.completedBody(partial, streaming = true))
+            assertEquals(partial, cleanup.completedBody(partial, interrupted = true))
+            assertEquals("她关上门。\n$close", cleanup.completedBody("她关上门。\n$close"))
+            assertEquals(raw, NarrativeHistoryEcho.forFormatRepair(card, "$original\n$close").completedBody(raw))
+        }
+    }
+
+    @Test
+    fun `terminal Done rejects disconnected game content indexes in chat and repair`() = runBlocking {
+        data class Reply(val raw: String, val done: Boolean, val error: Boolean, val toolReplyCompleted: Boolean?)
+        val first = "First scene."
+        val later = "Disconnected or subsequent scene."
+        fun call(index: Int, content: String) = chunk(buildJsonObject { put("content", content) }.toString(), "game_content", index = index)
+        val observed = mutableMapOf<String, Reply>()
+        val expected = mutableMapOf<String, Reply>()
+        for ((frames, expectedPreview, successful) in listOf(
+            Triple(listOf(call(0, first), call(2, later)), first, false),
+            Triple(listOf(call(2, later)), "", false),
+            Triple(listOf(call(1, later), call(0, first)), "$first\n$later", true),
+        )) {
+            for (repair in listOf(false, true)) {
+                val response = sse(frames + listOf(chunk(reason = "tool_calls"), "[DONE]"))
+                TaskResponseServer(response, "text/event-stream").use { server ->
+                    var completion: ChatReplyCompletion? = null
+                    val transport = service()
+                    val stream = if (repair) MessageFormatRepairService(transport).streamRepair("Original.", "Keep prose.", null, model(server))
+                        else transport.streamChat("terminal-index-validation", messages, model(server), onReplyCompletion = { completion = it })
+                    val events = withTimeout(5_000) { stream.toList() }
+                    val key = "${if (repair) "repair" else "chat"} ${if (successful) "contiguous" else if (frames.size == 1) "missing-zero" else "gap"}"
+                    observed[key] = Reply(
+                        events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text },
+                        events.any { it is StreamEvent.Done }, events.last() is StreamEvent.Error, completion?.toolReplyCompleted,
+                    )
+                    expected[key] = Reply(expectedPreview, successful, !successful, successful.takeUnless { repair })
+                }
+            }
+        }
+        assertEquals(expected, observed)
     }
 
     private fun repairToolFrame(first: String, followingIndex: Int, followingArguments: String): String {
