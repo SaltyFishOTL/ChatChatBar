@@ -17,6 +17,8 @@ import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.data.repository.ChatRepository
 import com.example.chatbar.domain.chat.MessageFormatRepairPolicy
 import com.example.chatbar.domain.prompt.PromptTemplates
@@ -74,6 +76,8 @@ class NarrativeHistoryWireTest {
         SENT_COMPLETE_MODE_SWITCH, SENT_HISTORY_HEADING, UNSENT_HISTORY_HEADING, REQUESTED_CITATION, PROJECTED_SUFFIX_HEADING,
         SENT_MODE_SUFFIX, SENT_SWITCH_SUFFIX, REQUESTED_CITATION_CHINESE,
         DISABLED_HISTORY_HEADING, DISABLED_UNSENT_HEADING, DISABLED_AUTHORED_HEADING, DISABLED_LITERAL_XML, REQUESTED_CITATION_TAGS_LAST,
+        DISABLED_MIDDLE_TOOL_HEADING, WORLDBOOK_AUTHORED_HEADING, WORLDBOOK_INCIDENTAL_HEADING,
+        FULL_MODE_BLOCK_INTERIOR, FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
@@ -377,6 +381,20 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.REQUESTED_CITATION_TAGS_LAST)
     }
 
+    @Test fun disabledMiddleToolHeadingAndActiveWorldBookOutputAreVerifiedOnTheWire() = runBlocking {
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.DISABLED_MIDDLE_TOOL_HEADING)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.DISABLED_MIDDLE_TOOL_HEADING)
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.WORLDBOOK_AUTHORED_HEADING)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.WORLDBOOK_INCIDENTAL_HEADING)
+    }
+
+    @Test fun fullModeEchoDoesNotReplaceAnIndependentlyAuthoredTitleInColdStorage() = runBlocking {
+        for (literal in listOf(LiteralCase.FULL_MODE_BLOCK_INTERIOR, LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = literal)
+        }
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -455,6 +473,7 @@ class NarrativeHistoryWireTest {
         val olderSameModeHistory: String?,
         val sentModeBlock: String?,
         val sentRoutineHistoryHeading: Boolean?,
+        val worldBookEntryText: String?,
         val priorLegacy: String?,
         val historicalUser: String?,
         val includePrior: Boolean,
@@ -491,6 +510,8 @@ class NarrativeHistoryWireTest {
         val narrativeModesDisabled = literal in setOf(
             LiteralCase.DISABLED_HISTORY_HEADING, LiteralCase.DISABLED_UNSENT_HEADING,
             LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_LITERAL_XML,
+            LiteralCase.DISABLED_MIDDLE_TOOL_HEADING, LiteralCase.WORLDBOOK_AUTHORED_HEADING,
+            LiteralCase.WORLDBOOK_INCIDENTAL_HEADING,
         )
         val otherMode = ChatNarrativeMode.entries.first { it != mode }
         val isModeSwitch = literal == LiteralCase.SENT_SWITCH_ECHO || literal == LiteralCase.SENT_COMPLETE_MODE_SWITCH ||
@@ -535,14 +556,26 @@ class NarrativeHistoryWireTest {
         val modeTail = PromptTemplates.narrativeModeTailSystemPrompt(mode, priorMode)
         val sentModeBlock = when (literal) {
             LiteralCase.SENT_CORE_ECHO, LiteralCase.NEGATIVE_MODE_HEADING -> modePrompt
-            LiteralCase.SENT_SWITCH_ECHO, LiteralCase.SENT_COMPLETE_MODE_SWITCH,
+            LiteralCase.SENT_SWITCH_ECHO, LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
+            LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE,
             LiteralCase.SENT_MODE_SUFFIX, LiteralCase.SENT_SWITCH_SUFFIX -> modeTail
             else -> null
-        }?.let { if (literal == LiteralCase.SENT_COMPLETE_MODE_SWITCH) it else it.lineSequence().take(2).joinToString("\n") }
+        }?.let {
+            if (literal in setOf(LiteralCase.SENT_COMPLETE_MODE_SWITCH, LiteralCase.FULL_MODE_BLOCK_INTERIOR,
+                    LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE)) it else it.lineSequence().take(2).joinToString("\n")
+        }
+        val modeTailTitle = modeTail.lineSequence().first()
         val routineHistoryHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val worldBookEntryText = when (literal) {
+            LiteralCase.WORLDBOOK_AUTHORED_HEADING -> "Please start each reply with this literal heading verbatim:\n$routineHistoryHeading"
+            LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> "The archive labels its earliest shelf $routineHistoryHeading."
+            else -> null
+        }
         val sentRoutineHistoryHeading = when (literal) {
             LiteralCase.SENT_HISTORY_HEADING, LiteralCase.DISABLED_HISTORY_HEADING,
-            LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_LITERAL_XML -> true
+            LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_LITERAL_XML,
+            LiteralCase.DISABLED_MIDDLE_TOOL_HEADING, LiteralCase.WORLDBOOK_AUTHORED_HEADING,
+            LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> true
             LiteralCase.UNSENT_HISTORY_HEADING, LiteralCase.DISABLED_UNSENT_HEADING -> false
             else -> null
         }
@@ -569,7 +602,12 @@ class NarrativeHistoryWireTest {
         } else null
         val customCore = "Required output template (keep both tags verbatim):\n$historicalTemplate"
             .takeIf { literal == LiteralCase.CHARACTER_CORE }.orEmpty()
-        val card = CharacterCard.create(cardName).copy(systemPrompt = customCore, postHistoryInstructions = customTail)
+        val inlineWorldBook = worldBookEntryText?.let {
+            WorldBook.create("Synthetic setting").copy(entries = listOf(WorldBookEntry.create(listOf("sigil"), it)))
+        }
+        val card = CharacterCard.create(cardName).copy(
+            systemPrompt = customCore, postHistoryInstructions = customTail, characterBook = inlineWorldBook,
+        )
         val historicalUser = when {
             narrativeModesDisabled && includePrior -> "Begin the previous synthetic scene."
             literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED || literal == LiteralCase.OLD_TEMPLATE_NO_XML ->
@@ -641,6 +679,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.REQUESTED_CITATION_CHINESE -> "请原样引用上一条助手回复，连同外层的 XML 历史标签。"
             literal == LiteralCase.REQUESTED_CITATION_TAGS_LAST -> "Quote the last reply verbatim, including both XML history tags."
             literal == LiteralCase.DISABLED_AUTHORED_HEADING -> "Print this title verbatim: $routineHistoryHeading."
+            literal == LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "Print this title verbatim: $modeTailTitle."
+            worldBookEntryText != null -> "Examine the sigil."
             literal == LiteralCase.BRACE_SLOT_TEMPLATE ->
                 "Use exactly this XML template, replace {story} with new prose and keep both tags verbatim:\n" +
                     PromptTemplates.narrativeModeHistoryReply("{story}", mode)
@@ -686,8 +726,11 @@ class NarrativeHistoryWireTest {
             LiteralCase.REQUESTED_CITATION_CHINESE -> "$historyCitation\n\n外层元素用于记录上一轮模式。"
             LiteralCase.REQUESTED_CITATION_TAGS_LAST -> "$historyCitation\n\nThe outer tags identify the original mode."
             LiteralCase.DISABLED_HISTORY_HEADING, LiteralCase.DISABLED_UNSENT_HEADING,
-            LiteralCase.DISABLED_AUTHORED_HEADING -> "$routineHistoryHeading\n$prose"
+            LiteralCase.DISABLED_AUTHORED_HEADING, LiteralCase.DISABLED_MIDDLE_TOOL_HEADING,
+            LiteralCase.WORLDBOOK_AUTHORED_HEADING, LiteralCase.WORLDBOOK_INCIDENTAL_HEADING -> "$routineHistoryHeading\n$prose"
             LiteralCase.DISABLED_LITERAL_XML -> framedReply
+            LiteralCase.FULL_MODE_BLOCK_INTERIOR -> "$prose\n$sentModeBlock\nShe took a lantern."
+            LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "$sentModeBlock\n\n$modeTailTitle\n$prose"
             LiteralCase.PROJECTED_SUFFIX_HEADING -> historyCitation + newStorySuffix + "\n" + modeTail.lineSequence().first()
             LiteralCase.NEGATIVE_MODE_HEADING -> "$modeHeading\n$prose"
             LiteralCase.EXACT_FORMAT_BOUNDARIES -> framedReply
@@ -709,6 +752,7 @@ class NarrativeHistoryWireTest {
         val secondScene = "A bird flies past the entrance."
         val disconnectedText = "This disconnected tool part must never be saved."
         val parts = when {
+            literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> listOf(prose, routineHistoryHeading, secondScene)
             toolIndexes != null -> toolIndexes.map { if (it == 0) prose else disconnectedText }
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> listOf(splitCaption, closing)
             literal == LiteralCase.BOUNDED_LOG_QUOTATION -> listOf(quoteLead, framedReply, quoteTail)
@@ -722,6 +766,9 @@ class NarrativeHistoryWireTest {
             else -> listOf(reply)
         }
         val expected = when {
+            literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> "$prose\n$secondScene"
+            literal == LiteralCase.FULL_MODE_BLOCK_INTERIOR -> "$prose\nShe took a lantern."
+            literal == LiteralCase.FULL_MODE_BLOCK_THEN_AUTHORED_TITLE -> "$modeTailTitle\n$prose"
             stopAfterCompleteToolCalls -> "$prose\n$secondScene"
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
@@ -735,7 +782,7 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.SENT_CORE_ECHO || literal == LiteralCase.SENT_SWITCH_ECHO ||
                 literal == LiteralCase.SENT_COMPLETE_MODE_SWITCH || literal == LiteralCase.SENT_HISTORY_HEADING ||
                 literal == LiteralCase.SENT_MODE_SUFFIX || literal == LiteralCase.SENT_SWITCH_SUFFIX ||
-                literal == LiteralCase.DISABLED_HISTORY_HEADING ||
+                literal == LiteralCase.DISABLED_HISTORY_HEADING || literal == LiteralCase.WORLDBOOK_INCIDENTAL_HEADING ||
                 literal == LiteralCase.NEGATIVE_MODE_HEADING -> prose
             literal == LiteralCase.QUOTED_POSSESSIVE -> possessiveBody
             literal == LiteralCase.PARAGRAPH_QUOTE -> paragraphQuote(closing)
@@ -759,6 +806,7 @@ class NarrativeHistoryWireTest {
         }
         // Experimental live preview initially carries the first tool call only.
         val preview = when {
+            literal == LiteralCase.DISABLED_MIDDLE_TOOL_HEADING -> prose
             toolIndexes != null -> prose
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
             literal == LiteralCase.BOUNDED_LOG_QUOTATION -> quoteLead
@@ -772,7 +820,7 @@ class NarrativeHistoryWireTest {
             narrativeModesDisabled = narrativeModesDisabled,
             prior = prior, priorMode = priorMode, sentModeBlock = sentModeBlock,
             olderSameModeHistory = olderSameModeHistory,
-            sentRoutineHistoryHeading = sentRoutineHistoryHeading, priorLegacy = priorLegacy,
+            sentRoutineHistoryHeading = sentRoutineHistoryHeading, worldBookEntryText = worldBookEntryText, priorLegacy = priorLegacy,
             historicalUser = historicalUser, includePrior = includePrior,
             rebuildInitial = rebuildInitial, customCore = customCore, renderedTail = customTail.replace("{{char}}", cardName),
             supplementaryTemplate = supplementaryTemplate,
@@ -915,6 +963,9 @@ class NarrativeHistoryWireTest {
             val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
             val role = if (fixture.transport.experimental) "system" else "assistant"
             assertEquals(isSent, messages.any { it.hasMessage(role, heading) })
+        }
+        fixture.worldBookEntryText?.let { declaration ->
+            assertTrue(messages.any { (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(declaration) == true })
         }
         fixture.priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
         fixture.historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }

@@ -3,14 +3,19 @@ package com.example.chatbar.domain.chat
 import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
+import com.example.chatbar.data.local.entity.ChunkSourceType
 import com.example.chatbar.data.local.entity.FormatCardUserToolConfig
 import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
+import com.example.chatbar.data.local.entity.WorldBook
+import com.example.chatbar.data.local.entity.WorldBookEntry
 import com.example.chatbar.domain.card.FormatCardUserToolPolicy
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
 import com.example.chatbar.domain.prompt.PromptTemplates
+import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
+import com.example.chatbar.domain.worldbook.WorldBookEngine
 import com.example.chatbar.ui.chat.appendCurrentUserAndCcbTailMessages
 import com.example.chatbar.ui.chat.buildCcbFinalTailSystemPrompt
 import com.example.chatbar.ui.chat.buildCcbStablePrefixMessages
@@ -288,16 +293,23 @@ class ExperimentalToolTransportTest {
         parts: List<String>, expected: String, formatCard: String? = null, narrativePrompt: String? = null,
         userText: String? = null,
         previousAssistant: ChatMessage? = null,
+        narrativeModesEnabled: Boolean = true,
+        issueRoutineHistoryHeading: Boolean = false,
     ): String {
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, formatCard)
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS.takeIf { narrativeModesEnabled }, formatCard)
         val request = messages.toMutableList()
         userText?.let {
             cleanup.recordNarrativePrompt("", it)
             cleanup.recordCurrentLiteralTags(it)
             request.add(ChatApiMessage.text("user", it))
         }
-        for (assistant in previousAssistant?.let(::listOf) ?: narrativeHistoryFixtures()) {
-            request.add(1, projectAssistant(cleanup, assistant))
+        for (assistant in previousAssistant?.let(::listOf) ?: narrativeHistoryFixtures().takeIf { narrativeModesEnabled }.orEmpty()) {
+            request.add(1, projectAssistant(cleanup, assistant, narrativeModesEnabled))
+        }
+        val routineHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        if (issueRoutineHistoryHeading && previousAssistant != null) {
+            request.add(1, ChatApiMessage.text("system", routineHeading))
+            cleanup.recordDispatchedHistoryHeading(routineHeading)
         }
         narrativePrompt?.let {
             cleanup.recordNarrativePrompt(it, null)
@@ -327,6 +339,14 @@ class ExperimentalToolTransportTest {
                 .single { it.getValue("name").jsonPrimitive.content == "context" }
                 .getValue("description").jsonPrimitive.content
             val sentHistory = Json.parseToJsonElement(sent).jsonArray
+            if (issueRoutineHistoryHeading) {
+                assertEquals(previousAssistant != null, sentHistory.any {
+                    val item = it.jsonObject
+                    item.getValue("role").jsonPrimitive.content == "system" &&
+                        item.getValue("content").jsonPrimitive.content == routineHeading
+                })
+                assertTrue(sentHistory.none { "<历史回复" in it.jsonObject.getValue("content").jsonPrimitive.content })
+            }
             for (source in request.drop(1).dropLast(1)) {
                 assertTrue(sentHistory.any { it.jsonObject.getValue("content") == source.content })
             }
@@ -4366,6 +4386,137 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `disabled narrative cleans only a dispatched standalone middle tool heading`(): Unit = runBlocking {
+        val title = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val first = "The first door opened.  "
+        val second = "    The second door was locked."
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Yesterday the porch was empty.")
+        val parts = listOf(first, title, second)
+        assertMultipartNarrativeReply(
+            parts, parts.joinToString("\n"), narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+        )
+        val caption = listOf("The sign showed this title:", title, second)
+        assertMultipartNarrativeReply(
+            caption, caption.joinToString("\n"), previousAssistant = prior,
+            narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+        )
+        val quoted = listOf(first, "> $title", second)
+        assertMultipartNarrativeReply(
+            quoted, quoted.joinToString("\n"), previousAssistant = prior,
+            narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+        )
+        assertMultipartNarrativeReply(
+            parts, parts.joinToString("\n"), previousAssistant = prior, userText = "Print this title verbatim: $title.",
+            narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+        )
+        assertMultipartNarrativeReply(
+            parts, "$first\n$second", previousAssistant = prior,
+            narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+        )
+    }
+
+    @Test
+    fun `only a dispatched explicit WorldBook title declaration reserves a routine title`() = runBlocking {
+        val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val declaration = "Please start each reply with this literal heading verbatim:\n$heading"
+        val prose = "She crossed the canal."
+        val raw = "$heading\n$prose"
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "They reached the pier.")
+        for (experimental in listOf(false, true)) {
+            for (entry in listOf(
+                "The archive contains a reference named $heading.",
+                "The archive quotes its rules here:\n" + declaration.prependIndent("> "),
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(prose), prose, previousAssistant = prior, currentUserText = "Check the sigil.",
+                    experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                    worldBookEntry = entry,
+                )
+            }
+            for ((core, player) in listOf(declaration to null, null to declaration)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Check the sigil.",
+                    experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                    characterCoreInstructions = core, playerOverride = player,
+                )
+            }
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(prose), prose, previousAssistant = prior, currentUserText = "Open the door.",
+                experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                worldBookEntry = declaration,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(prose), prose, previousAssistant = prior, currentUserText = "Check the sigil.",
+                experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                ragReferenceText = declaration,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, previousAssistant = prior, currentUserText = "Check the sigil.",
+                experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                worldBookEntry = declaration,
+            )
+        }
+    }
+
+    @Test
+    fun `only complete dispatched mode blocks leave interior revised narration`() = runBlocking {
+        val first = "The boat passed the old quay.  "
+        val second = "The passengers watched the quay recede."
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, other)
+            val core = PromptTemplates.narrativeModeSystemPrompt(mode)
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                for (block in listOf(core, tail)) {
+                    for (example in listOf(
+                        "$first\n~~~text\n$block\n~~~\n$second",
+                        "$first\n" + block.prependIndent("> ") + "\n$second",
+                        "$first\nThe plaque quoted these rules:\n$block\n$second",
+                        "$first\n" + block.lineSequence().take(2).joinToString("\n") + "\n$second",
+                    )) {
+                        assertNarrativeReplyDeltas(
+                            listOf(example), listOf(example), example, narrativePrompt = core, narrativeTail = tail,
+                            currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                        )
+                    }
+                    val raw = "$first\n$block\n$second"
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, narrativePrompt = core, narrativeTail = tail,
+                        currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                    )
+                    val wanted = "$first\n$second"
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(wanted), wanted, narrativePrompt = core, narrativeTail = tail,
+                        currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `complete mode echo is independent from a separately authored matching title`() = runBlocking {
+        val story = "She turned the page."
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, other)
+            val heading = tail.lineSequence().first()
+            val wanted = "$heading\n$story"
+            val raw = "$tail\n\n$wanted"
+            for ((experimental, toolCall) in listOf(false to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, narrativeTail = tail,
+                    currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(wanted), wanted, narrativeTail = tail,
+                    currentUserText = "Print this title verbatim: $heading.", experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -4624,17 +4775,34 @@ class ExperimentalToolTransportTest {
         earlierAssistant: ChatMessage? = null,
         narrativeModesEnabled: Boolean = true,
         issueRoutineHistoryHeading: Boolean = false,
+        worldBookEntry: String? = null,
+        ragReferenceText: String? = null,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE.takeIf { narrativeModesEnabled }, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
         val playerSetting = playerOverride?.takeIf(String::isNotBlank) ?: globalPersona
-        val hasStableLayers = characterCoreInstructions != null || supplementaryInstructions != null || playerSetting != null
+        val card = CharacterCard.create("Gatekeeper").copy(
+            systemPrompt = characterCoreInstructions.orEmpty(), postHistoryInstructions = characterPostHistoryInstructions.orEmpty(),
+        )
+        val worldBookPrompt = worldBookEntry?.let {
+            val engine = WorldBookEngine()
+            val book = WorldBook.create("Synthetic active setting").copy(
+                entries = listOf(WorldBookEntry.create(listOf("sigil"), it)),
+            )
+            val user = ChatMessage.create("fixture", MessageRole.USER, currentUserText.orEmpty())
+            val active = engine.evaluateAll(listOf(book), listOfNotNull(previousAssistant, user))
+            assertEquals(if ("sigil" in user.displayContent) 1 else 0, active.size)
+            engine.buildWorldBookPrompt(active, card.effectiveBotName, "Keeper")
+        }
+        val hasStableLayers = characterCoreInstructions != null || supplementaryInstructions != null ||
+            playerSetting != null || worldBookEntry != null || ragReferenceText != null
         val layers = if (hasStableLayers || characterPostHistoryInstructions != null) {
             PromptAssembler().assembleCachePromptLayers(
-                CharacterCard.create("Gatekeeper").copy(
-                    systemPrompt = characterCoreInstructions.orEmpty(),
-                    postHistoryInstructions = characterPostHistoryInstructions.orEmpty(),
-                ),
+                card,
+                worldBookPrompt = worldBookPrompt,
+                ragResults = listOfNotNull(ragReferenceText?.let {
+                    RetrievedKnowledgeCard("fixture-document", ChunkSourceType.DOCUMENT, "document", "Fixture document", it)
+                }),
                 supplementarySetting = supplementaryInstructions, playerSetting = playerSetting, playerName = "Keeper",
             )
         } else null
@@ -4642,10 +4810,12 @@ class ExperimentalToolTransportTest {
             cleanup.recordDispatchedCharacterCore(layers.coreSystemPrompt, !characterCoreInstructions.isNullOrBlank())
             cleanup.recordDispatchedSupplementarySettings(layers.supplementarySystemPrompt)
             cleanup.recordDispatchedPlayerSettings(layers.playerSystemPrompt)
+            layers.recordDispatchedWorldBookHeadings(cleanup)
             buildCcbStablePrefixMessages(
                 layers.coreSystemPrompt, layers.stableContextSystemPrompt,
                 positionedRequirementsSystemPrompt = "", formatPromptPosition = FormatPromptPosition.END,
                 supplementarySystemPrompt = layers.supplementarySystemPrompt, playerSystemPrompt = layers.playerSystemPrompt,
+                settingReferenceSystemPrompt = layers.settingReferenceSystemPrompt,
             )
         } else emptyList()
         cleanup.recordNarrativePrompt(narrativePrompt.orEmpty(), currentUserText)
@@ -4796,6 +4966,21 @@ class ExperimentalToolTransportTest {
                 assertTrue("Expected source in serialized reply request", context.any {
                     it.jsonObject.getValue("content").jsonPrimitive.content == source
                 })
+            }
+            if (worldBookEntry != null) {
+                val assembled = requireNotNull(layers).settingReferenceSystemPrompt
+                val sources = context.map { it.jsonObject.getValue("content").jsonPrimitive.content }
+                if (worldBookPrompt.isNullOrBlank()) {
+                    assertTrue(worldBookEntry !in sources.joinToString("\n"))
+                } else {
+                    assertTrue(worldBookEntry in assembled)
+                    assertTrue(assembled in sources)
+                }
+            }
+            if (ragReferenceText != null) {
+                val assembled = requireNotNull(layers).settingReferenceSystemPrompt
+                assertTrue(ragReferenceText in assembled)
+                assertTrue(context.any { it.jsonObject.getValue("content").jsonPrimitive.content == assembled })
             }
             if (issueRoutineHistoryHeading) {
                 val wireRole = if (experimental) "system" else "assistant"
@@ -5176,6 +5361,28 @@ class ExperimentalToolTransportTest {
                 original, null, null, listOf("$first\n$heading\n$paragraph\n$second"),
                 "$first\n$second", experimental, toolCall,
             )
+        }
+    }
+
+    @Test
+    fun `an exact original inside revised repair is retained without independent echo evidence`() = runBlocking {
+        val heading = "{待修复消息}"
+        val first = "The note still hangs beside the door."
+        val original = "Do not leave the lamps burning.  \r\n    Please lock the west gate."
+        val last = "She closed the shutters before leaving."
+        val possibleCitation = "$heading\r\n$original"
+        for ((experimental, toolCall) in listOf(false to false, true to true)) {
+            for (candidate in listOf(
+                "$first\r\n$possibleCitation\r\n$last",
+                "$first\nThe note transcribes the earlier wording:\n$possibleCitation\n$last",
+                "$first\n<quotation>\n$possibleCitation\n</quotation>\n$last",
+                "$first\n$original\n$last",
+            )) {
+                assertRepairBoundaryReply(original, null, null, listOf(candidate), candidate, experimental, toolCall)
+            }
+            val withAuthoredMarker = "$heading\n$original"
+            val authored = "$first\n$withAuthoredMarker\n$last"
+            assertRepairBoundaryReply(withAuthoredMarker, null, null, listOf(authored), authored, experimental, toolCall)
         }
     }
 
