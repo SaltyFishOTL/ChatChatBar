@@ -1172,15 +1172,17 @@ object NarrativeHistoryEcho {
             ): CleanedReply {
                 val start = parts[first].first
                 val part = text.substring(start, parts[last].last + 1)
-                fun isJoinedLiteral(index: Int, opening: Boolean): Boolean {
+                fun isJoinedLiteral(index: Int, opening: Boolean, afterClosedSection: Boolean = false): Boolean {
                     val joinedIndex = start + index
                     return joinedLiterals.ranges.containsOffset(joinedIndex) ||
                         joinedLiterals.isMarkdownContainerLine(
                             joinedIndex,
-                            includeStandaloneLazyTags = opening && !followsClosedWrapper,
+                            includeStandaloneLazyTags = opening && !followsClosedWrapper && !afterClosedSection,
                         ) || !opening && joinedLiterals.isCaptionedLazyClosing(joinedIndex)
                 }
-                fun cleanSection(section: String, sectionStart: Int, requireSectionPair: Boolean): CleanedReply =
+                fun cleanSection(
+                    section: String, sectionStart: Int, requireSectionPair: Boolean, afterClosedSection: Boolean = false,
+                ): CleanedReply =
                     cleanReply(
                         section, streaming, interrupted,
                         requirePair = requireSectionPair, formatOutput = formatOutput,
@@ -1190,13 +1192,15 @@ object NarrativeHistoryEcho {
                         allowedOpenings = allowedOpenings,
                         literalOutput = literalOutput, trailerHeadings = trailerHeadings,
                         cleanExposedBody = cleanExposedBody,
-                        isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening) },
+                        isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening, afterClosedSection) },
                     )
                 val cleaned = cleanSection(part, 0, requirePair)
                 if (first == last && cleaned.couldSpanToolCalls) {
                     val adjacent = cleanAdjacentHistoryPairs(
                         part, allowedOpenings.orEmpty(), formatOutput.declaredOpenings, streaming || interrupted,
-                    ) { section, sectionStart, _ -> cleanSection(section, sectionStart, requireSectionPair = true) }
+                    ) { section, sectionStart, _ ->
+                        cleanSection(section, sectionStart, requireSectionPair = true, afterClosedSection = sectionStart > 0)
+                    }
                     if (adjacent != null) return CleanedReply(adjacent, matchedOuterPair = true)
                 }
                 if (first == last && !requirePair && cleaned.body == part) {
@@ -1293,9 +1297,10 @@ object NarrativeHistoryEcho {
         val tags = wrapperFamilyTokens.getValue("历史回复").findAll(text).toList()
         val literals = classifyLiterals(text, tags, listOf(modernClosing), includeUnclosed = provisional)
         val standalone = tags.filter { tag ->
-            literals.isVisibleWrapperTag(text, tag, includeStandaloneLazyTags = true) &&
+            literals.isVisibleWrapperTag(text, tag) &&
                 literals.isStandaloneTagLine(tag.range.first, tag.value) &&
-                !literals.isLazyListItemLine(tag.range.first)
+                !literals.isLazyListItemLine(tag.range.first) &&
+                (tag.value != modernClosing || !literals.isCaptionedLazyClosing(tag.range.first))
         }
         fun adjacent(end: Int, start: Int): Boolean {
             val gap = text.subSequence(end, start)
@@ -1318,43 +1323,50 @@ object NarrativeHistoryEcho {
             return text.subSequence(cursor, start).isBlank()
         }
 
-        val boundaries = standalone.zipWithNext().mapNotNull { (close, open) ->
-            val end = close.range.last + 1
-            val start = open.range.first
-            if (close.value == modernClosing && open.value in openings && adjacent(end, start)) end to start else null
-        }.toMutableList()
-        if (provisional) {
-            // Keep already proven text visible while the next opener is arriving.
-            val previousClose = standalone.lastOrNull()?.takeIf { it.value == modernClosing }
-            if (previousClose != null) {
-                val end = previousClose.range.last + 1
-                val start = (end until text.length).firstOrNull { !literals.markdown[it].isWhitespace() }
-                if (start != null && adjacent(end, start) && hasMarkerPadding(text, start) &&
-                    literals.isUnprotected(start) && !literals.isLazyListItemLine(start) &&
-                    text.substring(start).let { prefix -> openings.any { it.startsWith(prefix) } } &&
-                    text.startsWith(possibleNextOpening, start)
-                ) boundaries += end to start
+        fun cleanPairs(eligible: List<MatchResult>, allowLazyQuote: Boolean): String? {
+            val boundaries = eligible.zipWithNext().mapNotNull { (close, open) ->
+                val end = close.range.last + 1
+                val start = open.range.first
+                if (close.value == modernClosing && open.value in openings && adjacent(end, start)) end to start else null
+            }.toMutableList()
+            if (provisional) {
+                // Keep already proven text visible while the next opener is arriving.
+                val previousClose = eligible.lastOrNull()?.takeIf { it.value == modernClosing }
+                if (previousClose != null) {
+                    val end = previousClose.range.last + 1
+                    val start = (end until text.length).firstOrNull { !literals.markdown[it].isWhitespace() }
+                    if (start != null && adjacent(end, start) && hasMarkerPadding(text, start) &&
+                        !literals.ranges.containsOffset(start) && !literals.isLazyListItemLine(start) &&
+                        !literals.isMarkdownContainerLine(start, includeStandaloneLazyTags = !allowLazyQuote) &&
+                        text.substring(start).let { prefix -> openings.any { it.startsWith(prefix) } } &&
+                        text.startsWith(possibleNextOpening, start)
+                    ) boundaries += end to start
+                }
             }
-        }
-        if (boundaries.isEmpty()) return null
+            if (boundaries.isEmpty()) return null
 
-        // All sections must be independently removable. A requested literal pair or visible
-        // prose after a close makes the adjacent blocks ambiguous and leaves the reply intact.
-        val result = StringBuilder()
-        var start = 0
-        var previousEnd = 0
-        for ((end, next) in boundaries + (text.length to text.length)) {
-            val section = text.substring(start, end)
-            val last = end == text.length
-            val cleaned = clean(section, start, !last || !provisional)
-            if (cleaned.body == section || !cleaned.matchedOuterPair && (!last || !provisional)) return null
-            val gap = text.subSequence(previousEnd, start)
-            if (result.isNotEmpty() && cleaned.body.isNotEmpty() || gap.isNotBlank()) result.append(gap)
-            result.append(cleaned.body)
-            previousEnd = end
-            start = next
+            // Every preceding section must prove its own outer pair before the next one can
+            // start a separate reply, including a quoted paragraph that syntactically continues.
+            val result = StringBuilder()
+            var start = 0
+            var previousEnd = 0
+            for ((end, next) in boundaries + (text.length to text.length)) {
+                val section = text.substring(start, end)
+                val last = end == text.length
+                val cleaned = clean(section, start, !last || !provisional)
+                if (cleaned.body == section || !cleaned.matchedOuterPair && (!last || !provisional)) return null
+                val gap = text.subSequence(previousEnd, start)
+                if (result.isNotEmpty() && cleaned.body.isNotEmpty() || gap.isNotBlank()) result.append(gap)
+                result.append(cleaned.body)
+                previousEnd = end
+                start = next
+            }
+            return result.toString()
         }
-        return result.toString()
+        val outsideQuotes = standalone.filterNot { literals.isLazyQuoteLine(it.range.first) }
+        return cleanPairs(outsideQuotes, allowLazyQuote = false) ?: if (outsideQuotes.size != standalone.size) {
+            cleanPairs(standalone, allowLazyQuote = true)
+        } else null
     }
 
     fun replyBody(

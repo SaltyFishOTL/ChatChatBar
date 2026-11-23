@@ -690,6 +690,27 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `adjacent echoed frames close after quoted text in ordinary and experimental streams`(): Unit = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val close = "</历史回复>"
+        val next = "The lights go out."
+        val second = PromptTemplates.narrativeModeHistoryReply(next, mode)
+        for (quote in listOf("> Spoken dialogue.", "> Closing tag example:\n$close")) {
+            val first = PromptTemplates.narrativeModeHistoryReply(quote, mode)
+            val expected = "$quote\n$next"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(first, "\n${second.take(6)}", second.drop(6)), listOf(quote, quote, expected), expected,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertMultipartNarrativeReply(listOf(first, second), expected)
+            val continuation = "They watch from the hall."
+            assertMultipartNarrativeReply(listOf("$first\n$second", continuation), "$expected\n$continuation")
+        }
+    }
+
+    @Test
     fun `main stream reserves an explicit format after an inline editor comment`() = runBlocking {
         val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
         val card = "输出格式：<!-- 编辑注记 -->$raw"

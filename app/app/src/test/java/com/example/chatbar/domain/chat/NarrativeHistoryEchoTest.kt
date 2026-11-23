@@ -846,6 +846,38 @@ class NarrativeHistoryEchoTest {
         }
     }
 
+    @Test fun verifiedAdjacentWrapperResetsLazyQuoteStateOnlyAfterTheFirstRealClose() {
+        val mode = ChatNarrativeMode.FOCUS
+        val open = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val cleanup = requestWithNarrativeHistory(mode, null)
+        val last = "The lights go out."
+        val second = PromptTemplates.narrativeModeHistoryReply(last, mode)
+        for (quote in listOf("> Ordinary dialogue.", "> Closing tag example:\n$close")) {
+            val first = PromptTemplates.narrativeModeHistoryReply(quote, mode)
+            assertEquals(quote, cleanup.completedBody(first))
+            val raw = "$first\n$second"
+            val expected = "$quote\n$last"
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(expected, cleanup.completedBody(raw, streaming = streaming, interrupted = interrupted))
+                assertEquals(expected, cleanup.completedBody(
+                    raw, streaming = streaming, interrupted = interrupted,
+                    partLengths = listOf(first.length, second.length),
+                ))
+            }
+            assertEquals(quote, cleanup.completedBody("$first\n${open.take(6)}", streaming = true))
+            assertEquals(quote, cleanup.completedBody("$first\n${open.take(6)}", interrupted = true))
+            val continuation = "They watch from the hall."
+            assertEquals("$expected\n$continuation", cleanup.completedBody(
+                "$raw\n$continuation", partLengths = listOf(raw.length, continuation.length),
+            ))
+        }
+
+        val quotedExample = "> Closing tag example:\n$close\n\n> $open\n> Some literal prose.\n> $close"
+        val framed = PromptTemplates.narrativeModeHistoryReply(quotedExample, mode)
+        assertEquals(quotedExample, cleanup.completedBody(framed))
+    }
+
     @Test fun lazyQuoteClosingExampleRemainsLiteralInAJoinedToolReply() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"
