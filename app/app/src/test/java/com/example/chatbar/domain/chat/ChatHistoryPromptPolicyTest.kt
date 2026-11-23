@@ -129,6 +129,25 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun nestedShortMarkdownFencesRemainInEarlierHistoryWhenStatusIsExcluded() {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val quotedCode = "> > ```text\n> > $closing\n> > ```"
+        val listCode = "- ```\n  [literal]  \n  ```"
+        val story = "她读出教程。\n\n$quotedCode\n\n$listCode\n\n她关上电脑。"
+        val status = "```text\n生命：10\n```"
+        val wrapped = "$opening\n$story\n\n$status\n$closing"
+        val cleaned = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, null).completedBody(wrapped)
+        val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
+
+        assertEquals("$story\n\n$status", cleaned)
+        val earlier = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.EARLIER_HISTORY)
+        assertEquals(JsonPrimitive("$opening\n$story\n$closing"),
+            ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)).content)
+        assertEquals(cleaned, ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.PREVIOUS_TURN))
+    }
+
+    @Test
     fun replyWithAnnotatedStatusReplaysWithOneHistoryWrapper() {
         val label = "（三个点为状态包裹格式，必须完整输出）"
         val before = "```text$label\n当前地点：门厅\n$label```"

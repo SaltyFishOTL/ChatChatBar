@@ -407,7 +407,7 @@ object NarrativeHistoryEcho {
     internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
         if (commentOpening !in text) emptyList() else classifyLiterals(text, interpretProseQuotes = false).commentRanges
 
-    /** Bare, text and status fences opened by three backticks stay eligible for roleplay parsing. */
+    /** Preserve Markdown code while keeping legacy status fences eligible for roleplay parsing. */
     internal fun roleplayLiteralCodeRanges(text: String): List<IntRange> {
         if ('`' !in text && '~' !in text && '\t' !in text && "    " !in text) return emptyList()
         val code = classifyLiterals(text, interpretProseQuotes = false).roleplayLiteralCode
@@ -449,7 +449,9 @@ object NarrativeHistoryEcho {
             val codeBlocks = indentedCode + fences.map { it.range }
             val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks, indentedParagraphLineStarts)
             val literalFences = fences.filter { fence ->
-                fence.marker == '~' || fence.markerLength > 3 ||
+                val nestedPlainCode = !fence.topLevel &&
+                    (fence.info.isEmpty() || fence.info.equals("text", ignoreCase = true))
+                fence.marker == '~' || fence.markerLength > 3 || nestedPlainCode ||
                     fence.info.isNotEmpty() && !statusFenceInfo.matches(fence.info)
             }
             val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range }

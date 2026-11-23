@@ -483,6 +483,16 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream keeps nested short Markdown fences inside the cleaned reply`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val quotedCode = "> > ```text\n> > $closing\n> > ```"
+        val listCode = "- ```\n  $closing\n  ```"
+        val story = "她读出教程。\n\n$quotedCode\n\n$listCode\n\n她关上电脑。"
+        assertNarrativeReplyStates("$opening\n$story\n$closing", expected = story)
+    }
+
+    @Test
     fun `main stream still treats text and typed code as ordinary trailing content`() = runBlocking {
         val story = "她推开门。"
         val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"

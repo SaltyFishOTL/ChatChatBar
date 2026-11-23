@@ -122,6 +122,26 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsNestedShortPlainFencesBesideLegacyStatus() {
+        val literal = "</历史回复><n=\"Mina\"/>[literal]  "
+        val status = "```text\n生命：10\n```"
+        for (code in listOf(
+            "> > ```text\n> > $literal\n> > ```",
+            "- ```\n  $literal\n  ```",
+        )) {
+            val raw = "$code\n\n$status"
+            val segments = parseRoleplayTextSegments(raw)
+            assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS), segments.map { it.kind })
+            assertEquals(code, sanitizeRoleplayMarkdown(segments.first().displayText, forColoring = true).trimEnd())
+
+            val legacy = parseRoleplayContent(stripRoleplaySpeakerMarkers(raw))
+            assertEquals(code,
+                sanitizeRoleplayMarkdown((legacy.first() as RoleplayContentSegment.Markdown).text).trimEnd())
+            assertEquals("生命：10", (legacy.last() as RoleplayContentSegment.Status).text)
+        }
+    }
+
+    @Test
     fun roleplayMarkdown_keepsLongBareAndTextFencesAsLiteralCode() {
         for ((marker, label) in listOf("````" to "", "`````" to "text")) {
             val code = "$marker$label\n```\n<!-- literal -->\n<n=\"Mina\"/>[sample]  \n```\n$marker"
