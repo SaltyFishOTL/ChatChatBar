@@ -3294,13 +3294,19 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     val streamOrderKey = regenerationTarget?.orderKey ?: streamCreatedAt.toMessageOrderKey()
 
                     val ctx = ChatBarApp.instance
+                    var previewedToolPartLengths = emptyList<Int>()
                     fun updateStreamingDraft(rawBody: String): String {
-                        val renderedBody = renderSessionText(
+                        val displayed = _streamingMessage.value
+                        val renderedBody = if (
+                            displayed != null && interruptedReplyDraft?.content == rawBody &&
+                            previewedToolPartLengths == receivedToolReplyPartLengths
+                        ) displayed.content else renderSessionText(
                             narrativeEcho.completedBody(
                                 rawBody, partLengths = receivedToolReplyPartLengths,
                                 streaming = true,
                             )
                         )
+                        previewedToolPartLengths = receivedToolReplyPartLengths
                         val draft = ChatMessage(
                             id = assistantMsgId,
                             sessionId = sessionId,

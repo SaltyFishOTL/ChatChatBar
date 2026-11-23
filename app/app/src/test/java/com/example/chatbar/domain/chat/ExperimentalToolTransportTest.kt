@@ -1969,6 +1969,82 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a standalone wrapper boundary in a closing call can precede ordinary prose`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val parts = listOf("$opening\n她打开门。", "灯光照进来。\n$closing", "他走了过去。")
+        assertMultipartNarrativeReply(parts, "她打开门。\n灯光照进来。\n他走了过去。")
+        val example = parts.dropLast(1) + "这是一个标签示例。"
+        assertMultipartNarrativeReply(example, example.joinToString("\n"))
+    }
+
+    @Test
+    fun `an explicitly requested exact XML copy keeps both tags`() = runBlocking {
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
+        val literal = "<历史回复 模式=\"聚焦\">sample</历史回复>"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(literal), listOf(literal), literal,
+                previousAssistant = previous, currentUserText = "Please copy the XML below verbatim: $literal",
+                experimental = experimental, toolCall = toolCall,
+            )
+            val different = literal.replace("sample", "story")
+            assertNarrativeReplyDeltas(
+                listOf(different), listOf("story"), "story",
+                previousAssistant = previous, currentUserText = "Please copy the XML below verbatim: $literal",
+                experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `projected orphan padding is distinct from Markdown code indentation`(): Unit = runBlocking {
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "旧故事。")
+        val closing = "</历史回复>"
+        val story = "故事就此结束。"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (padding in 0..3) {
+                val padded = "$story\n${" ".repeat(padding)}$closing"
+                assertNarrativeReplyDeltas(
+                    listOf(padded), listOf(story), story,
+                    previousAssistant = previous, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            val code = "$story\n\n    $closing"
+            assertNarrativeReplyDeltas(
+                listOf(code), listOf(code), code,
+                previousAssistant = previous, experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `a witnessed nested history projection can contain different modes`() = runBlocking {
+        val previous = ChatMessage.create(
+            "fixture", MessageRole.ASSISTANT,
+            PromptTemplates.narrativeModeHistoryReply("旧故事。", ChatNarrativeMode.FOCUS),
+        ).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
+        val story = "她推开窗。"
+        val inner = PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS)
+        val outer = PromptTemplates.narrativeModeHistoryReply(inner, ChatNarrativeMode.ADVANCE)
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            assertNarrativeReplyDeltas(
+                listOf(outer), listOf(story), story,
+                previousAssistant = previous, experimental = experimental, toolCall = toolCall,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(outer), listOf(inner), inner,
+                experimental = experimental, toolCall = toolCall,
+            )
+            assertNarrativeReplyDeltas(
+                listOf(outer), listOf(inner), inner,
+                previousAssistant = previous, experimental = experimental, toolCall = toolCall,
+                formatCard = "本轮输出模板：\n$inner",
+            )
+        }
+    }
+
+    @Test
     fun `an explicit user output template keeps its tags around replaced story text`() = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
