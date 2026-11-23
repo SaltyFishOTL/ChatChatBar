@@ -500,6 +500,14 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a closing marker after a list can still prove it is outside an earlier quote`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val close = "</历史回复>"
+        val actionList = "Story.\n$close\n---\n1. One\n2. Two"
+        assertMultipartNarrativeReply(listOf("$opening\n> quoted", actionList, close), "> quoted\n$actionList")
+    }
+
+    @Test
     fun `main stream keeps a standalone lazy quote tag before the terminal outer close`() = runBlocking {
         val close = "</历史回复>"
         val body = "> 下面这行是要展示的闭合标记。\n$close\n\n讲完代码后，他们走向码头。"

@@ -1221,12 +1221,14 @@ object NarrativeHistoryEcho {
                 ) || headingAfterClose(tag.range.last + 1) != null
 
         val terminal = visibleTags.lastOrNull()?.takeIf { tag ->
-            tag.value in wrapper.closings && !literals.isLazyContainerLine(tag.range.first) && endsReply(tag)
+            tag.value in wrapper.closings && !literals.isLazyQuoteLine(tag.range.first) && endsReply(tag)
         }
         // A proven close outside the Markdown container leaves its earlier lazy lines literal.
         val outsideContainer = terminal?.let {
+            val outsideList = !literals.isLazyListItemLine(it.range.first)
             wrapperBoundary(wrapper, visibleTags.asSequence().filterNot { tag ->
-                tag.value in wrapper.closings && literals.isLazyContainerLine(tag.range.first)
+                tag.value in wrapper.closings && (literals.isLazyQuoteLine(tag.range.first) ||
+                    outsideList && literals.isLazyListItemLine(tag.range.first))
             }).takeIf { it.closing == terminal }
         }
         val boundary = outsideContainer ?: wrapperBoundary(wrapper, visibleTags.asSequence())
@@ -1381,14 +1383,17 @@ object NarrativeHistoryEcho {
         text: String, families: Map<String, List<MatchResult>>, literals: ReplyLiterals,
     ): Map<Int, Set<IntRange>> {
         val matches = mutableMapOf<Int, MutableSet<IntRange>>()
+        val optionalContinuationLines = listOf(
+            emptySet(), literals.lazyQuoteLineStarts, literals.lazyQuoteLineStarts + literals.lazyListItemLineStarts,
+        ).distinct()
         for (tags in families.values) {
             val visible = tags.filter { literals.isVisibleWrapperTag(text, it, allowIndentedParagraphTag = true) }
-            for (skipLazyClose in listOf(false, true)) {
+            for (ignoredClosings in optionalContinuationLines) {
                 val openings = ArrayDeque<MatchResult>()
                 for (tag in visible) {
                     if (tag.value.startsWith("</")) {
                         if (literals.isCaptionedLazyListClosing(tag.range.first) ||
-                            skipLazyClose && literals.isLazyContainerLine(tag.range.first)
+                            lineStart(literals.markdown, tag.range.first) in ignoredClosings
                         ) continue
                         val open = openings.removeLastOrNull() ?: continue
                         val wrapper = wrappers.firstOrNull { it.opening == open.value } ?: continue
@@ -1438,11 +1443,6 @@ object NarrativeHistoryEcho {
 
     private fun ReplyLiterals.isLazyListItemLine(offset: Int): Boolean =
         lineStart(markdown, offset) in lazyListItemLineStarts
-
-    private fun ReplyLiterals.isLazyContainerLine(offset: Int): Boolean {
-        val start = lineStart(markdown, offset)
-        return start in lazyQuoteLineStarts || start in lazyListItemLineStarts
-    }
 
     private fun ReplyLiterals.isCaptionedLazyListClosing(offset: Int): Boolean {
         val start = lineStart(markdown, offset)
