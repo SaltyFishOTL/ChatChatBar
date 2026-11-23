@@ -1261,6 +1261,114 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `ordinary and tool replies remove sent headings inside an echoed pair`() = runBlocking {
+        val story = "她推开了门。"
+        for (mode in ChatNarrativeMode.entries) {
+            val narrative = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val tail = PromptTemplates.narrativeModeTailSystemPrompt(mode, null)
+            val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+            val inner = "${tail.lineSequence().first()}\n$story\n${narrative.lineSequence().first()}"
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(inner, mode)
+            for (toolCall in listOf(false, true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped.substringBeforeLast('\n'), "\n</历史回复>"),
+                    listOf(story, story), story, previousAssistant = previous,
+                    experimental = toolCall, narrativePrompt = narrative, narrativeTail = tail, toolCall = toolCall,
+                )
+                val quoted = "她写下了“\n${tail.lineSequence().first()}\n”。"
+                assertNarrativeReplyDeltas(
+                    listOf(PromptTemplates.narrativeModeHistoryReply(quoted, mode)), listOf(quoted), quoted,
+                    previousAssistant = previous, experimental = toolCall, narrativePrompt = narrative,
+                    narrativeTail = tail, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `an exact bare pair from the sent user input survives while independent echoes are removed`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val literal = PromptTemplates.narrativeModeHistoryReply("她推开了门。", mode)
+        val userText = "请逐字输出下列布局：\n$literal\n并保留标签。"
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val otherBody = "风吹破了窗。"
+        for (toolCall in listOf(false, true)) {
+            val prefix = literal.substringBeforeLast('\n')
+            assertNarrativeReplyDeltas(
+                listOf(prefix, "\n</历史回复>"), listOf(prefix, literal), literal,
+                previousAssistant = previous, experimental = toolCall, currentUserText = userText, toolCall = toolCall,
+            )
+            for ((raw, body) in listOf(
+                PromptTemplates.narrativeModeHistoryReply(otherBody, mode) to otherBody,
+                PromptTemplates.narrativeModeHistoryReply(literal, mode) to literal,
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(body), body, previousAssistant = previous, experimental = toolCall,
+                    currentUserText = userText, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `repair SSE cleans independent wrappers in multiple validated game content calls`() = runBlocking {
+        val original = "山路一片漆黑。远处传来了风声。"
+        val first = "山路陷入黑暗。"
+        val second = "风从远处吹来。"
+        val mode = ChatNarrativeMode.FOCUS
+        val sample = PromptTemplates.narrativeModeHistoryReply("旧片段", mode)
+        val card = "以下是禁止输出的反例。\n$sample"
+        val parts = listOf(first, second).map { PromptTemplates.narrativeModeHistoryReply(it, mode) }
+        val chunks = parts.mapIndexed { index, part ->
+            chunk(buildJsonObject { put("content", part) }.toString(), "game_content", index = index)
+        }
+        val cleanup = NarrativeHistoryEcho.forFormatRepair(card, original)
+        GatedExperimentalResponse(
+            sse(listOf(chunks.first())),
+            sse(listOf(chunks.last(), chunk(reason = "tool_calls"), "[DONE]")),
+        ).use { server ->
+            val repair = MessageFormatRepairService(service())
+            var received = ""
+            var partLengths = emptyList<Int>()
+            val events = withTimeout(5_000) {
+                repair.streamRepair(original, card, null, model(server.baseUrl)).onEach { event ->
+                    if (event is StreamEvent.Delta) {
+                        received += event.text
+                        partLengths = event.toolReplyPartLengths
+                        if (received == parts.first()) {
+                            assertFalse(server.tailSent)
+                            assertEquals(first, cleanup.completedBody(received, streaming = true))
+                            assertEquals(
+                                first + original.drop(first.length),
+                                MessageFormatRepairPolicy.progressiveOverlay(
+                                    original, cleanup.completedBody(received, interrupted = true),
+                                ),
+                            )
+                            server.releaseTail()
+                        }
+                    }
+                }.toList()
+            }
+            val payload = Json.parseToJsonElement(server.requestBody).jsonObject
+            val context = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
+                .single { it.getValue("name").jsonPrimitive.content == "context" }
+                .getValue("description").jsonPrimitive.content
+            assertTrue(Json.parseToJsonElement(context + "\"}]").jsonArray.any {
+                card in it.jsonObject.getValue("content").jsonPrimitive.content
+            })
+            val expected = "$first\n$second"
+            assertEquals(StreamEvent.Done, events.last())
+            assertEquals(parts.joinToString("\n"), received)
+            assertEquals(expected, cleanup.completedBody(received, partLengths = partLengths, streaming = true))
+            assertEquals(expected, cleanup.completedBody(received, partLengths = partLengths, interrupted = true))
+            assertEquals(expected, cleanup.completedBody(received, partLengths = partLengths))
+            assertEquals(parts.map(String::length), partLengths)
+            val declared = NarrativeHistoryEcho.forFormatRepair("输出模板：\n$sample", original)
+            assertEquals(received, declared.completedBody(received, partLengths = partLengths))
+        }
+    }
+
+    @Test
     fun `ordinary and tool replies remove a projected orphan close and preserve the declared footer`() = runBlocking {
         val story = "门外亮了起来。"
         val close = "</历史回复>"

@@ -140,10 +140,14 @@ object NarrativeHistoryEcho {
         private val projectedClosings = mutableSetOf<String>()
         private val narrativeHeadings = mutableSetOf<String>()
         private var currentUserText: String? = null
+        private var authoredPairs: Set<String> = emptySet()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
             prompt.lineSequence().firstOrNull()?.takeIf(String::isNotBlank)?.let(narrativeHeadings::add)
-            currentUserText = userText
+            if (currentUserText != userText) {
+                currentUserText = userText
+                authoredPairs = declaredUserPairs(userText)
+            }
         }
 
         private fun isAuthored(token: String): Boolean =
@@ -179,9 +183,9 @@ object NarrativeHistoryEcho {
             if (!enabled) return text
             val provisional = streaming || interrupted
             if (repairOpenings != null) {
-                val cleaned = cleanReply(
-                    text, streaming, interrupted, formatOutput = formatOutput, allowedOpenings = repairOpenings,
-                ).body
+                val cleaned = cleanCompletedBody(
+                    text, formatOutput, interrupted, partLengths, streaming, allowedOpenings = repairOpenings,
+                )
                 if (cleaned != text) return cleaned
                 val repairClosings = wrappers.filter { it.opening in repairOpenings }.flatMap { it.closings }
                 return withoutOrphanClosing(text, repairClosings, provisional, formatOutput) { partial ->
@@ -193,10 +197,36 @@ object NarrativeHistoryEcho {
             val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthored)
             val body = text.substring(reply)
             val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
-            val cleaned = cleanCompletedBody(body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings)
+            val cleaned = cleanCompletedBody(
+                body, formatOutput, interrupted, lengths, streaming, projectedDuplicateOpenings,
+                authoredPairs = authoredPairs,
+                cleanExposedBody = { inner ->
+                    inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
+                },
+            )
             if (cleaned != body) return cleaned
             val closings = projectedClosings.filterNot(::isAuthored)
             return withoutOrphanClosing(body, closings, provisional, formatOutput, ::isAuthored)
+        }
+    }
+
+    private fun declaredUserPairs(text: String?): Set<String> {
+        if (text == null || wrappers.none { it.opening in text }) return emptySet()
+        return buildSet {
+            for (family in wrapperFamilyTokens.values) {
+                val tags = family.findAll(text).toList()
+                for ((index, tag) in tags.withIndex()) {
+                    val wrapper = wrappers.firstOrNull { it.opening == tag.value } ?: continue
+                    if (lineStart(text, tag.range.first) != tag.range.first) continue
+                    val closing = wrapperBoundary(wrapper, tags.asSequence().drop(index + 1)).closing ?: continue
+                    val end = closing.range.last + 1
+                    if (lineStart(text, closing.range.first) != closing.range.first ||
+                        (end < text.length && !text[end].isHistoryLineBreak())
+                    ) continue
+                    val pair = text.substring(tag.range.first, end)
+                    if (wrapper.isStandalonePair(pair)) add(pair)
+                }
+            }
         }
     }
 
@@ -533,10 +563,14 @@ object NarrativeHistoryEcho {
         partLengths: List<Int>,
         streaming: Boolean,
         projectedDuplicateOpenings: Set<String> = emptySet(),
+        allowedOpenings: Set<String>? = null,
+        authoredPairs: Set<String> = emptySet(),
+        cleanExposedBody: (String) -> String = { it },
     ): String {
         fun clean(part: String) = cleanReply(
             part, streaming, interrupted, formatOutput = formatOutput,
             projectedDuplicateOpenings = projectedDuplicateOpenings,
+            allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
         ).body
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
             var offset = 0
@@ -553,6 +587,7 @@ object NarrativeHistoryEcho {
             val wholeReply = cleanReply(
                 text, streaming, interrupted, requirePair = true, formatOutput = formatOutput,
                 projectedDuplicateOpenings = projectedDuplicateOpenings,
+                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
             // Independent wrappers and groups of calls can coexist in the same tool reply.
@@ -571,7 +606,8 @@ object NarrativeHistoryEcho {
                 return cleanReply(
                     text.substring(start, parts[last].last + 1), streaming, interrupted,
                     requirePair = requirePair, formatOutput = formatOutput,
-                    projectedDuplicateOpenings = projectedDuplicateOpenings,
+                    projectedDuplicateOpenings = projectedDuplicateOpenings, allowedOpenings = allowedOpenings,
+                    authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
                     isJoinedLiteral = { index, opening ->
                         val joinedIndex = start + index
                         joinedLiterals.ranges.any { joinedIndex in it } ||
@@ -629,6 +665,8 @@ object NarrativeHistoryEcho {
         projectedDuplicateOpenings: Set<String> = emptySet(),
         isJoinedLiteral: ((index: Int, opening: Boolean) -> Boolean)? = null,
         allowedOpenings: Set<String>? = null,
+        authoredPairs: Set<String> = emptySet(),
+        cleanExposedBody: (String) -> String = { it },
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
         if (first < 0) return CleanedReply(text)
@@ -706,6 +744,13 @@ object NarrativeHistoryEcho {
         }
         val boundary = outsideQuote ?: wrapperBoundary(wrapper, visibleTags.asSequence())
         val closing = boundary.closing
+        val exactAuthoredPair = closing != null && authoredPairs.isNotEmpty() &&
+            text.substring(openingStart, bodyStart + closing.range.last + 1) in authoredPairs
+        val pendingAuthoredPair = closing == null && (streaming || interrupted) &&
+            body.isNotBlank() && authoredPairs.any { it.startsWith(start.trimEnd()) }
+        if (exactAuthoredPair || pendingAuthoredPair) {
+            return CleanedReply(text, matchedOuterPair = closing?.let(::endsReply) == true, couldSpanToolCalls = closing == null)
+        }
         val declared = wrapper.opening in formatOutput.declaredOpenings &&
             !(wrapper.opening in projectedDuplicateOpenings &&
                 openingStart == first && afterOpening.firstOrNull().isHistoryLineBreak() &&
@@ -724,6 +769,7 @@ object NarrativeHistoryEcho {
             val result = cleanReply(
                 inner, streaming, interrupted, requirePair = requireInnerPair, formatOutput = formatOutput,
                 isJoinedLiteral = isJoinedLiteral?.let { joined -> { index, opening -> joined(bodyStart + index, opening) } },
+                allowedOpenings = allowedOpenings, authoredPairs = authoredPairs, cleanExposedBody = cleanExposedBody,
             )
             return if (result.matchedOuterPair) result.body + inner.takeLastWhile(Char::isWhitespace) else result.body
         }
@@ -738,7 +784,9 @@ object NarrativeHistoryEcho {
             if (declared) return CleanedReply(text, matchedOuterPair = true)
             if (afterClosing == end.length) {
                 return CleanedReply(
-                    leadingContent + removeInnerTransport(bodyBeforeClose(position), requireInnerPair = true),
+                    leadingContent + cleanExposedBody(
+                        removeInnerTransport(bodyBeforeClose(position), requireInnerPair = true)
+                    ),
                     matchedOuterPair = true,
                 )
             }
@@ -751,8 +799,13 @@ object NarrativeHistoryEcho {
             } else {
                 bodyBeforeClose(position)
             }
+            val exposed = removeInnerTransport(before, requireInnerPair = true)
+            val cleaned = cleanExposedBody(exposed)
+            val separator = if (markerStartsLine && suffixSharesLine &&
+                cleaned.isNotEmpty() && !cleaned.last().isHistoryLineBreak()
+            ) exposed.takeLastWhile { it.isHistoryLineBreak() } else ""
             return CleanedReply(
-                leadingContent + removeInnerTransport(before, requireInnerPair = true) + tail,
+                leadingContent + cleaned + separator + tail,
                 matchedOuterPair = true,
             )
         }
@@ -774,11 +827,11 @@ object NarrativeHistoryEcho {
             ) {
                 val before = bodyBeforeClose(lastTag)
                 val cleaned = if (streaming || interrupted) removeInnerTransport(before, requireInnerPair = false) else before
-                return CleanedReply(leadingContent + cleaned, couldSpanToolCalls = true)
+                return CleanedReply(leadingContent + cleanExposedBody(cleaned), couldSpanToolCalls = true)
             }
         }
         val cleaned = if (streaming || interrupted) removeInnerTransport(body, requireInnerPair = false) else body
-        return CleanedReply(if (sameLineContent) text else leadingContent + cleaned, couldSpanToolCalls = true)
+        return CleanedReply(if (sameLineContent) text else leadingContent + cleanExposedBody(cleaned), couldSpanToolCalls = true)
     }
 
     private fun Wrapper.matchesProjectedDuplicate(body: String, tags: List<MatchResult>): Boolean {

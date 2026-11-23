@@ -2410,6 +2410,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         val repairEcho = NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, userText)
         var result = message
         var repairedPrefix = ""
+        var repairPartLengths = emptyList<Int>()
         var sawDone = false
         formatRepairStopRequested = false
         _messageFormatRepairState.value = MessageFormatRepairState(
@@ -2429,11 +2430,14 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         when (event) {
                             is StreamEvent.Delta -> {
                                 repairedPrefix += event.text
+                                repairPartLengths = event.toolReplyPartLengths
                                 _messageFormatRepairState.value = MessageFormatRepairState(
                                     messageId = message.id,
                                     previewContent = MessageFormatRepairPolicy.progressiveOverlay(
                                         original = originalContent,
-                                        repairedPrefix = repairEcho.completedBody(repairedPrefix, streaming = true)
+                                        repairedPrefix = repairEcho.completedBody(
+                                            repairedPrefix, partLengths = repairPartLengths, streaming = true,
+                                        )
                                     )
                                 )
                             }
@@ -2444,7 +2448,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             is StreamEvent.Usage -> Unit
                         }
                     }
-                    val repaired = repairEcho.completedBody(repairedPrefix)
+                    val repaired = repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths)
                     if (!sawDone || repaired.isBlank()) {
                         throw IllegalStateException("格式修复模型返回空结果")
                     }
@@ -2477,7 +2481,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (!formatRepairStopRequested) throw cancelled
                     val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
                         original = originalContent,
-                        repairedPrefix = repairEcho.completedBody(repairedPrefix, interrupted = true)
+                        repairedPrefix = repairEcho.completedBody(
+                            repairedPrefix, interrupted = true, partLengths = repairPartLengths,
+                        )
                     )
                     result = withContext(NonCancellable) {
                         persistFormatRepairMessage(

@@ -542,7 +542,7 @@ class StreamingChatService(
                             text.append(decoded.remainingText)
                             progress?.append(logId, null, decoded.remainingText)
                             DebugLogManager.appendResponseChunk(logId, "", decoded.remainingText)
-                            trySend(StreamEvent.Delta(decoded.remainingText))
+                            trySend(StreamEvent.Delta(decoded.remainingText, decoded.partLengths))
                         }
                         if (!toolDecoder.hasToolCalls) {
                             DebugLogManager.appendResponseChunk(logId, "[实验模式] 模型返回普通文本，未调用 game_content")
