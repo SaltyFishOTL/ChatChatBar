@@ -26,6 +26,7 @@ object NarrativeHistoryEcho {
         val roleplayLiteralCode: List<IntRange>,
         val lazyQuoteLineStarts: Set<Int>,
         val listItemLineStarts: Set<Int>,
+        val lazyListItemLineStarts: Set<Int>,
         val indentedParagraphLineStarts: Set<Int>,
         val markdown: String,
         val commentRanges: List<IntRange>,
@@ -76,6 +77,13 @@ object NarrativeHistoryEcho {
             "请(?:严格)?使用以下[ \\t]*XML[ \\t]*模板[，,][ \\t]*将${userTemplateSlot}替换为新正文[，,]?[ \\t]*并保留首尾标签)" +
             "[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
+    )
+    private const val quoteSamplePrefix = " {0,3}>[ \\t]?"
+    private val quoteSampleLine = Regex(quoteSamplePrefix)
+    private val quotedTemplateSample = Regex(
+        "(?m)^$quoteSamplePrefix(${wrappers.joinToString("|") { Regex.escape(it.opening) }})[ \\t]*\\r?\\n" +
+            "$quoteSamplePrefix($templateSlot)[ \\t]*\\r?\\n" +
+            "$quoteSamplePrefix(${wrapperClosings.joinToString("|", transform = Regex::escape)})[ \\t]*(?=\\r?\\n|$)",
     )
     private val inlineExactCopyInstruction = Regex(
         " {0,3}(?:(?:please[ \\t]+)?copy[ \\t]+(?:this|the following)[ \\t]+text[ \\t]+exactly," +
@@ -427,6 +435,28 @@ object NarrativeHistoryEcho {
                 templateOpenings += wrapper.opening
             }
         }
+        for (sample in quotedTemplateSample.findAll(bareCarriageReturn.replace(text, "\n"))) {
+            val opening = requireNotNull(sample.groups[1])
+            val slot = requireNotNull(sample.groups[2])
+            val closing = requireNotNull(sample.groups[3])
+            val wrapper = wrappers.first { it.opening == opening.value }
+            if (closing.value !in wrapper.closings ||
+                listOf(opening, slot, closing).any { part -> literals.ranges.any { part.range.first in it } }
+            ) continue
+            val start = sample.range.first
+            val end = sample.range.last + 1
+            val nextLine = literals.markdown.indexOf('\n', end) + 1
+            if (nextLine > 0 && (quoteSampleLine.matchAt(literals.markdown, nextLine) != null ||
+                    literals.isLazyQuoteLine(nextLine))
+            ) continue
+            val lead = previousVisibleLine(literals.markdown, start) ?: continue
+            val gap = literals.markdown.substring(lead.last + 1, start)
+            if (gap != "\n" && gap != "\r\n") continue
+            if (literals.visibleLine(lead)?.let(::userTemplateSlotFromInstruction) != slot.value) continue
+            val previous = previousVisibleLine(literals.markdown, lead.first)
+            if (literals.prohibitsWrapper(previous, end)) counterexampleClosingStarts += closing.range.first
+            else templateOpenings += wrapper.opening
+        }
         return UserOutput(pairs, templateOpenings, counterexampleClosingStarts)
     }
 
@@ -597,11 +627,14 @@ object NarrativeHistoryEcho {
         if (candidates.isEmpty() && partialClosing == null) return text
         val literals = classifyLiterals(end, tags, closings, includeUnclosed = provisional)
         val visible = tags.filter {
-            literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) && !isJoinedLiteral(it.range.first)
+            literals.isVisibleWrapperTag(end, it, includeStandaloneLazyTags = true) &&
+                !literals.isLazyListItemLine(it.range.first) && !isJoinedLiteral(it.range.first)
         }
         val close = visible.singleOrNull()?.takeIf { it in candidates }
         val position = close?.range?.first ?: if (visible.isEmpty() && partialClosing != null) {
-            (end.length - partialClosing.length).takeIf { literals.isUnprotected(it) && !isJoinedLiteral(it) }
+            (end.length - partialClosing.length).takeIf {
+                literals.isUnprotected(it) && !literals.isLazyListItemLine(it) && !isJoinedLiteral(it)
+            }
                 ?: return text
         } else return text
         val before = end.substring(0, position)
@@ -953,7 +986,10 @@ object NarrativeHistoryEcho {
                     val unwrapped = if (!cleaned.couldSpanToolCalls && !cleaned.matchedOuterPair &&
                         !explainsPreviousExample(last + 1)
                     ) {
-                        cleanPartOrphan?.invoke(body) { isJoinedLiteral(selection.body.first + it, true) } ?: body
+                        cleanPartOrphan?.invoke(body) {
+                            val localIndex = selection.body.first + it
+                            isJoinedLiteral(localIndex, true) || joinedLiterals.isLazyListItemLine(start + localIndex)
+                        } ?: body
                     } else body
                     return cleaned.copy(body = part.substring(0, selection.prefixEnd) + unwrapped)
                 }
@@ -1262,6 +1298,9 @@ object NarrativeHistoryEcho {
     private fun ReplyLiterals.isLazyQuoteLine(offset: Int): Boolean =
         lineStart(markdown, offset) in lazyQuoteLineStarts
 
+    private fun ReplyLiterals.isLazyListItemLine(offset: Int): Boolean =
+        lineStart(markdown, offset) in lazyListItemLineStarts
+
     private fun ReplyLiterals.isMarkdownContainerLine(offset: Int, includeStandaloneLazyTags: Boolean = false): Boolean {
         val start = lineStart(markdown, offset)
         if (start in listItemLineStarts || MarkdownCodeFences.hasQuoteContainerPrefix(markdown, start)) return true
@@ -1375,6 +1414,7 @@ object NarrativeHistoryEcho {
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val containerLineStarts = mutableSetOf<Int>()
             val listItemLineStarts = mutableSetOf<Int>()
+            val lazyListItemLineStarts = mutableSetOf<Int>()
             val indentedParagraphLineStarts = mutableSetOf<Int>()
             val indentedCode = mutableListOf<IntRange>()
             val fences = MarkdownCodeFences.blocks(
@@ -1384,6 +1424,7 @@ object NarrativeHistoryEcho {
                 onContainerLine = { if (hasMarkup) containerLineStarts += it },
                 onListItemLine = { listItemLineStarts += it },
                 onIndentedParagraphLine = { indentedParagraphLineStarts += it },
+                onLazyListItemLine = { lazyListItemLineStarts += it },
             )
             val codeBlocks = indentedCode + fences.map { it.range }
             val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks, indentedParagraphLineStarts)
@@ -1422,7 +1463,7 @@ object NarrativeHistoryEcho {
                 interpretProseQuotes, dialogue,
             )
             return ReplyLiterals(
-                ranges + quotes + dialogue, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts,
+                ranges + quotes + dialogue, roleplayLiteralCode, lazyQuoteLineStarts, listItemLineStarts, lazyListItemLineStarts,
                 indentedParagraphLineStarts, source, comments, fences,
             )
         }
@@ -1666,8 +1707,11 @@ object NarrativeHistoryEcho {
         return (position - preceding) % 2 != 0
     }
 
-    private fun lineStart(text: String, offset: Int): Int =
-        maxOf(text.lastIndexOf('\n', offset - 1), text.lastIndexOf('\r', offset - 1)) + 1
+    private fun lineStart(text: String, offset: Int): Int {
+        var index = minOf(text.length, offset) - 1
+        while (index >= 0 && !text[index].isHistoryLineBreak()) index--
+        return index + 1
+    }
 
     private fun hasCodeIndent(text: String, offset: Int, indentedParagraphLineStarts: Set<Int> = emptySet()): Boolean {
         val lineStart = lineStart(text, offset)

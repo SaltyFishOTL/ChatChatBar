@@ -64,6 +64,7 @@ object MarkdownCodeFences {
         onContainerLine: ((Int) -> Unit)? = null,
         onListItemLine: ((Int) -> Unit)? = null,
         onIndentedParagraphLine: ((Int) -> Unit)? = null,
+        onLazyListItemLine: ((Int) -> Unit)? = null,
     ): List<Block> = buildList {
         val containers = mutableListOf<Container>()
         var offset = 0
@@ -144,6 +145,9 @@ object MarkdownCodeFences {
                     if (paragraph) {
                         if (onLazyQuoteLine != null && dedentedParagraph.any { it.indent == null }) {
                             onLazyQuoteLine(start)
+                        }
+                        if (onLazyListItemLine != null && dedentedParagraph.any { it.indent != null }) {
+                            onLazyListItemLine(start)
                         }
                         containers.addAll(dedentedParagraph)
                     }

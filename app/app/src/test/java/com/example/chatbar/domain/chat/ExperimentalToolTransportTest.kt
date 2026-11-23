@@ -1792,6 +1792,98 @@ class ExperimentalToolTransportTest {
         assertExactInlineHistoryCopy(experimental = true, toolCall = true)
     }
 
+    @Test
+    fun `ordinary SSE keeps an explicitly requested quoted template`() = runBlocking {
+        assertQuotedTemplate(experimental = false, toolCall = false)
+    }
+
+    @Test
+    fun `ordinary fallback keeps an explicitly requested quoted template`() = runBlocking {
+        assertQuotedTemplate(experimental = true, toolCall = false)
+    }
+
+    @Test
+    fun `tool SSE keeps an explicitly requested quoted template`() = runBlocking {
+        assertQuotedTemplate(experimental = true, toolCall = true)
+    }
+
+    private suspend fun assertQuotedTemplate(experimental: Boolean, toolCall: Boolean) {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier story").copy(narrativeMode = mode)
+        val instruction = "Use exactly the following XML template; replace [BODY] with new prose and keep both tags:"
+        val template = PromptTemplates.narrativeModeHistoryReply("[BODY]", mode)
+        val quote = template.prependIndent("> ")
+        val story = "甲推开门。"
+        val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val prefix = reply.substringBeforeLast('\n')
+        for (sample in listOf(quote, template)) {
+            assertNarrativeReplyDeltas(
+                listOf(prefix, reply.removePrefix(prefix)), listOf(prefix, reply), reply,
+                previousAssistant = prior, currentUserText = "$instruction\n$sample",
+                experimental = experimental, toolCall = toolCall,
+            )
+        }
+        for (request in listOf(
+            "Here is an illustration.\n$quote",
+            "Do not output these tags.\n$instruction\n$quote",
+            "$instruction\n$quote\nDo not output these tags.",
+            "$instruction\n$quote\n\nDo not output these tags.",
+            "$instruction\n${quote.replace("[BODY]", "[OTHER]")}",
+            "$instruction\n$quote\n> This is part of the quoted block.",
+            "$instruction\n${quote.prependIndent("> ")}",
+        )) {
+            assertNarrativeReplyDeltas(
+                listOf(reply), listOf(story), story, previousAssistant = prior, currentUserText = request,
+                experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `ordinary SSE keeps a literal closing tag inside a lazy list item`() = runBlocking {
+        assertLazyListClosing(experimental = false, toolCall = false)
+    }
+
+    @Test
+    fun `ordinary fallback keeps a literal closing tag inside a lazy list item`() = runBlocking {
+        assertLazyListClosing(experimental = true, toolCall = false)
+    }
+
+    @Test
+    fun `tool SSE keeps a literal closing tag inside a lazy list item`() = runBlocking {
+        assertLazyListClosing(experimental = true, toolCall = true)
+    }
+
+    @Test
+    fun `multipart tool SSE keeps a literal closing tag inside a lazy list item`(): Unit = runBlocking {
+        val lead = "- The closing tag in this example is shown below"
+        val closing = "</历史回复>"
+        assertMultipartNarrativeReply(listOf(lead, closing), "$lead\n$closing")
+    }
+
+    private suspend fun assertLazyListClosing(experimental: Boolean, toolCall: Boolean) {
+        val mode = ChatNarrativeMode.FOCUS
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier story").copy(narrativeMode = mode)
+        val lead = "- The closing tag in this example is shown below"
+        val closing = "</历史回复>"
+        val literal = "$lead\n$closing"
+        val partial = closing.dropLast(1)
+        assertNarrativeReplyDeltas(
+            listOf(lead, "\n$partial", closing.takeLast(1)), listOf(lead, "$lead\n$partial", literal), literal,
+            previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+        )
+        val narration = "The lantern went out."
+        for ((raw, expected) in listOf(
+            "$narration\n$closing" to narration,
+            PromptTemplates.narrativeModeHistoryReply("- $narration", mode) to "- $narration",
+        )) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(expected), expected,
+                previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
     private suspend fun assertExactInlineHistoryCopy(experimental: Boolean, toolCall: Boolean) {
         val body = "Example text"
         for (mode in ChatNarrativeMode.entries) {
