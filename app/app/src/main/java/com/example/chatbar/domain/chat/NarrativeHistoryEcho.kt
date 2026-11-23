@@ -74,6 +74,12 @@ object NarrativeHistoryEcho {
             "[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val inlineExactCopyInstruction = Regex(
+        " {0,3}(?:(?:please[ \\t]+)?copy[ \\t]+(?:this|the following)[ \\t]+text[ \\t]+exactly," +
+            "[ \\t]+with[ \\t]+both[ \\t]+tags|" +
+            "请(?:逐字|原样)(?:复制|照抄)以下(?:文字|文本)[，,]?[ \\t]*并保留首尾标签)[：:][ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private const val omitTemplateFence =
         "(?:(?:不要|不得|禁止)输出代码围栏|" +
             "(?:omit|do not (?:output|include))[ \\t]+(?:the[ \\t]+)?(?:surrounding[ \\t]+)?(?:code[ \\t]+)?fence)"
@@ -362,8 +368,12 @@ object NarrativeHistoryEcho {
                 val tags = family.findAll(text).toList()
                 for ((index, tag) in tags.withIndex()) {
                     val start = tag.range.first
-                    if (!startsLine(start)) continue
-                    val lead = previousVisibleLine(literals.markdown, lineStart(text, start))
+                    val line = lineStart(text, start)
+                    val atLineStart = startsLine(start)
+                    if (!atLineStart && (tag.value in wrapperClosings ||
+                            !inlineExactCopyInstruction.matches(text.subSequence(line, start)))
+                    ) continue
+                    val lead = previousVisibleLine(literals.markdown, line)
                     if (tag.value in wrapperClosings) {
                         val after = tag.range.last + 1
                         if (literals.isUnprotected(start) && text.substring(after).lineSequence().first().isBlank() &&
@@ -380,13 +390,14 @@ object NarrativeHistoryEcho {
                     val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
                     val prohibitionLead = if (labeled && lead != null) previousVisibleLine(literals.markdown, lead.first) else lead
                     val visiblePair = literals.isUnprotected(start) && literals.isUnprotected(closing.range.first)
+                    val singleLine = lineStart(text, closing.range.first) == line
+                    if (!atLineStart && (!singleLine || !visiblePair)) continue
                     if (visiblePair && literals.prohibitsWrapper(prohibitionLead, end)) {
                         counterexampleClosingStarts += closing.range.first
                         continue
                     }
                     val pair = text.substring(start, end)
-                    val singleLine = lineStart(text, closing.range.first) == lineStart(text, tag.range.first)
-                    val standalonePair = text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
+                    val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
                     if (singleLine || standalonePair) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue

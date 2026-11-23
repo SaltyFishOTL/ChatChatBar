@@ -1778,6 +1778,79 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `ordinary SSE keeps a requested exact inline history pair`() = runBlocking {
+        assertExactInlineHistoryCopy(experimental = false, toolCall = false)
+    }
+
+    @Test
+    fun `experimental ordinary fallback keeps a requested exact inline history pair`() = runBlocking {
+        assertExactInlineHistoryCopy(experimental = true, toolCall = false)
+    }
+
+    @Test
+    fun `experimental tool SSE keeps a requested exact inline history pair`() = runBlocking {
+        assertExactInlineHistoryCopy(experimental = true, toolCall = true)
+    }
+
+    private suspend fun assertExactInlineHistoryCopy(experimental: Boolean, toolCall: Boolean) {
+        val body = "Example text"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier story").copy(narrativeMode = mode)
+            val wrapped = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val opening = wrapped.substringBefore('\n')
+            val closing = wrapped.substringAfterLast('\n')
+            val literal = "$opening$body$closing"
+            val userRequest = "Copy this text exactly, with both tags: $literal"
+            for (exactRequest in listOf(userRequest, "请原样复制以下文字并保留首尾标签：$literal")) {
+                assertNarrativeReplyDeltas(
+                    listOf(literal), listOf(literal), literal,
+                    previousAssistant = prior, currentUserText = exactRequest,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            val partialBody = opening + body.take(4)
+            val prefix = literal.dropLast(1)
+            assertNarrativeReplyDeltas(
+                listOf(partialBody, prefix.drop(partialBody.length), literal.takeLast(1)),
+                listOf(partialBody, prefix, literal), literal,
+                previousAssistant = prior, currentUserText = userRequest,
+                experimental = experimental, toolCall = toolCall,
+            )
+        }
+    }
+
+    @Test
+    fun `inline examples and different replies remain eligible for projected history cleanup`() = runBlocking {
+        val body = "Example text"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(body, ChatNarrativeMode.FOCUS)
+        val literal = wrapped.replace("\n", "")
+        val instruction = "Copy this text exactly, with both tags: $literal"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (request in listOf(
+                "This is what the history metadata looks like: $literal",
+                "She quoted:\n“\n$instruction\n”",
+                "$instruction This is an illustration.",
+                "$instruction\nDo not output these tags.",
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(literal), listOf(body), body, currentUserText = request,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            for ((echo, expected) in listOf(
+                wrapped to body,
+                literal.replace(body, "Different text") to "Different text",
+                literal.replace(body, "Different text").dropLast(1) to "Different text",
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(echo), listOf(expected), expected, currentUserText = instruction,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `validated call boundaries clean issued headings`(): Unit = runBlocking {
         val mode = ChatNarrativeMode.FOCUS
         val prompt = PromptAssembler().assembleCachePromptLayers(
