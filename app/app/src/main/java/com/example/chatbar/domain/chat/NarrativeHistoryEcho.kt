@@ -137,6 +137,11 @@ object NarrativeHistoryEcho {
             "(?:,[ \\t]+then[ \\t]+explain[ \\t]+[^\\r\\n.!?]+)?[.!?]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val exactPreviousReplyCitationInChinese = Regex(
+        " {0,3}请?(?:原样|逐字)引用(?:上一条|上一轮)(?:助手|助理)(?:回复|回答)[，,][ \\t]*" +
+            "(?:连同|并保留)(?:外层的?)?[ \\t]*XML[ \\t]*历史标签[。.!！]?[ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
     private val standaloneOpeningInstruction = Regex(
         " {0,3}(?:(?:please[ \\t]+)?(?:show|print|output)[ \\t]+(?:the[ \\t]+)?" +
             "literal[ \\t]+opening[ \\t]+tag[ \\t]+only[ \\t]+on[ \\t]+its[ \\t]+own[ \\t]+line" +
@@ -300,6 +305,16 @@ object NarrativeHistoryEcho {
         val counterexampleClosingStarts: Set<Int> = emptySet(),
     )
 
+    internal data class RepairDispatch(
+        val boundaries: List<String> = emptyList(),
+        val authoredSections: List<String> = emptyList(),
+        val continuations: Map<String, Set<List<String>>> = emptyMap(),
+    ) {
+        fun uniquelyIdentifiesUnfinishedBoundary(prefix: String): Boolean =
+            prefix.length >= 4 && prefix.startsWith('{') && '}' !in prefix &&
+                boundaries.count { it.startsWith(prefix) } == 1 && authoredSections.none { prefix in it }
+    }
+
     internal class RequestCleanup internal constructor(
         private val enabled: Boolean,
         private val formatOutput: FormatOutput = FormatOutput(),
@@ -308,7 +323,7 @@ object NarrativeHistoryEcho {
         private val repairOriginalContent: String = "",
         private val repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         private val repairStandaloneClosings: Set<String> = emptySet(),
-        private val repairBoundaries: List<String> = emptyList(),
+        private val repairDispatch: RepairDispatch = RepairDispatch(),
     ) {
         private val projectedOpenings = mutableSetOf<String>()
         private val projectedDuplicateOpenings = mutableSetOf<String>()
@@ -382,7 +397,8 @@ object NarrativeHistoryEcho {
             if (!enabled || source.isBlank()) return
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
             omitInheritedXmlTemplates = currentUserOmitsXml(source)
-            citeLatestProjectionVerbatim = exactPreviousReplyCitation.matches(source)
+            citeLatestProjectionVerbatim = exactPreviousReplyCitation.matches(source) ||
+                exactPreviousReplyCitationInChinese.matches(source)
         }
 
         private fun recordCurrentOutput(output: UserOutput) {
@@ -520,11 +536,17 @@ object NarrativeHistoryEcho {
                     .flatMap { it.closings }.plus(repairStandaloneClosings).distinct()
                 fun withoutRepairOrphan(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): String =
                     withoutOrphanClosing(part, repairClosings, provisional, formatOutput, ::authored, isJoinedLiteral)
-                fun removeRepairBoundary(part: String, isJoinedLiteral: (Int) -> Boolean = { false }) = withoutEchoedHeading(
-                    part, repairBoundaries, provisional, isAuthored = { false }, continuations = emptyMap(),
-                    isJoinedLiteral = { isJoinedLiteral(it) || hasOrphanClosingCaption(part, it) },
-                    allowPartialHeading = false,
-                )
+                fun removeRepairBoundary(part: String, isJoinedLiteral: (Int) -> Boolean = { false }): HeadingSelection {
+                    if (provisional && headingText(part)?.let(repairDispatch::uniquelyIdentifiesUnfinishedBoundary) == true &&
+                        !isJoinedLiteral(0)
+                    ) return HeadingSelection(0 until 0)
+                    return withoutEchoedHeading(
+                        part, repairDispatch.boundaries, provisional, isAuthored = { false },
+                        continuations = repairDispatch.continuations,
+                        isJoinedLiteral = { isJoinedLiteral(it) || hasOrphanClosingCaption(part, it) },
+                        allowPartialHeading = false,
+                    )
+                }
                 val reply = removeRepairBoundary(text)
                 val body = text.substring(reply.body)
                 val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
@@ -533,7 +555,7 @@ object NarrativeHistoryEcho {
                     repairProtectedClosings = repairProtectedClosings,
                     cleanPartOrphan = ::withoutRepairOrphan,
                     cleanExposedBody = { part -> removeRepairBoundary(part).content(part) },
-                    cleanPartHeading = ::removeRepairBoundary.takeIf { repairBoundaries.isNotEmpty() },
+                    cleanPartHeading = ::removeRepairBoundary.takeIf { repairDispatch.boundaries.isNotEmpty() },
                     protectCaptionedPartHeading = true,
                 )
                 return text.substring(0, reply.prefixEnd) + if (cleaned != body) cleaned else withoutRepairOrphan(body)
@@ -544,12 +566,14 @@ object NarrativeHistoryEcho {
                 withoutEchoedHeading(
                     body, headings, provisional, ::isAuthoredHeading, narrativeHeadingContinuations, isJoinedLiteral,
                 )
+            fun removeDispatchEchoBeforeTrailer(body: String): String =
+                withoutHeadingBeforeTrailer(body, headings, provisional, formatOutput, narrativeHeadingContinuations)
             fun cleanNewSuffix(separatorAndBody: String): String {
                 val separator = paragraphBreak.matchAt(separatorAndBody, 0) ?: return separatorAndBody
                 val firstLine = separator.range.last + 1
                 val body = separatorAndBody.substring(firstLine)
                 return separatorAndBody.substring(0, firstLine) +
-                    withoutHeadingBeforeTrailer(removeDispatchEcho(body).content(body), headings, provisional, formatOutput)
+                    removeDispatchEchoBeforeTrailer(removeDispatchEcho(body).content(body))
             }
             if (citeLatestProjectionVerbatim) {
                 latestHistoryProjection?.let { citation ->
@@ -590,9 +614,10 @@ object NarrativeHistoryEcho {
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings + supersededOpenings,
                 literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
                 trailerHeadings = headings,
+                trailerContinuations = narrativeHeadingContinuations,
                 cleanExposedBody = { inner ->
                     val exposed = removeDispatchEcho(inner).content(inner)
-                    withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
+                    removeDispatchEchoBeforeTrailer(exposed)
                 },
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
                     removeDispatchEcho(part, isJoinedLiteral)
@@ -602,14 +627,14 @@ object NarrativeHistoryEcho {
                 },
             )
             if (cleaned != body) {
-                return preservedPrefix + withoutHeadingBeforeTrailer(cleaned, headings, provisional, formatOutput)
+                return preservedPrefix + removeDispatchEchoBeforeTrailer(cleaned)
             }
-            val withoutTrailerHeading = withoutHeadingBeforeTrailer(body, headings, provisional, formatOutput)
+            val withoutTrailerHeading = removeDispatchEchoBeforeTrailer(body)
             val unwrapped = withoutOrphanClosing(
                 withoutTrailerHeading, closings, provisional, formatOutput, ::authoredClosingEvidence,
             )
             if (unwrapped == withoutTrailerHeading) return preservedPrefix + unwrapped
-            return preservedPrefix + withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
+            return preservedPrefix + removeDispatchEchoBeforeTrailer(unwrapped)
         }
     }
 
@@ -629,11 +654,13 @@ object NarrativeHistoryEcho {
 
     private fun withoutHeadingBeforeTrailer(
         text: String, headings: List<String>, provisional: Boolean, formatOutput: FormatOutput,
+        continuations: Map<String, Set<List<String>>>,
     ): String {
         if (headings.none { it in text }) return text
         val literals = classifyLiterals(text, includeUnclosed = provisional)
         val heading = headingBeforeTrailer(
             text, headings, provisional, formatOutput, literals, literals.replySuffixRanges(formatOutput, provisional),
+            continuations,
         ) ?: return text
         return text.substring(0, heading.first).trimEnd('\r', '\n') + text.substring(heading.last + 1)
     }
@@ -645,6 +672,7 @@ object NarrativeHistoryEcho {
         formatOutput: FormatOutput,
         literals: ReplyLiterals,
         suffixRanges: List<IntRange>,
+        continuations: Map<String, Set<List<String>>>,
         isJoinedLiteral: (Int) -> Boolean = { false },
     ): IntRange? {
         var cursor = text.length
@@ -654,14 +682,21 @@ object NarrativeHistoryEcho {
             val end = (cursor - 1 downTo 0).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
             val start = lineStart(text, end)
             cursor = start
-            if (headingText(text.substring(start, end)) !in headings || !literals.isUnprotected(start) ||
+            val heading = headingText(text.substring(start, end))
+            if (heading !in headings || !literals.isUnprotected(start) ||
                 isJoinedLiteral(start) || literals.followsLiteralHeadingLead(start)
             ) {
                 if (removeFrom >= 0) break
                 continue
             }
             if (removeFrom < 0) {
-                val lineBreak = text.indexOfAny(charArrayOf('\r', '\n'), end)
+                val headingEnd = lineEnd(text, end)
+                val blockEnd = continuations[heading]?.let {
+                    matchedDispatchContinuationEnd(text, headingEnd, it, provisional = false) { position ->
+                        literals.ranges.containsOffset(position) || isJoinedLiteral(position)
+                    }
+                } ?: headingEnd
+                val lineBreak = text.indexOfAny(charArrayOf('\r', '\n'), blockEnd)
                 if (lineBreak < 0 || !hasOnlyReplySuffix(
                         text, lineBreak, suffixRanges, literals, provisional, formatOutput, requireTrailer = true,
                     )
@@ -936,7 +971,7 @@ object NarrativeHistoryEcho {
     )
 
     internal fun forFormatRepair(
-        formatCard: String?, original: String, dispatchedBoundaries: Set<String> = emptySet(),
+        formatCard: String?, original: String, dispatch: RepairDispatch = RepairDispatch(),
     ): RequestCleanup {
         val output = formatCard?.let(::declaredOutput) ?: FormatOutput()
         val candidates = wrappers.filter {
@@ -970,10 +1005,10 @@ object NarrativeHistoryEcho {
                 sameFamily.none { close in it.closings && it.name in authoredOpeningFamilies }
         }
         return RequestCleanup(
-            enabled = openings.isNotEmpty() || standaloneClosings.isNotEmpty() || dispatchedBoundaries.isNotEmpty(),
+            enabled = openings.isNotEmpty() || standaloneClosings.isNotEmpty() || dispatch.boundaries.isNotEmpty(),
             formatOutput = output, repairOpenings = openings.mapTo(mutableSetOf(), Wrapper::opening),
             repairOriginalContent = original, repairProtectedClosings = protected, repairStandaloneClosings = standaloneClosings,
-            repairBoundaries = dispatchedBoundaries.toList(),
+            repairDispatch = dispatch,
         )
     }
 
@@ -1059,12 +1094,49 @@ object NarrativeHistoryEcho {
         while (bodyEnd > bodyStart) {
             val end = (bodyEnd - 1 downTo bodyStart).firstOrNull { !text[it].isWhitespace() }?.plus(1) ?: break
             val start = lineStart(text, end)
+            val blockStart = lastExactDispatchBlockStart(text, bodyStart, end, headings, continuations, provisional) { at, heading ->
+                isJoinedLiteral(at) || if (heading) {
+                    !literals.isUnprotected(at) || literals.followsLiteralHeadingLead(at)
+                } else literals.ranges.containsOffset(at)
+            }
+            if (blockStart != null) {
+                bodyEnd = (blockStart - 1 downTo bodyStart).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
+                continue
+            }
             if (!matches(text.substring(start, end), provisional && bodyEnd == text.length) ||
                 !literals.isUnprotected(start) || isJoinedLiteral(start) || literals.followsLiteralHeadingLead(start)
             ) break
             bodyEnd = (start - 1 downTo bodyStart).firstOrNull { !text[it].isHistoryLineBreak() }?.plus(1) ?: bodyStart
         }
         return HeadingSelection(bodyStart until bodyEnd, prefixEnd)
+    }
+
+    private fun lastExactDispatchBlockStart(
+        text: String, minStart: Int, end: Int, headings: List<String>,
+        continuations: Map<String, Set<List<String>>>, provisional: Boolean,
+        isProtected: (Int, Boolean) -> Boolean,
+    ): Int? {
+        var best: Int? = null
+        for ((heading, variants) in continuations) {
+            if (heading !in headings) continue
+            var occurrence = text.lastIndexOf(heading, end - heading.length)
+            while (occurrence >= minStart) {
+                val start = lineStart(text, occurrence)
+                val headingEnd = lineEnd(text, occurrence)
+                if (start >= minStart && headingEnd < end && headingText(text.substring(start, headingEnd)) == heading &&
+                    !isProtected(start, true)
+                ) {
+                    val blockEnd = matchedDispatchContinuationEnd(text, headingEnd, variants, provisional) {
+                        isProtected(it, false)
+                    }
+                    if (blockEnd > headingEnd && blockEnd <= end && text.subSequence(blockEnd, end).isBlank()) {
+                        best = minOf(best ?: start, start)
+                    }
+                }
+                occurrence = text.lastIndexOf(heading, occurrence - 1)
+            }
+        }
+        return best
     }
 
     /** Continue a previously matched literal application heading through the exact dispatched physical lines. */
@@ -1488,6 +1560,7 @@ object NarrativeHistoryEcho {
         repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         literalOutput: LiteralOutput = LiteralOutput(),
         trailerHeadings: List<String> = emptyList(),
+        trailerContinuations: Map<String, Set<List<String>>> = emptyMap(),
         cleanExposedBody: (String) -> String = { it },
         cleanPartHeading: ((String, (Int) -> Boolean) -> HeadingSelection)? = null,
         protectCaptionedPartHeading: Boolean = false,
@@ -1499,6 +1572,7 @@ object NarrativeHistoryEcho {
             projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
             allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
             literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+            trailerContinuations = trailerContinuations,
             cleanExposedBody = cleanExposedBody,
         )
         if (partLengths.size > 1 && partLengths.sumOf(Int::toLong) + partLengths.size - 1 == text.length.toLong()) {
@@ -1519,6 +1593,7 @@ object NarrativeHistoryEcho {
                 projectedLegacyInners = projectedLegacyInners, projectedBodies = projectedBodies,
                 allowedOpenings = allowedOpenings, repairProtectedClosings = repairProtectedClosings,
                 literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+                trailerContinuations = trailerContinuations,
                 cleanExposedBody = cleanExposedBody,
             )
             if (wholeReply.matchedOuterPair) return wholeReply.body
@@ -1575,6 +1650,7 @@ object NarrativeHistoryEcho {
                         allowedOpenings = allowedOpenings,
                         repairProtectedClosings = repairProtectedClosings,
                         literalOutput = literalOutput, trailerHeadings = trailerHeadings,
+                        trailerContinuations = trailerContinuations,
                         cleanExposedBody = cleanExposedBody,
                         isJoinedLiteral = { index, opening -> isJoinedLiteral(sectionStart + index, opening, afterClosedSection) },
                     )
@@ -1792,6 +1868,7 @@ object NarrativeHistoryEcho {
         repairProtectedClosings: Map<String, Set<String>> = emptyMap(),
         literalOutput: LiteralOutput = LiteralOutput(),
         trailerHeadings: List<String> = emptyList(),
+        trailerContinuations: Map<String, Set<List<String>>> = emptyMap(),
         cleanExposedBody: (String) -> String = { it },
     ): CleanedReply {
         val first = text.indexOfFirst { !it.isWhitespace() }
@@ -1853,7 +1930,7 @@ object NarrativeHistoryEcho {
         }
         val trailerHeading by lazy(LazyThreadSafetyMode.NONE) {
             if (trailerHeadings.none { it in body }) null else headingBeforeTrailer(
-                body, trailerHeadings, streaming || interrupted, formatOutput, literals, suffixRanges,
+                body, trailerHeadings, streaming || interrupted, formatOutput, literals, suffixRanges, trailerContinuations,
             ) { isJoinedLiteral?.invoke(bodyStart + it, true) == true }
         }
         // A sent heading may separate a genuine end marker from the recognized status or action trailer.
@@ -1956,6 +2033,7 @@ object NarrativeHistoryEcho {
                 allowedOpenings = setOf(witnessedInner.opening), literalOutput = literalOutput,
                 repairProtectedClosings = repairProtectedClosings,
                 trailerHeadings = trailerHeadings,
+                trailerContinuations = trailerContinuations,
                 cleanExposedBody = cleanExposedBody,
             )
             return if (result.matchedOuterPair) result.body + inner.takeLastWhile(Char::isWhitespace) else result.body

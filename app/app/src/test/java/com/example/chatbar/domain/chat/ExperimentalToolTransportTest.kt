@@ -4173,6 +4173,113 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a novel wrapped story can end before an exact dispatched mode suffix`() = runBlocking {
+        val story = "The courier left through a narrow gate."
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Yesterday it rained.").copy(narrativeMode = mode)
+            val novel = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            for (previousMode in listOf(mode, other)) {
+                val sentTail = PromptTemplates.narrativeModeTailSystemPrompt(mode, previousMode)
+                val block = sentTail.lineSequence().take(2).joinToString("\n")
+                val raw = "$novel\n$block"
+                for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                    for (literal in listOf(
+                        "$novel\nShe read the title aloud:\n$block",
+                        "$novel\n" + block.prependIndent("> "),
+                        "$novel\n~~~text\n$block\n~~~",
+                    )) {
+                        assertNarrativeReplyDeltas(
+                            listOf(literal), listOf(literal), literal, previousAssistant = prior, narrativeTail = sentTail,
+                            currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                        )
+                    }
+                    var persisted: String? = null
+                    assertNarrativeReplyDeltas(
+                        listOf(novel, "\n$block"), listOf(story, story), story, previousAssistant = prior, narrativeTail = sentTail,
+                        currentUserText = "Continue.", experimental = experimental, toolCall = toolCall, onCompleted = { persisted = it },
+                    )
+                    val status = "${MarkdownCodeFences.legacyStatusOpening}\n时间：晚上\n${MarkdownCodeFences.legacyStatusLabel}```"
+                    val withStatus = "$raw\n$status"
+                    val storyWithStatus = "$story\n$status"
+                    assertNarrativeReplyDeltas(
+                        listOf(withStatus), listOf(storyWithStatus), storyWithStatus, previousAssistant = prior,
+                        currentUserText = "Continue.", narrativeTail = sentTail, experimental = experimental, toolCall = toolCall,
+                    )
+                    if (toolCall) {
+                        assertMultipartNarrativeReply(listOf(novel, block), story, narrativePrompt = sentTail, previousAssistant = prior)
+                        assertMultipartNarrativeReply(
+                            listOf(novel, block, status), storyWithStatus, narrativePrompt = sentTail, previousAssistant = prior,
+                        )
+                    }
+                    val saved = ChatMessage.create("fixture", MessageRole.ASSISTANT, checkNotNull(persisted)).copy(narrativeMode = mode)
+                    val reloaded = Json.decodeFromString(ChatMessage.serializer(), Json.encodeToString(ChatMessage.serializer(), saved))
+                    assertEquals(story, reloaded.displayContent)
+                    val fresh = "She returned in the morning."
+                    assertNarrativeReplyDeltas(
+                        listOf(fresh), listOf(fresh), fresh, previousAssistant = reloaded,
+                        currentUserText = "Go on.", experimental = experimental, toolCall = toolCall,
+                    )
+                    val unrelated = PromptTemplates.narrativeModeTailSystemPrompt(other, mode).lineSequence().take(2).joinToString("\n")
+                    val unrelatedWire = "$novel\n$unrelated"
+                    assertNarrativeReplyDeltas(
+                        listOf(unrelatedWire), listOf(unrelatedWire), unrelatedWire, previousAssistant = prior,
+                        currentUserText = "Continue.", narrativeTail = sentTail, experimental = experimental, toolCall = toolCall,
+                    )
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, previousAssistant = prior, narrativeTail = sentTail,
+                        currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `a direct Chinese request keeps only the exact latest projected XML citation`() = runBlocking {
+        val priorStory = "她从书架上取下旧信。  \r\n    雨声慢了下来。"
+        val explanation = "\n\n外层元素标记上一轮采用的模式。"
+        val wanted = "请原样引用上一条助手回复，连同外层的 XML 历史标签。"
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, priorStory).copy(narrativeMode = mode)
+            val projection = PromptTemplates.narrativeModeHistoryReply(priorStory, mode)
+            val raw = projection + explanation
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (neutral in listOf(
+                    "请原样引用上一条助手回复，但不要包含外层的 XML 历史标签。",
+                    "她在纸条上抄写了一句请求：“$wanted”",
+                    "讨论上一条助手回复与 XML 历史标签的关系。",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(priorStory + explanation), priorStory + explanation, previousAssistant = previous,
+                        currentUserText = neutral, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(projection, explanation), listOf(projection, raw), raw, previousAssistant = previous,
+                    currentUserText = wanted, experimental = experimental, toolCall = toolCall,
+                )
+                val novel = PromptTemplates.narrativeModeHistoryReply("一只燕子在屋檐下停住。", mode)
+                assertNarrativeReplyDeltas(
+                    listOf(novel), listOf("一只燕子在屋檐下停住。"), "一只燕子在屋檐下停住。", previousAssistant = previous,
+                    currentUserText = wanted, experimental = experimental, toolCall = toolCall,
+                )
+                val earlier = "那天，她刚抵达车站。"
+                assertNarrativeReplyDeltas(
+                    listOf(PromptTemplates.narrativeModeHistoryReply(earlier, mode)), listOf(earlier), earlier,
+                    previousAssistant = previous,
+                    earlierAssistant = ChatMessage.create("fixture", MessageRole.ASSISTANT, earlier).copy(narrativeMode = mode),
+                    currentUserText = wanted, experimental = experimental, toolCall = toolCall,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(priorStory + explanation), priorStory + explanation, previousAssistant = previous,
+                    previousUserText = wanted, currentUserText = "继续故事。", experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -4426,6 +4533,7 @@ class ExperimentalToolTransportTest {
         globalPersona: String? = null,
         finishReason: String = if (toolCall) "tool_calls" else "stop",
         onCompleted: (String) -> Unit = {},
+        earlierAssistant: ChatMessage? = null,
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
@@ -4465,7 +4573,8 @@ class ExperimentalToolTransportTest {
             cleanup.recordNarrativePrompt(narrativeTail, currentUserText)
         }
         previousUserText?.let { requestMessages.add(1, ChatApiMessage.text("user", it)) }
-        val histories = previousAssistant?.let(::listOf) ?: if (fixtureHistory) narrativeHistoryFixtures() else emptyList()
+        val histories = if (previousAssistant != null) listOfNotNull(earlierAssistant, previousAssistant)
+        else if (fixtureHistory) narrativeHistoryFixtures() else emptyList()
         val historyMessages = histories.map { projectAssistant(cleanup, it) }
         for (history in historyMessages) {
             requestMessages.add(1, history)
@@ -4880,6 +4989,57 @@ class ExperimentalToolTransportTest {
         )
     }
 
+    @Test
+    fun `an uncompleted issued repair boundary does not cover original text on Preview or Stop`() = runBlocking {
+        val original = "She waited for the return of the carriage."
+        val revised = "She stayed at the gate until the carriage returned."
+        val partial = "{待修复"
+        val complete = "{待修复消息}"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (authored in listOf("$partial written on the envelope.", "> $partial")) {
+                assertRepairBoundaryReply(original, null, null, listOf(authored), authored, experimental, toolCall)
+            }
+            assertRepairBoundaryReply(
+                "$partial 表示残缺的标题。", null, null, listOf(partial), partial, experimental, toolCall,
+            )
+            assertRepairBoundaryReply(
+                original, null, null, listOf(partial), partial, experimental, toolCall,
+                expectedFirstPreview = "", expectedStopped = "",
+            )
+            assertRepairBoundaryReply(
+                original, null, null, listOf("$complete\n$revised"), revised, experimental, toolCall,
+                expectedFirstPreview = "", expectedStopped = "", firstWireFragment = partial,
+            )
+        }
+    }
+
+    @Test
+    fun `a repair user boundary only authorizes the exact sent system preamble`() = runBlocking {
+        val paragraph = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().lineSequence().first()
+        val appSentence = paragraph.substringBefore('。') + "。"
+        val boundary = "{待修复消息}"
+        val original = "她在树下等着。"
+        val revised = "她在庭院的老树下等着来信。"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf(
+                "$appSentence\n$revised",
+                "$boundary\n> $appSentence\n\n$revised",
+                "$boundary\n~~~text\n$appSentence\n~~~\n$revised",
+                "$boundary\n你是负责校对消息的修复器。\n$revised",
+            )) {
+                val cleaned = literal.removePrefix("$boundary\n")
+                assertRepairBoundaryReply(original, null, null, listOf(literal), cleaned, experimental, toolCall)
+            }
+            for (text in listOf(appSentence, paragraph)) {
+                val raw = "$boundary\n$text\n$revised"
+                assertRepairBoundaryReply(
+                    "$text\n$original", null, null, listOf(raw), "$text\n$revised", experimental, toolCall,
+                )
+                assertRepairBoundaryReply(original, null, null, listOf(raw), revised, experimental, toolCall)
+            }
+        }
+    }
+
     private suspend fun assertRepairBoundaryReply(
         original: String,
         card: String?,
@@ -4889,6 +5049,8 @@ class ExperimentalToolTransportTest {
         experimental: Boolean,
         tool: Boolean,
         expectedFirstPreview: String = expected,
+        expectedStopped: String = expected,
+        firstWireFragment: String? = null,
     ) {
         val frame = when {
             parts.size == 2 -> repairToolFrame(parts[0], 1, buildJsonObject { put("content", parts[1]) }.toString())
@@ -4904,15 +5066,26 @@ class ExperimentalToolTransportTest {
         val raw = parts.joinToString("\n")
         val expectedWire = PromptTemplates.messageFormatRepairUserPrompt(card, bubble, original)
         val lengths = parts.map(String::length).takeIf { it.size > 1 }.orEmpty()
-        GatedExperimentalResponse(sse(listOf(frame)), terminal).use { server ->
+        val frames = if (firstWireFragment == null) listOf(frame) else {
+            val remainder = parts.single().removePrefix(firstWireFragment)
+            if (tool) {
+                val prefix = JsonPrimitive(firstWireFragment).toString().removeSurrounding("\"")
+                val suffix = JsonPrimitive(remainder).toString().removeSurrounding("\"")
+                listOf(chunk("{\"content\":\"$prefix", "game_content"), chunk("$suffix\"}"))
+            } else listOf(ordinaryDelta(firstWireFragment), ordinaryDelta(remainder))
+        }
+        GatedExperimentalResponse(sse(frames), terminal).use { server ->
             var reader: (() -> List<String>)? = null
             val event = withTimeout(5_000) {
                 formatRepair.streamRepair(originalRequest, model(server.baseUrl)) { reader = it }
                     .first { it is StreamEvent.Delta || it is StreamEvent.ContentPreview }
             }
             val live = if (event is StreamEvent.Delta) event.text else (event as StreamEvent.ContentPreview).text
-            assertEquals(parts.first(), live)
+            assertEquals(firstWireFragment ?: parts.first(), live)
             val payload = Json.parseToJsonElement(server.requestBody).jsonObject
+            val system = payload.getValue("messages").jsonArray.first().jsonObject
+            assertEquals("system", system.getValue("role").jsonPrimitive.content)
+            assertTrue(PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim() in system.getValue("content").jsonPrimitive.content)
             val wireMessages = if (experimental) {
                 val context = payload.getValue("tools").jsonArray.map { it.jsonObject.getValue("function").jsonObject }
                     .single { it.getValue("name").jsonPrimitive.content == "context" }.getValue("description").jsonPrimitive.content
@@ -4925,16 +5098,37 @@ class ExperimentalToolTransportTest {
             })
             assertFalse(server.tailSent)
             val stopped = reader?.invoke()?.takeIf(List<String>::isNotEmpty)?.joinToString("\n") ?: live
-            assertEquals(raw, stopped)
-            assertEquals(expected, cleanup.completedBody(stopped, interrupted = true, partLengths = lengths))
-            assertEquals(expectedFirstPreview, cleanup.streamingPreview().appendedBody(live, 0))
+            assertEquals(firstWireFragment ?: raw, stopped)
+            val stoppedBody = cleanup.completedBody(stopped, interrupted = true, partLengths = lengths)
+            val liveBody = cleanup.streamingPreview().appendedBody(live, 0)
+            assertEquals(expectedStopped, stoppedBody)
+            assertEquals(expectedFirstPreview, liveBody)
+            assertEquals(
+                MessageFormatRepairPolicy.progressiveOverlay(original, expectedStopped),
+                MessageFormatRepairPolicy.progressiveOverlay(original, stoppedBody),
+            )
+            assertEquals(
+                MessageFormatRepairPolicy.progressiveOverlay(original, expectedFirstPreview),
+                MessageFormatRepairPolicy.progressiveOverlay(original, liveBody),
+            )
         }
-        GatedExperimentalResponse(sse(listOf(frame)), terminal).use { server ->
+        GatedExperimentalResponse(sse(frames), terminal).use { server ->
             val events = withTimeout(5_000) {
                 formatRepair.streamRepair(originalRequest, model(server.baseUrl))
                     .onEach { if (it is StreamEvent.Delta || it is StreamEvent.ContentPreview) server.releaseTail() }.toList()
             }
             val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            if (firstWireFragment != null) {
+                val previews = events.filterIsInstance<StreamEvent.ContentPreview>().map { it.text }.ifEmpty {
+                    deltas.runningFold("", { prefix, delta -> prefix + delta.text }).drop(1)
+                }
+                val incremental = cleanup.streamingPreview()
+                var previousLength = 0
+                val cleaned = previews.map { preview ->
+                    incremental.appendedBody(preview, previousLength).also { previousLength = preview.length }
+                }
+                assertEquals(listOf("", expected), cleaned)
+            }
             assertEquals(raw, deltas.joinToString("") { it.text })
             assertEquals(lengths, deltas.last().toolReplyPartLengths)
             assertEquals(StreamEvent.Done, events.last())

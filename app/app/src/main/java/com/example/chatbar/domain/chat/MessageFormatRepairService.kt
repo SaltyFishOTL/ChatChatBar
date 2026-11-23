@@ -17,29 +17,43 @@ class MessageFormatRepairService(
     ) {
         val formatCard = renderedFormatCard?.trim()?.takeIf(String::isNotEmpty)
         private val segmentedBubbleFormat = renderedSegmentedBubbleFormat?.trim()?.takeIf(String::isNotEmpty)
+        val systemPrompt = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim()
         val userPrompt = PromptTemplates.messageFormatRepairUserPrompt(formatCard, segmentedBubbleFormat, originalContent)
 
         fun historyCleanup(): NarrativeHistoryEcho.RequestCleanup =
-            NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, dispatchedBoundaries())
+            NarrativeHistoryEcho.forFormatRepair(formatCard, originalContent, dispatchEvidence())
 
-        private fun dispatchedBoundaries(): Set<String> {
+        private fun dispatchEvidence(): NarrativeHistoryEcho.RepairDispatch {
             val authoredSections = listOfNotNull(formatCard, segmentedBubbleFormat, originalContent)
+            val boundaries = mutableListOf<String>()
+            var messageBoundary: String? = null
             var start = 0
-            return buildSet {
-                for ((index, authoredContent) in authoredSections.withIndex()) {
-                    val boundaryEnd = userPrompt.indexOf('\n', start)
-                    if (boundaryEnd <= start) return emptySet()
-                    val contentStart = boundaryEnd + 1
-                    val contentEnd = contentStart + authoredContent.length
-                    if (!userPrompt.regionMatches(contentStart, authoredContent, 0, authoredContent.length)) return emptySet()
-                    if (index == authoredSections.lastIndex) {
-                        if (contentEnd != userPrompt.length) return emptySet()
-                    } else if (!userPrompt.startsWith("\n\n", contentEnd)) return emptySet()
-                    val boundary = userPrompt.substring(start, boundaryEnd)
-                    if (authoredSections.none { boundary in it }) add(boundary)
-                    start = contentEnd + 2
+            for ((index, authoredContent) in authoredSections.withIndex()) {
+                val boundaryEnd = userPrompt.indexOf('\n', start)
+                if (boundaryEnd <= start) return NarrativeHistoryEcho.RepairDispatch()
+                val contentStart = boundaryEnd + 1
+                val contentEnd = contentStart + authoredContent.length
+                if (!userPrompt.regionMatches(contentStart, authoredContent, 0, authoredContent.length)) {
+                    return NarrativeHistoryEcho.RepairDispatch()
                 }
+                val isMessageBoundary = index == authoredSections.lastIndex
+                if (isMessageBoundary && contentEnd != userPrompt.length ||
+                    !isMessageBoundary && !userPrompt.startsWith("\n\n", contentEnd)
+                ) return NarrativeHistoryEcho.RepairDispatch()
+                val boundary = userPrompt.substring(start, boundaryEnd)
+                if (authoredSections.none { boundary in it }) {
+                    boundaries += boundary
+                    if (isMessageBoundary) messageBoundary = boundary
+                }
+                start = contentEnd + 2
             }
+            val preamble = systemPrompt.lineSequence().first()
+            val sentenceEnd = preamble.indexOfFirst { it in ".。!?！？" }
+            val firstSentence = if (sentenceEnd < 0) preamble else preamble.take(sentenceEnd + 1)
+            val continuations = if (messageBoundary != null && authoredSections.none { firstSentence in it }) {
+                mapOf(messageBoundary to setOf(listOf(firstSentence), listOf(preamble)))
+            } else emptyMap()
+            return NarrativeHistoryEcho.RepairDispatch(boundaries, authoredSections, continuations)
         }
     }
 
@@ -64,7 +78,7 @@ class MessageFormatRepairService(
         messages = listOf(
             ChatApiMessage.text(
                 role = "system",
-                content = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim()
+                content = request.systemPrompt,
             ),
             ChatApiMessage.text(
                 role = "user",
