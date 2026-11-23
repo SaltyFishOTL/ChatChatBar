@@ -37,6 +37,7 @@ import kotlinx.serialization.json.put
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -4280,6 +4281,91 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `disabled narrative keeps routine headings scoped to the actual sent history`() = runBlocking {
+        val heading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        val story = "She closed the shutters."
+        val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, "The wind rose.").copy(narrativeMode = ChatNarrativeMode.FOCUS)
+        val raw = "$heading\n$story"
+        for (experimental in listOf(false, true)) {
+            assertNarrativeReplyDeltas(
+                listOf(raw), listOf(raw), raw, currentUserText = "Begin the story.", experimental = experimental,
+                fixtureHistory = false, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+            )
+            for ((candidate, instruction) in listOf(
+                raw to "Print this title verbatim: $heading.",
+                "> $heading\n$story" to "Continue.",
+                PromptTemplates.narrativeModeHistoryReply(story, ChatNarrativeMode.FOCUS) to "Continue.",
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(candidate), listOf(candidate), candidate, previousAssistant = previous, currentUserText = instruction,
+                    experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+                )
+            }
+            var persisted: String? = null
+            assertNarrativeReplyDeltas(
+                listOf(heading, "\n$story"), listOf("", story), story, previousAssistant = previous,
+                currentUserText = "Continue the scene.", experimental = experimental, narrativeModesEnabled = false,
+                issueRoutineHistoryHeading = true, onCompleted = { persisted = it },
+            )
+            val saved = ChatMessage.create("fixture", MessageRole.ASSISTANT, checkNotNull(persisted)).copy(narrativeMode = null)
+            val reloaded = Json.decodeFromString(ChatMessage.serializer(), Json.encodeToString(ChatMessage.serializer(), saved))
+            assertEquals(story, reloaded.displayContent)
+            assertNull(reloaded.narrativeMode)
+            val next = "Then she lit a candle."
+            assertNarrativeReplyDeltas(
+                listOf(next), listOf(next), next, previousAssistant = reloaded, currentUserText = "Go on.",
+                experimental = experimental, narrativeModesEnabled = false, issueRoutineHistoryHeading = true,
+            )
+        }
+    }
+
+    @Test
+    fun `including both XML history tags after verbatim reserves only the latest citation`() = runBlocking {
+        val saved = "The latch held.  \r\n    She tried the window."
+        val explanation = "\n\nThis XML records an earlier mode."
+        val request = "Quote the last reply verbatim, including both XML history tags."
+        for (mode in ChatNarrativeMode.entries) {
+            val previous = ChatMessage.create("fixture", MessageRole.ASSISTANT, saved).copy(narrativeMode = mode)
+            val projection = PromptTemplates.narrativeModeHistoryReply(saved, mode)
+            val raw = projection + explanation
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (copy in listOf(
+                    "Quote the previous answer with its XML history tags verbatim, then explain what purpose that wrapper serves.",
+                    "请原样引用上一条助手回复，连同外层的 XML 历史标签。",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, previousAssistant = previous,
+                        currentUserText = copy, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                for (other in listOf(
+                    "Quote the last reply verbatim, without either XML history tag.",
+                    "The letter says: “$request”",
+                    "Describe both XML history tags.",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(saved + explanation), saved + explanation, previousAssistant = previous,
+                        currentUserText = other, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(projection, explanation), listOf(projection, raw), raw, previousAssistant = previous,
+                    currentUserText = request, experimental = experimental, toolCall = toolCall,
+                )
+                val different = "An owl called from the roof."
+                val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, different).copy(narrativeMode = mode)
+                val otherProjection = PromptTemplates.narrativeModeHistoryReply(different, mode)
+                for (earlier in listOf(null, prior)) {
+                    assertNarrativeReplyDeltas(
+                        listOf(otherProjection), listOf(different), different, previousAssistant = previous,
+                        earlierAssistant = earlier, currentUserText = request, experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -4488,10 +4574,12 @@ class ExperimentalToolTransportTest {
             ChatMessage.create("fixture", MessageRole.ASSISTANT, "早先的故事。").copy(narrativeMode = mode)
         } + ChatMessage.create("fixture", MessageRole.ASSISTANT, "<聚焦模式=\"沉浸\">\n旧故事。\n</聚焦模式>")
 
-    private fun projectAssistant(cleanup: NarrativeHistoryEcho.RequestCleanup, assistant: ChatMessage): ChatApiMessage {
+    private fun projectAssistant(
+        cleanup: NarrativeHistoryEcho.RequestCleanup, assistant: ChatMessage, narrativeModesEnabled: Boolean = true,
+    ): ChatApiMessage {
         val body = assistant.displayContent
         val projection = ChatHistoryPromptPolicy.renderedHistory(
-            assistant, body, narrativeModesEnabled = true,
+            assistant, body, narrativeModesEnabled = narrativeModesEnabled,
             legacyHistoryWrapperDeclaredAsOutput = cleanup.declaresLegacyHistoryWrapper,
         )
         cleanup.recordHistoryProjection(body, projection.text, projection.retainsLegacyFraming)
@@ -4534,8 +4622,10 @@ class ExperimentalToolTransportTest {
         finishReason: String = if (toolCall) "tool_calls" else "stop",
         onCompleted: (String) -> Unit = {},
         earlierAssistant: ChatMessage? = null,
+        narrativeModesEnabled: Boolean = true,
+        issueRoutineHistoryHeading: Boolean = false,
     ) {
-        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
+        val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE.takeIf { narrativeModesEnabled }, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
         val playerSetting = playerOverride?.takeIf(String::isNotBlank) ?: globalPersona
         val hasStableLayers = characterCoreInstructions != null || supplementaryInstructions != null || playerSetting != null
@@ -4575,9 +4665,14 @@ class ExperimentalToolTransportTest {
         previousUserText?.let { requestMessages.add(1, ChatApiMessage.text("user", it)) }
         val histories = if (previousAssistant != null) listOfNotNull(earlierAssistant, previousAssistant)
         else if (fixtureHistory) narrativeHistoryFixtures() else emptyList()
-        val historyMessages = histories.map { projectAssistant(cleanup, it) }
+        val historyMessages = histories.map { projectAssistant(cleanup, it, narrativeModesEnabled) }
         for (history in historyMessages) {
             requestMessages.add(1, history)
+        }
+        val historyHeading = PromptTemplates.sectionHeading(PromptTemplates.SECTION_PREVIOUS_TURN)
+        if (issueRoutineHistoryHeading && historyMessages.isNotEmpty()) {
+            requestMessages.add(1, ChatApiMessage.text("system", historyHeading))
+            cleanup.recordDispatchedHistoryHeading(historyHeading)
         }
         val acknowledgement = PromptTemplates.CCB_POST_USER_ACK_ASSISTANT_PROMPT.trimIndent().trim()
         val strongSuffix = strongPrompt?.let { text ->
@@ -4701,6 +4796,20 @@ class ExperimentalToolTransportTest {
                 assertTrue("Expected source in serialized reply request", context.any {
                     it.jsonObject.getValue("content").jsonPrimitive.content == source
                 })
+            }
+            if (issueRoutineHistoryHeading) {
+                val wireRole = if (experimental) "system" else "assistant"
+                assertEquals(historyMessages.isNotEmpty(), context.any {
+                    val message = it.jsonObject
+                    message.getValue("role").jsonPrimitive.content == wireRole &&
+                        message.getValue("content").jsonPrimitive.content == historyHeading
+                })
+                if (!narrativeModesEnabled) {
+                    val assistantBodies = context.filter { it.jsonObject.getValue("role").jsonPrimitive.content == "assistant" }
+                        .map { it.jsonObject.getValue("content").jsonPrimitive.content }
+                    assertTrue(histories.all { it.displayContent in assistantBodies })
+                    assertTrue(assistantBodies.none { "<历史回复" in it })
+                }
             }
             assertEquals(acknowledgement, context.last().jsonObject.getValue("content").jsonPrimitive.content)
             assertEquals(StreamEvent.Done, events.last())
@@ -5037,6 +5146,36 @@ class ExperimentalToolTransportTest {
                 )
                 assertRepairBoundaryReply(original, null, null, listOf(raw), revised, experimental, toolCall)
             }
+        }
+    }
+
+    @Test
+    fun `interior repair echo needs the exact paired boundary and sent system wording`() = runBlocking {
+        val original = "A thunderclap woke her."
+        val first = "A distant thunderclap woke her.  "
+        val second = "She watched the old shutters from her chair."
+        val heading = "{待修复消息}"
+        val paragraph = PromptTemplates.MESSAGE_FORMAT_REPAIR_SYSTEM_PROMPT.trim().lineSequence().first()
+        val firstSentence = paragraph.substringBefore('。') + "。"
+        val pair = "$heading\r\n$firstSentence"
+        val raw = "$first\r\n$pair\r\n$second"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (literal in listOf(
+                "$first\n$heading\n$second",
+                "$first\n$heading\nYou are a message format proofreader and repairer.\n$second",
+                "$first\n> $heading\n> $firstSentence\n\n$second",
+                "$first\n~~~text\n$pair\n~~~\n$second",
+                "$first\nThe note showed the following messages:\n$pair\n$second",
+                "$first\nBelow is a literal quotation copied from the history log.\n$pair\nThat was a verbatim quotation from the log.\n$second",
+            )) {
+                assertRepairBoundaryReply(original, null, null, listOf(literal), literal, experimental, toolCall)
+            }
+            assertRepairBoundaryReply("$original\n$pair", null, null, listOf(raw), raw, experimental, toolCall)
+            assertRepairBoundaryReply(original, null, null, listOf(raw), "$first\r\n$second", experimental, toolCall)
+            assertRepairBoundaryReply(
+                original, null, null, listOf("$first\n$heading\n$paragraph\n$second"),
+                "$first\n$second", experimental, toolCall,
+            )
         }
     }
 

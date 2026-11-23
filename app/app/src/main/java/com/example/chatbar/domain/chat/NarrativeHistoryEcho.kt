@@ -132,8 +132,9 @@ object NarrativeHistoryEcho {
     )
     private val exactPreviousReplyCitation = Regex(
         " {0,3}(?:please[ \\t]+)?(?:quote|copy|reproduce)[ \\t]+the[ \\t]+(?:previous|last)[ \\t]+" +
-            "(?:assistant[’']s[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:with[ \\t]+|including[ \\t]+)" +
-            "(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+verbatim" +
+            "(?:assistant[’']s[ \\t]+)?(?:answer|reply|response)[ \\t]+(?:" +
+            "(?:with|including)[ \\t]+(?:its|the)[ \\t]+XML[ \\t]+history[ \\t]+tags[ \\t]+verbatim|" +
+            "verbatim,[ \\t]+including[ \\t]+both[ \\t]+XML[ \\t]+history[ \\t]+tags)" +
             "(?:,[ \\t]+then[ \\t]+explain[ \\t]+[^\\r\\n.!?]+)?[.!?]?[ \\t]*",
         RegexOption.IGNORE_CASE,
     )
@@ -343,6 +344,8 @@ object NarrativeHistoryEcho {
         private var currentLiteralOutput = LiteralOutput()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
+            userText?.let(::rememberAuthoredOutput)
+            if (!enabled) return
             val lines = prompt.lines()
             for ((index, line) in lines.withIndex()) {
                 val knownHeading = line in narrativeModeHeadings || line == narrativeTailHeading
@@ -354,11 +357,10 @@ object NarrativeHistoryEcho {
                     }
                 }
             }
-            userText?.let(::rememberAuthoredOutput)
         }
 
         fun recordDispatchedHistoryHeading(heading: String) {
-            if (enabled) narrativeHeadings += heading
+            narrativeHeadings += heading
         }
 
         /** Effective strong suffix sent this turn, after the current user's text. */
@@ -380,21 +382,25 @@ object NarrativeHistoryEcho {
             recordDispatchedEditableOutput(renderedSettings)
 
         private fun recordDispatchedEditableOutput(renderedSource: String, hasCustomInstructions: Boolean = true) {
-            if (!enabled || !hasCustomInstructions || renderedSource.isBlank()) return
-            recordCurrentOutput(declaredUserOutput(renderedSource, requireExplicitCopy = true))
+            if (!hasCustomInstructions || renderedSource.isBlank()) return
+            if (enabled) recordCurrentOutput(declaredUserOutput(renderedSource, requireExplicitCopy = true))
             explicitlyAuthoredHeadings += declaredReplyHeadings(renderedSource)
         }
 
         private fun rememberAuthoredOutput(source: String) {
-            if (!enabled || source.isBlank() || source in authoredSources) return
-            val output = declaredUserOutput(source)
+            if (source.isBlank() || source in authoredSources) return
+            val output = if (enabled) declaredUserOutput(source) else UserOutput()
             authoredSources[source] = output
             authoredPairs += output.literal.pairs
             authoredTemplateOpenings += output.templateOpenings
         }
 
         fun recordCurrentLiteralTags(source: String) {
-            if (!enabled || source.isBlank()) return
+            if (source.isBlank()) return
+            if (!enabled) {
+                rememberAuthoredOutput(source)
+                return
+            }
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
             omitInheritedXmlTemplates = currentUserOmitsXml(source)
             citeLatestProjectionVerbatim = exactPreviousReplyCitation.matches(source) ||
@@ -474,7 +480,7 @@ object NarrativeHistoryEcho {
             private var multipart = false
 
             fun appendedBody(text: String, previousLength: Int, partLengths: List<Int> = emptyList()): String {
-                if (!enabled) return text
+                if (!enabled && narrativeHeadings.isEmpty()) return text
                 val reset = previousLength == 0 || previousLength != seenLength || previousLength !in 0..text.length
                 if (reset) {
                     bodyStart = null
@@ -527,7 +533,7 @@ object NarrativeHistoryEcho {
             partLengths: List<Int> = emptyList(),
             streaming: Boolean = false,
         ): String {
-            if (!enabled) return text
+            if (!enabled && narrativeHeadings.isEmpty()) return text
             val provisional = streaming || interrupted
             if (repairOpenings != null) {
                 fun authored(token: String): ClosingEvidence =
@@ -558,16 +564,20 @@ object NarrativeHistoryEcho {
                     cleanPartHeading = ::removeRepairBoundary.takeIf { repairDispatch.boundaries.isNotEmpty() },
                     protectCaptionedPartHeading = true,
                 )
-                return text.substring(0, reply.prefixEnd) + if (cleaned != body) cleaned else withoutRepairOrphan(body)
+                val repaired = if (cleaned != body) cleaned else withoutRepairOrphan(body)
+                val result = if (partLengths.size <= 1) withoutInteriorRepairEcho(repaired, repairDispatch, provisional) else repaired
+                return text.substring(0, reply.prefixEnd) + result
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
             fun removeDispatchEcho(body: String, isJoinedLiteral: (Int) -> Boolean = { false }) =
                 withoutEchoedHeading(
                     body, headings, provisional, ::isAuthoredHeading, narrativeHeadingContinuations, isJoinedLiteral,
+                    allowPartialHeading = enabled,
                 )
             fun removeDispatchEchoBeforeTrailer(body: String): String =
                 withoutHeadingBeforeTrailer(body, headings, provisional, formatOutput, narrativeHeadingContinuations)
+            if (!enabled) return removeDispatchEchoBeforeTrailer(removeDispatchEcho(text).content(text))
             fun cleanNewSuffix(separatorAndBody: String): String {
                 val separator = paragraphBreak.matchAt(separatorAndBody, 0) ?: return separatorAndBody
                 val firstLine = separator.range.last + 1
@@ -635,6 +645,40 @@ object NarrativeHistoryEcho {
             )
             if (unwrapped == withoutTrailerHeading) return preservedPrefix + unwrapped
             return preservedPrefix + removeDispatchEchoBeforeTrailer(unwrapped)
+        }
+    }
+
+    private fun withoutInteriorRepairEcho(text: String, dispatch: RepairDispatch, provisional: Boolean): String {
+        val (heading, continuations) = dispatch.continuations.entries.singleOrNull() ?: return text
+        var occurrence = text.indexOf(heading)
+        if (occurrence < 0) return text
+        val literals = classifyLiterals(text, includeUnclosed = provisional)
+        return buildString {
+            var copiedThrough = 0
+            while (occurrence >= 0) {
+                val start = lineStart(text, occurrence)
+                val end = lineEnd(text, occurrence)
+                occurrence = text.indexOf(heading, occurrence + heading.length)
+                if (start < copiedThrough || headingText(text.substring(start, end)) != heading ||
+                    !literals.isUnprotected(start) || hasOrphanClosingCaption(text, start)
+                ) continue
+                val before = previousVisibleLine(literals.markdown, start) ?: continue
+                if (literals.matchesVisibleLine(before, logQuotationLead) ||
+                    literals.matchesVisibleLine(before, metadataExampleBridge)
+                ) continue
+                val blockEnd = matchedDispatchContinuationEnd(text, end, continuations, provisional = false) {
+                    !literals.isUnprotected(it)
+                }
+                if (blockEnd == end || blockEnd == text.length) continue
+                val afterBlock = blockEnd + if (text.startsWith("\r\n", blockEnd)) 2 else 1
+                val after = nextNonblankLine(literals.markdown, blockEnd) ?: continue
+                if (literals.matchesVisibleLine(after, logQuotationTail) ||
+                    literals.matchesVisibleLine(after, historyExampleExplanation)
+                ) continue
+                append(text, copiedThrough, start)
+                copiedThrough = afterBlock
+            }
+            append(text, copiedThrough, text.length)
         }
     }
 
@@ -955,7 +999,7 @@ object NarrativeHistoryEcho {
     }
 
     internal fun forRequest(narrativeMode: ChatNarrativeMode?, formatCard: String?): RequestCleanup =
-        if (narrativeMode == null) RequestCleanup(enabled = false)
+        if (narrativeMode == null) RequestCleanup(enabled = false, formatCard = formatCard)
         else RequestCleanup(
             enabled = true, formatOutput = formatCard?.let(::declaredOutput) ?: FormatOutput(), formatCard = formatCard,
         )
