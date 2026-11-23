@@ -72,8 +72,8 @@ class FormatRepairRetryRuntimeTest {
         val session = ChatSession.create(card.id, "Synthetic regeneration").copy(
             modelId = model.id, longTermMemoryEnabled = false, automaticImageGenerationEnabled = false
         )
-        val user = ChatMessage.create(session.id, MessageRole.USER, "Synthetic user request")
-        val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Original candidate A")
+        val user = ChatMessage.create(session.id, MessageRole.USER, "Synthetic user request", orderKey = MESSAGE_ORDER_STEP)
+        val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "Original candidate A", orderKey = 2 * MESSAGE_ORDER_STEP)
         val repairedText = "Repaired candidate A"
         val generatedText = "Generated candidate B"
         val candidateB = if (repairNewVersion) "Repaired candidate B" else generatedText
