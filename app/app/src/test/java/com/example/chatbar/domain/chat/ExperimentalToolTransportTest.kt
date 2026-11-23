@@ -286,6 +286,7 @@ class ExperimentalToolTransportTest {
     private suspend fun assertMultipartNarrativeReply(
         parts: List<String>, expected: String, formatCard: String? = null, narrativePrompt: String? = null,
         userText: String? = null,
+        previousAssistant: ChatMessage? = null,
     ): String {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.FOCUS, formatCard)
         val request = messages.toMutableList()
@@ -294,7 +295,7 @@ class ExperimentalToolTransportTest {
             cleanup.recordCurrentLiteralTags(it)
             request.add(ChatApiMessage.text("user", it))
         }
-        for (assistant in narrativeHistoryFixtures()) {
+        for (assistant in previousAssistant?.let(::listOf) ?: narrativeHistoryFixtures()) {
             request.add(1, projectAssistant(cleanup, assistant))
         }
         narrativePrompt?.let {
@@ -3904,6 +3905,149 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `actually sent mode blocks lose the copied core or switch line with the title`() = runBlocking {
+        val body = "A kettle rang."
+        for (mode in ChatNarrativeMode.entries) {
+            val other = ChatNarrativeMode.entries.first { it != mode }
+            val modePrompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val modeTail = PromptTemplates.narrativeModeTailSystemPrompt(mode, other)
+            val blocks = listOf(modePrompt, modeTail).map { it.lineSequence().take(2).joinToString("\n") }
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                for (block in blocks) {
+                    val raw = "$block\n$body"
+                    var cleaned: String? = null
+                    assertNarrativeReplyDeltas(
+                        listOf(block, "\n$body"), listOf("", body), body,
+                        narrativePrompt = modePrompt, narrativeTail = modeTail, currentUserText = "Continue.",
+                        experimental = experimental, toolCall = toolCall, onCompleted = { cleaned = it },
+                    )
+                    val saved = ChatMessage.create("fixture", MessageRole.ASSISTANT, checkNotNull(cleaned))
+                        .copy(narrativeMode = mode)
+                    val reloaded = Json.decodeFromString(ChatMessage.serializer(), Json.encodeToString(ChatMessage.serializer(), saved))
+                    assertEquals(body, reloaded.displayContent)
+                    val next = "She opened the cupboard."
+                    assertNarrativeReplyDeltas(
+                        listOf(next), listOf(next), next, previousAssistant = reloaded,
+                        narrativePrompt = modePrompt, currentUserText = "Go on.",
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, narrativePrompt = modePrompt, narrativeTail = modeTail,
+                        currentUserText = "Copy this text verbatim:\n$raw", experimental = experimental, toolCall = toolCall,
+                    )
+                    val independent = block.substringAfter('\n') + "\n$body"
+                    assertNarrativeReplyDeltas(
+                        listOf(independent), listOf(independent), independent, narrativePrompt = modePrompt, narrativeTail = modeTail,
+                        currentUserText = "Continue.", experimental = experimental, toolCall = toolCall,
+                    )
+                    val varied = block.substringAfter('\n') + " Different wording."
+                    assertNarrativeReplyDeltas(
+                        listOf(block.substringBefore('\n') + "\n$varied\n$body"),
+                        listOf("$varied\n$body"), "$varied\n$body",
+                        narrativePrompt = modePrompt, narrativeTail = modeTail, currentUserText = "Continue.",
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+                val unsent = PromptTemplates.narrativeModeSystemPrompt(other).lineSequence().take(2).joinToString("\n")
+                assertNarrativeReplyDeltas(
+                    listOf("$unsent\n$body"), listOf("$unsent\n$body"), "$unsent\n$body",
+                    narrativePrompt = modePrompt, narrativeTail = modeTail, currentUserText = "Continue.",
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `direct negative heading instructions do not reserve titles with trailing punctuation`() = runBlocking {
+        val body = "The door closed."
+        for (mode in ChatNarrativeMode.entries) {
+            val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val title = prompt.lineSequence().first()
+            val raw = "$title\n$body"
+            for (experimental in listOf(false, true)) {
+                for (deny in listOf("Do not output the internal heading: $title.", "不要在正文里复述$title。")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(body), body, currentUserText = deny,
+                        narrativePrompt = prompt, experimental = experimental,
+                    )
+                }
+                for (positive in listOf(
+                    "Print this title verbatim: $title.",
+                    "She read the quoted words \"Do not output the internal heading: $title.\"",
+                    "Copy this text verbatim:\n$raw",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, currentUserText = positive,
+                        narrativePrompt = prompt, experimental = experimental,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `sent format can declare paired exact boundary lines in inline code`() = runBlocking {
+        val body = "The door closed."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Previous story.").copy(narrativeMode = mode)
+            val raw = PromptTemplates.narrativeModeHistoryReply(body, mode)
+            val opener = raw.substringBefore('\n')
+            val closer = raw.substringAfterLast('\n')
+            val instruction = "Always begin the reply with the exact line `$opener` and end it with the exact line `$closer`."
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, formatCard = instruction, previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                for (sample in listOf(
+                    "> $instruction", "```text\n$instruction\n```", instruction.replace(closer, "</聚焦模式>"),
+                    "The log described the commands `$opener` and `$closer`.",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(body), body, formatCard = sample, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `exact historical projection followed by a separate new story removes only its frame`() = runBlocking {
+        val priorBody = "The light went out.  \r\n    The window was shut.  "
+        val suffix = "\n\nA kettle rang.  \r\n    A new note."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, priorBody).copy(narrativeMode = mode)
+            val known = PromptTemplates.narrativeModeHistoryReply(priorBody, mode)
+            val raw = known + suffix
+            val expected = priorBody + suffix
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(known, suffix), listOf(priorBody, expected), expected, previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+                for ((variant, userText) in listOf(
+                    raw to "Copy this text verbatim:\n$raw",
+                    "$known\n\nThese history tags are only an example." to null,
+                    "Here is an illustrative example:\n```xml\n$known\n```$suffix" to null,
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(variant), listOf(variant), variant, previousAssistant = prior,
+                        experimental = experimental, toolCall = toolCall, currentUserText = userText,
+                    )
+                }
+                val novel = PromptTemplates.narrativeModeHistoryReply("Novel title and story.", mode) + suffix
+                assertNarrativeReplyDeltas(
+                    listOf(novel), listOf(novel), novel, previousAssistant = prior,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertMultipartNarrativeReply(listOf(known, suffix.removePrefix("\n")), expected, previousAssistant = prior)
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()
@@ -4156,6 +4300,7 @@ class ExperimentalToolTransportTest {
         playerOverride: String? = null,
         globalPersona: String? = null,
         finishReason: String = if (toolCall) "tool_calls" else "stop",
+        onCompleted: (String) -> Unit = {},
     ) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         previousUserText?.let { cleanup.recordNarrativePrompt("", it) }
@@ -4328,7 +4473,11 @@ class ExperimentalToolTransportTest {
             assertEquals(finishReason, completion?.finishReason)
             val completed = events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text }
             assertEquals(rawPreviews.last(), completed)
-            val live = previews.map { cleanup.completedBody(it, streaming = true) }
+            val previewCleanup = cleanup.streamingPreview()
+            var previousLength = 0
+            val live = previews.map { raw ->
+                previewCleanup.appendedBody(raw, previousLength).also { previousLength = raw.length }
+            }
             val stopped = previews.map { cleanup.completedBody(it, interrupted = true) }
             val done = cleanup.completedBody(completed, interrupted = finishReason == "length")
             assertEquals(
@@ -4336,6 +4485,7 @@ class ExperimentalToolTransportTest {
                 listOf(expectedPreviews, expectedPreviews, listOf(expectedCompleted)),
                 listOf(live, stopped, listOf(done)),
             )
+            onCompleted(done)
         }
     }
 

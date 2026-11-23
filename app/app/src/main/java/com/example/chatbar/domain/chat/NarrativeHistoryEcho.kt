@@ -55,6 +55,9 @@ object NarrativeHistoryEcho {
     private val narrativeModeHeadings = ChatNarrativeMode.entries.map { mode ->
         PromptTemplates.narrativeModeSystemPrompt(mode).lineSequence().first()
     }.toSet()
+    private val narrativeTailHeading = PromptTemplates.narrativeModeTailSystemPrompt(
+        ChatNarrativeMode.FOCUS, previousMode = null,
+    ).lineSequence().first()
     private val wrapperFamilyTokens = wrappers.associate { wrapper ->
         val name = Regex.escape(wrapper.name)
         wrapper.name to Regex("</?$name(?=[\\s=>/])[^<>]*>")
@@ -73,6 +76,13 @@ object NarrativeHistoryEcho {
             "(?:(?:required|exact|fixed)[ \\t]+)?output template(?:[ \\t]+\\(keep both tags verbatim\\))?)" +
             "(?:[ \\t]*[：:]\\1|\\1[ \\t]*[：:])[ \\t]*",
         RegexOption.IGNORE_CASE,
+    )
+    private val exactBoundaryLines = Regex(
+        "^ {0,3}(?:always[ \\t]+|please[ \\t]+)?(?:begin|start)[ \\t]+(?:the|each|every)[ \\t]+" +
+            "(?:reply|answer|response)[ \\t]+with[ \\t]+the[ \\t]+exact[ \\t]+line[ \\t]+`([^`\\r\\n]+)`" +
+            "[ \\t]+and[ \\t]+(?:end|finish)[ \\t]+it[ \\t]+with[ \\t]+the[ \\t]+exact[ \\t]+line[ \\t]+" +
+            "`([^`\\r\\n]+)`[.!]?[ \\t]*(?=\\r?$)",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
     )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
@@ -161,17 +171,18 @@ object NarrativeHistoryEcho {
         "(?:^|[。.!?；;])[ \\t]*($keepTemplateTags)(?=$|[，。；,.; \\t])",
         RegexOption.IGNORE_CASE,
     )
-    private val headingProhibition = Regex(
+    private val headingProhibitionLead =
         "(?:^|[。.!?；;])[ \\t]*(" +
             "(?:(?:下面|以下|这)是(?:一条)?(?:系统|内部|叙事模式)?标题[，,][ \\t]*)?" +
-            "(?:请勿|请?不要|不得|禁止|严禁)(?:在(?:本轮(?:回复中|正文中)?|回复中|正文中))?(?:输出|包含|复制|复述)" +
+            "(?:请勿|请?不要|不得|禁止|严禁)(?:在(?:本轮(?:回复|正文)?|回复|正文)(?:中|里)?)?(?:输出|包含|复制|复述)" +
             "(?:(?:以下|下列|下面的|这条|该)?(?:系统|内部|叙事模式)?标题)?" +
             "|(?:please[ \\t]+)?(?:do not|never|must not)[ \\t]+(?:include|copy|output|emit|repeat|reproduce)[ \\t]+" +
             "(?:(?:the|this|following)[ \\t]+)*(?:(?:internal|system|narrative mode|metadata)[ \\t]+)*(?:heading|title)" +
             "(?:[ \\t]+(?:in|into)[ \\t]+(?:your|the|this)[ \\t]+(?:reply|answer|output))?" +
-            ")[ \\t]*[：:][ \\t]*$",
-        RegexOption.IGNORE_CASE,
-    )
+            ")[ \\t]*"
+    private val headingProhibition = Regex(headingProhibitionLead + "[：:][ \\t]*$", RegexOption.IGNORE_CASE)
+    private val inlineHeadingProhibition = Regex(headingProhibitionLead + "[：:]?[ \\t]*$", RegexOption.IGNORE_CASE)
+    private val headingSentenceEnd = Regex("[ \\t]*[.。!?！？]?[ \\t]*")
     private val explicitReplyHeading = Regex(
         "^ {0,3}(?:please[ \\t]+)?(?:begin|start|open)[ \\t]+(?:each|every|this)[ \\t]+" +
             "(?:reply|answer|response)[ \\t]+with[ \\t]+(?:this|the following)[ \\t]+" +
@@ -297,6 +308,7 @@ object NarrativeHistoryEcho {
         private val projectedClosings = mutableSetOf<String>()
         private val projectedBodies = mutableMapOf<String, String>()
         private val narrativeHeadings = mutableSetOf<String>()
+        private val narrativeHeadingContinuations = mutableMapOf<String, MutableSet<String>>()
         private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
@@ -306,8 +318,14 @@ object NarrativeHistoryEcho {
         private var currentLiteralOutput = LiteralOutput()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
-            prompt.lineSequence().forEachIndexed { index, line ->
-                if (line.isNotBlank() && (index == 0 || line in narrativeModeHeadings)) narrativeHeadings += line
+            val lines = prompt.lines()
+            for ((index, line) in lines.withIndex()) {
+                val knownHeading = line in narrativeModeHeadings || line == narrativeTailHeading
+                if (line.isNotBlank() && (index == 0 || knownHeading)) narrativeHeadings += line
+                val next = lines.getOrNull(index + 1)
+                if (knownHeading && !next.isNullOrBlank()) {
+                    narrativeHeadingContinuations.getOrPut(line, ::mutableSetOf).add(next)
+                }
             }
             userText?.let(::rememberAuthoredOutput)
         }
@@ -502,8 +520,16 @@ object NarrativeHistoryEcho {
             }
             if (text !in authoredPairs && replyFormat.declaredOpenings.none(text::startsWith)) {
                 projectedBodies[text]?.let { return it }
+                for ((projection, original) in projectedBodies) {
+                    if (projection in authoredPairs || !text.startsWith(projection)) continue
+                    if (hasSeparateStoryAfterProjection(text, projection.length)) {
+                        return original + text.substring(projection.length)
+                    }
+                }
             }
-            val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthoredHeading)
+            val reply = withoutEchoedHeading(
+                text, headings, provisional, ::isAuthoredHeading, narrativeHeadingContinuations,
+            )
             val body = text.substring(reply.body)
             val preservedPrefix = text.substring(0, reply.prefixEnd)
             val lengths = if (reply.body == text.indices) partLengths else partLengths.trimTo(reply.body, text.length)
@@ -520,11 +546,15 @@ object NarrativeHistoryEcho {
                 literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->
-                    val exposed = withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading).content(inner)
+                    val exposed = withoutEchoedHeading(
+                        inner, headings, provisional, ::isAuthoredHeading, narrativeHeadingContinuations,
+                    ).content(inner)
                     withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
                 },
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
-                    withoutEchoedHeading(part, headings, provisional, ::isAuthoredHeading, isJoinedLiteral)
+                    withoutEchoedHeading(
+                        part, headings, provisional, ::isAuthoredHeading, narrativeHeadingContinuations, isJoinedLiteral,
+                    )
                 }.takeIf { headings.isNotEmpty() },
                 cleanPartOrphan = { part, isJoinedLiteral ->
                     withoutOrphanClosing(part, closings, provisional, formatOutput, ::authoredClosingEvidence, isJoinedLiteral)
@@ -539,6 +569,20 @@ object NarrativeHistoryEcho {
             )
             if (unwrapped == withoutTrailerHeading) return preservedPrefix + unwrapped
             return preservedPrefix + withoutHeadingBeforeTrailer(unwrapped, headings, provisional, formatOutput)
+        }
+    }
+
+    private fun hasSeparateStoryAfterProjection(text: String, projectionEnd: Int): Boolean {
+        val separator = paragraphBreak.matchAt(text, projectionEnd) ?: return false
+        val start = separator.range.last + 1
+        val storyStart = start + text.substring(start).takeWhile { it == ' ' }.length
+        if (storyStart - start > 3 || text.getOrNull(storyStart)?.isLetterOrDigit() != true) return false
+        val firstLine = text.substring(start, lineEnd(text, start))
+        if (historyExampleExplanation.matches(firstLine) || metadataExampleBridge.matches(firstLine) ||
+            logQuotationTail.matches(firstLine)
+        ) return false
+        return wrappers.none { wrapper ->
+            text.indexOf(wrapper.opening, start) >= 0 || wrapper.closings.any { text.indexOf(it, start) >= 0 }
         }
     }
 
@@ -912,12 +956,14 @@ object NarrativeHistoryEcho {
             val heading = possibleHeadings.firstOrNull { source.startsWith(it, position) } ?: return true
             val start = lineStart(source, position)
             val end = position + heading.length
-            val lineEnd = source.indexOfAny(charArrayOf('\r', '\n'), end).takeIf { it >= 0 } ?: source.length
-            if (source.substring(end, lineEnd).isNotBlank()) return true
-            val lead = if (source.substring(start, position).isNotBlank()) start until position else {
+            val inline = source.substring(start, position).isNotBlank()
+            val tail = source.substring(end, lineEnd(source, end))
+            if (if (inline) !headingSentenceEnd.matches(tail) else tail.isNotBlank()) return true
+            val lead = if (inline) start until position else {
                 previousVisibleLine(source, start) ?: return true
             }
-            val instruction = headingProhibition.find(source.substring(lead))?.groups?.get(1) ?: return true
+            val prohibition = if (inline) inlineHeadingProhibition else headingProhibition
+            val instruction = prohibition.find(source.substring(lead))?.groups?.get(1) ?: return true
             if (!literals.isUnprotected(lead.first + instruction.range.first) || !literals.isUnprotected(position)) {
                 return true
             }
@@ -928,6 +974,7 @@ object NarrativeHistoryEcho {
 
     private fun withoutEchoedHeading(
         text: String, headings: List<String>, provisional: Boolean, isAuthored: (String) -> Boolean,
+        continuations: Map<String, Set<String>>,
         isJoinedLiteral: (Int) -> Boolean = { false },
     ): HeadingSelection {
         if (headings.isEmpty() || text.isBlank()) return HeadingSelection(text.indices)
@@ -952,6 +999,15 @@ object NarrativeHistoryEcho {
             if (!matches(line, provisional && end == text.length) ||
                 !literals.isUnprotected(start) || isJoinedLiteral(start)
             ) break
+            val exactContinuations = continuations[headingText(line)]
+            if (exactContinuations != null && text.substring(end, cursor) in setOf("\n", "\r\n", "\r")) {
+                val nextEnd = lineEnd(text, cursor)
+                if (text.substring(cursor, nextEnd) in exactContinuations &&
+                    literals.isUnprotected(cursor) && !isJoinedLiteral(cursor)
+                ) {
+                    cursor = (nextEnd until text.length).firstOrNull { !text[it].isHistoryLineBreak() } ?: text.length
+                }
+            }
             bodyStart = cursor
         }
         val prefixEnd = if (bodyStart > commentsEnd) commentsEnd else 0
@@ -1085,6 +1141,16 @@ object NarrativeHistoryEcho {
         val counterexampleOpenings = mutableSetOf<String>()
         val counterexampleClosingStarts = mutableSetOf<Int>()
         val declaredOpenings = buildSet {
+            for (directive in exactBoundaryLines.findAll(formatCard)) {
+                val (opening, closing) = directive.destructured
+                val wrapper = candidates.firstOrNull { it.opening == opening && closing in it.closings } ?: continue
+                val start = directive.range.first
+                if (!literals.isUnprotected(start)) continue
+                val before = previousVisibleLine(literals.markdown, start)
+                if (!literals.prohibitsWrapper(before, directive.range.last + 1) &&
+                    !literals.isDocumentaryHistoryLead(before)
+                ) add(wrapper.opening)
+            }
             var matchedEnd = -1
             for ((index, opening) in markup.withIndex()) {
                 val start = opening.range.first
