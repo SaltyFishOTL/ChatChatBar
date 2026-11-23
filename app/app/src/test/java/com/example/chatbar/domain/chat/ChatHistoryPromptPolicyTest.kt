@@ -115,6 +115,20 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun historyStatusExclusionKeepsLongBacktickCodeBytes() {
+        val bare = "````\n<!-- literal -->\n```text\n代码中的样例  \n```\n````"
+        val typed = "`````text\n<n=\"Mina\"/>[literal]  \n`````"
+        val status = "```\n真实状态\n```"
+        val full = "$bare\n\n$status\n\n$typed"
+        val assistant = message(MessageRole.ASSISTANT, full)
+        val earlier = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.EARLIER_HISTORY)
+        val request = ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)
+        val expected = full.replace(status, "")
+        assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(expected, ChatNarrativeMode.FOCUS)),
+            ChatApiMessage.text("assistant", request).content)
+    }
+
+    @Test
     fun replyWithAnnotatedStatusReplaysWithOneHistoryWrapper() {
         val label = "（三个点为状态包裹格式，必须完整输出）"
         val before = "```text$label\n当前地点：门厅\n$label```"

@@ -424,10 +424,51 @@ private fun mergeVisibleRanges(ranges: List<VisibleRange>): List<VisibleRange> {
     return merged
 }
 
+private const val annotatedActionLabel = "（横线为选项包裹格式，必须完整输出）"
+private val annotatedActionBoundary = Regex(
+    "(?m)^ {0,3}(—{22}$annotatedActionLabel|$annotatedActionLabel—{22})[ \\t]*(?=\\r?\\n|\\z)",
+)
+private val annotatedActionBodyStart = Regex(
+    "(?:[ \\t]*\\r?\\n)* {0,3}\\*\\*【行动选项】\\*\\*[ \\t]*\\r?\\n" +
+        "(?:[ \\t]*\\r?\\n)* {0,3}1\\.[ \\t]*\\S",
+)
+
+/** The labeled option block in the bundled roleplay preset has mirrored, exact delimiters. */
+internal fun roleplayAnnotatedActionRanges(text: String): List<IntRange> {
+    if (annotatedActionLabel !in text) return emptyList()
+    return buildList {
+        var opening: Int? = null
+        for (boundary in annotatedActionBoundary.findAll(text)) {
+            if (boundary.groupValues[1].startsWith('—')) {
+                opening = null
+                val lineEnd = boundary.range.last + 1
+                val newline = if (text.getOrNull(lineEnd) == '\r') lineEnd + 1 else lineEnd
+                if (text.getOrNull(newline) == '\n' && annotatedActionBodyStart.matchAt(text, newline + 1) != null) {
+                    opening = boundary.range.first
+                }
+            } else {
+                val start = opening ?: continue
+                add(start..boundary.range.last)
+                opening = null
+            }
+        }
+    }
+}
+
 private fun findLongDashWrappedRanges(text: String, start: Int, end: Int): List<VisibleRange> {
     val ranges = mutableListOf<VisibleRange>()
+    val annotatedActions = roleplayAnnotatedActionRanges(text)
+        .filter { range -> range.first >= start && range.last < end }
+        .associateBy { it.first }
     var lineStart = start
     while (lineStart < end) {
+        val annotated = annotatedActions[lineStart]
+        if (annotated != null) {
+            val endExclusive = annotated.last + 1
+            ranges += VisibleRange(annotated.first, endExclusive)
+            lineStart = nextLineStart(endExclusive, end)
+            continue
+        }
         val lineEnd = text.indexOf('\n', lineStart).takeIf { it >= 0 && it < end } ?: end
         val sameLineRanges = findSameLineLongDashWrappedRanges(text, lineStart, lineEnd)
         if (sameLineRanges.isNotEmpty()) {

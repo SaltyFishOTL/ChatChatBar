@@ -122,6 +122,21 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_keepsLongBareAndTextFencesAsLiteralCode() {
+        for ((marker, label) in listOf("````" to "", "`````" to "text")) {
+            val code = "$marker$label\n```\n<!-- literal -->\n<n=\"Mina\"/>[sample]  \n```\n$marker"
+            val status = "```text\n真实状态\n```"
+            val input = "$code\n\n$status"
+            val segments = parseRoleplayTextSegments(input)
+            assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS), segments.map { it.kind })
+            assertEquals(code, sanitizeRoleplayMarkdown(segments.first().displayText, forColoring = true).trimEnd())
+            val legacy = parseRoleplayContent(stripRoleplaySpeakerMarkers(input)).first() as RoleplayContentSegment.Markdown
+            assertEquals(code, sanitizeRoleplayMarkdown(legacy.text, forColoring = true).trimEnd())
+            assertEquals(code, stripRoleplayStatusSegments(input))
+        }
+    }
+
+    @Test
     fun roleplayMarkdown_endsLegacyStatusBeforeAdjacentTypedCode() {
         val label = "（三个点为状态包裹格式，必须完整输出）"
         val status = "```text$label\n生命：10\n$label```"

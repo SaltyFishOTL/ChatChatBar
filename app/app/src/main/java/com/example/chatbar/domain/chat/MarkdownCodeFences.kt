@@ -20,6 +20,7 @@ object MarkdownCodeFences {
         val info: String,
         internal val closingLineStart: Int? = null,
         internal val legacyStatus: Boolean = false,
+        internal val markerLength: Int = 3,
     )
 
     // A null indent identifies a block quote. A list item continues at its content indent.
@@ -28,7 +29,7 @@ object MarkdownCodeFences {
         val legacyStatus = marker == "```" && info == legacyStatusInfo
 
         fun to(endExclusive: Int, closingLineStart: Int? = null) =
-            Block(start until endExclusive, topLevel, marker[0], info, closingLineStart, legacyStatus)
+            Block(start until endExclusive, topLevel, marker[0], info, closingLineStart, legacyStatus, marker.length)
     }
 
     internal fun afterQuotePrefixes(text: String, start: Int): Int {

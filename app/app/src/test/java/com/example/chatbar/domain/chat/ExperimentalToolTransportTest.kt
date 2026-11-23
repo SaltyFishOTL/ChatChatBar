@@ -4,6 +4,7 @@ import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.domain.prompt.AiTaskContext
 import com.example.chatbar.domain.prompt.AiTaskKind
+import java.io.File
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.util.concurrent.CountDownLatch
@@ -406,6 +407,22 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main stream reserves mandatory templates in unlabeled and HTML fences`() = runBlocking {
+        val opening = "<历史回复 模式=\"推进\">"
+        val closing = "</历史回复>"
+        val raw = "$opening\n她推开门。\n$closing"
+        val template = "$opening\n{正文}\n$closing"
+        val lead = "请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏："
+        for (language in listOf("", "html")) {
+            val fenced = "```$language\n$template\n```"
+            assertNarrativeReplyStates(raw, expected = raw, formatCard = "$lead\n$fenced")
+            for (card in listOf(fenced, "她引用：“\n$lead\n$fenced\n引文结束。”", "$lead\n```$language\n$template")) {
+                assertNarrativeReplyStates(raw, expected = "她推开门。", formatCard = card)
+            }
+        }
+    }
+
+    @Test
     fun `main stream reserves a mandatory fixed template on its label line`() = runBlocking {
         val opening = "<历史回复 模式=\"推进\">"
         val closing = "</历史回复>"
@@ -525,6 +542,47 @@ class ExperimentalToolTransportTest {
 
         val card = "请阅读格式说明。\n    $opening\n    {正文}\n    $closing"
         assertNarrativeReplyStates("$opening\n$story\n$closing", expected = story, formatCard = card)
+    }
+
+    @Test
+    fun `main stream preserves the bundled annotated action and status blocks after the narrative`() = runBlocking {
+        val asset = listOf("app/app/src/main/assets", "app/src/main/assets", "src/main/assets")
+            .map { File(it, "presets/formats/erowriting-format.json") }.first(File::isFile)
+        val preset = Json.parseToJsonElement(asset.readText()).jsonObject.getValue("content").jsonPrimitive.content.lines()
+        val optionLabel = "（横线为选项包裹格式，必须完整输出）"
+        val optionOpen = preset.single { it.startsWith('—') && it.endsWith(optionLabel) }
+        val optionClose = preset.single { it.startsWith(optionLabel) && it.endsWith('—') }
+        val heading = preset.single { it == "**【行动选项】**" }
+        val statusOpen = preset.single { it.startsWith("```text（三个点") }
+        val statusClose = preset.single { it.startsWith("（三个点") && it.endsWith("```") }
+        val actions = "$optionOpen\n$heading\n\n1. **[稍候]()**\n\n2. **[离开]()**\n$optionClose"
+        val status = "$statusOpen\n地点：门外\n$statusClose"
+        val story = "她推开门。"
+        val wrapped = "<历史回复 模式=\"推进\">\n$story\n</历史回复>"
+        val body = "$story\n\n$actions\n\n$status"
+
+        val raw = "$wrapped\n\n$actions\n\n$status"
+        assertNarrativeReplyStates(raw, expected = body)
+        assertNarrativeReplyStates(raw.replace("\n", "\r\n"), expected = body.replace("\n", "\r\n"))
+        val note = "<!-- 选项旁注 -->"
+        assertNarrativeReplyStates(raw.replace("1. **[稍候]()**", "1. **[稍候]()** $note"),
+            expected = body.replace("1. **[稍候]()**", "1. **[稍候]()** $note"))
+        val segments = parseRoleplayTextSegments(body)
+        assertEquals(actions, segments.single { it.rawText == actions }.displayText)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS),
+            segments.map { it.kind })
+        assertEquals(story, stripRoleplayStatusSegments(body))
+
+        for (suffix in listOf(
+            actions.replace(heading, "**【示例】**") + "\n\n$status",
+            "$optionOpen\n$heading\n正文示例。\n$optionClose\n\n$status",
+            actions.removeSuffix(optionClose) + "\n\n$status",
+            actions.replace(optionLabel, "") + "\n\n$status",
+            "$actions\n\n$status\n\n后续示例说明。",
+        )) {
+            val literal = "$wrapped\n\n$suffix"
+            assertNarrativeReplyStates(literal, expected = literal)
+        }
     }
 
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) =

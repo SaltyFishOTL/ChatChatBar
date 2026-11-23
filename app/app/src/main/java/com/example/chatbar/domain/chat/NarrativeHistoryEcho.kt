@@ -40,6 +40,7 @@ object NarrativeHistoryEcho {
         "(?m)^ {0,3}请严格按照以下固定模板作答，必须逐字保留首尾标签，不要输出代码围栏[:：]" +
             "[ \\t]*(?:\\r?\\n[ \\t]*)+\\z",
     )
+    private val formatTemplateFenceInfo = setOf("", "html", "xml")
     private val formatCounterexampleLead = Regex(
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：])[ \\t]*",
     )
@@ -119,7 +120,7 @@ object NarrativeHistoryEcho {
             }
             for (fence in literals.fences) {
                 val closingLine = fence.closingLineStart ?: continue
-                if (!fence.topLevel || !fence.info.equals("xml", ignoreCase = true)) continue
+                if (!fence.topLevel || fence.info.lowercase() !in formatTemplateFenceInfo) continue
                 val lead = fencedTemplateLead.find(literals.markdown.subSequence(0, fence.range.first)) ?: continue
                 if (literals.ranges.any { lead.range.first in it }) continue
                 val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
@@ -261,7 +262,11 @@ object NarrativeHistoryEcho {
         }
         val suffixRanges by lazy(LazyThreadSafetyMode.NONE) {
             val status = literals.fences.filter { it.topLevel && it.legacyStatus }.map { it.range }
-            (literals.commentRanges + status).sortedBy { it.first }
+            val options = roleplayAnnotatedActionRanges(literals.markdown).filter { range ->
+                literals.ranges.none { range.first in it || range.last in it } &&
+                    !literals.isMarkdownContainerLine(range.first) && !literals.isMarkdownContainerLine(range.last)
+            }
+            (literals.commentRanges + status + options).sortedBy { it.first }
         }
         fun endsReply(tag: MatchResult): Boolean =
             tag.range.last + 1 == end.length ||
@@ -372,8 +377,8 @@ object NarrativeHistoryEcho {
     ): Boolean {
         var next = start
         for (range in suffixRanges) {
-            if (range.first < start) continue
-            if (!text.subSequence(next, range.first).isBlank()) return false
+            if (range.first < start || range.last < next) continue
+            if (range.first > next && !text.subSequence(next, range.first).isBlank()) return false
             next = range.last + 1
         }
         val remainder = text.substring(next).trimStart()
@@ -402,7 +407,7 @@ object NarrativeHistoryEcho {
     internal fun hiddenHtmlCommentRanges(text: String): List<IntRange> =
         if (commentOpening !in text) emptyList() else classifyLiterals(text, interpretProseQuotes = false).commentRanges
 
-    /** Bare, text and status backtick fences stay eligible for roleplay parsing. */
+    /** Bare, text and status fences opened by three backticks stay eligible for roleplay parsing. */
     internal fun roleplayLiteralCodeRanges(text: String): List<IntRange> {
         if ('`' !in text && '~' !in text && '\t' !in text && "    " !in text) return emptyList()
         val code = classifyLiterals(text, interpretProseQuotes = false).roleplayLiteralCode
@@ -444,7 +449,8 @@ object NarrativeHistoryEcho {
             val codeBlocks = indentedCode + fences.map { it.range }
             val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks, indentedParagraphLineStarts)
             val literalFences = fences.filter { fence ->
-                fence.marker == '~' || fence.info.isNotEmpty() && !statusFenceInfo.matches(fence.info)
+                fence.marker == '~' || fence.markerLength > 3 ||
+                    fence.info.isNotEmpty() && !statusFenceInfo.matches(fence.info)
             }
             val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range }
             val ranges = codeBlocks + inlineCode + comments
