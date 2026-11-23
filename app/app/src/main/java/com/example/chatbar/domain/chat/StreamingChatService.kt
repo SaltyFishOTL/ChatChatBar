@@ -484,6 +484,7 @@ class StreamingChatService(
         isolatedTaskParameters: Boolean = false,
         responseFormatJson: Boolean = false,
         emitOrdinaryPreview: Boolean = false,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
     ): Flow<StreamEvent> = callbackFlow {
         val context = taskContext?.forRequest()
         val actualMessages = context?.let { AiTaskMessageAssembler.assemble(messages, it) } ?: messages
@@ -527,6 +528,13 @@ class StreamingChatService(
         var graceJob: Job? = null
         var inactivityJob: Job? = null
         var lastMeaningfulEvent = System.nanoTime()
+        if (toolDecoder != null && onToolReplyPrefixReader != null) {
+            onToolReplyPrefixReader {
+                synchronized(lock) {
+                    if (refused) emptyList() else toolDecoder.interruptedMultipartPrefix()
+                }
+            }
+        }
 
         fun fail(eventSource: EventSource, error: Throwable) {
             if (!closed.compareAndSet(false, true)) return

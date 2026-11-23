@@ -711,6 +711,25 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `one streamed reply can contain independently witnessed legacy and modern frames in either order`(): Unit = runBlocking {
+        val legacy = "<聚焦模式=\"沉浸\">\nLegacy scene.\n</聚焦模式>"
+        val modern = PromptTemplates.narrativeModeHistoryReply("Modern scene.", ChatNarrativeMode.ADVANCE)
+        for ((first, second, expected) in listOf(
+            Triple(legacy, modern, "Legacy scene.\nModern scene."),
+            Triple(modern, legacy, "Modern scene.\nLegacy scene."),
+        )) {
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                val firstBody = expected.substringBefore('\n')
+                assertNarrativeReplyDeltas(
+                    listOf(first, "\n${second.take(5)}", second.drop(5)), listOf(firstBody, firstBody, expected), expected,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            assertMultipartNarrativeReply(listOf(first, second), expected)
+        }
+    }
+
+    @Test
     fun `main stream reserves an explicit format after an inline editor comment`() = runBlocking {
         val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
         val card = "输出格式：<!-- 编辑注记 -->$raw"
@@ -3109,9 +3128,93 @@ class ExperimentalToolTransportTest {
             assertEquals(StreamEvent.ReasoningDelta(witness), last)
             assertEquals(preview, shown.toString())
             assertFalse(server.tailSent)
-            assertEquals(null, completion)
+            // The client can report its own cancellation through onFailure before this caller resumes.
+            assertEquals(null, completion?.finishReason)
+            assertFalse(completion?.toolReplyCompleted == true)
             assertEquals(expectedParts, checkNotNull(readBufferedParts).invoke())
         }
+    }
+
+    @Test
+    fun `explicitly stopped format repair retains only complete contiguous calls already received in the same frame`() = runBlocking {
+        val original = "旧。"
+        val first = "Repaired opening line."
+        val second = "Repaired second line."
+        val terminating = sse(listOf(chunk(reason = "tool_calls"), "[DONE]"))
+        val cases = listOf(
+            Triple(1, buildJsonObject { put("content", second) }.toString(), "$first\n$second"),
+            Triple(1, """{"content":"unfinished""", first),
+            Triple(1, """{"content":42}""", first),
+            Triple(2, buildJsonObject { put("content", second) }.toString(), first),
+        )
+        for ((index, arguments, expected) in cases) {
+            GatedExperimentalResponse(sse(listOf(repairToolFrame(first, index, arguments))), terminating).use { server ->
+                var reader: (() -> List<String>)? = null
+                val repair = MessageFormatRepairService(service())
+                val event = withTimeout(5_000) {
+                    repair.streamRepair(original, "Keep paragraph breaks.", null, model(server.baseUrl)) {
+                        reader = it
+                    }.first { it is StreamEvent.Delta && it.text.length > original.length }
+                } as StreamEvent.Delta
+                assertEquals(first, event.text)
+                assertFalse(server.tailSent)
+                val parts = checkNotNull(reader).invoke()
+                val prefix = if (parts.isEmpty()) event.text else parts.joinToString("\n")
+                assertEquals(expected, MessageFormatRepairPolicy.progressiveOverlay(original, prefix))
+            }
+        }
+    }
+
+    @Test
+    fun `completed multipart format repair and ordinary stopped format repair retain their existing paths`() = runBlocking {
+        val first = "First repaired line."
+        val second = "Preserved second line."
+        val complete = repairToolFrame(first, 1, buildJsonObject { put("content", second) }.toString())
+        val terminal = sse(listOf(chunk(reason = "tool_calls"), "[DONE]"))
+        GatedExperimentalResponse(sse(listOf(complete)), terminal).use { server ->
+            val events = withTimeout(5_000) {
+                MessageFormatRepairService(service()).streamRepair("旧。", "Keep prose.", null, model(server.baseUrl))
+                    .onEach { if (it is StreamEvent.Delta) server.releaseTail() }.toList()
+            }
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            assertEquals("$first\n$second", deltas.joinToString("") { it.text })
+            assertEquals(listOf(first.length, second.length), deltas.last().toolReplyPartLengths)
+            assertEquals(StreamEvent.Done, events.last())
+        }
+        GatedExperimentalResponse(sse(listOf(ordinaryDelta(first))), sse(listOf(chunk(reason = "stop"), "[DONE]"))).use { server ->
+            val ordinary = StreamingChatService(experimentalApiModeEnabled = { false }, allowCleartextHttp = { true })
+            var registeredToolReader = false
+            val event = withTimeout(5_000) {
+                MessageFormatRepairService(ordinary).streamRepair("旧。", "Keep prose.", null, model(server.baseUrl)) {
+                    registeredToolReader = true
+                }.first { it is StreamEvent.Delta }
+            }
+            assertEquals(StreamEvent.Delta(first), event)
+            assertFalse(registeredToolReader)
+            assertFalse(server.tailSent)
+        }
+    }
+
+    private fun repairToolFrame(first: String, followingIndex: Int, followingArguments: String): String {
+        fun call(index: Int, arguments: String) = buildJsonObject {
+            put("index", index)
+            put("function", buildJsonObject {
+                put("name", "game_content")
+                put("arguments", arguments)
+            })
+        }
+        return buildJsonObject {
+            put("choices", buildJsonArray {
+                add(buildJsonObject {
+                    put("delta", buildJsonObject {
+                        put("tool_calls", buildJsonArray {
+                            add(call(0, buildJsonObject { put("content", first) }.toString()))
+                            add(call(followingIndex, followingArguments))
+                        })
+                    })
+                })
+            })
+        }.toString()
     }
 
     @Test

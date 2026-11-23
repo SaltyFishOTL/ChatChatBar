@@ -878,6 +878,47 @@ class NarrativeHistoryEchoTest {
         assertEquals(quotedExample, cleanup.completedBody(framed))
     }
 
+    @Test fun adjacentLegacyAndModernFramesRequireSeparateProjectionWitnesses() {
+        val legacyOpen = "<聚焦模式=\"沉浸\">"
+        val legacyClose = "</聚焦模式>"
+        val mode = ChatNarrativeMode.ADVANCE
+        val priorLegacy = "$legacyOpen\nEarlier legacy scene.\n$legacyClose"
+        val priorModern = "Earlier modern scene."
+        val legacy = "$legacyOpen\nNew legacy scene.\n$legacyClose"
+        val modern = PromptTemplates.narrativeModeHistoryReply("New modern scene.", mode)
+        val cleanup = NarrativeHistoryEcho.forRequest(mode, null).apply {
+            recordHistoryProjection(priorLegacy, priorLegacy, retainsLegacyFraming = true)
+            recordHistoryProjection(priorModern, PromptTemplates.narrativeModeHistoryReply(priorModern, mode))
+        }
+        val cases = listOf(
+            Triple(legacy, modern, "New legacy scene.\nNew modern scene."),
+            Triple(modern, legacy, "New modern scene.\nNew legacy scene."),
+        )
+        for ((first, second, expected) in cases) {
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(expected, cleanup.completedBody("$first\n$second", streaming = streaming, interrupted = interrupted))
+                assertEquals(expected, cleanup.completedBody(
+                    "$first\n$second", streaming = streaming, interrupted = interrupted,
+                    partLengths = listOf(first.length, second.length),
+                ))
+            }
+            val priorBody = expected.substringBefore('\n')
+            assertEquals(priorBody, cleanup.completedBody("$first\n${second.take(5)}", streaming = true))
+            assertEquals(priorBody, cleanup.completedBody("$first\n${second.take(5)}", interrupted = true))
+        }
+        assertEquals(priorLegacy, cleanup.completedBody(priorLegacy))
+        val fencedBody = "~~~xml\n$legacy\n~~~"
+        val quotedBody = legacy.prependIndent("> ")
+        for (literalBody in listOf(fencedBody, quotedBody)) {
+            assertEquals(literalBody, cleanup.completedBody(PromptTemplates.narrativeModeHistoryReply(literalBody, mode)))
+        }
+        val onlyModern = NarrativeHistoryEcho.forRequest(mode, null).apply {
+            recordHistoryProjection(priorLegacy, priorLegacy)
+            recordHistoryProjection(priorModern, PromptTemplates.narrativeModeHistoryReply(priorModern, mode))
+        }
+        assertEquals("$legacy\n$modern", onlyModern.completedBody("$legacy\n$modern"))
+    }
+
     @Test fun lazyQuoteClosingExampleRemainsLiteralInAJoinedToolReply() {
         val open = "<历史回复 模式=\"聚焦\">"
         val close = "</历史回复>"

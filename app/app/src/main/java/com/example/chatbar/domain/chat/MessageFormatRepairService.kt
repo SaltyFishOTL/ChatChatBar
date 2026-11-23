@@ -16,7 +16,8 @@ class MessageFormatRepairService(
         originalContent: String,
         formatCard: String?,
         segmentedBubbleFormat: String?,
-        modelConfig: ModelConfig
+        modelConfig: ModelConfig,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
     ): Flow<StreamEvent> = streamingChatService.streamText(
         taskContext = AiTaskContext(AiTaskKind.FORMAT_REPAIR, AiTaskStage.REPAIR),
         messages = listOf(
@@ -36,6 +37,7 @@ class MessageFormatRepairService(
         modelConfig = modelConfig,
         readTimeoutSeconds = FORMAT_REPAIR_READ_TIMEOUT_SECONDS,
         emitOrdinaryPreview = true,
+        onToolReplyPrefixReader = onToolReplyPrefixReader,
     )
 
     companion object {

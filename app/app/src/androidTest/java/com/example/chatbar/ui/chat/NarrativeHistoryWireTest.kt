@@ -11,6 +11,7 @@ import com.example.chatbar.data.local.entity.CharacterCard
 import com.example.chatbar.data.local.entity.ChatMessage
 import com.example.chatbar.data.local.entity.ChatNarrativeMode
 import com.example.chatbar.data.local.entity.ChatSession
+import com.example.chatbar.data.local.entity.MessageFormatRepairNoticeKind
 import com.example.chatbar.data.local.entity.MessageRole
 import com.example.chatbar.data.local.entity.ModelConfig
 import com.example.chatbar.data.repository.ChatRepository
@@ -56,6 +57,7 @@ class NarrativeHistoryWireTest {
     }
 
     private enum class LiteralCase { OPENING, INLINE_CLOSE, LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE }
+    private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
 
     @Before fun prepareSyntheticApplication() = runBlocking {
         assumeTrue("Use the repository-supported isolated Android test build", BuildConfig.ISOLATED_ANDROID_TEST)
@@ -121,6 +123,26 @@ class NarrativeHistoryWireTest {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
 
+    @Test fun ordinaryPreviewAndColdSaveCleanNeighboringLegacyAndModernFramesInEitherOrder() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = false, legacyFirst = true)
+        verifyReply(Transport.ORDINARY, stop = false, legacyFirst = false)
+    }
+
+    @Test fun actualRepairStopPersistsTwoCompleteCallsFromOneFrameWithNoTerminal() = runBlocking {
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true)
+    }
+
+    @Test fun actualRepairStopKeepsInvalidOrNoncontiguousSecondCallsOutOfColdStorage() = runBlocking {
+        for (fixture in listOf(RepairSecondCall.INCOMPLETE, RepairSecondCall.MALFORMED, RepairSecondCall.GAP)) {
+            verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = true, secondCall = fixture)
+        }
+    }
+
+    @Test fun ordinaryRepairStopAndCompletedToolRepairRetainTheirOwnNotices() = runBlocking {
+        verifyRepair(Transport.ORDINARY, stop = true)
+        verifyRepair(Transport.EXPERIMENTAL_TOOL, stop = false)
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
@@ -132,12 +154,13 @@ class NarrativeHistoryWireTest {
         continuation: String? = null,
         literal: LiteralCase? = null,
         stopAfterCompleteToolCalls: Boolean = false,
+        legacyFirst: Boolean? = null,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
         val card = CharacterCard.create("Synthetic narrative wire")
         val store = ViewModelStore()
-        val mode = if (stop) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
+        val mode = if (stop && legacyFirst == null) ChatNarrativeMode.FOCUS else ChatNarrativeMode.ADVANCE
         val prior = "Previous synthetic scene."
         val prose = "She opens the door and walks into the courtyard."
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
@@ -149,7 +172,7 @@ class NarrativeHistoryWireTest {
         val captionedExample = "The closing tag example:\n$closing"
         val lazyQuoteExample = "> Closing tag example:\n$closing"
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
-        val authorsTemplate = !stop && continuation == null && literal == null
+        val authorsTemplate = !stop && continuation == null && literal == null && legacyFirst == null
         val input = when {
             literal == LiteralCase.OPENING -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
             literal == LiteralCase.INLINE_CLOSE -> "请逐字照抄以下文本并保留首尾标签：\n$exactInlineCopy"
@@ -157,13 +180,22 @@ class NarrativeHistoryWireTest {
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
+        val legacyOpen = "<聚焦模式=\"沉浸\">"
+        val legacyClose = "</聚焦模式>"
+        val priorLegacy = "$legacyOpen\nPrevious legacy scene.\n$legacyClose".takeIf { legacyFirst != null }
+        val legacyScene = "A legacy scene follows."
+        val legacyReply = "$legacyOpen\n$legacyScene\n$legacyClose"
         val reply = when (literal) {
             LiteralCase.OPENING -> "$opener\nThis is the opening tag."
             LiteralCase.INLINE_CLOSE -> exactInlineCopy
             LiteralCase.CAPTIONED_CLOSE -> if (stop) "$opener\n$captionedExample" else "$opener\n$captionedExample\n$closing"
             LiteralCase.LAZY_QUOTE_CLOSE -> if (stop) "$opener\n$lazyQuoteExample" else "$opener\n$lazyQuoteExample\n$closing"
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
-            null -> framedReply
+            null -> when (legacyFirst) {
+                true -> "$legacyReply\n$framedReply"
+                false -> "$framedReply\n$legacyReply"
+                null -> framedReply
+            }
         }
         val secondScene = "A bird flies past the entrance."
         val parts = when {
@@ -179,6 +211,8 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
             literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
+            legacyFirst == true -> "$legacyScene\n$prose"
+            legacyFirst == false -> "$prose\n$legacyScene"
             authorsTemplate || literal != null -> reply
             else -> prose
         }
@@ -195,6 +229,9 @@ class NarrativeHistoryWireTest {
                 app.modelRepository.saveModel(model)
                 app.characterRepository.save(card)
                 app.chatRepository.createSession(session)
+                priorLegacy?.let {
+                    app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, it).copy(narrativeMode = ChatNarrativeMode.FOCUS))
+                }
                 app.chatRepository.addMessage(ChatMessage.create(session.id, MessageRole.ASSISTANT, prior).copy(narrativeMode = mode))
                 app.settingsRepository.saveAppSettings(settings.copy(
                     allowCleartextModelApi = true, defaultEmbeddingId = null, defaultFormatCardId = null,
@@ -204,11 +241,15 @@ class NarrativeHistoryWireTest {
                 val vm = rule.runOnIdle {
                     ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
                 }.also { editor = it }
-                rule.waitUntil(20_000) { vm.isModelUsable.value && vm.messages.value.any { it.displayContent == prior } }
+                val priorBodies = listOfNotNull(priorLegacy, prior)
+                rule.waitUntil(20_000) {
+                    vm.isModelUsable.value && priorBodies.all { body -> vm.messages.value.any { it.displayContent == body } }
+                }
                 rule.runOnIdle { assertTrue(vm.sendMessage(input)) }
                 val request = withTimeout(20_000) { server.requestBody.await() }
                 val messages = sentMessages(request, transport)
                 assertTrue(messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
+                priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
                 assertTrue(messages.any { it.hasMessage("user", input) })
                 // Experimental live preview initially carries the first tool call only.
                 val preview = if (continuation == null && !stopAfterCompleteToolCalls) expected else prose
@@ -224,11 +265,84 @@ class NarrativeHistoryWireTest {
                 rule.waitUntil(20_000) { !vm.isResponding.value }
                 assertEquals(!stop, server.terminalSent.get())
                 val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id)
-                assertEquals(listOf(prior, input, expected), saved.map(ChatMessage::displayContent))
-                assertEquals(listOf(MessageRole.ASSISTANT, MessageRole.USER, MessageRole.ASSISTANT), saved.map(ChatMessage::role))
+                assertEquals(priorBodies.toSet(), saved.take(priorBodies.size).map(ChatMessage::displayContent).toSet())
+                assertEquals(listOf(input, expected), saved.drop(priorBodies.size).map(ChatMessage::displayContent))
+                assertEquals(List(priorBodies.size) { MessageRole.ASSISTANT } + listOf(MessageRole.USER, MessageRole.ASSISTANT), saved.map(ChatMessage::role))
             } finally {
                 try {
                     // The generating job, like memory maintenance, can outlive its ViewModel.
+                    editor?.let { vm ->
+                        rule.runOnIdle { vm.cancelResponseGeneration() }
+                        rule.waitUntil(20_000) { !vm.isResponding.value }
+                    }
+                } finally {
+                    server.release()
+                    rule.runOnIdle { store.clear() }
+                    try {
+                        app.deletionCoordinator.deleteSession(session.id)
+                    } finally {
+                        app.settingsRepository.saveAppSettings(settings)
+                        app.characterRepository.delete(card.id)
+                        app.modelRepository.deleteModel(model.id)
+                    }
+                }
+            }
+        }
+    }
+
+    private suspend fun verifyRepair(
+        transport: Transport, stop: Boolean, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
+    ) {
+        val app = ChatBarApp.instance
+        val settings = app.settingsRepository.getAppSettings()
+        val card = CharacterCard.create("Synthetic repair wire")
+        val store = ViewModelStore()
+        val original = "旧。"
+        val first = "A repaired first line."
+        val second = "A repaired second line."
+        val tool = transport == Transport.EXPERIMENTAL_TOOL
+        val parts = if (tool) listOf(first, second) else listOf(first)
+        val expected = if (secondCall == RepairSecondCall.COMPLETE) parts.joinToString("\n") else first
+        HeldNarrativeReplyServer(parts, tool, reasoningWitness = null, secondCall = secondCall).use { server ->
+            val model = ModelConfig.create("Synthetic repair ${transport.name}", server.baseUrl, "fixture-key", "fixture-model")
+            val session = ChatSession.create(card.id, model.displayName).copy(modelId = model.id, longTermMemoryEnabled = false)
+            val message = ChatMessage.create(session.id, MessageRole.ASSISTANT, original)
+            var editor: ChatViewModel? = null
+            try {
+                app.modelRepository.saveModel(model)
+                app.characterRepository.save(card)
+                app.chatRepository.createSession(session)
+                app.chatRepository.addMessage(message)
+                app.settingsRepository.saveAppSettings(settings.copy(
+                    allowCleartextModelApi = true, defaultEmbeddingId = null, defaultFormatCardId = null,
+                    formatRepairModelId = model.id, assistantSegmentedBubblesEnabled = true,
+                    automaticFormatCheckEnabled = false, momentsEnabled = false,
+                    experimentalApiModeEnabled = transport.experimental,
+                ))
+                val vm = rule.runOnIdle {
+                    ViewModelProvider(store, ChatViewModelFactory(session.id))[ChatViewModel::class.java]
+                }.also { editor = it }
+                rule.waitUntil(20_000) { vm.messages.value.any { it.id == message.id && it.displayContent == original } }
+                rule.runOnIdle { vm.repairMessageFormat(message.id) }
+                val request = withTimeout(20_000) { server.requestBody.await() }
+                assertTrue(sentMessages(request, transport).any {
+                    it.jsonObject["role"]?.jsonPrimitive?.content == "user" &&
+                        (it.jsonObject["content"] as? JsonPrimitive)?.content?.contains(original) == true
+                })
+                rule.waitUntil(20_000) { vm.messageFormatRepairState.value?.previewContent == first }
+                assertFalse("The provider terminal must be held while both calls are already received", server.terminalSent.get())
+                assertTrue(vm.isResponding.value)
+                if (stop) rule.runOnIdle { vm.cancelResponseGeneration() } else server.release()
+                rule.waitUntil(20_000) { !vm.isResponding.value }
+                assertEquals(!stop, server.terminalSent.get())
+                val saved = ChatRepository(JsonFileStorage(app)).getMessages(session.id).single()
+                assertEquals(message.id, saved.id)
+                assertEquals(expected, saved.displayContent)
+                assertEquals(if (stop) MessageFormatRepairNoticeKind.STOPPED else MessageFormatRepairNoticeKind.APPLIED, saved.formatRepairNotice?.kind)
+                assertEquals(original, saved.formatRepairNotice?.originalContent)
+                assertEquals(expected, saved.formatRepairNotice?.targetContent)
+            } finally {
+                try {
                     editor?.let { vm ->
                         rule.runOnIdle { vm.cancelResponseGeneration() }
                         rule.waitUntil(20_000) { !vm.isResponding.value }
@@ -263,7 +377,9 @@ class NarrativeHistoryWireTest {
         jsonObject["role"]?.jsonPrimitive?.content == role &&
             (jsonObject["content"] as? JsonPrimitive)?.content == content
 
-    private class HeldNarrativeReplyServer(parts: List<String>, tool: Boolean, reasoningWitness: String?) : AutoCloseable {
+    private class HeldNarrativeReplyServer(
+        parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall = RepairSecondCall.COMPLETE,
+    ) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
         val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
@@ -279,7 +395,7 @@ class NarrativeHistoryWireTest {
                         .substringAfter(':').trim().toInt()
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
-                    val first = "data: ${delta(parts, tool, reasoningWitness)}\n\n".toByteArray(Charsets.UTF_8)
+                    val first = "data: ${delta(parts, tool, reasoningWitness, secondCall)}\n\n".toByteArray(Charsets.UTF_8)
                     val reason = if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
@@ -307,19 +423,25 @@ class NarrativeHistoryWireTest {
             worker.join(1_000)
         }
 
-        private fun delta(parts: List<String>, tool: Boolean, reasoningWitness: String?): String {
+        private fun delta(parts: List<String>, tool: Boolean, reasoningWitness: String?, secondCall: RepairSecondCall): String {
             val frame = if (tool) {
                 buildJsonObject {
                     reasoningWitness?.let { put("reasoning_content", it) }
                     put("tool_calls", buildJsonArray {
                         parts.forEachIndexed { index, part ->
                             add(buildJsonObject {
-                                put("index", index)
+                                put("index", if (index == 1 && secondCall == RepairSecondCall.GAP) 2 else index)
                                 put("id", "fixture-$index")
                                 put("type", "function")
                                 put("function", buildJsonObject {
                                     put("name", "game_content")
-                                    put("arguments", buildJsonObject { put("content", part) }.toString())
+                                    val arguments = when {
+                                        index != 1 -> buildJsonObject { put("content", part) }.toString()
+                                        secondCall == RepairSecondCall.INCOMPLETE -> """{"content":"unfinished"""
+                                        secondCall == RepairSecondCall.MALFORMED -> """{"content":42}"""
+                                        else -> buildJsonObject { put("content", part) }.toString()
+                                    }
+                                    put("arguments", arguments)
                                 })
                             })
                         }

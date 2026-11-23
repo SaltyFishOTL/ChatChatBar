@@ -1288,19 +1288,22 @@ object NarrativeHistoryEcho {
         provisional: Boolean,
         clean: (section: String, start: Int, requirePair: Boolean) -> CleanedReply,
     ): String? {
-        if (allowedOpenings.isEmpty()) return null
-        val firstClose = text.indexOf(modernClosing)
-        val possibleNextOpening = if (provisional) "<历" else modernOpeningPrefix
-        if (firstClose < 0 || text.indexOf(possibleNextOpening, firstClose + modernClosing.length) < 0) return null
         val openings = allowedOpenings - declaredOpenings
         if (openings.isEmpty()) return null
-        val tags = wrapperFamilyTokens.getValue("历史回复").findAll(text).toList()
-        val literals = classifyLiterals(text, tags, listOf(modernClosing), includeUnclosed = provisional)
+        val candidates = wrappers.filter { it.opening in openings }.distinctBy(Wrapper::name)
+        val closings = candidates.flatMap(Wrapper::closings)
+        val openingPrefixes = candidates.map { if (provisional) it.opening.take(2) else it.opening.substringBefore('"') }
+        val firstCloseEnd = closings.mapNotNull { token ->
+            text.indexOf(token).takeIf { it >= 0 }?.plus(token.length)
+        }.minOrNull() ?: return null
+        if (openingPrefixes.none { text.indexOf(it, firstCloseEnd) >= 0 }) return null
+        val tags = candidates.flatMap { wrapperFamilyTokens.getValue(it.name).findAll(text).toList() }.sortedBy { it.range.first }
+        val literals = classifyLiterals(text, tags, closings, includeUnclosed = provisional)
         val standalone = tags.filter { tag ->
             literals.isVisibleWrapperTag(text, tag) &&
                 literals.isStandaloneTagLine(tag.range.first, tag.value) &&
                 !literals.isLazyListItemLine(tag.range.first) &&
-                (tag.value != modernClosing || !literals.isCaptionedLazyClosing(tag.range.first))
+                (tag.value !in closings || !literals.isCaptionedLazyClosing(tag.range.first))
         }
         fun adjacent(end: Int, start: Int): Boolean {
             val gap = text.subSequence(end, start)
@@ -1327,11 +1330,11 @@ object NarrativeHistoryEcho {
             val boundaries = eligible.zipWithNext().mapNotNull { (close, open) ->
                 val end = close.range.last + 1
                 val start = open.range.first
-                if (close.value == modernClosing && open.value in openings && adjacent(end, start)) end to start else null
+                if (close.value in closings && open.value in openings && adjacent(end, start)) end to start else null
             }.toMutableList()
             if (provisional) {
                 // Keep already proven text visible while the next opener is arriving.
-                val previousClose = eligible.lastOrNull()?.takeIf { it.value == modernClosing }
+                val previousClose = eligible.lastOrNull()?.takeIf { it.value in closings }
                 if (previousClose != null) {
                     val end = previousClose.range.last + 1
                     val start = (end until text.length).firstOrNull { !literals.markdown[it].isWhitespace() }
@@ -1339,7 +1342,7 @@ object NarrativeHistoryEcho {
                         !literals.ranges.containsOffset(start) && !literals.isLazyListItemLine(start) &&
                         !literals.isMarkdownContainerLine(start, includeStandaloneLazyTags = !allowLazyQuote) &&
                         text.substring(start).let { prefix -> openings.any { it.startsWith(prefix) } } &&
-                        text.startsWith(possibleNextOpening, start)
+                        openingPrefixes.any { text.startsWith(it, start) }
                     ) boundaries += end to start
                 }
             }

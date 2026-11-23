@@ -2413,6 +2413,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         var result = message
         var repairedPrefix = ""
         var ordinaryPreview: String? = null
+        val interruptedRepairToolReader = AtomicReference<(() -> List<String>)?>()
         var repairPartLengths = emptyList<Int>()
         var sawDone = false
         formatRepairStopRequested = false
@@ -2433,41 +2434,75 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
         coroutineScope {
             val repairJob = launch {
                 try {
-                    messageFormatRepairService.streamRepair(
-                        originalContent = originalContent,
-                        formatCard = formatCard,
-                        segmentedBubbleFormat = segmentedFormat,
-                        modelConfig = model
-                    ).collect { event ->
-                        when (event) {
-                            is StreamEvent.Delta -> {
-                                ordinaryPreview = null
-                                val previousLength = repairedPrefix.length
-                                repairedPrefix += event.text
-                                repairPartLengths = event.toolReplyPartLengths
-                                updateRepairPreview(repairDeltaPreview.appendedBody(repairedPrefix, previousLength, repairPartLengths))
+                    val stoppedBeforeDone = try {
+                        messageFormatRepairService.streamRepair(
+                            originalContent = originalContent,
+                            formatCard = formatCard,
+                            segmentedBubbleFormat = segmentedFormat,
+                            modelConfig = model,
+                            onToolReplyPrefixReader = interruptedRepairToolReader::set,
+                        ).collect { event ->
+                            when (event) {
+                                is StreamEvent.Delta -> {
+                                    ordinaryPreview = null
+                                    val previousLength = repairedPrefix.length
+                                    repairedPrefix += event.text
+                                    repairPartLengths = event.toolReplyPartLengths
+                                    updateRepairPreview(repairDeltaPreview.appendedBody(repairedPrefix, previousLength, repairPartLengths))
+                                }
+                                is StreamEvent.ContentPreview -> {
+                                    val previousLength = ordinaryPreview.orEmpty().length
+                                    ordinaryPreview = event.text.takeIf(String::isNotEmpty)
+                                    val cleaned = ordinaryPreview?.let {
+                                        repairOrdinaryPreview.appendedBody(it, previousLength, repairPartLengths)
+                                    } ?: repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths, streaming = true)
+                                    updateRepairPreview(cleaned)
+                                }
+                                is StreamEvent.Error -> throw IllegalStateException(event.message)
+                                StreamEvent.Done -> sawDone = true
+                                is StreamEvent.ReasoningDelta,
+                                is StreamEvent.Usage -> Unit
                             }
-                            is StreamEvent.ContentPreview -> {
-                                val previousLength = ordinaryPreview.orEmpty().length
-                                ordinaryPreview = event.text.takeIf(String::isNotEmpty)
-                                val cleaned = ordinaryPreview?.let {
-                                    repairOrdinaryPreview.appendedBody(it, previousLength, repairPartLengths)
-                                } ?: repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths, streaming = true)
-                                updateRepairPreview(cleaned)
-                            }
-                            is StreamEvent.Error -> throw IllegalStateException(event.message)
-                            StreamEvent.Done -> sawDone = true
-                            is StreamEvent.ReasoningDelta,
-                            is StreamEvent.Usage -> Unit
                         }
+                        false
+                    } catch (cancelled: CancellationException) {
+                        if (!formatRepairStopRequested) throw cancelled
+                        !sawDone
+                    }
+                    if (stoppedBeforeDone) {
+                        val bufferedParts = if (repairPartLengths.isEmpty()) {
+                            interruptedRepairToolReader.get()?.invoke().orEmpty()
+                        } else emptyList()
+                        val bufferedBody = bufferedParts.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                        val partLengths = if (bufferedBody == null) repairPartLengths else bufferedParts.map(String::length)
+                        val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
+                            original = originalContent,
+                            repairedPrefix = repairEcho.completedBody(
+                                bufferedBody ?: ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = partLengths,
+                            )
+                        )
+                        withContext(NonCancellable) {
+                            result = persistFormatRepairMessage(
+                                MessageFormatRepairPolicy.replaceCurrentDisplayContent(
+                                    message = message,
+                                    replacement = mixedContent,
+                                    notice = MessageFormatRepairNotice(
+                                        kind = MessageFormatRepairNoticeKind.STOPPED,
+                                        targetContent = mixedContent,
+                                        originalContent = originalContent
+                                    )
+                                )
+                            )
+                        }
+                        return@launch
                     }
                     val repaired = repairEcho.completedBody(repairedPrefix, partLengths = repairPartLengths)
                     if (!sawDone || repaired.isBlank()) {
                         throw IllegalStateException("格式修复模型返回空结果")
                     }
-                    result = when {
-                        MessageFormatRepairPolicy.isUnchangedResult(repaired) ||
-                            repaired == originalContent -> {
+                    // A collected Done owns the final result even if Stop races with its disk write.
+                    withContext(NonCancellable) {
+                        result = if (MessageFormatRepairPolicy.isUnchangedResult(repaired) || repaired == originalContent) {
                             val unchanged = message.copy(
                                 formatRepairNotice = MessageFormatRepairPolicy.recoverableNotice(message),
                                 updatedAt = System.currentTimeMillis()
@@ -2475,12 +2510,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             if (unchanged != message) persistFormatRepairMessage(unchanged)
                             _messageFormatRepairEvents.tryEmit("格式无需修复")
                             unchanged
-                        }
-                        else -> {
-                            val notice = MessageFormatRepairPolicy.completedRepairNotice(
-                                original = originalContent,
-                                repaired = repaired
-                            )
+                        } else {
+                            val notice = MessageFormatRepairPolicy.completedRepairNotice(originalContent, repaired)
                             persistFormatRepairMessage(
                                 MessageFormatRepairPolicy.replaceCurrentDisplayContent(
                                     message = message,
@@ -2491,26 +2522,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         }
                     }
                 } catch (cancelled: CancellationException) {
-                    if (!formatRepairStopRequested) throw cancelled
-                    val mixedContent = MessageFormatRepairPolicy.progressiveOverlay(
-                        original = originalContent,
-                        repairedPrefix = repairEcho.completedBody(
-                            ordinaryPreview ?: repairedPrefix, interrupted = true, partLengths = repairPartLengths,
-                        )
-                    )
-                    result = withContext(NonCancellable) {
-                        persistFormatRepairMessage(
-                            MessageFormatRepairPolicy.replaceCurrentDisplayContent(
-                                message = message,
-                                replacement = mixedContent,
-                                notice = MessageFormatRepairNotice(
-                                    kind = MessageFormatRepairNoticeKind.STOPPED,
-                                    targetContent = mixedContent,
-                                    originalContent = originalContent
-                                )
-                            )
-                        )
-                    }
+                    throw cancelled
                 } catch (error: Exception) {
                     result = persistFormatRepairFailure(
                         message = message,

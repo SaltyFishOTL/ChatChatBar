@@ -38,6 +38,7 @@ Use chatbar-model-request-runtime for provider/request failures and chatbar-long
 - Replace only the current displayed candidate. Preserve other alternatives, images, reasoning, timestamps/order identity, and source-turn identity unless the owning operation explicitly changes them.
 - Use Unicode code-point boundaries for progressive overlay so surrogate-pair emoji are not split.
 - Keep streamed overlay in UI memory. Persist only terminal content or an explicit stopped result.
+- Experimental repair streams display the first tool call while receiving the response. An explicit Stop can include additional validated contiguous `game_content` calls already received, using the decoder's same prefix reader and part boundaries as main chat. A collected terminal Done owns the completed repair or unchanged result.
 - A protected closing tag in the original text can coexist with cleanup of a fresh outer pair from a prohibited format-card example. Keep a close already present in the original or current user text out of orphan cleanup.
 - Whenever repair changes content, persist an APPLIED or recoverable terminal notice containing the exact pre-repair text.
 - Show a notice only while notice.targetContent equals message.displayContent.
