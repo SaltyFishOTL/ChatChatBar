@@ -1939,7 +1939,7 @@ POV视角需要单独一个char caption，只写露出部分（如手部动作�
 """
 
     val NOVELAI_IMAGE_PROMPT_SYSTEM_V5: String = NOVELAI_IMAGE_PROMPT_SYSTEM
-        .replace("图片可以出现文字，需要放在base caption的末尾，并使用 “text:要出现的文字”格式。", "图片支持出现文字，只需要使用\"\"英文双引号将其包住并给予3的权重。可以在双引号前加形式引导tag，如【3::speech_bubble:\"角色的台词\"::,】。")
+        .replace("图片可以出现文字，需要放在base caption的末尾，并使用 “text:要出现的文字”格式。", "图片支持出现文字，只需要使用\"\"英文双引号将其包住并给予3的权重。可以在双引号前加形式引导tag，如3::speech_bubble:\"角色的台词\"::,。对话不应该写在base caption中，是谁的台词就写在谁的char caption中。多句台词时，提示词的输入顺序和实际的显示顺序是相反的，应该先写最后一句、最后写第一句。")
         .replace("使用 English ASCII。", "支持中文、英文自然语言与 Danbooru tags 混用。")
         .replace("自然语言 = 最后手段。", "自然语言 = 无合适 tag 或太过复杂时使用。")
         .replace(
