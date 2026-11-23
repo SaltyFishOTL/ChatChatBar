@@ -37,7 +37,9 @@ internal fun ModelPickerDialog(
     error: String?,
     onRefresh: () -> Unit,
     onSelect: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    title: String = "选择模型",
+    modelDetail: (String) -> String? = { null }
 ) {
     var query by rememberSaveable { mutableStateOf("") }
     var family by rememberSaveable { mutableStateOf<String?>(null) }
@@ -59,7 +61,7 @@ internal fun ModelPickerDialog(
 
     CbDialog(
         onDismissRequest = onDismiss,
-        title = "选择模型",
+        title = title,
         dismiss = { CbButton("关闭", onDismiss, variant = ButtonVariant.Ghost) }
     ) {
         Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
@@ -146,7 +148,8 @@ internal fun ModelPickerDialog(
                         ) {
                             Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                 CbText(id, style = ChatBarTheme.typography.label)
-                                CbText(if (selected) "当前选中 · ${modelSeries(id)}" else modelSeries(id),
+                                val detail = modelDetail(id) ?: modelSeries(id)
+                                CbText(if (selected) "当前选中 · $detail" else detail,
                                     style = ChatBarTheme.typography.caption, color = ChatBarTheme.colors.mutedForeground)
                             }
                             if (selected) CbIcon(AppIcons.Check, "当前选中", Modifier.size(20.dp), ChatBarTheme.colors.primary)

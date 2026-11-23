@@ -55,7 +55,6 @@ import com.example.chatbar.domain.memory.MemoryEpisodeBatchPolicy
 import com.example.chatbar.domain.memory.MemoryMaintenanceTrigger
 import com.example.chatbar.domain.memory.MemoryManualMaintenanceKind
 import com.example.chatbar.domain.model.hasConfiguredAuthentication
-import com.example.chatbar.domain.model.isModelAuthenticationConfigured
 import com.example.chatbar.domain.rag.RetrievedKnowledgeCard
 import com.example.chatbar.domain.rag.RetrievalPlan
 import com.example.chatbar.domain.rag.RagSourcePlan
@@ -2632,13 +2631,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         _isResponding.value = false
                         return@launch
                     }
-                if (
-                    !isModelAuthenticationConfigured(
-                        baseUrl = modelConfig.baseUrl,
-                        apiKey = modelConfig.apiKey,
-                        allowCleartextModelApi = appSettings.allowCleartextModelApi
-                    )
-                ) {
+                if (!modelConfig.hasConfiguredAuthentication(appSettings)) {
                     addSystemMessage("错误：${configurationStatus.errors.firstOrNull() ?: "API Key 未配置"}")
                     _isResponding.value = false
                     return@launch

@@ -29,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.example.chatbar.domain.model.visionProviderLabel
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.chatbar.data.local.entity.FormatPromptPosition
 import com.example.chatbar.data.local.entity.ModelTemplate
@@ -60,13 +61,16 @@ fun ModelEditScreen(
     viewModel: ModelEditViewModel = viewModel(key = modelId, factory = ModelEditViewModelFactory(modelId))
 ) {
     val multimodalModels by viewModel.availableMultimodalModels.collectAsState()
+    val originalModel by viewModel.modelConfig.collectAsState()
     var showAddParam by remember { mutableStateOf(false) }
-    val canSave = viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
+    var visionSetup by remember { mutableStateOf<VisionSetup?>(null) }
+    val canSave = !viewModel.isSaving && viewModel.displayName.isNotBlank() && viewModel.baseUrl.isNotBlank() &&
         viewModel.modelName.isNotBlank()
     val context = LocalContext.current
     var lastBackPressAt by remember { mutableStateOf(0L) }
 
     BackHandler {
+        if (viewModel.isSaving) return@BackHandler
         val now = System.currentTimeMillis()
         if (now - lastBackPressAt <= 2000L) {
             onBack()
@@ -82,7 +86,7 @@ fun ModelEditScreen(
             CbTopBar(
                 title = if (modelId == null) "添加模型" else "编辑模型",
                 statusBarInset = true,
-                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack) },
+                navigation = { CbIconButton(AppIcons.ArrowBack, "返回", onBack, enabled = !viewModel.isSaving) },
                 actions = {
                     CbIconButton(
                         AppIcons.Save,
@@ -119,11 +123,13 @@ fun ModelEditScreen(
             CbField("Base URL") {
                 CbInput(viewModel.baseUrl, { viewModel.baseUrl = it }, placeholder = "https://api.openai.com/v1")
             }
-            CbField("API Key", description = "留空时使用设置里的全局默认 API Key。") {
+            val explicitCredential = originalModel?.requiresExplicitApiKey == true
+            CbField("API Key", description = if (explicitCredential) "填写这个模型接口自己的 API Key。"
+                else "留空时可使用设置里的全局默认 API Key。") {
                 CbInput(
                     viewModel.apiKey,
                     { viewModel.apiKey = it },
-                    placeholder = "可留空，默认使用全局 API Key",
+                    placeholder = if (explicitCredential) "此接口的 Key" else "可留空，默认使用全局 API Key",
                     secure = true
                 )
             }
@@ -170,6 +176,14 @@ fun ModelEditScreen(
 
             CbDivider()
             SectionTitle("多模态")
+            if (originalModel?.selectableForChat == false) {
+                SettingRow(
+                    title = "加入对话模型列表",
+                    description = "开启后可以把此模型选作对话模型。",
+                    checked = viewModel.selectableForChat,
+                    onCheckedChange = { viewModel.selectableForChat = it }
+                )
+            }
             SettingRow(
                 title = "多模态模型",
                 description = "开启后，模型可以直接接收并识别用户图片。",
@@ -177,18 +191,32 @@ fun ModelEditScreen(
                 onCheckedChange = { viewModel.isMultimodal = it }
             )
             if (!viewModel.isMultimodal) {
-                val options = listOf(VisionOption(null, "不关联视觉模型")) +
-                    multimodalModels.map { VisionOption(it.id, it.displayName) }
+                val configured = (listOfNotNull(viewModel.stagedVisionModel) + multimodalModels)
+                    .groupBy { "${it.displayName} · ${visionProviderLabel(it.baseUrl)}" }
+                    .flatMap { (label, models) ->
+                        models.mapIndexed { index, model ->
+                            VisionOption(model.id, if (models.size == 1) label else "$label · 连接 ${index + 1}")
+                        }
+                    }
+                val options = listOf(
+                    VisionOption(null, "不关联视觉模型"),
+                    VisionOption(null, "从当前接口添加…", VisionSetup.Current),
+                    VisionOption(null, "新增其他接口…", VisionSetup.Other)
+                ) + configured
                 CbField("图片解析视觉模型", description = "文本模型收到图片时，先由此模型生成描述。") {
                     CbSelect(
-                        value = options.firstOrNull { it.id == viewModel.visionModelId },
+                        value = options.firstOrNull { it.setup == null && it.id == viewModel.visionModelId },
                         options = options,
                         optionLabel = { it.label },
-                        onValueChange = { viewModel.visionModelId = it.id },
-                        placeholder = "选择视觉模型"
+                        onValueChange = { option ->
+                            if (option.setup != null) visionSetup = option.setup else viewModel.selectVisionModel(option.id)
+                        },
+                        placeholder = "选择视觉模型",
+                        enabled = !viewModel.isSaving
                     )
                 }
             }
+            viewModel.saveError?.let { error -> CbText(error, color = ChatBarTheme.colors.destructive) }
 
             CbDivider()
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
@@ -208,6 +236,18 @@ fun ModelEditScreen(
             }
             Spacer(Modifier.height(bottomInset))
         }
+    }
+
+    visionSetup?.let { setup ->
+        VisionModelSetupDialog(
+            currentBaseUrl = viewModel.baseUrl.takeIf { setup == VisionSetup.Current },
+            currentApiKey = viewModel.apiKeyForCurrentVision.takeIf { setup == VisionSetup.Current }.orEmpty(),
+            onDismiss = { visionSetup = null },
+            onSelect = { model ->
+                viewModel.stageVisionModel(model)
+                visionSetup = null
+            }
+        )
     }
 
     if (viewModel.showModelPicker) {
@@ -363,7 +403,8 @@ private fun PresetGrid(existingKeys: Set<String>, onAdd: (CommonParamPreset) -> 
     }
 }
 
-private data class VisionOption(val id: String?, val label: String)
+private enum class VisionSetup { Current, Other }
+private data class VisionOption(val id: String?, val label: String, val setup: VisionSetup? = null)
 private enum class ParamType(val label: String) { Number("数字"), Boolean("布尔"), String("文本") }
 private data class CommonParamPreset(
     val key: String,

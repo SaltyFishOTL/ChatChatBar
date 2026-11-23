@@ -58,7 +58,7 @@ class CharacterAppearanceImageService(
         val linkedVisionModel = if (currentModel.isMultimodal) {
             null
         } else {
-            modelResolver.auxiliaryChatModel(currentModel.visionModelId, settings)
+            modelResolver.boundVisionModel(currentModel.visionModelId, settings)
         }
         val analysisModel = selectCharacterAppearanceImageModel(currentModel, linkedVisionModel)
             ?: error("当前对话模型不支持多模态，且未配置可用的关联视觉模型")
