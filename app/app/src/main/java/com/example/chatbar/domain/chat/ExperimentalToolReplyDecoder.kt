@@ -72,6 +72,14 @@ internal class ExperimentalToolReplyDecoder {
         return Completion(fullText.substring(emitted.length), validate, partLengths)
     }
 
+    /** Snapshot buffered validated calls for user Stop without altering live or terminal output. */
+    @Synchronized
+    fun interruptedMultipartPrefix(): List<String> {
+        if (calls.size < 2) return emptyList()
+        val parts = completeCallPrefix()
+        return parts.takeIf { it.size > 1 && it.first().startsWith(emitted.toString()) }.orEmpty()
+    }
+
     private fun completeCallPrefix(): List<String> = buildList {
         for ((index, call) in calls) {
             if (index != size || call.name.toString() != ExperimentalToolChatPolicy.OUTPUT_TOOL) break

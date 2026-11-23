@@ -3045,6 +3045,55 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `main chat cancellation reads complete contiguously buffered calls without a terminal event`() = runBlocking {
+        val story = "First scene."
+        val next = "Second scene."
+        val first = chunk(buildJsonObject { put("content", story) }.toString(), "game_content", index = 0)
+        val second = chunk(buildJsonObject { put("content", next) }.toString(), "game_content", index = 1)
+        val incomplete = chunk("""{"content":"unfinished""", "game_content", index = 2)
+        val later = chunk("""{"content":"Skipped scene."}""", "game_content", index = 3)
+        assertInterruptedToolPrefix(listOf(first, second, incomplete, later), story, listOf(story, next))
+    }
+
+    @Test
+    fun `main chat cancellation does not skip an absent or malformed call or change the visible first call`() = runBlocking {
+        val story = "First scene."
+        val first = chunk(buildJsonObject { put("content", story) }.toString(), "game_content", index = 0)
+        val second = chunk("""{"content":"Second scene."}""", "game_content", index = 1)
+        val third = chunk("""{"content":"Skipped scene."}""", "game_content", index = 2)
+        val malformed = chunk("""{"content":42}""", "game_content", index = 1)
+        val inconsistent = chunk("""{"content":"$story","content":"Different content."}""", "game_content", index = 0)
+        assertInterruptedToolPrefix(listOf(first, third), story, emptyList())
+        assertInterruptedToolPrefix(listOf(first, malformed, third), story, emptyList())
+        assertInterruptedToolPrefix(listOf(inconsistent, second), story, emptyList())
+    }
+
+    private suspend fun assertInterruptedToolPrefix(frames: List<String>, preview: String, expectedParts: List<String>) {
+        val witness = "Synthetic provider has flushed tool arguments."
+        val marker = """{"choices":[{"delta":{"reasoning_content":"$witness"}}]}"""
+        GatedExperimentalResponse(
+            sse(frames + marker), sse(listOf(chunk(reason = "tool_calls"), "[DONE]")),
+        ).use { server ->
+            var readBufferedParts: (() -> List<String>)? = null
+            var completion: ChatReplyCompletion? = null
+            val shown = StringBuilder()
+            val last = withTimeout(5_000) {
+                service().streamChat(
+                    "cancel-multipart", messages, model(server.baseUrl),
+                    onToolReplyPrefixReader = { readBufferedParts = it },
+                    onReplyCompletion = { completion = it },
+                ).onEach { if (it is StreamEvent.Delta) shown.append(it.text) }
+                    .first { it is StreamEvent.ReasoningDelta }
+            }
+            assertEquals(StreamEvent.ReasoningDelta(witness), last)
+            assertEquals(preview, shown.toString())
+            assertFalse(server.tailSent)
+            assertEquals(null, completion)
+            assertEquals(expectedParts, checkNotNull(readBufferedParts).invoke())
+        }
+    }
+
+    @Test
     fun `truncation remains truncation instead of JSON parse failure`() = runBlocking {
         val body = sse(listOf(chunk("""{"content":"部分正文""", "game_content"), chunk(reason = "length"), "[DONE]"))
         TaskResponseServer(body, "text/event-stream").use { server ->

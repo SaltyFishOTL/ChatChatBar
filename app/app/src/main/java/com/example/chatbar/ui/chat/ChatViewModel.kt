@@ -2673,6 +2673,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 startStreamingForegroundWork()
                 val generationJob = coroutineContext[Job]
                 var interruptedReplyDraft: ChatMessage? = null
+                val interruptedToolReplyReader = AtomicReference<(() -> List<String>)?>()
                 var receivedToolReplyPartLengths = emptyList<Int>()
                 var assistantReplyPersisted = false
                 var narrativeEcho = NarrativeHistoryEcho.forRequest(null, null)
@@ -3357,6 +3358,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         systemPrompt = promptSystemDebug,
                         ragChunks = ragDebugLogs,
                         promptCacheKey = promptCacheKey,
+                        onToolReplyPrefixReader = interruptedToolReplyReader::set,
                         onReplyCompletion = { replyCompletion.set(it) }
                     ).collect { event ->
                         if (ChatBarApp.instance.streamingStopRequested.value) {
@@ -3494,10 +3496,15 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                     if (e is BackgroundGenerationProtectionCancellationException) {
                         addSystemMessage("后台生成已中止：${e.reason}")
                     } else if (e is UserStoppedResponseGenerationException) {
-                        val finalDraft = interruptedReplyDraft?.let { partial ->
+                        val bufferedParts = if (!assistantReplyPersisted && receivedToolReplyPartLengths.isEmpty()) {
+                            interruptedToolReplyReader.get()?.invoke().orEmpty()
+                        } else emptyList()
+                        val bufferedBody = bufferedParts.takeIf { it.isNotEmpty() }?.joinToString("\n")
+                        val rawDraft = interruptedReplyDraft ?: bufferedBody?.let { _streamingMessage.value }
+                        val finalDraft = rawDraft?.let { partial ->
                             partial.copy(content = narrativeEcho.completedBody(
-                                partial.content, interrupted = true,
-                                partLengths = receivedToolReplyPartLengths,
+                                bufferedBody ?: partial.content, interrupted = true,
+                                partLengths = if (bufferedBody == null) receivedToolReplyPartLengths else bufferedParts.map(String::length),
                             ))
                         }
                         val draft = InterruptedReplyPolicy.persistableDraft(finalDraft)

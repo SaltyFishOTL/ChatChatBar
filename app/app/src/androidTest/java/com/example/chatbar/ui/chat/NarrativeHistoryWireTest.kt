@@ -117,6 +117,10 @@ class NarrativeHistoryWireTest {
         }
     }
 
+    @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
+    }
+
     private suspend fun verifyTransport(transport: Transport) {
         verifyReply(transport, stop = true)
         verifyReply(transport, stop = false)
@@ -127,6 +131,7 @@ class NarrativeHistoryWireTest {
         stop: Boolean,
         continuation: String? = null,
         literal: LiteralCase? = null,
+        stopAfterCompleteToolCalls: Boolean = false,
     ) {
         val app = ChatBarApp.instance
         val settings = app.settingsRepository.getAppSettings()
@@ -161,12 +166,15 @@ class NarrativeHistoryWireTest {
             null -> framedReply
         }
         val secondScene = "A bird flies past the entrance."
-        val parts = if (continuation == null) listOf(reply) else listOf(
-            reply.substringBeforeLast('\n'),
-            "$secondScene\n${reply.substringAfterLast('\n')}",
-            continuation,
-        )
+        val parts = when {
+            stopAfterCompleteToolCalls -> listOf("$opener\n$prose", "$secondScene\n$closing")
+            continuation != null -> listOf(
+                reply.substringBeforeLast('\n'), "$secondScene\n${reply.substringAfterLast('\n')}", continuation,
+            )
+            else -> listOf(reply)
+        }
         val expected = when {
+            stopAfterCompleteToolCalls -> "$prose\n$secondScene"
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
             literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
@@ -175,7 +183,8 @@ class NarrativeHistoryWireTest {
             else -> prose
         }
         val modelName = "Synthetic narrative wire ${transport.name}"
-        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL).use { server ->
+        val reasoningWitness = "Provider has sent both synthetic calls.".takeIf { stopAfterCompleteToolCalls }
+        HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness).use { server ->
             val model = ModelConfig.create(modelName, server.baseUrl, "fixture-key", "fixture-model")
             val session = ChatSession.create(card.id, modelName).copy(
                 modelId = model.id, narrativeMode = mode, longTermMemoryEnabled = false,
@@ -202,8 +211,12 @@ class NarrativeHistoryWireTest {
                 assertTrue(messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
                 assertTrue(messages.any { it.hasMessage("user", input) })
                 // Experimental live preview initially carries the first tool call only.
-                val preview = if (continuation == null) expected else prose
-                rule.waitUntil(20_000) { vm.streamingMessage.value?.displayContent == preview }
+                val preview = if (continuation == null && !stopAfterCompleteToolCalls) expected else prose
+                rule.waitUntil(20_000) {
+                    val draft = vm.streamingMessage.value
+                    draft != null && draft.displayContent == preview &&
+                        (reasoningWitness == null || draft.reasoningContent == reasoningWitness)
+                }
                 assertFalse("The provider's terminal event must remain held during preview", server.terminalSent.get())
                 assertTrue(vm.isResponding.value)
 
@@ -250,7 +263,7 @@ class NarrativeHistoryWireTest {
         jsonObject["role"]?.jsonPrimitive?.content == role &&
             (jsonObject["content"] as? JsonPrimitive)?.content == content
 
-    private class HeldNarrativeReplyServer(parts: List<String>, tool: Boolean) : AutoCloseable {
+    private class HeldNarrativeReplyServer(parts: List<String>, tool: Boolean, reasoningWitness: String?) : AutoCloseable {
         private val server = ServerSocket(0, 1, InetAddress.getByName("127.0.0.1"))
         private val terminal = CountDownLatch(1)
         val baseUrl = "http://127.0.0.1:${server.localPort}/v1"
@@ -266,7 +279,7 @@ class NarrativeHistoryWireTest {
                         .substringAfter(':').trim().toInt()
                     val bytes = ByteArray(length) { input.read().also { check(it >= 0) }.toByte() }
                     requestBody.complete(bytes.toString(Charsets.UTF_8))
-                    val first = "data: ${delta(parts, tool)}\n\n".toByteArray(Charsets.UTF_8)
+                    val first = "data: ${delta(parts, tool, reasoningWitness)}\n\n".toByteArray(Charsets.UTF_8)
                     val reason = if (tool) "tool_calls" else "stop"
                     val last = ("data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"$reason\"}]}\n\n" +
                         "data: [DONE]\n\n").toByteArray(Charsets.UTF_8)
@@ -294,9 +307,10 @@ class NarrativeHistoryWireTest {
             worker.join(1_000)
         }
 
-        private fun delta(parts: List<String>, tool: Boolean): String {
+        private fun delta(parts: List<String>, tool: Boolean, reasoningWitness: String?): String {
             val frame = if (tool) {
                 buildJsonObject {
+                    reasoningWitness?.let { put("reasoning_content", it) }
                     put("tool_calls", buildJsonArray {
                         parts.forEachIndexed { index, part ->
                             add(buildJsonObject {

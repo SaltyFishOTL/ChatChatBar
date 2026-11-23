@@ -208,6 +208,7 @@ class StreamingChatService(
         ragChunks: List<String> = emptyList(),
         promptCacheKey: String? = null,
         maxTokens: Int? = null,
+        onToolReplyPrefixReader: ((() -> List<String>) -> Unit)? = null,
         onReplyCompletion: (ChatReplyCompletion) -> Unit = {}
     ): Flow<StreamEvent> = callbackFlow {
         val maxRetries = 2
@@ -254,6 +255,11 @@ class StreamingChatService(
                 val finishReasonObserved = AtomicBoolean(false)
                 val replyCompletion = AtomicReference(ChatReplyCompletion())
                 val toolDecoder = if (experimentalApiMode) ExperimentalToolReplyDecoder() else null
+                if (toolDecoder != null && onToolReplyPrefixReader != null) {
+                    onToolReplyPrefixReader {
+                        if (replyCompletion.get().refused) emptyList() else toolDecoder.interruptedMultipartPrefix()
+                    }
+                }
                 var previewedOrdinaryText = false
                 var finishReasonCompletionJob: Job? = null
 
