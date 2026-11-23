@@ -14,6 +14,7 @@ import com.example.chatbar.domain.voice.VoiceAnchorReconciliation
 import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
 import com.example.chatbar.domain.voice.VoicePlaybackQueuePolicy
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -26,7 +27,11 @@ import kotlinx.coroutines.withContext
 internal class ReplyAudioFileCleanupException :
     IllegalStateException("回复已删除，语音文件清理失败，将在重试时继续")
 
-internal data class ReplyRemovalMedia(val audioPaths: List<String>, val legacyAnchorWitnessId: String?)
+internal data class ReplyRemovalMedia(
+    val audioPaths: List<String>,
+    val legacyAnchorWitnessId: String?,
+    val legacyVoiceContentHashes: Map<String, String>
+)
 
 data class VoiceSegmentAnchor(
     val segment: CurrentVoiceSegment,
@@ -311,6 +316,7 @@ class VoiceMessageRepository(
         require(!onlyIfUnvoiced || versionId == null)
         var targeted = if (onlyIfUnvoiced) persistedReplyVoices(message.sessionId, message.id, versionId) else emptyList()
         if (onlyIfUnvoiced && targeted.isNotEmpty()) return@withLock false
+        var legacyVoiceContentHashes = emptyMap<String, String>()
         val committed = commit {
             if (!onlyIfUnvoiced) {
                 targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
@@ -324,11 +330,14 @@ class VoiceMessageRepository(
                 val witnesses = unscopedAnchorVoices(state)
                 witnesses.firstOrNull()?.anchorId?.takeIf { witnesses.all { it.sessionId == message.sessionId } }
             }
-            ReplyRemovalMedia(audioPaths, legacyAnchorWitnessId)
+            if (versionId != null) {
+                legacyVoiceContentHashes = captureRetiringLegacyVoiceHashes(message, versionId, targeted)
+            }
+            ReplyRemovalMedia(audioPaths, legacyAnchorWitnessId, legacyVoiceContentHashes)
         }
         if (committed) {
             removeFromPlayback(targeted.mapTo(mutableSetOf(), GeneratedVoiceMessage::id))
-            if (versionId != null) restrictUnconfirmedReplyVoices(targeted)
+            if (versionId != null) restrictUnconfirmedReplyVoices(targeted, legacyVoiceContentHashes)
         }
         committed
     }
@@ -365,7 +374,7 @@ class VoiceMessageRepository(
             // A whole reply's voice rows can be the only witness for an unscoped anchor on retry.
             anchorKeys.forEach { deleteAnchorLocked(it) }
             deleteVoiceRecordsLocked(removed)
-            if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted)
+            if (removal.versionId != null) restrictUnconfirmedReplyVoices(targeted, removal.legacyVoiceContentHashes)
             deleteUnownedReplyAudio(removal.audioPaths, deleteAudio)
         }
     }
@@ -396,11 +405,38 @@ class VoiceMessageRepository(
         return result
     }
 
-    private suspend fun restrictUnconfirmedReplyVoices(voices: List<GeneratedVoiceMessage>) {
+    private fun captureRetiringLegacyVoiceHashes(
+        message: ChatMessage,
+        versionId: String,
+        voices: List<GeneratedVoiceMessage>
+    ): Map<String, String> {
+        val key = VoiceAnchorStateKey(message.sessionId, message.id, null)
+        val state = anchorsByVersion[key] ?: anchorsByVersion[key.copy(sessionId = "")]
+            ?.takeIf { unscopedAnchorOwner(it) == message.sessionId } ?: return emptyMap()
+        val versions = MessageAlternativeVersionPolicy.versions(message)
+        return buildMap {
+            for (voice in voices) {
+                if (voice.versionOwnershipConfirmed || !voice.messageVersionId.isNullOrBlank() ||
+                    voice.anchorId.isNullOrBlank() || voice.legacyVersionContentHash != null) continue
+                val version = VoiceMessageVersionPolicy.anchoredLegacyVersion(versions, voice, state)
+                    ?.takeIf { it.id == versionId } ?: continue
+                VoiceMessageVersionPolicy.legacyVersionContentHash(voice, version)?.let { put(voice.id, it) }
+            }
+        }
+    }
+
+    private suspend fun restrictUnconfirmedReplyVoices(
+        voices: List<GeneratedVoiceMessage>,
+        legacyVoiceContentHashes: Map<String, String> = emptyMap()
+    ) {
         // Keep any recorded version ID for recovery. A deleted version's former
         // recording must never fall back to whichever alternative happens to be active.
         voices.filterNot(GeneratedVoiceMessage::versionOwnershipConfirmed).forEach { voice ->
-            val retained = voice.copy(anchorId = null, requiresCompatibleVersion = true)
+            val retained = voice.copy(
+                anchorId = null,
+                requiresCompatibleVersion = true,
+                legacyVersionContentHash = voice.legacyVersionContentHash ?: legacyVoiceContentHashes[voice.id]
+            )
             if (retained != voice) {
                 storage.saveEntity(VOICE_TYPE, retained.id, retained, GeneratedVoiceMessage.serializer())
                 _voices.value = _voices.value.map { if (it.id == retained.id) retained else it }
@@ -653,9 +689,10 @@ class VoiceMessageRepository(
         }.mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
         if (legacyState == null && legacyVoiceIds.isEmpty()) return
 
+        val awaitingRestriction = legacyVoicesAwaitingRestriction(message, versionsById.keys, legacyVoiceIds)
         val legacyStateVersionId = legacyState?.let { state ->
             versions.singleOrNull { it.content == state.displayContentSnapshot }?.id
-                ?: versions.singleOrNull()?.id
+                ?: versions.singleOrNull()?.id?.takeIf { awaitingRestriction.isEmpty() }
         }
         if (legacyState != null && legacyStateVersionId != null) {
             val migratedKey = VoiceAnchorStateKey(message.sessionId, message.id, legacyStateVersionId)
@@ -669,7 +706,7 @@ class VoiceMessageRepository(
         }
 
         val changed = _voices.value.map { voice ->
-            if (voice.id !in legacyVoiceIds) {
+            if (voice.id !in legacyVoiceIds || voice.id in awaitingRestriction) {
                 voice
             } else {
                 val versionId = if (voice.requiresCompatibleVersion) {
@@ -706,9 +743,39 @@ class VoiceMessageRepository(
             }
         }
         persistChangedVoicesLocked(_voices.value, changed)
-        if (legacyStateVersionId != null) {
+        if (legacyStateVersionId != null && awaitingRestriction.isEmpty()) {
             deleteAnchorLocked(legacyKey)
         }
+    }
+
+    /** Avoid assigning a still-unrestricted clip while its committed removal awaits retry. */
+    private suspend fun legacyVoicesAwaitingRestriction(
+        message: ChatMessage,
+        currentVersionIds: Set<String>,
+        legacyVoiceIds: Set<String>
+    ): Set<String> {
+        val candidates = _voices.value.filter { voice ->
+            voice.id in legacyVoiceIds && voice.messageVersionId.isNullOrBlank() &&
+                !voice.anchorId.isNullOrBlank() && voice.legacyVersionContentHash == null
+        }.mapTo(mutableSetOf(), GeneratedVoiceMessage::id)
+        if (candidates.isEmpty()) return emptySet()
+
+        val awaiting = mutableSetOf<String>()
+        try {
+            storage.forEachUncached(ReplyRemoval.STORE, ReplyRemoval.serializer(), requireCompleteRead = true) { removal ->
+                val retiredId = removal.versionId
+                if (removal.sessionId == message.sessionId && removal.messageId == message.id &&
+                    retiredId != null && retiredId !in currentVersionIds) {
+                    removal.legacyVoiceContentHashes.keys.filterTo(awaiting) { it in candidates }
+                }
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            // Keep unconfirmed anchor owners readable as stored until journal evidence can be checked.
+            return candidates
+        }
+        return awaiting
     }
 
     private suspend fun persistChangedVoicesLocked(

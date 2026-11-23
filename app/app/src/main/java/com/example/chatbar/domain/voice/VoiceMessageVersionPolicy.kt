@@ -52,15 +52,19 @@ object VoiceMessageVersionPolicy {
         legacyState: VoiceAnchorState?
     ): String? {
         val versions = MessageAlternativeVersionPolicy.versions(message)
-        val anchoredVersion = legacyState?.takeIf { state ->
-            state.anchors.any { it.id == voice.anchorId }
-        }?.let { state ->
-            versions.singleOrNull { it.content == state.displayContentSnapshot }
-        }
-        return anchoredVersion?.id
+        return legacyState?.let { anchoredLegacyVersion(versions, voice, it) }?.id
             ?: versions.singleOrNull { isCompatibleVersion(it, voice) }?.id
             ?: versions.singleOrNull()?.id
     }
+
+    internal fun anchoredLegacyVersion(
+        versions: List<MessageVersionSnapshot>,
+        voice: GeneratedVoiceMessage,
+        state: VoiceAnchorState
+    ): MessageVersionSnapshot? =
+        state.takeIf { it.anchors.any { anchor -> anchor.id == voice.anchorId } }?.let {
+            versions.singleOrNull { version -> version.content == it.displayContentSnapshot }
+        }
 
     internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
         MessageAlternativeVersionPolicy.versions(message).singleOrNull { isCompatibleVersion(it, voice) }?.id

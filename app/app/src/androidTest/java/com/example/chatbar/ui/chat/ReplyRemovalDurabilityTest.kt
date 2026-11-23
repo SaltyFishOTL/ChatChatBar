@@ -27,6 +27,7 @@ import com.example.chatbar.domain.voice.FishAudioStorage
 import com.example.chatbar.domain.voice.VoiceAnchorPolicy
 import com.example.chatbar.domain.voice.VoiceAnchorStateKey
 import com.example.chatbar.domain.voice.VoiceGenerationPolicy
+import com.example.chatbar.domain.voice.VoiceMessageVersionPolicy
 import java.io.File
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
@@ -127,6 +128,62 @@ class ReplyRemovalDurabilityTest {
         verifyRetiredVoiceStaysHidden(assigned = true)
     @Test fun unassignedVoiceDoesNotPlayOnDifferentTextAfterColdRestore() =
         verifyRetiredVoiceStaysHidden(assigned = false)
+    @Test fun retiringWitnessedLegacySegmentKeepsItsOriginalReplyAcrossColdRetry() = withFixture { fixture ->
+        val session = fixture.createSession()
+        val original = ChatMessage.create(session.id, MessageRole.ASSISTANT, "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[A only]()")
+        val appended = MessageAlternativeVersionPolicy.append(original, "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[B only]()", "B")
+        val reply = fixture.chats.addMessage(MessageAlternativeVersionPolicy.select(appended, 0))
+        val retired = MessageAlternativeVersionPolicy.activeVersion(reply)
+        val replacement = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, retired.id))
+        val legacyState = VoiceAnchorPolicy.initialState(
+            reply.id, retired.content, sessionId = session.id, includeNarration = true
+        )
+        val anchor = legacyState.anchors.single { it.sourceText == "Shared line" }
+        val witnessed = fixture.addVoice(reply).copy(
+            messageVersionId = null, versionOwnershipConfirmed = false, anchorId = anchor.id,
+            sourceSegmentKind = anchor.segmentKind, sourceSpeakerName = anchor.speakerName.orEmpty(),
+            sourceText = anchor.sourceText, taggedText = anchor.sourceText
+        )
+        val otherAudio = File(witnessed.audioPath).resolveSibling("unwitnessed.mp3").apply { writeText("unwitnessed audio") }
+        val unwitnessed = witnessed.copy(id = "unwitnessed-voice", anchorId = null, audioPath = otherAudio.path,
+            byteLength = otherAudio.length())
+        fixture.voices.save(witnessed)
+        fixture.voices.save(unwitnessed)
+        fixture.storage.saveEntity(
+            "voice_anchor_states", VoiceAnchorStateKey(legacyState).storageId, legacyState, VoiceAnchorState.serializer()
+        )
+
+        val direct = Fixture(fixture.context, fixture.app)
+        val directory = File(fixture.context.filesDir, "entities/generated_voice_messages")
+        assertTrue(directory.setWritable(false))
+        try {
+            val warning = direct.removals.remove(reply, replacement, retired.id)
+            assertTrue(warning.orEmpty().startsWith("回复已删除"))
+            assertEquals(witnessed, direct.voices.get(witnessed.id))
+        } finally {
+            assertTrue(directory.setWritable(true))
+        }
+
+        val updated = requireNotNull(direct.chats.getMessage(reply.id, session.id))
+        assertEquals(listOf(unwitnessed.id), direct.voices.placementsForMessage(updated).map { it.voice.id })
+        assertEquals(witnessed, direct.voices.get(witnessed.id))
+
+        val cold = Fixture(fixture.context, fixture.app)
+        assertTrue(cold.removals.retryMessage(session.id, reply.id, retired.id))
+        val persisted = requireNotNull(cold.chats.getMessage(reply.id, session.id))
+        assertEquals(replacement.displayContent, persisted.displayContent)
+        assertEquals(listOf(unwitnessed.id), cold.voices.placementsForMessage(persisted).map { it.voice.id })
+        val retained = requireNotNull(cold.voices.get(witnessed.id))
+        assertNull(retained.messageVersionId)
+        assertNull(retained.anchorId)
+        assertTrue(retained.requiresCompatibleVersion)
+        assertTrue(VoiceMessageVersionPolicy.isCompatibleVersion(retired, retained))
+        assertFalse(VoiceMessageVersionPolicy.isCompatibleVersion(MessageAlternativeVersionPolicy.activeVersion(persisted), retained))
+        assertEquals("synthetic audio", File(retained.audioPath).readText())
+        assertEquals("unwitnessed audio", otherAudio.readText())
+        ReplyRemovalCoordinator.requireSettledForBackup(fixture.context.filesDir)
+    }
+
     @Test fun failedLegacyRestrictionReportsCommittedRemovalUntilColdRetry() = withFixture { fixture ->
         val session = fixture.createSession()
         val reply = fixture.addReply(session, versionOnly = true)

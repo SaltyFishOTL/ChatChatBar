@@ -17,5 +17,10 @@ internal data class ReplyRemoval(
     val images: List<String>,
     val audioPaths: List<String>,
     val invalidateAutomaticMemory: Boolean = versionId != null,
-    val legacyVoiceAnchorWitnessId: String? = null
-)
+    val legacyVoiceAnchorWitnessId: String? = null,
+    val legacyVoiceContentHashes: Map<String, String> = emptyMap()
+) {
+    companion object {
+        const val STORE = "pending_reply_removals"
+    }
+}

@@ -81,7 +81,8 @@ internal class ReplyRemovalCoordinator(
                             audioPaths = media.audioPaths,
                             invalidateAutomaticMemory = ChatMemoryIndexPolicy.contributesToIndex(expected) &&
                                 (replacement == null || expected.displayContent != replacement.displayContent),
-                            legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId
+                            legacyVoiceAnchorWitnessId = media.legacyAnchorWitnessId,
+                            legacyVoiceContentHashes = media.legacyVoiceContentHashes
                         )
                         storage.saveEntityUncached(STORE, pending.id, pending, ReplyRemoval.serializer())
                         removal = pending
@@ -358,7 +359,7 @@ internal class ReplyRemovalCoordinator(
     }
 
     companion object {
-        const val STORE = "pending_reply_removals"
+        const val STORE = ReplyRemoval.STORE
 
         /** Run under the exclusive data lease. The local recovery journal is not portable. */
         fun requireSettledForBackup(filesDir: File) {
