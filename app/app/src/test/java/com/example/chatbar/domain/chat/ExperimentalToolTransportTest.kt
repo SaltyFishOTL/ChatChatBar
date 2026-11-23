@@ -3703,6 +3703,138 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `positive XML output intent uses the same visible slot template in actual editable and format layers`() = runBlocking {
+        val story = "The harbor lights came on."
+        val directive = "Use the following XML template for each reply and keep both tags verbatim:"
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier story.").copy(narrativeMode = mode)
+            val raw = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            for (experimental in listOf(false, true)) {
+                for (example in listOf(sample, sample.replace("\n", ""), sample.replace("[story]", "{story}"))) {
+                    val declaration = "$directive\n$example"
+                    for (layer in listOf("user", "core", "supplementary", "player", "tail", "format")) {
+                        assertNarrativeReplyDeltas(
+                            listOf(raw), listOf(raw), raw, experimental = experimental, previousAssistant = prior,
+                            currentUserText = declaration.takeIf { layer == "user" } ?: "Continue.",
+                            characterCoreInstructions = declaration.takeIf { layer == "core" },
+                            supplementaryInstructions = declaration.takeIf { layer == "supplementary" },
+                            playerOverride = declaration.takeIf { layer == "player" },
+                            characterPostHistoryInstructions = declaration.takeIf { layer == "tail" },
+                            formatCard = declaration.takeIf { layer == "format" },
+                        )
+                    }
+                }
+                for (example in listOf(
+                    "Earlier the story used the following XML template and kept both tags verbatim:\n$sample",
+                    "Use the following XML template for each reply:\n$sample",
+                    "$directive\n" + PromptTemplates.narrativeModeHistoryReply("{state: true}", mode),
+                    ("$directive\n$sample").prependIndent("> "),
+                    "$directive\n" + sample.replace("[story]", "[story] plus general prose"),
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(story), story, experimental = experimental, previousAssistant = prior,
+                        currentUserText = example,
+                    )
+                }
+                val forbidden = "Do not output these history tags:\n$directive\n$sample"
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(story), story, experimental = experimental, previousAssistant = prior,
+                    currentUserText = forbidden,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(story), story, experimental = experimental, previousAssistant = prior,
+                    currentUserText = "Continue.", formatCard = forbidden,
+                )
+                assertActualRepairBody(raw, raw, "$directive\n$sample", "A plain draft.", null, experimental)
+            }
+        }
+    }
+
+    @Test
+    fun `an explicit verbatim title survives from each actually sent editable layer`() = runBlocking {
+        val body = "The harbor lights came on."
+        for (mode in ChatNarrativeMode.entries) {
+            val modePrompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+            val heading = modePrompt.lineSequence().first()
+            val raw = "$heading\n$body"
+            val authored = "Begin each reply with the following exact title printed verbatim:\n$heading"
+            val titlePrefix = heading.substringBefore('（')
+            val neutral = "Continue."
+            for (experimental in listOf(false, true)) {
+                for (layer in listOf("user", "core", "supplementary", "player", "tail", "format")) {
+                    assertNarrativeReplyDeltas(
+                        listOf(titlePrefix, raw.removePrefix(titlePrefix)), listOf(titlePrefix, raw), raw,
+                        experimental = experimental, narrativePrompt = modePrompt,
+                        currentUserText = authored.takeIf { layer == "user" } ?: neutral,
+                        characterCoreInstructions = authored.takeIf { layer == "core" },
+                        supplementaryInstructions = authored.takeIf { layer == "supplementary" },
+                        playerOverride = authored.takeIf { layer == "player" },
+                        characterPostHistoryInstructions = authored.takeIf { layer == "tail" },
+                        formatCard = authored.takeIf { layer == "format" },
+                    )
+                }
+                for (example in listOf(
+                    "Previous examples used this title:\n$heading",
+                    authored.prependIndent("> "),
+                    "```text\n$authored\n```",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(body), body, experimental = experimental, narrativePrompt = modePrompt,
+                        currentUserText = neutral, supplementaryInstructions = example,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(body), body, experimental = experimental, narrativePrompt = modePrompt, currentUserText = neutral,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `direct current no XML overrides only the inherited template for the reply`() = runBlocking {
+        val story = "The harbor lights came on."
+        for (mode in ChatNarrativeMode.entries) {
+            val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "An earlier story.").copy(narrativeMode = mode)
+            val raw = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            val template = "Use exactly this XML template, replace [story] with new prose and keep both tags verbatim:\n$sample"
+            val opposite = ChatNarrativeMode.entries.first { it != mode }
+            val wrongMode = "Do not output these history tags:\n" + PromptTemplates.narrativeModeHistoryReply("[story]", opposite)
+            val noXml = "Continue in plain prose. This turn use no XML."
+            for (experimental in listOf(false, true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(story), story, experimental = experimental, previousAssistant = prior,
+                    previousUserText = template, currentUserText = noXml,
+                )
+                for (control in listOf(
+                    "Prefer natural prose.", "Continue.", wrongMode,
+                    "The manual says, \"This turn use no XML.\"",
+                    "> This turn use no XML.", "```text\nThis turn use no XML.\n```",
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(raw), listOf(raw), raw, experimental = experimental, previousAssistant = prior,
+                        previousUserText = template, currentUserText = control,
+                    )
+                }
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, experimental = experimental, previousAssistant = prior,
+                    previousUserText = template, currentUserText = noXml, formatCard = "Output template:\n$sample",
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, experimental = experimental, previousAssistant = prior,
+                    previousUserText = "Copy this text verbatim:\n$raw",
+                    currentUserText = noXml,
+                )
+                assertNarrativeReplyDeltas(
+                    listOf(raw), listOf(raw), raw, experimental = experimental, previousAssistant = prior,
+                    previousUserText = template, currentUserText = noXml, characterPostHistoryInstructions = template,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `text array SSE preserves a separate newline after the issued mode title`() = runBlocking {
         val prompt = PromptTemplates.narrativeModeSystemPrompt(ChatNarrativeMode.FOCUS)
         val title = prompt.lineSequence().first()

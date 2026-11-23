@@ -68,6 +68,7 @@ class NarrativeHistoryWireTest {
         CHARACTER_TAIL_OPEN, CHARACTER_TAIL_CLOSE, CHARACTER_CORE, USER_COMPACT_TEMPLATE, STRONG_SUFFIX_DENIAL,
         DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION, BRACE_SLOT_TEMPLATE, QUOTED_POSSESSIVE,
         SUPPLEMENTARY_TEMPLATE, UNSENT_GREETING_CARD, PARAGRAPH_QUOTE, GERMAN_QUOTE, PLAYER_TEMPLATE, PARTIAL_OUTER_CLOSE,
+        COMMON_OUTPUT_TEMPLATE, AUTHOR_SUPPLEMENTARY_TITLE, OLD_TEMPLATE_NO_XML,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
@@ -293,6 +294,18 @@ class NarrativeHistoryWireTest {
             repairMode = ChatNarrativeMode.ADVANCE)
     }
 
+    @Test fun actualPositiveOutputDeclarationAndAuthoredTitleSurviveStopAndDone() = runBlocking {
+        for (literal in listOf(LiteralCase.COMMON_OUTPUT_TEMPLATE, LiteralCase.AUTHOR_SUPPLEMENTARY_TITLE)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = literal)
+        }
+    }
+
+    @Test fun explicitCurrentPlainReplySupersedesOnlyTheHistoricalTemplateOnDisk() = runBlocking {
+        verifyReply(Transport.ORDINARY, stop = true, literal = LiteralCase.OLD_TEMPLATE_NO_XML)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.OLD_TEMPLATE_NO_XML)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -401,10 +414,15 @@ class NarrativeHistoryWireTest {
         val splitCaption = "The literal closing tag is:"
         val bodyWithClosingLiteral = "屏幕显示 `$closing`。新句。"
         val historicalTemplate = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
-        val supplementaryTemplate = if (literal == LiteralCase.SUPPLEMENTARY_TEMPLATE) {
-            "Character is {{char}}.\n\nUse this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
-                historicalTemplate
-        } else null
+        val modeHeading = PromptTemplates.narrativeModeSystemPrompt(mode).lineSequence().first()
+        val supplementaryTemplate = when (literal) {
+            LiteralCase.SUPPLEMENTARY_TEMPLATE ->
+                "Character is {{char}}.\n\nUse this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
+                    historicalTemplate
+            LiteralCase.AUTHOR_SUPPLEMENTARY_TITLE ->
+                "Begin each reply with the following exact title printed verbatim:\n$modeHeading"
+            else -> null
+        }
         val customTail = when (literal) {
             LiteralCase.CHARACTER_POST_HISTORY -> "Copy this text verbatim:\n" +
                 PromptTemplates.narrativeModeHistoryReply("{{char}} turned the page.", mode)
@@ -420,7 +438,7 @@ class NarrativeHistoryWireTest {
             .takeIf { literal == LiteralCase.CHARACTER_CORE }.orEmpty()
         val card = CharacterCard.create(cardName).copy(systemPrompt = customCore, postHistoryInstructions = customTail)
         val historicalUser = when {
-            literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ->
+            literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED || literal == LiteralCase.OLD_TEMPLATE_NO_XML ->
                 "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$historicalTemplate"
             literal == LiteralCase.CHARACTER_POST_HISTORY && !stop ->
                 "The token `$closing` is printed in the manual."
@@ -474,6 +492,9 @@ class NarrativeHistoryWireTest {
                 "Use exactly this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
                     historicalTemplate.replace("\n", "")
             literal == LiteralCase.STRONG_SUFFIX_DENIAL -> "Required output template (keep both tags verbatim):\n$historicalTemplate"
+            literal == LiteralCase.COMMON_OUTPUT_TEMPLATE ->
+                "Use the following XML template for each reply and keep both tags verbatim:\n$historicalTemplate"
+            literal == LiteralCase.OLD_TEMPLATE_NO_XML -> "Continue in plain prose. This turn use no XML."
             literal == LiteralCase.BRACE_SLOT_TEMPLATE ->
                 "Use exactly this XML template, replace {story} with new prose and keep both tags verbatim:\n" +
                     PromptTemplates.narrativeModeHistoryReply("{story}", mode)
@@ -505,7 +526,9 @@ class NarrativeHistoryWireTest {
                 else PromptTemplates.narrativeModeHistoryReply(ordinaryCaptionedBody, mode)
             LiteralCase.CHARACTER_POST_HISTORY, LiteralCase.CHARACTER_CORE, LiteralCase.USER_COMPACT_TEMPLATE,
             LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT, LiteralCase.BRACE_SLOT_TEMPLATE,
-            LiteralCase.SUPPLEMENTARY_TEMPLATE, LiteralCase.UNSENT_GREETING_CARD, LiteralCase.PLAYER_TEMPLATE -> framedReply
+            LiteralCase.SUPPLEMENTARY_TEMPLATE, LiteralCase.UNSENT_GREETING_CARD, LiteralCase.PLAYER_TEMPLATE,
+            LiteralCase.COMMON_OUTPUT_TEMPLATE, LiteralCase.OLD_TEMPLATE_NO_XML -> framedReply
+            LiteralCase.AUTHOR_SUPPLEMENTARY_TITLE -> "$modeHeading\n$prose"
             LiteralCase.PARTIAL_OUTER_CLOSE -> "$opener\n$prose\n</历史回"
             LiteralCase.PARAGRAPH_QUOTE -> PromptTemplates.narrativeModeHistoryReply(paragraphQuote(closing), mode)
             LiteralCase.GERMAN_QUOTE -> PromptTemplates.narrativeModeHistoryReply(germanQuote(closing), mode)
@@ -546,7 +569,7 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.CARD_ORPHAN_NO_HISTORY -> prose
             literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ||
                 literal == LiteralCase.STRONG_SUFFIX_DENIAL || literal == LiteralCase.DOCUMENTARY_FORMAT ||
-                literal == LiteralCase.PARTIAL_OUTER_CLOSE -> prose
+                literal == LiteralCase.PARTIAL_OUTER_CLOSE || literal == LiteralCase.OLD_TEMPLATE_NO_XML -> prose
             literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> bodyWithClosingLiteral
             legacyFirst == true -> "$legacyScene\n$prose"
             legacyFirst == false -> "$prose\n$legacyScene"

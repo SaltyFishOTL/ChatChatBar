@@ -93,6 +93,18 @@ object NarrativeHistoryEcho {
             "[：:][ \\t]*",
         RegexOption.IGNORE_CASE,
     )
+    private val templateUseAndTagRetention = Regex(
+        " {0,3}(?:please[ \\t]+)?use[ \\t]+(?:exactly[ \\t]+)?(?:this|the following)[ \\t]+XML[ \\t]+(?:shape|template)" +
+            "(?:[ \\t]+for[ \\t]+(?:each|every|this)[ \\t]+(?:reply|answer|response))?" +
+            "[ \\t]+and[ \\t]+$keepTemplateTags[ \\t]*[：:][ \\t]*",
+        RegexOption.IGNORE_CASE,
+    )
+    private val noXmlForCurrentReply = Regex(
+        "(?:^|(?<=[.!?]))[ \\t]*((?:this[ \\t]+(?:turn|reply|response)[,:]?[ \\t]+)?" +
+            "(?:use[ \\t]+no|do[ \\t]+not[ \\t]+use)[ \\t]+XML" +
+            "(?:[ \\t]+(?:in[ \\t]+)?this[ \\t]+(?:turn|reply|response))?)[ \\t]*(?=[.!?]|$)",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
+    )
     private const val quoteSamplePrefix = " {0,3}>[ \\t]?"
     private val quoteSampleLine = Regex(quoteSamplePrefix)
     private val quotedTemplateSample = Regex(
@@ -159,6 +171,13 @@ object NarrativeHistoryEcho {
             "(?:[ \\t]+(?:in|into)[ \\t]+(?:your|the|this)[ \\t]+(?:reply|answer|output))?" +
             ")[ \\t]*[：:][ \\t]*$",
         RegexOption.IGNORE_CASE,
+    )
+    private val explicitReplyHeading = Regex(
+        "^ {0,3}(?:please[ \\t]+)?(?:begin|start|open)[ \\t]+(?:each|every|this)[ \\t]+" +
+            "(?:reply|answer|response)[ \\t]+with[ \\t]+(?:this|the following)[ \\t]+" +
+            "(?:(?:exact|literal)[ \\t]+)?(?:title|heading)[ \\t]+" +
+            "(?:(?:printed|written)[ \\t]+)?verbatim[ \\t]*[：:][ \\t]*(?=\\r?$)",
+        setOf(RegexOption.IGNORE_CASE, RegexOption.MULTILINE),
     )
     private val literalHeadingLead = Regex(
         "(?:(?:念出|读出|讀出|朗读|朗讀)[^。！？!?；;：:\\r\\n]{0,36}(?:标题|標題)|" +
@@ -282,6 +301,8 @@ object NarrativeHistoryEcho {
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
         private val currentTemplateIntents = mutableMapOf<String, TemplateIntent>()
+        private val explicitlyAuthoredHeadings = mutableSetOf<String>()
+        private var omitInheritedXmlTemplates = false
         private var currentLiteralOutput = LiteralOutput()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
@@ -294,7 +315,7 @@ object NarrativeHistoryEcho {
         /** Effective strong suffix sent this turn, after the current user's text. */
         fun recordAuthoredOutput(source: String) {
             rememberAuthoredOutput(source)
-            recordCurrentLiteralTags(source)
+            authoredSources[source]?.let(::recordCurrentOutput)
         }
 
         fun recordDispatchedCharacterCore(renderedCore: String, hasCustomInstructions: Boolean) =
@@ -312,6 +333,7 @@ object NarrativeHistoryEcho {
         private fun recordDispatchedEditableOutput(renderedSource: String, hasCustomInstructions: Boolean = true) {
             if (!enabled || !hasCustomInstructions || renderedSource.isBlank()) return
             recordCurrentOutput(declaredUserOutput(renderedSource, requireExplicitCopy = true))
+            explicitlyAuthoredHeadings += declaredReplyHeadings(renderedSource)
         }
 
         private fun rememberAuthoredOutput(source: String) {
@@ -325,6 +347,7 @@ object NarrativeHistoryEcho {
         fun recordCurrentLiteralTags(source: String) {
             if (!enabled || source.isBlank()) return
             recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
+            omitInheritedXmlTemplates = currentUserOmitsXml(source)
         }
 
         private fun recordCurrentOutput(output: UserOutput) {
@@ -341,7 +364,8 @@ object NarrativeHistoryEcho {
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
-            formatCard?.let { hasAuthoredHeading(it, token, narrativeHeadings) } == true ||
+            explicitlyAuthoredHeadings.any { it.startsWith(token) } ||
+                formatCard?.let { hasAuthoredHeading(it, token, narrativeHeadings) } == true ||
                 authoredSources.keys.any { hasAuthoredHeading(it, token, narrativeHeadings) }
 
         private fun authoredClosingEvidence(token: String): ClosingEvidence {
@@ -477,7 +501,10 @@ object NarrativeHistoryEcho {
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
-            val supersededOpenings = authoredTemplateOpenings.filter { currentTemplateIntents[it] == TemplateIntent.OMIT }
+            val supersededOpenings = authoredTemplateOpenings.filter { opening ->
+                val current = currentTemplateIntents[opening]
+                current == TemplateIntent.OMIT || current == null && omitInheritedXmlTemplates
+            }
             val activeTemplates = authoredTemplateOpenings - supersededOpenings
             val replyFormat = if (activeTemplates.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + activeTemplates)
@@ -643,12 +670,16 @@ object NarrativeHistoryEcho {
                         } else add(copy)
                         continue
                     }
-                    val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
-                    val prohibitionLead = if ((labeled || requestedMultilineCopy) && lead != null) {
-                        previousVisibleLine(literals.markdown, lead.first)
-                    } else lead
                     val visiblePair = literals.isUnprotected(start) && literals.isUnprotected(closing.range.first)
                     val singleLine = lineStart(text, closing.range.first) == line
+                    val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
+                        startsLine(closing.range.first)
+                    val template = atLineStart && visiblePair && (standalonePair || singleLine) &&
+                        literals.declaresSlotTemplate(lead, text.substring(tag.range.last + 1, closing.range.first).trim())
+                    val labeled = visibleLead?.let(formatTemplateLabel::matches) == true
+                    val prohibitionLead = if ((labeled || template || requestedMultilineCopy) && lead != null) {
+                        previousVisibleLine(literals.markdown, lead.first)
+                    } else lead
                     val explicitCopy = visiblePair && (requestedInlineCopy || requestedMultilineCopy)
                     if (!atLineStart && !explicitCopy) continue
                     if (visiblePair && literals.prohibitsWrapper(prohibitionLead, end)) {
@@ -657,13 +688,6 @@ object NarrativeHistoryEcho {
                         continue
                     }
                     val pair = text.substring(start, end)
-                    val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
-                        startsLine(closing.range.first)
-                    val template = if (atLineStart && visiblePair && visibleLead != null && (standalonePair || singleLine)) {
-                        val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
-                        val slot = userTemplateSlotFromInstruction(visibleLead)
-                        templateBody == slot || labeled && formatTemplateSlot.matches(templateBody)
-                    } else false
                     // A slot establishes a format for new text. Only a literal copy reserves these exact bytes.
                     if (template) templateOpenings += wrapper.opening
                     else if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) add(pair)
@@ -753,6 +777,45 @@ object NarrativeHistoryEcho {
     private fun userTemplateSlotFromInstruction(line: String): String? {
         val match = userTemplateInstruction.matchEntire(line) ?: return null
         return (match.groups[1] ?: match.groups[2])?.value
+    }
+
+    private fun ReplyLiterals.declaresSlotTemplate(lead: IntRange?, slot: String): Boolean {
+        if (!formatTemplateSlot.matches(slot)) return false
+        val directive = visibleLine(lead) ?: return false
+        val namedSlot = userTemplateSlotFromInstruction(directive)
+        if (namedSlot != null) return slot == namedSlot
+        return formatTemplateLabel.matches(directive) || templateUseAndTagRetention.matches(directive)
+    }
+
+    private fun currentUserOmitsXml(source: String): Boolean {
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(source) }
+        return noXmlForCurrentReply.findAll(source).any { match ->
+            val clause = requireNotNull(match.groups[1]).range
+            literals.isUnprotected(clause.first) && literals.isUnprotected(clause.last)
+        }
+    }
+
+    private fun declaredReplyHeadings(source: String): Set<String> {
+        if ("【" !in source) return emptySet()
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(source) }
+        return buildSet {
+            for (match in explicitReplyHeading.findAll(source)) {
+                val directiveStart = match.range.first
+                val directiveEnd = match.range.last + 1
+                val titleStart = when {
+                    source.startsWith("\r\n", directiveEnd) -> directiveEnd + 2
+                    source.getOrNull(directiveEnd).isHistoryLineBreak() -> directiveEnd + 1
+                    else -> continue
+                }
+                val line = source.substring(titleStart, lineEnd(source, titleStart))
+                val heading = headingText(line)?.takeIf { it.startsWith("【") && it.endsWith("】") } ?: continue
+                if (!literals.isUnprotected(directiveStart) || !literals.isUnprotected(titleStart)) continue
+                val beforeDirective = previousVisibleLine(literals.markdown, directiveStart)
+                if (literals.visibleLine(beforeDirective)?.let(headingProhibition::containsMatchIn) != true) {
+                    add(heading)
+                }
+            }
+        }
     }
 
     private fun closingEvidence(token: String, sources: Sequence<Pair<String, Set<Int>>>): ClosingEvidence {
@@ -1056,17 +1119,23 @@ object NarrativeHistoryEcho {
                 val suffix = literals.markdown.substring(matchedEnd + 1).lineSequence().first()
                 if (!suffix.isBlank() && !(explicitLabel && formatTemplateAffirmation.matches(suffix))) continue
 
-                val lead = if (standaloneLabel == null) before else {
-                    previousVisibleLine(literals.markdown, standaloneLabel.first)
+                val standaloneDirective = standaloneLabel ?: before?.takeIf {
+                    prefix.isBlank() && literals.declaresSlotTemplate(
+                        it, formatCard.substring(opening.range.last + 1, closing.range.first).trim(),
+                    )
+                }
+                val lead = if (standaloneDirective == null) before else {
+                    previousVisibleLine(literals.markdown, standaloneDirective.first)
                 }
                 if (literals.prohibitsWrapper(lead, matchedEnd + 1)) {
                     counterexampleOpenings += wrapper.opening
                     counterexampleClosingStarts += closing.range.first
                     continue
                 }
-                if (!explicitLabel && literals.isDocumentaryHistoryLead(lead)) continue
+                val hasOutputDirective = explicitLabel || standaloneDirective != null
+                if (!hasOutputDirective && literals.isDocumentaryHistoryLead(lead)) continue
                 add(wrapper.opening)
-                if (explicitLabel && lead != null &&
+                if (hasOutputDirective && lead != null &&
                     singlePairTemplateConstraint.matches(literals.markdown.substring(lead)) &&
                     wrapper.hasExactlyOnePair(formatCard.substring(start, matchedEnd + 1))
                 ) singlePairOpenings += wrapper.opening
