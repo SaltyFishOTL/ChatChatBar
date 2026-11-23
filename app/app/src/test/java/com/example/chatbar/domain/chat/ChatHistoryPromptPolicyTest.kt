@@ -99,6 +99,22 @@ class ChatHistoryPromptPolicyTest {
     }
 
     @Test
+    fun legacyStatusExclusionKeepsAdjacentTypedCodeInTheRequest() {
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val status = "```text$label\n生命：10\n$label```"
+        val code = "```kotlin\nval sample = \"<n=\\\"Mina\\\"/> [literal]\"  \n```"
+        val full = "开场。\n\n$status\n\n$code\n\n落幕。"
+        val expected = "开场。\n\n$code\n\n落幕。"
+        val assistant = message(MessageRole.ASSISTANT, full)
+
+        val earlier = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.EARLIER_HISTORY)
+        val earlierRequest = ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)
+        assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(expected, ChatNarrativeMode.FOCUS)),
+            ChatApiMessage.text("assistant", earlierRequest).content)
+        assertEquals(full, ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.PREVIOUS_TURN))
+    }
+
+    @Test
     fun statusOnlyPreviousAssistantRemainsAvailableWhileEarlierHistoryCanBeOmitted() {
         val statusOnly = """
             ```status

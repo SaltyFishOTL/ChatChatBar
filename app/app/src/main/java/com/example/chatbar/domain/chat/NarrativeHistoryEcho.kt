@@ -27,10 +27,14 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
-    private val formatTemplateLabel = Regex(" {0,3}(?:(?:本轮)?输出(?:模板|格式)|请按以下格式输出)[ \\t]*[:：][ \\t]*")
+    private val formatTemplateLabel = Regex(
+        " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出)[ \\t]*[:：]\\1[ \\t]*",
+    )
     private val formatTemplateAffirmation = Regex(
         "[ \\t]*(?:（[ \\t]*标签是固定输出的一部分[ \\t]*）|\\([ \\t]*标签是固定输出的一部分[ \\t]*\\))[ \\t]*[。.]?[ \\t]*",
     )
+    private val formatCounterexampleLead = Regex(" {0,3}以下是禁止输出的反例[。.:：]?[ \\t]*")
+    private val formatCounterexampleTail = Regex(" {0,3}不得输出上面的标签[。.]?[ \\t]*")
     private val statusFenceInfo = Regex("(?:text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
@@ -93,10 +97,16 @@ object NarrativeHistoryEcho {
                     wrapper, markup.asSequence().drop(index + 1).filter { family.matches(it.value) },
                 ).closing ?: continue
                 matchedEnd = closing.range.last
-                val suffix = literals.markdown.substring(matchedEnd + 1).lineSequence().first()
-                if (suffix.isBlank() || explicitLabel && formatTemplateAffirmation.matches(suffix)) {
-                    add(wrapper.opening)
-                }
+                val following = literals.markdown.substring(matchedEnd + 1).lineSequence().iterator()
+                val suffix = following.next()
+                if (!suffix.isBlank() && !(explicitLabel && formatTemplateAffirmation.matches(suffix))) continue
+
+                val before = literals.markdown.subSequence(0, prefixStart).lineSequence().lastOrNull { it.isNotBlank() }
+                val after = following.asSequence().firstOrNull { it.isNotBlank() }
+                if (before?.let(formatCounterexampleLead::matches) == true ||
+                    after?.let(formatCounterexampleTail::matches) == true
+                ) continue
+                add(wrapper.opening)
             }
         }
     }

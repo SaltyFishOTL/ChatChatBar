@@ -122,6 +122,24 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
+    fun roleplayMarkdown_endsLegacyStatusBeforeAdjacentTypedCode() {
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val status = "```text$label\n生命：10\n$label```"
+        val code = "```kotlin\n<!-- literal -->\nval sample = \"[code]\"  \n```"
+        val raw = "开场。\n\n$status\n\n$code\n\n落幕。"
+        val segments = parseRoleplayTextSegments(raw)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS, RoleplaySegmentKind.NARRATION),
+            segments.map { it.kind })
+        assertEquals(status, raw.substring(segments[1].start, segments[1].endExclusive))
+        assertEquals("生命：10\n$label", segments[1].displayText)
+        assertTrue(sanitizeRoleplayMarkdown(segments[2].displayText, forColoring = true).contains(code))
+
+        val legacy = parseRoleplayContent(stripRoleplaySpeakerMarkers(raw))
+        assertEquals(segments[1].displayText, (legacy[1] as RoleplayContentSegment.Status).text)
+        assertTrue(sanitizeRoleplayMarkdown((legacy[2] as RoleplayContentSegment.Markdown).text).contains(code))
+    }
+
+    @Test
     fun roleplayMarkdown_keepsDashFenceExamplesInsideTildeCode() {
         val code = "~~~text\n---\n<历史回复 模式=\"聚焦\">示例</历史回复>\n---\n~~~"
         val segments = parseRoleplayTextSegments(code)

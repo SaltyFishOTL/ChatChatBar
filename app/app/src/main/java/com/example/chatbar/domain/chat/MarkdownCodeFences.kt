@@ -8,6 +8,8 @@ object MarkdownCodeFences {
     private val thematicBreak = Regex(" {0,3}(?:(?:-[ \\t]*){3,}|(?:\\*[ \\t]*){3,}|(?:_[ \\t]*){3,})\\r?")
     private val heading = Regex("^ {0,3}#{1,6}(?:[ \\t]|$)")
     private val setextUnderline = Regex(" {0,3}(?:=+|-+)[ \\t]*")
+    private const val legacyStatusLabel = "（三个点为状态包裹格式，必须完整输出）"
+    private val legacyStatusClose = Regex(" {0,3}$legacyStatusLabel``` *")
 
     data class Block(val range: IntRange, val topLevel: Boolean, val marker: Char, val info: String)
 
@@ -102,8 +104,16 @@ object MarkdownCodeFences {
             // Record explicit membership before a dedented line can lazily resume a paragraph.
             if (onListItemLine != null && containers.any { it.indent != null }) onListItemLine(start)
             val remainder = line.substring(cursor).removeSuffix("\r")
-            val match = fenceLine.matchEntire(remainder)
             val existing = open
+            // The built-in legacy status template puts its closing backticks after the label.
+            if (existing?.marker == "```" && existing.info == "text$legacyStatusLabel" &&
+                legacyStatusClose.matches(remainder)
+            ) {
+                add(existing.to(start + rawLine.length))
+                open = null
+                continue
+            }
+            val match = fenceLine.matchEntire(remainder)
             if (match == null) {
                 if (existing == null) {
                     val startsIndentedCode = !paragraph && dedentedParagraph.isEmpty() && remainder.startsWith("    ")

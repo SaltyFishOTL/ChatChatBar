@@ -316,6 +316,43 @@ class ExperimentalToolTransportTest {
         assertNarrativeReplyStates(raw, expected = "正文", formatCard = "输出格式：$raw（仅为示例，请勿输出）")
     }
 
+    @Test
+    fun `main stream removes the history close after the built in legacy status footer`() = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val status = "```text$label\n生命：10\n$closing\n$label```"
+        val body = "她把门推开。\n$status"
+        assertNarrativeReplyStates("$opening\n$body\n$closing", expected = body)
+
+        val code = "```kotlin\n$label```\n$closing\n```"
+        assertNarrativeReplyStates("$opening\n$code\n$closing", expected = code)
+    }
+
+    @Test
+    fun `main stream treats explicitly forbidden standalone format pairs as examples`() = runBlocking {
+        val raw = "<历史回复 模式=\"聚焦\">\n正文\n</历史回复>"
+        val lead = "以下是禁止输出的反例。"
+        val tail = "不得输出上面的标签。"
+        for (card in listOf("$lead\n$raw\n$tail", "$lead\n\n$raw", "$raw\n\n$tail")) {
+            assertNarrativeReplyStates(raw, expected = "正文", formatCard = card)
+        }
+    }
+
+    @Test
+    fun `main stream preserves a fixed current output template`() = runBlocking {
+        val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = "本轮的固定输出模板：$raw")
+    }
+
+    @Test
+    fun `main stream preserves an affirmed bold format label`() = runBlocking {
+        val raw = "<历史回复 模式=\"聚焦\">正文</历史回复>"
+        val label = "**输出格式：**"
+        assertNarrativeReplyStates(raw, expected = raw, formatCard = "$label$raw（标签是固定输出的一部分）")
+        assertNarrativeReplyStates(raw, expected = "正文", formatCard = "$label$raw（仅为示例，请勿输出）")
+    }
+
     private suspend fun assertNarrativeReplyStates(raw: String, expected: String, formatCard: String? = null) {
         val cleanup = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, formatCard)
         val delta = buildJsonObject {
