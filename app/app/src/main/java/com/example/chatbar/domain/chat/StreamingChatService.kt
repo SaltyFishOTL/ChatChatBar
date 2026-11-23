@@ -275,15 +275,19 @@ class StreamingChatService(
                         try {
                             val evidence = replyCompletion.get()
                             val decoded = toolDecoder.finish(
-                                validate = completed && !evidence.refused && evidence.finishReason != "length"
+                                validate = completed && !evidence.refused && evidence.finishReason != "length",
+                                retainCompletePrefix = completed && !evidence.refused && evidence.finishReason == "length",
                             )
                             if (decoded.remainingText.isNotEmpty()) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "", decoded.remainingText)
                                 trySend(StreamEvent.Delta(decoded.remainingText, decoded.partLengths))
                             }
-                            if (decoded.toolReplyCompleted) {
+                            if (decoded.toolReplyCompleted || decoded.partLengths.isNotEmpty()) {
                                 replyCompletion.updateAndGet {
-                                    it.copy(toolReplyCompleted = true, toolReplyPartLengths = decoded.partLengths)
+                                    it.copy(
+                                        toolReplyCompleted = decoded.toolReplyCompleted,
+                                        toolReplyPartLengths = decoded.partLengths,
+                                    )
                                 }
                             } else if (completed && !toolDecoder.hasToolCalls) {
                                 DebugLogManager.appendResponseChunk(mainLogId, "[实验模式] 模型返回普通文本，未调用 game_content")

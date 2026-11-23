@@ -49,25 +49,39 @@ internal class ExperimentalToolReplyDecoder {
     }
 
     @Synchronized
-    fun finish(validate: Boolean = true): Completion {
+    fun finish(validate: Boolean = true, retainCompletePrefix: Boolean = false): Completion {
         if (completed) return Completion("", false)
         completed = true
         if (calls.isEmpty()) {
             if (validate) require(ordinaryText.isNotBlank()) { "实验模式未收到正文或 game_content 工具参数" }
             return Completion(ordinaryText.toString(), false)
         }
-        if (!validate) return Completion("", false)
-        val parts = calls.values.map { call ->
+        if (!validate && !retainCompletePrefix) return Completion("", false)
+        val parts = if (!validate) completeCallPrefix() else calls.values.map { call ->
             require(call.name.toString() == ExperimentalToolChatPolicy.OUTPUT_TOOL) {
                 "实验模式收到非正文工具调用：${call.name}，预期 game_content"
             }
             decodeArguments(call.arguments.toString())
         }
         val fullText = parts.joinToString("\n")
-        require(fullText.startsWith(emitted.toString())) { "实验模式工具参数与已接收正文不一致" }
-        require(fullText.isNotBlank()) { "实验模式工具回复正文为空" }
+        val matchesEmitted = fullText.startsWith(emitted.toString())
+        if (!validate && !matchesEmitted) return Completion("", false)
+        require(matchesEmitted) { "实验模式工具参数与已接收正文不一致" }
+        if (validate) require(fullText.isNotBlank()) { "实验模式工具回复正文为空" }
         val partLengths = if (parts.size > 1) parts.map(String::length) else emptyList()
-        return Completion(fullText.substring(emitted.length), true, partLengths)
+        return Completion(fullText.substring(emitted.length), validate, partLengths)
+    }
+
+    private fun completeCallPrefix(): List<String> = buildList {
+        for ((index, call) in calls) {
+            if (index != size || call.name.toString() != ExperimentalToolChatPolicy.OUTPUT_TOOL) break
+            val content = try {
+                decodeArguments(call.arguments.toString())
+            } catch (_: IllegalArgumentException) {
+                break
+            }
+            add(content)
+        }
     }
 
     companion object {

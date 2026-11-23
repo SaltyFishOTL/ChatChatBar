@@ -2099,6 +2099,35 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `an explicit user template reserves its fenced tags for the unfenced reply`() = runBlocking {
+        val instruction = "Use exactly this XML template, replace [story] with new prose and keep both tags verbatim:"
+        val story = "门开了。"
+        for (mode in ChatNarrativeMode.entries) {
+            val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+            val reply = PromptTemplates.narrativeModeHistoryReply(story, mode)
+            val fence = "```xml\n$sample\n```"
+            for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply, experimental = experimental, toolCall = toolCall,
+                    currentUserText = "$instruction\n$fence",
+                )
+                for (example in listOf(
+                    "The following shows history metadata:\n$fence",
+                    "$instruction\n$fence\nDo not output these tags.",
+                    "$instruction\n" + fence.prependIndent("> "),
+                    "$instruction\n" + fence.replace("```xml", "```kotlin"),
+                    "$instruction\n" + fence.removeSuffix("```"),
+                )) {
+                    assertNarrativeReplyDeltas(
+                        listOf(reply), listOf(story), story, experimental = experimental, toolCall = toolCall,
+                        currentUserText = example,
+                    )
+                }
+            }
+        }
+    }
+
+    @Test
     fun `the sent strong format card suffix reserves an explicit reply template`() = runBlocking {
         for (mode in ChatNarrativeMode.entries) {
             val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
@@ -2196,6 +2225,17 @@ class ExperimentalToolTransportTest {
                 )
             }
         }
+    }
+
+    @Test
+    fun `an explicit metadata example lead keeps the same reply across transport boundaries`(): Unit = runBlocking {
+        val lead = "The following shows history metadata:"
+        val sample = PromptTemplates.narrativeModeHistoryReply("示例正文。", ChatNarrativeMode.FOCUS)
+        val expected = "$lead\n$sample"
+        assertNarrativeReplyStates(expected, expected, experimental = false)
+        assertMultipartNarrativeReply(listOf(lead, sample), expected)
+        assertMultipartNarrativeReply(listOf(lead, sample.substringBeforeLast('\n'), sample.substringAfterLast('\n')), expected)
+        assertMultipartNarrativeReply(listOf("她翻开说明书。", sample), "她翻开说明书。\n示例正文。")
     }
 
     @Test
@@ -2490,6 +2530,41 @@ class ExperimentalToolTransportTest {
             assertEquals("部分正文", events.filterIsInstance<StreamEvent.Delta>().joinToString("") { it.text })
             assertFalse(events.any { it is StreamEvent.Done })
             assertNotNull(events.filterIsInstance<StreamEvent.Error>().single())
+        }
+    }
+
+    @Test
+    fun `main chat truncation retains complete contiguous tool calls before the truncated call`() = runBlocking {
+        val mode = ChatNarrativeMode.FOCUS
+        val opening = PromptTemplates.narrativeModeHistoryReply("history", mode).substringBefore('\n')
+        val story = "门开了。"
+        val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "Earlier story").copy(narrativeMode = mode)
+        val request = messages.toMutableList().apply { add(1, projectAssistant(cleanup, prior)) }
+        val response = sse(listOf(
+            chunk(buildJsonObject { put("content", opening) }.toString(), "game_content", index = 0),
+            chunk(buildJsonObject { put("content", story) }.toString(), "game_content", index = 1),
+            chunk("""{"content":"unfinished""", "game_content", index = 2),
+            chunk(buildJsonObject { put("content", "after incomplete call") }.toString(), "game_content", index = 3),
+            chunk(reason = "length"),
+            "[DONE]",
+        ))
+        TaskResponseServer(response, "text/event-stream").use { server ->
+            var completion: ChatReplyCompletion? = null
+            val events = withTimeout(5_000) {
+                service().streamChat("truncated-multipart", request, model(server),
+                    onReplyCompletion = { completion = it }).toList()
+            }
+            val partLengths = listOf(opening.length, story.length)
+            val deltas = events.filterIsInstance<StreamEvent.Delta>()
+            val text = deltas.joinToString("") { it.text }
+            assertEquals(listOf(StreamEvent.Delta(opening), StreamEvent.Delta("\n$story", partLengths)), deltas)
+            assertEquals(StreamEvent.Done, events.last())
+            assertEquals("length", completion?.finishReason)
+            assertEquals(false, completion?.toolReplyCompleted)
+            assertEquals(partLengths, completion?.toolReplyPartLengths)
+            assertEquals(story, cleanup.completedBody(text, partLengths = partLengths, streaming = true))
+            assertEquals(story, cleanup.completedBody(text, partLengths = partLengths, interrupted = true))
         }
     }
 

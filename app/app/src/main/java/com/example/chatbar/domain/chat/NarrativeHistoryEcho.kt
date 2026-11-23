@@ -391,15 +391,34 @@ object NarrativeHistoryEcho {
                     if (singleLine || standalonePair) add(pair)
                     if (!standalonePair || !visiblePair || visibleLead == null) continue
                     val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
-                    val instruction = userTemplateInstruction.matchEntire(visibleLead)
-                    val slot = (instruction?.groups?.get(1) ?: instruction?.groups?.get(2))?.value
+                    val slot = userTemplateSlotFromInstruction(visibleLead)
                     if (templateBody == slot || labeled && formatTemplateSlot.matches(templateBody)) {
                         templateOpenings += wrapper.opening
                     }
                 }
             }
         }
+        for (fence in literals.fences) {
+            val closingLine = fence.closingLineStart ?: continue
+            if (!fence.topLevel || fence.info.lowercase() !in formatTemplateFenceInfo) continue
+            val lead = previousVisibleLine(literals.markdown, fence.range.first) ?: continue
+            val slot = literals.visibleLine(lead)?.let(::userTemplateSlotFromInstruction) ?: continue
+            val previous = previousVisibleLine(literals.markdown, lead.first)
+            if (literals.prohibitsWrapper(previous, fence.range.last + 1)) continue
+            val contentStart = literals.markdown.indexOf('\n', fence.range.first) + 1
+            val template = text.substring(contentStart, closingLine).trim()
+            val wrapper = wrappers.firstOrNull { it.isStandalonePair(template) } ?: continue
+            val close = wrapper.closings.first(template::endsWith)
+            if (template.substring(wrapper.opening.length, template.length - close.length).trim() == slot) {
+                templateOpenings += wrapper.opening
+            }
+        }
         return UserOutput(pairs, templateOpenings, counterexampleClosingStarts)
+    }
+
+    private fun userTemplateSlotFromInstruction(line: String): String? {
+        val match = userTemplateInstruction.matchEntire(line) ?: return null
+        return (match.groups[1] ?: match.groups[2])?.value
     }
 
     private fun hasAuthoredClosing(source: String, token: String, prohibitedStarts: Set<Int>): Boolean {
@@ -932,31 +951,33 @@ object NarrativeHistoryEcho {
                 while (first < parts.size) {
                     var cleaned = cleanParts(first, first)
                     var next = first + 1
-                    if (cleaned.matchedOuterPair && explainsPreviousExample(next)) {
+                    val followsExampleLead = (cleaned.matchedOuterPair || cleaned.couldSpanToolCalls) &&
+                        joinedLiterals.matchesVisibleLine(
+                            previousVisibleLine(joinedLiterals.markdown, parts[first].first), metadataExampleBridge,
+                        )
+                    if (cleaned.matchedOuterPair && (followsExampleLead || explainsPreviousExample(next))) {
                         cleaned = CleanedReply(text.substring(parts[first]))
                     }
                     if (cleaned.couldSpanToolCalls) {
                         for (last in next..parts.lastIndex) {
                             val grouped = cleanParts(first, last, requirePair = true)
                             if (!grouped.matchedOuterPair) continue
-                            if (last < parts.lastIndex) {
-                                // Prose after a split pair is ambiguous unless a call boundary establishes
-                                // the close. An explicit explanation still identifies a literal example.
+                            val explicitExample = followsExampleLead || explainsPreviousExample(last + 1)
+                            val ambiguousContinuation = if (!explicitExample && last < parts.lastIndex) {
+                                // Prose after a split pair is ambiguous unless a call boundary establishes the close.
                                 val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)
                                 val closingPart = text.substring(parts[last]).trim()
-                                if (explainsPreviousExample(last + 1) ||
-                                    !following.matchedOuterPair && !following.couldSpanToolCalls &&
+                                !following.matchedOuterPair && !following.couldSpanToolCalls &&
                                     wrappers.none { closingPart in it.closings }
-                                ) {
-                                    // Preserve an ambiguous group intact instead of stripping half its pair.
-                                    cleaned = CleanedReply(text.substring(parts[first].first, parts[last].last + 1))
-                                    next = last + 1
-                                    break
-                                }
-                            }
-                            cleaned = grouped
+                            } else false
+                            cleaned = if (explicitExample || ambiguousContinuation) {
+                                CleanedReply(text.substring(parts[first].first, parts[last].last + 1))
+                            } else grouped
                             next = last + 1
                             break
+                        }
+                        if (followsExampleLead && next == first + 1) {
+                            cleaned = CleanedReply(text.substring(parts[first]))
                         }
                     }
                     if (cleaned.body.isNotEmpty() || next == first + 1 && parts[first].isEmpty()) {
