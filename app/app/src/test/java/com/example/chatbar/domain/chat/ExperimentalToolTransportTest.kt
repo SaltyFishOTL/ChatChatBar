@@ -288,6 +288,7 @@ class ExperimentalToolTransportTest {
         val request = messages.toMutableList()
         userText?.let {
             cleanup.recordNarrativePrompt("", it)
+            cleanup.recordCurrentLiteralTags(it)
             request.add(ChatApiMessage.text("user", it))
         }
         for (assistant in narrativeHistoryFixtures()) {
@@ -330,6 +331,32 @@ class ExperimentalToolTransportTest {
                 assertEquals("Done", expected, it)
             }
         }
+    }
+
+    @Test
+    fun `actual streams honor verbatim copies and explicit tags inside a separate history echo`(): Unit = runBlocking {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val requestedPair = "${opening}原样正文$closing"
+        val copyRequest = "Please return this XML verbatim: $requestedPair"
+        for (experimental in listOf(false, true)) {
+            assertNarrativeReplyStates(requestedPair, requestedPair, currentUserText = copyRequest, experimental = experimental)
+            assertNarrativeReplyStates(
+                "$opening\n$requestedPair\n$closing", requestedPair, currentUserText = copyRequest, experimental = experimental,
+            )
+        }
+        val following = "$opening\n门开了。\n$closing"
+        for ((tag, instruction) in listOf(
+            opening to "Please show the literal opening tag only on its own line, then explain it:",
+            closing to "Please show the literal closing tag on its own line, then explain it:",
+        )) {
+            val body = "$tag\nThis is a delimiter in serialized history."
+            val userText = "$instruction\n$tag"
+            assertNarrativeReplyStates("$opening\n$body\n$closing", body, currentUserText = userText)
+            assertMultipartNarrativeReply(listOf(opening, body, closing, following), "$body\n门开了。", userText = userText)
+        }
+        val example = listOf("$opening\n示例内容", "$closing\n这是一个历史标签示例。")
+        assertMultipartNarrativeReply(example + following, "${example.joinToString("\n")}\n门开了。")
     }
 
     @Test
@@ -2654,11 +2681,12 @@ class ExperimentalToolTransportTest {
 
     private fun projectAssistant(cleanup: NarrativeHistoryEcho.RequestCleanup, assistant: ChatMessage): ChatApiMessage {
         val body = assistant.displayContent
-        val projected = ChatHistoryPromptPolicy.renderedHistoryText(
-            assistant, body, legacyHistoryWrapperDeclaredAsOutput = cleanup.declaresLegacyHistoryWrapper,
+        val projection = ChatHistoryPromptPolicy.renderedHistory(
+            assistant, body, narrativeModesEnabled = true,
+            legacyHistoryWrapperDeclaredAsOutput = cleanup.declaresLegacyHistoryWrapper,
         )
-        cleanup.recordHistoryProjection(body, projected)
-        return ChatApiMessage.text("assistant", projected)
+        cleanup.recordHistoryProjection(body, projection.text, projection.retainsLegacyFraming)
+        return ChatApiMessage.text("assistant", projection.text)
     }
 
     private suspend fun assertNarrativeReplyStates(
@@ -2697,6 +2725,7 @@ class ExperimentalToolTransportTest {
         if (currentUserText != null) {
             val userIndex = requestMessages.indexOfFirst { it.role == "user" }
             requestMessages[userIndex] = ChatApiMessage.text("user", currentUserText)
+            cleanup.recordCurrentLiteralTags(currentUserText)
         }
         if (narrativePrompt != null) requestMessages.add(1, ChatApiMessage.text("system", narrativePrompt))
         val cardRequirements = formatCard?.let { PromptTemplates.currentTurnOutputRequirementsSystemPrompt(it, 300) }

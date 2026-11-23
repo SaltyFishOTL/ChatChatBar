@@ -6,6 +6,76 @@ import org.junit.Assert.assertEquals
 import org.junit.Test
 
 class NarrativeHistoryEchoTest {
+    @Test
+    fun realCurrentExactCopyRetainsThePairInsideOrWithoutAHistoryEcho() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val requested = "${opening}原样正文$closing"
+        val request = "Please return this XML verbatim: $requested"
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null).apply {
+            recordNarrativePrompt("", request)
+            recordCurrentLiteralTags(request)
+        }
+        val outer = "$opening\n$requested\n$closing"
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(requested, cleanup.completedBody(requested, interrupted, streaming = streaming))
+            assertEquals(requested, cleanup.completedBody(outer, interrupted, streaming = streaming))
+            val parts = listOf(opening.length, requested.length, closing.length)
+            assertEquals(requested, cleanup.completedBody(outer, interrupted, parts, streaming))
+        }
+        val other = "${opening}改写正文$closing"
+        assertEquals("改写正文", cleanup.completedBody(other))
+    }
+
+    @Test
+    fun separateRequestedTagsDoNotConsumeTheirOwnTransportBoundary() {
+        for (mode in ChatNarrativeMode.entries) {
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val closing = "</历史回复>"
+            for ((tag, instruction) in listOf(
+                opening to "Please show the literal opening tag only on its own line, then explain it:",
+                closing to "Please show the literal closing tag on its own line, then explain it:",
+            )) {
+                val request = "$instruction\n$tag"
+                val cleanup = requestWithNarrativeHistory(mode, null).apply {
+                    recordNarrativePrompt("", request)
+                    recordCurrentLiteralTags(request)
+                }
+                val requested = "$tag\nThis is a delimiter in serialized history."
+                val reply = "$opening\n$requested\n$closing"
+                for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                    assertEquals(requested, cleanup.completedBody(reply, interrupted, streaming = streaming))
+                    val parts = listOf(opening.length, requested.length, closing.length)
+                    assertEquals(requested, cleanup.completedBody(reply, interrupted, parts, streaming))
+                }
+                val pending = "$opening\n$requested"
+                assertEquals(requested, cleanup.completedBody(pending, interrupted = true))
+                assertEquals(requested, cleanup.completedBody(pending, streaming = true))
+                assertEquals("正文", cleanup.completedBody("$opening\n正文\n$closing"))
+            }
+        }
+    }
+
+    @Test
+    fun aJoinedExampleExplanationCanShareItsClosingToolCall() {
+        val opening = "<历史回复 模式=\"聚焦\">"
+        val closing = "</历史回复>"
+        val first = "$opening\n样例"
+        val second = "$closing\n这是一个历史标签示例。"
+        val genuine = "$opening\n门开了。\n$closing"
+        val literal = "$first\n$second"
+        val cleanup = requestWithNarrativeHistory(ChatNarrativeMode.FOCUS, null)
+        for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+            assertEquals(literal, cleanup.completedBody(literal, interrupted, streaming = streaming))
+            assertEquals(literal, cleanup.completedBody(
+                literal, interrupted, listOf(first.length, second.length), streaming,
+            ))
+            assertEquals("$literal\n门开了。", cleanup.completedBody(
+                "$literal\n$genuine", interrupted, listOf(first.length, second.length, genuine.length), streaming,
+            ))
+        }
+    }
+
 
     @Test
     fun appendOnlyNarrationPreviewMatchesAuthoritativeCleanupThroughSyntaxTransitions() {
@@ -1333,5 +1403,5 @@ internal fun requestWithNarrativeHistory(
         recordHistoryProjection(body, PromptTemplates.narrativeModeHistoryReply(body, historyMode))
     }
     val legacy = "<聚焦模式=\"沉浸\">\n$body\n</聚焦模式>"
-    recordHistoryProjection(legacy, legacy)
+    recordHistoryProjection(legacy, legacy, retainsLegacyFraming = true)
 }

@@ -3122,11 +3122,12 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             renderedBody = renderedBody,
                             hasSupportedImage = hasSupportedImage
                         ) ?: return
-                        val text = ChatHistoryPromptPolicy.renderedHistoryText(
+                        val history = ChatHistoryPromptPolicy.renderedHistory(
                             msg, payloadText,
                             narrativeModesEnabled = requestNarrativeMode != null,
                             legacyHistoryWrapperDeclaredAsOutput = narrativeEcho.declaresLegacyHistoryWrapper,
                         )
+                        val text = history.text
                         if (hasSupportedImage) {
                             try {
                                 val base64 = encodeImageToBase64(msg.images.first())
@@ -3145,7 +3146,9 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                             apiMessages.add(ChatApiMessage.text(role, text))
                         }
                         when (msg.role) {
-                            MessageRole.ASSISTANT -> narrativeEcho.recordHistoryProjection(payloadText, text)
+                            MessageRole.ASSISTANT -> narrativeEcho.recordHistoryProjection(
+                                payloadText, text, history.retainsLegacyFraming,
+                            )
                             MessageRole.USER -> narrativeEcho.recordNarrativePrompt("", text)
                             else -> Unit
                         }

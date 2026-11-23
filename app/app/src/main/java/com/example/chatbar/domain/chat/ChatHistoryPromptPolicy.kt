@@ -11,23 +11,32 @@ internal enum class ChatHistoryPromptZone {
 }
 
 object ChatHistoryPromptPolicy {
+    internal data class RenderedHistory(val text: String, val retainsLegacyFraming: Boolean = false)
+
     fun renderedHistoryText(
         message: ChatMessage,
         renderedBody: String,
         narrativeModesEnabled: Boolean = true,
         legacyHistoryWrapperDeclaredAsOutput: Boolean = false
-    ): String {
+    ): String = renderedHistory(message, renderedBody, narrativeModesEnabled, legacyHistoryWrapperDeclaredAsOutput).text
+
+    internal fun renderedHistory(
+        message: ChatMessage,
+        renderedBody: String,
+        narrativeModesEnabled: Boolean,
+        legacyHistoryWrapperDeclaredAsOutput: Boolean,
+    ): RenderedHistory {
         val mode = MessageAlternativeVersionPolicy.activeVersion(message).narrativeMode
         if (!narrativeModesEnabled || mode == null ||
             message.role != MessageRole.ASSISTANT || renderedBody.isBlank()
-        ) return renderedBody
+        ) return RenderedHistory(renderedBody)
         // Retain the exact legacy projection without inserting a second structural wrapper.
         if (mode == ChatNarrativeMode.FOCUS && !legacyHistoryWrapperDeclaredAsOutput &&
             NarrativeHistoryEcho.isStandaloneLegacyHistoryWrapper(renderedBody) &&
             (message.displayContent == renderedBody ||
                 NarrativeHistoryEcho.isStandaloneLegacyHistoryWrapper(message.displayContent))
-        ) return renderedBody
-        return PromptTemplates.narrativeModeHistoryReply(renderedBody, mode)
+        ) return RenderedHistory(renderedBody, retainsLegacyFraming = true)
+        return RenderedHistory(PromptTemplates.narrativeModeHistoryReply(renderedBody, mode))
     }
 
     fun previousNarrativeMode(

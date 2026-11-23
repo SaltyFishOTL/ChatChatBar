@@ -18,6 +18,40 @@ import org.junit.Test
 
 class ChatHistoryPromptPolicyTest {
     @Test
+    fun unchangedLegacyTextDoesNotCreateTransportProvenanceForAnUnframedVersion() {
+        val previous = "<聚焦模式=\"沉浸\">\n用户手写范例。\n</聚焦模式>"
+        val other = previous.replace("用户手写范例。", "另一个范例。")
+        val unframed = message(MessageRole.ASSISTANT, previous).copy(narrativeMode = null)
+        for (mode in ChatNarrativeMode.entries) {
+            val text = ChatHistoryPromptPolicy.renderedHistoryText(unframed, previous)
+            assertEquals(previous, text)
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null).apply {
+                recordHistoryProjection(previous, text)
+            }
+            assertEquals(other, cleanup.completedBody(other))
+
+            val focused = message(MessageRole.ASSISTANT, previous)
+            val projection = ChatHistoryPromptPolicy.renderedHistory(
+                focused, previous, narrativeModesEnabled = true, legacyHistoryWrapperDeclaredAsOutput = false,
+            )
+            assertTrue(projection.retainsLegacyFraming)
+            val retained = NarrativeHistoryEcho.forRequest(mode, null).apply {
+                recordHistoryProjection(previous, projection.text, projection.retainsLegacyFraming)
+            }
+            assertEquals(previous, retained.completedBody(previous))
+            assertEquals("另一个范例。", retained.completedBody(other))
+
+            val advanced = focused.copy(narrativeMode = ChatNarrativeMode.ADVANCE)
+            val wrapped = ChatHistoryPromptPolicy.renderedHistoryText(advanced, previous)
+            val nested = NarrativeHistoryEcho.forRequest(mode, null).apply {
+                recordHistoryProjection(previous, wrapped)
+            }
+            assertEquals(previous, nested.completedBody(wrapped))
+            assertEquals("另一个范例。", nested.completedBody(PromptTemplates.narrativeModeHistoryReply(other, ChatNarrativeMode.ADVANCE)))
+        }
+    }
+
+    @Test
     fun standaloneLegacyFocusHistoryIsProjectedOnlyOnce() {
         val open = "<聚焦模式=\"沉浸\">"
         val story = "她把书合上。"

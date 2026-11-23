@@ -50,6 +50,12 @@ object MarkdownCodeFences {
         }
     }
 
+    internal fun hasListProseBefore(text: String, start: Int, before: Int): Boolean {
+        val marker = listPrefix.matchAt(text, afterQuotePrefixes(text, start)) ?: return false
+        val proseStart = marker.range.last + 1
+        return proseStart < before && text[proseStart].isLetter()
+    }
+
     fun ranges(content: String): List<IntRange> = blocks(content).filter(Block::topLevel).map(Block::range)
 
     fun blocks(content: String): List<Block> = blocks(content, null)
