@@ -58,7 +58,9 @@ object NarrativeHistoryEcho {
         "(?:(?:必须|务必|请)(?:逐字|原样|完整)保留(?:以下)?首尾标签|" +
             "(?:keep|preserve)[ \\t]+(?:both|the)[ \\t]+(?:opening and closing[ \\t]+)?tags[ \\t]+" +
             "(?:verbatim|exactly as (?:written|shown)))"
-    private const val userTemplateSlot = "(\\[[\\p{L}][\\p{L}\\p{N}_ -]{0,31}\\])"
+    private const val templateSlot = "\\[[\\p{L}][\\p{L}\\p{N}_ -]{0,31}\\]"
+    private const val userTemplateSlot = "($templateSlot)"
+    private val formatTemplateSlot = Regex(templateSlot)
     private val userTemplateInstruction = Regex(
         " {0,3}(?:use (?:exactly )?(?:this|the following) XML (?:shape|template)[,.;][ \\t]*" +
             "replace $userTemplateSlot with (?:new prose|new story text|the new story)[ \\t]+" +
@@ -86,7 +88,22 @@ object NarrativeHistoryEcho {
         RegexOption.IGNORE_CASE,
     )
     private val omitSampleFence = Regex(
-        "(?:^|[，。；,.;][ \\t]*|[ \\t]+and[ \\t]+)$omitTemplateFence[。.]?[ \\t]*$",
+        "(?:^|[，。；,.;][ \\t]*|[ \\t]+and[ \\t]+)($omitTemplateFence)[。.]?[ \\t]*$",
+        RegexOption.IGNORE_CASE,
+    )
+    private val directTemplateKeep = Regex(
+        "(?:^|[。.!?；;])[ \\t]*($keepTemplateTags)(?=$|[，。；,.; \\t])",
+        RegexOption.IGNORE_CASE,
+    )
+    private val headingProhibition = Regex(
+        "(?:^|[。.!?；;])[ \\t]*(" +
+            "(?:(?:下面|以下|这)是(?:一条)?(?:系统|内部|叙事模式)?标题[，,][ \\t]*)?" +
+            "(?:请勿|请?不要|不得|禁止|严禁)(?:在(?:本轮(?:回复中|正文中)?|回复中|正文中))?(?:输出|包含|复制|复述)" +
+            "(?:(?:以下|下列|下面的|这条|该)?(?:系统|内部|叙事模式)?标题)?" +
+            "|(?:please[ \\t]+)?(?:do not|never|must not)[ \\t]+(?:include|copy|output|emit|repeat|reproduce)[ \\t]+" +
+            "(?:(?:the|this|following)[ \\t]+)*(?:(?:internal|system|narrative mode|metadata)[ \\t]+)*(?:heading|title)" +
+            "(?:[ \\t]+(?:in|into)[ \\t]+(?:your|the|this)[ \\t]+(?:reply|answer|output))?" +
+            ")[ \\t]*[：:][ \\t]*$",
         RegexOption.IGNORE_CASE,
     )
     private val trailingStatusLabel = Regex(
@@ -181,8 +198,9 @@ object NarrativeHistoryEcho {
             }
         }
 
-        private fun isAuthored(token: String): Boolean =
-            formatCard?.contains(token) == true || sentUserTexts.any { token in it }
+        private fun isAuthoredHeading(token: String): Boolean =
+            formatCard?.let { hasAuthoredHeading(it, token, narrativeHeadings) } == true ||
+                sentUserTexts.any { hasAuthoredHeading(it, token, narrativeHeadings) }
 
         private fun isAuthoredClosing(token: String): Boolean {
             if (sentUserTexts.any { token in it }) return true
@@ -238,11 +256,11 @@ object NarrativeHistoryEcho {
                 }
             }
 
-            val headings = narrativeHeadings.filterNot(::isAuthored)
+            val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
             val replyFormat = if (authoredTemplateOpenings.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + authoredTemplateOpenings)
             }
-            val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthored)
+            val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthoredHeading)
             val body = text.substring(reply)
             val lengths = if (reply == text.indices) partLengths else partLengths.trimTo(reply, text.length)
             val cleaned = cleanCompletedBody(
@@ -251,11 +269,11 @@ object NarrativeHistoryEcho {
                 authoredPairs = authoredPairs,
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->
-                    val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthored))
+                    val exposed = inner.substring(withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading))
                     withoutHeadingBeforeTrailer(exposed, headings, provisional, formatOutput)
                 },
                 cleanPartHeading = { part: String, isJoinedLiteral: (Int) -> Boolean ->
-                    part.substring(withoutEchoedHeading(part, headings, provisional, ::isAuthored, isJoinedLiteral))
+                    part.substring(withoutEchoedHeading(part, headings, provisional, ::isAuthoredHeading, isJoinedLiteral))
                 }.takeIf { headings.isNotEmpty() },
             )
             if (cleaned != body) {
@@ -382,6 +400,29 @@ object NarrativeHistoryEcho {
             enabled = openings.isNotEmpty(), formatOutput = output, repairOpenings = openings,
             repairLiteralSources = sources,
         )
+    }
+
+    private fun hasAuthoredHeading(source: String, token: String, issuedHeadings: Set<String>): Boolean {
+        var position = source.indexOf(token)
+        if (position < 0) return false
+        val possibleHeadings = issuedHeadings.filter { it.startsWith(token) }
+        val literals by lazy(LazyThreadSafetyMode.NONE) { classifyLiterals(source) }
+        while (position >= 0) {
+            val heading = possibleHeadings.firstOrNull { source.startsWith(it, position) } ?: return true
+            val start = lineStart(source, position)
+            val end = position + heading.length
+            val lineEnd = source.indexOfAny(charArrayOf('\r', '\n'), end).takeIf { it >= 0 } ?: source.length
+            if (source.substring(end, lineEnd).isNotBlank()) return true
+            val lead = if (source.substring(start, position).isNotBlank()) start until position else {
+                previousVisibleLine(source, start) ?: return true
+            }
+            val instruction = headingProhibition.find(source.substring(lead))?.groups?.get(1) ?: return true
+            if (!literals.isUnprotected(lead.first + instruction.range.first) || !literals.isUnprotected(position)) {
+                return true
+            }
+            position = source.indexOf(token, end)
+        }
+        return false
     }
 
     private fun withoutEchoedHeading(
@@ -576,13 +617,15 @@ object NarrativeHistoryEcho {
                 val explicitReplySample = isReplySample && requiresUnfencedTags(precedingInstruction)
                 val explicitOutputFormat = outputFormatLabel.matches(labelText) &&
                     (requiresUnfencedTags(precedingInstruction) || requiresUnfencedTags(literals.visibleLine(after)))
-                if (fence.info.lowercase() !in formatTemplateFenceInfo ||
-                    !fencedTemplateLabel.matches(labelText) && !formatTemplateLabel.matches(labelText) &&
-                    !explicitReplySample && !explicitOutputFormat
-                ) continue
+                if (fence.info.lowercase() !in formatTemplateFenceInfo) continue
+                val labeled = fencedTemplateLabel.matches(labelText) || formatTemplateLabel.matches(labelText) ||
+                    explicitReplySample || explicitOutputFormat
                 val wrapper = candidates.firstOrNull {
                     template.startsWith(it.opening) && it.closings.any(template::endsWith)
                 } ?: continue
+                if (!labeled && (!wrapper.hasTemplateSlot(template) || !literals.directlyRequiresUnfencedTags(label, before))) {
+                    continue
+                }
                 if (cleanReply(template, streaming = false, interrupted = false, requirePair = true).matchedOuterPair) {
                     add(wrapper.opening)
                     if (before != null && singlePairTemplateConstraint.matches(literals.markdown.substring(before)) &&
@@ -606,6 +649,25 @@ object NarrativeHistoryEcho {
 
     private fun requiresUnfencedTags(instruction: String?): Boolean =
         instruction != null && keepSampleTags.containsMatchIn(instruction) && omitSampleFence.containsMatchIn(instruction)
+
+    private fun ReplyLiterals.directlyRequiresUnfencedTags(line: IntRange, previous: IntRange?): Boolean {
+        val adjacent = previous?.takeIf {
+            markdown.subSequence(it.last + 1, line.first).count { char -> char == '\n' } == 1
+        }
+        val lines = listOfNotNull(adjacent, line)
+        fun hasVisibleCommand(pattern: Regex): Boolean = lines.any { range ->
+            val command = visibleLine(range)?.trimEnd()?.let(pattern::find)?.groups?.get(1)
+            command != null && isUnprotected(range.first + command.range.first) &&
+                isUnprotected(range.first + command.range.last)
+        }
+        return hasVisibleCommand(directTemplateKeep) && hasVisibleCommand(omitSampleFence)
+    }
+
+    private fun Wrapper.hasTemplateSlot(template: String): Boolean {
+        if (!isStandalonePair(template)) return false
+        val close = closings.first(template::endsWith)
+        return formatTemplateSlot.matches(template.substring(opening.length, template.length - close.length).trim())
+    }
 
     private fun ReplyLiterals.visibleLine(line: IntRange?): String? =
         line?.takeIf { isUnprotected(it.first) }?.let(markdown::substring)

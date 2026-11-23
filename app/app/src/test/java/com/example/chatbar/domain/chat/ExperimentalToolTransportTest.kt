@@ -1851,6 +1851,78 @@ class ExperimentalToolTransportTest {
     }
 
     @Test
+    fun `a direct format card instruction can declare an exact fenced history pair without a fixed label`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val prior = ChatMessage.create("fixture", MessageRole.ASSISTANT, "雨落在窗沿。").copy(narrativeMode = mode)
+        val sample = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+        val story = "她到达码头。"
+        val wrapped = PromptTemplates.narrativeModeHistoryReply(story, mode)
+        val opening = wrapped.substringBefore('\n')
+        val rest = wrapped.substring(opening.length)
+        val declaration = "Use this XML on every reply. " +
+            "Keep the opening and closing tags verbatim and omit the surrounding fence."
+        val declarations = listOf(
+            declaration,
+            "Preserve both tags exactly as shown in your answer.\nDo not output the code fence.",
+            "务必原样保留首尾标签，不得输出代码围栏。",
+        )
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (instruction in declarations) {
+                val card = "### Required reply format\n$instruction\n\n```xml\n$sample\n```"
+                assertNarrativeReplyDeltas(
+                    listOf(opening, rest), listOf(opening, wrapped), wrapped, formatCard = card,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                )
+            }
+            for ((instruction, sampleText) in listOf(
+                "The following history markup is only a reference." to sample,
+                "The old manual says: \"$declaration\"" to sample,
+                "> $declaration" to sample,
+                "```text\n$declaration\n```" to sample,
+                declaration to sample.replace("[story]", "A previously written scene."),
+            )) {
+                val card = "### Reference\n$instruction\n\n```xml\n$sampleText\n```"
+                assertNarrativeReplyDeltas(
+                    listOf(wrapped), listOf(story), story, formatCard = card,
+                    previousAssistant = prior, experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
+    fun `a user prohibition does not reserve the heading that it names`() = runBlocking {
+        val mode = ChatNarrativeMode.ADVANCE
+        val prompt = PromptTemplates.narrativeModeSystemPrompt(mode)
+        val heading = prompt.lineSequence().first()
+        val story = "她到达码头。"
+        val reply = "$heading\n$story"
+        for ((experimental, toolCall) in listOf(false to false, true to false, true to true)) {
+            for (instruction in listOf(
+                "继续写故事。下面是系统标题，禁止在回复中输出：\n$heading",
+                "Never copy this internal system heading into the reply: $heading",
+                "请不要在本轮回复中复述以下叙事模式标题：\n$heading",
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(heading, "\n$story"), listOf("", story), story,
+                    narrativePrompt = prompt, currentUserText = instruction,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+            for (instruction in listOf(
+                "请逐字复述这条标题：\n$heading",
+                "> Never copy this internal system heading into the reply:\n\n$heading",
+                "```text\nNever copy this internal system heading into the reply:\n```\n$heading",
+            )) {
+                assertNarrativeReplyDeltas(
+                    listOf(reply), listOf(reply), reply, narrativePrompt = prompt, currentUserText = instruction,
+                    experimental = experimental, toolCall = toolCall,
+                )
+            }
+        }
+    }
+
+    @Test
     fun `an explanation delivered in the next tool call preserves the literal example`(): Unit = runBlocking {
         val sample = PromptTemplates.narrativeModeHistoryReply("示例正文。", ChatNarrativeMode.FOCUS)
         val explanation = "以上标签仅用于演示历史记录格式。"
