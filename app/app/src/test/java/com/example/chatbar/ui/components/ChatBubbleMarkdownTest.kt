@@ -122,12 +122,15 @@ class ChatBubbleMarkdownTest {
     }
 
     @Test
-    fun roleplayMarkdown_keepsNestedShortPlainFencesBesideLegacyStatus() {
+    fun roleplayMarkdown_keepsNestedShortTextFencesBesideLegacyStatus() {
         val literal = "</历史回复><n=\"Mina\"/>[literal]  "
-        val status = "```text\n生命：10\n```"
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val status = "```text$label\n生命：10\n$label```"
         for (code in listOf(
             "> > ```text\n> > $literal\n> > ```",
             "- ```\n  $literal\n  ```",
+            "> > ```Text example\n> > $literal\n> > ```",
+            "- ```text$label\n  $literal\n  $label```",
         )) {
             val raw = "$code\n\n$status"
             val segments = parseRoleplayTextSegments(raw)
@@ -137,7 +140,7 @@ class ChatBubbleMarkdownTest {
             val legacy = parseRoleplayContent(stripRoleplaySpeakerMarkers(raw))
             assertEquals(code,
                 sanitizeRoleplayMarkdown((legacy.first() as RoleplayContentSegment.Markdown).text).trimEnd())
-            assertEquals("生命：10", (legacy.last() as RoleplayContentSegment.Status).text)
+            assertEquals("生命：10\n$label", (legacy.last() as RoleplayContentSegment.Status).text)
         }
     }
 

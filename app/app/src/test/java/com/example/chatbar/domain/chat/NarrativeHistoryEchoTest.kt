@@ -662,6 +662,35 @@ class NarrativeHistoryEchoTest {
     }
 
     @Test
+    fun xmlCdataKeepsLiteralTagsWhileRemovingTheOuterEcho() {
+        val closing = "</历史回复>"
+        for (mode in ChatNarrativeMode.entries) {
+            val cleanup = NarrativeHistoryEcho.forRequest(mode, null)
+            val opening = "<历史回复 模式=\"${mode.shortLabel}\">"
+            val xmlStart = "<example><![CDATA[\n$closing\n<!-- literal opener\n```text\n\"literal quote"
+            val xml = "$xmlStart\n]]></example>"
+            val parts = listOf("$opening\n$xmlStart", "]]></example>\n$closing")
+            for ((streaming, interrupted) in listOf(true to false, false to true, false to false)) {
+                assertEquals(xml, cleanup.completedBody(
+                    "$opening\n$xml\n$closing", streaming = streaming, interrupted = interrupted,
+                ))
+                assertEquals(xml, cleanup.completedBody(
+                    parts.joinToString("\n"), streaming = streaming, interrupted = interrupted,
+                    partLengths = parts.map(String::length),
+                ))
+            }
+
+            val partialTag = closing.dropLast(1)
+            val interruptedXml = "$xmlStart\n$partialTag"
+            assertEquals(interruptedXml, cleanup.completedBody("$opening\n$interruptedXml", streaming = true))
+            assertEquals(interruptedXml, cleanup.completedBody("$opening\n$interruptedXml", interrupted = true))
+            assertEquals(xml, cleanup.completedBody("$opening\n$xml\n$partialTag", interrupted = true))
+            val escapedMarker = "字面标记 \\<![CDATA[\n正文。"
+            assertEquals(escapedMarker, cleanup.completedBody("$opening\n$escapedMarker\n$closing", streaming = true))
+        }
+    }
+
+    @Test
     fun aNestedExampleKeepsItsClosingWithOrWithoutAnOuterClosing() {
         val opening = "<历史回复 模式=\"聚焦\">"
         for (streaming in listOf(false, true)) {

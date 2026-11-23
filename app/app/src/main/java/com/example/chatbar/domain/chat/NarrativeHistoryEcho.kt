@@ -7,6 +7,7 @@ object NarrativeHistoryEcho {
     private data class Wrapper(val name: String, val opening: String, val closings: List<String>)
     private data class WrapperBoundary(val closing: MatchResult?, val canEndWithPartialClose: Boolean)
     private data class CleanedReply(val body: String, val matchedOuterPair: Boolean = false)
+    private data class LiteralMarkup(val range: IntRange, val isComment: Boolean)
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
         val roleplayLiteralCode: List<IntRange>,
@@ -29,6 +30,8 @@ object NarrativeHistoryEcho {
     private val backtickRuns = Regex("`+")
     private const val commentOpening = "<!--"
     private val commentDelimiters = Regex("<!--|-->")
+    private const val cdataOpening = "<![CDATA["
+    private const val cdataClosing = "]]>"
     private val formatTemplateLabel = Regex(
         " {0,3}(\\*\\*|)(?:(?:本轮)?输出(?:模板|格式)|本轮的固定输出模板|请按以下格式输出|" +
             "每次回复必须使用此固定模板)[ \\t]*[:：]\\1[ \\t]*",
@@ -45,7 +48,7 @@ object NarrativeHistoryEcho {
         " {0,3}(?:以下是禁止输出的反例[。.:：]?|以下标签仅供举例，不要在回复中输出[:：])[ \\t]*",
     )
     private val formatCounterexampleTail = Regex(" {0,3}不得输出上面的标签[。.]?[ \\t]*")
-    private val statusFenceInfo = Regex("(?:text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
+    private val statusFenceInfo = Regex("(text|status)(?=$|[ \\t(（]).*", RegexOption.IGNORE_CASE)
     private val paragraphBreak = Regex("\\r?\\n[ \\t]*\\r?\\n")
     private val bareCarriageReturn = Regex("\\r(?!\\n)")
     private val proseDelimiters = mapOf(
@@ -409,7 +412,9 @@ object NarrativeHistoryEcho {
 
     /** Preserve Markdown code while keeping legacy status fences eligible for roleplay parsing. */
     internal fun roleplayLiteralCodeRanges(text: String): List<IntRange> {
-        if ('`' !in text && '~' !in text && '\t' !in text && "    " !in text) return emptyList()
+        if ('`' !in text && '~' !in text && '\t' !in text && "    " !in text && cdataOpening !in text) {
+            return emptyList()
+        }
         val code = classifyLiterals(text, interpretProseQuotes = false).roleplayLiteralCode
         return buildList {
             for (range in code.sortedBy { it.first }) {
@@ -432,9 +437,10 @@ object NarrativeHistoryEcho {
     ): ReplyLiterals {
         val markdown = bareCarriageReturn.replace(end, "\n")
         val comments = mutableListOf<IntRange>()
-        var nextComment: IntRange? = null
+        val cdata = mutableListOf<IntRange>()
+        var nextMarkup: LiteralMarkup? = null
 
-        fun inspect(source: String, onComment: ((IntRange) -> Unit)?): ReplyLiterals {
+        fun inspect(source: String, onMarkup: ((LiteralMarkup) -> Unit)?): ReplyLiterals {
             val lazyQuoteLineStarts = mutableSetOf<Int>()
             val listItemLineStarts = mutableSetOf<Int>()
             val indentedParagraphLineStarts = mutableSetOf<Int>()
@@ -449,13 +455,14 @@ object NarrativeHistoryEcho {
             val codeBlocks = indentedCode + fences.map { it.range }
             val inlineCode = inlineCodeRangesOutsideBlocks(source, codeBlocks, indentedParagraphLineStarts)
             val literalFences = fences.filter { fence ->
+                val statusKind = statusFenceInfo.matchEntire(fence.info)?.groupValues?.get(1)
                 val nestedPlainCode = !fence.topLevel &&
-                    (fence.info.isEmpty() || fence.info.equals("text", ignoreCase = true))
+                    (fence.info.isEmpty() || statusKind.equals("text", ignoreCase = true))
                 fence.marker == '~' || fence.markerLength > 3 || nestedPlainCode ||
-                    fence.info.isNotEmpty() && !statusFenceInfo.matches(fence.info)
+                    fence.info.isNotEmpty() && statusKind == null
             }
-            val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range }
-            val ranges = codeBlocks + inlineCode + comments
+            val roleplayLiteralCode = indentedCode + inlineCode + literalFences.map { it.range } + cdata
+            val ranges = codeBlocks + inlineCode + comments + cdata
             val quoteDelimitersToSkip = ranges + familyTags.map { it.range }
             val interiorClosings = if (includeUnclosed) familyTags.mapIndexedNotNull { index, tag ->
                 val position = tag.range.first
@@ -470,7 +477,7 @@ object NarrativeHistoryEcho {
                 }
             } else emptyList()
             val quotes = proseQuoteRanges(
-                end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onComment,
+                end, source, quoteDelimitersToSkip, includeUnclosed, interiorClosings, onMarkup,
                 interpretProseQuotes,
             )
             return ReplyLiterals(
@@ -479,14 +486,14 @@ object NarrativeHistoryEcho {
             )
         }
 
-        val capture = { range: IntRange -> nextComment = range }
-        var result = inspect(markdown, capture.takeIf { commentOpening in markdown })
+        val capture = { markup: LiteralMarkup -> nextMarkup = markup }
+        var result = inspect(markdown, capture.takeIf { commentOpening in markdown || cdataOpening in markdown })
         while (true) {
-            val range = nextComment ?: break
-            comments += range
-            nextComment = null
-            // A comment can itself contain a fence opener, so rescan the masked Markdown.
-            result = inspect(maskHtmlComments(markdown, comments), capture)
+            val markup = nextMarkup ?: break
+            if (markup.isComment) comments += markup.range else cdata += markup.range
+            nextMarkup = null
+            // Literal markup can itself contain a fence opener, so rescan the masked Markdown.
+            result = inspect(maskLiteralMarkup(markdown, comments + cdata), capture)
         }
         return result
     }
@@ -539,13 +546,13 @@ object NarrativeHistoryEcho {
         delimiterExclusions: List<IntRange>,
         includeUnclosed: Boolean,
         interiorClosings: List<Int>,
-        onComment: ((IntRange) -> Unit)?,
+        onMarkup: ((LiteralMarkup) -> Unit)?,
         interpretProseQuotes: Boolean,
     ): List<IntRange> = buildList {
         var open = -1
         var closing: Char? = null
         var depth = 0
-        var canOpenComment = onComment != null
+        var canOpenComment = onMarkup != null
         fun isProseDelimiter(index: Int): Boolean =
             !isEscaped(text, index) && delimiterExclusions.none { index in it }
 
@@ -556,11 +563,20 @@ object NarrativeHistoryEcho {
                 val end = closedCommentEnd(text, index)
                 val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
                 if (end != null || includeUnclosed && open < 0 && !inQuote) {
-                    onComment?.invoke(index until (end ?: text.length))
+                    onMarkup?.invoke(LiteralMarkup(index until (end ?: text.length), isComment = true))
                     break
                 }
                 // The body renderer treats the rest of a completed, unclosed comment as ordinary text.
                 if (open < 0 && !inQuote) canOpenComment = false
+            }
+            if (onMarkup != null && open < 0 && text.startsWith(cdataOpening, index) && isProseDelimiter(index)) {
+                val close = text.indexOf(cdataClosing, index + cdataOpening.length)
+                val inQuote = MarkdownCodeFences.hasQuoteContainerPrefix(markdown, lineStart(markdown, index))
+                if (close >= 0 || includeUnclosed && !inQuote) {
+                    val end = if (close >= 0) close + cdataClosing.length else text.length
+                    onMarkup(LiteralMarkup(index until end, isComment = false))
+                    break
+                }
             }
             if (!interpretProseQuotes) continue
             val symbol = text[index]
@@ -624,17 +640,17 @@ object NarrativeHistoryEcho {
         text.getOrNull(position - 1)?.isLetterOrDigit() == true &&
             text.getOrNull(position + 1)?.isLetterOrDigit() == true
 
-    private fun maskHtmlComments(source: String, comments: List<IntRange>): String {
+    private fun maskLiteralMarkup(source: String, markup: List<IntRange>): String {
         val masked = source.toCharArray()
-        val leadingComments = mutableMapOf<Int, IntRange>()
-        for (comment in comments) {
-            var start = lineStart(source, comment.first)
-            while (start <= comment.last) {
+        val leadingMarkup = mutableMapOf<Int, IntRange>()
+        for (range in markup.sortedBy { it.first }) {
+            var start = lineStart(source, range.first)
+            while (start <= range.last) {
                 val end = source.indexOf('\n', start).takeIf { it >= 0 } ?: source.length
-                val first = maxOf(start, comment.first)
-                val limit = minOf(end, comment.last + 1)
+                val first = maxOf(start, range.first)
+                val limit = minOf(end, range.last + 1)
                 if (first < limit && (start until first).all { source[it] == ' ' || source[it] == '\t' }) {
-                    leadingComments.putIfAbsent(start, first until end)
+                    leadingMarkup.putIfAbsent(start, first until end)
                 }
                 for (offset in first until limit) {
                     if (masked[offset] != '\r') masked[offset] = ' '
@@ -642,8 +658,8 @@ object NarrativeHistoryEcho {
                 start = end + 1
             }
         }
-        for (line in leadingComments.values) {
-            // Preserve the original indentation of visible content on mixed lines. Comment-only
+        for (line in leadingMarkup.values) {
+            // Preserve the original indentation of visible content on mixed lines. Markup-only
             // lines stay blank so they cannot turn the following indented code into a paragraph.
             if (line.any { !masked[it].isWhitespace() }) masked[line.first] = '\uFFFC'
         }

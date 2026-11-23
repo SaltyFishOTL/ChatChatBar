@@ -134,8 +134,11 @@ class ChatHistoryPromptPolicyTest {
         val closing = "</历史回复>"
         val quotedCode = "> > ```text\n> > $closing\n> > ```"
         val listCode = "- ```\n  [literal]  \n  ```"
-        val story = "她读出教程。\n\n$quotedCode\n\n$listCode\n\n她关上电脑。"
-        val status = "```text\n生命：10\n```"
+        val metadataCode = "> ```text example\n> $closing\n> ```"
+        val label = "（三个点为状态包裹格式，必须完整输出）"
+        val annotatedCode = "- ```text$label\n  $closing\n  $label```"
+        val story = "她读出教程。\n\n$quotedCode\n\n$listCode\n\n$metadataCode\n\n$annotatedCode\n\n她关上电脑。"
+        val status = "```text$label\n生命：10\n$label```"
         val wrapped = "$opening\n$story\n\n$status\n$closing"
         val cleaned = NarrativeHistoryEcho.forRequest(ChatNarrativeMode.ADVANCE, null).completedBody(wrapped)
         val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = ChatNarrativeMode.ADVANCE)
@@ -145,6 +148,24 @@ class ChatHistoryPromptPolicyTest {
         assertEquals(JsonPrimitive("$opening\n$story\n$closing"),
             ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)).content)
         assertEquals(cleaned, ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.PREVIOUS_TURN))
+    }
+
+    @Test
+    fun cdataRemainsLiteralInReadAndSerializedHistory() {
+        val mode = ChatNarrativeMode.FOCUS
+        val xml = "<example><![CDATA[\n</历史回复>\n<!-- literal -->\n```text\n[example]\n```\n]]></example>"
+        val status = "```text\n真实状态\n```"
+        val reply = PromptTemplates.narrativeModeHistoryReply("$xml\n\n$status", mode)
+        val cleaned = NarrativeHistoryEcho.forRequest(mode, null).completedBody(reply)
+        val assistant = message(MessageRole.ASSISTANT, cleaned).copy(narrativeMode = mode)
+
+        assertEquals("$xml\n\n$status", cleaned)
+        val segments = parseRoleplayTextSegments(assistant.displayContent)
+        assertEquals(listOf(RoleplaySegmentKind.NARRATION, RoleplaySegmentKind.STATUS), segments.map { it.kind })
+        assertEquals(xml, segments.first().rawText.trimEnd())
+        val earlier = ChatHistoryPromptPolicy.sourceText(assistant, true, ChatHistoryPromptZone.EARLIER_HISTORY)
+        assertEquals(JsonPrimitive(PromptTemplates.narrativeModeHistoryReply(xml, mode)),
+            ChatApiMessage.text("assistant", ChatHistoryPromptPolicy.renderedHistoryText(assistant, earlier)).content)
     }
 
     @Test
