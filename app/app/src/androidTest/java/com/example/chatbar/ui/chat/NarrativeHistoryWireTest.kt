@@ -64,6 +64,8 @@ class NarrativeHistoryWireTest {
         SAME_LINE_DIRECTIVE_MULTILINE, TOOL_SPLIT_CAPTION, CARD_ORPHAN_NO_HISTORY, STRONG_SUFFIX_OPEN,
         PADDED_OPENER, AUTHORED_CLOSE_EXTRA, HISTORICAL_TEMPLATE_PROHIBITED,
         LAZY_LIST_CLOSE, CAPTIONED_CLOSE, LAZY_QUOTE_CLOSE, ORDINARY_CAPTIONED_CLOSE, CHARACTER_POST_HISTORY,
+        CHARACTER_TAIL_OPEN, CHARACTER_TAIL_CLOSE, CHARACTER_CORE, USER_COMPACT_TEMPLATE, STRONG_SUFFIX_DENIAL,
+        DOCUMENTARY_FORMAT, BOUNDED_LOG_QUOTATION,
     }
     private enum class RepairSecondCall { COMPLETE, INCOMPLETE, MALFORMED, GAP }
     private enum class RepairOrphan {
@@ -219,6 +221,25 @@ class NarrativeHistoryWireTest {
             repairMode = ChatNarrativeMode.ADVANCE)
     }
 
+    @Test fun explicitCharacterCoreAndStandaloneTailSurviveRealStopAndDone() = runBlocking {
+        for (literal in listOf(LiteralCase.CHARACTER_CORE, LiteralCase.CHARACTER_TAIL_OPEN, LiteralCase.CHARACTER_TAIL_CLOSE)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TEXT, stop = false, literal = literal)
+        }
+    }
+
+    @Test fun compactUserTemplateAndLaterExactStrongDenialReachColdStorage() = runBlocking {
+        for (literal in listOf(LiteralCase.USER_COMPACT_TEMPLATE, LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT)) {
+            verifyReply(Transport.ORDINARY, stop = true, literal = literal)
+            verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = literal)
+        }
+    }
+
+    @Test fun boundedLogQuotationSurvivesActualMultipartStopAndDone() = runBlocking {
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, literal = LiteralCase.BOUNDED_LOG_QUOTATION)
+        verifyReply(Transport.EXPERIMENTAL_TOOL, stop = false, literal = LiteralCase.BOUNDED_LOG_QUOTATION)
+    }
+
     @Test fun stopPersistsTwoCompleteToolCallsWhileTheProviderTerminalIsHeld() = runBlocking {
         verifyReply(Transport.EXPERIMENTAL_TOOL, stop = true, stopAfterCompleteToolCalls = true)
     }
@@ -274,11 +295,6 @@ class NarrativeHistoryWireTest {
             LiteralCase.CHARACTER_POST_HISTORY -> "$cardName turned the page."
             else -> "She opens the door and walks into the courtyard."
         }
-        val customTail = if (literal == LiteralCase.CHARACTER_POST_HISTORY) {
-            "Copy this text verbatim:\n" +
-                PromptTemplates.narrativeModeHistoryReply("{{char}} turned the page.", mode)
-        } else ""
-        val card = CharacterCard.create(cardName).copy(postHistoryInstructions = customTail)
         val template = PromptTemplates.narrativeModeHistoryReply("[story]", mode).prependIndent("> ")
         val framedReply = PromptTemplates.narrativeModeHistoryReply(prose, mode)
         val opener = framedReply.substringBefore('\n')
@@ -291,6 +307,16 @@ class NarrativeHistoryWireTest {
         val splitCaption = "The literal closing tag is:"
         val bodyWithClosingLiteral = "屏幕显示 `$closing`。新句。"
         val historicalTemplate = PromptTemplates.narrativeModeHistoryReply("[story]", mode)
+        val customTail = when (literal) {
+            LiteralCase.CHARACTER_POST_HISTORY -> "Copy this text verbatim:\n" +
+                PromptTemplates.narrativeModeHistoryReply("{{char}} turned the page.", mode)
+            LiteralCase.CHARACTER_TAIL_OPEN -> "Please show the literal opening tag only on its own line, then explain it:\n$opener"
+            LiteralCase.CHARACTER_TAIL_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
+            else -> ""
+        }
+        val customCore = "Required output template (keep both tags verbatim):\n$historicalTemplate"
+            .takeIf { literal == LiteralCase.CHARACTER_CORE }.orEmpty()
+        val card = CharacterCard.create(cardName).copy(systemPrompt = customCore, postHistoryInstructions = customTail)
         val historicalUser = when {
             literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ->
                 "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$historicalTemplate"
@@ -304,6 +330,16 @@ class NarrativeHistoryWireTest {
                 FormatCard.create("Synthetic prohibited history sample",
                     "The following is a counterexample:\n$sample\nDo not output these history tags in your reply.")
             }
+            LiteralCase.DOCUMENTARY_FORMAT -> FormatCard.create(
+                "Synthetic historical reference",
+                "Reference only — the following tags record older history; never reproduce this sample in the answer:\n" +
+                    PromptTemplates.narrativeModeHistoryReply("An older turn.", mode) + "\nWrite plain narration.",
+            )
+            LiteralCase.STRONG_SUFFIX_DENIAL -> FormatCard.create("Synthetic strong denial", "Continue in ordinary prose.").copy(
+                userTools = listOf(FormatCardUserToolConfig.strongPromptSuffix().copy(
+                    text = "Do not output the following history tags:\n$historicalTemplate",
+                )),
+            )
             LiteralCase.STRONG_SUFFIX_OPEN -> FormatCard.create("Synthetic strong suffix", "Continue in ordinary prose.").copy(
                 userTools = listOf(FormatCardUserToolConfig.strongPromptSuffix().copy(
                     text = "Show the literal opening tag only on its own line, then explain it:\n$opener",
@@ -316,6 +352,8 @@ class NarrativeHistoryWireTest {
         val lazyQuoteExample = "> Closing tag example:\n$closing"
         val ordinaryCaption = "The screen shows this literal closing tag:\n$closing"
         val ordinaryCaptionedBody = if (stop) ordinaryCaption else "$ordinaryCaption\nShe turned the page."
+        val quoteLead = "Below is a literal quotation copied from the history log."
+        val quoteTail = "That was a verbatim quotation from the log."
         val listBody = if (stop) listExample else "$listExample\n\nThe explanation continues."
         val authorsTemplate = !stop && continuation == null && literal == null && legacyFirst == null && toolIndexes == null
         val input = when {
@@ -328,6 +366,10 @@ class NarrativeHistoryWireTest {
             literal == LiteralCase.CAPTIONED_CLOSE -> "Please show the literal closing tag only on its own line:\n$closing"
             literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> "Please preserve the literal token `$closing`."
             literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED -> "Do not output the following history tags:\n$historicalTemplate"
+            literal == LiteralCase.USER_COMPACT_TEMPLATE ->
+                "Use exactly this XML template, replace [story] with new prose and keep both tags verbatim:\n" +
+                    historicalTemplate.replace("\n", "")
+            literal == LiteralCase.STRONG_SUFFIX_DENIAL -> "Required output template (keep both tags verbatim):\n$historicalTemplate"
             authorsTemplate -> "Use exactly this XML shape, replace [story] with new prose and keep both tags:\n$template"
             else -> "Continue the scene."
         }
@@ -354,7 +396,11 @@ class NarrativeHistoryWireTest {
             LiteralCase.LAZY_LIST_CLOSE -> if (stop) "$opener\n$listBody" else PromptTemplates.narrativeModeHistoryReply(listBody, mode)
             LiteralCase.ORDINARY_CAPTIONED_CLOSE -> if (stop) "$opener\n$ordinaryCaptionedBody"
                 else PromptTemplates.narrativeModeHistoryReply(ordinaryCaptionedBody, mode)
-            LiteralCase.CHARACTER_POST_HISTORY -> framedReply
+            LiteralCase.CHARACTER_POST_HISTORY, LiteralCase.CHARACTER_CORE, LiteralCase.USER_COMPACT_TEMPLATE,
+            LiteralCase.STRONG_SUFFIX_DENIAL, LiteralCase.DOCUMENTARY_FORMAT -> framedReply
+            LiteralCase.CHARACTER_TAIL_OPEN -> "$opener\nThis is the opening tag."
+            LiteralCase.CHARACTER_TAIL_CLOSE -> "$opener\n$captionedExample"
+            LiteralCase.BOUNDED_LOG_QUOTATION -> "$quoteLead\n$framedReply\n$quoteTail"
             null -> when (legacyFirst) {
                 true -> "$legacyReply\n$framedReply"
                 false -> "$framedReply\n$legacyReply"
@@ -366,6 +412,7 @@ class NarrativeHistoryWireTest {
         val parts = when {
             toolIndexes != null -> toolIndexes.map { if (it == 0) prose else disconnectedText }
             literal == LiteralCase.TOOL_SPLIT_CAPTION -> listOf(splitCaption, closing)
+            literal == LiteralCase.BOUNDED_LOG_QUOTATION -> listOf(quoteLead, framedReply, quoteTail)
             stopAfterCompleteToolCalls -> listOf("$opener\n$prose", "$secondScene\n$closing")
             continuation != null -> listOf(
                 reply.substringBeforeLast('\n'), "$secondScene\n${reply.substringAfterLast('\n')}", continuation,
@@ -376,12 +423,13 @@ class NarrativeHistoryWireTest {
             stopAfterCompleteToolCalls -> "$prose\n$secondScene"
             continuation != null -> listOf(prose, secondScene, continuation).joinToString("\n")
             literal == LiteralCase.LAZY_LIST_CLOSE -> listBody
-            literal == LiteralCase.CAPTIONED_CLOSE -> captionedExample
+            literal == LiteralCase.CAPTIONED_CLOSE || literal == LiteralCase.CHARACTER_TAIL_CLOSE -> captionedExample
             literal == LiteralCase.LAZY_QUOTE_CLOSE -> lazyQuoteExample
             literal == LiteralCase.ORDINARY_CAPTIONED_CLOSE -> ordinaryCaptionedBody
             literal == LiteralCase.ADJACENT_AUTHORED -> "$prose\n$adjacentAuthored"
             literal == LiteralCase.CARD_ORPHAN_NO_HISTORY -> prose
-            literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED -> prose
+            literal == LiteralCase.PADDED_OPENER || literal == LiteralCase.HISTORICAL_TEMPLATE_PROHIBITED ||
+                literal == LiteralCase.STRONG_SUFFIX_DENIAL || literal == LiteralCase.DOCUMENTARY_FORMAT -> prose
             literal == LiteralCase.AUTHORED_CLOSE_EXTRA -> bodyWithClosingLiteral
             legacyFirst == true -> "$legacyScene\n$prose"
             legacyFirst == false -> "$prose\n$legacyScene"
@@ -389,8 +437,8 @@ class NarrativeHistoryWireTest {
             else -> prose
         }
         val modelName = "Synthetic narrative wire ${transport.name}"
-        val reasoningWitness = "Provider has sent both synthetic calls.".takeIf {
-            stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION
+        val reasoningWitness = "Provider has sent every synthetic call.".takeIf {
+            stopAfterCompleteToolCalls || literal == LiteralCase.TOOL_SPLIT_CAPTION || literal == LiteralCase.BOUNDED_LOG_QUOTATION
         }
         HeldNarrativeReplyServer(parts, tool = transport == Transport.EXPERIMENTAL_TOOL, reasoningWitness = reasoningWitness,
             toolIndexes = toolIndexes, finishReason = "length".takeIf { literal == LiteralCase.PADDED_OPENER }).use { server ->
@@ -431,10 +479,16 @@ class NarrativeHistoryWireTest {
                 assertEquals(includePrior, messages.any { it.hasMessage("assistant", PromptTemplates.narrativeModeHistoryReply(prior, mode)) })
                 priorLegacy?.let { body -> assertTrue(messages.any { it.hasMessage("assistant", body) }) }
                 historicalUser?.let { body -> assertTrue(messages.any { it.hasMessage("user", body) }) }
+                if (customCore.isNotEmpty()) {
+                    val first = Json.parseToJsonElement(request).jsonObject.getValue("messages").jsonArray.first().jsonObject
+                    assertEquals("system", first["role"]?.jsonPrimitive?.content)
+                    assertTrue(customCore in first.getValue("content").jsonPrimitive.content)
+                }
                 if (customTail.isNotEmpty()) {
                     val expectedTail = customTail.replace("{{char}}", cardName)
+                    val tailRole = if (transport.experimental) "system" else "assistant"
                     assertTrue(messages.any { entry ->
-                        entry.jsonObject["role"]?.jsonPrimitive?.content == "system" &&
+                        entry.jsonObject["role"]?.jsonPrimitive?.content == tailRole &&
                             (entry.jsonObject["content"] as? JsonPrimitive)?.content?.contains(expectedTail) == true
                     })
                 }
@@ -447,10 +501,18 @@ class NarrativeHistoryWireTest {
                     })
                 }
                 assertTrue(messages.any { it.hasMessage("user", input) })
+                if (literal == LiteralCase.STRONG_SUFFIX_DENIAL) {
+                    val user = messages.indexOfFirst { it.hasMessage("user", input) }
+                    val role = if (transport.experimental) "system" else "assistant"
+                    val strongText = checkNotNull(selectedFormatCard).userTools.single().text
+                    val suffix = messages.indexOfFirst { it.hasMessage(role, strongText) }
+                    assertTrue("The sent strong denial follows the actual user", user >= 0 && suffix > user)
+                }
                 // Experimental live preview initially carries the first tool call only.
                 val preview = when {
                     toolIndexes != null -> prose
                     literal == LiteralCase.TOOL_SPLIT_CAPTION -> splitCaption
+                    literal == LiteralCase.BOUNDED_LOG_QUOTATION -> quoteLead
                     continuation != null || stopAfterCompleteToolCalls -> prose
                     else -> expected
                 }

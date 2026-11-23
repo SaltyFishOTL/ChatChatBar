@@ -31,6 +31,7 @@ object NarrativeHistoryEcho {
         val counterexampleOpenings: Set<String> = emptySet(),
     )
     private enum class ClosingEvidence { NONE, ONE_LITERAL, PROTECTED }
+    private enum class TemplateIntent { KEEP, OMIT }
     private data class ReplyLiterals(
         val ranges: List<IntRange>,
         val roleplayLiteralCode: List<IntRange>,
@@ -221,6 +222,19 @@ object NarrativeHistoryEcho {
         '「' to '」', '『' to '』', '｢' to '｣', '“' to '”', '‘' to '’', '«' to '»', '"' to '"', '\'' to '\'',
     )
     private val leadingApostropheContraction = Regex("t(?:is|was|were|will|would)(?![a-z])", RegexOption.IGNORE_CASE)
+    private const val logQuotation = "(?:literal|verbatim)[ \\t]+quot(?:ation|e)[ \\t]+(?:copied[ \\t]+)?from[ \\t]+(?:the[ \\t]+)?(?:history[ \\t]+)?log"
+    private val logQuotationLead = Regex(
+        " {0,3}(?:below|the following)[ \\t]+is[ \\t]+a[ \\t]+$logQuotation[.!:][ \\t]*", RegexOption.IGNORE_CASE,
+    )
+    private val logQuotationTail = Regex(
+        " {0,3}(?:that|this)[ \\t]+was[ \\t]+a[ \\t]+$logQuotation[.!][ \\t]*", RegexOption.IGNORE_CASE,
+    )
+    private val referenceOnly = Regex("\\b(?:reference|documentation)[ \\t]+only\\b", RegexOption.IGNORE_CASE)
+    private val historyReference = Regex("\\b(?:history|(?:earlier|prior|previous)[ \\t]+turns?|log)\\b", RegexOption.IGNORE_CASE)
+    private val deniesReproducingSample = Regex(
+        "\\b(?:never|do[ \\t]+not)[ \\t]+(?:reproduce|repeat|output)[ \\t]+(?:this|the)[ \\t]+(?:sample|example|tags)\\b",
+        RegexOption.IGNORE_CASE,
+    )
     private val unfinishedPluralPossessor = Regex("(?:the|these|those|our|your|their)[ \\t]+[a-z]{2,}s")
     private val unfinishedPossessedWord = Regex("[a-z]{2,}")
     private val chineseSpeechLead = Regex("[说說][ \\t]*[：:]?[ \\t]*$")
@@ -260,8 +274,7 @@ object NarrativeHistoryEcho {
         private val authoredSources = mutableMapOf<String, UserOutput>()
         private val authoredPairs = mutableSetOf<String>()
         private val authoredTemplateOpenings = mutableSetOf<String>()
-        private val currentTemplateOpenings = mutableSetOf<String>()
-        private val currentCounterexampleOpenings = mutableSetOf<String>()
+        private val currentTemplateIntents = mutableMapOf<String, TemplateIntent>()
         private var currentLiteralOutput = LiteralOutput()
 
         fun recordNarrativePrompt(prompt: String, userText: String?) {
@@ -277,13 +290,15 @@ object NarrativeHistoryEcho {
             recordCurrentLiteralTags(source)
         }
 
-        /** Only the rendered custom instruction layer can declare an output frame here. */
-        fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) {
-            if (!enabled || !hasCustomInstructions || renderedTail.isBlank()) return
-            val output = declaredUserOutput(renderedTail, requireExplicitCopy = true)
-            authoredPairs += output.literal.pairs
-            authoredTemplateOpenings += output.templateOpenings
-            currentTemplateOpenings += output.templateOpenings
+        fun recordDispatchedCharacterCore(renderedCore: String, hasCustomInstructions: Boolean) =
+            recordDispatchedCharacterOutput(renderedCore, hasCustomInstructions)
+
+        fun recordDispatchedPostHistory(renderedTail: String, hasCustomInstructions: Boolean) =
+            recordDispatchedCharacterOutput(renderedTail, hasCustomInstructions)
+
+        private fun recordDispatchedCharacterOutput(renderedSource: String, hasCustomInstructions: Boolean) {
+            if (!enabled || !hasCustomInstructions || renderedSource.isBlank()) return
+            recordCurrentOutput(declaredUserOutput(renderedSource, requireExplicitCopy = true))
         }
 
         private fun rememberAuthoredOutput(source: String) {
@@ -296,26 +311,33 @@ object NarrativeHistoryEcho {
 
         fun recordCurrentLiteralTags(source: String) {
             if (!enabled || source.isBlank()) return
-            val output = authoredSources[source] ?: declaredUserOutput(source)
+            recordCurrentOutput(authoredSources[source] ?: declaredUserOutput(source))
+        }
+
+        private fun recordCurrentOutput(output: UserOutput) {
             val literal = output.literal
             currentLiteralOutput = currentLiteralOutput.copy(
-                pairs = currentLiteralOutput.pairs + literal.pairs,
                 openings = currentLiteralOutput.openings + literal.openings,
                 closings = currentLiteralOutput.closings + literal.closings,
             )
             authoredPairs += literal.pairs
-            currentTemplateOpenings += output.templateOpenings
-            currentCounterexampleOpenings += output.counterexampleOpenings
+            authoredTemplateOpenings += output.templateOpenings
+            // Only explicit declarations in sent layers participate, in their dispatch order.
+            for (opening in output.counterexampleOpenings) currentTemplateIntents[opening] = TemplateIntent.OMIT
+            for (opening in output.templateOpenings) currentTemplateIntents[opening] = TemplateIntent.KEEP
         }
 
         private fun isAuthoredHeading(token: String): Boolean =
             formatCard?.let { hasAuthoredHeading(it, token, narrativeHeadings) } == true ||
                 authoredSources.keys.any { hasAuthoredHeading(it, token, narrativeHeadings) }
 
-        private fun authoredClosingEvidence(token: String): ClosingEvidence = closingEvidence(token, sequence {
-            for ((source, output) in authoredSources) yield(source to output.counterexampleClosingStarts)
-            formatCard?.let { yield(it to formatOutput.counterexampleClosingStarts) }
-        })
+        private fun authoredClosingEvidence(token: String): ClosingEvidence {
+            if (currentLiteralOutput.closings.any { it.startsWith(token) }) return ClosingEvidence.PROTECTED
+            return closingEvidence(token, sequence {
+                for ((source, output) in authoredSources) yield(source to output.counterexampleClosingStarts)
+                formatCard?.let { yield(it to formatOutput.counterexampleClosingStarts) }
+            })
+        }
 
         val declaresLegacyHistoryWrapper: Boolean
             get() = legacyWrapper.opening in formatOutput.declaredOpenings
@@ -442,17 +464,10 @@ object NarrativeHistoryEcho {
             }
 
             val headings = narrativeHeadings.filterNot(::isAuthoredHeading)
-            val supersededOpenings = (currentCounterexampleOpenings - currentTemplateOpenings).intersect(authoredTemplateOpenings)
+            val supersededOpenings = authoredTemplateOpenings.filter { currentTemplateIntents[it] == TemplateIntent.OMIT }
             val activeTemplates = authoredTemplateOpenings - supersededOpenings
             val replyFormat = if (activeTemplates.isEmpty()) formatOutput else {
                 formatOutput.copy(declaredOpenings = formatOutput.declaredOpenings + activeTemplates)
-            }
-            val activePairs = if (supersededOpenings.isEmpty()) authoredPairs else {
-                val supersededSamples = authoredSources.values.flatMap { output ->
-                    val openings = output.templateOpenings.intersect(supersededOpenings)
-                    output.literal.pairs.filter { pair -> openings.any { pair.startsWith(it) } }
-                }
-                (authoredPairs - supersededSamples.toSet()) + currentLiteralOutput.pairs
             }
             val reply = withoutEchoedHeading(text, headings, provisional, ::isAuthoredHeading)
             val body = text.substring(reply.body)
@@ -469,7 +484,7 @@ object NarrativeHistoryEcho {
                 projectedInnerOpenings = projectedInnerOpenings,
                 projectedPaddedFrames = projectedPaddedFrames,
                 allowedOpenings = projectedOpenings + formatOutput.counterexampleOpenings + supersededOpenings,
-                literalOutput = currentLiteralOutput.copy(pairs = activePairs),
+                literalOutput = currentLiteralOutput.copy(pairs = authoredPairs),
                 trailerHeadings = headings,
                 cleanExposedBody = { inner ->
                     val exposed = withoutEchoedHeading(inner, headings, provisional, ::isAuthoredHeading).content(inner)
@@ -631,13 +646,14 @@ object NarrativeHistoryEcho {
                     val pair = text.substring(start, end)
                     val standalonePair = atLineStart && text.getOrNull(tag.range.last + 1).isHistoryLineBreak() &&
                         startsLine(closing.range.first)
-                    if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) add(pair)
-                    if (!standalonePair || !visiblePair || visibleLead == null) continue
-                    val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
-                    val slot = userTemplateSlotFromInstruction(visibleLead)
-                    if (templateBody == slot || labeled && formatTemplateSlot.matches(templateBody)) {
-                        templateOpenings += wrapper.opening
-                    }
+                    val template = if (atLineStart && visiblePair && visibleLead != null && (standalonePair || singleLine)) {
+                        val templateBody = text.substring(tag.range.last + 1, closing.range.first).trim()
+                        val slot = userTemplateSlotFromInstruction(visibleLead)
+                        templateBody == slot || labeled && formatTemplateSlot.matches(templateBody)
+                    } else false
+                    // A slot establishes a format for new text. Only a literal copy reserves these exact bytes.
+                    if (template) templateOpenings += wrapper.opening
+                    else if (explicitCopy || !requireExplicitCopy && (singleLine || standalonePair)) add(pair)
                 }
             }
         }
@@ -1025,6 +1041,7 @@ object NarrativeHistoryEcho {
                     counterexampleClosingStarts += closing.range.first
                     continue
                 }
+                if (!explicitLabel && literals.isDocumentaryHistoryLead(lead)) continue
                 add(wrapper.opening)
                 if (explicitLabel && lead != null &&
                     singlePairTemplateConstraint.matches(literals.markdown.substring(lead)) &&
@@ -1135,6 +1152,16 @@ object NarrativeHistoryEcho {
 
     private fun ReplyLiterals.matchesVisibleLine(line: IntRange?, pattern: Regex): Boolean =
         visibleLine(line)?.let(pattern::matches) == true
+
+    private fun ReplyLiterals.isDocumentaryHistoryLead(lead: IntRange?): Boolean {
+        if (lead == null) return false
+        val instruction = visibleLine(lead) ?: return false
+        return listOf(referenceOnly, historyReference, deniesReproducingSample).all { evidence ->
+            evidence.findAll(instruction).any { match ->
+                isUnprotected(lead.first + match.range.first) && isUnprotected(lead.first + match.range.last)
+            }
+        }
+    }
 
     private fun ReplyLiterals.isCounterexampleBefore(lead: IntRange?): Boolean {
         if (lead == null) return false
@@ -1289,6 +1316,14 @@ object NarrativeHistoryEcho {
                         ?.let(historyExampleExplanation::matches)
                 } == true
 
+            fun isBoundedLogQuotation(first: Int, last: Int): Boolean {
+                val before = previousVisibleLine(joinedLiterals.markdown, parts[first].first) ?: return false
+                val after = nextNonblankLine(joinedLiterals.markdown, parts[last].last + 1) ?: return false
+                if (before.last + 2 != parts[first].first || after.first != parts[last].last + 2) return false
+                return joinedLiterals.matchesVisibleLine(before, logQuotationLead) &&
+                    joinedLiterals.matchesVisibleLine(after, logQuotationTail)
+            }
+
             var previousGroupClosedWrapper = false
             fun cleanParts(
                 first: Int,
@@ -1359,7 +1394,9 @@ object NarrativeHistoryEcho {
                         joinedLiterals.matchesVisibleLine(
                             previousVisibleLine(joinedLiterals.markdown, parts[first].first), metadataExampleBridge,
                         )
-                    if (cleaned.matchedOuterPair && (followsExampleLead || explainsPreviousExample(next))) {
+                    if (cleaned.matchedOuterPair &&
+                        (followsExampleLead || explainsPreviousExample(next) || isBoundedLogQuotation(first, first))
+                    ) {
                         cleaned = CleanedReply(text.substring(parts[first]))
                     }
                     val opening = cleaned.pendingToolOpening?.let { parts[first].first + it }
@@ -1377,7 +1414,8 @@ object NarrativeHistoryEcho {
                         for (last in closingParts) {
                             val grouped = cleanParts(first, last, requirePair = true)
                             if (!grouped.matchedOuterPair && !grouped.preservedLiteralExample) continue
-                            val explicitExample = followsExampleLead || explainsPreviousExample(last + 1)
+                            val explicitExample = followsExampleLead || explainsPreviousExample(last + 1) ||
+                                isBoundedLogQuotation(first, last)
                             val ambiguousContinuation = if (!explicitExample && last < parts.lastIndex) {
                                 // A standalone marker at the end of a call establishes the boundary.
                                 val following = cleanParts(last + 1, last + 1, followsClosedWrapper = true)

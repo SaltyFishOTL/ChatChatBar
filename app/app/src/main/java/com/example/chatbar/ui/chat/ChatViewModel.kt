@@ -3120,6 +3120,10 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                         ?.let(PromptCacheKeyFactory::cacheKey)
 
                     val apiMessages = stablePrefixMessages.toMutableList()
+                    narrativeEcho.recordDispatchedCharacterCore(
+                        promptLayers.coreSystemPrompt,
+                        hasCustomInstructions = charCard.systemPrompt.isNotBlank(),
+                    )
 
                     suspend fun addContextMessage(
                         msg: ChatMessage,
