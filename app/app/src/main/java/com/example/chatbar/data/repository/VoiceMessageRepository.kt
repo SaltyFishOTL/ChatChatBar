@@ -33,6 +33,11 @@ internal data class ReplyRemovalMedia(
     val legacyVoiceContentHashes: Map<String, String>
 )
 
+internal data class SaveSlotVoiceSnapshot(
+    val voices: List<GeneratedVoiceMessage>,
+    val anchors: List<VoiceAnchorState>
+)
+
 data class VoiceSegmentAnchor(
     val segment: CurrentVoiceSegment,
     val anchor: VoiceAnchor
@@ -77,12 +82,39 @@ class VoiceMessageRepository(
 
     suspend fun snapshotAnchorsForMessages(sessionId: String, messageIds: Set<String>): List<VoiceAnchorState> = mutex.withLock {
         ensureInitializedLocked()
+        snapshotAnchorsForMessagesLocked(sessionId, messageIds)
+    }
+
+    internal suspend fun snapshotForSaveSlot(sessionId: String): SaveSlotVoiceSnapshot = mutex.withLock {
+        ensureInitializedLocked()
+        val voices = _voices.value.filter { it.sessionId == sessionId }
+        val anchors = snapshotAnchorsForMessagesLocked(sessionId, voices.mapTo(mutableSetOf(), GeneratedVoiceMessage::messageId))
+            .associateBy(::VoiceAnchorStateKey).toMutableMap()
+        val versionsByMessage = mutableMapOf<String, List<MessageVersionSnapshot>>()
+        val captured = voices.map { voice ->
+            if (!voice.messageVersionId.isNullOrBlank() || voice.anchorId.isNullOrBlank()) return@map voice
+            val key = VoiceAnchorStateKey(sessionId, voice.messageId, null)
+            val legacyState = anchors[key] ?: return@map voice
+            val versions = versionsByMessage.getOrPut(voice.messageId) {
+                loadCurrentMessage?.invoke(voice.messageId, sessionId)
+                    ?.let(MessageAlternativeVersionPolicy::versions).orEmpty()
+            }
+            val resolved = VoiceMessageVersionPolicy.bindWitnessedLegacyVersion(versions, voice, legacyState)
+                ?: return@map voice
+            val versionKey = key.copy(messageVersionId = resolved.messageVersionId)
+            val state = anchors.getOrPut(versionKey) { legacyState.copy(messageVersionId = resolved.messageVersionId) }
+            placeWitnessedLegacyVoice(resolved, legacyState, state)
+        }
+        SaveSlotVoiceSnapshot(captured, anchors.values.toList())
+    }
+
+    private suspend fun snapshotAnchorsForMessagesLocked(sessionId: String, messageIds: Set<String>): List<VoiceAnchorState> {
         val legacyKeys = anchorsByVersion.keys.filter { it.sessionId.isBlank() && it.messageId in messageIds }
         legacyKeys.forEach { key ->
             val scopedKey = key.copy(sessionId = sessionId)
             if (scopedKey !in anchorsByVersion) adoptUnscopedAnchorLocked(scopedKey)
         }
-        anchorsByVersion.values.filter { it.sessionId == sessionId && it.messageId in messageIds }
+        return anchorsByVersion.values.filter { it.sessionId == sessionId && it.messageId in messageIds }
     }
 
     /** Caller supplies fresh message identities; preserve exact version/segment placement. */
@@ -235,6 +267,10 @@ class VoiceMessageRepository(
 
     suspend fun save(voice: GeneratedVoiceMessage) = mutex.withLock {
         ensureInitializedLocked()
+        saveVoiceLocked(voice)
+    }
+
+    private suspend fun saveVoiceLocked(voice: GeneratedVoiceMessage) {
         storage.saveEntity(VOICE_TYPE, voice.id, voice, GeneratedVoiceMessage.serializer())
         _voices.value = _voices.value.filterNot { it.id == voice.id } + voice
     }
@@ -321,6 +357,11 @@ class VoiceMessageRepository(
             if (!onlyIfUnvoiced) {
                 targeted = persistedReplyVoices(message.sessionId, message.id, versionId, includeUnassigned = true)
             }
+            if (versionId != null) {
+                val (survivingIds, retiringHashes) = preserveLegacyVoiceWitnesses(message, versionId, targeted)
+                targeted = targeted.filterNot { it.id in survivingIds }
+                legacyVoiceContentHashes = retiringHashes
+            }
             val audioPaths = targeted.filter { versionId == null || it.messageVersionId == versionId && it.versionOwnershipConfirmed }
                 .map(GeneratedVoiceMessage::audioPath).distinct()
             // Restricting an unconfirmed recording after commit clears its anchor ID.
@@ -329,9 +370,6 @@ class VoiceMessageRepository(
             }?.let { state ->
                 val witnesses = unscopedAnchorVoices(state)
                 witnesses.firstOrNull()?.anchorId?.takeIf { witnesses.all { it.sessionId == message.sessionId } }
-            }
-            if (versionId != null) {
-                legacyVoiceContentHashes = captureRetiringLegacyVoiceHashes(message, versionId, targeted)
             }
             ReplyRemovalMedia(audioPaths, legacyAnchorWitnessId, legacyVoiceContentHashes)
         }
@@ -405,24 +443,42 @@ class VoiceMessageRepository(
         return result
     }
 
-    private fun captureRetiringLegacyVoiceHashes(
+    private suspend fun preserveLegacyVoiceWitnesses(
         message: ChatMessage,
-        versionId: String,
+        retiringVersionId: String,
         voices: List<GeneratedVoiceMessage>
-    ): Map<String, String> {
+    ): Pair<Set<String>, Map<String, String>> {
         val key = VoiceAnchorStateKey(message.sessionId, message.id, null)
-        val state = anchorsByVersion[key] ?: anchorsByVersion[key.copy(sessionId = "")]
-            ?.takeIf { unscopedAnchorOwner(it) == message.sessionId } ?: return emptyMap()
+        val legacyState = anchorsByVersion[key] ?: anchorsByVersion[key.copy(sessionId = "")]
+            ?.takeIf { unscopedAnchorOwner(it) == message.sessionId } ?: return emptySet<String>() to emptyMap()
         val versions = MessageAlternativeVersionPolicy.versions(message)
-        return buildMap {
-            for (voice in voices) {
-                if (voice.versionOwnershipConfirmed || !voice.messageVersionId.isNullOrBlank() ||
-                    voice.anchorId.isNullOrBlank() || voice.legacyVersionContentHash != null) continue
-                val version = VoiceMessageVersionPolicy.anchoredLegacyVersion(versions, voice, state)
-                    ?.takeIf { it.id == versionId } ?: continue
-                VoiceMessageVersionPolicy.legacyVersionContentHash(voice, version)?.let { put(voice.id, it) }
+        val survivingIds = mutableSetOf<String>()
+        val retiringHashes = mutableMapOf<String, String>()
+        for (voice in voices) {
+            val resolved = VoiceMessageVersionPolicy.bindWitnessedLegacyVersion(versions, voice, legacyState) ?: continue
+            if (resolved.messageVersionId == retiringVersionId) {
+                retiringHashes[voice.id] = checkNotNull(resolved.legacyVersionContentHash)
+            } else {
+                // Persist the known survivor before changing the reply. Retry will no longer target it as unassigned.
+                val versionKey = key.copy(messageVersionId = resolved.messageVersionId)
+                val state = anchorsByVersion[versionKey] ?: legacyState.copy(
+                    messageVersionId = resolved.messageVersionId, sessionId = message.sessionId
+                ).also { saveAnchorLocked(versionKey, it) }
+                saveVoiceLocked(placeWitnessedLegacyVoice(resolved, legacyState, state))
+                survivingIds += voice.id
             }
         }
+        return survivingIds to retiringHashes
+    }
+
+    private fun placeWitnessedLegacyVoice(
+        voice: GeneratedVoiceMessage,
+        legacyState: VoiceAnchorState,
+        state: VoiceAnchorState
+    ): GeneratedVoiceMessage {
+        if (state.displayContentSnapshot == legacyState.displayContentSnapshot &&
+            state.anchors.any { it.id == voice.anchorId }) return voice
+        return voice.copy(anchorId = VoiceMessageVersionPolicy.archivedAnchorIdForVoice(voice, state))
     }
 
     private suspend fun restrictUnconfirmedReplyVoices(

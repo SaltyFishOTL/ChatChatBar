@@ -66,6 +66,18 @@ object VoiceMessageVersionPolicy {
             versions.singleOrNull { version -> version.content == it.displayContentSnapshot }
         }
 
+    internal fun bindWitnessedLegacyVersion(
+        versions: List<MessageVersionSnapshot>,
+        voice: GeneratedVoiceMessage,
+        state: VoiceAnchorState
+    ): GeneratedVoiceMessage? {
+        if (voice.versionOwnershipConfirmed || !voice.messageVersionId.isNullOrBlank() ||
+            voice.anchorId.isNullOrBlank() || voice.legacyVersionContentHash != null) return null
+        val version = anchoredLegacyVersion(versions, voice, state) ?: return null
+        val contentHash = legacyVersionContentHash(voice, version) ?: return null
+        return voice.copy(messageVersionId = version.id, legacyVersionContentHash = contentHash)
+    }
+
     internal fun compatibleVersionId(message: ChatMessage, voice: GeneratedVoiceMessage): String? =
         MessageAlternativeVersionPolicy.versions(message).singleOrNull { isCompatibleVersion(it, voice) }?.id
 

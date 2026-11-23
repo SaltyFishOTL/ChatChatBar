@@ -277,6 +277,124 @@ class VoiceMessageRepositoryTest {
     }
 
     @Test
+    fun `off-screen unversioned audio retains its witnessed version and segment through v8 export`() = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val storage = JsonFileStorage(context)
+        val chats = ChatRepository(storage)
+        val voices = VoiceMessageRepository(storage, chats::getMessage)
+        val packages = SaveSlotPackageStorage(context)
+        val a = "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[A only]()"
+        val b = "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[B only]()"
+        val reply = chats.addMessage(MessageAlternativeVersionPolicy.append(
+            ChatMessage.create("source", MessageRole.ASSISTANT, a), b, "B"
+        ))
+        val original = MessageAlternativeVersionPolicy.versions(reply).first()
+        val legacyState = VoiceAnchorPolicy.initialState(reply.id, a, includeNarration = true)
+        val anchor = legacyState.anchors.filter { it.sourceText == "Shared line" }.last()
+        storage.saveEntity("voice_anchor_states", reply.id, legacyState, VoiceAnchorState.serializer())
+        val audio = File(context.filesDir, "legacy.mp3").apply { writeText("second shared line in A") }
+        val voice = recording(reply, "legacy", "Shared line", anchor.id).copy(
+            messageVersionId = null, versionOwnershipConfirmed = false, sourceOrder = anchor.sourceOrder,
+            audioPath = audio.path, byteLength = audio.length()
+        )
+        voices.save(voice)
+
+        // Save before any chat window requests placements for this reply.
+        val captured = voices.snapshotForSaveSlot(reply.sessionId)
+        assertNull(voices.get(voice.id)?.messageVersionId)
+        val slot = packages.createPackage(
+            SaveSlot.create(reply.sessionId, "Legacy witness"), SaveSlotImagePolicy.NONE, true,
+            messageSource = { emit -> chats.forEachMessage(reply.sessionId, action = emit) },
+            ragSource = {}, voices = captured.voices, voiceAnchors = captured.anchors
+        )
+        val exported = temp.newFile("off-screen.cbsave")
+        exported.outputStream().use { packages.export(slot, it) }
+        val target = "off-screen-target"
+        val imported = exported.inputStream().use { packages.importPackage(it, target) { it }.slot }
+        packages.openReader(imported).use { reader ->
+            reader.validate()
+            val restored = reader.restoreVoices(target) { _, _, input ->
+                val path = File(context.filesDir, "restored-legacy.mp3")
+                path.outputStream().use { input.copyTo(it) }
+                FishAudioStoredAudio(path.path, 1_000, path.length())
+            }
+            chats.replaceMessagesForSessionStreaming(target) { emit -> reader.streamMessages(target, emit) }
+            voices.restorePackagedForSession(target, restored) { emit -> reader.streamVoiceAnchors(target, emit) }
+        }
+
+        val coldChats = ChatRepository(JsonFileStorage(context))
+        val cold = VoiceMessageRepository(JsonFileStorage(context), coldChats::getMessage)
+        val displayedB = requireNotNull(coldChats.getMessage(reply.id, target))
+        assertTrue(cold.placementsForMessage(displayedB).isEmpty())
+        val displayedA = requireNotNull(coldChats.updateMessageIfUnchanged(
+            displayedB, MessageAlternativeVersionPolicy.select(displayedB, 0)
+        ))
+        val placement = cold.placementsForMessage(displayedA).single()
+        assertEquals(original.id, placement.voice.messageVersionId)
+        assertEquals(anchor.id, placement.voice.anchorId)
+        assertEquals(1, placement.segmentIndex)
+        assertFalse(placement.voice.versionOwnershipConfirmed)
+        assertNotNull(placement.voice.legacyVersionContentHash)
+        assertEquals("second shared line in A", File(placement.voice.audioPath).readText())
+    }
+
+    @Test
+    fun `removing an unrelated alternative preserves the witnessed legacy owner before cleanup retry`() = runBlocking {
+        val context = TestContext(temp.newFolder())
+        val storage = JsonFileStorage(context)
+        val chats = ChatRepository(storage)
+        val voices = VoiceMessageRepository(storage, chats::getMessage)
+        val a = "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[A only]()"
+        val c = "<n=\"甲\"/>[Shared line]()\n<n=\"甲\"/>[C only]()"
+        val replyA = ChatMessage.create("source", MessageRole.ASSISTANT, a)
+        val reply = chats.addMessage(MessageAlternativeVersionPolicy.append(
+            MessageAlternativeVersionPolicy.append(replyA, c, "C"), "<n=\"甲\"/>[B only]()", "B"
+        ))
+        val original = MessageAlternativeVersionPolicy.versions(reply).first()
+        val legacyState = VoiceAnchorPolicy.initialState(reply.id, a, includeNarration = true)
+        val anchor = legacyState.anchors.first()
+        storage.saveEntity("voice_anchor_states", reply.id, legacyState, VoiceAnchorState.serializer())
+        val audio = File(context.filesDir, "legacy.mp3").apply { writeText("shared line in A") }
+        val voice = recording(reply, "legacy", "Shared line", anchor.id).copy(
+            messageVersionId = null, versionOwnershipConfirmed = false, audioPath = audio.path, byteLength = audio.length()
+        )
+        voices.save(voice)
+
+        val survivor = requireNotNull(MessageAlternativeVersionPolicy.remove(reply, "B"))
+        val removal = ReplyRemoval("unrelated", reply.sessionId, reply.id, "B", reply.role,
+            reply.sourceTurnId, reply.sourceTurnOrder, reply.timelineTurn, emptyList(), emptyList())
+        assertTrue(voices.prepareReplyRemoval(reply, "B", {}) { collectMedia ->
+            chats.commitReplyRemoval(reply, survivor) {
+                val media = collectMedia()
+                assertTrue(media.audioPaths.isEmpty())
+                storage.saveEntityUncached(ReplyRemoval.STORE, removal.id,
+                    removal.copy(legacyVoiceContentHashes = media.legacyVoiceContentHashes), ReplyRemoval.serializer())
+            }
+        })
+
+        // Open a fresh repository before the pending journal has been drained.
+        val coldStorage = JsonFileStorage(context)
+        val coldChats = ChatRepository(coldStorage)
+        val cold = VoiceMessageRepository(coldStorage, coldChats::getMessage)
+        val displayedC = requireNotNull(coldChats.getMessage(reply.id, reply.sessionId))
+        assertEquals("C", MessageAlternativeVersionPolicy.activeVersionId(displayedC))
+        assertTrue(cold.placementsForMessage(displayedC).isEmpty())
+        val pending = requireNotNull(coldStorage.loadEntity(ReplyRemoval.STORE, removal.id, ReplyRemoval.serializer()))
+        assertTrue(cold.finishReplyRemoval(pending, { cleanup -> coldChats.finishReplyRemoval(pending, cleanup) }, {},
+            { error("The surviving recording must be retained") }))
+        val displayedA = requireNotNull(coldChats.updateMessageIfUnchanged(
+            displayedC, MessageAlternativeVersionPolicy.select(displayedC, 0)
+        ))
+        val placement = cold.placementsForMessage(displayedA).single()
+        assertEquals(original.id, placement.voice.messageVersionId)
+        assertEquals(anchor.id, placement.voice.anchorId)
+        assertEquals(0, placement.segmentIndex)
+        assertFalse(placement.voice.versionOwnershipConfirmed)
+        assertNotNull(placement.voice.legacyVersionContentHash)
+        assertEquals("shared line in A", File(placement.voice.audioPath).readText())
+    }
+
+    @Test
     fun `restored v8 recordings recover exact placement after version removal and cold read`() = runBlocking {
         val context = TestContext(temp.newFolder())
         val reply = MessageAlternativeVersionPolicy.append(

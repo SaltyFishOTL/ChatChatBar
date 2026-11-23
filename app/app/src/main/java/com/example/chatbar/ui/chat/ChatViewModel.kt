@@ -4238,11 +4238,7 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
             narrativeModeSaveMutex.withLock { }
             val memorySnapshot = longTermMemoryService.snapshot(sessionId)
             val curSession = chatRepository.getSession(sessionId) ?: error("当前会话尚未加载")
-            val voices = if (includeAudio) {
-                voiceMessageRepository.listForSession(sessionId)
-            } else {
-                emptyList()
-            }
+            val voiceSnapshot = if (includeAudio) voiceMessageRepository.snapshotForSaveSlot(sessionId) else null
             val baseSlot = SaveSlot.create(
                 sessionId = sessionId,
                 name = NamePolicy.normalize(name),
@@ -4290,10 +4286,8 @@ class ChatViewModel(private val sessionId: String) : ViewModel() {
                 ragSource = { emit ->
                     ChatBarApp.instance.ragRepository.forEachChunkForSession(sessionId, emit)
                 },
-                voices = voices,
-                voiceAnchors = if (voices.isEmpty()) emptyList() else voiceMessageRepository.snapshotAnchorsForMessages(
-                    sessionId, voices.mapTo(mutableSetOf()) { it.messageId }
-                ),
+                voices = voiceSnapshot?.voices.orEmpty(),
+                voiceAnchors = voiceSnapshot?.anchors.orEmpty(),
                 onProgress = { status ->
                     _saveSlotOperation.value = SaveSlotOperationState(true, status, cancellable)
                 }
